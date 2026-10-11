@@ -148,7 +148,7 @@ Each model directory carries a `trentina-model.json`: its id, pinned revision, t
 
 ### Layer 3 — Quarantined LLM (Q-Agent)
 
-A quarantined LLM — `gemini-2.5-flash-lite` by default, any configured provider otherwise — that receives the **original, unmodified content** and judges it while ignoring injected instructions. It waits for L1 and L2 and is briefed with both: L1's counts by type, L2's label and score, and — unconditionally — the caveat that L2 misses attacks that need reasoning, such as social engineering and exfiltration intent, so a low score is never evidence of safety. The Q-Agent is deliberately constrained:
+A quarantined LLM — `gemini-3.5-flash-lite` by default, any configured provider otherwise — that receives the **original, unmodified content** and judges it while ignoring injected instructions. It waits for L1 and L2 and is briefed with both: L1's counts by type, L2's label and score, and — unconditionally — the caveat that L2 misses attacks that need reasoning, such as social engineering and exfiltration intent, so a low score is never evidence of safety. The Q-Agent is deliberately constrained:
 
 - **No tools** — can't execute actions even if manipulated
 - **No memory** — can't be poisoned across sessions
@@ -159,7 +159,7 @@ A quarantined LLM — `gemini-2.5-flash-lite` by default, any configured provide
 
 **What it catches:** Social engineering, data exfiltration intent, authority-based attacks, subtle semantic manipulation — everything that requires understanding *meaning*, not just *pattern*.
 
-**What it misses:** with the default `QUARANTINE_MODEL` (`gemini-2.5-flash-lite`), the Q-Agent's aggregate catch rate on attacks written to evade both L1 and L2 is 86% (see `benchmarks/results/`), not near-100% — and it drops to 33% on the `detector_meta` category (attacks targeting the detector itself). A stronger `QUARANTINE_MODEL` closes most of that gap; see `docs/benchmark.md` for per-model numbers before treating L3 as a reliable backstop.
+**What it misses:** with `gemini-2.5-flash-lite`, the default until 1.5.0, the Q-Agent's aggregate catch rate on attacks written to evade both L1 and L2 is 86% (see `benchmarks/results/`), not near-100% — and it drops to 33% on the `detector_meta` category (attacks targeting the detector itself). A stronger `QUARANTINE_MODEL` closes most of that gap; see `docs/benchmark.md` for per-model numbers before treating L3 as a reliable backstop.
 
 **Latency:** 1-2s per turn (Gemini round-trip). **Cost:** Gemini API tokens — one call per payload, three in redact mode. **Always runs;** its absence is a gap, never a skip.
 
@@ -401,10 +401,12 @@ one does; the rest name the benchmark that measured them.
     Gemini 3.5 Flash-Lite with its pack flags 3 of the same 228 and misses
     no planted instruction, and is the judge to run through OpenRouter
     ([benchmark](benchmark.md#re-tuning-did-not-work-the-judge-is-the-fix-2026-10-11)).
-    The gap that remains: `DEFAULT_MODEL` is still Gemini 2.5 Flash-Lite on
-    the Gemini API, on the generic prompts, which flag the most (58 of
-    228 through OpenRouter); Claude Haiku 4.5 (84 of 288 unbriefed) and
-    Gemini 3.8 Flash (31) have no briefed result. `block` refuses such a
+    It is the default since 1.5.0, and startup names any other judge in
+    use as deprecated or unmeasured. The gap that remains: a judge on the
+    generic prompts, which is any judge not reached through OpenRouter,
+    flags more (17 of 228 for the default model, 58 for its predecessor);
+    Claude Haiku 4.5 (84 of 288 unbriefed) and Gemini 3.8 Flash (31) have
+    no briefed result. `block` refuses such a
     document and offers `redact`. Measured by `benchmarks/prompt_pack.py
     --briefing benign` and `benchmarks/detonation.py --mode judge
     --briefing`.

@@ -27,8 +27,9 @@ uv run trentina
   holds none, so it never calls Google directly.
 - `OPENROUTER_API_KEY` — standalone key for `TRENTINA_MODEL_PROVIDER=openrouter`;
   a gateway profile uses `llm_keys.openrouter`. Model ids are OpenRouter's
-  (`google/gemini-2.5-flash-lite`).
-- `QUARANTINE_MODEL` — Gemini model for Q-Agent (default: gemini-2.5-flash-lite)
+  (`google/gemini-3.5-flash-lite`).
+- `QUARANTINE_MODEL` — Gemini model for Q-Agent (default: gemini-3.5-flash-lite, the one
+  supported judge: its pack passed the briefed pack gate, #397)
 - `QUARANTINE_SEARCH_MODEL` — L0 web search model, an OpenRouter id (default
   `google/gemini-2.5-flash`). L0 is OpenRouter's `web` plugin and nothing else
   (`_enforce_openrouter_search_quarantine`); the Gemini grounding route strips

@@ -32,6 +32,8 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from ..config import get_config
+from ..quarantine.packs import SUPPORTED, pack_for, supported_judges
+from ..quarantine.providers import openrouter_model
 from .context import _current_profile
 
 if TYPE_CHECKING:
@@ -125,6 +127,7 @@ def log_service_identity(profiles: Mapping[str, Profile]) -> None:
             provider,
             model,
         )
+        log_judge_support(profiles)
         return
     provider, model = judge_of(operator)
     logger.warning(
@@ -133,3 +136,37 @@ def log_service_identity(profiles: Mapping[str, Profile]) -> None:
         provider,
         model,
     )
+    log_judge_support(profiles)
+
+
+def judge_support(profiles: Mapping[str, Profile]) -> dict[tuple[str, str], str]:
+    """Every judge these profiles name that is not a supported one, with its pack's status.
+
+    A judge is supported when the pack it is prompted with passed the pack
+    gate as production runs it (``packs.SUPPORTED``, #397). The env default
+    counts as named: it is what a call with no profile is judged by.
+    """
+    found: dict[tuple[str, str], str] = {}
+    for profile in (None, *profiles.values()):
+        provider, model = judge_of(profile)
+        if provider == "openrouter":
+            model = openrouter_model(model)
+        own = getattr(getattr(profile, "defense", None), "l3_prompt_pack", None)
+        status = pack_for((provider, model), own).status
+        if status != SUPPORTED:
+            found[(provider, model)] = status
+    return found
+
+
+def log_judge_support(profiles: Mapping[str, Profile]) -> None:
+    """Name, once each, a judge in use whose pack has not passed the gate."""
+    listed = ", ".join(f"{provider}/{model}" for provider, model in supported_judges())
+    for (provider, model), status in sorted(judge_support(profiles).items()):
+        logger.warning(
+            "judge: provider=%s model=%s is %s on the L3 pack gate; supported: %s. "
+            "See docs/configuration.md#supported-judges.",
+            provider,
+            model,
+            status,
+            listed or "none",
+        )

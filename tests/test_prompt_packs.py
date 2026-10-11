@@ -18,8 +18,9 @@ from benchmarks.detonation import BRIEFINGS
 from benchmarks.provider_benchmark import CaseResult, ProviderReport
 from corpora.internal import CORPUS
 from corpora.jailbreak import CATEGORY_ATTACK
+from trentina import config as config_mod
 from trentina.defense import build_l3_briefing
-from trentina.gateway import ingress_defense
+from trentina.gateway import ingress_defense, service
 from trentina.gateway.profile import AuthConfig, DefenseConfig, Profile
 from trentina.l1 import run_l1
 from trentina.quarantine import agent, packs
@@ -34,7 +35,7 @@ from trentina.quarantine.packs import (
 from trentina.quarantine.prompts import L2_BLINDSPOT_CAVEAT
 from trentina.quarantine.providers import reset_provider
 
-_JUDGE = ("openrouter", "google/gemini-2.5-flash-lite")
+_JUDGE = ("openrouter", "google/gemini-3.5-flash-lite")
 _BENIGN = BRIEFINGS["benign"]
 _RULES = " ".join(FRAMING) + " the content you are analyzing."
 
@@ -55,6 +56,14 @@ def _pack(**changes: Any) -> dict[str, Any]:
     }
     pack.update(changes)
     return pack
+
+
+def _profile(name: str, provider: str, model: str) -> Profile:
+    return Profile(
+        name=name,
+        auth=AuthConfig(bearer_token_env=f"{name.upper()}_TOKEN"),
+        defense=DefenseConfig(provider=provider, model=model),
+    )
 
 
 def _file(tmp_path: Path, pack: dict[str, Any], name: str = "pack.json") -> str:
@@ -633,3 +642,52 @@ class TestBriefedAsProduction:
         expected = None if brief is None else f"briefing for {case.payload}"
         assert detect.await_args.kwargs["layer1_context"] == expected
         assert detect.await_args.args == (case.payload,), "the payload itself is never changed"
+
+
+class TestSupportedJudges:
+    """#397: a judge is supported when its pack passed the briefed gate."""
+
+    def test_a_pack_says_where_it_stands_and_the_stamp_does_not_move(self) -> None:
+        plain = parse_pack(_pack())
+        assert plain.status == packs.UNMEASURED, "a file that does not say was never run"
+        passed = parse_pack(_pack() | {"status": packs.SUPPORTED})
+        assert passed.status == packs.SUPPORTED
+        assert passed.stamp == plain.stamp, "status is not prompt text: no verdict is swept"
+        with pytest.raises(PackError, match="status"):
+            parse_pack(_pack() | {"status": "blessed"})
+
+    def test_a_supported_pack_ships_the_briefed_run_it_passed(self) -> None:
+        for path in sorted(packs.SHIPPED_DIR.glob("*.json")):
+            raw = json.loads(path.read_text())
+            if raw["status"] == packs.SUPPORTED:
+                assert raw["measured"]["briefing"] == "benign", path.name
+                assert raw["measured"]["split"] == "held-out", path.name
+        assert packs.GENERIC.status == packs.UNMEASURED
+
+    def test_startup_names_a_judge_that_is_not_supported(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setenv(packs.PACK_ENV, "")
+        old = _profile("old", provider="openrouter", model="google/gemini-2.5-flash-lite")
+        new = _profile("new", provider="openrouter", model="google/gemini-3.5-flash-lite")
+        own = _profile("own", provider="openai", model="gpt-4o-mini")
+        found = service.judge_support({"old": old, "new": new, "own": own})
+        assert found[("openrouter", "google/gemini-2.5-flash-lite")] == packs.DEPRECATED
+        assert found[("openai", "gpt-4o-mini")] == packs.UNMEASURED
+        assert ("openrouter", "google/gemini-3.5-flash-lite") not in found
+        with caplog.at_level("WARNING", logger=service.logger.name):
+            service.log_judge_support({"old": old, "new": new})
+        said = [r.getMessage() for r in caplog.records if r.getMessage().startswith("judge:")]
+        assert any("gemini-2.5-flash-lite is deprecated" in line for line in said)
+        assert all("supported: openrouter/google/gemini-3.5-flash-lite" in line for line in said)
+        assert not any("model=google/gemini-3.5-flash-lite is" in line for line in said)
+
+    def test_the_bare_default_through_openrouter_is_the_supported_judge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(packs.PACK_ENV, "")
+        monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", "openrouter")
+        monkeypatch.delenv("QUARANTINE_MODEL", raising=False)
+        monkeypatch.setattr(config_mod, "_config", None)
+        assert service.judge_support({}) == {}
+        monkeypatch.setattr(config_mod, "_config", None)

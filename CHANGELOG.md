@@ -10,7 +10,14 @@ under that name.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-11
+
 ### Added
+- Supported judges (#397). A judge is supported when its prompt pack passed
+  the pack gate briefed as production and ships that run. Each shipped pack
+  says so in a `status` key (`supported`, `deprecated`, `unmeasured`), and
+  startup and a profile reload log one line for every judge a profile names
+  that is not supported. `docs/configuration.md` has the table.
 - `benchmarks/prompt_pack.py --briefing benign|malicious` judges each case
   under the briefing `defend()` sends in production, so a pack's
   `l2_caveat` is exercised and the gate measures what production runs
@@ -24,7 +31,17 @@ under that name.
   54, and misses none of 99 planted instructions where that judge misses 5.
   Fifteen re-worded packs for the older judge did not move it. The newer
   judge's pack carries the briefed measurement in its header; its prompts
-  are unchanged. `DEFAULT_MODEL` is unchanged.
+  are unchanged.
+- `DEFAULT_MODEL` is `gemini-3.5-flash-lite`. A deployment that does not
+  set `QUARANTINE_MODEL` changes judge with this release. The Gemini API
+  now serves Gemini 2.5 only to accounts that already used it.
+- `PERIMETER_VERSION` is 16: the first start re-judges every tool
+  description.
+
+### Deprecated
+- `google/gemini-2.5-flash-lite` as the L3 judge. Its pack fails the pack
+  gate briefed as production. It still runs, and startup logs one line
+  naming it and the supported judge. Its pack stays through 1.x.
 
 ## [1.4.1] - 2026-10-11
 
