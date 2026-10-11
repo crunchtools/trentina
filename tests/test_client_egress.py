@@ -474,6 +474,27 @@ class TestConfig:
         with pytest.raises(ValidationError):
             ClientEgressConfig(source_networks=["192.0.2.0/29"], hosts=[host])
 
+    @pytest.mark.parametrize(
+        "address", ["192.0.2.7", "10.1", "0x7f.1", "2130706433.0", "example.123", "host.0"]
+    )
+    def test_a_numeric_last_label_marks_an_address_however_it_is_spelled(
+        self, address: str
+    ) -> None:
+        assert not is_dns_name(address)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "api.example.com",
+            "a1.example.com",
+            "1.example.com",
+            "123.example.co1",
+            "xn--bcher-kva.example",
+        ],
+    )
+    def test_digits_elsewhere_in_a_name_are_fine(self, name: str) -> None:
+        assert is_dns_name(name)
+
     def test_a_name_listed_twice_is_refused(self) -> None:
         with pytest.raises(ValidationError):
             ClientEgressConfig(source_networks=["192.0.2.0/29"], hosts=[ALLOWED, ALLOWED])
