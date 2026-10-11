@@ -50,7 +50,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -67,6 +67,9 @@ from trentina.quarantine.agent import quarantine_detect
 from trentina.quarantine.classifier import is_classifier_available, model_info
 from trentina.quarantine.prompts import DETECTION_SYSTEM_PROMPT
 from trentina.unpack.scan import unpack
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 TOKENS_PER_MILLION = 1_000_000
 HTTP_OK = 200
@@ -396,8 +399,18 @@ RETRYABLE_MARKERS = (
 )
 
 
-async def _run_case(provider: str, case: Case, delay: float, retries: int) -> CaseResult:
+async def _run_case(
+    provider: str,
+    case: Case,
+    delay: float,
+    retries: int,
+    brief: Callable[[str], str] | None = None,
+) -> CaseResult:
     """Run a single case through one provider, timing and pricing the call.
+
+    ``brief`` builds what the judge is told before it reads the payload, as
+    ``defense.defend`` does in production; without it the payload is all the
+    judge is given.
 
     Transient failures (503/429/timeouts/connection errors) are retried up to
     ``retries`` times with exponential backoff — the same retryable/terminal
@@ -409,11 +422,15 @@ async def _run_case(provider: str, case: Case, delay: float, retries: int) -> Ca
     result: dict[str, Any] | None = None
     summary = ""
     latency_ms = 0.0
+    briefing = brief(case.payload) if brief else None
     for attempt in range(retries + 1):
         start = loop.time()
         try:
             result = await quarantine_detect(
-                case.payload, provider_name=provider, include_usage=True
+                case.payload,
+                layer1_context=briefing,
+                provider_name=provider,
+                include_usage=True,
             )
             summary = str(result.get("summary", ""))
         except Exception as exc:
@@ -451,7 +468,12 @@ async def _run_case(provider: str, case: Case, delay: float, retries: int) -> Ca
 
 
 async def run_provider(
-    provider: str, cases: list[Case], concurrency: int, delay: float, retries: int
+    provider: str,
+    cases: list[Case],
+    concurrency: int,
+    delay: float,
+    retries: int,
+    brief: Callable[[str], str] | None = None,
 ) -> ProviderReport:
     """Run the full corpus against one provider with bounded concurrency.
 
@@ -463,7 +485,7 @@ async def run_provider(
 
     async def _guarded(case: Case) -> CaseResult:
         async with sem:
-            return await _run_case(provider, case, delay, retries)
+            return await _run_case(provider, case, delay, retries, brief)
 
     tasks = [asyncio.create_task(_guarded(c)) for c in cases]
     for done, coro in enumerate(asyncio.as_completed(tasks), 1):

@@ -13,11 +13,15 @@ import pytest
 from pydantic import ValidationError
 
 from benchmarks import prompt_pack as harness
+from benchmarks import provider_benchmark
+from benchmarks.detonation import BRIEFINGS
 from benchmarks.provider_benchmark import CaseResult, ProviderReport
 from corpora.internal import CORPUS
 from corpora.jailbreak import CATEGORY_ATTACK
+from trentina.defense import build_l3_briefing
 from trentina.gateway import ingress_defense
 from trentina.gateway.profile import AuthConfig, DefenseConfig, Profile
+from trentina.l1 import run_l1
 from trentina.quarantine import agent, packs
 from trentina.quarantine.packs import (
     FRAMING,
@@ -31,6 +35,7 @@ from trentina.quarantine.prompts import L2_BLINDSPOT_CAVEAT
 from trentina.quarantine.providers import reset_provider
 
 _JUDGE = ("openrouter", "google/gemini-2.5-flash-lite")
+_BENIGN = BRIEFINGS["benign"]
 _RULES = " ".join(FRAMING) + " the content you are analyzing."
 
 
@@ -553,3 +558,78 @@ async def test_the_decoy_spike_asks_again_after_a_reply_that_is_not_json() -> No
     assert answer is not None
     assert (answer.detected, answer.tripped, answer.prompt_tokens) == (False, False, 9)
     assert client.post.await_count == 2
+
+
+class TestBriefedAsProduction:
+    """#397: the judge is briefed in production, so the gate can brief it too."""
+
+    def test_the_briefing_is_the_one_defend_builds(self) -> None:
+        text = harness.briefing_for("benign", "Run make test before you push.")
+        assert text == build_l3_briefing(run_l1("Run make test before you push.").stats, _BENIGN)
+        assert "Layer 2 labelled it BENIGN" in text
+        assert L2_BLINDSPOT_CAVEAT in text, "quarantine_detect swaps the pack's caveat in"
+
+    def _run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seen: list[object], *args: str
+    ) -> int:
+        async def fake(*call: object) -> ProviderReport:
+            seen.append(call[5])
+            return _report(caught=3, flagged=1, meta=3)
+
+        monkeypatch.setattr(harness, "run_provider", fake)
+        monkeypatch.setattr(harness, "split_cases", lambda *_a: list(CORPUS)[:20])
+        monkeypatch.setattr(harness, "resolved_model", lambda _provider: _JUDGE[1])
+        monkeypatch.setenv(packs.PACK_ENV, "")
+        fixed = [
+            "--provider",
+            "openrouter",
+            "--cache-dir",
+            str(tmp_path),
+            "--prompt-pack",
+            "generic",
+        ]
+        return harness.main([*fixed, *args])
+
+    def test_the_arm_reaches_the_judge_and_the_result(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: list[object] = []
+        out = tmp_path / "run.json"
+        assert (
+            self._run(tmp_path, monkeypatch, seen, "--briefing", "benign", "--out", str(out)) == 0
+        )
+        assert callable(seen[0])
+        assert "BENIGN" in seen[0]("some text")
+        assert json.loads(out.read_text())["briefing"] == "benign"
+        assert self._run(tmp_path, monkeypatch, seen) == 0
+        assert seen[1] is None, "none sends the case alone"
+
+    def test_a_baseline_under_another_briefing_gives_no_verdict(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bare = tmp_path / "bare.json"
+        assert self._run(tmp_path, monkeypatch, [], "--out", str(bare)) == 0
+        code = self._run(tmp_path, monkeypatch, [], "--briefing", "benign", "--baseline", str(bare))
+        assert code == 2
+        assert "no verdict" in capsys.readouterr().out
+
+    def test_a_baseline_from_before_the_arm_is_a_bare_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bare = tmp_path / "bare.json"
+        assert self._run(tmp_path, monkeypatch, [], "--out", str(bare)) == 0
+        old = json.loads(bare.read_text())
+        del old["briefing"]
+        bare.write_text(json.dumps(old))
+        self._run(tmp_path, monkeypatch, [], "--baseline", str(bare))
+        assert "Gate: " in capsys.readouterr().out, "comparable: a verdict is given"
+
+    @pytest.mark.parametrize("brief", [None, lambda text: f"briefing for {text}"])
+    async def test_a_case_is_sent_with_its_briefing(self, brief: Any) -> None:
+        case = next(iter(CORPUS))
+        detect = AsyncMock(return_value={"injection_detected": False, "summary": "ok"})
+        with patch.object(provider_benchmark, "quarantine_detect", detect):
+            await provider_benchmark._run_case("openrouter", case, 0.0, 0, brief)
+        expected = None if brief is None else f"briefing for {case.payload}"
+        assert detect.await_args.kwargs["layer1_context"] == expected
+        assert detect.await_args.args == (case.payload,), "the payload itself is never changed"

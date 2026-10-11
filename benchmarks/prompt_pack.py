@@ -65,6 +65,7 @@ import os
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -72,11 +73,13 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from benchmarks.detonation import CARRIERS_PER_INSERT, build_cases, document_id
+from benchmarks.detonation import BRIEFINGS, CARRIERS_PER_INSERT, build_cases, document_id
 from benchmarks.provider_benchmark import ProviderReport, resolved_model, run_provider
 from corpora import fetch, jailbreak
 from corpora.detonation import BENIGN_INSERTS, CARRIERS, internal_inserts
 from corpora.internal import CORPUS, Case
+from trentina.defense import build_l3_briefing
+from trentina.l1 import run_l1
 from trentina.quarantine import packs
 
 GENERIC = "generic"
@@ -285,8 +288,8 @@ def render(run: dict[str, Any], baseline: dict[str, Any] | None) -> str:
     lines = [
         f"# L3 prompt pack: {run['pack']} on {run['provider']} / {run['model']}",
         "",
-        f"Split: **{run['split']}**, {run['votes']} vote(s) a case"
-        + (tuning if run["split"] == "train" else ""),
+        f"Split: **{run['split']}**, {run['votes']} vote(s) a case, "
+        f"briefing {run.get('briefing', 'none')}" + (tuning if run["split"] == "train" else ""),
         "",
         "| " + head,
         rule,
@@ -315,6 +318,7 @@ def emitted(pack_file: Path, run: dict[str, Any], baseline: dict[str, Any]) -> d
         "date": run["date"],
         "split": run["split"],
         "votes": run["votes"],
+        "briefing": run["briefing"],
         "corpus": run["corpus"],
         "pack": {k: v for k, v in run["measured"].items() if not k.endswith("by_category")},
         "generic": {k: v for k, v in baseline["measured"].items() if not k.endswith("by_category")},
@@ -337,10 +341,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--out", help="Write this run's JSON here.")
     parser.add_argument("--cache-dir", default=str(fetch.CACHE_DIR))
     parser.add_argument("--votes", type=int, default=1, help="Ask each case this many times.")
+    parser.add_argument(
+        "--briefing",
+        choices=tuple(BRIEFINGS),
+        default="none",
+        help="What the judge is told Layer 2 made of each case; none sends the case alone.",
+    )
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--limit", type=int, default=0, help="Cut the case list, for a smoke run.")
     return parser.parse_args(argv)
+
+
+def briefing_for(arm: str, text: str) -> str:
+    """What production tells the judge before ``text`` (#397).
+
+    ``build_l3_briefing`` over L1's real counts for the text and the arm's
+    Layer 2 label; ``quarantine_detect`` puts the pack's caveat in. The label
+    is the arm, not a measurement: ``benign`` is what the judge is told about
+    nearly every document it should pass, and about every attack Layer 2
+    missed.
+    """
+    return build_l3_briefing(run_l1(text).stats, BRIEFINGS[arm])
 
 
 def use_pack(choice: str | None, judge: tuple[str, str]) -> packs.PromptPack:
@@ -375,8 +397,9 @@ async def main_async(args: argparse.Namespace) -> int:
     )
     cases = cases[: args.limit] if args.limit else cases
     print(f"{len(cases)} cases, {args.split}, pack {pack.stamp}, judge {judge}", file=sys.stderr)
+    brief = None if args.briefing == "none" else partial(briefing_for, args.briefing)
     runs = [
-        await run_provider(args.provider, cases, args.concurrency, 0.0, args.retries)
+        await run_provider(args.provider, cases, args.concurrency, 0.0, args.retries, brief)
         for _ in range(max(args.votes, 1))
     ]
     report = voted(runs)
@@ -388,6 +411,7 @@ async def main_async(args: argparse.Namespace) -> int:
         "pack": pack.stamp,
         "split": args.split,
         "votes": max(args.votes, 1),
+        "briefing": args.briefing,
         "corpus": {
             "internal": sum(1 for c in cases if not c.id.startswith(("ext-", EMBEDDED_PREFIX))),
             "embedded": sum(1 for c in cases if c.id.startswith(EMBEDDED_PREFIX)),
@@ -408,8 +432,13 @@ async def main_async(args: argparse.Namespace) -> int:
     if baseline is None:
         return 0
     same = ("provider", "model", "split", "votes", "cases")
-    if any(baseline.get(key) != run[key] for key in same):
-        print("\nThe baseline is another judge, split, vote count or set of cases: no verdict.")
+    differs = any(baseline.get(key) != run[key] for key in same)
+    # A result written before the arm existed was run with none.
+    if differs or baseline.get("briefing", "none") != run["briefing"]:
+        print(
+            "\nThe baseline is another judge, split, vote count, briefing or set of cases: "
+            "no verdict."
+        )
         return 2
     reasons = gate(run["measured"], baseline["measured"])
     print("\nGate: " + ("PASS" if not reasons else "FAIL: " + "; ".join(reasons)))
