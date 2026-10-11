@@ -277,6 +277,7 @@ class TestTheFactor:
 class TestDeliveredAsTheOversizeRefusal:
     """The agent gets admission's oversize refusal; the audit calls it a block."""
 
+    @pytest.mark.usefixtures("read_only_tools")
     async def test_router_refuses_with_the_oversize_gap(self, tmp_path: Any) -> None:
         from pydantic import SecretStr
 

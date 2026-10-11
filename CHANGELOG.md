@@ -10,6 +10,20 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+- A response withheld from a tool that may write no longer reads as a failed
+  call (#425). A proxied response is judged after the backend answered; when
+  block refused the one-line confirmation of a sent mail, the agent took the
+  refusal for a failed send and sent the mail again. For a remote backend's
+  tool not annotated `readOnlyHint`, a response withheld by the defense
+  pipeline, a response guard, the response byte cap or a failed required
+  pre-processor is now delivered as a result that says the call was executed
+  and its response withheld: `isError` is the backend's own where it was read
+  (true at the byte cap, where it was not), `_trentina_refusal` carries
+  `executed: true`, and the text says not to repeat the call. The response is
+  withheld as before and the audit outcome is unchanged. A tool annotated
+  `readOnlyHint`, and every internal tool, gets the refusal it always did.
+
 ### Changed
 - Every corpus lives in `corpora/` (#10). `tests/adversarial_corpus.py` is
   `corpora/internal.py`, with the L1 pattern pairs and OWASP's list split out

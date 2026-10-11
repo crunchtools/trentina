@@ -392,6 +392,7 @@ class TestRouter:
         assert forwarded == {}
         scan.assert_not_called()
 
+    @pytest.mark.usefixtures("read_only_tools")
     async def test_a_refusal_carries_its_alternatives(self) -> None:
         refusal = {"reason": "flagged by L3", "flagged_by": "L3", "alternatives": ["redact"]}
         resp, _, _ = await self._call(

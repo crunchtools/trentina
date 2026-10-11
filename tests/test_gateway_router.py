@@ -468,6 +468,7 @@ class TestRouter:
             assert stats["totals"]["blocked"] == 1
         db_mod._db = None
 
+    @pytest.mark.usefixtures("read_only_tools")
     async def test_denied_response_guard_blocks_and_skips_the_perimeter(
         self, tmp_path: Any
     ) -> None:

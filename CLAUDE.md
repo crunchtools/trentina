@@ -320,6 +320,13 @@ its own posture and nothing enforced it. Now the policy does:
 - Refusals carry `{reason, mode, flagged_by|gaps, alternatives}` —
   JSON-RPC `error.data` for web tools, `_trentina_refusal` for proxied ones.
   Flagged → `redact` only, NEVER `flag`; gap-only → `flag`.
+- A response withheld AFTER the backend answered (defense block, response
+  guard, byte cap, failed required pre-processor) is not a refusal for a tool
+  that may write (#425): `router._executed` rewords it as "executed, response
+  withheld", `isError` the backend's own (true at the byte cap, where it was
+  never read), `_trentina_refusal.executed` true.
+  `_may_have_acted` is the test: remote and not annotated `readOnlyHint`. A
+  new path that withholds a remote response goes through it.
 
 No text written by L3 reaches an agent: finding types are a closed enum
 (`prompts.FINDING_TYPES`). Every L3 answer is held to its response schema in
