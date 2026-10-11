@@ -372,6 +372,61 @@ Score it with `--l2-only` above, then run `tests/test_l2_integration.py`
 against it with `TRENTINA_REQUIRE_L2_MODEL=1`; a model with no recorded
 expectations runs only the benign checks until its row is added.
 
+## L2 window width (#438)
+
+L2 slides a window across what it reads. The width was a constant, 512,
+documented as Prompt Guard 2's limit; the shipped model is ModernBERT and
+reads 8192. Since 1.7.0 the width is the model's own, stated in its manifest
+(`window_tokens`), and this is the measurement behind the value it states.
+
+`benchmarks/l2_window.py` scans 16,384 tokens of benign prose through
+`classify()` at each width, with the model's 64-token guard band, and again
+with an instruction planted at token 700 and at token 8,000: one addressed
+to the model outright, one written as a note to an assistant summarizing
+the document.
+
+2026-10-11, `prompt-injection-guard-small@3215a27edd62` at 0.7, 4 threads,
+the prose tokens 1,500 on of Project Gutenberg #41, on a laptop with mixed
+cores. Milliseconds a token, three runs on three sets of cores:
+
+| window | passes | 4 CPUs of quota, any core | 2 fast cores, 4 threads | 4 slow cores |
+|---|---|---|---|---|
+| 256 | 86 | 0.64 | 1.05 | 0.95 |
+| 512 | 37 | 0.73 | 1.32 | 1.25 |
+| 1024 | 18 | 1.12 | 1.35 | 1.16 |
+| 2048 | 9 | 1.66 | 1.36 | 1.61 |
+| 4096 | 5 | 2.22 | 2.52 | 3.73 |
+| 8192 | 3 | 3.88 | 5.02 | 5.96 |
+
+The first column is the published image under `podman --cpus 4`, scanning
+token ids directly; its 0.73 at 512 matches the 0.71 measured on production.
+The other two are this script pinned with `taskset`. The columns disagree
+on the order of 512, 1024 and 2048, which is what the hardware under them
+decides: 512 is a third faster than 1024 in the first, level with it in the
+second and 7% slower in the third. They agree on the ends. 4096 and 8192
+cost two to five times what 512 does, on every set of cores. 256 is the
+fastest everywhere.
+
+Scores, from the two script runs (identical in both):
+
+| window | benign prose | each planted instruction |
+|---|---|---|
+| 256 | **0.873** | 1.000 |
+| 512 | 0.005 | 1.000 |
+| 1024 | 0.003 | 1.000 |
+| 2048 | 0.002 | 1.000 |
+| 4096 | 0.004 | 1.000 |
+| 8192 | 0.005 | 0.998 to 1.000 |
+
+**The shipped model stays at 512.** 256 is faster and flags the benign text:
+one window of an 1820 short story scores 0.873 against a threshold of 0.7.
+No wider window is reliably faster, and both gates and every L2 number in
+this document were measured at 512. The planted instructions are blatant
+and say nothing about which width detects better; a width that is to change
+is run on the corpus (`--l2-only`) and through both gates first.
+
+    CLASSIFIER_MODEL_PATH=<export> uv run python benchmarks/l2_window.py --text <file>
+
 ## L2 obfuscation gate (#359)
 
 A model-selection gate, run before an L2 model ships. L2 reads the arrived

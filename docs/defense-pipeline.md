@@ -126,7 +126,7 @@ OWASP's recommended "dual-LLM" architecture, where a quarantined model reads unt
 
 ### Layer 2 — Local Classifier
 
-A prompt-injection classifier running on ONNX Runtime (CPU, no GPU required), sliding a 512-token window across the payload and keeping the highest malicious score. Which model is an operator setting (#350): `CLASSIFIER_MODEL` names one the image ships, `CLASSIFIER_MODEL_PATH` points at any other export (`scripts/export_l2_model.py`).
+A prompt-injection classifier running on ONNX Runtime (CPU, no GPU required), sliding a window across the payload and keeping the highest malicious score. The window is the model's own setting (#438): `window_tokens` and `guard_tokens` in its manifest, 512 and 64 when it states neither, never past what the model can read. The shipped model is scanned at 512: no wider window measured reliably faster, and a narrower one flagged benign text ([benchmark](benchmark.md#l2-window-width-438)). Which model is an operator setting (#350): `CLASSIFIER_MODEL` names one the image ships, `CLASSIFIER_MODEL_PATH` points at any other export (`scripts/export_l2_model.py`).
 
 | Model (`CLASSIFIER_MODEL`) | Threshold | Notes |
 |---|---|---|

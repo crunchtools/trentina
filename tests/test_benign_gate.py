@@ -205,7 +205,7 @@ def test_the_benign_gate_state_is_in_the_perimeter_stamp() -> None:
         with patch.object(classifier, "resolve_model", return_value=model):
             return perimeter_stamp()
 
-    assert stamp("passed").endswith(":benign-passed")
+    assert ":benign-passed:" in stamp("passed")
     assert stamp("passed") != stamp("unrecorded")
 
 
