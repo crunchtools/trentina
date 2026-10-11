@@ -1026,12 +1026,14 @@ by this judge, two of which L2 flags (known gap 20).
 
 **Decided:** the judge to run through OpenRouter is
 `google/gemini-3.5-flash-lite`, and production runs it from 2026-10-11.
-Its pack ships with this measurement in its header. `DEFAULT_MODEL` is
-unchanged: it names a model on the Gemini API, where no pack ships and
-nothing here was measured; the generic columns say the newer model is the
-better choice there too (34 against 98), and that is a measurement through
-OpenRouter, not of that endpoint. Claude Haiku 4.5 and Gemini 3.8 Flash
-were not run on the briefed gate.
+Its pack ships with this measurement in its header. Since 1.5.0 it is
+`DEFAULT_MODEL` as well, and a pack says where it stands on this gate
+(`status`: supported, deprecated or unmeasured), which startup reports for
+every judge in use. On the Gemini API, where no pack ships, the default
+runs on the generic prompts: the generic columns say the newer model is
+the better choice there too (34 against 98), which is a measurement
+through OpenRouter and not of that endpoint. Claude Haiku 4.5 and Gemini
+3.8 Flash were not run on the briefed gate and are unmeasured.
 
 ## L1 briefing ablation
 

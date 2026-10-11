@@ -38,7 +38,7 @@ these variables control the process itself. Profile tokens
 | `TRENTINA_PROVIDER_FALLBACK` | unset (none) | Comma-separated provider names to fall back to if `TRENTINA_MODEL_PROVIDER` is unavailable. |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Base URL for the Ollama provider. |
 | `OLLAMA_MODEL` | `qwen2.5:0.5b` | Model used when the Ollama provider is selected. See [LLM Key Proxying](llm-proxying.md). |
-| `QUARANTINE_MODEL` | `gemini-2.5-flash-lite` | Model used for quarantine agent (L3) extraction/detection calls. Through OpenRouter, run `google/gemini-3.5-flash-lite`: with its pack it flags 3 of 362 benign cases where `google/gemini-2.5-flash-lite` flags 54, and misses no planted instruction ([benchmark](benchmark.md#re-tuning-did-not-work-the-judge-is-the-fix-2026-10-11)). |
+| `QUARANTINE_MODEL` | `gemini-3.5-flash-lite` | Model used for quarantine agent (L3) extraction/detection calls. See [Supported judges](#supported-judges). |
 | `QUARANTINE_REASONING_EFFORT` | unset | `minimal`, `low`, `medium` or `high`: how long a reasoning judge thinks, sent as OpenRouter's `reasoning.effort`. Unset leaves the model's default. Set `minimal` for Gemini 3.8 Flash, which otherwise takes 6 to 17 s a call. Changing it re-judges cached verdicts. |
 | `TRENTINA_L3_PROMPT_PACK` | unset | Path to an L3 prompt pack: the judge's three system prompts and Layer 2 caveat for one exact (provider, model), for every profile that does not set `defense.l3_prompt_pack`. `generic` turns shipped packs off. See [L3 prompt tuning](l3-prompt-tuning.md). |
 | `QUARANTINE_SEARCH_MODEL` | `google/gemini-2.5-flash` | L0 web search model, an OpenRouter id. Search runs through OpenRouter's `web` plugin; standalone with no OpenRouter key it falls back to Gemini grounding. |
@@ -81,3 +81,33 @@ these variables control the process itself. Profile tokens
 - [Deployment Hardening](deployment-hardening.md): `TRENTINA_REQUIRE_HARDENED` and secrets from files
 - [Authentication](authentication.md): OAuth settings
 - [Defense Pipeline](defense-pipeline.md): what the L2 and L3 settings change
+
+## Supported judges
+
+A judge is **supported** when the prompt pack it runs with passed the pack
+gate as production runs it: held-out split, three votes, briefed with Layer
+1's counts and a Layer 2 label (`benchmarks/prompt_pack.py --briefing
+benign`), and the pack ships that run in its `measured` header. Each
+shipped pack says where it stands in its `status` key.
+
+| Judge (through OpenRouter) | Status | Benign flagged, of 362 | Planted instructions missed, of 99 |
+|---|---|---|---|
+| `google/gemini-3.5-flash-lite` | supported, and the default | 3 | 0 |
+| `google/gemini-2.5-flash-lite` | deprecated: fails the gate | 54 | 5 |
+| `google/gemini-3.8-flash` | unmeasured | | |
+| `anthropic/claude-haiku-4.5` | unmeasured | | |
+
+Any other model, on any provider, runs on the generic prompts and is
+unmeasured. A judge that is not supported still works. Startup, and a
+profile reload, log one line for each such judge a profile names:
+
+```
+judge: provider=openrouter model=google/gemini-2.5-flash-lite is deprecated on the L3 pack gate; supported: openrouter/google/gemini-3.5-flash-lite.
+```
+
+A deprecated pack stays in the image through the 1.x releases. A model
+becomes supported by passing the gate: tune a pack as
+[l3-prompt-tuning.md](l3-prompt-tuning.md) describes, run it held-out with
+`--briefing benign`, and ship the pack `--emit` writes with `"status":
+"supported"`. The Gemini API serves Gemini 2.5 only to accounts that
+already used it, which is the other reason the default moved.

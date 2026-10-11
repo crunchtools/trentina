@@ -22,6 +22,7 @@ from trentina.quarantine.agent import (
     quarantine_detect,
     quarantine_extract,
 )
+from trentina.quarantine.packs import supported_judges
 from trentina.quarantine.prompts import (
     DETECTION_RESPONSE_SCHEMA,
     DETECTION_SYSTEM_PROMPT,
@@ -443,8 +444,10 @@ class TestSystemPrompts:
 class TestModelDefault:
     """Verify default model configuration."""
 
-    def test_default_model_is_2_5_flash_lite(self) -> None:
-        assert DEFAULT_MODEL == "gemini-2.5-flash-lite"
+    def test_default_model_is_the_supported_judge(self) -> None:
+        """#397: the default is the one judge whose pack passes the gate."""
+        assert DEFAULT_MODEL == "gemini-3.5-flash-lite"
+        assert supported_judges() == [("openrouter", f"google/{DEFAULT_MODEL}")]
 
 
 class TestPostExtractionTruncation:

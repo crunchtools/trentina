@@ -62,9 +62,18 @@ TURNS = ("detection", "extraction", "verify")
 
 CAVEAT = "l2_caveat"
 PROMPT_KEYS = frozenset({*TURNS, CAVEAT})
-KEYS = frozenset({"pack", "version", "provider", "model", "prompts", "measured", "notes"})
+KEYS = frozenset({"pack", "version", "provider", "model", "prompts", "measured", "notes", "status"})
 """Every key a pack file may have. Anything else refuses the pack: a file
 that tries to carry a schema or a finding list is not a prompt pack."""
+
+SUPPORTED, DEPRECATED, UNMEASURED = "supported", "deprecated", "unmeasured"
+STATUSES = (SUPPORTED, DEPRECATED, UNMEASURED)
+"""Where a pack stands on the pack gate as production runs it, briefed
+(``benchmarks/prompt_pack.py --briefing benign``, #397). ``supported``: it
+passed, and its ``measured`` header is that run. ``deprecated``: it was run
+and failed; the judge still works and startup says so. ``unmeasured``: never
+run on it, which is also what a file that does not say is, and what the
+generic prompts are. The status is not prompt text and is not in the stamp."""
 
 MAX_PROMPT_CHARS = 8000
 MAX_PACK_BYTES = 256 * 1024
@@ -94,6 +103,7 @@ class PromptPack:
         detection, extraction, verify: The system prompt for each turn.
         l2_caveat: What L3 is told about Layer 2's blind spot.
         digest: A hash of the four texts, so an edit changes the stamp.
+        status: One of ``STATUSES``.
     """
 
     id: str
@@ -104,6 +114,7 @@ class PromptPack:
     verify: str
     l2_caveat: str
     digest: str
+    status: str = UNMEASURED
 
     def prompt(self, turn: str) -> str:
         """The system prompt for ``turn``, one of ``TURNS``."""
@@ -160,6 +171,9 @@ def parse_pack(raw: Any) -> PromptPack:
     named = all(isinstance(v, str) and v.strip() for v in (name, provider, model))
     if not named or not isinstance(version, int) or isinstance(version, bool) or version < 1:
         raise PackError("pack, provider and model must be names, and version a positive integer")
+    status = raw.get("status", UNMEASURED)
+    if status not in STATUSES:
+        raise PackError("status must be supported, deprecated or unmeasured")
     return PromptPack(
         id=f"{name}/{version}",
         provider=str(provider),
@@ -169,7 +183,13 @@ def parse_pack(raw: Any) -> PromptPack:
         verify=prompts["verify"],
         l2_caveat=prompts[CAVEAT],
         digest=_digest(*(prompts[key] for key in (*TURNS, CAVEAT))),
+        status=status,
     )
+
+
+def supported_judges() -> list[tuple[str, str]]:
+    """The judges whose shipped pack passed the gate, as ``(provider, model)``."""
+    return sorted(judge for judge, pack in shipped().items() if pack.status == SUPPORTED)
 
 
 def load_pack(path: str | Path) -> PromptPack:

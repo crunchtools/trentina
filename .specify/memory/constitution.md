@@ -1,6 +1,6 @@
 # trentina Constitution
 
-> **Version:** 2.3.1
+> **Version:** 2.4.0
 > **Ratified:** 2026-09-22
 > **Amended:** 2026-10-10
 > **Status:** Active
@@ -129,7 +129,10 @@ The L3 quarantine is enforced architecturally: raw httpx REST calls to the
 provider, no function declarations in API requests, no memory beyond a
 single request, structured JSON output via a response schema. Provider
 drivers are pluggable (Gemini, OpenAI-compatible including OpenRouter,
-Anthropic, Ollama); the default model is `gemini-2.5-flash-lite` (spec 002).
+Anthropic, Ollama); the default model is `gemini-3.5-flash-lite`, the judge whose prompt pack
+passes the pack gate briefed as production briefs it (#397). A shipped
+pack states whether it is supported, deprecated or unmeasured on that gate,
+and startup names a judge in use that is not supported.
 
 A new L1 stage is a module in `l1/`, wired into `_run_stages` in
 `l1/pipeline.py` with its stats added to `PipelineStats`, and tested on
@@ -281,3 +284,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.2.0 | 2026-10-08 | A honeypot profile's decoy-call arguments are kept in `honeypot_captures` beside what it read, planted credentials by id (#410); no other profile's are |
 | 2.3.0 | 2026-10-10 | The L2 benign gate is enforced beside the obfuscation gate (#411): run by the image build at the shipped threshold, recorded in the model manifest with that threshold, checked at startup |
 | 2.3.1 | 2026-10-11 | A run of decimal digits up to twenty long is a number, not hex the unpack stage decodes: a byte count was being read by every layer as the text its digits spell in hex (#431) |
+| 2.4.0 | 2026-10-11 | The default judge is gemini-3.5-flash-lite (#397). A judge is supported when its prompt pack passes the pack gate briefed as production; shipped packs carry that status and startup reports a judge that is not supported |

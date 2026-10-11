@@ -29,6 +29,13 @@ One JSON file:
 }
 ```
 
+A shipped pack also carries `status`: `supported` (it passed the gate
+below, briefed, and its `measured` header is that run), `deprecated` (it
+was run and failed) or `unmeasured`, which is also what a file without the
+key is. Startup names every judge in use whose pack is not `supported`
+([configuration.md](configuration.md#supported-judges)). The status is not
+prompt text and does not change the pack's stamp.
+
 `detection` judges content on the way in. `extraction` and `verify` are
 turns 2 and 3 of `redact`. `l2_caveat` is the sentence L3 is given with
 Layer 2's score. Copy the ones you are not changing from

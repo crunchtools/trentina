@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS verdict_cache (
 );
 """
 
-PERIMETER_VERSION = "15"
+PERIMETER_VERSION = "16"
 """Bump whenever a change could alter what a scan CONCLUDES: a new detector, a
 retuned L3 prompt, a different L2 model or threshold set. Rows stamped with any
 other value are swept on load, so an older perimeter's verdict is unusable
@@ -71,6 +71,7 @@ judged as different text.
 petit (#419), so a journal response is judged as its samples and a summary.
 "15" (1.4.1): a structured listing gives its rows before its note, and the
 unpack stage reads a run of decimal digits as a number, not as hex (#431).
+"16" (1.5.0): the default judge is gemini-3.5-flash-lite (#397).
 
 The L2 model and its threshold are no longer bumped here: they are an
 operator setting since 0.55.0 (#350), so :func:`perimeter_stamp` carries them."""

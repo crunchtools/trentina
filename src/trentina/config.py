@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 _config: Config | None = None
 
 DEFAULT_PROVIDER = "gemini"
-DEFAULT_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_SEARCH_MODEL = "google/gemini-2.5-flash"
 DEFAULT_CLASSIFIER_THRESHOLD = 0.5
 """The cut for a model directory with no ``trentina-model.json`` (#350).
