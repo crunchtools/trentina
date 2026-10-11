@@ -213,7 +213,6 @@ jobs:
               --entrypoint python \
               -v ${{ github.workspace }}/tests:/tests:ro \
             -v ${{ github.workspace }}/corpora:/corpora:ro \
-              -v ${{ github.workspace }}/corpora:/corpora:ro \
               -e GEMINI_API_KEY="test_key_for_ci" \
               -e CLASSIFIER_MODEL="$model" \
               -e TRENTINA_REQUIRE_L2_MODEL=1 \
