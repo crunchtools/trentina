@@ -339,7 +339,10 @@ class _Reducer:
         details = result.details
         if details.get("declined") == "petit_error":
             self.logs_failed += 1
-            self.log_error = str(details.get("error", ""))
+            # petit.py reports the exception's class. Held to that shape
+            # here, so a message can never ride out in the details (#262).
+            error = str(details.get("error", ""))
+            self.log_error = error if error.isidentifier() else "PetitError"
         # Degraded is a log too: a driver claimed the value and then met a
         # line it could not parse, so petit grouped the whole of it
         # structurally.

@@ -520,15 +520,21 @@ class TestLogInAString:
         assert result.details["logs_reduced"] == 0
         assert result.details["elements_dropped"] == 47
 
+    @pytest.mark.parametrize(
+        ("reported", "kept"),
+        [("ParseError", "ParseError"), ("bad line: token=hunter2", "PetitError")],
+        ids=["a-class", "a-message"],
+    )
     async def test_a_petit_error_is_counted_and_the_value_left(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, reported: str, kept: str
     ) -> None:
-        """petit's own error comes back as a decline, not an exception."""
+        """petit's own error comes back as a decline, not an exception, and
+        only a class name is kept of it: a message could carry the value."""
         from trentina.preprocess import structured
 
         def errored(payload: str, **_kw: object) -> PreProcessResult:
             return PreProcessResult.declined(
-                "petit", Cost.FREE, payload, reason="petit_error", details={"error": "ParseError"}
+                "petit", Cost.FREE, payload, reason="petit_error", details={"error": reported}
             )
 
         monkeypatch.setattr(structured._PETIT, "reduce", errored)
@@ -536,7 +542,7 @@ class TestLogInAString:
         result = await _run(json.dumps(payload))
         assert json.loads(result.content)["logs"] == _journal()
         assert result.details["logs_failed"] == 1
-        assert result.details["log_error"] == "ParseError"
+        assert result.details["log_error"] == kept
         assert result.details["logs_reduced"] == 0
 
     @pytest.mark.parametrize(
