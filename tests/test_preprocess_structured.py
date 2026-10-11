@@ -507,7 +507,7 @@ class TestLogInAString:
         counted as failed; the array beside it is still collapsed."""
         from trentina.preprocess import structured
 
-        def boom(_payload: str) -> PreProcessResult:
+        def boom(_payload: str, **_kw: object) -> PreProcessResult:
             raise RuntimeError("petit exploded")
 
         monkeypatch.setattr(structured._PETIT, "reduce", boom)
@@ -516,8 +516,71 @@ class TestLogInAString:
         delivered = json.loads(result.content)
         assert delivered["logs"] == _journal()
         assert result.details["logs_failed"] == 1
+        assert result.details["log_error"] == "RuntimeError", "the class, never the message"
         assert result.details["logs_reduced"] == 0
         assert result.details["elements_dropped"] == 47
+
+    async def test_a_petit_error_is_counted_and_the_value_left(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """petit's own error comes back as a decline, not an exception."""
+        from trentina.preprocess import structured
+
+        def errored(payload: str, **_kw: object) -> PreProcessResult:
+            return PreProcessResult.declined(
+                "petit", Cost.FREE, payload, reason="petit_error", details={"error": "ParseError"}
+            )
+
+        monkeypatch.setattr(structured._PETIT, "reduce", errored)
+        payload = {"logs": _journal(), "issues": json.loads(_issues(50))}
+        result = await _run(json.dumps(payload))
+        assert json.loads(result.content)["logs"] == _journal()
+        assert result.details["logs_failed"] == 1
+        assert result.details["log_error"] == "ParseError"
+        assert result.details["logs_reduced"] == 0
+
+    @pytest.mark.parametrize(
+        ("driver", "degraded", "reduced"),
+        [
+            ("SyslogEntry", False, True),
+            ("RawEntry", True, True),
+            ("RawEntry", False, False),
+        ],
+        ids=["named", "named-then-degraded", "raw-fallback"],
+    )
+    async def test_the_value_is_reduced_only_when_petit_named_a_log_format(
+        self, monkeypatch: pytest.MonkeyPatch, driver: str, degraded: bool, reduced: bool
+    ) -> None:
+        """Degraded is a format petit named and then gave up parsing by; the
+        raw fallback with nothing named is a document."""
+        from trentina.preprocess import structured
+
+        def answer(payload: str, **_kw: object) -> PreProcessResult:
+            return PreProcessResult(
+                name="petit",
+                cost=Cost.FREE,
+                content="three samples",
+                applied=True,
+                bytes_in=len(payload),
+                bytes_out=13,
+                details={
+                    "lines_in": 100,
+                    "lines_out": 3,
+                    "groups_collapsed": 1,
+                    "petit_driver": driver,
+                    "petit_degraded": degraded,
+                },
+            )
+
+        monkeypatch.setattr(structured._PETIT, "reduce", answer)
+        payload = json.dumps({"logs": _journal()}, separators=(",", ":"))
+        result = await _run(payload)
+        if reduced:
+            assert json.loads(result.content) == {"logs": "three samples"}
+            assert (result.details["logs_reduced"], result.details["log_lines_out"]) == (1, 3)
+        else:
+            assert not result.applied
+            assert result.content == payload
 
     async def test_a_reduced_log_past_the_budget_is_still_clipped(self) -> None:
         """Reduced first, then the prose cap, on what is left."""

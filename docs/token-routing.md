@@ -365,7 +365,7 @@ fallback petit groups any repeated line, which in a file or a page is the
 blank lines and the closing brackets. And base64, wrapped or not, is never
 offered. A value petit declines or fails on is left as it arrived. The
 details report `logs_reduced`, `log_lines_in`, `log_lines_out`,
-`log_groups_collapsed` and `logs_failed`.
+`log_groups_collapsed`, `logs_failed` and `log_error` (the class of the last failure).
 
 ##### Composition is still size-driven
 

@@ -282,6 +282,8 @@ class _Reducer:
         self.log_lines_out = 0
         self.log_groups_collapsed = 0
         self.logs_failed = 0
+        # The class of the last failure, never its message (#262).
+        self.log_error = ""
 
     @property
     def changed(self) -> bool:
@@ -329,13 +331,15 @@ class _Reducer:
             return node
         try:
             result = _PETIT.reduce(node, tag="")
-        except Exception:
-            # Counted, never logged: the message may carry the value (#262).
+        except Exception as exc:
+            # Counted by class, never logged: the message may carry the value (#262).
             self.logs_failed += 1
+            self.log_error = type(exc).__name__
             return node
         details = result.details
         if details.get("declined") == "petit_error":
             self.logs_failed += 1
+            self.log_error = str(details.get("error", ""))
         # Degraded is a log too: a driver claimed the value and then met a
         # line it could not parse, so petit grouped the whole of it
         # structurally.
@@ -612,5 +616,6 @@ class StructuredProcessor:
                 "log_lines_out": reducer.log_lines_out,
                 "log_groups_collapsed": reducer.log_groups_collapsed,
                 "logs_failed": reducer.logs_failed,
+                "log_error": reducer.log_error,
             },
         )
