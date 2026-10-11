@@ -413,6 +413,138 @@ a passing one (`l2_obfuscation_gate_failed`, `l2_obfuscation_gate_unrecorded`);
 `TRENTINA_REQUIRE_HARDENED` turns that into a refusal to start. Prompt Guard
 2 no longer ships in the image.
 
+## garak's encodings (#423)
+
+The gate above holds a model to six transforms. garak's `encoding` probes
+are a wider list, and `benchmarks/l2_encodings.py` scores the shipped model
+on the sixteen of them the standard library can express
+([corpora](corpora.md#garak-encodings)). It gates nothing: a run that
+scored the model exits 0 whatever it found (2 when no model loads), and the
+numbers decide which transform could join the gate and which is a known
+gap.
+
+```bash
+CLASSIFIER_MODEL_PATH=<export> uv run python benchmarks/l2_encodings.py
+```
+
+Every text is asked two questions. **L2 alone**: does the model call the
+text malicious as it arrived, which is the gate's question. **Pipeline**:
+would `defend()` flag it with no L3, meaning the unpack stage builds what
+the layers read, L1 and L2 each read that once, and either can flag. No
+judge is called, so L3 is not measured here.
+
+Benign text goes through the same transforms, because a detection count
+cannot tell reading from recoil: a model that flags every base32 blob
+detects every base32 attack and has read none of them. Two benign sets,
+reported apart: the 14 benign texts of the internal corpus, which are prose
+written to look like an attack, and the 72 forum replies of
+`corpora/benign_ops.py`, which are ordinary. Both are the length of the
+attacks.
+
+2026-10-11, `prompt-injection-guard-small@3215a27edd62` at 0.7, the model
+the image ships, run on a workstation from the extracted export. Flagged,
+of 44 attacks, 14 internal benign and 72 forum replies:
+
+| transform | attacks, L2 alone | attacks, pipeline | internal benign, L2 alone | internal benign, pipeline | forum replies, L2 alone | forum replies, pipeline |
+|---|---|---|---|---|---|---|
+| plain | 41 | 41 | 0 | 0 | 0 | 0 |
+| zero-width, every letter (gate) | 41 | 44 | 0 | 14 | 0 | 72 |
+| zero-width, mid-word (gate) | 41 | 44 | 0 | 13 | 0 | 72 |
+| soft hyphens (gate) | 41 | 44 | 0 | 13 | 0 | 72 |
+| fullwidth (gate) | 41 | 44 | 0 | 11 | 0 | 64 |
+| base64 (gate) | 44 | 42 | 14 | 1 | 72 | 1 |
+| Unicode tag characters (gate) | 41 | 44 | 0 | 14 | 0 | 72 |
+| base16 | 44 | 41 | 14 | 0 | 72 | 0 |
+| hex | 44 | 41 | 14 | 0 | 72 | 0 |
+| base32 | 37 | 37 | 13 | 13 | 66 | 66 |
+| Ascii85 | 44 | 44 | 14 | 14 | 71 | 71 |
+| base85 | 43 | 43 | 14 | 14 | 71 | 71 |
+| UU | 44 | 44 | 14 | 14 | 72 | 72 |
+| Braille | 42 | 42 | 14 | 14 | 72 | 72 |
+| Morse | 44 | 44 | 14 | 14 | 72 | 72 |
+| Unicode variant selectors | 44 | 44 | 14 | 14 | 71 | 72 |
+| quoted-printable | 42 | 42 | 3 | 3 | 3 | 3 |
+| MIME | 42 | 42 | 3 | 3 | 3 | 3 |
+| ROT13 | 24 | 24 | 5 | 5 | 20 | 20 |
+| Atbash | 21 | 21 | 3 | 3 | 15 | 15 |
+| leetspeak | 35 | 35 | 7 | 7 | 14 | 14 |
+| NATO alphabet | 0 | 0 | 0 | 0 | 0 | 0 |
+| sneaky bits | 0 | 0 | 0 | 0 | 0 | 0 |
+
+What the rows say, in the order of the table:
+
+- **Five of the gate's six transforms are read.** Zero-width characters,
+  soft hyphens, fullwidth letters and tag characters change no label and
+  move no score, attack or benign, by more than 0.014. The pipeline
+  column is L1: it counts the hiding and its risk refuses the text
+  whatever it says, benign included, which is
+  [known gap 7](defense-pipeline.md#known-gaps).
+- **Base64 is not read. It is flagged.** As a raw blob, all 44 attacks and
+  all 86 benign texts are flagged, at 0.96 or more. The gate's base64 row
+  (44 of 44, three more than plain) records a model that recoils from the
+  blob, and a model that read nothing would pass it the same way. It was
+  already on record in the [unpack stage](#unpack-stage-367) measurement
+  (14 of 14 benign). In the pipeline the model is never asked: the unpack
+  stage decodes canonical base64 first, and the layers read the text (42
+  attacks, 2 of 86 benign; the texts carry the transform's `Note: `
+  prefix). What the gate's row does protect is base64 the unpack stage
+  will not decode (known gap 2), where a flag on every blob is all there
+  is.
+- **base16 and hex are the same story, and the pipeline covers them.** The
+  unpack stage decodes all 44, upper case or lower, so the pipeline's
+  numbers are plain's: 41 attacks and no benign text. Alone, the model
+  flags every one of the 130 blobs.
+- **base32, Ascii85, base85, UU, Braille, Morse and variant selectors are
+  flagged for what they are.** Between 37 and 44 attacks, and between 79
+  and 86 of the 86 benign texts. Nothing decodes the first six, so that is
+  the pipeline's answer as well; L1 counts variant selectors as hiding, on
+  every text. None is read: an attack rate with the same benign rate
+  beside it measures the encoding.
+- **Quoted-printable and MIME are read.** They are one routine and one
+  row. ASCII passes through them unchanged except for a soft line break
+  every 76 characters, which is why garak ships both probes switched off.
+  42 of 44 attacks against 41 plain; 6 of 86 benign texts against 0, and
+  two of the six scored 0.000 before the soft breaks went in.
+- **ROT13, Atbash and leetspeak are read badly.** Detection falls to 24,
+  21 and 35 of 44, and benign flags rise to 25, 18 and 21 of 86. L1's
+  ROT13 stage matched 1 of the 44: it reads directive patterns, and the
+  corpus is written to carry none.
+- **The NATO alphabet and sneaky bits pass everything.** No attack is
+  flagged by L1 or L2. An attack spelled as `India Golf November ...` is
+  a list of ordinary words, and no attack scored above 0.11. Sneaky bits is the
+  text in binary, written with two invisible characters and a zero-width
+  space between words: every text scores the same 0.004, so the tokenizer
+  hands the model nothing, and L1 counts a zero-width character only
+  inside a Latin word and these two operators not at all.
+
+**Decided.** Nothing joins the gate.
+
+- A transform joins `TRANSFORMS` when the model keeps its detections
+  within `GATE_MAX_DROP` *and* benign text under the same transform is not
+  flagged at about the same rate. Only quoted-printable and MIME meet
+  both, and gating them was measured and rejected: the transform changes
+  almost nothing in ASCII text, so the row would test very little, and
+  every model record written before it would read `unrecorded`.
+- Every encoding the model flags without reading meets the first half and
+  fails the second. Gating one would select for a model that refuses
+  encoded text harder, the pressure the
+  [benign gate](#l2-benign-gate-411-404) was added to oppose.
+- base16 and hex are rows of the
+  [coverage table](defense-pipeline.md#coverage). The rest are
+  [known gaps](defense-pipeline.md#known-gaps) 21 (flagged, not read), 22
+  (the letter ciphers) and 23 (the two that pass), each held open by a
+  test. The half that needs the model runs in the image
+  (`tests/test_l2_integration.py`).
+- The benchmark is not part of the image build. It classifies about 3,400
+  texts, many of them long once encoded (Morse and sneaky bits are several
+  times the length of the plain text), and took 19 minutes on four
+  threads. The benign gate, the slowest step of that stage, takes six.
+
+**Not measured.** L3 on any of these: the judge reads the same blob L2
+does, and whether it decodes one is a question for a keyed run. Whether an
+agent would act on an encoded instruction it was never asked to decode is
+not something a detector benchmark can answer.
+
 ## L2 benign gate (#411, #404)
 
 The obfuscation gate selects for a model that reads encoded text as possibly

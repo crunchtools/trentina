@@ -24,6 +24,7 @@ A detection rate means nothing without the set it was measured on. Three things 
 | [Jailbreak classification](#jailbreak-classification) | `corpora/jailbreak.py` | 262 test, 1,044 train | `jackhhao/jailbreak-classification` | Apache-2.0 | fetched |
 | [InjecAgent](#injecagent) | `corpora/injecagent.py` | 32 attack inserts | `uiuc-kang-lab/InjecAgent` | MIT | fetched |
 | [garak latent injection](#garak-latent-injection) | `corpora/garak_latent.py` | 972 attacks, 22 benign | `NVIDIA/garak`, anonymized | Apache-2.0 | vendored |
+| [garak encodings](#garak-encodings) | `corpora/garak_encodings.py` | 16 transforms, no text | `NVIDIA/garak`, as transforms | Apache-2.0 | vendored |
 | [Disclosed attacks](#disclosed-attacks) | `corpora/disclosed.py` | 5 attacks | published disclosures, rewritten | AGPL-3.0-or-later | vendored |
 
 `corpora/registry.py` holds the same list as data, and `tests/test_corpora_registry.py` fails when a module there has no record or a record has no section here.
@@ -105,6 +106,18 @@ The latent-injection probes of [garak](https://github.com/NVIDIA/garak), NVIDIA'
 - **Rules.** `sample` is one attack in five by hash of its id, with every benign control; `full` is all 972. Case ids are `garak-<family>-<n>` in garak's loop order; categories start `garak_`. A test holds every mail address, phone number and registrant domain to the roster.
 - **Read by.** `benchmarks/provider_benchmark.py --corpus garak`.
 
+### garak encodings
+
+The encoders of garak's `encoding` probes (#423): sixteen ways to write a text so that a filter does not read it. It holds no text of its own. Each transform is applied to the internal attacks and to benign text, to measure what the L2 model and the pipeline make of the result.
+
+- **Where it came from.** `garak/probes/encoding.py`, `garak/resources/encodings.py` and `garak/resources/smuggling/smuggle_ascii.py` at `v0.17.0` (commit `93aa9cdec309`), Apache-2.0. Taken: base16, base32, hex, Ascii85, base85, quoted-printable, UU, MIME, ROT13, Atbash, leetspeak, Braille, Morse, the NATO alphabet, Unicode variant selectors and "sneaky bits" (a text written in binary with two invisible characters). Each gives what garak's function gives for the same text, including what garak drops: Braille and Morse lose any character they have no cell or code for, and the NATO alphabet keeps letters only.
+- **What was changed.** garak's leetspeak swaps letters on a coin toss; here the toss is seeded with the text, so a text has one encoding on every run. garak wraps the encoded text in a request to decode it, aimed at the model it is testing; the gateway judges a document, so the encoded text stands alone.
+- **What was not taken.** Base2048, Ecoji and Zalgo need third-party packages. Base64 and Unicode tag characters are already transforms of the obfuscation gate.
+- **Why it is apart from the gate's transforms.** Those are part of the perimeter: a model that fails one does not ship. These are measured and gate nothing. A transform moves from here into the gate in a change that carries its measurement.
+- **What it does not measure.** Whether an agent would act on the encoded text. Most of these need a deliberate decoding step that an agent reading a document does not take unprompted; garak supplies that prompt, and it is left out here. A miss is a text the gateway did not read, which is not the same as an attack that worked.
+- **Rules.** Quoted-printable and MIME are one routine in the standard library and agree byte for byte; both are kept because garak lists both. A test holds every reversible encoding to the standard library's decoder.
+- **Read by.** `benchmarks/l2_encodings.py`, `tests/test_garak_encodings.py`, `tests/test_coverage_gaps.py`.
+
 ### Disclosed attacks
 
 Payloads reproduced from published disclosures (#29), so the defense is measured on what was actually sent and not on our restatement of it.
@@ -119,7 +132,7 @@ Payloads reproduced from published disclosures (#29), so the defense is measured
 ## What Is Not a Corpus
 
 - **The wild feed** (`benchmarks/wild_feed.py`, #357) collects what agents are sent on a public agent network. Its output is a run artifact and never a fixture.
-- **The obfuscation transforms** (`src/trentina/quarantine/obfuscation.py`) are applied to the internal attacks by the L2 obfuscation gate. They are part of the perimeter, so they live in `src/`.
+- **The obfuscation transforms** (`src/trentina/quarantine/obfuscation.py`) are applied to the internal attacks by the L2 obfuscation gate. They are part of the perimeter, so they live in `src/`. garak's wider list is measured and not gated, and is [above](#garak-encodings).
 - **File builders** (`tests/office_files.py`, `tests/pdf_files.py`, `tests/image_files.py`) make documents in memory for the unpack tests. They hold no payloads of their own.
 
 ## Adding a Corpus

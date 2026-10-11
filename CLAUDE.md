@@ -438,6 +438,9 @@ defended, by kind of content, plus every known gap. Each gap that a test can
 hold open has one in `tests/test_coverage_gaps.py`, which asserts the gap
 STILL exists: closing a gap fails its test, and the fix moves the Coverage
 row and the Known gaps entry in the same change. #365 is the plan.
+garak's encodings (`corpora/garak_encodings.py`, #423) are measured by
+`benchmarks/l2_encodings.py`, attacks and benign text alike, and gate
+nothing: each is a Coverage row or one of gaps 21 to 23.
 
 Pre-processing is two stages, always in this order (#365). Stage 1,
 `preprocess/`, decides what the agent receives. Stage 2, `unpack/`, builds
