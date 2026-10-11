@@ -10,6 +10,44 @@ under that name.
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-10-11
+
+### Added
+- `fetch`, `read` and `content` are delivered in parts (#446). Behind the
+  gateway, for a profile that can call `read_part`, a payload over 16,000 L2
+  tokens is cut as a proxied response is. The call returns part 1 in the
+  tool's own shape, led by `_trentina_part` (its `read_next` says how to read
+  the rest); `read_part` returns the others. Every part is judged as the
+  tool's source, so a later part flagged under block puts the URL on the
+  caller's blocklist. Until now such a page was refused over the admission
+  cap, or read head-only under flag. Standalone nothing is cut.
+- L1 counts a line written to look like the gateway's own (#447):
+  `forgery_gateway_lines`, a line that opens `[TRENTINA]` and goes on as one
+  of the gateway's notices does. A line that quotes one does not count. It
+  raises L1's risk.
+- `resolver_busy`, an egress refusal reason (#449): no DNS lookup slot was
+  free, so the name was not checked. It was reported as `unresolvable`.
+- `benchmarks/paging_l3.py` and the `paging` benchmark job (#448): L3 on an
+  attack cut across two parts, and with its halves in parts that do not
+  touch.
+- Two invented shapes in the benign corpus (#450): machine-written meeting
+  notes with and without the bare links they end in. `provider_benchmark.py
+  --corpus notes`, and a notes row in `l2_lone_flag.py`.
+- Known gap 28: L2 flags machine-written meeting notes that end in bare
+  links. 5 of 18 held-out cases; none of 12 without the links.
+
+### Changed
+- Client egress resolves a name once per burst (#449): tunnels to one name
+  that start together share one check, and its answer serves that profile's
+  tunnels to that name for five seconds. A tunnel refused for want of a
+  resolver slot is 503 `denied_guard`, where it was 403 `blocked_defense`.
+- `content` is refused for size only when it will not be delivered in parts.
+- Known gap 13 (flag reads only the head of an oversized payload) no longer
+  applies to `fetch`, `read` and `content` behind the gateway.
+- The L2 benign gate reads 207 gated cases, 153 held-out, 3 allowed (was
+  195, 146 and 2).
+- `PERIMETER_VERSION` 18.
+
 ## [1.8.0] - 2026-10-11
 
 ### Added

@@ -632,6 +632,26 @@ it reads a part and not the response is known gap 27.
 
     CLASSIFIER_MODEL_PATH=<export> uv run python benchmarks/paging_split.py --text <file>
 
+### L3 on a split attack (#448)
+
+`benchmarks/paging_l3.py` asks the same of L3, and asks the question a
+lead-in cannot answer. Each attack is set in invented benign text (the
+detonation carriers and the unlinked meeting notes, about 48,000 characters
+a part) three ways: **whole**, inside one part; **adjacent**, cut at 25, 50
+and 75% with the pieces ending one part and opening the next; and **apart**,
+cut in half with the pieces in parts 2 and 6 of 6. Every part goes through
+`defend()` with the part briefing, behind its lead-in, as
+`router._deliver_part` sends it. An arrangement is caught when L3 flags a
+part that holds a piece, by majority of three votes. The split rows count
+only the attacks L3 catches whole, and six parts with no attack in them give
+the false-positive floor.
+
+It needs judge quota, so it runs as the `paging` job of the
+`Benchmark - decoy tools` workflow, once per shipped judge, on merged code.
+Its result decides whether the part briefing gets a prompt-pack entry.
+
+    TRENTINA_MODEL_PROVIDER=openrouter QUARANTINE_MODEL=<judge> uv run python benchmarks/paging_l3.py
+
 ## L2 benign gate (#411, #404)
 
 The obfuscation gate selects for a model that reads encoded text as possibly

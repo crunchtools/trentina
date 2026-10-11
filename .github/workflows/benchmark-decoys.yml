@@ -10,7 +10,9 @@ name: Benchmark - decoy tools
 # `packs` is benchmarks/prompt_pack.py for every shipped pack against the
 # generic prompts, held-out, embedded documents included (#397). `corpora` is
 # benchmarks/provider_benchmark.py on the garak and disclosed corpora for every
-# shipped judge (#10, #29). `tune` is benchmarks/prompt_pack.py for one judge
+# shipped judge (#10, #29), and on the invented meeting notes (#450). `paging`
+# is benchmarks/paging_l3.py for every shipped judge: an attack split across
+# the parts of a response delivered in parts (#448). `tune` is benchmarks/prompt_pack.py for one judge
 # with a candidate pack handed in as an input (#397): the pack is data the
 # merged harness reads, so a pack can be tuned without unreviewed code ever
 # running beside the key. Started by hand, never by a push or a pull request: it
@@ -23,7 +25,7 @@ on:
       job:
         description: "Which spike to run"
         type: choice
-        options: [detonation, venn, decoys, briefing, packs, corpora, tune]
+        options: [detonation, venn, decoys, briefing, packs, corpora, paging, tune]
         default: detonation
       external:
         description: "External corpus split (test is the held-out one)"
@@ -372,6 +374,63 @@ jobs:
             generic.json
             pack.json
             emitted.json
+          retention-days: 30
+
+  paging:
+    name: paging ${{ matrix.model }}
+    if: github.ref == 'refs/heads/main' && inputs.job == 'paging'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # One per file in src/trentina/quarantine/prompt_packs/.
+        include:
+          - { model: google/gemini-2.5-flash-lite }
+          - { model: google/gemini-3.5-flash-lite }
+          - { model: anthropic/claude-haiku-4.5 }
+          - { model: google/gemini-3.8-flash, reasoning: minimal }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      # Dependencies install without the key: no install hook ever sees it.
+      - name: Install dependencies
+        run: |
+          uv python install 3.14
+          uv sync --all-extras --locked
+
+      # Every corpus attack whole, cut across two adjacent parts, and with
+      # its halves in parts that do not touch, each part through defend()
+      # with the part briefing. No L2 model here: L3 is what is measured.
+      - name: Judge the split attacks
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TRENTINA_MODEL_PROVIDER: openrouter
+          QUARANTINE_MODEL: ${{ matrix.model }}
+          QUARANTINE_REASONING_EFFORT: ${{ matrix.reasoning }}
+        run: |
+          set -o pipefail
+          mkdir -p results
+          uv run --no-sync python benchmarks/paging_l3.py --votes 3 --concurrency 8 \
+            --json results/paging_l3.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Artifact name
+        id: slug
+        env:
+          MODEL: ${{ matrix.model }}
+        run: echo "name=paging-${MODEL//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload results
+        if: always() && hashFiles('results/*.json') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.slug.outputs.name }}
+          path: results/
           retention-days: 30
 
   corpora:

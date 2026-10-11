@@ -219,7 +219,8 @@ smallest.
   that URL (a file as its path, inline content as its hash), so a later part
   flagged under block puts the source on the caller's blocklist, as a page
   flagged whole does, and the next fetch of it is refused before any bytes
-  arrive. An allowlisted source is not put there, and its block-to-redact
+  arrive. So is the rest of a response already held: flag does not read on
+  from a source block has blocklisted, and redact does. An allowlisted source is not put there, and its block-to-redact
   downgrade applies to part 1 only: a later flagged part is refused, with
   redact offered. A honeypot is handed what arrived, whole. `dir` and
   `search` are not cut. Standalone, with no gateway and so no `read_part`,
@@ -504,7 +505,12 @@ one does; the rest name the benchmark that measured them.
     untrusted. L2 on an attack the boundary cuts in two: 33 to 34 of 35
     caught with no lead-in, 34 to 35 with it
     ([benchmark](benchmark.md#an-attack-cut-by-a-part-boundary-340)). L3 on
-    a split attack is not measured.
+    a split attack, cut across two parts and with its halves in parts that
+    do not touch, is `benchmarks/paging_l3.py` (#448,
+    [method](benchmark.md#l3-on-a-split-attack-448)). Also by design: a
+    response with an image or a blob in it is not cut (gap 13), a part of a
+    JSON response is text and not valid JSON on its own, and part N+1 is
+    judged when it is asked for and not ahead of the request.
 28. **L2 flags machine-written meeting notes that end in bare links**
     (#450). Notes a meeting assistant writes (summary, decisions, action
     items addressed to their owners) close with where the recording and the

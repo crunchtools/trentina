@@ -270,6 +270,29 @@ class TestAFlaggedPart:
             again = await gateway.send(FETCH, url=URL, trentina_preprocess=False)
         assert "on the blocklist" in json.dumps(again["error"])
 
+    async def test_flag_does_not_read_on_once_block_has_blocklisted_the_source(
+        self, env: Path
+    ) -> None:
+        """A fresh flag fetch of a blocklisted URL is refused; so is the rest
+        of one already held. redact reads on, as it does for a fresh call."""
+        gateway = _Gateway()
+        with layers(env, payload=LONG) as fakes:
+            _where(fakes)
+            first = await gateway.fetch()
+            handle = first[paging.PART_KEY]["handle"]
+            await gateway.read(handle=handle)
+            await gateway.read(handle=handle)
+            flagged = await gateway.read(handle=handle, part=3, trentina_mode="flag")
+            asked = fakes.classify.await_count
+            redacted = await gateway.read(
+                handle=handle, part=3, trentina_mode={"redact": "What changed?"}
+            )
+        assert flagged["isError"] is True
+        assert "on the blocklist" in flagged["content"][0]["text"]
+        assert HOSTILE not in json.dumps(flagged)
+        assert asked == 3  # refused unread, as the tool refuses before any bytes arrive
+        assert "on the blocklist" not in json.dumps(redacted)
+
     async def test_block_refuses_a_flagged_part_one_and_holds_nothing(self, env: Path) -> None:
         gateway = _Gateway()
         with layers(env, payload=LONG) as fakes:

@@ -299,6 +299,11 @@ def current_policy() -> ModePolicy:
     return ModePolicy.of(config.allowed_modes, config.default_mode)
 
 
+BLOCKLIST_REASON = "on the blocklist"
+"""Why a call on a source the caller's blocklist holds is refused. Constant
+(#263): nothing in it depends on when or by whom the source was flagged."""
+
+
 def refusal_body(
     reason: str,
     mode: Mode,

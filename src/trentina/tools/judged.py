@@ -28,7 +28,7 @@ from ..gateway import paging
 from ..gateway.context import current_call, get_current_parts
 from ..gateway.scope import current_scope
 from ..l1.pipeline import run_l1
-from ..modes import Mode, gaps_of, refusal_body, refusal_reason
+from ..modes import BLOCKLIST_REASON, Mode, gaps_of, refusal_body, refusal_reason
 from ..quarantine.agent import quarantine_redact
 from ..report import Disposition, LayerState, build_report
 from ..warning import build_warning
@@ -43,8 +43,6 @@ DEFAULT_REDACT_PROMPT = "Extract the main content."
 """Used when block downgrades an allowlisted source to redact: the agent asked
 for the bytes, so there is no extraction prompt of its own to use."""
 
-
-BLOCKLIST_REASON = "on the blocklist"
 
 PAGED_FAMILIES = frozenset({"fetch", "read", "content"})
 """The families whose payload is one text an agent reads to the end, and so
