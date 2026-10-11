@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-11
+
 ### Fixed
 - A response withheld from a tool that may write no longer reads as a failed
   call (#425). A proxied response is judged after the backend answered; when
