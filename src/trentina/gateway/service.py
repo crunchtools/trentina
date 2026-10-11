@@ -31,8 +31,9 @@ from contextlib import contextmanager
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from ..config import DEFAULT_MODEL, get_config
+from ..config import get_config
 from ..quarantine.packs import SUPPORTED, pack_for, supported_judges
+from ..quarantine.providers import openrouter_model
 from .context import _current_profile
 
 if TYPE_CHECKING:
@@ -148,10 +149,8 @@ def judge_support(profiles: Mapping[str, Profile]) -> dict[tuple[str, str], str]
     found: dict[tuple[str, str], str] = {}
     for profile in (None, *profiles.values()):
         provider, model = judge_of(profile)
-        # OpenRouter ids carry a vendor; the bare default is given one when
-        # the provider is built (`providers._openrouter`).
-        if provider == "openrouter" and model == DEFAULT_MODEL:
-            model = f"google/{model}"
+        if provider == "openrouter":
+            model = openrouter_model(model)
         own = getattr(getattr(profile, "defense", None), "l3_prompt_pack", None)
         status = pack_for((provider, model), own).status
         if status != SUPPORTED:

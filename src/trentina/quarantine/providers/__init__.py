@@ -19,17 +19,20 @@ __all__ = ["Provider", "ProviderResult", "get_fallback_providers", "get_provider
 _DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 
+def openrouter_model(model: str) -> str:
+    """``model`` as OpenRouter names it: the bare default is given its vendor."""
+    return f"google/{model}" if model == _DEFAULT_GEMINI_MODEL else model
+
+
 def _openrouter(key_value: str, model: str, reasoning_effort: str | None) -> Provider:
     """The OpenAI driver pointed at OpenRouter, where model ids carry a vendor."""
     from .openai import OPENROUTER_API_BASE, OPENROUTER_ROUTING, OpenAIProvider
 
     if not key_value:
         raise QuarantineAgentError("OPENROUTER_API_KEY not configured")
-    if model == _DEFAULT_GEMINI_MODEL:
-        model = f"google/{_DEFAULT_GEMINI_MODEL}"
     return OpenAIProvider(
         api_key=key_value,
-        model=model,
+        model=openrouter_model(model),
         base_url=OPENROUTER_API_BASE,
         routing=OPENROUTER_ROUTING,
         reasoning_effort=reasoning_effort,
