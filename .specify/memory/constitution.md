@@ -1,6 +1,6 @@
 # trentina Constitution
 
-> **Version:** 2.3.0
+> **Version:** 2.3.1
 > **Ratified:** 2026-09-22
 > **Amended:** 2026-10-10
 > **Status:** Active
@@ -112,7 +112,8 @@ decoded form, or, for binary, by its identified type (#365). Pre-processing
 is two stages in that order: the pre-processors decide what is delivered, and
 the unpack stage (`unpack/`) builds what the layers read from it, never
 changing it. Canonical base64 and hex that decode to text are read decoded;
-binary is read as a label naming its type. Every layer reads that once (the
+binary is read as a label naming its type. A run of decimal digits up to
+twenty long is a number and not hex, read as it arrived (#431). Every layer reads that once (the
 Layer contract in `docs/defense-pipeline.md`). Binary an agent's tools could
 open and no layer can read yet (an image, a PDF, an archive, audio, video)
 is the `binary_unread` gap: `block` and `redact` refuse it. One exception: an
@@ -279,3 +280,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.1.0 | 2026-10-06 | Decoys and Honeypot Profiles added (#357): decoy tools and honeytokens are deterministic tripwires, not a layer; a `honeypot` profile holds nothing real, is delivered content with no verdict attached, and its content is kept in `honeypot_captures`, the one stated exception to storing caller-chosen text |
 | 2.2.0 | 2026-10-08 | A honeypot profile's decoy-call arguments are kept in `honeypot_captures` beside what it read, planted credentials by id (#410); no other profile's are |
 | 2.3.0 | 2026-10-10 | The L2 benign gate is enforced beside the obfuscation gate (#411): run by the image build at the shipped threshold, recorded in the model manifest with that threshold, checked at startup |
+| 2.3.1 | 2026-10-11 | A run of decimal digits up to twenty long is a number, not hex the unpack stage decodes: a byte count was being read by every layer as the text its digits spell in hex (#431) |

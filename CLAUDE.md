@@ -457,7 +457,8 @@ never changes it. Nothing restores anything afterwards, because nothing was
 replaced.
 
 - `unpack/` — stage 2 (#367). `scan.unpack(text)` decodes canonical
-  base64 and hex that decode to text, in place and unmarked (a bracketed
+  base64 and hex that decode to text (never a run of decimal digits up to
+  twenty long, which is a number, #431), in place and unmarked (a bracketed
   marker raised L2's false positives fourfold), to two levels; labels binary
   of 64 characters or more by its signature (`signatures.py`),
   `(image/png, 1.1 KB, not read)`; and leaves identifiers, short binary and

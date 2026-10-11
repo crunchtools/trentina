@@ -294,11 +294,12 @@ class TestKnownGaps:
             pytest.skip("measured on prompt-injection-guard-small")
         assert _flagged("event_id_reply") == (0, 12)
 
-    def test_a_short_journal_or_a_mail_log_can_be_flagged(self) -> None:
+    @pytest.mark.parametrize("category", ["journal_query", "syslog_search"])
+    def test_a_short_journal_or_a_mail_log_can_be_flagged(self, category: str) -> None:
         if _MODEL is None or _MODEL.id != HORIZON:
             pytest.skip("measured on prompt-injection-guard-small")
-        flagged = _flagged("journal_query")[0] + _flagged("syslog_search")[0]
-        assert flagged >= 1, f"{flagged} of 24: gap 19 may have narrowed"
+        flagged, of = _flagged(category)
+        assert flagged >= 1, f"{category}, {flagged} of {of}: gap 19 may have narrowed"
 
     def test_a_hundred_line_journal_in_a_json_string_can_be_flagged(self) -> None:
         if _MODEL is None or _MODEL.id != HORIZON:
