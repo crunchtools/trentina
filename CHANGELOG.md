@@ -10,6 +10,37 @@ under that name.
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-10-11
+
+### Fixed
+- The unpack stage read a number as hex (#431). An even-length run of decimal
+  digits whose bytes happen to be printable was decoded like hex-encoded
+  text, so a byte count such as `"Size":7764637970` reached all three layers
+  as `"Size":wdcyp`. A run of decimal digits up to twenty long, the largest
+  unsigned 64-bit integer, is now a number and is read as it arrived. Longer
+  digit-only hex still decodes.
+- The L2 benign gate reads a tool response as the router does (#431). The
+  harness joined the text block with every string of the structured copy;
+  the router drops a structured copy that repeats the text, so the layers
+  read it once. Read once, the shipped model flagged 4 of 146 held-out cases
+  where the gate allows 2, and the gate that shipped did not see it.
+
+### Changed
+- A `structured` listing gives its rows before its note:
+  `PROJ-1001, PROJ-1002; 2 more element(s) with this shape, /key` where it
+  was `2 more element(s) with this shape; /key: PROJ-1001, PROJ-1002`. Note
+  first, a list of image digests read to L2 as a sentence handing over a
+  payload: a `system_df` reply scored 0.99 that way and 0.01 this way. Chosen
+  on the tuning split; nothing is removed from the listing.
+- Known gap 18 is closed and known gap 19 is wider. A reply that is little
+  but an event ID flagged 9 of 12 only because the harness read it twice;
+  read once none flags, and the shape is now gated. Short journals and mail
+  logs (`journal_query`, `syslog_search`) join the hundred-line journal under
+  gap 19, scored on every build and outside the gate's budget: 3 of their 20
+  held-out cases flag and no change to what the model reads fixed them
+  without breaking others.
+- `PERIMETER_VERSION` is 15: the first start re-judges every tool description.
+
 ## [1.4.0] - 2026-10-11
 
 ### Fixed

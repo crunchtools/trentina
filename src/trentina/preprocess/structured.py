@@ -164,7 +164,10 @@ _MAX_LISTED = 100
 # as one: the same rows scored 0.00 as they arrived and 0.99 with one tagged
 # marker among them. The words say what the tag said.
 _OMITTED = "{count} more element(s) with this shape omitted"
-_LISTED = "{count} more element(s) with this shape; {fields}: {rows}"
+# Rows first, note after (#431). Note first, a run of image digests behind
+# "with this shape; /Links /VolumeName:" read to L2 as a sentence handing
+# over a payload: a `system_df` reply scored 0.99 that way and 0.01 this way.
+_LISTED = "{rows}; {count} more element(s) with this shape, {fields}"
 _IDENTICAL = "{count} more element(s) identical to the one above"
 
 

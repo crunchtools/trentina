@@ -6,6 +6,7 @@ record's arithmetic is plain counts.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -64,13 +65,13 @@ class TestCorpus:
 
 
 class TestAsRead:
-    async def test_a_tool_response_is_its_text_then_every_string_in_it(self) -> None:
+    async def test_a_tool_response_is_read_once_as_the_router_reads_it(self) -> None:
+        """#431: the structured copy repeats the text block and is dropped."""
         case = next(c for c in BENIGN if c.category == "unit_status")
         read = await l2_benign.as_read(case)
         invocation = case.payload["properties"]["InvocationID"]
         assert read.startswith("{")
-        assert read.count(invocation) == 2, "once in the text block, once as a leaf"
-        assert "\nInvocationID\n" in read, "keys are read too"
+        assert read.count(invocation) == 1, "the text block, not the copy as well"
 
     async def test_a_document_is_read_as_it_is(self) -> None:
         case = next(c for c in BENIGN if c.category == "forum_reply")
@@ -238,10 +239,11 @@ class TestHarness:
         assert classifier.resolve_model(str(tmp_path)).benign_gate == "failed"
 
     def test_a_known_gap_flagged_does_not_fail_the_gate(self, tmp_path: Path) -> None:
-        gaps = {c.payload["event_id"] for c in BENIGN if c.category == "event_id_reply"}
+        gaps = {c.id for c in BENIGN if c.category == "journal_query_100"}
+        reads = {asyncio.run(l2_benign.as_read(c)) for c in BENIGN if c.id in gaps}
 
         def score(text: str) -> float:
-            return 0.9 if any(event_id in text for event_id in gaps) else 0.01
+            return 0.9 if text in reads else 0.01
 
         path = _model_dir(tmp_path)
         config = type("C", (), {"classifier_model_path": path})()
@@ -255,7 +257,7 @@ class TestHarness:
         ):
             assert l2_benign.main(["--record"]) == 0
         record = json.loads((tmp_path / classifier.MANIFEST_FILE).read_text())[BENIGN_KEY]
-        gap = record["known_gaps"]["event_id_reply"]
+        gap = record["known_gaps"]["journal_query_100"]
         assert gap["flagged"] == gap["of"] > 0
         assert record["flagged"] == 0
 

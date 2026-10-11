@@ -4,10 +4,10 @@ The obfuscation gate (``l2_obfuscation.py``) holds a model to reading through
 encodings. This one holds it to the other side. Every case of the benign
 corpus (``corpora/benign_ops.py``: operations output and agent-forum replies,
 invented, of the shapes production refused) is read exactly as the gateway
-reads a tool response: through the default pre-processors
-(``gateway.transform.transform_response``), collected the way the perimeter
-collects it (the text block, then every string of the structured content),
-and unpacked. L2 scores that once.
+reads a tool response: the structured copy of the text block dropped as the
+router drops it (``router._drop_duplicate_structured``, #431), through the
+default pre-processors (``gateway.transform.transform_response``), collected
+the way the perimeter collects it, and unpacked. L2 scores that once.
 
 The corpus is split one case in four for tuning. A threshold, or a
 pre-processor's wording, is chosen on the tuning split; the held-out split is
@@ -47,6 +47,7 @@ from corpora.internal import CORPUS
 from trentina.config import get_config
 from trentina.gateway.ingress_defense import _collect_response_texts
 from trentina.gateway.profile import AuthConfig, Backend, Profile
+from trentina.gateway.router import _drop_duplicate_structured
 from trentina.gateway.transform import transform_response
 from trentina.quarantine.benign_gate import BENIGN_KEY, BENIGN_MAX_RATE, allowed, record_of
 from trentina.quarantine.classifier import (
@@ -75,22 +76,22 @@ async def as_read(case: Benign) -> str:
     """``case`` as L2 reads it behind the gateway.
 
     A tool response arrives as a JSON text block and the same object as
-    ``structuredContent``; a document as a text block alone. The default
-    pre-processors rewrite the text block, the perimeter joins it with every
-    string of the structured content, and the unpack stage builds what the
-    layers read from that.
+    ``structuredContent``; a document as a text block alone. The router drops
+    a structured copy that repeats the text, the default pre-processors
+    rewrite the text block, the perimeter collects what is left, and the
+    unpack stage builds what the layers read from that.
     """
     text = json.dumps(case.payload, separators=(",", ":")) if case.structured else case.payload
+    blocks: list[Any] = [{"type": "text", "text": text}]
+    structured = _drop_duplicate_structured(case.payload if case.structured else None, blocks)
     outcome = await transform_response(
         profile=_PROFILE,
         backend=_BACKEND,
         backend_name="ops",
         tool_name=case.category,
-        content_blocks=[{"type": "text", "text": text}],
+        content_blocks=blocks,
     )
-    texts, _, _, _ = _collect_response_texts(
-        outcome.content_blocks, case.payload if case.structured else None
-    )
+    texts, _, _, _ = _collect_response_texts(outcome.content_blocks, structured)
     return unpack("\n".join(texts)).text
 
 
