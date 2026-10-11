@@ -10,6 +10,24 @@ under that name.
 
 ## [Unreleased]
 
+### Changed
+- Every corpus lives in `corpora/` (#10). `tests/adversarial_corpus.py` is
+  `corpora/internal.py`, with the L1 pattern pairs and OWASP's list split out
+  as `l1_patterns.py` and `owasp.py`; `tests/benign_corpus.py` is
+  `benign_ops.py`; `benchmarks/external_corpus.py` is `jailbreak.py`, its
+  download and pin helpers `fetch.py`; `benchmarks/detonation_corpus.py` is
+  `detonation.py`, its InjecAgent loader `injecagent.py`. The download cache
+  moved from `benchmarks/data/` to `corpora/data/`. No case, id or split
+  changed.
+
+### Added
+- `docs/corpora.md`: where each corpus came from, its licence, what it
+  measures and what it does not. `corpora/registry.py` is the same list as
+  data, and a test fails when the two disagree.
+
+### Removed
+- `tests/test-injection.md`, which nothing read.
+
 ## [1.3.0] - 2026-10-10
 
 ### Fixed

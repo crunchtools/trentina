@@ -121,10 +121,10 @@ uv run trentina
   stage); `posture.check_l2_gate` warns on a model without a passing one and
   refuses under `TRENTINA_REQUIRE_HARDENED`. The same stage then runs the
   benign gate (#411): `benchmarks/l2_benign.py --record` over
-  `tests/benign_corpus.py`, read through `transform_response` as a tool
+  `corpora/benign_ops.py`, read through `transform_response` as a tool
   response is, at most 2% of held-out flagged. Its `benign_gate` record
   holds the threshold, so another `CLASSIFIER_THRESHOLD` reads as
-  `unrecorded`. `benign_corpus.KNOWN_GAPS` is scored and never gated.
+  `unrecorded`. `benign_ops.KNOWN_GAPS` is scored and never gated.
 - `TRENTINA_L3_PROMPT_PACK` — an L3 prompt pack file (#354), or `generic`.
   `quarantine/packs.py` loads and checks packs: closed key set, the framing
   sentences in every system prompt, an exact (provider, model). The pack for
@@ -403,7 +403,7 @@ refused. Delegated verifiers answer their own profile (audience pin).
 ## Development
 
 ```bash
-uv run ruff check src tests    # Lint
+uv run ruff check src tests corpora    # Lint
 uv run mypy src                # Type check
 uv run pytest -v               # Test
 TRENTINA_REQUIRE_L2_MODEL=1 CLASSIFIER_MODEL_PATH=<export> uv run pytest tests/test_l2_integration.py  # L2 against a real model; fails, not skips, if it does not load
@@ -524,7 +524,7 @@ replaced.
     a Latin word, a lone ESC, a run of variation selectors.
   - `directives.py` — the exact patterns, named after OpenRouter's guardrail
     (#201). Near-misses matter as much as hits: every pattern has an attack
-    and a benign line in `tests/adversarial_corpus.py` (`L1_PATTERN_CASES`),
+    and a benign line in `corpora/l1_patterns.py` (`L1_PATTERN_CASES`),
     kept out of `CORPUS` because that is the semantic L3 benchmark.
   - `evasion.py` — undoes scrambles, one-edit typos and character spacing,
     then asks the exact patterns again. A typo alone is never a detection.

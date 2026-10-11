@@ -65,8 +65,8 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from benchmarks import external_corpus
-from tests.adversarial_corpus import CORPUS, Case
+from corpora import fetch, jailbreak
+from corpora.internal import CORPUS, Case
 from trentina.config import get_config
 from trentina.quarantine.packs import pack_for
 from trentina.quarantine.prompts import DETECTION_RESPONSE_SCHEMA
@@ -491,7 +491,7 @@ async def run(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--external", choices=("test", "train", "all", "none"), default="test")
-    parser.add_argument("--cache-dir", default=str(external_corpus.CACHE_DIR))
+    parser.add_argument("--cache-dir", default=str(fetch.CACHE_DIR))
     parser.add_argument(
         "--design",
         choices=("two-call", "one-call"),
@@ -508,7 +508,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     cases = list(CORPUS)
     if args.external != "none":
-        cases += external_corpus.load(args.external, cache_dir=Path(args.cache_dir))
+        cases += jailbreak.load(args.external, cache_dir=Path(args.cache_dir))
     cases = cases[: args.limit] if args.limit else cases
     model = get_config().model
     arms = arms_for(args.design)

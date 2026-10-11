@@ -19,8 +19,9 @@ import pytest
 
 from benchmarks import decoy_tools
 from benchmarks import detonation as det
-from benchmarks import detonation_corpus as corpus
 from benchmarks.detonation import Call, Case, Draw, Outcome, Reply, Row, Tokens
+from corpora import detonation as corpus
+from corpora import injecagent
 from trentina.quarantine.packs import GENERIC
 from trentina.quarantine.prompts import L2_BLINDSPOT_CAVEAT
 
@@ -473,18 +474,18 @@ def test_injecagent_rows_alternate_base_and_enhanced(tmp_path: Path) -> None:
     )
     pinned = hashlib.sha256(rows).hexdigest()
     with pytest.MonkeyPatch.context() as patched:
-        patched.setattr(corpus, "INJECAGENT_SHA256", pinned)
-        inserts = corpus.injecagent_inserts(cache_dir=tmp_path, fetch=lambda: rows)
+        patched.setattr(injecagent, "INJECAGENT_SHA256", pinned)
+        inserts = injecagent.injecagent_inserts(cache_dir=tmp_path, fetch=lambda: rows)
     assert [i.id for i in inserts] == ["ia-ds-00", "ia-ds-01"]
-    assert not inserts[0].text.startswith(corpus.INJECAGENT_ENHANCED)
-    assert inserts[1].text.startswith(corpus.INJECAGENT_ENHANCED)
+    assert not inserts[0].text.startswith(injecagent.INJECAGENT_ENHANCED)
+    assert inserts[1].text.startswith(injecagent.INJECAGENT_ENHANCED)
     assert (inserts[0].names_tool, inserts[1].names_tool) == (False, True)
     assert all(i.attack and i.expects == ("send_email",) for i in inserts)
 
 
 def test_injecagent_off_its_pinned_hash_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="does not match the pinned"):
-        corpus.injecagent_inserts(cache_dir=tmp_path, fetch=lambda: b"{}\n")
+        injecagent.injecagent_inserts(cache_dir=tmp_path, fetch=lambda: b"{}\n")
 
 
 @pytest.fixture

@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from tests.adversarial_corpus import CORPUS, Case
+from corpora.internal import CORPUS, Case
 from trentina.l1.pipeline import run_l1
 from trentina.quarantine.agent import quarantine_detect
 
@@ -428,7 +428,7 @@ class TestL3DetectorMetaAttacks:
     prompt or schema regression that weakens meta-attack resistance fails CI.
 
     Q-Agent responses are mocked with fixtures; the payloads are pulled from
-    tests.adversarial_corpus so the two never drift.
+    corpora.internal so the two never drift.
     """
 
     @pytest.mark.parametrize("case", _DETECTOR_META_CASES, ids=[c.id for c in _DETECTOR_META_CASES])

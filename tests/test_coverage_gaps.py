@@ -18,12 +18,12 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
+from corpora.benign_ops import BENIGN, CATEGORIES, KNOWN_GAPS
 from trentina.gateway.decoy import leaked_tokens
 from trentina.gateway.profile import AuthConfig, Backend, Honeytoken, Profile
 from trentina.l1.pipeline import run_l1
 from trentina.unpack.scan import unpack
 
-from .benign_corpus import BENIGN, CATEGORIES, KNOWN_GAPS
 from .image_files import picture
 from .office_files import b64, docx, paragraph, run, zipped
 from .pdf_files import pdf, show

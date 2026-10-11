@@ -1,7 +1,7 @@
 """The count-only L1 stages of #363: what each counts, and what it must not.
 
 No attack line is written here. A positive is one of three things already in
-the tree: an attack from ``tests/adversarial_corpus.py`` put through a
+the tree: an attack from ``corpora/internal.py`` put through a
 mechanical transform, a string built from the package's own constants, or a
 file the repository already ships (the demo page, the demo transcript). The
 near-misses are the half that matters more (#204) and are written out.
@@ -16,11 +16,11 @@ from pathlib import Path
 
 import pytest
 
+from corpora.internal import CORPUS
+from corpora.l1_patterns import L1_PATTERN_CASES
 from trentina import reserved
 from trentina.l1.exfiltration import _EXFIL_PARAM_NAMES
 from trentina.l1.pipeline import FINDING_NAMES, PipelineStats, run_l1
-
-from .adversarial_corpus import CORPUS, L1_PATTERN_CASES
 
 _REPO = Path(__file__).resolve().parents[1]
 _ATTACKS = [c.payload for c in L1_PATTERN_CASES if c.expect_detection]

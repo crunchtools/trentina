@@ -34,7 +34,7 @@ from typing import Any
 
 import pytest
 
-from tests.adversarial_corpus import ATTACKS, Case
+from corpora.internal import ATTACKS, Case
 from trentina.quarantine.agent import quarantine_detect
 
 DETECTION_FLOOR = 0.90

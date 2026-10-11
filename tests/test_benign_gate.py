@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from benchmarks import l2_benign
-from tests.benign_corpus import BENIGN, CATEGORIES, KNOWN_GAPS, in_tuning
+from corpora.benign_ops import BENIGN, CATEGORIES, KNOWN_GAPS, in_tuning
 from trentina import posture
 from trentina.errors import ConfigError
 from trentina.perimeter_db import perimeter_stamp
@@ -34,10 +34,10 @@ _HELD_OUT = [c for c in BENIGN if not in_tuning(c.id) and c.category not in KNOW
 
 class TestCorpus:
     def test_ids_are_unique_and_the_corpus_never_moves(self) -> None:
-        from tests import benign_corpus
+        from corpora import benign_ops
 
         assert len({case.id for case in BENIGN}) == len(BENIGN)
-        again = benign_corpus._build()
+        again = benign_ops._build()
         assert [(c.id, c.payload) for c in again] == [(c.id, c.payload) for c in BENIGN]
 
     def test_the_split_is_fixed_and_every_shape_is_on_both_sides(self) -> None:

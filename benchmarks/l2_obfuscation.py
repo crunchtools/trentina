@@ -32,7 +32,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tests.adversarial_corpus import CORPUS
+from corpora.internal import CORPUS
 from trentina.config import get_config
 from trentina.quarantine.classifier import (
     MANIFEST_FILE,

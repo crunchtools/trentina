@@ -5,7 +5,7 @@ encoded text as possibly hostile. Nothing held the other side: the default
 model went into production flagging routine operations output, and the first
 measurement of it was the audit log. This gate is that other side. A model,
 at the threshold it ships with, is run over benign content of the shapes the
-gateway delivers (``tests/benign_corpus.py``), read as the gateway reads it,
+gateway delivers (``corpora/benign_ops.py``), read as the gateway reads it,
 and may flag at most :data:`BENIGN_MAX_RATE` of the held-out cases.
 
 The result is recorded in the model's ``trentina-model.json``

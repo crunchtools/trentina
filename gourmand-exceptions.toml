@@ -717,7 +717,7 @@ classification = "by_design"
 
 [[exceptions]]
 check = "primitive_obsession"
-path = "tests/benign_corpus.py"
+path = "corpora/benign_ops.py"
 justification = "The numbers are the data. This file generates invented operations output (#411): the literals are PID ranges, byte sizes, port ranges, row counts and identifier lengths (32 hex for an invocation ID, 64 for a container ID, 43 base64url for a Matrix event ID), each used once where the line it belongs to is written. A named constant per range would be fifty names for values the surrounding f-string already explains."
 classification = "by_design"
 
@@ -725,4 +725,40 @@ classification = "by_design"
 check = "print_alongside_logger"
 path = "benchmarks/l2_benign.py"
 justification = "The harness prints a Markdown report to stdout, as every benchmark here does, and the image build's log is where it is read. `logging` is imported for one call that quiets gateway.transform's per-response WARNING line, which would otherwise put 225 lines between the report's tables. Nothing is logged by this file."
+classification = "by_design"
+
+[[exceptions]]
+check = "absolute_paths"
+path = "corpora/benign_ops.py"
+justification = "The paths are inside invented operations output (#411): unit files, sockets and mount points as a journal or a unit's properties print them. They are corpus text the classifier reads, never opened."
+classification = "by_design"
+
+[[exceptions]]
+check = "absolute_paths"
+path = "corpora/detonation.py"
+justification = "The path is inside a carrier document (#357), a README telling its reader where a binary is installed. It is corpus text handed to a model, never opened."
+classification = "by_design"
+
+[[exceptions]]
+check = "absolute_paths"
+path = "corpora/internal.py"
+justification = "The path is inside an attack payload, which asks an agent to read a system file. It is corpus text the detector reads, never opened."
+classification = "by_design"
+
+[[exceptions]]
+check = "hardcoded_years"
+path = "corpora/benign_ops.py"
+justification = "The dates are inside invented journal and unit output (#411). A fixed year keeps the corpus the same text on every run, which the benign gate depends on."
+classification = "by_design"
+
+[[exceptions]]
+check = "hardcoded_years"
+path = "corpora/detonation.py"
+justification = "The year is inside a carrier document (#357), in the URL of a dated meeting-notes page. Corpus text, fixed so a carrier id names the same document forever."
+classification = "by_design"
+
+[[exceptions]]
+check = "hardcoded_years"
+path = "corpora/internal.py"
+justification = "The years are inside attack payloads that forge an approval date or a ticket reference (SEC-2026-0042). The fake reference is the attack."
 classification = "by_design"

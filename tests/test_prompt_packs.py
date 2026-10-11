@@ -13,9 +13,9 @@ import pytest
 from pydantic import ValidationError
 
 from benchmarks import prompt_pack as harness
-from benchmarks.external_corpus import CATEGORY_ATTACK
 from benchmarks.provider_benchmark import CaseResult, ProviderReport
-from tests.adversarial_corpus import CORPUS
+from corpora.internal import CORPUS
+from corpora.jailbreak import CATEGORY_ATTACK
 from trentina.gateway import ingress_defense
 from trentina.gateway.profile import AuthConfig, DefenseConfig, Profile
 from trentina.quarantine import agent, packs

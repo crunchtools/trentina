@@ -165,10 +165,11 @@ max-complexity = 10
 "tests/*" = ["S101", "S105", "S106", "S108", "S603", "PLC0415", "PLR2004", "ARG002", "ARG005", "RUF003", "PT018", "TC003"]
 # RUF001: the Chinese and Japanese cases (#353) use fullwidth punctuation,
 # which is what that text is written with; ASCII would make them less real.
-"tests/adversarial_corpus.py" = ["RUF001"]
+"corpora/internal.py" = ["RUF001"]
 # S311: the benign corpus (#411) is generated from a fixed seed so that it is
 # the same text on every run; nothing in it is a secret.
-"tests/benign_corpus.py" = ["S311"]
+# ARG005: every shape's maker takes the case index; most do not need it.
+"corpora/benign_ops.py" = ["S311", "ARG005"]
 "src/trentina/dbus_interface.py" = ["UP037", "C901", "TRY300"]
 # S603: PDFs are parsed in a child process so a hostile file can be killed
 # at a deadline (#369). argv is this interpreter and a constant module name;

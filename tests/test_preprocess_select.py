@@ -1,7 +1,7 @@
 """Scan-view extraction: the rules, the accounting, and the safety guards.
 
 The single most important test in this file is
-``test_no_adversarial_payload_is_ever_skipped``. tests/adversarial_corpus.py
+``test_no_adversarial_payload_is_ever_skipped``. corpora/internal.py
 is already this codebase's definition of "text that must be judged", so
 wiring it to the skip predicates means the day someone widens a regex to chase
 latency, CI names the attack it just blinded.
@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from corpora.internal import CORPUS
 from trentina.channels import Channel
 from trentina.gateway.profile import MatrixPreProcessConfig
 from trentina.gateway.selection import describe, read_everything, run_l1
@@ -23,8 +24,6 @@ from trentina.preprocess import (
     SkipReason,
 )
 from trentina.preprocess.shapes import classify_skip, looks_random, wordy
-
-from .adversarial_corpus import CORPUS
 
 _CYRILLIC_INJECTION = "".join(
     chr(c)
