@@ -579,6 +579,29 @@ def head(text: str, tokens: int) -> str:
     return text[: offsets[tokens - 1][1]] if tokens > 0 else ""
 
 
+def token_starts(text: str) -> list[int] | None:
+    """The character each of L2's tokens begins at in ``text``.
+
+    What paging cuts on (#340): a part is a run of whole tokens, so its size
+    is stated in the unit the admission cap is. None when the model is
+    absent or its tokenizer reports no offsets; a caller that cannot place a
+    token boundary does not cut.
+    """
+    if not is_classifier_available():
+        return None
+    try:
+        offsets = _tokenizer(
+            text,
+            truncation=False,
+            add_special_tokens=False,
+            return_attention_mask=False,
+            return_offsets_mapping=True,
+        )["offset_mapping"]
+    except NotImplementedError:
+        return None
+    return [int(start) for start, _ in offsets]
+
+
 def estimate_tokens(text: str) -> int:
     """An upper bound on ``text``'s tokens when there is no tokenizer: its UTF-8 bytes.
 

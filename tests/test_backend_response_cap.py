@@ -263,8 +263,21 @@ class TestTheFactor:
 
         monkeypatch.setenv("CLASSIFIER_MAX_TOKENS", "100000")
         monkeypatch.setenv("QUARANTINE_CONTEXT_TOKENS", "1000000")
+        monkeypatch.setenv("TRENTINA_PART_TOKENS", "0")
         config_mod._config = None
         assert response_byte_cap() == 100_000 * BYTES_PER_TOKEN
+
+    def test_cap_covers_every_part_of_a_paged_response(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A response delivered in parts is read whole before it is cut (#340)."""
+        from trentina import config as config_mod
+
+        monkeypatch.delenv("CLASSIFIER_MAX_TOKENS", raising=False)
+        monkeypatch.delenv("TRENTINA_PART_TOKENS", raising=False)
+        monkeypatch.delenv("TRENTINA_MAX_PARTS", raising=False)
+        config_mod._config = None
+        assert response_byte_cap() == 12_000 * 16 * BYTES_PER_TOKEN
 
     def test_floor(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from trentina import config as config_mod

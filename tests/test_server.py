@@ -16,7 +16,9 @@ class TestServerRegistration:
     """Test that all tools are registered correctly."""
 
     async def test_tool_count(self) -> None:
-        """9: one tool per family, plus four that deliver no content.
+        """10: one tool per family, four that deliver no content, and
+        ``read_part`` (#340), which delivers the parts of a response another
+        tool produced.
 
         The count is asserted because every tool definition sits in every
         agent's context on every call. Adding one should be a decision
@@ -24,7 +26,7 @@ class TestServerRegistration:
         when the mode moved from the tool NAME to an argument (#193).
         """
         tools = await mcp.list_tools()
-        assert len(tools) == 9, f"Expected 9 tools, got {len(tools)}"
+        assert len(tools) == 10, f"Expected 10 tools, got {len(tools)}"
 
     async def test_every_family_takes_a_mode(self) -> None:
         """The mode is an argument the policy checks, not a name the agent picks."""
@@ -36,7 +38,8 @@ class TestServerRegistration:
             assert "trentina_mode" not in tools[f"{family}_tool"].parameters.get("required", [])
 
     async def test_expected_tools_registered(self) -> None:
-        """Nothing delivers content except a family tool (#187, #193)."""
+        """Nothing delivers content except a family tool (#187, #193) and
+        ``read_part``, which delivers what the router judged (#340)."""
         tools = await mcp.list_tools()
         tool_names = {t.name for t in tools}
         families = {f"{family}_tool" for family in FAMILIES}
@@ -46,7 +49,14 @@ class TestServerRegistration:
             "reconnect_backend_tool",
             "reload_profiles_tool",
         }
-        assert tool_names == families | admin
+        assert tool_names == families | admin | {"read_part_tool"}
+
+    async def test_read_part_holds_nothing_without_a_gateway(self) -> None:
+        """Behind the gateway the router answers it; standalone nothing is paged."""
+        from trentina.server import read_part_tool
+
+        answer = await read_part_tool(handle="0" * 32, part=2)
+        assert answer["held"] == []
 
     def test_server_name(self) -> None:
         assert mcp.name == "trentina"

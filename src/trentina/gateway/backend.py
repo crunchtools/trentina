@@ -48,7 +48,9 @@ admission would have judged: a token that is one CJK character JSON-escaped
 as ``\\uXXXX`` is 6 bytes, the same text can arrive twice (``content`` and
 ``structuredContent``, deduplicated only after the read), and SSE and
 JSON-RPC framing add more. 32 is that worst case with headroom; the cap's job
-is bounding memory, and admission still decides what is judged."""
+is bounding memory, and admission still decides what is judged. With paging
+on (#340) the tokens counted are ``Config.paged_tokens``, every part of the
+largest response that can be delivered."""
 
 MIN_RESPONSE_BYTES = 1_048_576
 """The cap never drops below 1 MiB, so a tiny ``CLASSIFIER_MAX_TOKENS`` cannot
@@ -59,7 +61,10 @@ def response_byte_cap() -> int:
     """The most bytes one backend response may stream before the read stops."""
     from ..config import get_config
 
-    return max(MIN_RESPONSE_BYTES, get_config().admission_tokens * BYTES_PER_TOKEN)
+    # ``paged_tokens``, not the admission cap: a response delivered in parts
+    # (#340) is read whole before it is cut, and is the admission cap itself
+    # when paging is off.
+    return max(MIN_RESPONSE_BYTES, get_config().paged_tokens * BYTES_PER_TOKEN)
 
 
 class _ResponseRefused(httpx2.StreamError):

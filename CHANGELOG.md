@@ -10,6 +10,31 @@ under that name.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-11
+
+### Added
+- Responses delivered in parts (#340). A proxied response that is only text
+  and over 16,000 L2 tokens is cut into near-equal parts of about 12,000
+  (`TRENTINA_PART_TOKENS`). The call returns part 1; the new `read_part`
+  tool returns the rest and reaches no backend. Every part is judged by all
+  three layers when it is asked for, behind the last 64 tokens of the part
+  before it, in every mode: block refuses a flagged part and every later
+  one, flag delivers it with its warning, redact asks its question of each
+  part. Parts are read in order. Until now such a response ran past the client's timeout, and over
+  32,768 tokens it was refused. `docs/defense-pipeline.md`, "Responses
+  delivered in parts".
+- `TRENTINA_PART_TOKENS`, `TRENTINA_MAX_PARTS`, `TRENTINA_PART_TTL_SECONDS`.
+- `benchmarks/paging_split.py`: L2 on an attack a part boundary cuts in two.
+- Known gap 27: a response delivered in parts is judged a part at a time.
+
+### Changed
+- The backend response byte cap covers every part of the largest response
+  paging can deliver: 6 MiB by default, where it was 1 MiB.
+- Known gap 13 (flag reads only the head of an oversized payload) no longer
+  applies to a proxied text response.
+- `PERIMETER_VERSION` 17.
+- The standalone server's instructions no longer name Prompt Guard 2.
+
 ## [1.7.0] - 2026-10-11
 
 ### Added

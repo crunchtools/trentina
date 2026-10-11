@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -43,6 +44,41 @@ DEFAULT_QUARANTINE_CONTEXT_TOKENS = 1_000_000
 """What the L3 model can read in one call. Gemini 2.5 Flash-Lite's window;
 set it lower for a smaller provider (Ollama's default model reads 32k). The
 other input to ``Config.admission_tokens``."""
+
+DEFAULT_PART_TOKENS = 12_000
+"""The size a paged response's parts aim for, in L2's tokens (#340).
+
+A part is the largest thing that reliably beats the client's 60 s: at
+0.7 ms a token on production CPU, 12K is about 9 s of L2, and measured end
+to end a 32 to 64 KB response ran 13.5 s at the median and 29 s at the 95th
+percentile. Part size does not change the total L2 work, and every extra
+part costs an L3 call and an agent turn, so smaller is not cheaper. 0 turns
+paging off."""
+
+PART_WHOLE_RATIO = (4, 3)
+"""A response up to this multiple of ``DEFAULT_PART_TOKENS`` is delivered
+whole: 16K tokens with the default. One just over the target is not worth a
+second call."""
+
+PART_LEAD_TOKENS = 64
+"""Tokens of the part before that a part is judged behind: L2's guard band
+(``classifier.GUARD_TOKENS``; a test holds the two equal). Reserved out of
+the admission cap so a part and its lead-in are always admitted together."""
+
+PART_SLACK = 10
+"""A cut may move back one part in this many to land on a line break
+(``paging.BOUNDARY_SLACK``), which makes the part after it that much larger."""
+
+DEFAULT_MAX_PARTS = 16
+"""The most parts one response is cut into: 192K tokens with the default
+size. Over it the response is refused as over the admission cap, as before."""
+
+DEFAULT_PART_TTL_SECONDS = 600
+"""How long a paged response is held without a part of it being read."""
+
+MIN_PART_TTL_SECONDS = 30
+"""The shortest hold a setting may ask for: under it an agent cannot read
+part 1 and ask for part 2 before the rest is gone."""
 
 DEFAULT_BLOCKLIST_TTL_DAYS = 30
 """Days a block refusal keeps its source on the calling profile's blocklist."""
@@ -106,6 +142,20 @@ def bool_env(name: str, default: bool) -> bool:
             "config: %s (%s) is not a boolean — using %s", name, redact_source(raw), default
         )
     return default
+
+
+def part_settings() -> tuple[int, int, int]:
+    """``TRENTINA_PART_TOKENS``, ``TRENTINA_MAX_PARTS`` and
+    ``TRENTINA_PART_TTL_SECONDS`` (#340): the part size a paged response aims
+    for (0 turns paging off), the most parts one is cut into, and the seconds
+    one is held unread."""
+    return (
+        int_env("TRENTINA_PART_TOKENS", DEFAULT_PART_TOKENS, minimum=0),
+        int_env("TRENTINA_MAX_PARTS", DEFAULT_MAX_PARTS, minimum=2),
+        int_env(
+            "TRENTINA_PART_TTL_SECONDS", DEFAULT_PART_TTL_SECONDS, minimum=MIN_PART_TTL_SECONDS
+        ),
+    )
 
 
 def int_env(name: str, default: int, *, minimum: int | None = None) -> int:
@@ -385,6 +435,61 @@ class Config:
         if self.classifier_max_tokens > 0:
             budgets.append(self.classifier_max_tokens)
         return min(budgets)
+
+    @functools.cached_property
+    def _parts(self) -> tuple[int, int, int]:
+        return part_settings()
+
+    @property
+    def part_tokens(self) -> int:
+        """``TRENTINA_PART_TOKENS``: the size a paged response's parts aim for; 0 is off."""
+        return self._parts[0]
+
+    @property
+    def max_parts(self) -> int:
+        """``TRENTINA_MAX_PARTS``: the most parts one response is cut into."""
+        return self._parts[1]
+
+    @property
+    def part_ttl_seconds(self) -> int:
+        """``TRENTINA_PART_TTL_SECONDS``: how long a paged response is held unread."""
+        return self._parts[2]
+
+    @property
+    def part_target_tokens(self) -> int:
+        """The size parts aim for; 0 when paging is off, by setting or because
+        the admission cap is too small to hold a part and its lead-in.
+
+        Never so large that a part cannot be admitted: a part may run a
+        tenth over its target when the cut before it moved back to a line
+        break, and it is judged behind ``PART_LEAD_TOKENS`` of the part
+        before. Both are reserved out of the admission cap.
+        """
+        room = (self.admission_tokens - PART_LEAD_TOKENS) * PART_SLACK // (PART_SLACK + 1)
+        # No room for a part behind its lead-in: nothing is cut, and the cap
+        # refuses what it always refused.
+        return max(min(self.part_tokens, room), 0)
+
+    @property
+    def whole_tokens(self) -> int:
+        """The most tokens a response may carry and still be delivered whole (#340).
+
+        ``PART_WHOLE_RATIO`` times the part size, never over the admission
+        cap. With paging off it is the admission cap, as before.
+        """
+        if self.part_target_tokens <= 0:
+            return self.admission_tokens
+        above, below = PART_WHOLE_RATIO
+        return min(self.part_target_tokens * above // below, self.admission_tokens)
+
+    @property
+    def paged_tokens(self) -> int:
+        """The most tokens a response may carry and be delivered at all.
+
+        ``max_parts`` parts at the part size when paging is on, and the
+        admission cap when it is off or would be the larger.
+        """
+        return max(self.part_target_tokens * self.max_parts, self.admission_tokens)
 
     @property
     def has_api_key(self) -> bool:
