@@ -105,6 +105,15 @@ documents) and every internal attack into two (`embedded_attack`). An
 embedded document goes where its insert goes: a case tuned on bare is never
 reported on embedded.
 
+**Brief the judge as production does (#397).** In production the judge
+never reads a document bare: `defend()` puts Layer 1's counts, Layer 2's
+label and the pack's `l2_caveat` in front of it. `--briefing benign` does
+the same here, with L1's real counts for each case and the label fixed:
+BENIGN is what the judge is told about nearly every document it should
+pass, and about every attack Layer 2 missed. Without it (`none`, the
+default, and how every result before 1.5.0 was measured) the pack's caveat
+is never read. A baseline under another briefing gives no verdict.
+
 **Use votes for anything you will rely on.** The judge is not
 deterministic. `--votes 3` asks each case three times and takes the
 majority. One run of 300 cases moves by a case or two.

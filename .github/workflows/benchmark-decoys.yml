@@ -49,6 +49,11 @@ on:
         type: choice
         options: [train, held-out]
         default: train
+      briefing:
+        description: "tune: what the judge is told Layer 2 made of each case, as production briefs it; none sends the case alone"
+        type: choice
+        options: [benign, malicious, none]
+        default: benign
       pack:
         description: "tune: the candidate pack, base64 of its JSON"
         type: string
@@ -329,10 +334,12 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           QUARANTINE_MODEL: ${{ inputs.model }}
           QUARANTINE_REASONING_EFFORT: ${{ inputs.model == 'google/gemini-3.8-flash' && 'minimal' || '' }}
+          BRIEFING: ${{ inputs.briefing }}
         run: |
           set -o pipefail
           uv run --no-sync python benchmarks/prompt_pack.py --provider openrouter \
             --prompt-pack candidate.json --split train --concurrency 8 \
+            --briefing "$BRIEFING" \
             --out pack.json | tee -a "$GITHUB_STEP_SUMMARY"
 
       # The gate's exit status is the job's; emitted.json exists only when
@@ -343,13 +350,16 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           QUARANTINE_MODEL: ${{ inputs.model }}
           QUARANTINE_REASONING_EFFORT: ${{ inputs.model == 'google/gemini-3.8-flash' && 'minimal' || '' }}
+          BRIEFING: ${{ inputs.briefing }}
         run: |
           set -o pipefail
           uv run --no-sync python benchmarks/prompt_pack.py --provider openrouter \
-            --prompt-pack generic --votes 3 --concurrency 8 --out generic.json \
+            --prompt-pack generic --votes 3 --concurrency 8 --briefing "$BRIEFING" \
+            --out generic.json \
             | tee -a "$GITHUB_STEP_SUMMARY"
           uv run --no-sync python benchmarks/prompt_pack.py --provider openrouter \
-            --prompt-pack candidate.json --votes 3 --concurrency 8 --baseline generic.json \
+            --prompt-pack candidate.json --votes 3 --concurrency 8 --briefing "$BRIEFING" \
+            --baseline generic.json \
             --emit emitted.json --out pack.json | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload results
