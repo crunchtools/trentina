@@ -112,13 +112,15 @@ For complete network isolation, combine with the [LLM key proxy](llm-proxying.md
 1. **MCP tools** → `http://trentina:8019/gateway/<profile>/mcp`
 2. **LLM calls** → `http://trentina:8019/llm/<provider>/<path>`
 3. **Matrix** → `http://trentina:8019/matrix/_matrix/<path>`, from the agent's own network
+4. **The agent's own HTTPS client** → `HTTPS_PROXY=http://trentina:8021`, tunnelled to the hosts its profile lists ([client egress](client-egress.md))
 
-The agent has no other network access of its own. Every request it makes goes through Trentina and is audited, but a request is not the only way out: a model provider can fetch, search and connect to MCP servers on the caller's behalf (Anthropic's `web_fetch`, `web_search` and `mcp_servers`, OpenRouter's `web` plugin and `:online` models, Gemini's Google Search grounding and `url_context`). Until #297 the LLM proxy forwarded those untouched, so an agent on `--network=none` could still reach any host through its provider. The proxy now admits only completions with caller-run function tools and inline content, and refuses the rest ([what the proxy admits](llm-proxying.md#what-the-proxy-admits)).
+The agent has no other network access of its own. Every request it makes goes through Trentina and is audited (a tunnel as a host and a byte count, since its contents are TLS no layer reads), but a request is not the only way out: a model provider can fetch, search and connect to MCP servers on the caller's behalf (Anthropic's `web_fetch`, `web_search` and `mcp_servers`, OpenRouter's `web` plugin and `:online` models, Gemini's Google Search grounding and `url_context`). Until #297 the LLM proxy forwarded those untouched, so an agent on `--network=none` could still reach any host through its provider. The proxy now admits only completions with caller-run function tools and inline content, and refuses the rest ([what the proxy admits](llm-proxying.md#what-the-proxy-admits)).
 
 What remains is the provider itself: an agent can still put data in a prompt, and the provider receives it. Treat the provider as a destination the agent can write to.
 
 ## Related
 
 - [LLM Key Proxying](llm-proxying.md) — isolating model API keys from agents
+- [Client Egress](client-egress.md) — a tunnel for the agent's own HTTPS client
 - [MCP Gateway](gateway.md) — the gateway architecture this extends
 - [Defense Pipeline](defense-pipeline.md) — content inspection applied to all proxied responses

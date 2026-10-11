@@ -143,9 +143,12 @@ commerce keeps flowing, and nothing dangerous gets in.
 16. **[Operator Profile](docs/operator.md).** Trentina is built to be run by an
     agent. The operator seat installs, reloads and administers the gateway, and
     is the identity its own model calls bill to.
-17. **[Matrix Reverse Proxy](docs/network-isolation.md).** Agents on an
+17. **[Client Egress](docs/client-egress.md).** An agent's own HTTPS client,
+    tunnelled to the hosts its profile lists and to nothing else, by source
+    network with no credential in the proxy URL. Recorded, not read.
+18. **[Matrix Reverse Proxy](docs/network-isolation.md).** Agents on an
     isolated network reach Matrix through the gateway rather than the internet.
-18. **[Cockpit Plugin](docs/cockpit-plugin.md).** A live dashboard of layers,
+19. **[Cockpit Plugin](docs/cockpit-plugin.md).** A live dashboard of layers,
     blocklist and pipeline events in the Cockpit console.
 
 ## Quick Start
@@ -223,6 +226,7 @@ Then point Claude Code at it:
 | [LLM Key Proxying](docs/llm-proxying.md) | Provider keys kept inside the gateway |
 | [Matrix Bridge](docs/matrix-bridge.md) | E2EE termination and two-way judging |
 | [Matrix Reverse Proxy](docs/network-isolation.md) | Matrix for agents on an isolated network |
+| [Client Egress](docs/client-egress.md) | A CONNECT tunnel to listed hosts for the agent's own client |
 | [Deployment Hardening](docs/deployment-hardening.md) | Container flags, secrets, egress, the startup check |
 | [Cockpit Plugin](docs/cockpit-plugin.md) | Live defense pipeline dashboard |
 | [Internal: Gateway Design](docs/internal/gateway-design.md) | Original design document, for contributors |

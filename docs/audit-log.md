@@ -22,10 +22,10 @@ Each gateway call writes one row to the `gateway_calls` table:
 | `duration_ms` | integer | `234` |
 | `error_message` | text | `null` (or error message) |
 | `outcome` | text | `ok`, `blocked_defense`, … (see below) |
-| `bytes_arrived` / `bytes_delivered` | integer | response size before and after minifying |
+| `bytes_arrived` / `bytes_delivered` | integer | response size before and after minifying; for a [tunnel](#client-egress-tunnels), bytes from and to the destination |
 | `normalized` | text (JSON) | `{"feed_id": "dropped: below minimum 1"}`: arguments dropped before forwarding ([normalization](gateway.md#argument-normalization)) |
 | `destination` | text | `docs.example.org#1a2b3c4d5e6f7a8b`, `q#…`, `C0OPS`: where the call was pointed ([call destinations](profiles.md#call-destinations)). Never logged |
-| `destination_kind` | text | `fetch`, `search`, `param` or `model`; NULL when the tool names no destination |
+| `destination_kind` | text | `fetch`, `search`, `param`, `model` or `tunnel`; NULL when the tool names no destination |
 | `session` | text | `3f9a…`: a fingerprint of the MCP session the call arrived on. NULL for a client that sends no session header |
 | `call_ref` | text | `8c1d…`: a random reference for this call. A `detections` row raised by the call carries the same one |
 | `content_digest` | text | `b27e…`: a fingerprint of the delivered result. NULL when nothing was delivered |
@@ -141,6 +141,18 @@ model the agent named (`destination_kind = model`). A refused request is
 in `error_message`; a profile with no key for the provider is
 `denied_allowlist`. An admitted call is `ok`, or `tool_error` / `backend_error`
 for a provider 4xx / 5xx.
+
+### Client egress tunnels
+
+Every [client egress](client-egress.md) tunnel writes a row when it closes or
+is refused (#442): `backend` is `egress`, `tool` is `connect`, and
+`destination` is `name:443` as the client named it (`destination_kind =
+tunnel`). `bytes_arrived` is what came back from the destination and
+`bytes_delivered` is what the agent sent to it. A name the profile does not
+list is `denied_allowlist`; a refused port, method, tunnel cap or first TLS
+record is `denied_guard` with the [reason](client-egress.md#refusals) in
+`error_message`; the egress guard's refusal is `blocked_defense`. No layer
+reads a tunnel, so there is no `detections` row to join.
 
 ## Accessing Audit Data
 

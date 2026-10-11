@@ -597,6 +597,36 @@ def _check_matrix_networks(registry: dict[str, Profile]) -> None:
             seen.append((name, net))
 
 
+def _check_egress_networks(registry: dict[str, Profile]) -> None:
+    """No profile's ``client_egress.source_networks`` reach another's (#442).
+
+    The same rule as ``_check_matrix_networks``, for the same reason: the
+    address is what picks the profile. It is also held against the other
+    profiles' Matrix networks, because one network is one agent whichever
+    listener it calls. A profile may use one network for both of its own.
+    """
+    claims = [
+        (name, block.source_networks)
+        for name, profile in sorted(registry.items())
+        for block in (profile.client_egress, profile.matrix_ingress)
+        if block is not None
+    ]
+    for name, profile in sorted(registry.items()):
+        if profile.client_egress is None:
+            continue
+        for net in profile.client_egress.source_networks:
+            for other, prior_nets in claims:
+                if other == name:
+                    continue
+                for prior in prior_nets:
+                    if net.version == prior.version and net.overlaps(prior):
+                        raise ProfileConfigError(
+                            f"Profiles {other!r} and {name!r}: client_egress.source_networks "
+                            f"overlap another profile's network ({prior} and {net}); "
+                            "one agent per network"
+                        )
+
+
 def load_profiles(path: Path | str) -> GatewayConfig:
     """Load gateway configuration from YAML.
 
@@ -636,6 +666,7 @@ def load_profiles(path: Path | str) -> GatewayConfig:
     _check_operator(registry)
     _check_judges(registry)
     _check_matrix_networks(registry)
+    _check_egress_networks(registry)
 
     logger.info(
         "gateway: loaded %d profile(s): %s",
@@ -675,7 +706,9 @@ class ActiveConfig:
     they were bound into closures when the routes were registered: the LLM
     provider set, and whether the alert, matrix and OAuth routes exist at all.
     A reload compares against them so it can say what it did not apply, instead
-    of reporting success over a change that went nowhere. OAuth is in this set
+    of reporting success over a change that went nowhere. The client-egress
+    listener is in this set too: it is a second socket, bound before serving,
+    and only when some profile asked for it. OAuth is in this set
     because the provider and its authorization-server routes bind at startup —
     turning ``oauth.enabled`` on for a profile in the YAML and reloading cannot
     conjure a provider that boot did not build.
@@ -687,6 +720,7 @@ class ActiveConfig:
     alert_route_registered: bool
     matrix_route_registered: bool
     oauth_route_registered: bool
+    egress_listener_configured: bool = False
 
 
 _active: ActiveConfig | None = None
@@ -711,6 +745,10 @@ def register_active_config(
         alert_route_registered=any(p.alert_ingress is not None for p in config.profiles.values()),
         matrix_route_registered=bool(config.matrix.get("enabled")),
         oauth_route_registered=oauth_route_registered,
+        # Bound before serving, and only when a profile asked for it (#442).
+        egress_listener_configured=any(
+            p.client_egress is not None for p in config.profiles.values()
+        ),
     )
 
 
@@ -735,6 +773,7 @@ def replace_active_config(config: GatewayConfig) -> None:
         alert_route_registered=_active.alert_route_registered,
         matrix_route_registered=_active.matrix_route_registered,
         oauth_route_registered=_active.oauth_route_registered,
+        egress_listener_configured=_active.egress_listener_configured,
     )
 
 

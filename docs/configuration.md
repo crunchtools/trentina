@@ -21,6 +21,16 @@ L3 needs one provider. Set `TRENTINA_MODEL_PROVIDER` and that provider's key:
 `/proc/<pid>/environ`. Behind the gateway, each profile's `llm_keys` is used
 instead; see [Operator Profile](operator.md).
 
+## Command-line flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--transport` | `stdio` | `stdio`, `sse` or `streamable-http`. |
+| `--host` | `127.0.0.1` | Address both listeners bind. |
+| `--port` | `8019` | The MCP and HTTP routes. |
+| `--egress-port` | `8021` | The [client egress](client-egress.md) `CONNECT` listener. Bound only when a profile has a `client_egress` block. |
+| `--no-dbus` | off | Do not register the D-Bus interface. |
+
 ## Environment variables
 
 Trentina reads its gateway, profile and backend configuration from a YAML file;

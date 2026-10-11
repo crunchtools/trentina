@@ -637,7 +637,10 @@ Some sections cannot reload, because their routes bind at startup: the
 `not_applied` rather than reporting success over an edit that went nowhere. An
 agent-scope reload never moves its own `matrix_bridge` at all, nor adds,
 removes or re-points its own `matrix_ingress.source_networks` (the network is
-the Matrix proxy's credential, #330); each is reported under `operator_only`.
+the Matrix proxy's credential, #330), nor its own `client_egress` block
+(#442); each is reported under `operator_only`. Adding the first
+`client_egress` block needs a restart, because its listener is bound at
+startup.
 
 ## Related
 
@@ -645,3 +648,4 @@ the Matrix proxy's credential, #330); each is reported under `operator_only`.
 - [Tool Filtering](tool-filtering.md) — allowlist/denylist configuration
 - [Parameter Guards](parameter-guards.md) — argument-level restrictions
 - [Defense Pipeline](defense-pipeline.md) — L1/L2/L3 configuration details
+- [Client Egress](client-egress.md) — the `client_egress` block

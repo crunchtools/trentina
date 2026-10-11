@@ -25,9 +25,10 @@ if TYPE_CHECKING:
     from .gateway.profile import Profile
     from .gateway.sessions import SessionRegistry
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 DEFAULT_PORT = 8019
+DEFAULT_EGRESS_PORT = 8021
 _TRUTHY = {"1", "true", "yes", "on"}
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,12 @@ def main() -> None:
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument(
+        "--egress-port",
+        type=int,
+        default=DEFAULT_EGRESS_PORT,
+        help="Client-egress CONNECT listener port; served only if a profile has client_egress",
+    )
     parser.add_argument(
         "--no-dbus",
         action="store_true",
@@ -84,6 +91,11 @@ def main() -> None:
             mcp.run(transport="sse", host=args.host, port=args.port, log_level=log_level)
         case _:
             if gateway_enabled:
+                from .gateway import client_egress
+
+                # Where the CONNECT listener binds if a profile turns out to
+                # have client_egress; the server's lifespan starts it (#442).
+                client_egress.configure(args.host, args.egress_port)
                 _run_with_gateway(mcp, host=args.host, port=args.port, log_level=log_level)
             else:
                 mcp.run(

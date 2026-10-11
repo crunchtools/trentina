@@ -235,6 +235,8 @@ new pattern goes into that file's attack, benign and linearity tables.
 
 ## Endpoints
 
+- A second listener, `--egress-port` (8021): HTTP `CONNECT` only, for a
+  profile's `client_egress` (#442). Not a route on the app below.
 - `GET /health` — unauthenticated liveness probe returning `{status, classifier, profiles}`.
   A timeout here means the asyncio event loop is blocked, not merely that a
   backend is slow.
@@ -552,6 +554,17 @@ replaced.
   Refusal reasons are a closed set and never name the address. Never give an
   outbound `httpx.AsyncClient` an agent-chosen URL without it. DNS lookups
   are capped per profile (4) and gateway-wide (64), never queued (#291).
+- `gateway/client_egress.py` — the CONNECT listener (#442) on `--egress-port`
+  (8021), bound only when a profile has `client_egress`, started and stopped
+  by `warmup.trentina_lifespan`. The peer address picks the profile (no
+  credential, as #330); the name must be in `hosts`, port 443, and pass
+  `egress.check_url`; the tunnel connects to a checked address
+  (`open_upstream` is the test seam). After `200` the first TLS record must
+  be a ClientHello whose SNI is the CONNECT host, or the tunnel closes before
+  a byte is forwarded. One `gateway_calls` row per tunnel (`egress` /
+  `connect`, `DestinationKind.TUNNEL`). Nothing reads the bytes: known gap 26.
+  The block is held on an agent reload (`_hold_perimeter_fields`) and refused
+  on a honeypot.
 - `tools/` — Tool implementations called by server.py wrappers
 - `database.py` — SQLite blocklist for cumulative detection memory, keyed on
   (profile, source) since #263: `is_blocked(source, profile)` sees the

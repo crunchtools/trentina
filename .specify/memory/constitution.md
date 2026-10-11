@@ -1,8 +1,8 @@
 # trentina Constitution
 
-> **Version:** 2.4.0
+> **Version:** 2.5.0
 > **Ratified:** 2026-09-22
-> **Amended:** 2026-10-10
+> **Amended:** 2026-10-11
 > **Status:** Active
 > **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.24.0
 > **Profile:** Security Gateway
@@ -255,6 +255,7 @@ justification in `gourmand-exceptions.toml`.
 | Service and address | `trentina.crunchtools.com` |
 | PyPI | not published; `mcp-trentina-crunchtools` stops at 0.54.1 |
 | HTTP port | 8019 |
+| Client egress port | 8021 (CONNECT only; bound when a profile has `client_egress`) |
 | HTTP clients | httpx (application), httpx2 (MCP transport) |
 | Extra stack | beautifulsoup4, markdownify, SQLite; pypdf, rapidocr and opencv-python-headless (each run only in a child process, #369, #370) |
 
@@ -285,3 +286,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.3.0 | 2026-10-10 | The L2 benign gate is enforced beside the obfuscation gate (#411): run by the image build at the shipped threshold, recorded in the model manifest with that threshold, checked at startup |
 | 2.3.1 | 2026-10-11 | A run of decimal digits up to twenty long is a number, not hex the unpack stage decodes: a byte count was being read by every layer as the text its digits spell in hex (#431) |
 | 2.4.0 | 2026-10-11 | The default judge is gemini-3.5-flash-lite (#397). A judge is supported when its prompt pack passes the pack gate briefed as production; shipped packs carry that status and startup reports a judge that is not supported |
+| 2.5.0 | 2026-10-11 | Client egress (#442): a CONNECT listener tunnels an agent's own HTTPS client to the hosts its profile lists. The gateway decides the caller (by network), the host, the address and the TLS server name, and records the bytes; it does not read them, which is known gap 26. The block is perimeter: held on an agent reload, refused on a honeypot |

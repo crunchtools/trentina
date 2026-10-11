@@ -16,6 +16,8 @@ Three kinds, each stored beside the call in ``gateway_calls``:
   truncated. The provider is the row's backend.
 - ``param``: for a proxied tool its backend declares in ``destination_params``,
   that argument's value — the channel, recipient, repo or queue — truncated.
+- ``tunnel``: for a client-egress tunnel (#442), ``host:port`` as the client
+  named it on its CONNECT line. The row's backend is ``egress``.
 
 The value is caller-chosen, so it lives in the audit database only, which no
 tool reads raw. It never goes to the log (#262), and ``quarantine_stats``
@@ -50,6 +52,7 @@ class DestinationKind(StrEnum):
     SEARCH = "search"
     PARAM = "param"
     MODEL = "model"
+    TUNNEL = "tunnel"
 
 
 @dataclass(frozen=True)

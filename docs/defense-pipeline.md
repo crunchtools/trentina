@@ -198,6 +198,7 @@ gaps below.
 | A Matrix image download, under `unjudged: withhold` (the default) | the image, with the risk level in a header if flagged | the text OCR reads in it | judged; refused if OCR could not read it (#371) |
 | Other Matrix media (`audio/*`, `video/*`, `application/octet-stream`, which is what an E2EE attachment is) under withhold | a refusal | nothing | refused: nothing reads it |
 | A Matrix room event the gateway could not decrypt, under withhold | the withheld notice in its place; the rest of the response as judged | nothing | withheld, and counted in the warning |
+| Bytes in a [client egress](client-egress.md) tunnel | as the destination sent them | nothing: they are TLS and the gateway holds no key | not judged; the tunnel decides the host and records the bytes (gap 26) |
 | Any of those three under `unjudged: annotate` | as it arrived, media with the warning header | nothing | forwarded unjudged, by the operator's choice |
 | Over the admission cap (`CLASSIFIER_MAX_TOKENS`, 32,768 L2 tokens) | block and redact: a refusal; flag: as it arrived | flag: the head only | refused |
 
@@ -410,6 +411,15 @@ one does; the rest name the benchmark that measured them.
     document and offers `redact`. Measured by `benchmarks/prompt_pack.py
     --briefing benign` and `benchmarks/detonation.py --mode judge
     --briefing`.
+26. **Nothing reads a client-egress tunnel** (#442). A profile with a
+    `client_egress` block lets its agent's own client (a model API, a git
+    forge) open TLS to the hosts it lists. The gateway decides the host,
+    checks the address and the server name, and records the bytes each way;
+    it cannot read them. So an instruction arriving over a tunnel is not
+    judged, and an agent that has been talked into it can send whatever it
+    holds to any listed host: a forge that accepts a push accepts one from a
+    hijacked agent. List only hosts the agent's client needs, and treat each
+    as a destination the agent can write to. Tested.
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 
