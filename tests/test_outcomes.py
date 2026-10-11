@@ -87,7 +87,10 @@ class TestGrouping:
     def test_every_outcome_lands_in_exactly_one_group(self) -> None:
         """No outcome may be ungrouped, or totals silently stop reconciling."""
         for outcome in Outcome:
-            assert group_of(outcome.value) in {"ok", "blocked", "tripped", "failed"}
+            allowed = {"ok", "blocked", "tripped", "failed"}
+            if outcome is Outcome.CANCELLED:
+                allowed = {"unknown"}
+            assert group_of(outcome.value) in allowed
 
     def test_blocked_and_failed_are_disjoint(self) -> None:
         assert not (BLOCKED_OUTCOMES & FAILED_OUTCOMES)
@@ -281,3 +284,7 @@ class TestDeliverySizes:
             assert {"bytes_arrived", "bytes_delivered"} <= columns
         finally:
             db_mod._db = None
+
+
+def test_cancelled_is_unknown_not_failed() -> None:
+    assert group_of(Outcome.CANCELLED.value) == "unknown"

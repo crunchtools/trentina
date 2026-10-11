@@ -7,6 +7,7 @@ router and reads the row back.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -125,6 +126,14 @@ class TestCatchAll:
         ):
             await _call(_profile(), {"name": f"web{NAMESPACE_SEP}fetch_tool", "arguments": {}})
         assert _rows() == [("", redact_source(f"web{NAMESPACE_SEP}fetch_tool"), "gateway_error")]
+
+    async def test_a_cancelled_call_is_a_cancelled_row(self) -> None:
+        with (
+            patch.object(router_mod, "resolve_call", side_effect=asyncio.CancelledError),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await _call(_profile(), {"name": f"web{NAMESPACE_SEP}fetch_tool", "arguments": {}})
+        assert _rows() == [("", redact_source(f"web{NAMESPACE_SEP}fetch_tool"), "cancelled")]
 
     async def test_a_path_that_audited_before_raising_is_not_counted_twice(self) -> None:
         with (
