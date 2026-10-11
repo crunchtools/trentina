@@ -42,6 +42,7 @@ from ..outcomes import Outcome, classify_exception, refusal_of
 from ..preprocess.policy import PREPROCESS_PARAM
 from ..quarantine.limiter import Priority, l3_priority
 from ..reserved import (
+    REFUSAL_KEY,
     WARNING_KEY,
     reserved_sites,
     strip_content_blocks,
@@ -296,16 +297,20 @@ def _err(
     return {"jsonrpc": "2.0", "id": req_id, "error": error}
 
 
-def _refusal_text(refusal: dict[str, Any]) -> str:
-    """One line an agent reads even when a client strips the structured field."""
-    alternatives = refusal.get("alternatives") or []
-    spelled = [
+def _spelled_modes(alternatives: list[str]) -> str:
+    """The modes a refusal offers, as the arguments an agent would send."""
+    return " or ".join(
         f'{MODE_PARAM}={{"redact": "<what you need>"}}' if m == "redact" else f"{MODE_PARAM}={m}"
         for m in alternatives
-    ]
+    )
+
+
+def _refusal_text(refusal: dict[str, Any]) -> str:
+    """One line an agent reads even when a client strips the structured field."""
+    spelled = _spelled_modes(refusal.get("alternatives") or [])
     tail = (
-        "Your policy allows retrying with " + " or ".join(spelled) + "."
-        if alternatives
+        f"Your policy allows retrying with {spelled}."
+        if spelled
         else "No other mode is available under your policy."
     )
     advisory = refusal.get("security_advisory")
@@ -882,10 +887,7 @@ async def _tools_call(profile: Profile, req_id: Any, params: dict[str, Any]) -> 
             str(exc),
             destination=dest,
         )
-        refusal = _call_refusal(exc, mode, policy)
-        if refusal is not None:
-            return _err(req_id, JSONRPC_INTERNAL_ERROR, _refusal_text(refusal), refusal)
-        return _err(req_id, JSONRPC_INTERNAL_ERROR, str(exc))
+        return _failed_call(req_id, exc, _may_have_acted(backend, tool_name), mode, policy)
 
     duration_ms = int((time.monotonic() - t0) * 1000)
 
@@ -909,7 +911,10 @@ async def _tools_call(profile: Profile, req_id: Any, params: dict[str, Any]) -> 
             response_err,
             destination=dest,
         )
-        return _err(req_id, JSONRPC_INVALID_PARAMS, response_err)
+        if not _may_have_acted(backend, tool_name):
+            return _err(req_id, JSONRPC_INVALID_PARAMS, response_err)
+        withheld = {REFUSAL_KEY: {"reason": response_err, "mode": mode.value}}
+        return _ok(req_id, _executed(withheld, call_result.is_error))
 
     result = await _deliver(
         profile,
@@ -926,6 +931,20 @@ async def _tools_call(profile: Profile, req_id: Any, params: dict[str, Any]) -> 
         destination=dest,
     )
     return _ok(req_id, result)
+
+
+def _failed_call(
+    req_id: Any, exc: BackendCallError, acted: bool, mode: Mode, policy: ModePolicy
+) -> dict[str, Any]:
+    """What the agent is told of a call that raised: the refusal it carries, if any."""
+    refusal = _call_refusal(exc, mode, policy)
+    if refusal is None:
+        return _err(req_id, JSONRPC_INTERNAL_ERROR, str(exc))
+    if acted and isinstance(exc, BackendResponseTooLargeError):
+        # The backend answered, at length, so it ran the call. The read
+        # stopped at the cap: whether it reported an error is not known.
+        return _ok(req_id, _executed({REFUSAL_KEY: refusal}, None))
+    return _err(req_id, JSONRPC_INTERNAL_ERROR, _refusal_text(refusal), refusal)
 
 
 def _call_refusal(exc: BackendCallError, mode: Mode, policy: ModePolicy) -> dict[str, Any] | None:
@@ -1152,6 +1171,49 @@ def _l3_context(backend: Backend, reduced: TransformOutcome) -> str | None:
     return "\n".join(n for n in notes if n) or None
 
 
+def _may_have_acted(backend: Backend, tool_name: str) -> bool:
+    """Whether a call the backend answered may have changed something (#425).
+
+    The backend's own ``readOnlyHint`` is the only thing that says it did not,
+    as in ``args.py``: an unannotated tool may write. The internal tools read.
+    """
+    return not backend.is_internal and not cached_tool_read_only(backend.url, tool_name)
+
+
+def _executed(refused: dict[str, Any], backend_error: bool | None) -> dict[str, Any]:
+    """*refused*, reworded for a call that may already have acted (#425).
+
+    A refusal reads as a failed call, and an agent repeats a failed call: a
+    blocked confirmation of a sent mail sent the mail twice. What is withheld
+    here is the response, never the action, so the result says the call ran
+    and is an error only when the backend said so. *backend_error* is its
+    ``isError``, or None when the response was never read that far.
+
+    The refusal keeps its alternatives for a tool that only reads and never
+    said so; the text names the condition, since another mode is another call.
+    """
+    refusal = {**(refused.get(REFUSAL_KEY) or {"reason": "defense"}), "executed": True}
+    ran = {
+        False: "The call was executed and the backend reported no error.",
+        True: "The call reached the backend, which reported an error;"
+        " whether it took effect is not known.",
+        None: "The call reached the backend and may have taken effect.",
+    }[backend_error]
+    spelled = _spelled_modes(refusal.get("alternatives") or [])
+    retry = f" If it only reads, your policy allows retrying with {spelled}." if spelled else ""
+    text = (
+        f"[TRENTINA] {ran} Its response was withheld ({refusal['reason']}) and nothing"
+        " from it was delivered. This tool is not marked read-only: do not repeat the"
+        f" call to see the response, because a call that acts would act again.{retry}"
+    )
+    return {
+        **refused,
+        "content": [{"type": "text", "text": text}],
+        "isError": backend_error is not False,
+        REFUSAL_KEY: refusal,
+    }
+
+
 def _blocked_result(decision: Any) -> dict[str, Any]:
     """The refusal delivered in place of a response the perimeter blocked."""
     refused: dict[str, Any] = {
@@ -1299,6 +1361,8 @@ async def _assemble_call_result(
     content_blocks, structured, stripped = await asyncio.to_thread(_arrived, backend, call_result)
     provenance = Provenance.EXTERNAL
     reduced: TransformOutcome | None = None
+    # The backend has answered, so a tool that may write has written (#425).
+    acted = _may_have_acted(backend, tool_name)
 
     # Transform BEFORE the perimeter, never after. preprocess/base.py
     # invariant 2: the caller scans the transformed artifact and delivers that
@@ -1318,8 +1382,9 @@ async def _assemble_call_result(
             minify=minify,
         )
         if reduced.failed is not None:
+            failed = _preprocess_refusal(reduced.failed, mode)
             return Assembled(
-                _preprocess_refusal(reduced.failed, mode),
+                _executed(failed, call_result.is_error) if acted else failed,
                 Outcome.BLOCKED_DEFENSE,
                 reduced.failed,
                 stripped=stripped,
@@ -1357,8 +1422,9 @@ async def _assemble_call_result(
             # as a defense block so a misfiring threshold is visible in the
             # outcome column, not just in an agent's confusion.
             risk = decision.warning.get("risk_level") if decision.warning else "?"
+            blocked = _blocked_result(decision)
             return Assembled(
-                _blocked_result(decision),
+                _executed(blocked, call_result.is_error) if acted else blocked,
                 Outcome.BLOCKED_DEFENSE,
                 f"response blocked by defense (risk={risk})",
                 warning=gateway_warning,

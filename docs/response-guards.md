@@ -73,7 +73,7 @@ Two properties of that position are deliberate:
 
 **On internal backends too.** Internal (`internal://`) backends skip pre-processing and the defense scan, because the firewall already filtered that content where it *entered*. Egress policy is a different question — it is about who is asking, and the asker is the same either way — so response guards run regardless.
 
-The backend was contacted and did spend its call. That is unavoidable: the restricted material is only identifiable once it exists. What the guard controls is whether it is relayed.
+The backend was contacted and did spend its call. That is unavoidable: the restricted material is only identifiable once it exists. What the guard controls is whether it is relayed. For a tool that is not annotated `readOnlyHint`, the agent is therefore told the call was executed and its response withheld, not handed an error it would retry ([A withheld response is not a failed call](quarantine-tools.md#a-withheld-response-is-not-a-failed-call)).
 
 ## Blocking, Not Scrubbing
 

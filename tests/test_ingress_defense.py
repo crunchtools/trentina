@@ -715,6 +715,7 @@ class TestEnforcement:
             with pytest.raises(ValueError, match=legacy):
                 DefenseConfig(**{legacy: False})
 
+    @pytest.mark.usefixtures("read_only_tools")
     async def test_blocked_response_never_reaches_the_agent(self) -> None:
         """End to end through the router: block mode swaps the content for
         the refusal notice."""

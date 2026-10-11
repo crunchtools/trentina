@@ -327,6 +327,7 @@ class TestProxiedCall:
         resp, _, _, _ = await self._call(profile, {"id": "1"})
         assert resp["result"]["content"][0]["text"].startswith("# Release notes")
 
+    @pytest.mark.usefixtures("read_only_tools")
     async def test_a_floor_that_raises_delivers_nothing(self) -> None:
         profile = _profile(PreProcessConfig(processors=["html"], required=["html"]))
         with patch(HTML_RUN, side_effect=RuntimeError("parser exploded")):
@@ -347,6 +348,7 @@ class TestProxiedCall:
         assert resp["result"]["_trentina_refusal"]["reason"] == "preprocess_failed"
         scan.assert_not_awaited()
 
+    @pytest.mark.usefixtures("read_only_tools")
     async def test_a_floor_that_declines_as_broken_delivers_nothing(self) -> None:
         broken = PreProcessResult.declined("html", Cost.FREE, PAGE, reason="worker_error")
         profile = _profile(PreProcessConfig(processors=["html"], required=["html"]))

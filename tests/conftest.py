@@ -147,3 +147,13 @@ def _no_ocr_process(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPa
     from trentina.unpack import scan
 
     monkeypatch.setattr(scan, "read_images", lambda images: [None] * len(images))
+
+
+@pytest.fixture
+def read_only_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every remote tool is one its backend annotated ``readOnlyHint``.
+
+    A test whose backend never listed its tools gets an unannotated one, and
+    the router treats that as a tool that may write (#425).
+    """
+    monkeypatch.setattr("trentina.gateway.router.cached_tool_read_only", lambda _url, _tool: True)

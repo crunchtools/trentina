@@ -71,6 +71,23 @@ A refusal carries a structured body — JSON-RPC `error.data` for these tools, `
 
 No payload text and no L3 prose appear in a refusal.
 
+### A withheld response is not a failed call
+
+A proxied response is judged after the backend has answered, so by then a tool that writes has written. A refusal reads as a failed call, and an agent repeats a failed call: on 2026-10-10 a blocked one-line confirmation of a sent mail sent the mail a second time (#425). So when the response of a tool that is not annotated `readOnlyHint` is withheld (by the defense pipeline, a [response guard](response-guards.md), the response byte cap or a required pre-processor that failed), the agent gets a result, not a refusal that looks like an error:
+
+```json
+{
+  "content": [{"type": "text", "text": "[TRENTINA] The call was executed and the backend reported no error. Its response was withheld (flagged by L2) and nothing from it was delivered. This tool is not marked read-only: do not repeat the call to see the response, because a call that acts would act again."}],
+  "isError": false,
+  "_trentina_refusal": {"reason": "flagged by L2", "mode": "block", "flagged_by": "L2", "alternatives": [], "executed": true}
+}
+```
+
+- `isError` is the backend's own: false when it reported no error, true when it reported one or when the read stopped before that was known (the byte cap). The text says which.
+- The response is withheld exactly as before, and the audit row is still `blocked_defense` or `denied_response_guard`. Only what the agent is told changed.
+- `alternatives` are still listed, for a tool that only reads and never said so, and the text names that condition: another mode is another call.
+- A tool its backend annotates `readOnlyHint: true` gets the plain refusal above, since repeating a read costs nothing. A backend that publishes no annotations gets the executed wording on every tool, so annotate its read tools.
+
 `flag` is the only mode that satisfies the owner's rule in both directions — *what the agent receives is byte-identical to what entered the perimeter, or nothing at all* — even when the verdict is bad.
 
 ### redact runs L3 three times
