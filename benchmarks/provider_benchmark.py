@@ -59,7 +59,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from benchmarks import l2_sweep
-from corpora import jailbreak
+from corpora import disclosed, garak_latent, jailbreak
 from corpora.internal import CORPUS, RISK_ORDER, Case
 from trentina.config import DEFAULT_CLASSIFIER_THRESHOLD, get_config
 from trentina.defense import _stage_one
@@ -337,12 +337,21 @@ def render_l2_markdown(
     return l2_sweep.render_markdown(pairs, l2_threshold_in_force(), unscored, corpus=corpus)
 
 
-CORPORA = ("internal", "external")
+CORPORA = ("internal", "external", "garak", "disclosed")
+
+_PREFIXES = {
+    jailbreak.CATEGORY_PREFIX: "external",
+    garak_latent.CATEGORY_PREFIX: "garak",
+    disclosed.CATEGORY_PREFIX: "disclosed",
+}
 
 
 def corpus_of(case: Case | CaseResult) -> str:
-    """``external`` for a category under the external prefix, else ``internal``."""
-    return "external" if case.category.startswith(jailbreak.CATEGORY_PREFIX) else "internal"
+    """The corpus a category's prefix marks; ``internal`` for one with none."""
+    for prefix, name in _PREFIXES.items():
+        if case.category.startswith(prefix):
+            return name
+    return "internal"
 
 
 CHARS_PER_TOKEN = 4
@@ -540,6 +549,17 @@ CORPUS_NOTES = {
         "benign roleplay, not L3's semantic gap. High detection here is a "
         "sanity floor. No severity labels, so Risk-cal is n/a."
     ),
+    "garak": (
+        f"`{garak_latent.REPOSITORY}` latent-injection probes ({garak_latent.LICENSE}), "
+        f"derived from `{garak_latent.TAG}`: an instruction buried in a report, a "
+        "resume or a WHOIS record, and the same documents untouched as benign "
+        "controls. Indirect injection by a third party, with every real person "
+        "rewritten. No severity labels, so Risk-cal is n/a."
+    ),
+    "disclosed": (
+        "Payloads reproduced from published disclosures (#29), rewritten to "
+        "fictional names. Five cases: read each one, not the rate."
+    ),
 }
 
 NOTABLE_LIST_CAP = 25
@@ -671,14 +691,17 @@ def by_corpus(cases: list[Case]) -> dict[str, list[Case]]:
 
 
 def build_meta(
-    providers: list[str], cases: list[Case], external_split: str | None = None
+    providers: list[str],
+    cases: list[Case],
+    external_split: str | None = None,
+    garak_split: str | None = None,
 ) -> dict[str, Any]:
     """Run metadata, counted from the cases that actually ran.
 
     Returns ``timestamp``, ``providers``, ``pricing``, and ``corpora``: per
     corpus present in ``cases``, ``n_total``/``n_attacks``/``n_benign``/
-    ``n_categories``, and for ``external`` also the dataset, pinned revision,
-    license, and ``split`` (the ``external_split`` argument).
+    ``n_categories``, and for ``external`` and ``garak`` also the dataset,
+    revision, license, and ``split`` (the matching ``*_split`` argument).
     """
     corpora: dict[str, dict[str, Any]] = {
         name: _corpus_counts(sub) for name, sub in by_corpus(cases).items()
@@ -689,6 +712,13 @@ def build_meta(
             revision=jailbreak.REVISION,
             license=jailbreak.LICENSE,
             split=external_split,
+        )
+    if "garak" in corpora:
+        corpora["garak"].update(
+            dataset=garak_latent.REPOSITORY,
+            revision=garak_latent.COMMIT,
+            license=garak_latent.LICENSE,
+            split=garak_split,
         )
     return {
         "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -707,10 +737,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--corpus",
-        choices=("internal", "external", "both"),
+        choices=("internal", "external", "garak", "disclosed", "both", "all"),
         default="internal",
         help="internal: the hand-authored L3 corpus. external: the third-party "
-        "jailbreak set (downloaded on first use). both: each, reported separately.",
+        "jailbreak set (downloaded on first use). garak: garak's latent-injection "
+        "documents. disclosed: payloads from published disclosures. both: internal "
+        "and external. all: every one. Each corpus is reported separately.",
+    )
+    p.add_argument(
+        "--garak-split",
+        choices=garak_latent.SPLITS,
+        default="sample",
+        help="Split of the garak set: sample (one attack in five) or full (972).",
     )
     p.add_argument(
         "--external-split",
@@ -755,13 +793,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def select_cases(args: argparse.Namespace) -> list[Case]:
     """Each chosen corpus, category-filtered, cut to ``--limit`` on its own.
 
-    Internal before external.
+    In ``CORPORA`` order.
     """
     corpora: list[list[Case]] = []
-    if args.corpus in ("internal", "both"):
+    if args.corpus in ("internal", "both", "all"):
         corpora.append(list(CORPUS))
-    if args.corpus in ("external", "both"):
+    if args.corpus in ("external", "both", "all"):
         corpora.append(jailbreak.load(args.external_split))
+    if args.corpus in ("garak", "all"):
+        corpora.append(garak_latent.load(args.garak_split))
+    if args.corpus in ("disclosed", "all"):
+        corpora.append(list(disclosed.CORPUS))
     wanted = {c.strip() for c in args.categories.split(",")} if args.categories else None
     selected: list[Case] = []
     for corpus in corpora:
@@ -817,7 +859,7 @@ async def main_async(args: argparse.Namespace) -> int:
             res.l2_malicious_score = scores.get(res.id)
         reports.append(report)
 
-    meta = build_meta(providers, cases, args.external_split)
+    meta = build_meta(providers, cases, args.external_split, args.garak_split)
     write_outputs(Path(args.out), meta, reports, cases, scores)
     return 0
 
