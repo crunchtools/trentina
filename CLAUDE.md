@@ -323,7 +323,8 @@ its own posture and nothing enforced it. Now the policy does:
 - A response withheld AFTER the backend answered (defense block, response
   guard, byte cap, failed required pre-processor) is not a refusal for a tool
   that may write (#425): `router._executed` rewords it as "executed, response
-  withheld", `isError` the backend's own, `_trentina_refusal.executed` true.
+  withheld", `isError` the backend's own (true at the byte cap, where it was
+  never read), `_trentina_refusal.executed` true.
   `_may_have_acted` is the test: remote and not annotated `readOnlyHint`. A
   new path that withholds a remote response goes through it.
 
