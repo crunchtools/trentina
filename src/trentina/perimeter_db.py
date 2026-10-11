@@ -67,7 +67,7 @@ delivered as written.
 "13" (1.3.0): the structured pre-processor's markers lose their bracketed
 tag, which L2 read as an injected note (#411), so a listing it reduced is
 judged as different text.
-"14": the structured pre-processor hands a log held in a JSON string to
+"14" (1.4.0): the structured pre-processor hands a log held in a JSON string to
 petit (#419), so a journal response is judged as its samples and a summary.
 
 The L2 model and its threshold are no longer bumped here: they are an

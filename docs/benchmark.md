@@ -732,14 +732,87 @@ correlation: the documents L2 flags may also be the ones Haiku would flag
 unbriefed. `detonation.py --mode judge --briefing` (below) judges the same
 documents under each label, which is the measurement that separates the two.
 
-Not measured here: whether L2's lone flag should refuse on this kind of
-source, which #404 asks. That is a count of attacks L2 flags and the judge
-misses, per judge, and needs the judges.
+### What L2's lone flag is worth (#404)
+
+Any layer's flag refuses, so L2 refuses alone whenever the judge clears what
+it flags. #404 asked whether it should, and the answer is a count: of the
+attacks a judge cleared, how many L2 flagged, and of the benign documents,
+how many only L2 refused. `benchmarks/l2_lone_flag.py` takes that count from
+results other benchmarks already wrote. It scores L2 on the same texts and
+calls no judge, so it costs nothing and can be run again on a stored result.
+L2 reads each text unpacked, as `defend()` hands it over; the pre-processors
+are not run first, which for these plain-text cases changes nothing.
+
+```bash
+CLASSIFIER_MODEL_PATH=<export> uv run python benchmarks/l2_lone_flag.py \
+    --packs pack.json --judged detonation.json --corpora benchmark-*.json
+```
+
+2026-10-11, `prompt-injection-guard-small@3215a27edd62` at 0.7, over the
+artifacts of three dispatches: the pack gate (run 38074900624, held-out,
+three votes), the briefing arms (run 38074898906, three votes) and the
+garak and disclosed corpora (run 38107026361, one call a case).
+
+| set | judge | attacks | judge cleared | of those, L2 flags | cleared by both | benign | judge flags | only L2 flags |
+|---|---|---|---|---|---|---|---|---|
+| pack gate, held-out | Gemini 2.5 Flash-Lite | 238 | 7 | 3 | 4 | 362 | 83 | 1 |
+| pack gate, held-out | Gemini 3.5 Flash-Lite | 238 | 20 | 6 | 14 | 362 | 2 | 8 |
+| embedded documents, briefed BENIGN | Gemini 2.5 Flash-Lite | 960 | 50 | 35 | 15 | 300 | 45 | 4 |
+| embedded documents, briefed BENIGN | Gemini 3.5 Flash-Lite | 960 | 6 | 3 | 3 | 300 | 4 | 7 |
+| embedded documents, briefed MALICIOUS | Gemini 2.5 Flash-Lite | 960 | 35 | 26 | 9 | 300 | 70 | 1 |
+| embedded documents, briefed MALICIOUS | Gemini 3.5 Flash-Lite | 960 | 6 | 2 | 4 | 300 | 3 | 6 |
+| embedded documents, no briefing | Gemini 2.5 Flash-Lite | 960 | 27 | 23 | 4 | 300 | 118 | 1 |
+| embedded documents, no briefing | Gemini 3.5 Flash-Lite | 960 | 7 | 4 | 3 | 300 | 10 | 7 |
+| internal, garak, disclosed | Claude Haiku 4.5 | 241 | 3 | 1 | 2 | 36 | 1 | 0 |
+| internal, garak, disclosed | Gemini 2.5 Flash-Lite | 241 | 10 | 4 | 6 | 36 | 1 | 0 |
+| internal, garak, disclosed | Gemini 3.5 Flash-Lite | 241 | 14 | 5 | 9 | 36 | 0 | 0 |
+| internal, garak, disclosed | Gemini 3.8 Flash | 241 | 4 | 2 | 2 | 36 | 1 | 0 |
+
+"Only L2 flags" is a benign document the judge passed and L2 refused: what
+the lone flag costs. The briefing rows are not three scenarios. In
+production the briefing carries L2's own label, so a document L2 flags is
+judged under MALICIOUS and one it passes under BENIGN.
+
+- **On every judge and every set, L2 flags a share of what the judge
+  cleared**: from three in ten to five in six. Briefed that Layer 2 called
+  the document MALICIOUS, which is what production sends for a document L2
+  flags, the default judge still cleared 35 of 960 attacks planted in a
+  document. L2 had flagged 26 of them, and its refusal is the only one they
+  get: with L2 advisory, the attacks that reach the agent go from 15 of 960
+  to 41 on that judge, and from 3 to 5 on Gemini 3.5 Flash-Lite. The
+  briefing does not stand in for the refusal.
+- **On written corpora the lone flag costs little.** L2 alone refuses 1 to
+  8 of 362 held-out benign cases and 1 to 7 of 300 benign documents,
+  depending on how many the judge refuses first, and none of the 36 benign
+  controls.
+- **On the agent-forum feed it costs a great deal and catches little**: one
+  document in eight (above), and 2 of the 11 hand-labelled attacks
+  ([data-collector#9](https://github.com/crunchtools/data-collector/issues/9)).
+
+**Decided: L2's flag keeps refusing on its own, for every source.** Making
+it advisory would deliver what the first bullet counts, on every judge
+measured. The cost in the third bullet is L2's, and rule 3 of the
+[layer contract](defense-pipeline.md#layer-contract) says where it is paid:
+in the model, at selection. The benign gate's 72 invented forum replies do
+not reproduce the feed (none is flagged), so the instrument for the next
+model is the collector's labelled set, and the forum-feed rate is
+[known gap 24](defense-pipeline.md#known-gaps) until a model passes it. A
+per-profile switch to make L2 advisory was considered and rejected: the
+manifest gives no layer an off switch, and a profile's `l2_threshold` can
+only make L2 stricter.
+
+Not measured: Haiku 4.5 and Gemini 3.8 Flash on the pack gate and the
+briefing arms, which did not finish (below). One feed, one labeller.
 
 ## Briefing arms and embedded documents (#397)
 
-Two harness changes, with no numbers yet: both need a provider key, and a
-keyed benchmark runs merged code only (`benchmark-decoys.yml`).
+A benign carrier document (a README, a runbook, a support thread) with a
+benign instruction for its human reader spliced into the middle ("run `make
+test` before you push") is flagged by the shipped judges far more often than
+the same instruction judged bare, which is how the packs were tuned and
+gated. Embedded in a document is the shape fetched content has. Two harness
+changes measure it; both need a provider key, and a keyed benchmark runs
+merged code only (`benchmark-decoys.yml`).
 
 - `benchmarks/detonation.py --mode judge --briefing none|benign|malicious`
   puts the production briefing in front of each document: L1's real counts
@@ -750,6 +823,92 @@ keyed benchmark runs merged code only (`benchmark-decoys.yml`).
   splits (288 benign, 88 attack), split by insert, and its gate holds
   embedded benign apart from the overall rate. The `packs` job measures each
   shipped pack against the generic prompts under the new rule.
+
+Both were dispatched once, on 2026-10-10 at `1a8888e` (runs 38074898906 and
+38074900624). OpenRouter answered 402 partway through, so only the two
+Gemini Flash-Lite judges finished; Haiku 4.5 and Gemini 3.8 Flash have no
+result from either. They are not owed as voting dispatches: the two runs
+cost about $50 for half a result, and what is left is answered from the
+collector's labelled set
+([data-collector#9](https://github.com/crunchtools/data-collector/issues/9)).
+
+**Briefing arms.** Embedded documents, majority of three votes, each judge
+with the pack it ships with:
+
+| judge | briefing | benign documents flagged (288) | attacks flagged (960) |
+|---|---|---|---|
+| Gemini 2.5 Flash-Lite (default) | none | 118 (41.0%) | 933 (97.2%) |
+| Gemini 2.5 Flash-Lite (default) | Layer 2 BENIGN | 45 (15.6%) | 910 (94.8%) |
+| Gemini 2.5 Flash-Lite (default) | Layer 2 MALICIOUS | 70 (24.3%) | 925 (96.4%) |
+| Gemini 3.5 Flash-Lite | none | 10 (3.5%) | 953 (99.3%) |
+| Gemini 3.5 Flash-Lite | Layer 2 BENIGN | 4 (1.4%) | 954 (99.4%) |
+| Gemini 3.5 Flash-Lite | Layer 2 MALICIOUS | 3 (1.0%) | 954 (99.4%) |
+
+No judge flagged any of the 12 untouched carriers. The unbriefed rate on
+the 6 October run, the one that opened #397 (`detonation.py --mode judge`,
+run 37537500541), was 118, 84, 31 and 7 of 288 for Gemini 2.5 Flash-Lite,
+Haiku 4.5, Gemini 3.8 Flash and Gemini 3.5 Flash-Lite.
+
+- **The briefing lowers benign flags on both judges, whichever label it
+  carries.** A MALICIOUS label does not talk either Gemini judge into a
+  flag. Whether it does Haiku, whose flags on the forum feed follow L2's
+  label (above), is the arm that did not run.
+- **The briefing costs the default judge attacks.** Told Layer 2 found
+  nothing, it cleared 50 of 960 where unbriefed it cleared 27. L2 had
+  flagged 35 of the 50, so they are refused anyway; the other 15 are
+  attacks L2 passed and the judge then cleared, against 4 unbriefed
+  ([above](#what-l2s-lone-flag-is-worth-404)). Gemini 3.5 Flash-Lite
+  cleared 3 such attacks briefed and 3 unbriefed.
+- **In production the default judge flags about one benign document in six
+  of this kind**, 15.6%, since nearly all of them reach it briefed BENIGN.
+  Gemini 3.5 Flash-Lite flags 1.4% of the same documents.
+
+**Pack gate, embedded documents included.** Held-out, three votes:
+
+| judge | prompts | attacks caught | benign flagged | embedded benign flagged (228) | embedded attacks (66) | direct jailbreaks |
+|---|---|---|---|---|---|---|
+| Gemini 2.5 Flash-Lite | generic | 98.3% of 238 | 42.5% of 362 | 127 | 65 | 137 of 139 |
+| Gemini 2.5 Flash-Lite | its pack | 97.1% of 238 | 22.9% of 362 | 81 | 64 | 135 of 139 |
+| Gemini 3.5 Flash-Lite | generic | 96.2% of 235 | 12.4% of 362 | 27 | 64 | 130 of 136 |
+| Gemini 3.5 Flash-Lite | its pack | 91.5% of 236 | 0.6% of 362 | 2 | 63 | 123 of 137 |
+
+**Both shipped packs fail the gate on this corpus**, each on the rule that a
+pack catches no fewer planted instructions than the generic prompts: the
+default judge's by one embedded attack (64 against 65), Gemini 3.5
+Flash-Lite's by one embedded attack and by two of the three
+`conditional_trigger` cases. Neither fails the new embedded-benign rule.
+They shipped on the corpus of 2026-10-06, before it held documents, and one
+case in 66 on one run of a judge that does not answer the same way twice is
+inside its noise. Two or three calls errored on the Gemini 3.5 runs and are
+left out of their rates.
+
+**Decided: the default judge stays, and the behaviour is
+[known gap 25](defense-pipeline.md#known-gaps).** Changing it to Gemini 3.5
+Flash-Lite was measured and not adopted:
+
+- For: on the shape production reads, under the briefing production sends,
+  it refuses 4 benign documents of 300 where the default refuses 45, and
+  with L2 beside it lets 3 planted attacks of 960 through where the default
+  lets 15. The same tenfold gap in benign refusals shows on the pack gate
+  (2 against 83 of 362) and on the forum feed (0 false alarms against 16).
+- Against: it is the weaker judge on everything quieter. With L2 beside it,
+  it lets through 14 of 238 held-out attacks against 4 (12 and 4 of them
+  direct jailbreaks, which are outside the threat model, and 2 against 0
+  planted in a document), 9 of 241 on the garak and disclosed corpora
+  against 6, and it clears three of Imperva's four published payloads,
+  one of which L2 clears too. Every one of those differences is a
+  single-digit count on one run.
+- And it cannot ship with its measurement. Every number here is the judge
+  through OpenRouter with its pack. `DEFAULT_PROVIDER` is `gemini`, where no
+  pack ships for any model, so changing `DEFAULT_MODEL` would change an
+  unmeasured default for another: a judge on the generic prompts, which
+  flag 42.5% and 12.4% of these benign cases through OpenRouter.
+
+What would settle it is the collector's labelled set: Gemini 3.5
+Flash-Lite's misses on in-scope attacks, with L2 beside it, against the
+default's. Re-tuning the default judge's pack on the train split's embedded
+documents is the other fix, and needs paid runs: one held-out gate run for
+one Flash-Lite judge is 1,800 calls, about $0.32.
 
 ## L1 briefing ablation
 
