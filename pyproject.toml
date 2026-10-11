@@ -205,6 +205,7 @@ max-complexity = 10
 "benchmarks/decoy_tools.py" = ["E402"]
 "benchmarks/detonation.py" = ["E402"]
 "benchmarks/wild_feed.py" = ["E402"]
+"benchmarks/l2_lone_flag.py" = ["E402"]
 # S311: a seeded generator makes the blob samples reproducible; nothing here is a secret.
 "benchmarks/l2_blob_length.py" = ["E402", "S311"]
 

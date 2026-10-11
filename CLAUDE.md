@@ -419,6 +419,7 @@ podman run --rm -v .:/repo:Z quay.io/crunchtools/gourmand:latest check /repo  # 
 # the model-export stage needs a gated HF credential held only in CI. Push and let
 # the pipeline build it.
 uv run python benchmarks/provider_benchmark.py  # L3 detection benchmark across providers — see docs/benchmark.md
+CLASSIFIER_MODEL_PATH=<export> uv run python benchmarks/l2_lone_flag.py --packs <pack.json> --judged <detonation.json> --corpora <benchmark.json>  # what L2 flags of a judge's stored misses; calls no judge (#404)
 podman run --rm -v .:/src:Z docker.io/semgrep/semgrep semgrep --config /src/.semgrep --error /src/src  # in-repo rules
 uv run python -m trentina.gateway.profile_lint <profiles.yaml>  # posture lint
 uv run python tests/boundary_review_eval.py  # boundary-review skill eval; needs ANTHROPIC_API_KEY

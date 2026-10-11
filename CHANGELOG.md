@@ -59,6 +59,10 @@ under that name.
 - `benchmarks/l2_encodings.py` scores the L2 model on sixteen of garak's
   encodings (`corpora/garak_encodings.py`, Apache-2.0), attacks and benign
   text alike, alone and through unpack and L1. It gates nothing (#423).
+- `benchmarks/l2_lone_flag.py` (#404): what L2 flags of the attacks a judge
+  cleared, and what only L2 refuses of the benign cases, joined from results
+  `prompt_pack.py`, `detonation.py` and `provider_benchmark.py` already
+  wrote. It calls no judge.
 - `docs/corpora.md`: where each corpus came from, its licence, what it
   measures and what it does not. `corpora/registry.py` is the same list as
   data, and a test fails when the two disagree.
@@ -78,8 +82,20 @@ under that name.
   reads the text alone. Read that way the shipped model flags 4 of 146
   held-out cases and none of the `event_id_reply` cases
   (`docs/benchmark.md`).
+- Known gap 24 (#404): L2 flags about one post in eight on an agent-written
+  forum feed and 2 of its 11 labelled attacks. Decided, with the count the
+  issue was waiting for: L2's flag keeps refusing on its own. On every judge
+  measured it flags between three in ten and five in six of the attacks the
+  judge clears; made advisory, the default judge would let 41 planted
+  attacks of 960 through in place of 15. The forum rate is fixed at model
+  selection, against the collector's labelled set.
+- Known gap 25 (#397): the shipped judges flag benign documents that carry
+  an instruction for a human reader, the default one 45 times in 288 under
+  the production briefing. `docs/benchmark.md` now holds the briefing-arm
+  and pack-gate results of 2026-10-10 for the two judges that finished, and
+  why Gemini 3.5 Flash-Lite was measured as the default and not adopted.
 - Known gap 20 (#29): a request that reads as an ordinary one passes every
-  layer. Varonis's customer-export request is flagged by L1, L2 and none of
+  layer. Varonis's customer-export request is flagged by none of L1, L2 and
   the four shipped judges; Imperva's bare install instruction passes L2 and
   two of the four. `docs/benchmark.md` has L3 on the garak and disclosed
   corpora for every shipped judge.

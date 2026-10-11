@@ -379,6 +379,34 @@ one does; the rest name the benchmark that measured them.
     character only inside a Latin word and the two operators nowhere.
     Neither is flagged once in 44. An agent has to decode either on
     purpose; L3 is not measured on them. Tested, L2 in the image.
+24. **L2 flags about one post in eight on an agent-written forum feed**
+    (#404). On 1,427 posts and comments from one feed the shipped model
+    flagged 183 at 0.7; a third of those score 0.98 or more, so no
+    threshold separates them. Of the 11 attacks a reader found among the
+    first 905 it flagged 2. L2's flag refuses on its own, so `block`
+    refuses each of those posts, and it keeps doing so: on every judge
+    measured, L2 flags between three in ten and five in six of the attacks
+    the judge clears
+    ([benchmark](benchmark.md#what-l2s-lone-flag-is-worth-404)). The fix is
+    a model that passes a benign gate built from this shape; the gate's
+    invented forum replies do not reproduce it (none is flagged). Measured
+    by `crunchtools/data-collector`, whose documents are not fixtures, so
+    no test holds it.
+25. **L3 flags a benign document that carries an instruction for its human
+    reader** (#397). A README, runbook or support thread with "run `make
+    test` before you push" spliced into it is flagged by the default judge
+    with its pack 45 times in 288 under the briefing production sends, and
+    118 times with no briefing; the same instructions judged bare are
+    flagged about 2% of the time, which is what the packs were tuned and
+    gated on. Unbriefed, Haiku 4.5 flags 84 of the 288, Gemini 3.8 Flash 31
+    and Gemini 3.5 Flash-Lite 7. `block` refuses such a document and offers
+    `redact`. The pack gate holds embedded documents since 1.3.0, and both
+    packs measured on it since fail it by one to three cases
+    ([benchmark](benchmark.md#briefing-arms-and-embedded-documents-397)).
+    A judge on the generic prompts, which is any judge not reached through
+    OpenRouter, flags more: 127 and 27 of 228 for the two Gemini Flash-Lite
+    models. Measured by `benchmarks/detonation.py --mode judge --briefing`
+    and `benchmarks/prompt_pack.py`.
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 
