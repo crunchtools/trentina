@@ -332,14 +332,18 @@ async def open_upstream(
 
 
 def _settle(key: tuple[str, str], task: asyncio.Task[ResolvedTarget]) -> None:
-    """Keep a finished check's answer for ``CHECKED_TTL``; drop a refusal."""
+    """Keep a finished check's answer for ``CHECKED_TTL``; drop a refusal.
+
+    Nothing sweeps ``_checked``: a key is a name some profile lists, checked
+    against the list before it is asked about, so there are at most 64 a
+    profile, and a stale answer is replaced when its name is next asked for.
+    """
     _checking.pop(key, None)
-    now = time.monotonic()
-    for stale in [name for name, (until, _) in _checked.items() if until <= now]:
-        del _checked[stale]
     # Read here so a check nobody waited out is not reported as unretrieved.
-    if not task.cancelled() and task.exception() is None:
-        _checked[key] = (now + CHECKED_TTL, task.result())
+    if task.cancelled() or task.exception() is not None:
+        _checked.pop(key, None)
+        return
+    _checked[key] = (time.monotonic() + CHECKED_TTL, task.result())
 
 
 async def _check(profile: Profile, host: str) -> ResolvedTarget:

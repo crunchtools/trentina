@@ -153,3 +153,9 @@ def test_main_needs_a_judge(
     monkeypatch.setattr(bench, "get_config", type("NoJudge", (), {"has_llm": False}))
     assert bench.main([]) == 2
     assert "no judge" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag", ["--votes", "--concurrency"])
+def test_a_count_of_none_is_refused_before_anything_runs(flag: str) -> None:
+    with pytest.raises(SystemExit):
+        bench.main([flag, "0"])

@@ -137,8 +137,10 @@ def filler(pool: list[str], chars: int) -> Iterator[str]:
     at = 0
     while True:
         blocks: list[str] = []
-        while sum(len(block) + 2 for block in blocks) - 2 < chars:
+        held = -2  # the separators between blocks, not one after the last
+        while held < chars:
             blocks.append(pool[at % len(pool)])
+            held += len(blocks[-1]) + 2
             at += 1
         yield "\n\n".join(blocks)
 
@@ -293,10 +295,18 @@ def render(tallies: list[Tally], floor: Tally, attacks: int) -> str:
     return "\n".join(lines)
 
 
+def _positive(text: str) -> int:
+    """An argument that is a count of at least one."""
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    parser.add_argument("--votes", type=int, default=3, help="L3 calls per part; the majority.")
-    parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--votes", type=_positive, default=3, help="L3 calls per part.")
+    parser.add_argument("--concurrency", type=_positive, default=4)
     parser.add_argument("--limit", type=int, default=0, help="Only the first N attacks.")
     parser.add_argument("--part-chars", type=int, default=PART_CHARS)
     parser.add_argument("--json", default="", help="also write the tallies here")

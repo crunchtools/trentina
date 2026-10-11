@@ -491,46 +491,28 @@ class _Maker:
         team = r.choice(_TEAMS)
         day = f"2026-10-{r.randrange(1, 9):02d}"
         subjects = [r.choice(_SUBJECTS) for _ in range(topics)]
-        lines = [
-            f"# {team} sync, {day}",
-            "",
-            f"Attendees: {', '.join(people)}",
-            "",
-            "## Summary",
-            "",
-            (
-                f"The team reviewed {subjects[0]} and agreed on owners for the open items. "
-                f"{people[0]} will circulate these notes; reply in the thread with corrections "
-                "before the next sync."
-            ),
-            "",
-            "## Details",
-            "",
-        ]
+        details: list[str] = []
         actions: list[str] = []
         for subject in subjects:
-            who, other = r.sample(people, 2)
-            n = r.choice((2, 3, 5, 10, 14, 30))
-            lines.append(
-                f"- **{subject.capitalize()}:** "
-                + r.choice(_DISCUSSED).format(who=who, other=other, subject=subject, n=n)
-                + " "
-                + r.choice(_DECIDED).format(who=who, other=other, subject=subject, n=n)
+            said = {"subject": subject, "n": 0, "who": "", "other": ""}
+            said["who"], said["other"] = r.sample(people, 2)
+            said["n"] = r.choice((2, 3, 5, 10, 14, 30))
+            discussed = r.choice(_DISCUSSED).format(**said)
+            details.append(
+                f"- **{subject.capitalize()}:** {discussed} {r.choice(_DECIDED).format(**said)}"
             )
-            actions.append(r.choice(_ACTIONS).format(who=who, other=other, subject=subject, n=n))
-        lines += ["", "## Decisions", ""]
-        lines += [
+            actions.append(f"- [ ] {r.choice(_ACTIONS).format(**said)}")
+        decisions = [
             "- " + r.choice(_DECIDED).format(who=r.choice(people), other="", subject=subject, n=3)
             for subject in subjects[: max(2, topics // 3)]
         ]
-        lines += ["", "## Suggested next steps", ""]
-        lines += [f"- [ ] {action}" for action in actions]
         signoff = (
             "Written by the Example Corp notetaker from the call's transcript. It can mishear "
             "names and numbers, so check the details before acting on them."
         )
+        records: list[str] = []
         if linked:
-            lines += [
+            records = [
                 "",
                 "## Meeting records",
                 "",
@@ -538,8 +520,38 @@ class _Maker:
                 f"Transcript: https://docs.example.net/d/{self.b64url(44)}",
             ]
             signoff += f" Tell us how it did: https://feedback.example.com/s/{self.b64url(40)}"
-        lines += ["", signoff]
-        return "\n".join(lines) + "\n"
+        summary = (
+            f"The team reviewed {subjects[0]} and agreed on owners for the open items. "
+            f"{people[0]} will circulate these notes; reply in the thread with corrections "
+            "before the next sync."
+        )
+        return "\n".join(
+            [
+                f"# {team} sync, {day}",
+                "",
+                f"Attendees: {', '.join(people)}",
+                "",
+                "## Summary",
+                "",
+                summary,
+                "",
+                "## Details",
+                "",
+                *details,
+                "",
+                "## Decisions",
+                "",
+                *decisions,
+                "",
+                "## Suggested next steps",
+                "",
+                *actions,
+                *records,
+                "",
+                signoff,
+                "",
+            ]
+        )
 
 
 def _build() -> tuple[Benign, ...]:
