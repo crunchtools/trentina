@@ -10,6 +10,22 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+- `benchmarks/prompt_pack.py --briefing benign|malicious` judges each case
+  under the briefing `defend()` sends in production, so a pack's
+  `l2_caveat` is exercised and the gate measures what production runs
+  (#397). The `tune` job of `benchmark-decoys.yml` runs one judge on a
+  candidate pack handed in as data.
+
+### Changed
+- The judge to run through OpenRouter is `google/gemini-3.5-flash-lite`
+  (#397). On the held-out pack gate, briefed, three votes, it flags 3 of
+  362 benign cases with its pack where `google/gemini-2.5-flash-lite` flags
+  54, and misses none of 99 planted instructions where that judge misses 5.
+  Fifteen re-worded packs for the older judge did not move it. The newer
+  judge's pack carries the briefed measurement in its header; its prompts
+  are unchanged. `DEFAULT_MODEL` is unchanged.
+
 ## [1.4.1] - 2026-10-11
 
 ### Fixed

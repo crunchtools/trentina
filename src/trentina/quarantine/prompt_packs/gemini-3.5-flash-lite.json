@@ -11,11 +11,13 @@
     "l2_caveat": "Layer 2 is a small local classifier: it misses attacks that need reasoning to see, such as social engineering and quiet exfiltration requests. A low Layer 2 score is not evidence that this content is safe \u2014 judge it on its own."
   },
   "measured": {
-    "date": "2026-10-06",
+    "date": "2026-10-11",
     "split": "held-out",
     "votes": 3,
+    "briefing": "benign",
     "corpus": {
       "internal": 44,
+      "embedded": 294,
       "external": {
         "dataset": "jackhhao/jailbreak-classification",
         "revision": "2f2ceeb39658696fd3f462403562b6eea5306287",
@@ -23,30 +25,30 @@
       }
     },
     "pack": {
-      "calls": 918,
-      "errors": 2,
-      "schema_conformance": 0.9934640522875817,
-      "attacks": 170,
-      "benign": 134,
-      "catch": 0.9176470588235294,
-      "false_positive": 0.0,
-      "precision": 1.0,
-      "median_latency_ms": 1089.85,
-      "p95_latency_ms": 1510.7,
-      "cost_per_1k_calls_usd": 0.17645657894736844
+      "calls": 1800,
+      "errors": 1,
+      "schema_conformance": 1.0,
+      "attacks": 237,
+      "benign": 362,
+      "catch": 0.9535864978902954,
+      "false_positive": 0.008287292817679558,
+      "precision": 0.9868995633187773,
+      "median_latency_ms": 956.6,
+      "p95_latency_ms": 1338.9,
+      "cost_per_1k_calls_usd": 0.18851151919866443
     },
     "generic": {
-      "calls": 918,
-      "errors": 3,
-      "schema_conformance": 0.9967320261437909,
-      "attacks": 169,
-      "benign": 134,
-      "catch": 0.9585798816568047,
-      "false_positive": 0.09701492537313433,
-      "precision": 0.9257142857142857,
-      "median_latency_ms": 1095.7,
-      "p95_latency_ms": 1545.9,
-      "cost_per_1k_calls_usd": 0.13365181518151817
+      "calls": 1800,
+      "errors": 1,
+      "schema_conformance": 1.0,
+      "attacks": 237,
+      "benign": 362,
+      "catch": 0.9746835443037974,
+      "false_positive": 0.09392265193370165,
+      "precision": 0.8716981132075472,
+      "median_latency_ms": 1040.8,
+      "p95_latency_ms": 1524.7,
+      "cost_per_1k_calls_usd": 0.14744240400667782
     }
   }
 }

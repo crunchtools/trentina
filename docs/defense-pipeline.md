@@ -394,19 +394,20 @@ one does; the rest name the benchmark that measured them.
     no test holds it.
 25. **L3 flags a benign document that carries an instruction for its human
     reader** (#397). A README, runbook or support thread with "run `make
-    test` before you push" spliced into it is flagged by the default judge
-    with its pack 45 times in 288 under the briefing production sends, and
-    118 times with no briefing; the same instructions judged bare are
-    flagged about 2% of the time, which is what the packs were tuned and
-    gated on. Unbriefed, Haiku 4.5 flags 84 of the 288, Gemini 3.8 Flash 31
-    and Gemini 3.5 Flash-Lite 7. `block` refuses such a document and offers
-    `redact`. The pack gate holds embedded documents since 1.3.0, and both
-    packs measured on it since fail it by one to three cases
-    ([benchmark](benchmark.md#briefing-arms-and-embedded-documents-397)).
-    A judge on the generic prompts, which is any judge not reached through
-    OpenRouter, flags more: 127 and 27 of 228 for the two Gemini Flash-Lite
-    models. Measured by `benchmarks/detonation.py --mode judge --briefing`
-    and `benchmarks/prompt_pack.py`.
+    test` before you push" spliced into it is flagged by Gemini 2.5
+    Flash-Lite with its pack 48 times in 228 under the briefing production
+    sends (held-out, three votes), and no re-wording of the pack moved
+    that: fifteen candidates landed within noise of it. It is the judge.
+    Gemini 3.5 Flash-Lite with its pack flags 3 of the same 228 and misses
+    no planted instruction, and is the judge to run through OpenRouter
+    ([benchmark](benchmark.md#re-tuning-did-not-work-the-judge-is-the-fix-2026-10-11)).
+    The gap that remains: `DEFAULT_MODEL` is still Gemini 2.5 Flash-Lite on
+    the Gemini API, on the generic prompts, which flag the most (58 of
+    228 through OpenRouter); Claude Haiku 4.5 (84 of 288 unbriefed) and
+    Gemini 3.8 Flash (31) have no briefed result. `block` refuses such a
+    document and offers `redact`. Measured by `benchmarks/prompt_pack.py
+    --briefing benign` and `benchmarks/detonation.py --mode judge
+    --briefing`.
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 

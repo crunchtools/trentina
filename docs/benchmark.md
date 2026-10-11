@@ -974,6 +974,65 @@ default's. Re-tuning the default judge's pack on the train split's embedded
 documents is the other fix, and needs paid runs: one held-out gate run for
 one Flash-Lite judge is 1,800 calls, about $0.32.
 
+### Re-tuning did not work; the judge is the fix (2026-10-11)
+
+Both were then done, one judge at a time through the `tune` job, for about
+$3 in all.
+
+**Fifteen candidate packs for the default judge, none better.** Train
+split, one vote, 60 embedded benign documents (five inserts in twelve
+carriers):
+
+| what the candidate changed | embedded benign flagged, of 60 |
+|---|---|
+| nothing: pack 1, judged bare | 27 |
+| a paragraph on judging an instruction inside a document | 35 |
+| the same in two short clauses; an "ask who it is addressed to" test; the not-an-injection list moved first | 24 to 28 |
+| worked examples; an evidence test; both; the "oddly formatted text" line narrowed | 23 to 28 |
+| the whole prompt cut to a third of its length | 23, with 45 benign role-play prompts flagged where 2 were |
+| nothing: pack 1, **briefed as production** | 14 |
+| a caveat that frames what follows as fetched content; the best detection prompt above; both | 11 to 20 |
+
+One vote on 60 documents moves by three or four between runs, and nothing
+here is outside that. The only large effect is the briefing, which is not
+the pack's: the gate had been judging every case bare, which production
+never does, and a pack's `l2_caveat` was never read by it.
+`prompt_pack.py --briefing benign` now sends what `defend()` sends (L1's
+real counts, the label fixed at BENIGN).
+
+**The two Flash-Lite judges on that gate.** Held-out, three votes, each
+with the pack it ships with against the generic prompts:
+
+| held-out, briefed, 3 votes | 2.5 Flash-Lite, generic | 2.5 Flash-Lite, pack 1 | 3.5 Flash-Lite, generic | 3.5 Flash-Lite, pack 1 |
+|---|---|---|---|---|
+| benign flagged, of 362 | 98 | 54 | 34 | **3** |
+| of those, embedded documents (228) | 58 | 48 | 17 | **3** |
+| planted instructions missed (internal, 33) | 2 | 2 | 1 | **0** |
+| planted in a document, missed (66) | 2 | 3 | 0 | **0** |
+| `detector_meta` caught, of 3 | 2 | 2 | 2 | **3** |
+| direct jailbreaks missed (external, 139) | 3 | 5 | 5 | 11 |
+| cost per 1,000 calls | $0.14 | $0.18 | $0.15 | $0.19 |
+| gate | | FAIL: one embedded attack fewer than generic | | PASS |
+
+Gemini 3.5 Flash-Lite with its pack flags an eighteenth of the benign
+cases the default judge flags, misses no planted instruction where the
+default misses five, and gives up six direct jailbreaks, which the gate
+allows (a user jailbreaking a chatbot is not what the judge is for, and
+it spares 31 benign refusals for them). The objections recorded above
+were single-call counts and a pack-gate failure measured bare; briefed and
+voted, the pack passes and the default's does not. What stands is the
+disclosed corpus: three of Imperva's four first-person payloads are missed
+by this judge, two of which L2 flags (known gap 20).
+
+**Decided:** the judge to run through OpenRouter is
+`google/gemini-3.5-flash-lite`, and production runs it from 2026-10-11.
+Its pack ships with this measurement in its header. `DEFAULT_MODEL` is
+unchanged: it names a model on the Gemini API, where no pack ships and
+nothing here was measured; the generic columns say the newer model is the
+better choice there too (34 against 98), and that is a measurement through
+OpenRouter, not of that endpoint. Claude Haiku 4.5 and Gemini 3.8 Flash
+were not run on the briefed gate.
+
 ## L1 briefing ablation
 
 L1 reaches the verdict two ways: its own refusal at high or critical
