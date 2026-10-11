@@ -651,7 +651,7 @@ It needs judge quota, so it runs as the `paging` job of the
 
 2026-10-11, at `ac230d8` (1.9.0), each judge through OpenRouter with its own
 prompt pack, three votes a part. No L2 model in the job, so every number is
-L3 alone, told L2 was absent. Parts are cut on words.
+L3 alone. Parts are cut on words.
 
 | judge | caught whole, of 44 | adjacent, 25% | adjacent, 50% | adjacent, 75% | apart | parts with no attack flagged |
 |---|---|---|---|---|---|---|
