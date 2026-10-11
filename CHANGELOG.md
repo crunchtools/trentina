@@ -25,6 +25,17 @@ under that name.
   `readOnlyHint`, and every internal tool, gets the refusal it always did.
 
 ### Changed
+- The `structured` pre-processor reduces a log held in a JSON string (#419).
+  A string value of at least twenty lines and 1 KB, anywhere in a JSON text
+  block, is handed to petit and becomes its samples and summary, as a
+  plain-text log does; `journal_query`'s `{"logs": "..."}` was not reduced at
+  all before. The summary carries no `[petit]` tag inside a document (#411).
+  Only a value petit names a log format for is reduced: its raw fallback
+  trims blank lines and brackets out of files and pages. A value petit
+  declines or fails on is left as it arrived, and `trentina_preprocess:
+  false` still delivers the exact text. The details report `logs_reduced`,
+  `log_lines_in`, `log_lines_out`, `log_groups_collapsed`, `logs_failed` and
+  `log_error`. `PERIMETER_VERSION` is "14".
 - Every corpus lives in `corpora/` (#10). `tests/adversarial_corpus.py` is
   `corpora/internal.py`, with the L1 pattern pairs and OWASP's list split out
   as `l1_patterns.py` and `owasp.py`; `tests/benign_corpus.py` is
@@ -45,11 +56,28 @@ under that name.
   (#29), rewritten to fictional names. `provider_benchmark.py --corpus
   disclosed`; `--corpus all` runs every corpus, each reported apart.
 - A `corpora` job in `benchmark-decoys.yml`: every shipped judge on both.
+- `benchmarks/l2_encodings.py` scores the L2 model on sixteen of garak's
+  encodings (`corpora/garak_encodings.py`, Apache-2.0), attacks and benign
+  text alike, alone and through unpack and L1. It gates nothing (#423).
 - `docs/corpora.md`: where each corpus came from, its licence, what it
   measures and what it does not. `corpora/registry.py` is the same list as
   data, and a test fails when the two disagree.
 
 ### Documented
+- Known gaps 21 to 23 (#423): L2 flags base32, Ascii85, base85, UU, Braille
+  and Morse whatever the text says; ROT13, Atbash and leetspeak cost it
+  detections and add false positives; an attack in the NATO alphabet or in
+  sneaky bits passes L1 and L2. base16 and hex are decoded by the unpack
+  stage. The obfuscation gate is unchanged; its base64 row is now described
+  as what it is, a model flagging the blob.
+- Known gap 19 stays open (#419). A journal of mixed units keeps about two
+  lines in three after reduction, and 2 of 6 still flag at 0.7. The benign
+  gate passes as before (0 of 146); the obfuscation gate is unchanged.
+- The benign gate reads a tool response as its text plus every string of its
+  structured content; the router drops a duplicate `structuredContent` and
+  reads the text alone. Read that way the shipped model flags 4 of 146
+  held-out cases and none of the `event_id_reply` cases
+  (`docs/benchmark.md`).
 - Known gap 20 (#29): a request that reads as an ordinary one passes every
   layer. Varonis's customer-export request is flagged by L1, L2 and none of
   the four shipped judges; Imperva's bare install instruction passes L2 and

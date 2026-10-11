@@ -175,7 +175,7 @@ gaps below.
 | Prose and plain text | the text; reply chains collapsed and repeats grouped by default | the same | judged |
 | HTML | Markdown; hidden elements, scripts and comments dropped, and the hiding counted for L1 (#229) | that Markdown | judged |
 | HTML with `trentina_preprocess: false` | raw HTML | raw HTML, with L1 counting hiding fingerprints | judged |
-| JSON and `structuredContent` | compacted JSON | every string, keys included | judged |
+| JSON and `structuredContent` | compacted JSON; in a text block, repeated array elements collapsed to a count and a log held in a string reduced to petit's samples and summary (#419); `structuredContent` as it arrived | a text block as delivered; every string of `structuredContent`, keys included | judged |
 | Base64 or hex that decodes to text (canonical only; base16 is hex in upper case) | as it arrived | the decoded text, in place, to two levels | judged; hex and base16 attacks are flagged as often as plain ones (41 of 44) and no benign text is ([benchmark](benchmark.md#garaks-encodings-423)) |
 | URL-safe, unpadded or otherwise non-canonical base64 | as it arrived | the raw blob | judged, but L2 may react to the blob |
 | Text in base32, Ascii85, base85, uuencoding, Braille or Morse | as it arrived | the encoding as it arrived; nothing decodes it | judged, but L2 flags nearly all of it whatever it says (gap 21) |
@@ -333,13 +333,17 @@ one does; the rest name the benchmark that measured them.
     a reply and offers `redact`. Scored on every image build as
     `event_id_reply` ([benchmark](benchmark.md#l2-benign-gate-411-404)).
     Tested, in the image (`tests/test_l2_integration.py`).
-19. **A long log inside a JSON string can be flagged by L2** (#411). A
-    hundred journal lines returned as one string is about 15,000 tokens that
-    no pre-processor reduces, read in over thirty windows of which the worst
-    decides: 1 of 6 flags at 0.7. The same lines as plain text are reduced
-    by petit and pass. Asking for fewer lines, or a narrower unit or
-    pattern, avoids it. Scored on every image build as `journal_query_100`
-    (#419). Tested, in the image.
+19. **A long log inside a JSON string can be flagged by L2** (#411, #419).
+    A hundred journal lines returned as one string is read in many windows
+    of which the worst decides. Since #419 `structured` hands such a string
+    to petit, and that did not close this: a journal of mixed units keeps
+    about two lines in three, because lines that differ in a word (a unit
+    name, a key fingerprint) are each their own group, and 2 of 6 flag at
+    0.7 where 1 of 6 did, not the same ones. A journal of one repeated
+    message reduces to three samples and a count. Asking for fewer lines,
+    or a narrower unit or pattern, avoids it. Scored on every image build as
+    `journal_query_100` ([benchmark](benchmark.md#a-log-in-a-json-string-419)).
+    Tested, in the image.
 20. **A request that reads as an ordinary one passes every layer** (#29).
     Varonis's published customer-export request, a colleague asking an agent
     to send this week's export, is flagged by nothing: L1 strips nothing, L2

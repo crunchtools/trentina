@@ -127,7 +127,8 @@ narrows one tool.
 Tool output is minified before it is judged and delivered (0.38.0). The
 default processor, `detect`, looks at each payload and runs what fits it:
 HTML to Markdown then `petit` for a page, `structured` for JSON (compacted,
-repeated elements collapsed to a count), `email` then `petit` for everything
+repeated elements collapsed to a count, a log held in a string reduced as
+`petit` reduces one), `email` then `petit` for everything
 else. Undeclared text is converted only when it is unmistakably HTML, so a
 mail header's `<alice@example.com>` and code's `Vec<String>` survive.
 

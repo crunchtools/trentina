@@ -66,6 +66,25 @@ and costs the agent the document it asked for — that trade is phase 4's
 open question about METERED summarize, and belongs in a decision with
 numbers attached rather than in a constant chosen quietly here.
 
+A log in a string is reduced by petit (#419). ``journal_query`` answers
+``{"logs": "<a hundred lines>"}``: one string, so nothing here to group, and
+petit is only ever offered a whole text block, so nothing reduced it at all.
+A string of at least ``_MIN_LOG_LINES`` lines and ``_MIN_LOG_CHARS``
+characters is handed to ``PetitProcessor.reduce``, the same reduction a
+plain-text block gets, and the value becomes petit's own artifact: the
+sample lines as they were written, then its summary, in petit's words
+without the ``[petit]`` tag (the #411 lesson, measured again here). It is
+kept only when petit NAMED a log format for the value. On its raw fallback
+petit groups any repeated line, which in a source file or a page is the
+blank lines and the closing brackets: measured on this repository's own
+files it deletes a fifth of the lines to save 0.3% to 2% of the bytes, and
+a JSON string is where a tool puts the document an agent asked for. A stray
+line where petit samples the value can cost it its format, and then the
+value is delivered whole. The same deletion rule as the arrays
+applies: what petit drops is counted (``log_lines_in``/``log_lines_out``),
+never delivered and never judged, and its summary is in-band and spoofable.
+A value petit declines, or that makes it raise, is left as it arrived.
+
 Hostile-input hardening: parsing is bounded by ``_MAX_PARSE_BYTES``, the
 walk is depth-limited, and fingerprinting reads at most
 ``_FINGERPRINT_MAX_CHARS`` per element, so neither deep nesting nor one
@@ -77,6 +96,7 @@ payload must not stall the gateway's event loop.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, NamedTuple
@@ -89,6 +109,9 @@ from ..unpack.child import run_unpacking
 from ..unpack.office import reduce_base64
 from .base import Cost, PreProcessContext, PreProcessResult
 from .pdf import reduce_base64 as reduce_pdf
+from .petit import _MIN_BYTES as _MIN_LOG_CHARS
+from .petit import _MIN_LINES as _MIN_LOG_LINES
+from .petit import PetitProcessor
 
 # The normalization policy, loaded from petit rather than restated here — the
 # same file its JSON and mail drivers declare, so this fingerprint and petit's
@@ -214,6 +237,22 @@ def _identifiers(item: Any) -> _Pulled | None:
 
 _TRUNCATED = "... {count} more character(s) truncated"
 
+# A string value is offered to petit as a log (#419) at petit's own two
+# floors, imported above, and at BOTH of them where a text block needs only
+# one: a value under twenty lines cannot hold the twenty records petit asks
+# for, and a short one has nothing worth a deletion inside a document.
+_PETIT = PetitProcessor()
+
+# What petit reports when no driver recognised the format. A value is
+# reduced only under a driver that did; see "A log in a string" above.
+_RAW_DRIVER = "RawEntry"
+
+# Base64, wrapped or not: the alphabets and whitespace and nothing else. Such
+# a value is a file, which `_document` and the unpack stage read; grouping
+# its lines would corrupt it. Linear, one character class, and it stops at
+# the first `:` or `.` of a log line.
+_BLOB = re.compile(r"[A-Za-z0-9+/=_\-\s]*")
+
 
 class _Reducer:
     """One walk over one document, accumulating what it removed.
@@ -238,6 +277,13 @@ class _Reducer:
         self.office_hidden = 0
         self.pdf_converted = 0
         self.pdf_hidden = 0
+        self.logs_reduced = 0
+        self.log_lines_in = 0
+        self.log_lines_out = 0
+        self.log_groups_collapsed = 0
+        self.logs_failed = 0
+        # The class of the last failure, never its message (#262).
+        self.log_error = ""
 
     @property
     def changed(self) -> bool:
@@ -247,6 +293,7 @@ class _Reducer:
             or self.strings_truncated
             or self.office_converted
             or self.pdf_converted
+            or self.logs_reduced
         )
 
     def _document(self, node: str) -> dict[str, str] | None:
@@ -270,6 +317,44 @@ class _Reducer:
             return {"format": "pdf", "as_markdown": pdf[0]}
         return None
 
+    def _log(self, node: str) -> str:
+        """A long log as petit reduces a text block (#419), or ``node`` as it arrived.
+
+        Minifying fails open: a value petit declines, does not name a log
+        format for, or raises on is delivered whole.
+        """
+        if (
+            len(node) < _MIN_LOG_CHARS
+            or node.count("\n") + 1 < _MIN_LOG_LINES
+            or _BLOB.fullmatch(node)
+        ):
+            return node
+        try:
+            result = _PETIT.reduce(node, tag="")
+        except Exception as exc:
+            # Counted by class, never logged: the message may carry the value (#262).
+            self.logs_failed += 1
+            self.log_error = type(exc).__name__
+            return node
+        details = result.details
+        if details.get("declined") == "petit_error":
+            self.logs_failed += 1
+            # petit.py reports the exception's class. Held to that shape
+            # here, so a message can never ride out in the details (#262).
+            error = str(details.get("error", ""))
+            self.log_error = error if error.isidentifier() else "PetitError"
+        # Degraded is a log too: a driver claimed the value and then met a
+        # line it could not parse, so petit grouped the whole of it
+        # structurally.
+        named = details.get("petit_driver") != _RAW_DRIVER or details.get("petit_degraded")
+        if not (result.applied and named):
+            return node
+        self.logs_reduced += 1
+        self.log_lines_in += int(details["lines_in"])
+        self.log_lines_out += int(details["lines_out"])
+        self.log_groups_collapsed += int(details["groups_collapsed"])
+        return result.content
+
     def _clipped(self, node: str) -> str:
         removed = len(node) - _MAX_STRING_CHARS
         self.strings_truncated += 1
@@ -277,7 +362,7 @@ class _Reducer:
         return node[:_MAX_STRING_CHARS] + _TRUNCATED.format(count=removed)
 
     def walk(self, node: Any, depth: int = 0) -> Any:
-        """Reduce arrays and long strings, leaving everything else alone.
+        """Reduce arrays, logs and long strings, leaving everything else alone.
 
         Past ``_MAX_DEPTH`` the subtree comes back untouched. Declining to
         reduce is always safe; blowing the stack on attacker-chosen nesting
@@ -294,8 +379,12 @@ class _Reducer:
             return node
 
         if isinstance(node, str):
-            long = self.truncate and len(node) > _MAX_STRING_CHARS
-            return self._document(node) or (self._clipped(node) if long else node)
+            document = self._document(node)
+            if document is not None:
+                return document
+            text = self._log(node)
+            long = self.truncate and len(text) > _MAX_STRING_CHARS
+            return self._clipped(text) if long else text
 
         if isinstance(node, dict):
             return {key: self.walk(value, depth + 1) for key, value in node.items()}
@@ -448,7 +537,7 @@ def _parse_and_reduce(payload: str, *, truncate: bool) -> tuple[str | None, _Red
 
 
 class StructuredProcessor:
-    """FREE. Collapses repeated JSON elements, truncates long strings."""
+    """FREE. Collapses repeated JSON elements and logs in strings, truncates long strings."""
 
     name = "structured"
     cost = Cost.FREE
@@ -525,5 +614,11 @@ class StructuredProcessor:
                 "office_hidden": reducer.office_hidden,
                 "pdf_converted": reducer.pdf_converted,
                 "pdf_hidden": reducer.pdf_hidden,
+                "logs_reduced": reducer.logs_reduced,
+                "log_lines_in": reducer.log_lines_in,
+                "log_lines_out": reducer.log_lines_out,
+                "log_groups_collapsed": reducer.log_groups_collapsed,
+                "logs_failed": reducer.logs_failed,
+                "log_error": reducer.log_error,
             },
         )

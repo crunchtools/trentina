@@ -768,3 +768,9 @@ check = "hardcoded_years"
 path = "corpora/disclosed.py"
 justification = "2026-06-10 and 2026-06-09 are the publication dates of the Imperva and Varonis disclosures this corpus reproduces (#29), cited so a reader can find the posts."
 classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/preprocess/petit.py"
+justification = "PetitProcessor.reduce (the body of run until #419, made synchronous so structured can call it) is reported as identical to reduce_base64 in unpack/office.py and open_archive in unpack/archive.py. One groups log lines, the others decode a base64 office file and open an archive. They share a run of guard-then-return statements around one try, nothing else. Structural collision, not duplication."
+classification = "gourmand_bug"

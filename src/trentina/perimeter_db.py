@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS verdict_cache (
 );
 """
 
-PERIMETER_VERSION = "13"
+PERIMETER_VERSION = "14"
 """Bump whenever a change could alter what a scan CONCLUDES: a new detector, a
 retuned L3 prompt, a different L2 model or threshold set. Rows stamped with any
 other value are swept on load, so an older perimeter's verdict is unusable
@@ -67,6 +67,8 @@ delivered as written.
 "13" (1.3.0): the structured pre-processor's markers lose their bracketed
 tag, which L2 read as an injected note (#411), so a listing it reduced is
 judged as different text.
+"14": the structured pre-processor hands a log held in a JSON string to
+petit (#419), so a journal response is judged as its samples and a summary.
 
 The L2 model and its threshold are no longer bumped here: they are an
 operator setting since 0.55.0 (#350), so :func:`perimeter_stamp` carries them."""

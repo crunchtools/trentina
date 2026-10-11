@@ -14,6 +14,7 @@ at 0.7). A model with no expectations recorded still runs the benign checks.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import TYPE_CHECKING, Any
@@ -24,6 +25,8 @@ from corpora.benign_ops import BENIGN as BENIGN_SHAPES
 from corpora.disclosed import CORPUS as DISCLOSED
 from corpora.garak_encodings import ENCODINGS
 from corpora.internal import CORPUS as INTERNAL
+from trentina.gateway.profile import AuthConfig, Backend, Profile
+from trentina.gateway.transform import transform_response
 from trentina.jsonwalk import iter_leaves
 from trentina.l1.pipeline import run_l1
 from trentina.quarantine.classifier import (
@@ -237,17 +240,34 @@ def test_a_short_title_is_read_with_its_text() -> None:
     assert together.label == "BENIGN"
 
 
-def _as_read(payload: Any) -> str:
-    """A tool response as the layers read it when no pre-processor rewrites
-    it: the JSON text, then every string in it, unpacked. Neither shape below
-    is rewritten (``benchmarks/l2_benign.py`` runs the real transform and
-    reports the same counts)."""
-    text = json.dumps(payload, separators=(",", ":"))
+_OPS = Backend(url="http://ops.invalid/mcp", tools_allow=["*"])
+_DEFAULTS = Profile(
+    name="known-gaps", auth=AuthConfig(bearer_token_env="KNOWN_GAPS_TOKEN"), backends={"ops": _OPS}
+)
+
+
+def _as_read(payload: Any, category: str) -> str:
+    """A tool response as ``benchmarks/l2_benign.py`` reads it, which reports
+    the same counts: the JSON text through the default pre-processors, then
+    every string of the response, unpacked. A journal's text is reduced
+    (#419); an event ID reply is too short to be."""
+    outcome = asyncio.run(
+        transform_response(
+            profile=_DEFAULTS,
+            backend=_OPS,
+            backend_name="ops",
+            tool_name=category,
+            content_blocks=[{"type": "text", "text": json.dumps(payload, separators=(",", ":"))}],
+        )
+    )
+    text = (outcome.content_blocks or [])[0]["text"]
     return unpack("\n".join([text, *iter_leaves(payload)])).text
 
 
 def _flagged(category: str) -> tuple[int, int]:
-    scored = [classify(_as_read(c.payload)) for c in BENIGN_SHAPES if c.category == category]
+    scored = [
+        classify(_as_read(c.payload, category)) for c in BENIGN_SHAPES if c.category == category
+    ]
     return sum(r is not None and r.label == "MALICIOUS" for r in scored), len(scored)
 
 
