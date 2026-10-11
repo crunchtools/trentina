@@ -116,6 +116,7 @@ blocked 34 hostile pages.
 | `tool_error` | failed | Backend completed but reported `isError`. |
 | `backend_error` | failed | Upstream failed: network, timeout, auth, 4xx/5xx. |
 | `gateway_error` | failed | Our own bug. The only outcome that should page anyone. |
+| `client_abandoned` | failed | The client hung up while the call was still running; written only when no other row was. |
 | *(NULL)* | unknown | Row predates the taxonomy. Never back-fitted. |
 
 **Only the `failed` group is a health signal.** The `blocked` group is a

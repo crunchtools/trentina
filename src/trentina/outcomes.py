@@ -88,6 +88,10 @@ class Outcome(str, Enum):
     GATEWAY_ERROR = "gateway_error"
     """Our own bug. The only outcome that should ever page anyone."""
 
+    CLIENT_ABANDONED = "client_abandoned"
+    """The client hung up while the call was still running (#439), so the
+    task was cancelled before any path wrote a row."""
+
 
 BLOCKED_OUTCOMES: frozenset[Outcome] = frozenset(
     {
@@ -104,7 +108,12 @@ TRIPPED_OUTCOMES: frozenset[Outcome] = frozenset({Outcome.DECOY_TRIPPED})
 something an agent doing its job has no reason to do."""
 
 FAILED_OUTCOMES: frozenset[Outcome] = frozenset(
-    {Outcome.TOOL_ERROR, Outcome.BACKEND_ERROR, Outcome.GATEWAY_ERROR}
+    {
+        Outcome.TOOL_ERROR,
+        Outcome.BACKEND_ERROR,
+        Outcome.GATEWAY_ERROR,
+        Outcome.CLIENT_ABANDONED,
+    }
 )
 """Genuine failures. This is the health signal."""
 
