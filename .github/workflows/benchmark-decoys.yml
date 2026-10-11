@@ -10,7 +10,10 @@ name: Benchmark - decoy tools
 # `packs` is benchmarks/prompt_pack.py for every shipped pack against the
 # generic prompts, held-out, embedded documents included (#397). `corpora` is
 # benchmarks/provider_benchmark.py on the garak and disclosed corpora for every
-# shipped judge (#10, #29). Started by hand, never by a push or a pull request: it
+# shipped judge (#10, #29). `tune` is benchmarks/prompt_pack.py for one judge
+# with a candidate pack handed in as an input (#397): the pack is data the
+# merged harness reads, so a pack can be tuned without unreviewed code ever
+# running beside the key. Started by hand, never by a push or a pull request: it
 # spends money, and it runs the checked-out code with OPENROUTER_API_KEY in
 # its environment, so it runs merged code only, as live-l3 in ci.yml does.
 
@@ -20,7 +23,7 @@ on:
       job:
         description: "Which spike to run"
         type: choice
-        options: [detonation, venn, decoys, briefing, packs, corpora]
+        options: [detonation, venn, decoys, briefing, packs, corpora, tune]
         default: detonation
       external:
         description: "External corpus split (test is the held-out one)"
@@ -32,6 +35,24 @@ on:
         type: choice
         options: [two-call, one-call]
         default: two-call
+      model:
+        description: "tune: the judge the candidate pack is for"
+        type: choice
+        options:
+          - google/gemini-2.5-flash-lite
+          - google/gemini-3.5-flash-lite
+          - anthropic/claude-haiku-4.5
+          - google/gemini-3.8-flash
+        default: google/gemini-2.5-flash-lite
+      split:
+        description: "tune: train names what the pack got wrong, one vote. held-out gates it against the generic prompts, three votes"
+        type: choice
+        options: [train, held-out]
+        default: train
+      pack:
+        description: "tune: the candidate pack, base64 of its JSON"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -273,6 +294,75 @@ jobs:
             pack.json
           retention-days: 30
 
+  tune:
+    name: tune ${{ inputs.model }} (${{ inputs.split }})
+    if: github.ref == 'refs/heads/main' && inputs.job == 'tune'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      # Dependencies install without the key: no install hook ever sees it.
+      - name: Install dependencies
+        run: |
+          uv python install 3.14
+          uv sync --all-extras --locked
+
+      # The input reaches the shell as an environment variable, never as
+      # workflow text, and is parsed as JSON before anything reads it.
+      - name: Write the candidate pack
+        env:
+          PACK_B64: ${{ inputs.pack }}
+        run: |
+          printf '%s' "$PACK_B64" | base64 --decode > candidate.json
+          python3 -c "import json; json.load(open('candidate.json'))"
+
+      # A train run names the cases the pack got wrong and cannot emit one.
+      - name: Tune on the train split
+        if: inputs.split == 'train'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          QUARANTINE_MODEL: ${{ inputs.model }}
+          QUARANTINE_REASONING_EFFORT: ${{ inputs.model == 'google/gemini-3.8-flash' && 'minimal' || '' }}
+        run: |
+          set -o pipefail
+          uv run --no-sync python benchmarks/prompt_pack.py --provider openrouter \
+            --prompt-pack candidate.json --split train --concurrency 8 \
+            --out pack.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # The gate's exit status is the job's; emitted.json exists only when
+      # the candidate passed.
+      - name: Gate on the held-out split
+        if: inputs.split == 'held-out'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          QUARANTINE_MODEL: ${{ inputs.model }}
+          QUARANTINE_REASONING_EFFORT: ${{ inputs.model == 'google/gemini-3.8-flash' && 'minimal' || '' }}
+        run: |
+          set -o pipefail
+          uv run --no-sync python benchmarks/prompt_pack.py --provider openrouter \
+            --prompt-pack generic --votes 3 --concurrency 8 --out generic.json \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          uv run --no-sync python benchmarks/prompt_pack.py --provider openrouter \
+            --prompt-pack candidate.json --votes 3 --concurrency 8 --baseline generic.json \
+            --emit emitted.json --out pack.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always() && hashFiles('candidate.json') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: tune-${{ inputs.split }}-${{ github.run_id }}
+          path: |
+            candidate.json
+            generic.json
+            pack.json
+            emitted.json
+          retention-days: 30
 
   corpora:
     name: corpora ${{ matrix.model }}
