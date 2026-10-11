@@ -13,6 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from benchmarks import prompt_pack as harness
+from benchmarks import provider_benchmark
 from benchmarks.detonation import BRIEFINGS
 from benchmarks.provider_benchmark import CaseResult, ProviderReport
 from corpora.internal import CORPUS
@@ -611,3 +612,24 @@ class TestBriefedAsProduction:
         code = self._run(tmp_path, monkeypatch, [], "--briefing", "benign", "--baseline", str(bare))
         assert code == 2
         assert "no verdict" in capsys.readouterr().out
+
+    def test_a_baseline_from_before_the_arm_is_a_bare_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bare = tmp_path / "bare.json"
+        assert self._run(tmp_path, monkeypatch, [], "--out", str(bare)) == 0
+        old = json.loads(bare.read_text())
+        del old["briefing"]
+        bare.write_text(json.dumps(old))
+        self._run(tmp_path, monkeypatch, [], "--baseline", str(bare))
+        assert "Gate: " in capsys.readouterr().out, "comparable: a verdict is given"
+
+    @pytest.mark.parametrize("brief", [None, lambda text: f"briefing for {text}"])
+    async def test_a_case_is_sent_with_its_briefing(self, brief: Any) -> None:
+        case = next(iter(CORPUS))
+        detect = AsyncMock(return_value={"injection_detected": False, "summary": "ok"})
+        with patch.object(provider_benchmark, "quarantine_detect", detect):
+            await provider_benchmark._run_case("openrouter", case, 0.0, 0, brief)
+        expected = None if brief is None else f"briefing for {case.payload}"
+        assert detect.await_args.kwargs["layer1_context"] == expected
+        assert detect.await_args.args == (case.payload,), "the payload itself is never changed"
