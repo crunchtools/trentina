@@ -62,6 +62,13 @@ different outer name and is refused; that is the safe direction.
 It also makes the listener TLS-only by construction. Anything else on port
 443 is refused before a byte is forwarded.
 
+What the check does not do is bind the requests inside the TLS to that name.
+A client can complete the handshake for a listed name and then ask for
+another virtual host (domain fronting), and only the server decides whether
+to serve it. Closing that would take terminating TLS in the gateway, which
+means holding a CA the agent trusts and reading its model traffic; that is a
+different product decision and is not made here. It is part of known gap 26.
+
 ## What is not decided
 
 The bytes. They are TLS and the gateway holds no key. This is a path through

@@ -418,8 +418,12 @@ one does; the rest name the benchmark that measured them.
     it cannot read them. So an instruction arriving over a tunnel is not
     judged, and an agent that has been talked into it can send whatever it
     holds to any listed host: a forge that accepts a push accepts one from a
-    hijacked agent. List only hosts the agent's client needs, and treat each
-    as a destination the agent can write to. Tested.
+    hijacked agent. The server-name check is on the TLS handshake only, so
+    a listed name served by a shared front end may also reach other sites
+    that front end will serve under it (domain fronting); the gateway
+    cannot see the request that would do it. List only hosts the agent's
+    client needs, prefer ones whose servers answer only for themselves, and
+    treat each as a destination the agent can write to. Tested.
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 

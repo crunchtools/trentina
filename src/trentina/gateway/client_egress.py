@@ -14,9 +14,12 @@ What the tunnel decides, in order, each one deterministic:
 - **where it may go**: an exact name in that profile's ``client_egress.hosts``,
   port 443, and through ``egress.check_url`` so every address it resolves to
   is global. The tunnel connects to an address that was checked.
-- **what it may speak**: TLS to the host it named. The first record must be a
-  ClientHello whose SNI is the CONNECT host. Without that, a tunnel to a host
-  on a shared CDN reaches every other site the CDN serves.
+- **what it may speak**: TLS that names the host it asked for. The first
+  record must be a ClientHello whose SNI is the CONNECT host, so the tunnel
+  cannot carry another protocol or open with another site's name. This is a
+  check on the handshake, not on what follows: inside the TLS the client can
+  still ask the server for a different virtual host, and whether a shared
+  front end honours that is the server's decision, not the gateway's.
 
 What it does not decide: anything about the bytes inside. They are TLS, the
 gateway holds no key, and no layer reads them. That is known gap 26 in
@@ -500,7 +503,8 @@ async def _serve(
         if not tunnel.established:
             await _respond(writer, refusal.status, refusal.reason)
         outcome, reason = refusal.outcome, refusal.reason
-    except OSError:
+    except OSError as exc:
+        logger.warning("client egress: tunnel failed err=%s", exc_kind(exc))
         outcome, reason = Outcome.BACKEND_ERROR, "connect_failed"
     except asyncio.CancelledError:
         _audit(profile, host, Outcome.CANCELLED, started, tunnel=tunnel)

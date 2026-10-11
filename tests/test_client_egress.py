@@ -23,7 +23,7 @@ from trentina import database as database_mod
 from trentina import egress
 from trentina.gateway import client_egress
 from trentina.gateway.errors import ProfileConfigError
-from trentina.gateway.loader import _check_egress_networks
+from trentina.gateway.loader import ActiveConfig, GatewayConfig, _check_egress_networks
 from trentina.gateway.profile import (
     AuthConfig,
     ClientEgressConfig,
@@ -32,7 +32,7 @@ from trentina.gateway.profile import (
     is_dns_name,
     profile_for_address,
 )
-from trentina.tools.reload import _hold_perimeter_fields
+from trentina.tools.reload import _hold_perimeter_fields, _unapplied
 
 from .egress_harness import PUBLIC_ADDRESS
 
@@ -551,3 +551,32 @@ class TestAnAgentCannotReloadItsOwnEgress:
 
     def test_an_unchanged_block_is_not_reported(self) -> None:
         assert "client_egress" not in _hold_perimeter_fields(_profile(), _profile())
+
+
+class TestAFirstBlockNeedsARestart:
+    """The listener is a socket bound at startup; a reload cannot open one."""
+
+    @staticmethod
+    def _active(tmp_path: Path, *, listening: bool) -> ActiveConfig:
+        plain = Profile(name="agent1", auth=AuthConfig(bearer_token_env="TOK"))
+        return ActiveConfig(
+            path=tmp_path / "profiles.yaml",
+            config=GatewayConfig(profiles={"agent1": plain}),
+            llm_providers={},
+            alert_route_registered=False,
+            matrix_route_registered=False,
+            oauth_route_registered=False,
+            egress_listener_configured=listening,
+        )
+
+    def test_a_block_added_to_a_gateway_with_no_listener_is_reported(self, tmp_path: Path) -> None:
+        notes = _unapplied(
+            self._active(tmp_path, listening=False), GatewayConfig(profiles={"agent1": _profile()})
+        )
+        assert any("client_egress" in note and "restart" in note for note in notes)
+
+    def test_a_block_edited_under_a_running_listener_is_not(self, tmp_path: Path) -> None:
+        notes = _unapplied(
+            self._active(tmp_path, listening=True), GatewayConfig(profiles={"agent1": _profile()})
+        )
+        assert not any("client_egress" in note for note in notes)

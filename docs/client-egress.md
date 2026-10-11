@@ -73,12 +73,21 @@ In order, each one deterministic:
    [egress guard](deployment-hardening.md) as every gateway-side fetch: every
    address it resolves to must be global, and the tunnel connects to an
    address that was checked, not to a second lookup.
-5. **The client speaks TLS to the host it named.** The gateway answers `200`,
-   then reads the client's first TLS record before forwarding a byte. It must
-   be a ClientHello whose server name (SNI) is the CONNECT host. A different
-   name, no name, an encrypted ClientHello or anything that is not TLS closes
-   the tunnel. Without this, a tunnel to a host on a shared CDN reaches every
-   other site that CDN serves.
+5. **The client opens TLS naming the host it asked for.** The gateway answers
+   `200`, then reads the client's first TLS record before forwarding a byte.
+   It must be a ClientHello whose server name (SNI) is the CONNECT host. A
+   different name, no name, an encrypted ClientHello or anything that is not
+   TLS closes the tunnel.
+
+This last check is on the handshake, not on what follows it. Once TLS is up
+the gateway sees nothing, and a client can ask the server for a different
+virtual host than the one it named (a `Host` header or HTTP/2 `:authority`
+that differs from the SNI, known as domain fronting). Whether that reaches
+another site is the server's decision: a dedicated service ignores it, and a
+shared CDN may or may not refuse it. So a listed name on a shared front end
+is, at worst, a path to whatever else that front end will serve under that
+handshake. Prefer names whose servers answer only for themselves, and read
+"listed hosts" as "listed TLS endpoints".
 
 A profile holds at most 16 tunnels at once, and a tunnel with no byte in
 either direction for 15 minutes is closed.

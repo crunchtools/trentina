@@ -1197,19 +1197,18 @@ _MAX_PORT = 65535
 
 
 def is_dns_name(value: str) -> bool:
-    """A lower-case DNS name of two or more labels that is not an IP address.
+    """A lower-case DNS name of two or more labels that is not an IPv4 address.
 
     What a client-egress host is, in the config and on a CONNECT line. An
     address is refused because a name is what the allowlist and the egress
-    guard both decide on; ``10.0.0.1`` satisfies the label grammar too.
+    guard both decide on, and ``10.0.0.1`` satisfies the label grammar too.
+    No top-level domain is all digits (RFC 3696 section 2), so a last label
+    that is marks an address in any of its spellings (``10.1``, ``0x7f.1``
+    ends in a digit label as well). IPv6 never matches the grammar.
     """
     if len(value) > _MAX_DNS_NAME or "." not in value or not _DNS_NAME_RE.match(value):
         return False
-    try:
-        ipaddress.ip_address(value)
-    except ValueError:
-        return True
-    return False
+    return not value.rpartition(".")[2].isdigit()
 
 
 def profile_for_address(

@@ -561,7 +561,8 @@ replaced.
   `egress.check_url`; the tunnel connects to a checked address
   (`open_upstream` is the test seam). After `200` the first TLS record must
   be a ClientHello whose SNI is the CONNECT host, or the tunnel closes before
-  a byte is forwarded. One `gateway_calls` row per tunnel (`egress` /
+  a byte is forwarded (a handshake check only: it does not stop a different
+  `Host` inside the TLS). One `gateway_calls` row per tunnel (`egress` /
   `connect`, `DestinationKind.TUNNEL`). Nothing reads the bytes: known gap 26.
   The block is held on an agent reload (`_hold_perimeter_fields`) and refused
   on a honeypot.
