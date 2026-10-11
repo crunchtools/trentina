@@ -180,6 +180,22 @@ def serve_short_names(profile: Profile, tools: list[dict[str, Any]]) -> list[dic
     return [{**tool, "name": served[pair]} for tool, pair in zip(tools, pairs, strict=True)]
 
 
+def served_name(profile: Profile, backend: str, tool: str) -> str | None:
+    """The name tools/list serves ``(backend, tool)`` under, or None if it never has.
+
+    For text the gateway writes that names one of its own tools (#340): an
+    agent can only call the name it was served.
+    """
+    if backend not in profile.backends:
+        return None
+    if not profile.short_names:
+        return f"{backend}{NAMESPACE_SEP}{tool}"
+    for name, pair in _issued_names(profile.name).items():
+        if pair == (backend, tool):
+            return name
+    return None
+
+
 def resolve_name(profile: Profile, name: str) -> Pair | None:
     """The (backend, tool) a served name stands for, or None.
 

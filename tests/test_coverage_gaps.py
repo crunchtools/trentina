@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import re
 from pathlib import Path
 from typing import cast
 
@@ -251,3 +252,29 @@ async def test_a_client_egress_tunnel_forwards_what_it_is_given_unread() -> None
     await client_egress._copy(arriving, cast("asyncio.StreamWriter", _Sink()), tunnel, "received")
     assert bytes(forwarded) == _ATTACK.encode()
     assert tunnel.received == len(_ATTACK)
+
+
+async def test_a_response_delivered_in_parts_is_judged_a_part_at_a_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gap 27 (#340): the layers are handed one part and the end of the one
+    before it, never the response. An attack whose two halves sit in parts
+    that do not touch is read as two documents."""
+    from trentina import config as config_mod
+    from trentina.gateway import paging
+
+    monkeypatch.setenv("TRENTINA_PART_TOKENS", "300")
+    monkeypatch.setattr(
+        paging, "token_offsets", lambda text: [m.span() for m in re.finditer(r"\S+", text)]
+    )
+    config_mod._config = None
+    try:
+        parts = paging.cut(" ".join(f"w{i}" for i in range(1_000)))
+    finally:
+        config_mod._config = None
+    assert parts is not None and len(parts) == 4
+    first, _, third, _ = parts
+    assert "w0" not in (third.lead_in + third.text).split()
+    assert first.text.split()[-1] not in (third.lead_in + third.text).split()
+    page = Path(__file__).parents[1].joinpath("docs/defense-pipeline.md").read_text()
+    assert "27. **A response delivered in parts is judged a part at a time**" in page

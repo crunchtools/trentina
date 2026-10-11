@@ -600,6 +600,38 @@ does, and whether it decodes one is a question for a keyed run. Whether an
 agent would act on an encoded instruction it was never asked to decode is
 not something a detector benchmark can answer.
 
+## An attack cut by a part boundary (#340)
+
+A response too large to judge in one call is delivered in parts, and a part
+is judged behind the last 64 tokens of the part before it
+([Responses delivered in parts](defense-pipeline.md#responses-delivered-in-parts)).
+`benchmarks/paging_split.py` measures what that lead-in is worth to L2. Each
+attack in `corpora/internal.py` is set between 400 tokens of benign prose on
+each side, and the text is cut inside the attack. The two sides are scored
+as paging hands them over: the first part, then the second with and without
+its lead-in. An attack counts as caught when either part is flagged. Only
+attacks L2 flags uncut in the same prose are counted, so the table is what
+the cut loses.
+
+2026-10-11, `prompt-injection-guard-small@3215a27edd62` at 0.7, the prose
+tokens 1,500 on of Project Gutenberg #41. 35 of the 44 attacks are flagged
+uncut.
+
+| cut at | caught, no lead-in | caught, with lead-in |
+|---|---|---|
+| 25% of the attack | 33 of 35 | 35 of 35 |
+| 50% | 33 of 35 | 34 of 35 |
+| 75% | 34 of 35 | 35 of 35 |
+
+A cut through an attack costs L2 one or two detections in 35, and the
+lead-in recovers all but one. The miss at 50% is a 41-token attack
+(`tool-read-shadow-file`) that the lead-in holds whole: read behind 44
+tokens of the prose instead of 400, it scores under the threshold. L2's
+score moves with what surrounds an attack, cut or not. L3 was not run. That
+it reads a part and not the response is known gap 27.
+
+    CLASSIFIER_MODEL_PATH=<export> uv run python benchmarks/paging_split.py --text <file>
+
 ## L2 benign gate (#411, #404)
 
 The obfuscation gate selects for a model that reads encoded text as possibly

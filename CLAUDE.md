@@ -92,7 +92,9 @@ uv run trentina
   (`/gateway/<profile>/mcp`, FastMCP's own mount) and the alert ingress
   (default 1 MiB, floor 1 KiB). Over it: 413, the rest unread, chunked or
   not (`httpbody.RequestBodyCap`, #267). A backend's RESPONSE has its own
-  cap, derived rather than set: `admission_tokens * 32` bytes, floor 1 MiB
+  cap, derived rather than set: `paged_tokens * 32` bytes (every part of the
+  largest response paging can deliver, #340; the admission cap with paging
+  off), floor 1 MiB
   (`gateway/backend.py` `BYTES_PER_TOKEN`); over it, admission's oversize
   refusal with no alternatives, audited `blocked_defense`.
 - `TRENTINA_OAUTH_JWT_SIGNING_KEY` / `TRENTINA_OAUTH_JWT_SIGNING_KEY_FILE` and
@@ -259,6 +261,17 @@ reliably faster and 4096 and 8192 far slower. One cap bounds the scan (#225):
   the head and L3 reads the same token-bounded head (`classifier.head`), so
   `l2_truncated`/`l3_truncated` exist only on flag.
 
+A proxied text response over `Config.whole_tokens` (16K) is not judged in one
+call (#340): `gateway/paging.py` cuts it once into parts of about
+`TRENTINA_PART_TOKENS` (12000; 0 is off), the router delivers part 1
+(`_hold_paged`, `_deliver_part`) and answers the `read_part` tool itself
+(`_read_part`), never forwarding it. Each part crosses `scan_tool_response`
+with the previous part's last 64 tokens as `lead_in`. The remainder is held
+in memory only, by a handle bound to the profile. Wording an agent reads is
+in `paging.py`; say "part", never "page" (wiki and PDF pages own that word).
+A profile without `read_part_tool` on its internal backend is not paged, and
+the internal tools are not paged yet.
+
 Async callers must use `classify_async`. Calling the
 synchronous `classify()` from a coroutine blocks the event loop for the whole
 scan and takes the gateway down with it. The same holds for L1 (#295):
@@ -347,6 +360,10 @@ NOTE: `defense.enforcement` is the DEFAULT mode and accepts only `flag` and
 `warn`/`clean`, the pre-0.35.0 names (#200), were removed in 0.36.0; a
 profile or call still using one is refused like any unknown mode. The names are OpenRouter's guardrail actions; our `redact` is an L3
 rewrite, not their span substitution. Precedence: block > redact > flag.
+
+`read_part_tool` (#340) is the tenth tool: it delivers the parts of a
+response another tool produced, and behind the gateway the router answers
+it.
 
 ### Stats
 - quarantine_stats — operator `config` carries `provider` and `llm_available`

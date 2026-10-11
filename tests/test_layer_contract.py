@@ -15,7 +15,7 @@ from contextlib import ExitStack
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from trentina.defense import DefenseVerdict, build_l3_briefing, defend
 from trentina.l1.pipeline import FINDING_NAMES, PipelineStats, run_l1
@@ -24,6 +24,7 @@ from trentina.quarantine.classifier import ClassifierResult
 from trentina.unpack.scan import unpack
 
 _D = "trentina.defense"
+_INGRESS = "trentina.gateway.ingress_defense"
 _SRC = Path(__file__).resolve().parents[1] / "src" / "trentina"
 _BENIGN = ClassifierResult(label="BENIGN", score=0.05, latency_ms=1.0)
 
@@ -166,3 +167,30 @@ def test_l2_is_read_only_from_the_known_sites() -> None:
         f"new L2 call site(s) {sorted(sites - _L2_CALL_SITES)}: a second read of "
         "the same payload breaks the Layer contract (docs/defense-pipeline.md)"
     )
+
+
+async def test_a_part_is_read_once_behind_the_end_of_the_part_before() -> None:
+    """The one stated exception to "exactly once" (#340, rule 1): a response
+    delivered in parts is a delivery per part. Each layer reads a part once,
+    with the previous part's last tokens in front of it, and never reads the
+    part a second time."""
+    from trentina.gateway.ingress_defense import scan_tool_response
+    from trentina.gateway.profile import AuthConfig, Profile
+
+    profile = Profile(name="agent1", auth=AuthConfig(bearer_token_env="TEST"), backends={})
+    verdict = MagicMock(flagged=False)
+    with (
+        patch(f"{_INGRESS}.defend", AsyncMock(return_value=verdict)) as defend,
+        patch(f"{_INGRESS}.build_warning", return_value=None),
+        patch(f"{_INGRESS}.gaps_of", return_value=MagicMock(blocking=lambda: False)),
+    ):
+        await scan_tool_response(
+            profile=profile,
+            backend_name="docs",
+            tool_name="get_doc",
+            content_blocks=[{"type": "text", "text": "the part"}],
+            structured_content=None,
+            lead_in="the end of the part before. ",
+        )
+    defend.assert_awaited_once()
+    assert defend.await_args.args[0] == "the end of the part before. the part"

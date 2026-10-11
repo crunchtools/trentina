@@ -54,7 +54,7 @@ mcp = FastMCP(
     version=__version__,
     instructions=(
         "Untrusted content through a three-layer prompt injection defense: "
-        "L1 deterministic detection, L2 Prompt Guard 2 classifier, L3 a "
+        "L1 deterministic detection, L2 a local classifier, L3 a "
         "quarantined LLM judge. All three run on every call. "
         "Five tools — fetch (URL), read (file), dir (directory listing), "
         "content (inline text), search (web). trentina_mode picks what is "
@@ -210,6 +210,44 @@ async def search_tool(
     name, question = parse_mode_arg(_as_arg(trentina_mode))
     mode = current_policy().resolve(name)
     return await web_search(query, num_results, mode, question or "Summarize the search results.")
+
+
+@mcp.tool()
+async def read_part_tool(
+    handle: str | None = None,
+    part: int | None = None,
+    trentina_mode: str | RedactMode | None = None,
+) -> dict[str, Any]:
+    """Read one part of a tool response that Trentina delivered in parts.
+
+    A response too large to judge in one call arrives a part at a time, and
+    every part is judged by all three layers before it is delivered. Each
+    part ends with a [TRENTINA] line that gives the handle and the number of
+    the next part. The whole response is already held at the gateway, so the
+    rest of it comes from this tool and not from the tool that produced it.
+    With no arguments, lists the responses held for this profile.
+
+    Args:
+        handle: from the last line of a part
+        part: 1 to the number of parts; omitted, the next part not yet read
+        trentina_mode: block, flag, or {"redact": "<what you need>"}; omitted,
+            the mode of the call that produced the response
+
+    Returns:
+        A part: three text blocks (a [TRENTINA] line naming the part, the
+        part's text, a [TRENTINA] line with the next call) and
+        ``_trentina_part`` with ``part``, ``parts``, ``delivered`` and, until
+        the last part, ``handle`` and ``next``. A part that is refused: one
+        text block saying why, ``isError`` true, ``_trentina_refusal`` and
+        ``_trentina_warning``. With no arguments: ``held``, a list of
+        ``handle``, ``tool``, ``parts``, ``delivered`` and
+        ``expires_in_seconds``.
+    """
+    # Behind the gateway the router answers this call itself and it never
+    # arrives here (``router._read_part``, #340). Standalone there is no
+    # proxied response to hold, so there is never a part to read.
+    del handle, part, trentina_mode
+    return {"held": [], "note": "Responses are delivered in parts only behind the gateway."}
 
 
 @mcp.tool()

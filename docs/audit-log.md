@@ -223,6 +223,13 @@ never reach a backend:
 - An exception that escapes every audited path is `gateway_error`, with
   `error_message` naming its class only, before the HTTP edge answers 500.
 
+A response delivered in parts (#340) writes one row for the call that
+produced it and one for each `read_part` call, all against the backend and
+tool that produced it, with `part 2/5` in `error_message` and the outcome of
+that part: `ok`, or `blocked_defense` for a part that was flagged, could not
+be fully judged, or follows a flagged one. A handle that resolves to nothing
+is `denied_guard` against the internal backend's `read_part_tool`.
+
 A fetch advisory (a suspicious 415/406, a 4xx body the pipeline flags, a
 redirect to a binary) is a refusal and audits as `blocked_defense`; until
 #293 it was a successful result with no content, audited `ok`. A search whose

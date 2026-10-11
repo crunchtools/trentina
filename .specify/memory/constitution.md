@@ -1,6 +1,6 @@
 # trentina Constitution
 
-> **Version:** 2.5.1
+> **Version:** 2.6.0
 > **Ratified:** 2026-09-22
 > **Amended:** 2026-10-11
 > **Status:** Active
@@ -46,7 +46,12 @@ the agent follows because it cannot tell data from instructions.
   smaller of L2's CPU budget and the Q-Agent's context window. Admitted
   content is read whole by every layer; `block` and `redact` refuse what is
   over the cap, and no layer is handed a truncated slice of content it was
-  asked to judge. `flag` alone scans an over-cap payload's head, and alone
+  asked to judge. A proxied text response too large to judge in one call is
+  not refused: it is cut into parts, each under the cap, and each part is
+  admitted, read whole by every layer and delivered on its own (#340). The
+  parts not yet asked for are held in memory, never stored, and reach no
+  agent unjudged. A part is read behind the end of the part before it, so
+  those tokens are read with both. `flag` alone scans an over-cap payload's head, and alone
   delivers binary no layer can read yet (`binary_unread`, below); it says so
   in the warning both times.
 - **Supply chain:** no google-genai SDK, which enforces the Q-Agent
@@ -289,3 +294,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.4.0 | 2026-10-11 | The default judge is gemini-3.5-flash-lite (#397). A judge is supported when its prompt pack passes the pack gate briefed as production; shipped packs carry that status and startup reports a judge that is not supported |
 | 2.5.0 | 2026-10-11 | Client egress (#442): a CONNECT listener tunnels an agent's own HTTPS client to the hosts its profile lists. The gateway decides the caller (by network), the host, the address and the TLS server name, and records the bytes; it does not read them, which is known gap 26. The block is perimeter: held on an agent reload, refused on a honeypot |
 | 2.5.1 | 2026-10-11 | The window L2 scans in is the model's, stated in its manifest beside polarity and threshold (#438); the shipped model states 512 |
+| 2.6.0 | 2026-10-11 | A proxied text response too large to judge in one call is delivered in judged parts (#340) where it was refused: each part is admitted and read whole, behind the last tokens of the part before it. Known gap 27: such a response is judged a part at a time |

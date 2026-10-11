@@ -438,6 +438,7 @@ async def scan_tool_response(
     prompt: str | None = None,
     policy: ModePolicy | None = None,
     hidden: HiddenStats | None = None,
+    lead_in: str = "",
 ) -> IngressDecision:
     """Judge one tool response and decide its fate under the call's mode.
 
@@ -455,6 +456,13 @@ async def scan_tool_response(
     (#229): L1 reports the larger of those and its own count on the
     Markdown, where conversion left none.
 
+    ``lead_in`` is the text that came immediately before this one in a
+    response delivered in parts (#340): the end of the previous part, already
+    judged and delivered with it. The layers read it in front of this part,
+    so an instruction cut by the part boundary is read whole, and it is not
+    delivered again. Scanning more than is delivered is the call site's
+    decision (``docs/defense-pipeline.md``, "Where the line falls").
+
     Flags are recorded to the detections table (source_type="tool_response")
     except on a verdict-cache hit.
     """
@@ -462,6 +470,8 @@ async def scan_tool_response(
         content_blocks, structured_content, hidden
     )
     joined = "\n".join(texts)
+    # Behind its lead-in, when there is any text to lead into.
+    joined = lead_in + joined if lead_in and joined.strip() else joined
     mode = effective_mode(profile, mode)
     policy = policy or ModePolicy((mode,), mode)
 

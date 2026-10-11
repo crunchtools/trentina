@@ -34,6 +34,7 @@ from __future__ import annotations
 import copy
 from typing import TYPE_CHECKING, Any
 
+from ..config import get_config
 from ..errors import PromptParamGoneError
 from ..modes import Mode, ModePolicy, parse_mode_arg
 from ..preprocess.policy import (
@@ -182,7 +183,7 @@ def mode_instructions(profile: Profile) -> str:
     }
     modes = [m for m in Mode if m.value in offered]
     if len(modes) < 2:
-        return _PREPROCESS_TEXT
+        return _PREPROCESS_TEXT + _parts_text()
     default = profile.defense.enforcement
     return (
         f"Content from every tool is judged by Trentina's three layers. Pass "
@@ -191,6 +192,17 @@ def mode_instructions(profile: Profile) -> str:
         + "; ".join(_MODE_TEXT[m] for m in modes)
         + ". A refusal lists the alternatives your policy allows. "
         + _PREPROCESS_TEXT
+        + _parts_text()
+    )
+
+
+def _parts_text() -> str:
+    """The sentence on responses delivered in parts (#340), or "" with paging off."""
+    if get_config().part_target_tokens <= 0:
+        return ""
+    return (
+        " A response too large to judge in one call arrives in parts: the last"
+        " line of each part says how to read the next with read_part."
     )
 
 
