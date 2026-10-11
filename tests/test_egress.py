@@ -121,7 +121,8 @@ class TestRefusedAddresses:
         route(monkeypatch, _unreachable)
         monkeypatch.setattr(egress, "_lookup_slots", busy)
         err = await _refusal("https://example.com/")
-        assert err.reason == "unresolvable"
+        # Not ``unresolvable`` (#449): the name was never asked about.
+        assert err.reason == "resolver_busy"
 
     async def test_a_timed_out_lookup_gives_its_slot_back(
         self, monkeypatch: pytest.MonkeyPatch

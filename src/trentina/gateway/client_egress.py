@@ -13,7 +13,9 @@ What the tunnel decides, in order, each one deterministic:
   print proxy URLs in errors and status output.
 - **where it may go**: an exact name in that profile's ``client_egress.hosts``,
   port 443, and through ``egress.check_url`` so every address it resolves to
-  is global. The tunnel connects to an address that was checked.
+  is global. The tunnel connects to an address that was checked. A client
+  opens its connections in a burst, so one check answers every tunnel to the
+  same name that starts while it runs or within ``CHECKED_TTL`` of it (#449).
 - **what it may speak**: TLS that names the host it asked for. The first
   record must be a ClientHello whose SNI is the CONNECT host, so the tunnel
   cannot carry another protocol or open with another site's name. This is a
@@ -37,6 +39,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from http import HTTPStatus
+from functools import partial
 from typing import TYPE_CHECKING
 
 from ..database import record_gateway_call
@@ -50,6 +53,7 @@ from .loader import get_active_config
 from .profile import CLIENT_EGRESS_PORT, is_dns_name, profile_for_address
 
 if TYPE_CHECKING:
+    from ..egress import ResolvedTarget
     from .profile import Profile
 
 logger = logging.getLogger(__name__)
@@ -70,6 +74,15 @@ client holding a streaming response sees keep-alives well inside this."""
 
 MAX_TUNNELS_PER_PROFILE = 16
 """Tunnels one profile may hold open. A client pools a handful per host."""
+
+CHECKED_TTL = 5.0
+"""Seconds a name's checked addresses answer the same profile's next tunnel
+(#449). A client opens a pool of connections to two or three names at once,
+and each lookup takes one of the profile's four resolver slots, which never
+queue: without this the fifth tunnel of a burst was refused. Safe for a
+tunnel and not for ``fetch``: the name is one the operator listed, checked
+against the list before this is asked, and the tunnel dials the addresses
+that were checked. A refusal is never kept."""
 
 _CHUNK = 65536
 _RECORD_HEADER = 5
@@ -99,6 +112,11 @@ REASONS = frozenset(
 """Every ``error_message`` this module writes besides the egress guard's own
 reason codes. Closed, so the audit never carries the caller's text there."""
 
+RESOLVER_BUSY = "resolver_busy"
+"""The egress guard's reason when no resolver slot was free. It is the
+gateway's load and not a verdict on the name, so a tunnel answers it as it
+answers its own ``busy``: 503, ``denied_guard``."""
+
 
 class TunnelRefusedError(Exception):
     """A tunnel the gateway will not open, or will not keep open."""
@@ -124,6 +142,8 @@ _listen: tuple[str, int] | None = None
 _server: asyncio.Server | None = None
 _open: dict[str, int] = {}
 _tasks: set[asyncio.Task[None]] = set()
+_checking: dict[tuple[str, str], asyncio.Task[ResolvedTarget]] = {}
+_checked: dict[tuple[str, str], tuple[float, ResolvedTarget]] = {}
 
 
 def configure(host: str, port: int) -> None:
@@ -163,6 +183,7 @@ async def stop() -> None:
     await _server.wait_closed()
     _server = None
     _open.clear()
+    _checked.clear()
 
 
 # TRUST: the peer address picks the profile (#442, after #330)
@@ -310,14 +331,51 @@ async def open_upstream(
     return await asyncio.open_connection(address, port)
 
 
+def _settle(key: tuple[str, str], task: asyncio.Task[ResolvedTarget]) -> None:
+    """Keep a finished check's answer for ``CHECKED_TTL``; drop a refusal."""
+    _checking.pop(key, None)
+    now = time.monotonic()
+    for stale in [name for name, (until, _) in _checked.items() if until <= now]:
+        del _checked[stale]
+    # Read here so a check nobody waited out is not reported as unretrieved.
+    if not task.cancelled() and task.exception() is None:
+        _checked[key] = (now + CHECKED_TTL, task.result())
+
+
+async def _check(profile: Profile, host: str) -> ResolvedTarget:
+    """``host``'s checked addresses, from one lookup per burst (#449).
+
+    Tunnels to one name that start together share the check in flight, and
+    ones that start within ``CHECKED_TTL`` of it share its answer. The check
+    is shielded: a client that hangs up does not cancel it for the others.
+
+    Raises:
+        EgressRefusedError: the egress guard refused the name.
+    """
+    key = (profile.name, host)
+    held = _checked.get(key)
+    if held is not None and time.monotonic() < held[0]:
+        return held[1]
+    task = _checking.get(key)
+    if task is None:
+        with profile_context(profile):
+            task = asyncio.create_task(check_url(f"https://{host}:{CLIENT_EGRESS_PORT}"))
+        _checking[key] = task
+        task.add_done_callback(partial(_settle, key))
+    return await asyncio.shield(task)
+
+
 async def _connect(
     profile: Profile, host: str
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
     """Resolve ``host`` through the egress guard and connect to what was checked."""
     try:
-        with profile_context(profile):
-            target = await check_url(f"https://{host}:{CLIENT_EGRESS_PORT}")
+        target = await _check(profile, host)
     except EgressRefusedError as exc:
+        if exc.reason == RESOLVER_BUSY:
+            raise TunnelRefusedError(
+                HTTPStatus.SERVICE_UNAVAILABLE, exc.reason, Outcome.DENIED_GUARD
+            ) from None
         raise TunnelRefusedError(
             HTTPStatus.FORBIDDEN, exc.reason, Outcome.BLOCKED_DEFENSE
         ) from None

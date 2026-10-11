@@ -575,13 +575,16 @@ replaced.
   verifies the hostname), and follows redirects by hand, checking each hop.
   Refusal reasons are a closed set and never name the address. Never give an
   outbound `httpx.AsyncClient` an agent-chosen URL without it. DNS lookups
-  are capped per profile (4) and gateway-wide (64), never queued (#291).
+  are capped per profile (4) and gateway-wide (64), never queued (#291):
+  past either, `resolver_busy` (#449).
 - `gateway/client_egress.py` — the CONNECT listener (#442) on `--egress-port`
   (8021), bound only when a profile has `client_egress`, started and stopped
   by `warmup.trentina_lifespan`. The peer address picks the profile (no
   credential, as #330); the name must be in `hosts`, port 443, and pass
   `egress.check_url`; the tunnel connects to a checked address
-  (`open_upstream` is the test seam). After `200` the first TLS record must
+  (`open_upstream` is the test seam). `_check` is one lookup per burst
+  (#449): tunnels to a name share the check in flight and its answer for
+  `CHECKED_TTL`; `resolver_busy` is 503 `denied_guard`, not a defense block. After `200` the first TLS record must
   be a ClientHello whose SNI is the CONNECT host, or the tunnel closes before
   a byte is forwarded (a handshake check only: it does not stop a different
   `Host` inside the TLS). One `gateway_calls` row per tunnel (`egress` /

@@ -55,7 +55,7 @@ MAX_LOOKUPS = 64
 ``getaddrinfo`` cannot be cancelled, so a stalled resolver keeps its thread
 after ``RESOLVE_TIMEOUT``. The executor has exactly this many workers and a
 lookup takes a slot before it is submitted, so nothing ever queues behind a
-stalled one; past the limit a fetch is refused as ``unresolvable``."""
+stalled one; past the limit a fetch is refused as ``resolver_busy``."""
 
 MAX_LOOKUPS_PER_PROFILE = 4
 """Of those, what one profile may hold (#291). The global pool was the only
@@ -150,17 +150,19 @@ async def _resolve(host: str, port: int) -> list[str]:
 
     A lookup takes one of the caller's ``MAX_LOOKUPS_PER_PROFILE`` slots and
     one of ``MAX_LOOKUPS`` gateway-wide, and never queues: with either
-    exhausted, or after ``RESOLVE_TIMEOUT``, or on a resolver error, the fetch
-    is refused as ``unresolvable``. Both slots come back when the thread ends.
+    exhausted the fetch is refused as ``resolver_busy`` (#449: the name was
+    never asked about, so the refusal does not say it failed to resolve).
+    After ``RESOLVE_TIMEOUT``, or on a resolver error, it is ``unresolvable``.
+    Both slots come back when the thread ends.
     """
     mine, slots = _slots_for_caller(), _lookup_slots
     if not mine.acquire(blocking=False):
         log.warning("egress: this profile's resolver slots are busy; refusing")
-        raise EgressRefusedError("unresolvable")
+        raise EgressRefusedError("resolver_busy")
     if not slots.acquire(blocking=False):
         mine.release()
         log.warning("egress: every resolver slot is busy; refusing")
-        raise EgressRefusedError("unresolvable")
+        raise EgressRefusedError("resolver_busy")
     job = _RESOLVER.submit(_lookup, host, port)
     # On the executor's future, not asyncio's: it fires when the thread
     # finishes, however long after the caller timed out.

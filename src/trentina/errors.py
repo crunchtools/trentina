@@ -48,6 +48,7 @@ EGRESS_REASONS = frozenset(
         "port",
         "non_global_address",
         "unresolvable",
+        "resolver_busy",
         "too_many_redirects",
         "downgrade",
         "encoded",

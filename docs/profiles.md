@@ -236,7 +236,8 @@ could move and another could time or read:
   objects A had fetched.
 - DNS lookups for fetch take one of the caller's 4 slots as well as one of
   64 gateway-wide. One profile pointing lookups at a black-holed name server
-  used to fill all 16 and refuse every profile's fetch.
+  used to fill all 16 and refuse every profile's fetch. A lookup with no
+  slot free is refused as `resolver_busy`, never queued.
 - An agent's `reconnect_backend` refreshes the backend's tool list in place
   and rebuilds only its own aggregate. It used to drop every profile's
   aggregate on that URL, which moved their `surface.built_at`.
