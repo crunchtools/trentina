@@ -11,15 +11,18 @@ OCR limits) are documented with the benchmark that measured them instead.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 from pathlib import Path
+from typing import cast
 
 import pytest
 from pydantic import SecretStr
 
 from corpora.benign_ops import BENIGN, CATEGORIES, KNOWN_GAPS
 from corpora.garak_encodings import ENCODINGS
+from trentina.gateway import client_egress
 from trentina.gateway.decoy import leaked_tokens
 from trentina.gateway.profile import AuthConfig, Backend, Honeytoken, Profile
 from trentina.l1.pipeline import run_l1
@@ -224,3 +227,27 @@ def test_the_shapes_l2_is_known_to_flag_are_numbered_gaps_and_stay_in_the_corpus
         assert f"`{name}`" in gaps
         assert name not in CATEGORIES, "a known gap is scored, never gated"
         assert any(case.category == name for case in BENIGN)
+
+
+async def test_a_client_egress_tunnel_forwards_what_it_is_given_unread() -> None:
+    """Gap 26 (#442). The tunnel copies bytes; no layer is asked about them.
+    A tunnel that began judging its contents would change what this copies."""
+    forwarded = bytearray()
+
+    class _Sink:
+        def write(self, data: bytes) -> None:
+            forwarded.extend(data)
+
+        async def drain(self) -> None:
+            return None
+
+        def can_write_eof(self) -> bool:
+            return False
+
+    arriving = asyncio.StreamReader()
+    arriving.feed_data(_ATTACK.encode())
+    arriving.feed_eof()
+    tunnel = client_egress._Tunnel()
+    await client_egress._copy(arriving, cast("asyncio.StreamWriter", _Sink()), tunnel, "received")
+    assert bytes(forwarded) == _ATTACK.encode()
+    assert tunnel.received == len(_ATTACK)

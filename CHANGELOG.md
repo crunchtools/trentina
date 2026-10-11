@@ -10,6 +10,21 @@ under that name.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-11
+
+### Added
+- Client egress (#442): a second listener, `--egress-port` (default 8021),
+  that speaks HTTP `CONNECT` only and tunnels an agent's own HTTPS client to
+  the hosts its profile lists in a new `client_egress` block. The caller's
+  source network picks the profile, so there is no credential in the proxy
+  URL. A name must be listed, on port 443, and pass the egress guard; the
+  tunnel connects to an address that was checked, and its first TLS record
+  must be a ClientHello naming the same host. Each tunnel writes one audit
+  row (`egress` / `connect`, `destination_kind = tunnel`) with the bytes each
+  way. An agent's own reload cannot change the block, and a honeypot profile
+  cannot have one. See [docs/client-egress.md](docs/client-egress.md).
+- Known gap 26: nothing reads the bytes in a client-egress tunnel.
+
 ### Fixed
 - A `tools/call` the client abandons mid-scan now writes a `gateway_calls`
   row with the new `cancelled` outcome (unknown group, not a failure) and the elapsed

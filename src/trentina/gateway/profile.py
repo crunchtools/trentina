@@ -1196,6 +1196,100 @@ _MAX_DNS_NAME = 253
 _MAX_PORT = 65535
 
 
+def is_dns_name(value: str) -> bool:
+    """A lower-case DNS name of two or more labels that is not an IPv4 address.
+
+    What a client-egress host is, in the config and on a CONNECT line. An
+    address is refused because a name is what the allowlist and the egress
+    guard both decide on, and ``10.0.0.1`` satisfies the label grammar too.
+    No top-level domain is all digits (RFC 3696 section 2), so a last label
+    that is marks an address in any of its spellings (``10.1``, ``0x7f.1``
+    ends in a digit label as well). IPv6 never matches the grammar.
+    """
+    if len(value) > _MAX_DNS_NAME or "." not in value or not _DNS_NAME_RE.match(value):
+        return False
+    return not value.rpartition(".")[2].isdigit()
+
+
+def profile_for_address(
+    peer: str | None, profiles: dict[str, Profile], channel: str
+) -> Profile | None:
+    """The profile whose ``<channel>.source_networks`` hold ``peer``, or None.
+
+    ``channel`` is ``matrix_ingress`` or ``client_egress``: the two listeners
+    where the caller's address, not a credential, picks the profile (#330,
+    #442). The loader guarantees at most one profile holds any address. A
+    peer that is not an address (a test client, a unix socket) matches
+    nothing.
+    """
+    try:
+        address = ipaddress.ip_address(peer or "")
+    except ValueError:
+        return None
+    for profile in profiles.values():
+        block = getattr(profile, channel)
+        if block is not None and any(address in net for net in block.source_networks):
+            return profile
+    return None
+
+
+CLIENT_EGRESS_PORT = 443
+"""The one port a client-egress tunnel may name. The tunnel carries TLS only."""
+
+_MAX_EGRESS_HOSTS = 64
+
+
+class ClientEgressConfig(BaseModel):
+    """Per-profile CONNECT tunnel for the agent's own client (#442).
+
+    An agent on an internal network has no route out, and some of what it
+    runs is a client that opens HTTPS itself: its model API, its session
+    service, its git forge. ``gateway/client_egress.py`` tunnels those
+    connections to the hosts named here and to nothing else.
+
+    As with ``matrix_ingress`` (#330), the caller's address is what picks the
+    profile and nothing secret is on the wire: a credential in a proxy URL is
+    printed by every client that reports a proxy error.
+
+    The bytes inside a tunnel are TLS the gateway cannot read, so no layer
+    judges them (known gap 26). This block decides where an agent's client
+    may talk, not what it says.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    source_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "CIDRs the agent's connections come from; the peer address resolves "
+            "the profile. One agent per network, so no two profiles may overlap."
+        ),
+    )
+    hosts: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=_MAX_EGRESS_HOSTS,
+        description=(
+            "Exact DNS names the client may be tunnelled to, on port 443. No "
+            "wildcards and no addresses: each name is one decision an operator made."
+        ),
+    )
+
+    @field_validator("hosts")
+    @classmethod
+    def _hosts_are_exact_names(cls, hosts: list[str]) -> list[str]:
+        bad = sum(1 for host in hosts if not is_dns_name(host))
+        if bad:
+            raise ValueError(
+                f"client_egress.hosts: {bad} entries are not lower-case DNS names "
+                "(no wildcards, ports, schemes or addresses)"
+            )
+        if len(set(hosts)) != len(hosts):
+            raise ValueError("client_egress.hosts lists a name twice")
+        return hosts
+
+
 def _valid_server_name(value: str) -> bool:
     """The Matrix server-name grammar: a DNS name, an IPv4 address or a
     bracketed IPv6 literal, then an optional port in 1-65535."""
@@ -1778,6 +1872,10 @@ class Profile(BaseModel):
         default=None,
         description="Matrix E2EE termination by bridge (optional, #162)",
     )
+    client_egress: ClientEgressConfig | None = Field(
+        default=None,
+        description="CONNECT tunnel for the agent's own client (optional, #442)",
+    )
     oauth: OAuthConfig | None = Field(
         default=None,
         description="Google-backed OAuth access for this profile (optional)",
@@ -1835,7 +1933,7 @@ class Profile(BaseModel):
             problems.append("role must be agent")
         if self.defense.enforcement != "flag" or self.defense.modes not in (None, ["flag"]):
             problems.append("defense.enforcement and defense.modes must be flag only")
-        for channel in ("alert_ingress", "matrix_ingress", "matrix_bridge"):
+        for channel in ("alert_ingress", "matrix_ingress", "matrix_bridge", "client_egress"):
             if getattr(self, channel) is not None:
                 problems.append(f"{channel} does not apply")
         if problems:

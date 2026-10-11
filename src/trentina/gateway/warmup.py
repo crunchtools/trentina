@@ -144,9 +144,15 @@ async def trentina_lifespan() -> AsyncIterator[dict[str, Any]]:
     if get_active_config() is not None and _task is None:
         _task = asyncio.create_task(warm_all(), name="trentina-warmup")
         started_here = True
+    # The client-egress listener (#442), on the loop that serves. A no-op
+    # unless startup configured one.
+    from . import client_egress
+
+    await client_egress.start()
     try:
         yield {}
     finally:
+        await client_egress.stop()
         if started_here and _task is not None:
             _task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

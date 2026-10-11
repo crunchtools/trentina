@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import ipaddress
 import json
 import logging
 import re
@@ -72,6 +71,7 @@ from ..warning import build_warning
 from .context import profile_context
 from .drivers import build_preprocessors
 from .matrix_relation import withheld_relation
+from .profile import profile_for_address
 from .proxy_utils import (
     PLAIN_TEXT,
     filter_response_headers,
@@ -231,26 +231,6 @@ async def close_matrix_client() -> None:
         _matrix_client = None
 
 
-def _resolve_profile_by_address(
-    host: str | None,
-    profiles: dict[str, Profile],
-) -> Profile | None:
-    """The profile whose ``source_networks`` hold ``host``, or None.
-
-    The loader guarantees at most one does. A host that is not an address
-    (Starlette's test client, a unix socket) matches nothing.
-    """
-    try:
-        address = ipaddress.ip_address(host or "")
-    except ValueError:
-        return None
-    for profile in profiles.values():
-        ingress = profile.matrix_ingress
-        if ingress is not None and any(address in net for net in ingress.source_networks):
-            return profile
-    return None
-
-
 def _caller_address(request: Request) -> str | None:
     """The address that connected, or None when it may not be that.
 
@@ -304,7 +284,7 @@ def register_matrix_routes(
     async def matrix_proxy_endpoint(request: Request) -> Response:
         if not request.path_params.get("path", "").startswith("_matrix/"):
             return Response(content="not found", status_code=404, media_type=PLAIN_TEXT)
-        profile = _resolve_profile_by_address(_caller_address(request), profiles)
+        profile = profile_for_address(_caller_address(request), profiles, "matrix_ingress")
         if profile is None:
             return Response(
                 content="unauthorized",

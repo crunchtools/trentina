@@ -774,3 +774,9 @@ check = "copy_paste_detection"
 path = "src/trentina/preprocess/petit.py"
 justification = "PetitProcessor.reduce (the body of run until #419, made synchronous so structured can call it) is reported as identical to reduce_base64 in unpack/office.py and open_archive in unpack/archive.py. One groups log lines, the others decode a base64 office file and open an archive. They share a run of guard-then-return statements around one try, nothing else. Structural collision, not duplication."
 classification = "gourmand_bug"
+
+[[exceptions]]
+check = "redundant_error_handling"
+path = "src/trentina/gateway/client_egress.py"
+justification = "_audit writes the gateway_calls row for a tunnel that has already been served or refused. A database error there is logged by kind and dropped, exactly as router._audit and llm_proxy._audit do: raising would turn a lost audit row into a failed connection for a client that did nothing wrong, and the tunnel is already closed. The loss is visible in the journal."
+classification = "by_design"

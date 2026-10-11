@@ -223,6 +223,13 @@ def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
             "(no profile used it, or the client credentials were unset) — "
             "restart to serve it"
         )
+    if not active.egress_listener_configured and any(
+        p.client_egress is not None for p in new_config.profiles.values()
+    ):
+        notes.append(
+            "client_egress added but its listener was not started (no profile "
+            "had one at startup) — restart to serve it"
+        )
     notes.extend(_unapplied_delegated(current, new_config))
     for name, profile in sorted(new_config.profiles.items()):
         notes.extend(_unapplied_proxy_oauth_for(current.profiles.get(name), profile, name))
@@ -387,6 +394,12 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
     if after.matrix_bridge != before.matrix_bridge:
         after.matrix_bridge = before.matrix_bridge
         held.append("matrix_bridge")
+    # Where the agent's own client may be tunnelled, and which addresses
+    # speak for it (#442). An agent able to reload its own host list could
+    # add the one host it was talked into wanting.
+    if after.client_egress != before.client_egress:
+        after.client_egress = before.client_egress
+        held.append("client_egress")
     held.extend(_hold_matrix_networks(before, after))
     b = before.matrix_ingress
     a = after.matrix_ingress

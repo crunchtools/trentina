@@ -208,4 +208,6 @@ ENV PYTHONSAFEPATH=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
 EXPOSE 8019
+# Client egress (CONNECT), bound only when a profile has client_egress.
+EXPOSE 8021
 ENTRYPOINT ["python", "-m", "trentina"]

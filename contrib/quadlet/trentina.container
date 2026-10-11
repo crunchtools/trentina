@@ -11,6 +11,8 @@ Image=quay.io/crunchtools/trentina:latest
 ContainerName=trentina
 Network=trentina.network
 PublishPort=127.0.0.1:8019:8019
+# Client egress (--egress-port, 8021) is not published: agents reach it on
+# their own internal network. See docs/client-egress.md.
 Exec=--transport streamable-http --host 0.0.0.0 --port 8019 --no-dbus
 
 # Containment. TRENTINA_REQUIRE_HARDENED refuses to start without it.
