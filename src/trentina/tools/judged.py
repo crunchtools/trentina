@@ -15,6 +15,7 @@ advisories). Everything after the payload exists is here, once.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -23,8 +24,10 @@ from ..database import is_blocked, record_capture
 from ..dbus_interface import emit_request_event
 from ..defense import DefenseVerdict, Provenance, defend, layer_verdicts
 from ..errors import BlockedSourceError
-from ..gateway.context import current_call
+from ..gateway import paging
+from ..gateway.context import current_call, get_current_parts
 from ..gateway.scope import current_scope
+from ..l1.pipeline import run_l1
 from ..modes import Mode, gaps_of, refusal_body, refusal_reason
 from ..quarantine.agent import quarantine_redact
 from ..report import Disposition, LayerState, build_report
@@ -42,6 +45,13 @@ for the bytes, so there is no extraction prompt of its own to use."""
 
 
 BLOCKLIST_REASON = "on the blocklist"
+
+PAGED_FAMILIES = frozenset({"fetch", "read", "content"})
+"""The families whose payload is one text an agent reads to the end, and so
+is delivered in parts when it is too large to judge in one call (#446). A
+directory listing and a search answer are not: neither comes near the size."""
+
+READ_NEXT_KEY = "read_next"
 
 
 def blocklisted(source: str, mode: Mode) -> BlockedSourceError:
@@ -236,6 +246,27 @@ async def judge_and_deliver(
         BlockedSourceError: block or redact refused. The message names the
             layer or gap, never the payload.
     """
+    paged = None
+    if delivered is None and family in PAGED_FAMILIES:
+        paged = await _hold(
+            document,
+            mode=mode,
+            prompt=prompt,
+            provenance=provenance,
+            l3_context=l3_context,
+            hidden=precomputed_l1.stats.hidden if precomputed_l1 is not None else None,
+            source=source,
+            source_type=source_type,
+            domain=domain,
+            blocklists=not allowlisted,
+        )
+    if paged is not None:
+        # Part 1 is what this call judges and delivers; the rest is held.
+        document = paged.parts[0].text
+        precomputed_l1 = await _part_l1(document, paged.hidden)
+        l3_context = "\n".join(
+            note for note in (l3_context, paging.part_briefing(paged, 1)) if note
+        )
     call = _Call(
         mode=mode,
         family=family,
@@ -271,7 +302,27 @@ async def judge_and_deliver(
         },
     )
     original = document if delivered is None else delivered
+    if paged is None:
+        return await _dispose(call, verdict, original, prompt, extras, redact_extras)
+    try:
+        response = await _dispose(call, verdict, original, prompt, extras, redact_extras)
+    except BlockedSourceError:
+        # Nothing of it was delivered, so there is no rest to come back for.
+        paging.release(paged)
+        raise
+    return _first_part(paged, verdict, response)
 
+
+async def _dispose(
+    call: _Call,
+    verdict: DefenseVerdict,
+    original: Any,
+    prompt: str | None,
+    extras: Mapping[str, Any] | None,
+    redact_extras: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Deliver, extract from or refuse a judged payload, as the call's mode says."""
+    mode, allowlisted = call.mode, call.allowlisted
     if mode is Mode.FLAG:
         honeypot = honeypot_caller()
         if honeypot is not None:
@@ -294,6 +345,80 @@ async def judge_and_deliver(
     if gaps_of(verdict).blocking():
         raise call.refuse(verdict, reason or "not fully judged")
     return await _redact(call, verdict, prompt or DEFAULT_REDACT_PROMPT, redact_extras)
+
+
+def pageable(tokens: int) -> bool:
+    """Whether a payload of ``tokens`` would be delivered in parts to this caller.
+
+    For a tool that would otherwise refuse the size itself (``content``).
+    """
+    config = get_config()
+    return (
+        get_current_parts() is not None
+        and honeypot_caller() is None
+        and config.part_target_tokens > 0
+        and config.whole_tokens < tokens <= config.paged_tokens
+    )
+
+
+async def _hold(document: str, **judged_as: Any) -> paging.Paged | None:
+    """Cut and hold a payload too large to judge in one call (#446), or None.
+
+    Only behind the gateway, for a profile that can call ``read_part``: the
+    router binds the offer (``context.PartsOffer``). Standalone there is no
+    store and nothing to read part 2 with, so nothing is cut. A honeypot is
+    handed what arrived, whole and unmarked.
+    """
+    offer = get_current_parts()
+    profile = _caller()[0]
+    if offer is None or profile is None or honeypot_caller() is not None:
+        return None
+    # The tokenizer runs over the whole text: off the loop, like L1 (#295).
+    parts = await asyncio.to_thread(paging.cut, document)
+    if parts is None:
+        return None
+    return paging.hold(
+        paging.Origin(
+            profile=profile,
+            backend=offer.backend,
+            tool=offer.tool,
+            label=offer.label,
+            is_error=False,
+            acted=False,
+        ),
+        parts,
+        **judged_as,
+    )
+
+
+async def _part_l1(text: str, hidden: Any) -> PipelineResult | None:
+    """L1 over part 1 with the whole document's hiding counts, as every later
+    part is read (``scan_tool_response``); None leaves L1 to ``defend()``."""
+    if hidden is None:
+        return None
+    pipeline = await asyncio.to_thread(run_l1, text)
+    pipeline.stats.hidden = pipeline.stats.hidden.at_least(hidden)
+    return pipeline
+
+
+def _first_part(
+    paged: paging.Paged, verdict: DefenseVerdict, response: dict[str, Any]
+) -> dict[str, Any]:
+    """Part 1 in the tool's own shape, led by where the rest is.
+
+    ``_trentina_part`` is what the router writes on every later part, with
+    the footer's words under ``read_next``: an internal tool answers in JSON,
+    so the instruction rides in the marker and not in a text block.
+    """
+    offer = get_current_parts()
+    if verdict.flagged_by is not None:
+        paged.flagged_at, paged.flagged_by = 1, verdict.flagged_by.value
+    paged.delivered.add(1)
+    marker = paging.marker(paged, 1)
+    marker[READ_NEXT_KEY] = paging.footer(
+        paged, 1, offer.reader if offer is not None else paging.READ_PART_TOOL
+    )
+    return {paging.PART_KEY: marker, **response}
 
 
 def _deliver(

@@ -66,7 +66,7 @@ from .compress import (
     maybe_trigger_compression,
     set_on_compressed,
 )
-from .context import current_call, current_session, profile_context
+from .context import PartsOffer, current_call, current_session, profile_context
 from .decoy import canned_result, keep_arguments, leaked_tokens, record_trip, served_tools
 from .destination import Destination, destination_of
 from .errors import BackendCallError, BackendResponseTooLargeError
@@ -1182,7 +1182,19 @@ async def _dispatch(
     # mode; the bound policy is what their refusals offer as alternatives.
     # The pre-processor request goes through as asked: its default depends on
     # what arrives, so the tool resolves it under the bound policy.
-    with profile_context(profile, policy, preprocess):
+    # A profile that can read part 2 may be handed a part 1 (#446).
+    reader = _part_reader(profile)
+    parts = (
+        PartsOffer(
+            backend_name,
+            tool_name,
+            served_name(profile, backend_name, tool_name) or tool_name,
+            reader,
+        )
+        if reader is not None
+        else None
+    )
+    with profile_context(profile, policy, preprocess, parts):
         return await call_internal_tool(
             tool_name,
             forwarded,
@@ -1697,6 +1709,10 @@ async def _deliver_part(
         ),
         hidden=paged.hidden,
         lead_in=part.lead_in,
+        source=paged.source,
+        source_type=paged.source_type or "tool_response",
+        domain=paged.domain,
+        blocklists=paged.blocklists,
     )
     warning = decision.warning
     by = (warning or {}).get("flagged_by")

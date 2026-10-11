@@ -69,7 +69,7 @@ Four rules shape every layer, and any change to a layer is held to them. `tests/
 1. **Nothing is delivered that the layers did not read, in its original or decoded form, or, for binary, by its identified type. Each layer reads it exactly once.** Pre-processing is two stages, always in this order (#365). Stage 1, the pre-processors, shrinks what will be delivered. Stage 2, the unpack stage (`unpack/scan.py`), builds what the layers read from that delivery: strict base64 and hex that decode to text are decoded in place, archives, office files and PDFs are opened and read inside (#368, #369), images are read by OCR (#370), and other binary is labelled by its signature, `(image/png, 1.1 KB, not read)`. The delivery itself is never changed. L1 and L2 run in parallel on the unpacked text, and L3 reads it after both. Redact's checks on turn 2's output follow the same rule: L1 and L2 read the delivered strings once, unpacked, as the one document turn 3 then reads (#379). Binary an agent could open and no layer can read yet (an image, a PDF, an archive this stage does not open) is the `binary_unread` gap: block and redact refuse it, and offer `flag`. One stated exception to "exactly once" (#340): a response delivered in parts is a delivery per part, and each part is read once behind the last 64 tokens of the part before it. Those 64 tokens are read with both parts and delivered with the first. It is the guard band L2's windows already keep inside a single read, carried across the one boundary a single read no longer spans; it is not a second pass over a delivery.
 2. **Layers share findings, never inputs.** L1's counts by type and L2's label and score reach L3's briefing as structure: fixed names and numbers, never payload text. No layer reads text that another layer produced.
 3. **A layer's weakness is fixed inside that layer or at model selection.** The fix is a better model, a new L1 stage, or a gate at model selection. Two gates hold L2, from opposite sides: the obfuscation gate rejects a model a trick can blind (`benchmarks/l2_obfuscation.py`, #362), and the benign gate rejects one that refuses what the gateway delivers (`benchmarks/l2_benign.py`, #411). The image build runs both at one threshold, and the gateway checks their records at startup. The pipeline never gets an extra pass, a second input, or a reshaped copy to compensate.
-4. **Read time is linear in payload size, one pass per layer.** The admission cap (`CLASSIFIER_MAX_TOKENS`) is sized on that: 32K tokens is about 23 s of L2 on production CPU, well inside the 60 s MCP client timeout. A proxied text response over 16K tokens is not judged in one call at all: it is cut into parts of about 12K and each part is judged, whole, when it is asked for ([Responses delivered in parts](#responses-delivered-in-parts)). A part is read behind the last 64 tokens of the part before it, the margin L2's own windows keep between themselves, so those tokens are read with both parts and delivered once.
+4. **Read time is linear in payload size, one pass per layer.** The admission cap (`CLASSIFIER_MAX_TOKENS`) is sized on that: 32K tokens is about 23 s of L2 on production CPU, well inside the 60 s MCP client timeout. A text response over 16K tokens, proxied or an internal tool's, is not judged in one call at all: it is cut into parts of about 12K and each part is judged, whole, when it is asked for ([Responses delivered in parts](#responses-delivered-in-parts)). A part is read behind the last 64 tokens of the part before it, the margin L2's own windows keep between themselves, so those tokens are read with both parts and delivered once.
 
 Redact's extraction turn reads the same unpacked text (`DefenseVerdict.read`), so it extracts from what was judged. Until 0.57.1 it read a copy L1 had normalized, which made L1 a cleansing layer for that one consumer (#360).
 
@@ -174,7 +174,8 @@ the total L2 work, and each extra part costs an L3 call and an agent turn,
 so a part is the largest thing that reliably beats the timeout, not the
 smallest.
 
-- **When.** A proxied response whose content is only text and counts over
+- **When.** A proxied response whose content is only text, or what `fetch`,
+  `read` or `content` is about to judge (#446, 1.9.0), that counts over
   `whole_tokens` (16K L2 tokens: four thirds of `TRENTINA_PART_TOKENS`, never
   over the admission cap). Up to that it is delivered as it always was.
 - **How it is cut.** Once, after the pre-processors, on L2 token boundaries,
@@ -187,7 +188,9 @@ smallest.
   `[TRENTINA] End of part 2 of 5. For part 3 call read_part(handle="…",
   part=3)…`. `_trentina_part` carries the same facts as data. The count is
   fixed when the response is cut. `read_part` with no arguments lists what
-  the profile holds.
+  the profile holds. An internal tool answers in JSON, so its part 1 is the
+  tool's own shape (`content`, `scan`) led by `_trentina_part`, whose
+  `read_next` holds the footer's words; parts 2 on are the three blocks.
 - **In order.** A part is read only after every part before it was
   delivered, and a part already read can be read again. So a flagged part
   cannot be read around, and the last part, which releases the response, is
@@ -211,7 +214,16 @@ smallest.
 - **What does not change.** `read_part` reaches no backend, so a tool that
   writes never acts twice. A profile whose internal backend does not allow
   `read_part_tool` is not paged. A response over 16 parts is refused as over
-  the admission cap. The internal tools are not paged yet.
+  the admission cap.
+- **An internal tool's source.** Every part of a fetched page is judged as
+  that URL (a file as its path, inline content as its hash), so a later part
+  flagged under block puts the source on the caller's blocklist, as a page
+  flagged whole does, and the next fetch of it is refused before any bytes
+  arrive. An allowlisted source is not put there, and its block-to-redact
+  downgrade applies to part 1 only: a later flagged part is refused, with
+  redact offered. A honeypot is handed what arrived, whole. `dir` and
+  `search` are not cut. Standalone, with no gateway and so no `read_part`,
+  nothing is cut and the admission cap refuses what it always refused.
 
 Each `read_part` call writes its own `gateway_calls` row against the backend
 and tool that produced the response, `part 3/5` in its message.
@@ -253,8 +265,8 @@ gaps below.
 | A Matrix room event the gateway could not decrypt, under withhold | the withheld notice in its place; the rest of the response as judged | nothing | withheld, and counted in the warning |
 | Bytes in a [client egress](client-egress.md) tunnel | as the destination sent them | nothing: they are TLS and the gateway holds no key | not judged; the tunnel decides the host and records the bytes (gap 26) |
 | Any of those three under `unjudged: annotate` | as it arrived, media with the warning header | nothing | forwarded unjudged, by the operator's choice |
-| A proxied response that is only text, over 16K L2 tokens and within 16 parts (192K) | one part of about 12K tokens per call, the first from the call itself and the rest from `read_part` (#340) | each part whole, behind the last 64 tokens of the part before | judged a part at a time; block withholds a flagged part and every later one |
-| Over the admission cap (`CLASSIFIER_MAX_TOKENS`, 32,768 L2 tokens) and not delivered in parts: an internal tool's content, a response with an image or blob in it, one over 16 parts, any response to a profile without `read_part` | block and redact: a refusal; flag: as it arrived | flag: the head only | refused |
+| A proxied response that is only text, or an internal tool's (`fetch`, `read`, `content`) behind the gateway, over 16K L2 tokens and within 16 parts (192K) | one part of about 12K tokens per call, the first from the call itself and the rest from `read_part` (#340, #446) | each part whole, behind the last 64 tokens of the part before | judged a part at a time; block withholds a flagged part and every later one |
+| Over the admission cap (`CLASSIFIER_MAX_TOKENS`, 32,768 L2 tokens) and not delivered in parts: a response with an image or blob in it, one over 16 parts, any response to a profile without `read_part`, a honeypot's, an internal tool's standalone | block and redact: a refusal; flag: as it arrived | flag: the head only | refused |
 
 ### Known gaps
 
@@ -340,10 +352,11 @@ one does; the rest name the benchmark that measured them.
 13. **Flag mode reads only the head of an oversized payload that is not
     delivered in parts.** The tail is delivered unread, and the warning says
     so (`l2_truncated`, `l3_truncated`). Since 1.8.0 a proxied text response
-    is delivered in parts and read whole (#340); what remains is the
-    internal tools (`fetch`, `read`, `content`), a response with an image or
-    a blob in it, one over 16 parts, and a profile that is not allowed
-    `read_part`.
+    is delivered in parts and read whole (#340), and since 1.9.0 so is what
+    `fetch`, `read` and `content` return behind the gateway (#446). What
+    remains: a response with an image or a blob in it, one over 16 parts, a
+    profile that is not allowed `read_part`, a honeypot, and the tools run
+    standalone. Tested.
 14. **Under `unjudged: annotate`, Matrix media and undecrypted events
     forward unread** (#371). Under withhold, the default, they do not: an
     image is read by OCR and judged, other media is refused, and an

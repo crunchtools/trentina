@@ -1,7 +1,8 @@
 """A response too large to judge in one call, delivered in judged parts (#340).
 
 L2's cost is linear in what it reads, and a client waits about a minute. So a
-proxied response over ``Config.whole_tokens`` is cut once, on L2 token
+response over ``Config.whole_tokens``, a backend's or an internal tool's
+(#446, cut in ``tools/judged.py``), is cut once, on L2 token
 boundaries, into near-equal parts of about ``Config.part_target_tokens``.
 The call that produced it returns part 1; the rest are read with the
 ``read_part`` tool, which serves from the store below and never reaches a
@@ -100,6 +101,13 @@ class Paged:
         delivered: the parts delivered so far. Parts are read in order.
         flagged_at, flagged_by: the first part a layer flagged and the layer,
             once one has; ``block`` refuses that part and every later one.
+        source, source_type, domain: for an internal tool's response (#446),
+            what the tool judged it as: the URL, path or content hash. Every
+            part is judged as that source, so a flagged later part puts it
+            on the blocklist as a flagged whole response does. None for a
+            proxied response, whose source is its backend and tool.
+        blocklists: False when an operator vouched for the source: its
+            flags stand and it is not put on the blocklist.
     """
 
     handle: str
@@ -120,6 +128,10 @@ class Paged:
     delivered: set[int] = field(default_factory=set)
     flagged_at: int | None = None
     flagged_by: str | None = None
+    source: str | None = None
+    source_type: str | None = None
+    domain: str | None = None
+    blocklists: bool = True
 
     @property
     def count(self) -> int:
@@ -261,6 +273,10 @@ def hold(
     provenance: Provenance,
     l3_context: str | None,
     hidden: HiddenStats | None,
+    source: str | None = None,
+    source_type: str | None = None,
+    domain: str | None = None,
+    blocklists: bool = True,
 ) -> Paged:
     """Keep a cut response for its caller and return it, handle issued."""
     now = time.monotonic()
@@ -283,6 +299,10 @@ def hold(
         acted=origin.acted,
         size=size,
         used=now,
+        source=source,
+        source_type=source_type,
+        domain=domain,
+        blocklists=blocklists,
     )
     _store[paged.handle] = paged
     return paged

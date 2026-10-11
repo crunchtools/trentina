@@ -128,8 +128,10 @@ cuts in two.
 
 ## Not in this release
 
-- The internal tools (`fetch`, `read`, `content`) are not paged.
-- An L1 pattern for gateway-styled lines inside a document.
+- The internal tools (`fetch`, `read`, `content`) are not paged. (Done in
+  1.9.0, #446.)
+- An L1 pattern for gateway-styled lines inside a document. (Done in 1.9.0,
+  #447.)
 - Parts around image or blob blocks; valid JSON per part; read-ahead.
 - L3 measured on an attack split across parts.
 

@@ -223,8 +223,10 @@ async def read_part_tool(
     A response too large to judge in one call arrives a part at a time, and
     every part is judged by all three layers before it is delivered. Each
     part ends with a [TRENTINA] line that gives the handle and the number of
-    the next part. The whole response is already held at the gateway, so the
-    rest of it comes from this tool and not from the tool that produced it.
+    the next part; the first part of a fetch, read or content response
+    carries the same under ``_trentina_part``. The whole response is already
+    held at the gateway, so the rest of it comes from this tool and not from
+    the tool that produced it.
     With no arguments, lists the responses held for this profile.
 
     Args:
@@ -245,8 +247,8 @@ async def read_part_tool(
         ``expires_in_seconds``.
     """
     # Behind the gateway the router answers this call itself and it never
-    # arrives here (``router._read_part``, #340). Standalone there is no
-    # proxied response to hold, so there is never a part to read.
+    # arrives here (``router._read_part``, #340). Standalone nothing is cut
+    # and nothing is held, so there is never a part to read.
     del handle, part, trentina_mode
     return {"held": [], "note": "Responses are delivered in parts only behind the gateway."}
 

@@ -261,7 +261,7 @@ reliably faster and 4096 and 8192 far slower. One cap bounds the scan (#225):
   the head and L3 reads the same token-bounded head (`classifier.head`), so
   `l2_truncated`/`l3_truncated` exist only on flag.
 
-A proxied text response over `Config.whole_tokens` (16K) is not judged in one
+A text response over `Config.whole_tokens` (16K) is not judged in one
 call (#340): `gateway/paging.py` cuts it once into parts of about
 `TRENTINA_PART_TOKENS` (12000; 0 is off), the router delivers part 1
 (`_hold_paged`, `_deliver_part`) and answers the `read_part` tool itself
@@ -269,8 +269,13 @@ call (#340): `gateway/paging.py` cuts it once into parts of about
 with the previous part's last 64 tokens as `lead_in`. The remainder is held
 in memory only, by a handle bound to the profile. Wording an agent reads is
 in `paging.py`; say "part", never "page" (wiki and PDF pages own that word).
-A profile without `read_part_tool` on its internal backend is not paged, and
-the internal tools are not paged yet.
+A profile without `read_part_tool` on its internal backend is not paged.
+`fetch`, `read` and `content` are paged too (#446), from the other side:
+`router._dispatch` binds a `context.PartsOffer`, `judged.judge_and_deliver`
+cuts and holds, judges part 1 and returns it in the tool's shape under
+`_trentina_part`; parts 2 on take `_read_part` like any other, judged as the
+tool's own source (`Paged.source`), so a late flag blocklists the URL.
+Standalone, unbound or a honeypot: no offer, nothing cut.
 
 Async callers must use `classify_async`. Calling the
 synchronous `classify()` from a coroutine blocks the event loop for the whole
