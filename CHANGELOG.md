@@ -10,6 +10,15 @@ under that name.
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-10-11
+
+### Fixed
+- A call the client abandons writes its audit row (#439). A caller that hung
+  up mid-scan cancelled the request, and `CancelledError` is a
+  `BaseException`: the catch-all in `_route_tools_call` never saw it, so the
+  call left no `gateway_calls` row. It is now recorded as `client_abandoned`,
+  a new outcome in the failed group, with the time it had run.
+
 ## [1.5.0] - 2026-10-11
 
 ### Added

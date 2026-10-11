@@ -98,6 +98,9 @@ class TestGrouping:
         assert group_of(Outcome.DECOY_TRIPPED.value) == "tripped"
         assert not (TRIPPED_OUTCOMES & (BLOCKED_OUTCOMES | FAILED_OUTCOMES))
 
+    def test_a_caller_that_hung_up_is_a_failure(self) -> None:
+        assert group_of(Outcome.CLIENT_ABANDONED.value) == "failed"
+
     def test_legacy_rows_are_unknown_not_guessed(self) -> None:
         """Pre-migration rows must not be back-fitted into a real outcome."""
         assert group_of("legacy") == "unknown"

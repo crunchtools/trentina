@@ -116,6 +116,7 @@ blocked 34 hostile pages.
 | `tool_error` | failed | Backend completed but reported `isError`. |
 | `backend_error` | failed | Upstream failed: network, timeout, auth, 4xx/5xx. |
 | `gateway_error` | failed | Our own bug. The only outcome that should page anyone. |
+| `client_abandoned` | failed | The caller hung up before the call finished, usually on a scan longer than its timeout. Nothing was delivered. |
 | *(NULL)* | unknown | Row predates the taxonomy. Never back-fitted. |
 
 **Only the `failed` group is a health signal.** The `blocked` group is a
@@ -209,6 +210,8 @@ never reach a backend:
 - `params` or `arguments` that are not a JSON object are `denied_guard`.
 - An exception that escapes every audited path is `gateway_error`, with
   `error_message` naming its class only, before the HTTP edge answers 500.
+- A call cancelled before any path wrote its row is `client_abandoned` (#439),
+  with the time it had run. `tool` is the name's fingerprint, as above.
 
 A fetch advisory (a suspicious 415/406, a 4xx body the pipeline flags, a
 redirect to a binary) is a refusal and audits as `blocked_defense`; until

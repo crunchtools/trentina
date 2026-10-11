@@ -593,6 +593,8 @@ async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[
     is ours, so it is recorded as gateway_error before it propagates to the
     HTTP edge's 500: a probe that crashes the router is the probe the audit
     most needs to see.
+    A call cancelled before any path wrote its row is client_abandoned (#439):
+    the caller stopped waiting, usually on a scan longer than its timeout.
     """
     token = _call_audited.set(False)
     # Random, not the JSON-RPC id: that one is the caller's to choose.
@@ -608,6 +610,18 @@ async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[
             _audit(profile.name, "", "", Outcome.DENIED_GUARD, 0, "params must be an object")
             return _err(req_id, JSONRPC_INVALID_PARAMS, "params must be an object")
         return await _tools_call(profile, req_id, params)
+    except asyncio.CancelledError:
+        # The caller hung up (#439). CancelledError is a BaseException, so
+        # the catch-all below never saw it and the call left no row at all.
+        if not _call_audited.get():
+            _audit(
+                profile.name,
+                "",
+                redact_source(params.get("name") if isinstance(params, dict) else None),
+                Outcome.CLIENT_ABANDONED,
+                int((time.monotonic() - t0) * 1000),
+            )
+        raise
     except Exception as exc:
         if not _call_audited.get():
             _audit(

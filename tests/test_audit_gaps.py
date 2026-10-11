@@ -7,6 +7,7 @@ router and reads the row back.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,6 +56,11 @@ def _profile(*, short_names: bool = False) -> Profile:
     assert profile.auth is not None
     profile.auth.bearer_token = SecretStr("x")
     return profile
+
+
+async def _audited_then_cancelled(*_args: Any, **_kwargs: Any) -> None:
+    router_mod._audit("alpha", "web", "content_tool", router_mod.Outcome.OK, 1)
+    raise asyncio.CancelledError
 
 
 async def _call(profile: Profile, params: Any) -> dict[str, Any]:
@@ -141,6 +147,31 @@ class TestCatchAll:
                 {"name": f"web{NAMESPACE_SEP}content_tool", "arguments": {"content": "x"}},
             )
         assert _rows() == [("web", "content_tool", "gateway_error")]
+
+    async def test_a_cancelled_call_is_a_client_abandoned_row(self) -> None:
+        """CancelledError is a BaseException: the catch-all never saw it (#439)."""
+        with (
+            patch.object(router_mod, "resolve_call", side_effect=asyncio.CancelledError),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await _call(_profile(), {"name": f"web{NAMESPACE_SEP}fetch_tool", "arguments": {}})
+        assert _rows() == [("", redact_source(f"web{NAMESPACE_SEP}fetch_tool"), "client_abandoned")]
+
+    async def test_a_call_audited_before_it_was_cancelled_keeps_its_one_row(self) -> None:
+        with (
+            patch.object(
+                router_mod,
+                "_dispatch",
+                return_value=SimpleNamespace(content=[], structured_content=None, is_error=False),
+            ),
+            patch.object(router_mod, "_assemble_call_result", side_effect=_audited_then_cancelled),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await _call(
+                _profile(),
+                {"name": f"web{NAMESPACE_SEP}content_tool", "arguments": {"content": "x"}},
+            )
+        assert _rows() == [("web", "content_tool", "ok")]
 
 
 class TestFetchAdvisory:
