@@ -163,12 +163,10 @@ _MAX_LISTED = 100
 # middle of data is what an injected system note looks like, and L2 read it
 # as one: the same rows scored 0.00 as they arrived and 0.99 with one tagged
 # marker among them. The words say what the tag said.
-#
-# A listing gives its rows first and the note after them (#431). Note first,
-# a hundred image digests behind "with this shape; /Links /VolumeName:" read
-# to L2 as a sentence handing over a payload: a `system_df` reply scored 0.99
-# that way and 0.01 this way, the same characters in the other order.
 _OMITTED = "{count} more element(s) with this shape omitted"
+# Rows first, note after (#431). Note first, a run of image digests behind
+# "with this shape; /Links /VolumeName:" read to L2 as a sentence handing
+# over a payload: a `system_df` reply scored 0.99 that way and 0.01 this way.
 _LISTED = "{rows}; {count} more element(s) with this shape, {fields}"
 _IDENTICAL = "{count} more element(s) identical to the one above"
 
