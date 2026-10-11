@@ -48,5 +48,5 @@ Thumbs.db
 
 # Benchmark output (issue #43) — generated per run, not source
 benchmarks/results/
-benchmarks/data/
+corpora/data/
 .claude/worktrees/

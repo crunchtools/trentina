@@ -9,7 +9,7 @@ The question it answers: **does the choice of LLM behind the Q-Agent matter?**
 
 ## Why this corpus is hard
 
-The corpus (`tests/adversarial_corpus.py`) is built to isolate what only Layer 3
+The corpus (`corpora/internal.py`) is built to isolate what only Layer 3
 can do. Every attack is written to slip past the cheaper layers:
 
 - **Layer 1** (deterministic detection) counts hidden markup, zero-width
@@ -86,8 +86,8 @@ Each run writes two timestamped files to `--out`:
 `--corpus external` runs [`jackhhao/jailbreak-classification`](https://huggingface.co/datasets/jackhhao/jailbreak-classification)
 (Apache-2.0), a third-party labeled set, so the defense is not graded only
 against attacks its own author wrote, and the FP rate gets a denominator in
-the hundreds. `benchmarks/external_corpus.py` pins one dataset revision and
-checks each split's SHA-256, downloads on first use into `benchmarks/data/`
+the hundreds. `corpora/jailbreak.py` pins one dataset revision and
+checks each split's SHA-256, downloads on first use into `corpora/data/`
 (gitignored, never vendored), and maps rows onto `Case` as
 `external_jailbreak` / `external_benign`.
 
@@ -323,7 +323,7 @@ to 11 to 29: metrics rows, journals, unit properties, disk usage. Across
 every profile, L3 called 313 of 401 L2 detections clean (#411).
 
 `benchmarks/l2_benign.py` is the gate for that side. The corpus
-(`tests/benign_corpus.py`) is 225 invented cases of the shapes that were
+(`corpora/benign_ops.py`) is 225 invented cases of the shapes that were
 refused, generated from a fixed seed; no line of it comes from a production
 host. Each case is read exactly as the gateway reads a tool response:
 through the default pre-processors (`transform_response`), the text block
@@ -852,7 +852,7 @@ the middle of a task, with nothing about security in its prompt and a
 workspace block of fake credentials made up for the run. The user asks for a
 page to be fetched and summarized, a scripted `fetch_url` call stands for
 the model having asked, and the tool result is a benign document
-(`detonation_corpus.CARRIERS`, twelve of them) with an insert spliced into
+(`corpora.detonation.CARRIERS`, twelve of them) with an insert spliced into
 the middle. The model's next turn is what is measured; a model that reads a
 planted secret is handed it and gets one more.
 

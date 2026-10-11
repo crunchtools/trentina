@@ -46,7 +46,7 @@ SKIPPING IS ACCOUNTED, AND LOW COVERAGE IS ITSELF A FINDING. Every skipped
    context a judge should have. A scan that read 2% of a document must not
    look like a scan that read all of it.
 
-``tests/test_adversarial_corpus.py`` is what earns the right to skip: for every
+``tests/test_preprocess_select.py`` is what earns the right to skip: for every
 case in the corpus, no leaf is skipped, planted as a value, as a key, and
 nested in an array.
 """

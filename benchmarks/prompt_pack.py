@@ -72,11 +72,11 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from benchmarks import external_corpus
 from benchmarks.detonation import CARRIERS_PER_INSERT, build_cases, document_id
-from benchmarks.detonation_corpus import BENIGN_INSERTS, CARRIERS, internal_inserts
 from benchmarks.provider_benchmark import ProviderReport, resolved_model, run_provider
-from tests.adversarial_corpus import CORPUS, Case
+from corpora import fetch, jailbreak
+from corpora.detonation import BENIGN_INSERTS, CARRIERS, internal_inserts
+from corpora.internal import CORPUS, Case
 from trentina.quarantine import packs
 
 GENERIC = "generic"
@@ -134,7 +134,7 @@ def split_cases(split: str, train_external: int, cache_dir: Path) -> list[Case]:
     """The cases of ``train`` or ``held-out``: internal, embedded, external."""
     train = split == "train"
     internal = [case for case in CORPUS if in_train(case.id) == train]
-    external = external_corpus.load("train" if train else "test", cache_dir=cache_dir)
+    external = jailbreak.load("train" if train else "test", cache_dir=cache_dir)
     return internal + embedded_cases(train) + (external[:train_external] if train else external)
 
 
@@ -230,7 +230,7 @@ def gate(candidate: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
     """
     reasons = []
     ours, theirs = candidate["by_category"], baseline["by_category"]
-    planted = [name for name in theirs if name != external_corpus.CATEGORY_ATTACK]
+    planted = [name for name in theirs if name != jailbreak.CATEGORY_ATTACK]
     lost = [name for name in planted if _caught(ours, name) < _caught(theirs, name)]
     if lost:
         reasons.append(f"it catches fewer planted instructions: {', '.join(lost)}")
@@ -240,13 +240,13 @@ def gate(candidate: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
     # not pay for more documents flagged, which is what production reads.
     if _embedded_flagged(candidate)[0] > _embedded_flagged(baseline)[0]:
         reasons.append("it flags more benign instructions embedded in a document")
-    jailbreak = external_corpus.CATEGORY_ATTACK
-    given_up = _caught(theirs, jailbreak) - _caught(ours, jailbreak)
+    direct = jailbreak.CATEGORY_ATTACK
+    given_up = _caught(theirs, direct) - _caught(ours, direct)
     spared = round(
         baseline["false_positive"] * baseline["benign"]
         - candidate["false_positive"] * candidate["benign"]
     )
-    if given_up > JAILBREAK_ALLOWANCE * theirs.get(jailbreak, {"of": 0})["of"]:
+    if given_up > JAILBREAK_ALLOWANCE * theirs.get(direct, {"of": 0})["of"]:
         reasons.append(f"it gives up more than {JAILBREAK_ALLOWANCE:.0%} of the direct jailbreaks")
     elif given_up > 0 and spared <= given_up:
         reasons.append("it gives up more direct jailbreaks than the benign refusals it spares")
@@ -335,7 +335,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--baseline", help="A previous run's JSON to compare with and gate on.")
     parser.add_argument("--emit", help="Write the pack here, measured, if it passes the gate.")
     parser.add_argument("--out", help="Write this run's JSON here.")
-    parser.add_argument("--cache-dir", default=str(external_corpus.CACHE_DIR))
+    parser.add_argument("--cache-dir", default=str(fetch.CACHE_DIR))
     parser.add_argument("--votes", type=int, default=1, help="Ask each case this many times.")
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--retries", type=int, default=2)
@@ -392,8 +392,8 @@ async def main_async(args: argparse.Namespace) -> int:
             "internal": sum(1 for c in cases if not c.id.startswith(("ext-", EMBEDDED_PREFIX))),
             "embedded": sum(1 for c in cases if c.id.startswith(EMBEDDED_PREFIX)),
             "external": {
-                "dataset": external_corpus.DATASET,
-                "revision": external_corpus.REVISION,
+                "dataset": jailbreak.DATASET,
+                "revision": jailbreak.REVISION,
                 "cases": sum(1 for c in cases if c.id.startswith("ext-")),
             },
         },

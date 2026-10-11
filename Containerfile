@@ -129,13 +129,13 @@ RUN tr -d - < /proc/sys/kernel/random/uuid > /etc/machine-id.seed
 FROM pip-builder AS l2-gate
 COPY --from=model-builder /models/ /models/
 COPY benchmarks/l2_obfuscation.py benchmarks/l2_benign.py /gate/benchmarks/
-COPY tests/adversarial_corpus.py tests/benign_corpus.py /gate/tests/
+COPY corpora/internal.py corpora/benign_ops.py /gate/corpora/
 RUN cd /gate \
  && ORT_DISABLE_TELEMETRY=1 CLASSIFIER_MODEL_PATH=/models/prompt-injection-guard-small \
     python benchmarks/l2_obfuscation.py --record
 
 # The benign gate (#411), at the same threshold: the model must not refuse
-# the operations output and forum replies of tests/benign_corpus.py, read
+# the operations output and forum replies of corpora/benign_ops.py, read
 # through the default pre-processors as the gateway reads them. Its own layer,
 # after the obfuscation gate's, so a change to one corpus re-runs one gate.
 RUN cd /gate \

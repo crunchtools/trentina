@@ -79,16 +79,16 @@ if str(_REPO_ROOT) not in sys.path:
 
 from benchmarks import decoy_tools
 from benchmarks.decoy_tools import send, share, tool
-from benchmarks.detonation_corpus import (
+from corpora.detonation import (
     ACTION_ATTACKS,
     BENIGN_INSERTS,
-    CACHE_DIR,
     CARRIERS,
     Carrier,
     Insert,
-    injecagent_inserts,
     internal_inserts,
 )
+from corpora.fetch import CACHE_DIR
+from corpora.injecagent import injecagent_inserts
 from trentina.config import get_config
 from trentina.defense import build_l3_briefing
 from trentina.l1 import run_l1

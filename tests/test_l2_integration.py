@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from tests.benign_corpus import BENIGN as BENIGN_SHAPES
+from corpora.benign_ops import BENIGN as BENIGN_SHAPES
 from trentina.jsonwalk import iter_leaves
 from trentina.l1.pipeline import run_l1
 from trentina.quarantine.classifier import (
@@ -248,7 +248,7 @@ def _flagged(category: str) -> tuple[int, int]:
 class TestKnownGaps:
     """Known gaps 18 and 19 (#411), held open: each asserts the shipped model
     STILL flags the shape. When a model or a pre-processor closes one, its
-    test fails on purpose: take the shape out of ``benign_corpus.KNOWN_GAPS``
+    test fails on purpose: take the shape out of ``benign_ops.KNOWN_GAPS``
     (it is then gated) and the entry out of docs/defense-pipeline.md."""
 
     def test_a_reply_that_is_little_but_an_event_id_is_flagged(self) -> None:

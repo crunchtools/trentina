@@ -210,6 +210,7 @@ Then point Claude Code at it:
 | [Authentication](docs/authentication.md) | Static bearer, OAuth proxy with DCR or a provisioned client, delegated issuers |
 | [Defense Pipeline](docs/defense-pipeline.md) | L1/L2/L3, modes, coverage and known gaps |
 | [Benchmark](docs/benchmark.md) | Detection rates per layer and per L3 provider |
+| [Corpora](docs/corpora.md) | Every attack and benign set the defense is measured on: source, licence, what it measures |
 | [Prompt Packs](docs/l3-prompt-tuning.md) | The judge's prompts tuned per model: shipped packs, the gate, tuning your own |
 | [Content Tools](docs/quarantine-tools.md) | fetch, read, dir, content, search |
 | [Blocklist](docs/blocklist.md) | Cumulative detection memory |

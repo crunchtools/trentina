@@ -19,6 +19,7 @@ import zipfile
 
 import pytest
 
+from corpora.owasp import OWASP_TEST_ATTACKS
 from trentina.l1.pipeline import run_l1
 from trentina.preprocess.base import PreProcessContext
 from trentina.preprocess.detect import document_hidden, hiding_removed
@@ -27,7 +28,6 @@ from trentina.unpack import archive, office
 from trentina.unpack.archive import Budget, open_archive
 from trentina.unpack.scan import ENCRYPTED_ENTRY, read_blob, unpack
 
-from .adversarial_corpus import OWASP_TEST_ATTACKS
 from .office_files import b64, docx, paragraph, pptx, run, xlsx, zipped
 from .test_unpack import _defend
 

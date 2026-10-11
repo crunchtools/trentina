@@ -2,7 +2,10 @@
 uv.lock
 .specify/templates/
 # Prompt-injection payloads: reviewing them feeds live injections to the reviewer
-tests/adversarial_corpus.py
+corpora/internal.py
+corpora/l1_patterns.py
+corpora/owasp.py
+corpora/detonation.py
 demo/attack-sim/payload/
 docs/demo/site/
 # Captured third-party tool list: data, not code under review

@@ -11,7 +11,7 @@ import pytest
 
 from benchmarks import l2_sweep
 from benchmarks import provider_benchmark as bench
-from tests.adversarial_corpus import CORPUS, Case
+from corpora.internal import CORPUS, Case
 from trentina.quarantine.classifier import ClassifierResult
 
 if TYPE_CHECKING:

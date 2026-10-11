@@ -46,7 +46,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from benchmarks.l2_obfuscation import TRANSFORMS
-from tests.adversarial_corpus import ATTACKS, BENIGN
+from corpora.internal import ATTACKS, BENIGN
 from trentina.l1 import run_l1
 from trentina.l1.delimiters import normalize_delimiters
 from trentina.l1.encoded import normalize_encoded

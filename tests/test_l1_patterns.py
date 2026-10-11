@@ -1,7 +1,7 @@
 """L1's OpenRouter and OWASP patterns, their evasions, and their near-misses (#201).
 
 Every pattern has an attack it must catch and a benign line it must not, both
-in ``tests/adversarial_corpus.py``. The near-miss is the half that matters
+in ``corpora/internal.py``. The near-miss is the half that matters
 more: a directive pattern that fires on "ignore previous versions of the
 package" rates ordinary ops text as an attack, and under block that is a
 refused call (#204).
@@ -13,6 +13,8 @@ import time
 
 import pytest
 
+from corpora.l1_patterns import L1_PATTERN_CASES, PatternCase
+from corpora.owasp import OWASP_TEST_ATTACKS
 from trentina.l1.directives import PATTERNS, strip_directives
 from trentina.l1.encoded import _DATA_URI_PATTERN
 from trentina.l1.evasion import (
@@ -23,8 +25,6 @@ from trentina.l1.evasion import (
     within_one_edit,
 )
 from trentina.l1.pipeline import run_l1
-
-from .adversarial_corpus import L1_PATTERN_CASES, OWASP_TEST_ATTACKS, PatternCase
 
 _STAGES = {"evasion", "delimiters", "encoded", "exfiltration", "hidden"}
 

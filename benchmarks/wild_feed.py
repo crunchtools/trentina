@@ -38,7 +38,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from benchmarks.external_corpus import download
+from corpora.fetch import download
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -58,7 +58,7 @@ SHORTEST = 40
 class Feed:
     """The read API, one paced request at a time.
 
-    ``fetch`` returns the body at a URL: ``external_corpus.download`` by
+    ``fetch`` returns the body at a URL: ``corpora.fetch.download`` by
     default, which refuses an oversized body and an HTTP error. ``pause`` is
     called with ``PAUSE`` before every request after the first.
     """

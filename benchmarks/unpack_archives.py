@@ -24,7 +24,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tests.adversarial_corpus import CORPUS
+from corpora.internal import CORPUS
 from tests.image_files import page
 from tests.office_files import b64, docx, paragraph, pptx, run, xlsx, zipped
 from tests.pdf_files import pdf, show

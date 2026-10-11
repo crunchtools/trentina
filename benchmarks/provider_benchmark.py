@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cross-provider injection-detection benchmark (issue #43).
 
-Runs the Layer 3 adversarial corpus (``tests/adversarial_corpus.py``) through
+Runs the Layer 3 adversarial corpus (``corpora/internal.py``) through
 ``quarantine_detect()`` once per configured LLM provider and produces a
 comparative report: detection rate by attack category, false-positive rate on
 benign content, risk-level calibration, latency, and estimated token cost.
@@ -26,7 +26,7 @@ Usage (see docs/benchmark.md for the full option list)
         (issue #86). No provider, no tokens; needs the Prompt Guard 2 model.
 
     uv run python benchmarks/provider_benchmark.py --corpus external
-        The third-party jailbreak set (issue #85, ``external_corpus.py``);
+        The third-party jailbreak set (issue #85, ``jailbreak.py``);
         ``both`` runs the two, reported separately and never blended.
 
 Every run also scores each case through L2 once (the score does not depend
@@ -58,8 +58,9 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from benchmarks import external_corpus, l2_sweep
-from tests.adversarial_corpus import CORPUS, RISK_ORDER, Case
+from benchmarks import l2_sweep
+from corpora import jailbreak
+from corpora.internal import CORPUS, RISK_ORDER, Case
 from trentina.config import DEFAULT_CLASSIFIER_THRESHOLD, get_config
 from trentina.defense import _stage_one
 from trentina.quarantine.agent import quarantine_detect
@@ -341,7 +342,7 @@ CORPORA = ("internal", "external")
 
 def corpus_of(case: Case | CaseResult) -> str:
     """``external`` for a category under the external prefix, else ``internal``."""
-    return "external" if case.category.startswith(external_corpus.CATEGORY_PREFIX) else "internal"
+    return "external" if case.category.startswith(jailbreak.CATEGORY_PREFIX) else "internal"
 
 
 CHARS_PER_TOKEN = 4
@@ -533,8 +534,8 @@ def _category_table(
 CORPUS_NOTES = {
     "internal": ("Hand-authored semantic attacks built to slip past L1 and L2: this measures L3."),
     "external": (
-        f"`{external_corpus.DATASET}` ({external_corpus.LICENSE}), pinned at "
-        f"`{external_corpus.REVISION[:12]}`. Direct jailbreak, NOT indirect "
+        f"`{jailbreak.DATASET}` ({jailbreak.LICENSE}), pinned at "
+        f"`{jailbreak.REVISION[:12]}`. Direct jailbreak, NOT indirect "
         "injection in retrieved content: it measures L2 and over-triggering on "
         "benign roleplay, not L3's semantic gap. High detection here is a "
         "sanity floor. No severity labels, so Risk-cal is n/a."
@@ -684,9 +685,9 @@ def build_meta(
     }
     if "external" in corpora:
         corpora["external"].update(
-            dataset=external_corpus.DATASET,
-            revision=external_corpus.REVISION,
-            license=external_corpus.LICENSE,
+            dataset=jailbreak.DATASET,
+            revision=jailbreak.REVISION,
+            license=jailbreak.LICENSE,
             split=external_split,
         )
     return {
@@ -713,7 +714,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--external-split",
-        choices=external_corpus.SPLITS,
+        choices=jailbreak.SPLITS,
         default="test",
         help="Split of the external set: test (262), train (1,044) or all (1,306).",
     )
@@ -760,7 +761,7 @@ def select_cases(args: argparse.Namespace) -> list[Case]:
     if args.corpus in ("internal", "both"):
         corpora.append(list(CORPUS))
     if args.corpus in ("external", "both"):
-        corpora.append(external_corpus.load(args.external_split))
+        corpora.append(jailbreak.load(args.external_split))
     wanted = {c.strip() for c in args.categories.split(",")} if args.categories else None
     selected: list[Case] = []
     for corpus in corpora:

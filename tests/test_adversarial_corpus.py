@@ -1,7 +1,7 @@
 """Integrity tests for the Layer 3 adversarial corpus.
 
 These tests make NO API calls. They prove two things about
-``tests/adversarial_corpus.py``:
+``corpora/internal.py``:
 
 1. The corpus is well-formed (unique ids, valid risk levels, coherent
    attack/benign split).
@@ -25,7 +25,7 @@ import json
 
 import pytest
 
-from tests.adversarial_corpus import (
+from corpora.internal import (
     ATTACKS,
     BENIGN,
     CORPUS,

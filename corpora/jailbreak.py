@@ -12,26 +12,22 @@ gap; the internal corpus stays that measurement.
 
 Pinned to one dataset revision and checked by SHA-256, so a result names
 exactly what it was measured on. Downloaded on first use into
-``benchmarks/data/`` (gitignored): the repo does not vendor 1.6 MB of
+``corpora/data/`` (gitignored): the repo does not vendor 1.6 MB of
 jailbreak prompts.
 """
 
 from __future__ import annotations
 
 import csv
-import hashlib
 import io
-import os
-import tempfile
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-import httpx
-
-from tests.adversarial_corpus import Case
+from corpora.fetch import CACHE_DIR, download, pinned
+from corpora.internal import Case
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
 DATASET = "jackhhao/jailbreak-classification"
 REVISION = "2f2ceeb39658696fd3f462403562b6eea5306287"
@@ -52,11 +48,7 @@ CATEGORY_ATTACK = "external_jailbreak"
 CATEGORY_BENIGN = "external_benign"
 CATEGORY_PREFIX = "external_"
 
-CACHE_DIR = Path(__file__).resolve().parent / "data"
-
 _LABELS = {"jailbreak": True, "benign": False}
-MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
-"""The constitution's cap on a fetched response. The largest split is 1.3 MB."""
 _CSV_FIELD_LIMIT = 1 << 20
 """Largest prompt is ~12 KB; the stdlib default of 128 KB is fine today, this
 keeps a longer one from failing the parse instead of the benchmark."""
@@ -68,47 +60,6 @@ def url(split: str) -> str:
         f"https://huggingface.co/datasets/{DATASET}/resolve/{REVISION}"
         f"/balanced/jailbreak_dataset_{split}_balanced.csv"
     )
-
-
-def download(target: str, transport: httpx.BaseTransport | None = None) -> bytes:
-    """Stream ``target``, refusing it past ``MAX_DOWNLOAD_BYTES``."""
-    body = bytearray()
-    with (
-        httpx.Client(transport=transport, follow_redirects=True, timeout=60.0) as client,
-        client.stream("GET", target) as response,
-    ):
-        response.raise_for_status()
-        for chunk in response.iter_bytes():
-            body += chunk
-            if len(body) > MAX_DOWNLOAD_BYTES:
-                raise ValueError(f"{target} exceeds {MAX_DOWNLOAD_BYTES} bytes")
-    return bytes(body)
-
-
-def pinned(cached: Path, expected: str, fetch: Callable[[], bytes], what: str) -> bytes:
-    """A pinned file, from ``cached`` when its hash still matches, else fetched.
-
-    A fetched file that does not match ``expected`` (a SHA-256) is refused,
-    never cached: a benchmark measured on different rows than it names is
-    worse than one that does not run. ``what`` names the file in that error.
-    """
-    usable = cached.is_file() and not cached.is_symlink()
-    if usable and cached.stat().st_size <= MAX_DOWNLOAD_BYTES:
-        held = cached.read_bytes()
-        if hashlib.sha256(held).hexdigest() == expected:
-            return held
-    fetched = fetch()
-    actual = hashlib.sha256(fetched).hexdigest()
-    if actual != expected:
-        raise ValueError(f"{what}: sha256 {actual} does not match the pinned {expected}")
-    cached.parent.mkdir(parents=True, exist_ok=True)
-    # Written beside the cache and renamed over it: a symlink planted at the
-    # cache path is replaced, never followed.
-    fd, partial = tempfile.mkstemp(dir=cached.parent, suffix=".part")
-    with os.fdopen(fd, "wb") as out:
-        out.write(fetched)
-    Path(partial).replace(cached)
-    return fetched
 
 
 def _split_bytes(split: str, cache_dir: Path, fetch: Callable[[str], bytes]) -> bytes:

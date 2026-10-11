@@ -37,7 +37,7 @@ jobs:
         run: uv sync --all-extras --locked
 
       - name: Run linter
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests corpora
 
       - name: Run type checker
         run: uv run mypy src
@@ -212,6 +212,8 @@ jobs:
             docker run --rm \
               --entrypoint python \
               -v ${{ github.workspace }}/tests:/tests:ro \
+            -v ${{ github.workspace }}/corpora:/corpora:ro \
+              -v ${{ github.workspace }}/corpora:/corpora:ro \
               -e GEMINI_API_KEY="test_key_for_ci" \
               -e CLASSIFIER_MODEL="$model" \
               -e TRENTINA_REQUIRE_L2_MODEL=1 \
@@ -228,6 +230,7 @@ jobs:
           docker run --rm \
             --entrypoint python \
             -v ${{ github.workspace }}/tests:/tests:ro \
+            -v ${{ github.workspace }}/corpora:/corpora:ro \
             -e GEMINI_API_KEY="test_key_for_ci" \
             trentina:test-runner \
             -m pytest /tests/test_l3_integration.py -v
@@ -245,6 +248,7 @@ jobs:
             --security-opt no-new-privileges \
             --entrypoint python \
             -v ${{ github.workspace }}/tests:/tests:ro \
+            -v ${{ github.workspace }}/corpora:/corpora:ro \
             -e GEMINI_API_KEY="test_key_for_ci" \
             trentina:test-runner \
             -m pytest -p no:cacheprovider /tests/test_unpack_ocr.py /tests/test_unpack_pdf.py -v

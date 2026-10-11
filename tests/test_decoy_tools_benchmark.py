@@ -21,7 +21,7 @@ from benchmarks.decoy_tools import (
     as_json,
     report,
 )
-from tests.adversarial_corpus import Case
+from corpora.internal import Case
 
 
 def _reply(content: str = "", calls: tuple[str, ...] = ()) -> dict[str, Any]:

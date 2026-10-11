@@ -2,7 +2,7 @@
 
 The obfuscation gate (``l2_obfuscation.py``) holds a model to reading through
 encodings. This one holds it to the other side. Every case of the benign
-corpus (``tests/benign_corpus.py``: operations output and agent-forum replies,
+corpus (``corpora/benign_ops.py``: operations output and agent-forum replies,
 invented, of the shapes production refused) is read exactly as the gateway
 reads a tool response: through the default pre-processors
 (``gateway.transform.transform_response``), collected the way the perimeter
@@ -14,7 +14,7 @@ pre-processor's wording, is chosen on the tuning split; the held-out split is
 what is reported, gated and recorded. Exit 1 when the model, at its own
 threshold, flags more than ``BENIGN_MAX_RATE`` of the held-out cases.
 
-A shape the shipped model is known to flag (``benign_corpus.KNOWN_GAPS``) is
+A shape the shipped model is known to flag (``benign_ops.KNOWN_GAPS``) is
 scored and printed on every run and recorded beside the result, outside the
 budget: a gap that is measured every build, not one that is forgotten.
 
@@ -42,8 +42,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tests.adversarial_corpus import CORPUS
-from tests.benign_corpus import BENIGN, CATEGORIES, KNOWN_GAPS, Benign, in_tuning
+from corpora.benign_ops import BENIGN, CATEGORIES, KNOWN_GAPS, Benign, in_tuning
+from corpora.internal import CORPUS
 from trentina.config import get_config
 from trentina.gateway.ingress_defense import _collect_response_texts
 from trentina.gateway.profile import AuthConfig, Backend, Profile
