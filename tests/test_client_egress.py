@@ -712,3 +712,76 @@ class TestABurstIsOneLookup:
         assert (row["outcome"], row["error_message"]) == ("denied_guard", "resolver_busy")
         assert upstream.connections == 0
         writer.close()
+
+    async def test_a_refusal_after_an_expired_answer_leaves_nothing_behind(
+        self,
+        listener: dict[str, Profile],
+        upstream: _Upstream,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The stale answer is not what a later tunnel connects to."""
+        self._counting(monkeypatch, [PUBLIC_ADDRESS])
+        _response, _reader, writer = await _connect()
+        writer.close()
+        key = ("agent1", ALLOWED)
+        other = ("agent2", ALLOWED)
+        _until, target = client_egress._checked[key]
+        client_egress._checked[key] = (time.monotonic() - 1, target)
+        client_egress._checked[other] = (time.monotonic() - 1, target)
+
+        self._counting(monkeypatch, ["10.0.0.5"])
+        refused, _reader, writer = await _connect()
+        assert refused.startswith(b"HTTP/1.1 403")
+        writer.close()
+        assert key not in client_egress._checked
+        # Another profile's entry is its own: neither read nor removed here.
+        assert other in client_egress._checked
+
+    async def test_a_cancelled_check_keeps_nothing_and_is_asked_again(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        release = asyncio.Event()
+        calls = 0
+
+        async def check(_url: str) -> egress.ResolvedTarget:
+            nonlocal calls
+            calls += 1
+            await release.wait()
+            return egress.ResolvedTarget(ALLOWED, 443, (PUBLIC_ADDRESS,))
+
+        monkeypatch.setattr(client_egress, "check_url", check)
+        profile = _profile()
+        key = (profile.name, ALLOWED)
+        waiting = asyncio.create_task(client_egress._check(profile, ALLOWED))
+        while not calls:  # until the shared check itself is running
+            await asyncio.sleep(0)
+        client_egress._checking[key].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        assert key not in client_egress._checked
+        assert key not in client_egress._checking
+
+        release.set()
+        target = await client_egress._check(profile, ALLOWED)
+        assert target.addresses == (PUBLIC_ADDRESS,)
+        assert calls == 2
+        assert client_egress._checked.pop(key)[1] is target
+
+    async def test_a_client_that_hangs_up_does_not_cancel_the_check_for_the_others(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        release = asyncio.Event()
+
+        async def check(_url: str) -> egress.ResolvedTarget:
+            await release.wait()
+            return egress.ResolvedTarget(ALLOWED, 443, (PUBLIC_ADDRESS,))
+
+        monkeypatch.setattr(client_egress, "check_url", check)
+        profile = _profile()
+        gone = asyncio.create_task(client_egress._check(profile, ALLOWED))
+        stays = asyncio.create_task(client_egress._check(profile, ALLOWED))
+        await asyncio.sleep(0)
+        gone.cancel()
+        release.set()
+        assert (await stays).addresses == (PUBLIC_ADDRESS,)
+        client_egress._checked.clear()

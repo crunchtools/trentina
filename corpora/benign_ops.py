@@ -488,20 +488,22 @@ class _Maker:
         """
         r = self.r
         people = r.sample(_PEOPLE, 5)
-        team = r.choice(_TEAMS)
-        day = f"2026-10-{r.randrange(1, 9):02d}"
+        title = f"# {r.choice(_TEAMS)} sync, 2026-10-{r.randrange(1, 9):02d}"
         subjects = [r.choice(_SUBJECTS) for _ in range(topics)]
-        details: list[str] = []
-        actions: list[str] = []
-        for subject in subjects:
-            said = {"subject": subject, "n": 0, "who": "", "other": ""}
-            said["who"], said["other"] = r.sample(people, 2)
-            said["n"] = r.choice((2, 3, 5, 10, 14, 30))
+
+        def topic(subject: str) -> tuple[str, str]:
+            """One subject's line under Details, and the next step it left."""
+            who, other = r.sample(people, 2)
+            said = {"subject": subject, "who": who, "other": other}
+            said["n"] = str(r.choice((2, 3, 5, 10, 14, 30)))
             discussed = r.choice(_DISCUSSED).format(**said)
-            details.append(
-                f"- **{subject.capitalize()}:** {discussed} {r.choice(_DECIDED).format(**said)}"
+            decided = r.choice(_DECIDED).format(**said)
+            return (
+                f"- **{subject.capitalize()}:** {discussed} {decided}",
+                f"- [ ] {r.choice(_ACTIONS).format(**said)}",
             )
-            actions.append(f"- [ ] {r.choice(_ACTIONS).format(**said)}")
+
+        discussed = [topic(subject) for subject in subjects]
         decisions = [
             "- " + r.choice(_DECIDED).format(who=r.choice(people), other="", subject=subject, n=3)
             for subject in subjects[: max(2, topics // 3)]
@@ -527,7 +529,7 @@ class _Maker:
         )
         return "\n".join(
             [
-                f"# {team} sync, {day}",
+                title,
                 "",
                 f"Attendees: {', '.join(people)}",
                 "",
@@ -537,7 +539,7 @@ class _Maker:
                 "",
                 "## Details",
                 "",
-                *details,
+                *(detail for detail, _ in discussed),
                 "",
                 "## Decisions",
                 "",
@@ -545,7 +547,7 @@ class _Maker:
                 "",
                 "## Suggested next steps",
                 "",
-                *actions,
+                *(action for _, action in discussed),
                 *records,
                 "",
                 signoff,
