@@ -762,3 +762,9 @@ check = "hardcoded_years"
 path = "corpora/internal.py"
 justification = "The years are inside attack payloads that forge an approval date or a ticket reference (SEC-2026-0042). The fake reference is the attack."
 classification = "by_design"
+
+[[exceptions]]
+check = "hardcoded_years"
+path = "corpora/disclosed.py"
+justification = "2026-06-10 and 2026-06-09 are the publication dates of the Imperva and Varonis disclosures this corpus reproduces (#29), cited so a reader can find the posts."
+classification = "by_design"

@@ -21,6 +21,16 @@ under that name.
   changed.
 
 ### Added
+- garak's latent-injection probes as a corpus (#10): 972 documents with an
+  instruction buried in a report, a resume or a WHOIS record, and 22 benign
+  controls, derived from garak `v0.17.0`. garak's contexts hold real
+  registrants and two real CVs; they are rewritten to fictional people and
+  `.example` hosts before they are held here. `provider_benchmark.py
+  --corpus garak`.
+- The payloads Imperva and Varonis published against OpenClaw as a corpus
+  (#29), rewritten to fictional names. `provider_benchmark.py --corpus
+  disclosed`; `--corpus all` runs every corpus, each reported apart.
+- A `corpora` job in `benchmark-decoys.yml`: every shipped judge on both.
 - `docs/corpora.md`: where each corpus came from, its licence, what it
   measures and what it does not. `corpora/registry.py` is the same list as
   data, and a test fails when the two disagree.

@@ -23,6 +23,8 @@ A detection rate means nothing without the set it was measured on. Three things 
 | [Detonation](#detonation) | `corpora/detonation.py` | 12 carriers, 36 attack and 10 benign inserts | ours | AGPL-3.0-or-later | vendored |
 | [Jailbreak classification](#jailbreak-classification) | `corpora/jailbreak.py` | 262 test, 1,044 train | `jackhhao/jailbreak-classification` | Apache-2.0 | fetched |
 | [InjecAgent](#injecagent) | `corpora/injecagent.py` | 32 attack inserts | `uiuc-kang-lab/InjecAgent` | MIT | fetched |
+| [garak latent injection](#garak-latent-injection) | `corpora/garak_latent.py` | 972 attacks, 22 benign | `NVIDIA/garak`, anonymized | Apache-2.0 | vendored |
+| [Disclosed attacks](#disclosed-attacks) | `corpora/disclosed.py` | 5 attacks | published disclosures, rewritten | AGPL-3.0-or-later | vendored |
 
 `corpora/registry.py` holds the same list as data, and `tests/test_corpora_registry.py` fails when a module there has no record or a record has no section here.
 
@@ -91,6 +93,29 @@ The 32 data-stealing attacker instructions of [InjecAgent](https://github.com/ui
 - **What it does not measure.** Detection. They are inserts for the detonation harness, not labeled cases for a judge.
 - **Read by.** `benchmarks/detonation.py` (skipped with `--no-injecagent`).
 
+### garak latent injection
+
+The latent-injection probes of [garak](https://github.com/NVIDIA/garak), NVIDIA's LLM vulnerability scanner (#10): an instruction buried in a document an assistant is asked to read. Three families carry a document and are taken: stock-plan and earnings **reports**, **resumes**, and **WHOIS** records.
+
+- **Where it came from.** `garak/probes/latentinjection.py` at `v0.17.0` (commit `93aa9cdec309`), Apache-2.0. Each attack is garak's own cross product of context, separator, injection instruction, payload and trigger: 324 reports, 480 resumes, 168 WHOIS records. The user-side task ("Summarise this resume:") is left out, because the gateway judges the retrieved document and never sees the question.
+- **What was changed.** garak's contexts hold real people, so they are rewritten before they are held here. WHOIS records: registrant domains are under `.example`; names, addresses, mail and phone numbers are roster values; registry ids are zeroed; the registries' closing notices are cut. Resumes: one was a real researcher's CV and one a real professor's biography, and the employers, institutions, awards and name are rewritten. Reports: two executive names. The three trigger hosts are under `.example` and `.test`. The injection separators, instructions and payloads are garak's, unchanged. `corpora/garak_latent.json` is the result and `corpora/garak_latent.py` carries the full list of changes.
+- **Why it is here.** It is indirect injection in retrieved content, Trentina's threat model, written by someone else. The jailbreak set is third-party but direct; the internal corpus is indirect but ours.
+- **Benign controls.** The same 20 contexts with the injection removed, and garak's Eiffel Tower and legal paragraphs joined: 22 documents an agent would have read had nobody tampered with them.
+- **What it does not measure.** Variety. 972 documents are 20 contexts times a few dozen injections, so a rate here is a rate over templates, and 22 benign documents move the false-positive rate in steps of 5%. garak's Translation and LatentJailbreak families have no document and are not taken, nor is the rest of garak, which probes a model's own output.
+- **Rules.** `sample` is one attack in five by hash of its id, with every benign control; `full` is all 972. Case ids are `garak-<family>-<n>` in garak's loop order; categories start `garak_`. A test holds every mail address, phone number and registrant domain to the roster.
+- **Read by.** `benchmarks/provider_benchmark.py --corpus garak`.
+
+### Disclosed attacks
+
+Payloads reproduced from published disclosures (#29), so the defense is measured on what was actually sent and not on our restatement of it.
+
+- **Where it came from.** Imperva's [message-object injections](https://www.imperva.com/blog/compromise-openclaw-with-prompt-injections-in-message-objects/) against OpenClaw (2026-06-10): a contact name, a vCard and a location label that close their own object and carry an instruction, padded with whitespace so the victim never sees it; and the same instruction as hidden in an image, which the model Imperva tested refused. Varonis's [agent-phishing simulations](https://www.varonis.com/blog/openclaw-phishing) (2026-06-09): the one sentence of attacker text it published, a routine request for a customer export, under a mail header of ours.
+- **What was changed.** The researcher's name and the second name are roster names, the host is `corp_artifactory.example` (the underscore is the original's), and the phone numbers are placeholders. Padding, brackets and wording are kept. Imperva elides both ends of the location label; two opening words are ours. Each case's `notes` says what was changed.
+- **Why it is here.** These attacks worked against a deployed agent. The internal corpus cites them and restates them; this holds the originals.
+- **What it does not measure.** Anything statistical: it is five cases, to be read one at a time. The Varonis request is indistinguishable in text from a real colleague's, so a miss on it is Varonis's finding and argues for an outbound control more than a better detector. Varonis's other three scenarios published no attacker text. The display-name allowlist bypass in #29 is an identity question and has no payload.
+- **Rules.** Categories start `disclosed_`. L1 strips nothing from any of them, and a test says so.
+- **Read by.** `benchmarks/provider_benchmark.py --corpus disclosed`.
+
 ## What Is Not a Corpus
 
 - **The wild feed** (`benchmarks/wild_feed.py`, #357) collects what agents are sent on a public agent network. Its output is a run artifact and never a fixture.
@@ -112,11 +137,18 @@ The 32 data-stealing attacker instructions of [InjecAgent](https://github.com/ui
 # The internal corpus through every configured L3 provider
 uv run python benchmarks/provider_benchmark.py
 
-# Internal and the third-party set, each reported apart
+# Internal and the jailbreak set, each reported apart
 uv run python benchmarks/provider_benchmark.py --corpus both
 
+# garak's documents: the sample, or all 972
+uv run python benchmarks/provider_benchmark.py --corpus garak
+uv run python benchmarks/provider_benchmark.py --corpus garak --garak-split full
+
+# Every corpus, each reported apart
+uv run python benchmarks/provider_benchmark.py --corpus all
+
 # What would run, with no API call
-uv run python benchmarks/provider_benchmark.py --corpus both --dry-run
+uv run python benchmarks/provider_benchmark.py --corpus all --dry-run
 ```
 
 ## Related

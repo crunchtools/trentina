@@ -53,6 +53,22 @@ CORPORA: tuple[Corpus, ...] = (
         prefix="external_",
     ),
     Corpus("InjecAgent", "injecagent", "uiuc-kang-lab/InjecAgent", "MIT", FETCHED),
+    Corpus(
+        "garak latent injection",
+        "garak_latent",
+        "NVIDIA/garak, anonymized",
+        "Apache-2.0",
+        VENDORED,
+        prefix="garak_",
+    ),
+    Corpus(
+        "Disclosed attacks",
+        "disclosed",
+        "published disclosures, rewritten to fictional names",
+        "AGPL-3.0-or-later",
+        VENDORED,
+        prefix="disclosed_",
+    ),
 )
 
 SUPPORT: frozenset[str] = frozenset({"fetch", "registry"})

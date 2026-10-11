@@ -6,6 +6,8 @@ corpora/internal.py
 corpora/l1_patterns.py
 corpora/owasp.py
 corpora/detonation.py
+corpora/disclosed.py
+corpora/garak_latent.json
 demo/attack-sim/payload/
 docs/demo/site/
 # Captured third-party tool list: data, not code under review
