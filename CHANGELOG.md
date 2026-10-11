@@ -12,7 +12,7 @@ under that name.
 
 ### Fixed
 - A `tools/call` the client abandons mid-scan now writes a `gateway_calls`
-  row with the new `client_abandoned` outcome (failed group) and the elapsed
+  row with the new `cancelled` outcome (unknown group, not a failure) and the elapsed
   duration, then re-raises the cancellation (#439).
 
 ## [1.5.0] - 2026-10-11

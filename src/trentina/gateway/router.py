@@ -620,14 +620,14 @@ async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[
             )
         raise
     except asyncio.CancelledError:
-        # A BaseException: the client hung up mid-scan (#439). Re-raised, so
+        # A BaseException: the task was cancelled mid-scan (#439), by a hang-up or a shutdown. Re-raised, so
         # the cancellation still propagates.
         if not _call_audited.get():
             _audit(
                 profile.name,
                 "",
                 redact_source(params.get("name") if isinstance(params, dict) else None),
-                Outcome.CLIENT_ABANDONED,
+                Outcome.CANCELLED,
                 int((time.monotonic() - t0) * 1000),
             )
         raise

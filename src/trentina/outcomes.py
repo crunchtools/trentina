@@ -88,9 +88,10 @@ class Outcome(str, Enum):
     GATEWAY_ERROR = "gateway_error"
     """Our own bug. The only outcome that should ever page anyone."""
 
-    CLIENT_ABANDONED = "client_abandoned"
-    """The client hung up while the call was still running (#439), so the
-    task was cancelled before any path wrote a row."""
+    CANCELLED = "cancelled"
+    """The call's task was cancelled before any path wrote a row (#439). The
+    cause is not known: a client hang-up and a server shutdown look alike, so
+    it is neither blamed on the client nor counted as a failure."""
 
 
 BLOCKED_OUTCOMES: frozenset[Outcome] = frozenset(
@@ -112,7 +113,6 @@ FAILED_OUTCOMES: frozenset[Outcome] = frozenset(
         Outcome.TOOL_ERROR,
         Outcome.BACKEND_ERROR,
         Outcome.GATEWAY_ERROR,
-        Outcome.CLIENT_ABANDONED,
     }
 )
 """Genuine failures. This is the health signal."""
@@ -214,4 +214,6 @@ def group_of(outcome: str) -> str:
         return "blocked"
     if parsed in TRIPPED_OUTCOMES:
         return "tripped"
+    if parsed is Outcome.CANCELLED:
+        return "unknown"
     return "failed"
