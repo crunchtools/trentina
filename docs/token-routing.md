@@ -337,7 +337,7 @@ One consequence is worth knowing before you build on it. A per-record **filterin
 
 ```json
 [{"key":"PROJ-1000","summary":"Nightly build failed"},
- "100 more element(s) with this shape; /key: PROJ-1001, PROJ-1002, ..."]
+ "PROJ-1001, PROJ-1002, ...; 100 more element(s) with this shape, /key"]
 ```
 
 The marker lists every element; the `...` is only this page's. Exact equality is what makes it lossless: the representative plus the list reconstructs each record. Fields that do not vary stay out of the list, a marker names at most 100 elements before the next one opens a fresh group, and a record with more than four identifier fields is left alone so the list never becomes the payload. Everything listed is delivered and judged. An identifier is at most 64 characters with no whitespace, matched by bounded patterns (petit's `pull_identifiers`), so a listed value cannot carry a sentence. The details report `groups_listed` and `elements_listed` beside `groups_collapsed` and `elements_dropped`.

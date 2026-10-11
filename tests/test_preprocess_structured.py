@@ -181,15 +181,15 @@ class TestIdentifierListing:
         first, *markers = json.loads(result.content)
         assert first == _KEYED[0]
         assert markers[0] == (
-            "100 more element(s) with this shape; /key: "
-            + ", ".join(r["key"] for r in _KEYED[1:101])
+            ", ".join(r["key"] for r in _KEYED[1:101])
+            + "; 100 more element(s) with this shape, /key"
         )
         # Past _MAX_LISTED the next member opens a new group, verbatim, and
         # its marker lists the rest: every record is reconstructible.
         delivered = json.loads(result.content)
         assert delivered[2] == _KEYED[101]
         assert delivered[3] == (
-            "98 more element(s) with this shape; /key: " + ", ".join(r["key"] for r in _KEYED[102:])
+            ", ".join(r["key"] for r in _KEYED[102:]) + "; 98 more element(s) with this shape, /key"
         )
         assert len(delivered) == 4
 
@@ -207,7 +207,7 @@ class TestIdentifierListing:
         ]
         result = await _run(json.dumps(records))
         marker = json.loads(result.content)[1]
-        assert marker.startswith("9 more element(s) with this shape; /id /key: ")
+        assert marker.endswith("; 9 more element(s) with this shape, /id /key")
         assert "10002 PROJ-2, 10003 PROJ-3" in marker
         assert "10000" not in marker
 
@@ -256,7 +256,7 @@ class TestIdentifierListing:
         records = [{"a/b": {"ids": [f"PROJ-{i}"]}, "s": "x y"} for i in range(10)]
         result = await _run(json.dumps(records))
         marker = json.loads(result.content)[1]
-        assert marker.startswith("9 more element(s) with this shape; /a~1b/ids/0: ")
+        assert marker.endswith("; 9 more element(s) with this shape, /a~1b/ids/0")
         assert "PROJ-9" in marker
 
     async def test_too_many_integers_fall_back_to_the_string_identifiers(self) -> None:

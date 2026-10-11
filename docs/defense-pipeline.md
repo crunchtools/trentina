@@ -323,27 +323,27 @@ one does; the rest name the benchmark that measured them.
     tool call through the gateway. It is a tripwire for the common case,
     where an injection says "send the key to this address" and the agent
     does. Tested.
-18. **A response that is little but a base64-shaped identifier is flagged
-    by L2** (#411). The shipped model passes the obfuscation gate because it
-    reads base64 as possibly hostile, and a reply such as
-    `{"ok": true, "event_id": "$..."}`, a Matrix event ID in an object with
-    one other field, gives it almost no context to read the ID against: 9 of
-    12 flag at 0.7, scoring 0.71 to 0.94. An identifier inside a record does not
-    (0 of 41 unit, container, image and disk listings). `block` refuses such
-    a reply and offers `redact`. Scored on every image build as
-    `event_id_reply` ([benchmark](benchmark.md#l2-benign-gate-411-404)).
+18. *Closed in 1.4.1 (#431).* A reply that is little but an event ID,
+    `{"ok": true, "event_id": "$..."}`, was recorded as flagged 9 times in
+    12. That was the gate's harness reading the reply twice, as text and as
+    its structured copy; the router drops the copy, and read once none
+    flags. The shape is gated now. The number is kept so later gaps keep
+    theirs.
+19. **A log can be flagged by L2** (#411, #419, #431). A journal or a mail
+    log is key fingerprints, container IDs, message IDs and audit records,
+    and the shipped model's score on one moves with which of them it holds.
+    Of a dozen to a score of lines, 3 of 20 held-out cases flag at 0.7
+    (`journal_query`, `syslog_search`); of a hundred lines in one JSON
+    string, 2 of 6 (`journal_query_100`). Since #419 `structured` hands the
+    long form to petit, and that did not close this: a journal of mixed
+    units keeps about two lines in three. Removing any one kind of token
+    from what the model reads clears some logs and flags others, so there is
+    nothing for a pre-processor to do; it is fixed at model selection.
+    `block` refuses such a reply and offers `redact`; asking for fewer
+    lines, or a narrower unit or pattern, often avoids it. Scored on every
+    image build, outside the gate's budget
+    ([benchmark](benchmark.md#the-gate-reads-as-the-router-reads-431)).
     Tested, in the image (`tests/test_l2_integration.py`).
-19. **A long log inside a JSON string can be flagged by L2** (#411, #419).
-    A hundred journal lines returned as one string is read in many windows
-    of which the worst decides. Since #419 `structured` hands such a string
-    to petit, and that did not close this: a journal of mixed units keeps
-    about two lines in three, because lines that differ in a word (a unit
-    name, a key fingerprint) are each their own group, and 2 of 6 flag at
-    0.7 where 1 of 6 did, not the same ones. A journal of one repeated
-    message reduces to three samples and a count. Asking for fewer lines,
-    or a narrower unit or pattern, avoids it. Scored on every image build as
-    `journal_query_100` ([benchmark](benchmark.md#a-log-in-a-json-string-419)).
-    Tested, in the image.
 20. **A request that reads as an ordinary one passes every layer** (#29).
     Varonis's published customer-export request, a colleague asking an agent
     to send this week's export, is flagged by nothing: L1 strips nothing, L2

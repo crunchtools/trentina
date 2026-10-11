@@ -28,8 +28,9 @@ What becomes of a token:
   text (``office.py``). One that does not open, or breaks a limit, falls to
   the next case and is labelled unread.
 * **Anything else stays verbatim:** short binary, hex digests up to SHA-512's
-  128 characters, and runs that decode to binary but read like words, such
-  as a URL path or a run of ``x``.
+  128 characters, numbers (decimal digits up to ``DECIMAL_MAX``), and runs
+  that decode to binary but read like words, such as a URL path or a run
+  of ``x``.
 
 Why decoded text carries no marker: any bracketed note in front of it, such
 as ``[base64 → text]``, made L2 flag 4 to 8 of the 14 benign corpus texts,
@@ -89,6 +90,14 @@ HEX_DIGEST_MAX = 128
 """Hex runs up to SHA-512's length that do not decode to text are digests,
 identifiers read as they are. Hex that decodes to text is decoded at any
 length."""
+
+DECIMAL_MAX = 20
+"""A run of decimal digits up to this long is a number, read as it is: twenty
+digits is the largest unsigned 64-bit integer. Without it an even-length byte
+count is hex that happens to decode to text, and ``"Size":7764637970`` reached
+the layers as ``"Size":wdcyp`` (#431). Hex text written in digits alone can
+spell at most ten characters under this, from an alphabet without ``j`` to
+``o`` or ``z``."""
 
 TINY_IMAGE_PIXELS = 4
 """An image whose header says it is at most this many pixels a side cannot
@@ -262,6 +271,8 @@ def _run(token: str, depth: int, state: _Pass) -> str | None:
         return _long(token, OPAQUE, state)
     if len(token) < MIN_TOKEN:
         return None
+    if len(token) <= DECIMAL_MAX and token.isascii() and token.isdigit():
+        return None  # a number
     if _HEX.fullmatch(token) and not len(token) % 2:
         unhexed = bytes.fromhex(token)
         if _as_text(unhexed) is None and len(token) <= HEX_DIGEST_MAX:

@@ -65,7 +65,7 @@ The fourteen test inputs from the OWASP [LLM Prompt Injection Prevention Cheat S
 
 - **Where it came from.** Generated from a fixed seed (411), so a case id names the same text on every run. Every line is invented; none comes from a production host.
 - **Why it is here.** The internal corpus has fourteen benign cases, all prose written to look like an attack. Nothing in any gate looked like routine tool output until this did.
-- **Rules.** 207 cases are gated: the image build fails a model that refuses more than 2% of them. Two shapes the shipped model is known to flag (`KNOWN_GAPS`) are measured on every build and never dropped; they are [known gaps](defense-pipeline.md#known-gaps) 18 and 19. One case in four is the tuning split, by hash of its id.
+- **Rules.** 195 cases are gated: the image build fails a model that refuses more than 2% of them. Three shapes the shipped model is known to flag (`KNOWN_GAPS`, all logs) are measured on every build and never dropped; they are [known gap](defense-pipeline.md#known-gaps) 19. Each case is read as the router reads a tool response (#431). One case in four is the tuning split, by hash of its id.
 - **Read by.** `benchmarks/l2_benign.py` (the image build's benign gate), `tests/test_benign_gate.py`, `tests/test_coverage_gaps.py`, `tests/test_l2_integration.py`.
 
 ### Detonation

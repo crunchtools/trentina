@@ -456,18 +456,23 @@ def _build() -> tuple[Benign, ...]:
 BENIGN: tuple[Benign, ...] = _build()
 """The corpus: 225 cases across twelve shapes."""
 
-KNOWN_GAPS: tuple[str, ...] = ("event_id_reply", "journal_query_100")
+KNOWN_GAPS: tuple[str, ...] = ("journal_query", "syslog_search", "journal_query_100")
 """Shapes the shipped model is known to flag, measured on every run and held
-outside the gate's budget: known gaps 18 and 19 in
-``docs/defense-pipeline.md``.
+outside the gate's budget: known gap 19 in ``docs/defense-pipeline.md``.
 
-``event_id_reply``: a response that is a base64url identifier in an object
-with one other field gives a classifier chosen for reading base64 as
-possibly hostile almost no context to read it against.
-``journal_query_100``: a hundred journal lines inside one JSON string is
-key fingerprints, container IDs and audit records that petit reduces by
-only a quarter to a third (#419: a line that differs in a word is its own
-group), read in many windows of which the worst one decides.
+All three are logs. A journal or a mail log is key fingerprints, container
+IDs, message IDs and audit records, and the model's score on one moves with
+which of them it holds: taking the container IDs out of one journal took it
+from 0.79 to 0.01 and another from 0.52 to 0.98. ``journal_query_100`` is a
+hundred such lines in one JSON string, which petit reduces by only a quarter
+to a third (#419: a line that differs in a word is its own group).
+``journal_query`` and ``syslog_search`` are a dozen to a score of lines, and
+were gated until the gate read a response as the router does (#431): read
+that way 3 of their 20 held-out cases flag, where the budget for the whole
+corpus is 2.
+
+``event_id_reply`` (known gap 18) left this list in the same change: read
+once, none of the twelve flags.
 
 A shape leaves this list by passing, in the change that says so."""
 

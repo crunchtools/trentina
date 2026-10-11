@@ -25,9 +25,10 @@ from corpora.benign_ops import BENIGN as BENIGN_SHAPES
 from corpora.disclosed import CORPUS as DISCLOSED
 from corpora.garak_encodings import ENCODINGS
 from corpora.internal import CORPUS as INTERNAL
+from trentina.gateway.ingress_defense import _collect_response_texts
 from trentina.gateway.profile import AuthConfig, Backend, Profile
+from trentina.gateway.router import _drop_duplicate_structured
 from trentina.gateway.transform import transform_response
-from trentina.jsonwalk import iter_leaves
 from trentina.l1.pipeline import run_l1
 from trentina.quarantine.classifier import (
     classify,
@@ -248,20 +249,22 @@ _DEFAULTS = Profile(
 
 def _as_read(payload: Any, category: str) -> str:
     """A tool response as ``benchmarks/l2_benign.py`` reads it, which reports
-    the same counts: the JSON text through the default pre-processors, then
-    every string of the response, unpacked. A journal's text is reduced
-    (#419); an event ID reply is too short to be."""
+    the same counts, and as the router does (#431): the structured copy of
+    the text dropped, the JSON text through the default pre-processors, then
+    unpacked. A journal's text is reduced (#419)."""
+    blocks: list[Any] = [{"type": "text", "text": json.dumps(payload, separators=(",", ":"))}]
+    structured = _drop_duplicate_structured(payload, blocks)
     outcome = asyncio.run(
         transform_response(
             profile=_DEFAULTS,
             backend=_OPS,
             backend_name="ops",
             tool_name=category,
-            content_blocks=[{"type": "text", "text": json.dumps(payload, separators=(",", ":"))}],
+            content_blocks=blocks,
         )
     )
-    text = (outcome.content_blocks or [])[0]["text"]
-    return unpack("\n".join([text, *iter_leaves(payload)])).text
+    texts, _, _, _ = _collect_response_texts(outcome.content_blocks, structured)
+    return unpack("\n".join(texts)).text
 
 
 def _flagged(category: str) -> tuple[int, int]:
@@ -279,16 +282,23 @@ def _detected(texts: Iterable[str]) -> int:
 
 @requires_model
 class TestKnownGaps:
-    """Known gaps 18 and 19 (#411), 20 (#29) and 21 to 23 (#423), held open. 18 and 19 assert
-    the shipped model STILL flags the shape. When a model or a pre-processor closes one, its
-    test fails on purpose: take the shape out of ``benign_ops.KNOWN_GAPS``
+    """Known gaps 19 (#411, #431), 20 (#29) and 21 to 23 (#423), held open. 19 asserts
+    the shipped model STILL flags the shapes. When a model or a pre-processor closes it, its
+    tests fail on purpose: take the shape out of ``benign_ops.KNOWN_GAPS``
     (it is then gated) and the entry out of docs/defense-pipeline.md."""
 
-    def test_a_reply_that_is_little_but_an_event_id_is_flagged(self) -> None:
+    def test_a_reply_that_is_little_but_an_event_id_is_read_clean(self) -> None:
+        """Known gap 18, closed (#431): the nine of twelve were the harness
+        reading the reply twice. Read once, as the router reads it, none flags."""
         if _MODEL is None or _MODEL.id != HORIZON:
             pytest.skip("measured on prompt-injection-guard-small")
-        flagged, of = _flagged("event_id_reply")
-        assert flagged * 2 > of, f"{flagged} of {of}: gap 18 may have closed"
+        assert _flagged("event_id_reply") == (0, 12)
+
+    def test_a_short_journal_or_a_mail_log_can_be_flagged(self) -> None:
+        if _MODEL is None or _MODEL.id != HORIZON:
+            pytest.skip("measured on prompt-injection-guard-small")
+        flagged = _flagged("journal_query")[0] + _flagged("syslog_search")[0]
+        assert flagged >= 1, f"{flagged} of 24: gap 19 may have narrowed"
 
     def test_a_hundred_line_journal_in_a_json_string_can_be_flagged(self) -> None:
         if _MODEL is None or _MODEL.id != HORIZON:
