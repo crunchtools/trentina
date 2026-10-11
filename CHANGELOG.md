@@ -10,6 +10,11 @@ under that name.
 
 ## [Unreleased]
 
+### Changed
+- Known gaps 27 and 28 carry their L3 measurements (#448, #450): an attack
+  split across parts, and what a lone L2 flag on meeting notes is worth.
+  `docs/benchmark.md`.
+
 ## [1.9.0] - 2026-10-11
 
 ### Added
