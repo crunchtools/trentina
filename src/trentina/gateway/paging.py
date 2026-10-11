@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from ..config import PART_SLACK, get_config
-from ..quarantine.classifier import GUARD_TOKENS, token_offsets
+from ..quarantine.classifier import GUARD_TOKENS, token_starts
 
 if TYPE_CHECKING:
     from ..defense import Provenance
@@ -79,9 +79,27 @@ class Part:
 class Paged:
     """A response held for delivery in parts.
 
-    ``mode`` and ``prompt`` are the first call's: what a ``read_part`` call
-    that names no mode runs in. ``flagged_at`` is the first part a layer
-    flagged, once one has; ``block`` refuses that part and every later one.
+    Attributes:
+        handle: what the agent passes to ``read_part``; random, 128 bits.
+        profile: the profile that made the call, and the only one that may
+            read the rest.
+        backend, tool: what produced the response. Each part is judged,
+            audited and policed as that tool's response.
+        label: the name the agent called the tool by, for the text it reads.
+        parts: the response, cut; never changed after ``hold``.
+        mode, prompt: the first call's mode and redact question: what a
+            ``read_part`` call that names no mode runs in, if today's policy
+            still allows it.
+        provenance, l3_context, hidden: what the first call's scan was given
+            about the response, handed to every part's scan.
+        is_error: the backend's own ``isError``, carried on every part.
+        acted: the backend may have written, so the agent is never told to
+            call the tool again.
+        size: bytes of text held, counted against the caps.
+        used: when a part was last read; the hold time runs from it.
+        delivered: the parts delivered so far. Parts are read in order.
+        flagged_at, flagged_by: the first part a layer flagged and the layer,
+            once one has; ``block`` refuses that part and every later one.
     """
 
     handle: str
@@ -137,10 +155,10 @@ def _token_starts(text: str) -> list[int] | None:
     # A token is at least one character, so a text this short cannot be over.
     if config.part_target_tokens <= 0 or len(text) <= config.whole_tokens:
         return None
-    offsets = token_offsets(text)
-    if offsets is None or not config.whole_tokens < len(offsets) <= config.paged_tokens:
+    starts = token_starts(text)
+    if starts is None or not config.whole_tokens < len(starts) <= config.paged_tokens:
         return None
-    return [start for start, _ in offsets]
+    return starts
 
 
 def _between(text: str, starts: list[int], cuts: list[int]) -> tuple[Part, ...]:
@@ -387,8 +405,9 @@ def gap_text(paged: Paged, number: int, reason: str, retry: str) -> str:
     return (
         f"[TRENTINA] Refused part {number} of {paged.count} of the {paged.label} response"
         f" ({reason}). Nothing from part {number} was delivered. The parts already delivered"
-        " stand as judged, and the other parts remain available: the gap is this part's,"
-        f" not the response's. {retry}"
+        " stand as judged. The gap is this part's, not the response's: nothing was found,"
+        " and the later parts are held and wait on this one, since parts are read in order."
+        f" Ask for part {number} again. {retry}"
     )
 
 
@@ -401,7 +420,24 @@ UNKNOWN_HANDLE = (
 """One wording for every way a handle fails to resolve."""
 
 
+def next_part(paged: Paged) -> int:
+    """The part to read next: the first not yet delivered, or the last."""
+    return next((n for n in range(1, paged.count + 1) if n not in paged.delivered), paged.count)
+
+
+def out_of_order(paged: Paged, number: int, reader: str) -> str:
+    """The refusal for a part asked for before the parts in front of it."""
+    following = next_part(paged)
+    return (
+        f"[TRENTINA] Part {number} of the {paged.label} response cannot be read yet: parts"
+        f" are read in order, and part {following} is next. Call"
+        f' {reader}(handle="{paged.handle}", part={following}). A part already read can be'
+        " read again."
+    )
+
+
 def no_such_part(paged: Paged) -> str:
+    """The refusal for a part number the response does not have."""
     return (
         f"[TRENTINA] The {paged.label} response has {paged.count} parts;"
         f" ask for one of 1 to {paged.count}."

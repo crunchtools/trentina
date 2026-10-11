@@ -46,7 +46,7 @@ def _document(words: int, *, every: int = 10) -> str:
 @pytest.fixture(autouse=True)
 def _paging(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("TRENTINA_PART_TOKENS", str(PART_TOKENS))
-    monkeypatch.setattr(paging, "token_offsets", _words)
+    monkeypatch.setattr(paging, "token_starts", lambda text: [a for a, _ in _words(text)])
     config_mod._config = None
     paging.reset()
     _tool_list_cache[URL] = [{"name": SEND}, {"name": GET, "annotations": {"readOnlyHint": True}}]
@@ -236,7 +236,7 @@ class TestCut:
         assert paging.cut(_document(5_000)) is None
 
     def test_without_a_tokenizer_nothing_is_cut(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(paging, "token_offsets", lambda _text: None)
+        monkeypatch.setattr(paging, "token_starts", lambda _text: None)
         assert paging.cut(_document(5_000)) is None
 
     @pytest.mark.parametrize("cap", [100, 150, 330, 1_000])
@@ -443,7 +443,8 @@ class TestFirstPart:
         first = resp["result"]
         assert "structuredContent" not in first
         handle = first[paging.PART_KEY]["handle"]
-        last = await gateway.read(handle=handle, part=first[paging.PART_KEY]["parts"])
+        for _ in range(first[paging.PART_KEY]["parts"] - 1):
+            last = await gateway.read(handle=handle)
         assert _body(last).endswith('{"note":"tail marker"}')
 
     async def test_a_backends_own_part_marker_is_not_delivered(self) -> None:
@@ -607,8 +608,10 @@ class TestBlock:
             "part 3 was flagged by L2, so the response is withheld from there on"
             in (fourth["content"][0]["text"])
         )
-        # Withheld on the response's mark: part 4 was never handed to a layer.
-        assert len(gateway.perimeter.calls) == judged
+        # Withheld on the response's mark, and judged all the same: the mode
+        # decides what is delivered, never whether the layers run.
+        assert len(gateway.perimeter.calls) == judged + 1
+        assert "w900" not in str(fourth)
         assert gateway.outcomes()[-2:] == [
             ("docs", GET, Outcome.BLOCKED_DEFENSE),
             ("docs", GET, Outcome.BLOCKED_DEFENSE),
@@ -618,6 +621,7 @@ class TestBlock:
         gateway = _Gateway(w600=_flagged())
         first = await gateway.call(_document(1_000))
         handle = first[paging.PART_KEY]["handle"]
+        await gateway.read(handle=handle, part=2)
         await gateway.read(handle=handle, part=3)
         second = await gateway.read(handle=handle, part=2)
         assert second["isError"] is False
@@ -646,13 +650,14 @@ class TestBlock:
     async def test_redact_is_offered_when_the_policy_has_it(self) -> None:
         gateway = _Gateway(_profile(["block", "redact"]), w600=_flagged(alternatives=["redact"]))
         first = await gateway.call(_document(1_000))
+        await gateway.read(handle=first[paging.PART_KEY]["handle"], part=2)
         third = await gateway.read(handle=first[paging.PART_KEY]["handle"], part=3)
         assert (
             "Your policy allows retrying for this part and the rest with "
             f'{MODE_PARAM}={{"redact": "<what you need>"}} on {READER}.'
         ) in third["content"][0]["text"]
 
-    async def test_a_gap_refuses_its_own_part_only(self) -> None:
+    async def test_a_gap_refuses_its_own_part_and_marks_nothing(self) -> None:
         gateway = _Gateway(w300=GAP)
         first = await gateway.call(_document(1_000))
         handle = first[paging.PART_KEY]["handle"]
@@ -660,11 +665,99 @@ class TestBlock:
         text = second["content"][0]["text"]
         assert second["isError"] is True
         assert "Refused part 2 of 4" in text and "(not fully judged: L3 unavailable)" in text
-        assert "the gap is this part's, not the response's" in text
+        assert "The gap is this part's, not the response's" in text
+        assert "Ask for part 2 again." in text
+        # The layers answer the next time: the part is delivered and the
+        # response goes on, unmarked.
+        gateway.perimeter.decisions.clear()
+        again = await gateway.read(handle=handle, part=2)
         third = await gateway.read(handle=handle, part=3)
-        assert third["isError"] is False
+        assert again["isError"] is False and third["isError"] is False
         assert "flagged_at" not in third[paging.PART_KEY]
-        assert third[paging.PART_KEY]["delivered"] == [1, 3]
+        assert third[paging.PART_KEY]["delivered"] == [1, 2, 3]
+
+
+class TestOrder:
+    async def test_a_part_is_not_read_before_the_parts_in_front_of_it(self) -> None:
+        gateway = _Gateway()
+        first = await gateway.call(_document(1_000))
+        handle = first[paging.PART_KEY]["handle"]
+        skipped = await gateway.read(handle=handle, part=4)
+        text = skipped["content"][0]["text"]
+        assert skipped["isError"] is True
+        assert "Part 4" in text and "cannot be read yet" in text and "part 2 is next" in text
+        assert f'{READER}(handle="{handle}", part=2)' in text
+        assert len(gateway.perimeter.calls) == 1
+        assert gateway.outcomes()[-1] == ("docs", GET, Outcome.DENIED_GUARD)
+        # Nothing was released: the response is still there to read in order.
+        assert (await gateway.read(handle=handle, part=2))["isError"] is False
+
+    async def test_a_flagged_part_cannot_be_read_around(self) -> None:
+        """block withholds a flagged part and every later one, whichever is asked first."""
+        gateway = _Gateway(w300=_flagged())
+        first = await gateway.call(_document(1_000))
+        handle = first[paging.PART_KEY]["handle"]
+        third = await gateway.read(handle=handle, part=3)
+        assert "cannot be read yet" in third["content"][0]["text"]
+        second = await gateway.read(handle=handle, part=2)
+        assert "Refused part 2 of 4" in second["content"][0]["text"]
+        third = await gateway.read(handle=handle, part=3)
+        assert "part 2 was flagged by L2" in third["content"][0]["text"]
+        assert "w500" not in str(third)
+
+    async def test_a_gap_holds_the_parts_behind_it(self) -> None:
+        gateway = _Gateway(w300=GAP)
+        first = await gateway.call(_document(1_000))
+        handle = first[paging.PART_KEY]["handle"]
+        await gateway.read(handle=handle, part=2)
+        third = await gateway.read(handle=handle, part=3)
+        assert "part 2 is next" in third["content"][0]["text"]
+
+
+class TestPolicyNow:
+    async def test_a_mode_taken_away_by_a_reload_is_gone_for_a_held_response(self) -> None:
+        gateway = _Gateway(_profile(["block", "flag"]))
+        first = await gateway.call(_document(1_000), **{MODE_PARAM: "flag"})
+        gateway.profile.defense.modes = ["block"]
+        refused = await gateway.read(handle=first[paging.PART_KEY]["handle"], part=2)
+        assert refused["code"] == -32602
+        assert len(gateway.perimeter.calls) == 1
+        allowed = await gateway.read(
+            handle=first[paging.PART_KEY]["handle"], part=2, **{MODE_PARAM: "block"}
+        )
+        assert allowed["isError"] is False
+        assert gateway.perimeter.calls[-1]["mode"].value == "block"
+
+
+class TestNotCut:
+    """What the router does with a response the cut declines: what it always did."""
+
+    @pytest.mark.parametrize("mode", ["block", "flag"])
+    async def test_over_the_ceiling_takes_the_path_every_response_took(
+        self, monkeypatch: pytest.MonkeyPatch, mode: str
+    ) -> None:
+        monkeypatch.setenv("TRENTINA_MAX_PARTS", "2")
+        monkeypatch.setenv("CLASSIFIER_MAX_TOKENS", "500")
+        config_mod._config = None
+        text = _document(601)
+        gateway = _Gateway(_profile(["block", "flag"]))
+        result = await gateway.call(text, **{MODE_PARAM: mode})
+        (judged,) = gateway.perimeter.calls
+        # Whole, to the perimeter, whose admission refuses it or reads its head.
+        assert judged["content_blocks"] == [{"type": "text", "text": text}]
+        assert judged.get("lead_in", "") == ""
+        assert paging.PART_KEY not in result
+        assert paging.listing("agent1") == []
+
+    async def test_without_a_tokenizer_the_response_is_judged_whole(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(paging, "token_starts", lambda _text: None)
+        text = _document(1_000)
+        gateway = _Gateway()
+        result = await gateway.call(text)
+        assert gateway.perimeter.calls[0]["content_blocks"] == [{"type": "text", "text": text}]
+        assert paging.PART_KEY not in result
 
 
 class TestFlag:

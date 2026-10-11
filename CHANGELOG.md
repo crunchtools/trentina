@@ -20,7 +20,7 @@ under that name.
   three layers when it is asked for, behind the last 64 tokens of the part
   before it, in every mode: block refuses a flagged part and every later
   one, flag delivers it with its warning, redact asks its question of each
-  part. Until now such a response ran past the client's timeout, and over
+  part. Parts are read in order. Until now such a response ran past the client's timeout, and over
   32,768 tokens it was refused. `docs/defense-pipeline.md`, "Responses
   delivered in parts".
 - `TRENTINA_PART_TOKENS`, `TRENTINA_MAX_PARTS`, `TRENTINA_PART_TTL_SECONDS`.

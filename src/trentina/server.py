@@ -229,7 +229,8 @@ async def read_part_tool(
 
     Args:
         handle: from the last line of a part
-        part: 1 to the number of parts; omitted, the next part not yet read
+        part: omitted, the next part not yet read. Parts are read in order;
+            a part already read can be read again
         trentina_mode: block, flag, or {"redact": "<what you need>"}; omitted,
             the mode of the call that produced the response
 

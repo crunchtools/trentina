@@ -187,15 +187,21 @@ smallest.
   part=3)…`. `_trentina_part` carries the same facts as data. The count is
   fixed when the response is cut. `read_part` with no arguments lists what
   the profile holds.
+- **In order.** A part is read only after every part before it was
+  delivered, and a part already read can be read again. So a flagged part
+  cannot be read around, and the last part, which releases the response, is
+  the last one read.
 - **What is judged.** Each part crosses `defend()` in full when it is asked
-  for, in the first call's mode unless the `read_part` call names another
-  its policy allows. It is read behind the last 64 tokens of the part before
+  for, in the first call's mode unless the `read_part` call names another.
+  Either way the mode is checked against the tool's policy as it stands at
+  that call, and the profile must still be allowed the tool. It is read behind the last 64 tokens of the part before
   it and delivered without them; L3 is told it is a fragment.
-- **Modes.** block refuses a flagged part and every later one, unjudged,
-  and tells the agent the parts it already has are untrusted. flag delivers
-  a flagged part with its warning, and later parts say an earlier one was
-  flagged. redact asks its question of each part. A gap on one part (L3
-  unreachable) refuses that part and no other.
+- **Modes.** block refuses a flagged part and every later one, each judged
+  all the same, and tells the agent the parts it already has are untrusted.
+  flag delivers a flagged part with its warning, and later parts say an
+  earlier one was flagged. redact asks its question of each part. A gap on
+  one part (L3 unreachable) refuses that part and marks nothing: the later
+  parts wait until it is asked for again and delivered.
 - **Where the rest waits.** In the gateway's memory, never on disk, under a
   128-bit handle bound to the profile: ten minutes unread, four responses
   and 32 MiB a profile, 128 MiB in all, the least recently read evicted, and

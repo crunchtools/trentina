@@ -579,8 +579,8 @@ def head(text: str, tokens: int) -> str:
     return text[: offsets[tokens - 1][1]] if tokens > 0 else ""
 
 
-def token_offsets(text: str) -> list[tuple[int, int]] | None:
-    """Where each of L2's tokens sits in ``text``, as (start, end) characters.
+def token_starts(text: str) -> list[int] | None:
+    """The character each of L2's tokens begins at in ``text``.
 
     What paging cuts on (#340): a part is a run of whole tokens, so its size
     is stated in the unit the admission cap is. None when the model is
@@ -599,7 +599,7 @@ def token_offsets(text: str) -> list[tuple[int, int]] | None:
         )["offset_mapping"]
     except NotImplementedError:
         return None
-    return [(int(start), int(end)) for start, end in offsets]
+    return [int(start) for start, _ in offsets]
 
 
 def estimate_tokens(text: str) -> int:

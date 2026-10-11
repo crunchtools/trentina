@@ -1674,23 +1674,13 @@ async def _deliver_part(
     """Judge one part in the caller's mode and shape what it is given.
 
     Every part crosses ``scan_tool_response`` as a response of its own, with
-    the end of the part before it as lead-in. A part a layer flags marks the
-    response: ``block`` refuses that part and every later one without
-    judging them. A part the layers could not finish is refused alone.
+    the end of the part before it as lead-in: the mode decides what is
+    delivered, never whether the layers run. A part a layer flags marks the
+    response, and ``block`` then refuses that part and every later one,
+    judged all the same. A part the layers could not finish is refused alone.
     """
     reader = _part_reader(profile) or paging.READ_PART_TOOL
-    if mode is Mode.BLOCK and paged.flagged_at is not None and number >= paged.flagged_at:
-        marked = paged.flagged_by or "defense"
-        refusal = refusal_body(f"flagged by {marked}", mode, flagged_by=marked, policy=policy)
-        retry = _part_retry(refusal, reader, flagged=True)
-        return _refused_part(
-            paged,
-            number,
-            paging.flagged_text(paged, number, marked, retry),
-            refusal,
-            {"flagged_by": marked, "blocked": True, "flagged_at": paged.flagged_at},
-        )
-
+    marked_at, marked_by = paged.flagged_at, paged.flagged_by
     part = paged.parts[number - 1]
     decision = await scan_tool_response(
         profile=profile,
@@ -1723,6 +1713,18 @@ async def _deliver_part(
         )
         return _refused_part(
             paged, number, text + " Details are in _trentina_warning.", refusal, warning
+        )
+    if mode is Mode.BLOCK and marked_at is not None and number > marked_at:
+        # Clean on its own, and still withheld: block does not deliver what
+        # follows a flagged part of the same response.
+        marked = marked_by or "defense"
+        refusal = refusal_body(f"flagged by {marked}", mode, flagged_by=marked, policy=policy)
+        return _refused_part(
+            paged,
+            number,
+            paging.flagged_text(paged, number, marked, _part_retry(refusal, reader, flagged=True)),
+            refusal,
+            {**(warning or {}), "flagged_by": marked, "blocked": True, "flagged_at": marked_at},
         )
 
     paged.delivered.add(number)
@@ -1807,24 +1809,34 @@ async def _read_part(
 
     number = arguments.get("part")
     if number is None:
-        # The next part not yet delivered; after the last, the last again.
-        number = next(
-            (n for n in range(1, paged.count + 1) if n not in paged.delivered), paged.count
-        )
+        number = paging.next_part(paged)
     if isinstance(number, bool) or not isinstance(number, int) or not 1 <= number <= paged.count:
         _audit(profile.name, paged.backend, paged.tool, Outcome.DENIED_GUARD, 0, "no such part")
         return _part_note(req_id, paging.no_such_part(paged))
-
+    # Under today's policy, not the one the response arrived under: a reload
+    # that took a mode away takes it from a response still being read.
     policy = policy_for(profile, backend, paged.tool)
-    mode: Mode = paged.mode
+    name: str | None = paged.mode.value
     prompt: str | None = paged.prompt
     try:
         if arguments.get(MODE_PARAM) is not None:
-            name, question = parse_mode_arg(arguments[MODE_PARAM])
-            mode, prompt = policy.resolve(name), question
+            name, prompt = parse_mode_arg(arguments[MODE_PARAM])
+        mode = policy.resolve(name)
     except (ModeNotPermittedError, ValueError) as exc:
         _audit(profile.name, paged.backend, paged.tool, Outcome.DENIED_GUARD, 0, str(exc))
         return _err(req_id, JSONRPC_INVALID_PARAMS, str(exc))
+
+    # In order: a part is read only after every part before it was delivered,
+    # so block's "this part and every later one" cannot be read around, and
+    # the last part, which releases the response, is the last one read. The
+    # one part past the next that is answered is one block withholds for a
+    # flag: it is told why, which "part K is next" would not say.
+    withheld = mode is Mode.BLOCK and paged.flagged_at is not None and number > paged.flagged_at
+    if number > paging.next_part(paged) and not withheld:
+        _audit(profile.name, paged.backend, paged.tool, Outcome.DENIED_GUARD, 0, "out of order")
+        return _part_note(
+            req_id, paging.out_of_order(paged, number, _part_reader(profile) or "read_part")
+        )
 
     assembled = await _deliver_part(profile, paged, number, mode=mode, prompt=prompt, policy=policy)
     delivered, digest = await asyncio.to_thread(wire_digest, assembled.result)

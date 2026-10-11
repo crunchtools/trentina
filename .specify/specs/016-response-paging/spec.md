@@ -80,10 +80,13 @@ that lost its handle. The count never changes after the cut.
    call's mode unless the `read_part` call names another its policy allows.
 3. A part is judged behind the last 64 tokens of the part before it and
    delivered without them.
-4. block: a flagged part is refused, and every later part is refused
-   unjudged. The refusal says the parts already delivered are untrusted.
+4. block: a flagged part is refused, and every later part is judged and
+   refused. The refusal says the parts already delivered are untrusted.
    flag: delivered with the warning. redact: the question is asked of each
-   part. A gap on one part refuses that part only.
+   part. A gap on one part refuses that part and marks nothing.
+4a. Parts are read in order; a part already read can be read again. The
+   mode and the tool are checked against the profile as it stands at each
+   read.
 5. The remainder lives in memory only, under a 128-bit handle bound to the
    profile: 10 minutes unread, 4 responses and 32 MiB a profile, 128 MiB in
    all, released after the last part.
@@ -112,7 +115,7 @@ that lost its handle. The count never changes after the cut.
 | `gateway/paging.py` | New: the cut, the store, the text an agent reads |
 | `gateway/router.py` | `_hold_paged`, `_deliver_part`, `_read_part` |
 | `gateway/ingress_defense.py` | `scan_tool_response(lead_in=…)` |
-| `quarantine/classifier.py` | `token_offsets` |
+| `quarantine/classifier.py` | `token_starts` |
 | `config.py` | part size, part count, hold time; `whole_tokens`, `paged_tokens` |
 | `gateway/backend.py` | byte cap follows `paged_tokens` |
 | `server.py` | `read_part_tool` declared |

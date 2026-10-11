@@ -265,7 +265,7 @@ async def test_a_response_delivered_in_parts_is_judged_a_part_at_a_time(
 
     monkeypatch.setenv("TRENTINA_PART_TOKENS", "300")
     monkeypatch.setattr(
-        paging, "token_offsets", lambda text: [m.span() for m in re.finditer(r"\S+", text)]
+        paging, "token_starts", lambda text: [m.start() for m in re.finditer(r"\S+", text)]
     )
     config_mod._config = None
     try:
