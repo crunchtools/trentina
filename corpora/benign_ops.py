@@ -465,9 +465,9 @@ outside the gate's budget: known gaps 18 and 19 in
 with one other field gives a classifier chosen for reading base64 as
 possibly hostile almost no context to read it against.
 ``journal_query_100``: a hundred journal lines inside one JSON string is
-fifteen thousand tokens of key fingerprints,
-container IDs and audit records that no pre-processor reduces, read in
-over thirty windows of which the worst one decides.
+key fingerprints, container IDs and audit records that petit reduces by
+only a quarter to a third (#419: a line that differs in a word is its own
+group), read in many windows of which the worst one decides.
 
 A shape leaves this list by passing, in the change that says so."""
 

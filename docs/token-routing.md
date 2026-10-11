@@ -342,6 +342,31 @@ One consequence is worth knowing before you build on it. A per-record **filterin
 
 The marker lists every element; the `...` is only this page's. Exact equality is what makes it lossless: the representative plus the list reconstructs each record. Fields that do not vary stay out of the list, a marker names at most 100 elements before the next one opens a fresh group, and a record with more than four identifier fields is left alone so the list never becomes the payload. Everything listed is delivered and judged. An identifier is at most 64 characters with no whitespace, matched by bounded patterns (petit's `pull_identifiers`), so a listed value cannot carry a sentence. The details report `groups_listed` and `elements_listed` beside `groups_collapsed` and `elements_dropped`.
 
+##### A log in a string (#419)
+
+`journal_query` answers `{"logs": "<a hundred lines>"}`: one string, so no
+array to group, and petit is only offered a whole text block. `structured`
+hands a string value of at least twenty lines and 1 KB (petit's own floors)
+to petit, anywhere in the document, and the value becomes what petit makes
+of a text block: the sample lines as they were written, then its summary.
+
+```json
+{"logs":"Oct 08 02:00:00 host01 sshd[2000]: Connection closed by 203.0.113.0 port 40000\n...\n\n100 records reduced to 3 line(s); 1 repetitive group(s) collapsed (showing first 3 of each):\n  100x: sshd[#]: Connection closed by #"}
+```
+
+This one deletes, and the deletion rule is petit's: a dropped line is never
+delivered and never judged, a line that differs in a word is its own group
+and is delivered, and the summary is in-band and spoofable. Three things
+differ from a text block. The summary has no `[petit]` tag, because a
+bracketed tag inside a document's data reads to L2 as an injected note
+(#411, measured again in [benchmark.md](benchmark.md#a-log-in-a-json-string-419)).
+The value is reduced only when petit names a log format for it: on its raw
+fallback petit groups any repeated line, which in a file or a page is the
+blank lines and the closing brackets. And base64, wrapped or not, is never
+offered. A value petit declines or fails on is left as it arrived. The
+details report `logs_reduced`, `log_lines_in`, `log_lines_out`,
+`log_groups_collapsed` and `logs_failed`.
+
 ##### Composition is still size-driven
 
 The contract is transformation; the selection strategies are not. A processor that does not shrink behaves differently per strategy:

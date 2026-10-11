@@ -598,7 +598,11 @@ replaced.
     space and emits valid JSON, which is why petit does not replace it:
     petit reports positions as source LINE ranges and exposes group
     membership only for samples, so neither a minified array nor a
-    per-element account is expressible through its API.
+    per-element account is expressible through its API. A string VALUE of
+    twenty lines and 1 KB or more is handed to `PetitProcessor.reduce`
+    (#419) and kept only when petit names a log format for it: its raw
+    fallback trims blank lines and brackets out of documents. The summary
+    there carries no `[petit]` tag (#411). Known gap 19 stays open.
   - `email.py` — mail. Collapses quoted reply chains and strips signatures;
     leaves repeated footers to petit, which is what `chain` is for. Rewrites
     the thread, where petit's `EmailHash` only fingerprints its skeleton.

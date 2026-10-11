@@ -79,11 +79,17 @@ a large payload must not stall the gateway's event loop.
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
 from petit import PetitError, analyze_text
 
 from ..channels import Channel, Kind
 from .base import Cost, PreProcessContext, PreProcessResult
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from petit import Group
 
 # Handed to petit as ``max_record_chars``, which caps the FINGERPRINT KEY and
 # never the samples. It used to be applied here, by truncating every line
@@ -117,6 +123,35 @@ _SAMPLES_PER_GROUP = 3
 # went in, and delivering that would cost bytes for nothing.
 
 
+def _samples(lines: list[str], groups: Sequence[Group]) -> list[str]:
+    """Every group's sample lines, as they were written.
+
+    In written order, so the artifact reads like the payload it came from,
+    and by SPAN, not by first line. A record stopped being a line in 4.0.0:
+    the first line of a pretty-printed JSON element is "{", and selecting by
+    line hands the agent a brace where a record was promised. Spans index
+    the ORIGINAL lines, so the fingerprint cap never reaches what is
+    delivered.
+    """
+    spans = sorted(
+        (start, end)
+        for group in groups
+        for start, end in group.sample_spans
+        if 0 <= start < end <= len(lines)
+    )
+    out_lines: list[str] = []
+    emitted = 0
+    for start, end in spans:
+        # Groups should not overlap, but a driver that ever emitted
+        # overlapping spans would otherwise duplicate delivered content.
+        first = max(start, emitted)
+        if first >= end:
+            continue
+        out_lines.extend(lines[first:end])
+        emitted = end
+    return out_lines
+
+
 class PetitProcessor:
     """FREE. Collapses repetitive records, keeps samples, accounts for the rest."""
 
@@ -126,7 +161,21 @@ class PetitProcessor:
     kind = Kind.TEXT
 
     async def run(self, payload: str, _ctx: PreProcessContext) -> PreProcessResult:
-        # petit reduces by structure alone; it reads no job context.
+        # petit reduces by structure alone; it reads no job context. The
+        # library is synchronous, so the whole reduction runs on a worker.
+        return await asyncio.to_thread(self.reduce, payload)
+
+    def reduce(self, payload: str, *, tag: str = "[petit] ") -> PreProcessResult:
+        """The reduction itself, synchronous. ``run`` puts it on a worker
+        thread; ``structured`` calls it from the worker it is already on, for
+        a log held in a JSON string (#419), so a log is reduced by one rule
+        wherever it was found.
+
+        ``tag`` opens each summary line. ``structured`` passes none: a
+        bracketed tag inside a document's data read to L2 as an injected
+        note (#411), and measured on a journal in a JSON string it took one
+        case of six from 0.55 to 0.94 (``docs/benchmark.md``).
+        """
         bytes_in = len(payload.encode("utf-8"))
         lines = payload.split("\n")
 
@@ -140,8 +189,7 @@ class PetitProcessor:
             )
 
         try:
-            analysis = await asyncio.to_thread(
-                analyze_text,
+            analysis = analyze_text(
                 payload,
                 max_samples=_SAMPLES_PER_GROUP,
                 source_name="trentina",
@@ -190,39 +238,17 @@ class PetitProcessor:
                 },
             )
 
-        # In written order, so the artifact reads like the payload it came
-        # from — and by SPAN, not by first line. A record stopped being a line
-        # in 4.0.0: the first line of a pretty-printed JSON element is "{",
-        # and selecting by line hands the agent a brace where a record was
-        # promised. Spans index the ORIGINAL lines, so the fingerprint cap
-        # never reaches what is delivered.
-        spans = sorted(
-            (start, end)
-            for group in analysis.groups
-            for start, end in group.sample_spans
-            if 0 <= start < end <= len(lines)
-        )
-        out_lines: list[str] = []
-        emitted = 0
-        for start, end in spans:
-            # Groups should not overlap, but a driver that ever emitted
-            # overlapping spans would otherwise duplicate delivered content.
-            first = max(start, emitted)
-            if first >= end:
-                continue
-            out_lines.extend(lines[first:end])
-            emitted = end
-
+        out_lines = _samples(lines, analysis.groups)
         summary = [
             "",
             (
-                f"[petit] {analysis.records_in} records reduced to "
+                f"{tag}{analysis.records_in} records reduced to "
                 f"{len(out_lines)} line(s); "
                 f"{len(collapsed)} repetitive group(s) collapsed "
                 f"(showing first {_SAMPLES_PER_GROUP} of each):"
             ),
         ]
-        summary.extend(f"[petit]   {g.count}x: {g.pattern}" for g in collapsed)
+        summary.extend(f"{tag}  {g.count}x: {g.pattern}" for g in collapsed)
 
         reduced = "\n".join(out_lines + summary)
         bytes_out = len(reduced.encode("utf-8"))
