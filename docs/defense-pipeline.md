@@ -137,7 +137,7 @@ The image ships that one model. Meta's `prompt-guard-2-86m` shipped beside it fr
 
 **The obfuscation gate is enforced.** The image build classifies every corpus attack plain and under six transforms with the shipped model and writes the result into its `trentina-model.json` (`benchmarks/l2_obfuscation.py --record`); a model that fails stops the build. At startup the gateway reads the record: a model with a failing record, or none, is logged as `l2_obfuscation_gate_failed` or `l2_obfuscation_gate_unrecorded`, and under `TRENTINA_REQUIRE_HARDENED` the gateway refuses to start. The gate's state is part of the verdict stamp. garak's sixteen further encodings are measured against the model and gate nothing (`benchmarks/l2_encodings.py`, #423): the model reads quoted-printable and MIME, which barely change the text, and none of the others; base16 and hex are decoded before it is asked, and the rest are known gaps 21 to 23. To run your own model, export it and record the gate against it before you point `CLASSIFIER_MODEL_PATH` at it.
 
-**So is the benign gate (#411).** The same build then runs the model, at the threshold it ships with, over 207 invented benign cases of the shapes production refused (unit properties, journals, disk-usage and container listings, metrics rows, replies that carry an identifier, agent-forum replies), each read as the gateway reads a tool response: through the default pre-processors, the text block and then every string of the structured content, unpacked. A model that flags more than 2% of the held-out cases stops the build (`benchmarks/l2_benign.py --record`). The record carries the threshold it was taken at, so a gateway started with another `CLASSIFIER_THRESHOLD` reports `l2_benign_gate_unrecorded` until the gate is run at that one. Numbers, and the two shapes the shipped model still flags, are in [benchmark.md](benchmark.md#l2-benign-gate-411-404).
+**So is the benign gate (#411).** The same build then runs the model, at the threshold it ships with, over 261 invented benign cases of the shapes production refused (unit properties, journals, disk-usage and container listings, metrics rows, replies that carry an identifier, agent-forum replies, machine-written meeting notes), 207 of them gated, each read as the gateway reads a tool response: through the default pre-processors, the text block and then every string of the structured content, unpacked. A model that flags more than 2% of the held-out cases stops the build (`benchmarks/l2_benign.py --record`). The record carries the threshold it was taken at, so a gateway started with another `CLASSIFIER_THRESHOLD` reports `l2_benign_gate_unrecorded` until the gate is run at that one. Numbers, and the shapes the shipped model still flags (known gaps 19 and 28), are in [benchmark.md](benchmark.md#l2-benign-gate-411-404).
 
 Measured on our corpora (`docs/benchmark.md`, #350), the default catches 36 of 39 internal attacks to Prompt Guard 2's 8, and 21 of 39 when they are planted inside long benign documents to Prompt Guard 2's 4, flagging 3 of 150 benign documents to Prompt Guard 2's 0, at 2.4x the throughput on CPU. Two English-only DeBERTa models, ProtectAI's v2 and PIGuard, were measured and rejected (#353): they flag 29 and 67 of the 150. Prompt Guard 2 is the better detector of DAN-style direct jailbreaks (624 vs 520 of 666 on the jackhhao set, 1 and 3 false positives of 640).
 
@@ -505,6 +505,24 @@ one does; the rest name the benchmark that measured them.
     caught with no lead-in, 34 to 35 with it
     ([benchmark](benchmark.md#an-attack-cut-by-a-part-boundary-340)). L3 on
     a split attack is not measured.
+28. **L2 flags machine-written meeting notes that end in bare links**
+    (#450). Notes a meeting assistant writes (summary, decisions, action
+    items addressed to their owners) close with where the recording and the
+    transcript are and a feedback link, each a bare URL ending in an
+    identifier no person wrote. On production two of two such documents
+    scored 0.91 and 0.93 at 0.7 while L3 read both clean. Of the invented
+    cases of that shape, 5 of 18 held-out flag (`meeting_notes`, up to
+    0.98); of the same notes without the links, none of 12
+    (`meeting_notes_unlinked`, at most 0.01), so that shape is gated. It is
+    the two together: the same links after ordinary prose flag 2 documents
+    in 11, and a Markdown link around the URL mostly does not flag. Like gap
+    19 it is an identifier the model reads as encoded text, and there is
+    nothing for a pre-processor to remove that the agent does not need; it
+    is fixed at model selection. `block` refuses such a document and offers
+    `redact`, which returned a verified extraction on production. Scored on
+    every image build, outside the gate's budget
+    ([benchmark](benchmark.md#meeting-notes-and-their-links-450)). Tested,
+    in the image (`tests/test_l2_integration.py`).
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 

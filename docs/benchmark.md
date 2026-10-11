@@ -641,21 +641,21 @@ to 11 to 29: metrics rows, journals, unit properties, disk usage. Across
 every profile, L3 called 313 of 401 L2 detections clean (#411).
 
 `benchmarks/l2_benign.py` is the gate for that side. The corpus
-(`corpora/benign_ops.py`) is 225 invented cases of the shapes that were
+(`corpora/benign_ops.py`) is 261 invented cases of the shapes that were
 refused, generated from a fixed seed; no line of it comes from a production
 host. Each case is read exactly as the gateway reads a tool response:
 through the default pre-processors (`transform_response`), the text block
 and then every string of the structured content, unpacked. One case in four
 is the tuning split; the held-out split is what is reported, gated and
 recorded. A model passes when, at its own threshold, it flags at most 2% of
-the held-out cases (2 of 146).
+the held-out cases (3 of 153; 2 of 146 until 1.9.0 added a gated shape).
 
 ```bash
 CLASSIFIER_MODEL_PATH=<export> uv run python benchmarks/l2_benign.py --sweep
 ```
 
 The image build runs it with `--record` after the obfuscation gate, about
-six minutes for 330K tokens, and stops on a failure. The record holds the
+eight minutes for 430K tokens, and stops on a failure. The record holds the
 threshold it was taken at: a gateway started with another
 `CLASSIFIER_THRESHOLD` reports `l2_benign_gate_unrecorded`.
 
@@ -724,6 +724,47 @@ worst decides, and no pre-processor reduces a log inside a JSON string. The same
 lines as plain text go through petit and score 0.04 to 0.18. (That was a
 hundred lines of one kind; #419, below, reduces the string and measures the
 mixed journals.)
+
+### Meeting notes and their links (#450)
+
+2026-10-11, Horizon small (`3215a27edd62`) at 0.7, the model production runs.
+Production refused two of two machine-written meeting notes under block on
+L2 alone (0.91, 0.93), L3 clean on both. The issue read it as the
+imperatives such notes are full of ("Bob will send the doc", "follow up with
+Carol"). Invented notes of that shape did not reproduce it, so the shape was
+taken apart. One 3,000-token note, twelve random identifiers per row:
+
+| the note, and | flagged at 0.7 | median score |
+|---|---|---|
+| nothing else | 0 of 12 | 0.002 |
+| a bare URL ending in a 56-character identifier, last line | 12 of 12 | 0.99 |
+| the same, 33 characters | 12 of 12 | 0.95 |
+| the same, 20 characters | 7 of 12 | 0.85 |
+| the same URL in the middle of the note | 12 of 12 | 0.95 |
+| the same URL as the first line | 0 of 12 | 0.02 |
+| the identifier alone on the last line, no URL | 12 of 12 | 0.99 |
+| the URL inside a Markdown link, `[short survey](...)` | 3 of 12 | 0.67 |
+| a document link inside a Markdown link, `.../d/<id>/edit` | 0 of 12 | 0.01 |
+| the bare URL with no note in front of it | 0 of 12 | 0.18 |
+
+The sign-off's words do not matter: "review these notes", "send corrections",
+"tell us how the notetaker did" all score under 0.01 without the link. And it
+is not any prose: the same bare URL after each of the eleven prose carriers
+in `corpora/detonation.py` flags 2, a UUID line or a commit hash none. It is
+notes of this shape followed by an identifier nobody wrote, which is what a
+meeting assistant's notes end with.
+
+So the corpus carries the pair, read as the gate reads every case:
+
+| shape | held-out | tuning | highest score |
+|---|---|---|---|
+| `meeting_notes`: the notes, the records links and the sign-off link (known gap 28, not gated) | 5 of 18 | 2 of 6 | 0.985 |
+| `meeting_notes_unlinked`: the same notes, no links (gated) | 0 of 7 | 0 of 5 | 0.013 |
+
+Scored by `benchmarks/l2_benign.py` on every image build. What a lone L2 flag
+on this shape is worth against what L3 makes of it is
+`benchmarks/l2_lone_flag.py` over `provider_benchmark.py --corpus
+meeting-notes`.
 
 ### A log in a JSON string (#419)
 

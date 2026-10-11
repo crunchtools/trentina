@@ -35,7 +35,7 @@ for _path in (_REPO_ROOT, _REPO_ROOT / "benchmarks"):
 import detonation
 import prompt_pack
 
-from corpora import disclosed, garak_latent
+from corpora import benign_ops, disclosed, garak_latent
 from corpora.detonation import ACTION_ATTACKS, BENIGN_INSERTS, CARRIERS, internal_inserts
 from corpora.fetch import CACHE_DIR
 from corpora.internal import CORPUS
@@ -148,23 +148,41 @@ def corpus_texts() -> dict[str, str]:
     return {case.id: case.payload for case in cases}
 
 
+NOTES = "meeting notes"
+
+
+def notes_texts() -> dict[str, str]:
+    """The invented meeting notes (#450), by case id: every one benign."""
+    return {case.id: case.payload for case in benign_ops.meeting_notes_cases()}
+
+
 def corpora_rows(runs: list[dict[str, Any]], flagged: Callable[[str], bool]) -> list[Row]:
     """``provider_benchmark.py`` results, one row a judge over every corpus it ran.
 
     A result holds one entry per provider it benchmarked, and a judge's
-    corpora may arrive as separate results; both are gathered by model.
+    corpora may arrive as separate results; both are gathered by model. The
+    meeting notes (#450) get a row of their own: they are all benign, and
+    the number asked of them is how many only L2 refuses.
     """
-    texts = corpus_texts()
+    texts, notes = corpus_texts(), notes_texts()
     by_judge: dict[str, list[dict[str, Any]]] = {}
     for run in runs:
         for provider in run["providers"]:
             by_judge.setdefault(provider["model"], []).extend(provider["cases"])
     rows = []
     for judge, cases in by_judge.items():
-        known = [c for c in cases if c["id"] in texts and not c.get("error")]
-        judged = [Judged(texts[c["id"]], c["expect_injection"], bool(c["detected"])) for c in known]
-        source = "internal, garak, disclosed"
-        rows.append(tally(source, judge, judged, flagged, len(cases) - len(known)))
+        attacks = [c for c in cases if c["id"] not in notes]
+        for source, held, mine in (
+            ("internal, garak, disclosed", texts, attacks),
+            (NOTES, notes, [c for c in cases if c["id"] in notes]),
+        ):
+            if not mine:
+                continue
+            known = [c for c in mine if c["id"] in held and not c.get("error")]
+            judged = [
+                Judged(held[c["id"]], c["expect_injection"], bool(c["detected"])) for c in known
+            ]
+            rows.append(tally(source, judge, judged, flagged, len(mine) - len(known)))
     return rows
 
 

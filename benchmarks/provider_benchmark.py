@@ -59,7 +59,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from benchmarks import l2_sweep
-from corpora import disclosed, garak_latent, jailbreak
+from corpora import benign_ops, disclosed, garak_latent, jailbreak
 from corpora.internal import CORPUS, RISK_ORDER, Case
 from trentina.config import DEFAULT_CLASSIFIER_THRESHOLD, get_config
 from trentina.defense import _stage_one
@@ -340,12 +340,13 @@ def render_l2_markdown(
     return l2_sweep.render_markdown(pairs, l2_threshold_in_force(), unscored, corpus=corpus)
 
 
-CORPORA = ("internal", "external", "garak", "disclosed")
+CORPORA = ("internal", "external", "garak", "disclosed", "notes")
 
 _PREFIXES = {
     jailbreak.CATEGORY_PREFIX: "external",
     garak_latent.CATEGORY_PREFIX: "garak",
     disclosed.CATEGORY_PREFIX: "disclosed",
+    benign_ops.CATEGORY_PREFIX: "notes",
 }
 
 
@@ -582,6 +583,11 @@ CORPUS_NOTES = {
         "Payloads reproduced from published disclosures (#29), rewritten to "
         "fictional names. Five cases: read each one, not the rate."
     ),
+    "notes": (
+        "Invented machine-written meeting notes from `corpora/benign_ops.py` (#450), "
+        "with and without the bare links such notes end in. All benign: this "
+        "measures what the judge flags of a shape L2 flags on its own (known gap 28)."
+    ),
 }
 
 NOTABLE_LIST_CAP = 25
@@ -759,12 +765,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--corpus",
-        choices=("internal", "external", "garak", "disclosed", "both", "all"),
+        choices=("internal", "external", "garak", "disclosed", "notes", "both", "all"),
         default="internal",
         help="internal: the hand-authored L3 corpus. external: the third-party "
         "jailbreak set (downloaded on first use). garak: garak's latent-injection "
-        "documents. disclosed: payloads from published disclosures. both: internal "
-        "and external. all: every one. Each corpus is reported separately.",
+        "documents. disclosed: payloads from published disclosures. notes: benign "
+        "machine-written meeting notes. both: internal and external. all: every "
+        "one. Each corpus is reported separately.",
     )
     p.add_argument(
         "--garak-split",
@@ -826,6 +833,8 @@ def select_cases(args: argparse.Namespace) -> list[Case]:
         corpora.append(garak_latent.load(args.garak_split))
     if args.corpus in ("disclosed", "all"):
         corpora.append(list(disclosed.CORPUS))
+    if args.corpus in ("notes", "all"):
+        corpora.append(benign_ops.meeting_notes_cases())
     wanted = {c.strip() for c in args.categories.split(",")} if args.categories else None
     selected: list[Case] = []
     for corpus in corpora:

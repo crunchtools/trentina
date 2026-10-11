@@ -404,7 +404,9 @@ jobs:
 
       # The garak sample (one attack in five, every benign control) and the
       # disclosed payloads, each reported apart. The internal corpus rides
-      # along as the number the others are read against.
+      # along as the number the others are read against. The notes are the
+      # invented meeting notes of known gap 28 (#450), all benign: the judge
+      # half of what benchmarks/l2_lone_flag.py joins with L2.
       - name: Judge the corpora
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -413,7 +415,7 @@ jobs:
           QUARANTINE_REASONING_EFFORT: ${{ matrix.reasoning }}
         run: |
           set -o pipefail
-          for corpus in internal garak disclosed; do
+          for corpus in internal garak disclosed notes; do
             uv run --no-sync python benchmarks/provider_benchmark.py \
               --providers openrouter --corpus "$corpus" --concurrency 8 --retries 3 \
               --out "results/$corpus"
