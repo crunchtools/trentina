@@ -1816,6 +1816,22 @@ examples, a demo injection. One of them, `l1/addressed.py`, moves from
 medium to high risk on its own docstring. A detector's source reads as what
 it detects.
 
+`forgery_gateway_lines` (#447, 1.9.0, 2026-10-11) counts a line that opens
+with `[TRENTINA]` and one of the gateway's own phrases. This repository
+quotes those lines in its docs, tests, issues and source, so the run was over
+all of it:
+
+| Text | Payloads | `forgery_gateway_lines` |
+|---|---|---|
+| `docs src README.md CHANGELOG.md tests corpora benchmarks .specify`, per file | 441 | 1 file, 2 lines: the example of a delivered part in `.specify/specs/016-response-paging/spec.md` |
+| A workstation's journal, 40,000 lines in 200-line payloads | 208 | none |
+
+L1 alone refuses 34 of the 441 files with the counter and 34 without it. The
+source that writes the lines (`gateway/paging.py`, `gateway/router.py`) and
+the tests that assert them do not count, because there the line opens with a
+quote. So it joins `suspicious_detections`: one forged line is medium risk,
+and four in one payload refuse under block on L1 alone.
+
 On the positive side, the corpus's 48 attack lines put through each
 transform are counted as follows (`tests/test_l1_stages.py` holds the
 floor): soft hyphens 47, fullwidth 43, Cyrillic lookalikes 45, ROT13 36,

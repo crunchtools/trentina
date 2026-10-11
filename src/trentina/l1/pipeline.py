@@ -54,6 +54,7 @@ FINDING_NAMES: dict[str, str] = {
     "directives_evasions_detected": "lines matching one once scrambled, misspelled or spaced out",
     "directives_ciphered_detected": "lines matching one once read in ROT13 or backwards",
     "forgery_gateway_verdicts": "lines impersonating this gateway's verdict on the content",
+    "forgery_gateway_lines": "lines written to look like this gateway's own notices",
     "forgery_tool_calls": "tool calls written into the content",
     "addressed_ai_addressed_lines": "lines addressed to an AI reading the content",
     "shadows_files": "Python files shadowing the standard library",
@@ -131,7 +132,8 @@ class PipelineStats:
         Only categories that signal an actual attack vector count: hidden
         elements, off-screen positioning, same-color text, unicode
         manipulation, encoded payloads, exfiltration URLs and fill-in links,
-        LLM delimiters, directive injection, forged verdicts and tool calls,
+        LLM delimiters, directive injection, forged verdicts, gateway lines
+        and tool calls,
         and text addressed to an AI. A link whose text and target disagree is
         not one: mail trackers do that on every message.
 

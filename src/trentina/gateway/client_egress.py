@@ -38,8 +38,8 @@ import contextlib
 import logging
 import time
 from dataclasses import dataclass, field
-from http import HTTPStatus
 from functools import partial
+from http import HTTPStatus
 from typing import TYPE_CHECKING
 
 from ..database import record_gateway_call

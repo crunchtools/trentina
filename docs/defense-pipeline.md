@@ -86,7 +86,7 @@ Only canonical base64 is decoded, meaning text whose re-encoding reproduces it e
 L1 counts, and never modifies what the agent receives:
 
 - **What the agent receives** (`content`) — the caller's text, untouched. A CVE ticket, a Nagios alert, or a security mail *discusses* attacks in the words attacks use; amputating those lines destroyed exactly the content an ops agent exists to read, and destroyed the evidence before the smarter layers could judge it.
-- **Counts, by type** (`PipelineStats`) — hidden markup, unicode manipulation, encoded payloads, exfiltration URLs and links, LLM delimiters, directive patterns like "ignore previous instructions", forged gateway verdicts and tool calls, lines addressed to an AI reader, and, for a directory, Python files that shadow the standard library. They feed the risk score and the warning, and L3's briefing names each non-zero one (`PipelineStats.findings`, from the fixed `FINDING_NAMES` table).
+- **Counts, by type** (`PipelineStats`) — hidden markup, unicode manipulation, encoded payloads, exfiltration URLs and links, LLM delimiters, directive patterns like "ignore previous instructions", forged gateway verdicts, gateway lines and tool calls, lines addressed to an AI reader, and, for a directory, Python files that shadow the standard library. They feed the risk score and the warning, and L3's briefing names each non-zero one (`PipelineStats.findings`, from the fixed `FINDING_NAMES` table).
 
 To match through obfuscation, some stages work on a private normalized copy: zero-width characters removed, encoded blobs replaced, fake `<|im_start|>`/`<|eot_id|>`/`[INST]` delimiters dropped, exfiltration image URLs defanged. The copy never leaves L1 (#360). L1 hands on counts and nothing else.
 
@@ -95,6 +95,7 @@ The stages added for #363 (0.58.0) count forms that are findings in themselves, 
 | Counter | Counts | Raises L1's risk |
 |---|---|---|
 | `forgery_gateway_verdicts` | a `_trentina_*` key written as a key, or a claim that Trentina cleared what follows (`l1/forgery.py`) | yes |
+| `forgery_gateway_lines` | a line that opens `[TRENTINA]` and goes on as one of the gateway's own notices does: which part this is, that a response was refused or flagged (#447, 1.9.0). A line that quotes one does not count | yes |
 | `forgery_tool_calls` | tool-call markup, or a call object interrupting prose | yes |
 | `addressed_ai_addressed_lines` | a line that turns to the AI reading it (`l1/addressed.py`); writing about agents does not count | yes |
 | `unicode_soft_hyphen_words` | a word with soft hyphens between two or more letters | yes |
