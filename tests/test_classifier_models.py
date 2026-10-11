@@ -135,6 +135,118 @@ class TestManifest:
         assert rev_a != classifier.resolve_model(str(b)).revision
 
 
+def _windowed(tmp_path: Path, manifest: dict[str, Any], limit: int | None = None) -> Any:
+    config: dict[str, Any] = {"id2label": {"0": "SAFE", "1": "INJECTION"}}
+    if limit is not None:
+        config["max_position_embeddings"] = limit
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    (tmp_path / classifier.MANIFEST_FILE).write_text(json.dumps(manifest))
+    return classifier.resolve_model(str(tmp_path))
+
+
+class TestWindow:
+    """The window a model is scanned in is the model's, stated in its manifest (#438)."""
+
+    def test_no_manifest_key_is_the_default_window(self, tmp_path: Path) -> None:
+        model = _windowed(tmp_path, {})
+        assert (model.window, model.guard) == (classifier.WINDOW_TOKENS, classifier.GUARD_TOKENS)
+
+    def test_a_model_that_reads_more_is_not_widened_by_default(self, tmp_path: Path) -> None:
+        """Horizon reads 8192 and is slower at every width past 512."""
+        assert _windowed(tmp_path, {}, limit=8192).window == classifier.WINDOW_TOKENS
+
+    def test_the_default_never_passes_the_models_own_limit(self, tmp_path: Path) -> None:
+        assert _windowed(tmp_path, {}, limit=256).window == 256
+
+    def test_the_manifest_states_the_window_and_the_guard(self, tmp_path: Path) -> None:
+        model = _windowed(tmp_path, {"window_tokens": 1024, "guard_tokens": 96}, limit=8192)
+        assert (model.window, model.guard) == (1024, 96)
+
+    def test_a_window_the_model_cannot_read_refuses(self, tmp_path: Path) -> None:
+        with pytest.raises(classifier.ModelManifestError, match="window_tokens"):
+            _windowed(tmp_path, {"window_tokens": 1024}, limit=512)
+
+    @pytest.mark.parametrize("window", [0, -512, classifier.MIN_WINDOW_TOKENS - 1])
+    def test_a_window_too_narrow_to_read_refuses(self, tmp_path: Path, window: int) -> None:
+        with pytest.raises(classifier.ModelManifestError, match="window_tokens"):
+            _windowed(tmp_path, {"window_tokens": window})
+
+    @pytest.mark.parametrize("value", ["512", 512.0, True])
+    def test_a_window_that_is_not_a_whole_number_refuses(self, tmp_path: Path, value: Any) -> None:
+        with pytest.raises(classifier.ModelManifestError, match="whole numbers"):
+            _windowed(tmp_path, {"window_tokens": value})
+
+    @pytest.mark.parametrize("guard", [-1, 256, 510])
+    def test_a_guard_band_that_leaves_no_stride_refuses(self, tmp_path: Path, guard: int) -> None:
+        """Over half the content, every token is read twice or the scan never advances."""
+        with pytest.raises(classifier.ModelManifestError, match="guard_tokens"):
+            _windowed(tmp_path, {"guard_tokens": guard})
+
+    def test_half_the_content_is_the_widest_guard_band(self, tmp_path: Path) -> None:
+        assert _windowed(tmp_path, {"guard_tokens": 255}).guard == 255
+
+
+def test_the_window_is_in_the_perimeter_stamp() -> None:
+    """A model scanned in other windows scores other text: its verdicts are swept."""
+    from trentina.perimeter_db import perimeter_stamp
+
+    def stamp(window: int) -> str:
+        model = classifier.ModelInfo("m", "r", 0.7, (1,), window=window)
+        with patch.object(classifier, "resolve_model", return_value=model):
+            return perimeter_stamp()
+
+    assert stamp(512).endswith(":window-512/64")
+    assert stamp(512) != stamp(256)
+
+
+def test_the_window_benchmark_counts_passes_as_classify_runs_them() -> None:
+    from benchmarks.l2_window import passes
+
+    assert passes(16_384, 512, 64) == 37
+    assert passes(16_384, 8_192, 64) == 3
+    assert passes(100, 512, 64) == 1
+    assert passes(510, 512, 64) == 1
+    assert passes(511, 512, 64) == 2
+
+
+class TestBenchmarkWidestWindow:
+    """``benchmarks/l2_window.py`` tries no width the model cannot read (#438)."""
+
+    def _widest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tokenizer: int, stated: Any
+    ) -> int:
+        from benchmarks import l2_window
+
+        config = {} if stated is None else {"max_position_embeddings": stated}
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        monkeypatch.setattr(
+            l2_window, "get_config", lambda: MagicMock(classifier_model_path=str(tmp_path))
+        )
+        return l2_window._widest(MagicMock(model_max_length=tokenizer))
+
+    @pytest.mark.parametrize(
+        ("tokenizer", "stated", "widest"),
+        [
+            (8192, 512, 512),
+            (512, 8192, 512),
+            (8192, 8192, 8192),
+            (4096, None, 4096),
+            (4096, "512", 4096),
+            (4096, 0, 4096),
+            (4096, -1, 4096),
+        ],
+    )
+    def test_the_smaller_of_the_tokenizers_and_the_models_limit(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        tokenizer: int,
+        stated: Any,
+        widest: int,
+    ) -> None:
+        assert self._widest(tmp_path, monkeypatch, tokenizer, stated) == widest
+
+
 class TestOutputWidth:
     def _session(self, shape: list[Any]) -> MagicMock:
         session = MagicMock()

@@ -74,6 +74,64 @@ class ModelManifestError(ValueError):
     """A model directory that does not say which of its outputs is malicious."""
 
 
+WINDOW_TOKENS = 512
+"""The window a model is scanned in when its manifest states none (#438).
+
+The window is the model's, not the gateway's: ``trentina-model.json`` carries
+``window_tokens`` and :func:`resolve_model` reads it into
+:class:`ModelInfo`. This is the default, and it is never taken past the
+model's own ``max_position_embeddings``. Prompt Guard 2 could read no more
+than 512. Horizon's prompt-injection-guard-small can read 8192 and is still
+scanned at 512: no wider window measured reliably faster, 4096 and 8192 ran
+two to five times slower, and 256 flagged benign prose (``docs/benchmark.md``,
+"L2 window width")."""
+
+WINDOW_SPECIAL_TOKENS = 2
+"""Special tokens the model wraps each window in (CLS ... SEP).
+
+``classify()`` takes the real count from the tokenizer rather than this
+constant, so a model that wraps differently stays correct. This is the value
+the default window geometry below is stated against, and a test pins the two
+together.
+"""
+
+WINDOW_CONTENT_TOKENS = WINDOW_TOKENS - WINDOW_SPECIAL_TOKENS
+"""Content tokens one default window actually carries.
+
+The window is WINDOW_TOKENS wide, but the special tokens occupy two of those
+slots, so only this many tokens of the input fit. The overlap below is the
+guard band over CONTENT, which is the thing an injection is made of -- stating
+it against WINDOW_TOKENS overstates it by WINDOW_SPECIAL_TOKENS.
+"""
+
+GUARD_TOKENS = 64
+"""Content tokens two neighbouring windows share, unless the manifest's
+``guard_tokens`` says otherwise.
+
+Overlap exists so an injection straddling a window boundary still lands
+intact inside at least one window. It only has to exceed the longest
+injection we care about catching whole: the canonical forms
+("ignore all previous instructions and ...") run 10-30 tokens, so 64 is a
+comfortable margin.
+"""
+
+WINDOW_STRIDE = WINDOW_CONTENT_TOKENS - GUARD_TOKENS
+"""How far the default window advances: 446, leaving the guard band.
+
+This was stride=256 -- a 256-token guard band, which meant a 50% overlap
+and ran the model over every token TWICE. On a 32,768-token scan that is
+128 passes instead of 74, and at the measured 872 ms per pass on host01 it
+cost roughly 47 seconds of pure duplicate work per scan. The Matrix proxy
+scans every /sync response, so agent1 paid it on every message and
+agent3 could not finish an initial sync inside its 30 s budget at all
+(RT #1460).
+"""
+
+MIN_WINDOW_TOKENS = 16
+"""The narrowest window a manifest may state. Below it a window holds less
+than any instruction, and the scan is passes with nothing to read."""
+
+
 @dataclass(frozen=True)
 class ModelInfo:
     """What L2 is running: identity for the verdict stamp, and how to score it."""
@@ -86,6 +144,8 @@ class ModelInfo:
     license: str = ""
     gate: str = "unrecorded"  # obfuscation gate: passed, failed or unrecorded (#362)
     benign_gate: str = "unrecorded"  # benign gate, the same three states (#411)
+    window: int = WINDOW_TOKENS  # tokens one pass reads, special tokens included (#438)
+    guard: int = GUARD_TOKENS  # content tokens neighbouring windows share
 
 
 def resolve_model(model_path: str, threshold_override: float | None = None) -> ModelInfo:
@@ -154,6 +214,7 @@ def resolve_model(model_path: str, threshold_override: float | None = None) -> M
     )
     if not 0.0 < threshold <= 1.0:
         raise ModelManifestError("threshold outside (0, 1]")
+    window, guard = _window_geometry(manifest, config)
     return ModelInfo(
         id=str(manifest.get("id") or root.name),
         revision=str(manifest.get("revision") or _unpinned_revision(root)),
@@ -163,7 +224,39 @@ def resolve_model(model_path: str, threshold_override: float | None = None) -> M
         license=str(manifest.get("license", "")),
         gate=gate_state(manifest),
         benign_gate=benign_state(manifest, threshold),
+        window=window,
+        guard=guard,
     )
+
+
+def _window_geometry(manifest: dict[str, Any], config: dict[str, Any]) -> tuple[int, int]:
+    """The window and guard band a model is scanned with (#438).
+
+    The manifest's ``window_tokens`` and ``guard_tokens``, else the defaults,
+    the window never past the model's own ``max_position_embeddings``. A
+    manifest that states a window the model cannot read is refused: every
+    pass would be cut short by the model while the scan reported it whole.
+    Neighbouring windows must advance, and by at least as far as they
+    overlap, or one payload costs passes without bound.
+
+    Raises:
+        ModelManifestError: a window or guard band that is not a whole
+            number, a window under :data:`MIN_WINDOW_TOKENS` or over the
+            model's limit, or a guard band that leaves no stride.
+    """
+    limit = config.get("max_position_embeddings")
+    limit = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else None
+    stated = manifest.get("window_tokens")
+    window = stated if stated is not None else min(WINDOW_TOKENS, limit or WINDOW_TOKENS)
+    guard = manifest.get("guard_tokens", GUARD_TOKENS)
+    for value in (window, guard):
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ModelManifestError("window_tokens and guard_tokens must be whole numbers")
+    if window < MIN_WINDOW_TOKENS or (limit is not None and window > limit):
+        raise ModelManifestError("window_tokens outside what the model can read")
+    if guard < 0 or guard * 2 > window - WINDOW_SPECIAL_TOKENS:
+        raise ModelManifestError("guard_tokens leaves the window no stride")
+    return window, guard
 
 
 def _unpinned_revision(root: Path) -> str:
@@ -260,11 +353,13 @@ def is_classifier_available() -> bool:
         _loaded = True
         logger.info(
             "Layer 2 classifier loaded from %s: %s@%s, threshold %.2f, "
-            "obfuscation gate %s, benign gate %s",
+            "window %d (guard %d), obfuscation gate %s, benign gate %s",
             model_path,
             _model.id,
             _model.revision or "unpinned",
             _model.threshold,
+            _model.window,
+            _model.guard,
             _model.gate,
             _model.benign_gate,
         )
@@ -338,46 +433,6 @@ def _classify_segment(input_ids: list[int], attention_mask: list[int]) -> tuple[
     return label, malicious_score
 
 
-WINDOW_TOKENS = 512
-"""Prompt Guard 2's context window. max_position_embeddings is 512, so a
-segment longer than this cannot be scanned in one pass."""
-
-WINDOW_SPECIAL_TOKENS = 2
-"""Special tokens the model wraps each window in (CLS ... SEP).
-
-``classify()`` takes the real count from the tokenizer rather than this
-constant, so a model that wraps differently stays correct. This is the value
-the window geometry below is stated against, and a test pins the two together.
-"""
-
-WINDOW_CONTENT_TOKENS = WINDOW_TOKENS - WINDOW_SPECIAL_TOKENS
-"""Content tokens one window actually carries.
-
-The window is WINDOW_TOKENS wide, but the special tokens occupy two of those
-slots, so only this many tokens of the input fit. The overlap below is the
-guard band over CONTENT, which is the thing an injection is made of -- stating
-it against WINDOW_TOKENS overstates it by WINDOW_SPECIAL_TOKENS.
-"""
-
-WINDOW_STRIDE = 446
-"""How far the window advances, leaving a 64-token guard band of overlap.
-
-Overlap exists so an injection straddling a window boundary still lands
-intact inside at least one window. It only has to exceed the longest
-injection we care about catching whole: the canonical forms
-("ignore all previous instructions and ...") run 10-30 tokens, so 64 is a
-comfortable margin.
-
-This was stride=256 -- a 256-token guard band, which meant a 50% overlap
-and ran the model over every token TWICE. On a 32,768-token scan that is
-128 passes instead of 74, and at the measured 872 ms per pass on host01 it
-cost roughly 47 seconds of pure duplicate work per scan. The Matrix proxy
-scans every /sync response, so agent1 paid it on every message and
-agent3 could not finish an initial sync inside its 30 s budget at all
-(RT #1460).
-"""
-
-
 def classify(
     text: str, *, fail_on_truncate: bool = False, source: str = "content"
 ) -> ClassifierResult | None:
@@ -388,9 +443,10 @@ def classify(
     Prefer :func:`classify_async` from async code so a long scan cannot
     block the event loop.
 
-    For text longer than ``WINDOW_TOKENS``, splits into overlapping segments
-    (advancing by ``WINDOW_STRIDE``, leaving a 64-token guard band) and
-    returns the highest malicious score.  Scanning stops
+    For text longer than the model's window (``ModelInfo.window``, 512 unless
+    its manifest says otherwise, #438), splits into overlapping segments that
+    share the model's guard band (64 tokens by default) and returns the
+    highest malicious score.  Scanning stops
     after ``Config.admission_tokens`` tokens and the result is marked
     ``truncated``; callers must treat a truncated scan of an untrusted
     source as unscannable rather than clean.  Without that bound an 855 KB
@@ -408,8 +464,9 @@ def classify(
 
     start = time.monotonic()
 
-    max_length = WINDOW_TOKENS
-    stride = WINDOW_STRIDE
+    model = _model
+    max_length = model.window if model is not None else WINDOW_TOKENS
+    guard = model.guard if model is not None else GUARD_TOKENS
 
     all_ids = _encode(text)
 
@@ -423,7 +480,7 @@ def classify(
 
     # One loop for every length. There was a single-window shortcut here that
     # re-tokenized ``text`` with ``truncation=True`` whenever the input was at
-    # most WINDOW_TOKENS long, but a window carries only WINDOW_CONTENT_TOKENS
+    # most one window long, but a window carries two tokens less than that
     # of content: a 511- or 512-token input lost its last one or two tokens
     # and came back with ``truncated`` False (#298). A short input is one
     # pass of this loop at its natural length, which is what the shortcut
@@ -431,9 +488,14 @@ def classify(
     best_label = "BENIGN"
     best_score = 0.0
 
-    # WINDOW_CONTENT_TOKENS states this; the tokenizer is the source of
-    # truth so a model wrapping windows differently stays correct.
+    # WINDOW_CONTENT_TOKENS states this for the default window; the tokenizer
+    # is the source of truth so a model wrapping windows differently stays
+    # correct.
     content_length = max_length - _tokenizer.num_special_tokens_to_add()
+    # The guard band is content the neighbouring windows share; resolve_model
+    # holds it to half a window, and max(..., 1) keeps the loop advancing for
+    # a tokenizer that wraps in more special tokens than the default two.
+    stride = max(content_length - guard, 1)
 
     # max(..., 1): empty text still gets its one pass, as it did before.
     for start_idx in range(0, max(len(all_ids), 1), stride):

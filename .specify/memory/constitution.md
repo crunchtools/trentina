@@ -1,6 +1,6 @@
 # trentina Constitution
 
-> **Version:** 2.5.0
+> **Version:** 2.5.1
 > **Ratified:** 2026-09-22
 > **Amended:** 2026-10-11
 > **Status:** Active
@@ -89,7 +89,8 @@ and `tests/test_layer_contract.py` enforces the first two.
   (`quarantine/classifier.py`). The model is an operator setting
   (`CLASSIFIER_MODEL`, #350): Horizon-Labs' prompt-injection-guard-small by
   default and the one model the image ships, exported from a pinned
-  revision with a manifest that states its polarity and threshold. A shipped
+  revision with a manifest that states its polarity, its threshold and the
+  window it is scanned in (#438). A shipped
   model passes the obfuscation gate (`benchmarks/l2_obfuscation.py`): the
   image build runs it and records the result in the manifest, and the
   gateway names a model without a passing record at startup and refuses to
@@ -287,3 +288,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.3.1 | 2026-10-11 | A run of decimal digits up to twenty long is a number, not hex the unpack stage decodes: a byte count was being read by every layer as the text its digits spell in hex (#431) |
 | 2.4.0 | 2026-10-11 | The default judge is gemini-3.5-flash-lite (#397). A judge is supported when its prompt pack passes the pack gate briefed as production; shipped packs carry that status and startup reports a judge that is not supported |
 | 2.5.0 | 2026-10-11 | Client egress (#442): a CONNECT listener tunnels an agent's own HTTPS client to the hosts its profile lists. The gateway decides the caller (by network), the host, the address and the TLS server name, and records the bytes; it does not read them, which is known gap 26. The block is perimeter: held on an agent reload, refused on a honeypot |
+| 2.5.1 | 2026-10-11 | The window L2 scans in is the model's, stated in its manifest beside polarity and threshold (#438); the shipped model states 512 |

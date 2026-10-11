@@ -112,10 +112,11 @@ uv run trentina
   `prompt-injection-guard-small` (Horizon-Labs, Apache-2.0), the one model the
   image ships (#362 dropped `prompt-guard-2-86m`, which fails the obfuscation
   gate). A model directory carries `trentina-model.json` (id, pinned
-  revision, threshold, which outputs are malicious), written by
+  revision, threshold, which outputs are malicious, the window it is scanned
+  in), written by
   `scripts/export_l2_model.py`; without one, labels come from `config.json`
   and any label not a known benign or malicious name refuses to load. The
-  model, revision, threshold, polarity and gate state are in
+  model, revision, threshold, polarity, gate state and window are in
   `perimeter_db.perimeter_stamp()`, so switching sweeps cached verdicts. The
   manifest's `obfuscation_gate` record is written by
   `benchmarks/l2_obfuscation.py --record` (the Containerfile's `l2-gate`
@@ -243,8 +244,12 @@ new pattern goes into that file's attack, benign and linearity tables.
 
 ## Layer 2 scanning limits
 
-`classify()` slides a 512-token window at stride 446, so cost grows linearly
-with input length. One cap bounds it (#225):
+`classify()` slides the model's window across the payload, so cost grows
+linearly with input length. The window is the model's (#438): its manifest's
+`window_tokens` and `guard_tokens`, read into `ModelInfo`, else 512 and 64,
+never past the model's `max_position_embeddings`. The shipped model states
+512 (stride 446): `benchmarks/l2_window.py` measured no wider window
+reliably faster and 4096 and 8192 far slower. One cap bounds the scan (#225):
 
 - `Config.admission_tokens` = `min(CLASSIFIER_MAX_TOKENS, QUARANTINE_CONTEXT_TOKENS)`,
   in L2's tokens. `defend()` counts first (`defense.admission`), before any

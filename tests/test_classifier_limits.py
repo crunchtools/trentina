@@ -9,6 +9,7 @@ that pegged every core for roughly 90 minutes and wedged the event loop.
 from __future__ import annotations
 
 import importlib
+import itertools
 import os
 import re
 import threading
@@ -481,3 +482,35 @@ class TestSingleWindowEdge:
             result = classify("")
         assert result is not None
         assert session.run.call_count == 1
+
+
+class TestWindowIsTheModels:
+    """``classify()`` scans in the loaded model's window, not a constant (#438)."""
+
+    @pytest.mark.parametrize(
+        ("window", "guard", "tokens"),
+        [(128, 16, 1_000), (1_024, 64, 4_000), (WINDOW_TOKENS, 64, 4_000), (256, 0, 1_016)],
+    )
+    def test_passes_and_overlap_follow_the_manifest(
+        self, window: int, guard: int, tokens: int
+    ) -> None:
+        content = window - WINDOW_SPECIAL_TOKENS
+        stride = content - guard
+        model = ModelInfo(
+            id="m", revision="", threshold=0.5, malicious=(1, 2), window=window, guard=guard
+        )
+        with (
+            mocked_model(token_count=tokens) as session,
+            patch("trentina.quarantine.classifier._model", model),
+        ):
+            classify("x")
+
+        ids = [list(call.args[1]["input_ids"][0]) for call in session.run.call_args_list]
+        assert all(len(seg) <= window for seg in ids)
+        assert len(ids[0]) == window
+        # Content only: strip the CLS and SEP the window is wrapped in.
+        spans = [seg[1:-1] for seg in ids]
+        assert [span[0] for span in spans] == list(range(0, spans[-1][0] + 1, stride))
+        assert spans[-1][-1] == tokens - 1
+        for before, after in itertools.pairwise(spans):
+            assert before[-1] - after[0] + 1 == guard

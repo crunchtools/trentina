@@ -10,9 +10,10 @@ point ``CLASSIFIER_MODEL_PATH`` at it.
         --out /models/NAME --id NAME --threshold 0.5 --malicious-labels INJECTION
 
 The manifest (``trentina-model.json``) is what ``quarantine/classifier.py``
-reads to know which outputs are malicious and at what threshold; see
-``resolve_model`` there. Name the malicious outputs by label when the model's
-``config.json`` labels them, by index when it does not.
+reads to know which outputs are malicious, at what threshold, and in what
+window the model is scanned (#438); see ``resolve_model`` there. Name the
+malicious outputs by label when the model's ``config.json`` labels them, by
+index when it does not.
 """
 
 from __future__ import annotations
@@ -55,6 +56,17 @@ def main() -> int:
     p.add_argument("--license", default="")
     p.add_argument("--threshold", type=float, required=True)
     p.add_argument("--head", choices=HEADS, default="auto")
+    p.add_argument(
+        "--window-tokens",
+        type=int,
+        help="Tokens one L2 pass reads (#438). Omitted, the runtime uses 512 "
+        "or the model's max_position_embeddings, whichever is smaller.",
+    )
+    p.add_argument(
+        "--guard-tokens",
+        type=int,
+        help="Content tokens neighbouring windows share. Omitted, the runtime uses 64.",
+    )
     polarity = p.add_mutually_exclusive_group(required=True)
     polarity.add_argument("--malicious-labels", nargs="+")
     polarity.add_argument("--malicious-indices", nargs="+", type=int)
@@ -86,6 +98,10 @@ def main() -> int:
         "license": args.license,
         "threshold": args.threshold,
     }
+    if args.window_tokens is not None:
+        manifest["window_tokens"] = args.window_tokens
+    if args.guard_tokens is not None:
+        manifest["guard_tokens"] = args.guard_tokens
     if args.malicious_labels:
         manifest["malicious_labels"] = args.malicious_labels
     else:

@@ -48,7 +48,10 @@ RUN pip install --no-cache-dir \
 
 # The L2 model, exported to ONNX from a PINNED revision of its safetensors,
 # with the trentina-model.json manifest the classifier reads for its
-# identity, polarity and threshold (#350). Bumping the revision is a model
+# identity, polarity, threshold and window (#350, #438). The window is
+# stated here, not inherited from a default: no wider window measured reliably
+# faster for this model and a narrower one flagged benign text
+# (docs/benchmark.md, "L2 window width"). Bumping the revision is a model
 # change: re-run the L2 benchmark and update the expectations in
 # tests/test_l2_integration.py.
 COPY scripts/export_l2_model.py /usr/local/bin/export_l2_model.py
@@ -62,6 +65,7 @@ RUN python /usr/local/bin/export_l2_model.py \
       --id prompt-injection-guard-small \
       --license Apache-2.0 \
       --threshold 0.7 \
+      --window-tokens 512 \
       --malicious-labels INJECTION
 
 # ============================================================

@@ -10,6 +10,30 @@ under that name.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-11
+
+### Added
+- The window L2 scans in is a per-model setting (#438). A model's
+  `trentina-model.json` may state `window_tokens` and `guard_tokens`;
+  `scripts/export_l2_model.py` writes them (`--window-tokens`,
+  `--guard-tokens`) and `resolve_model` reads them into `ModelInfo`. Without
+  them the window is 512, or the model's `max_position_embeddings` when that
+  is smaller, and the guard band 64. A window the model cannot read, or a
+  guard band over half of what a window holds, refuses to load. `quarantine_stats` reports
+  `window_tokens`.
+- `benchmarks/l2_window.py` measures a model's cost and scores at each
+  window width.
+
+### Changed
+- `WINDOW_TOKENS = 512` was a module constant documented as Prompt Guard 2's
+  limit, and the shipped model inherited it. The shipped model reads 8192
+  tokens; its manifest now states 512. No wider window measured reliably
+  faster, 4096 and 8192 ran two to five times slower, and 256 flagged
+  benign prose (`docs/benchmark.md`, "L2 window width"). Nothing it scans
+  changes.
+- The perimeter stamp carries the window, so verdicts cached under the old
+  stamp are judged again once on the first start.
+
 ## [1.6.0] - 2026-10-11
 
 ### Added

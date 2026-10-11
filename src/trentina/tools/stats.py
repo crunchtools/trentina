@@ -76,6 +76,7 @@ def _classifier() -> dict[str, Any]:
         "model": model.id if model else None,
         "revision": model.revision if model else None,
         "threshold": model.threshold if model else None,
+        "window_tokens": model.window if model else None,
     }
 
 
