@@ -62,6 +62,13 @@ CORPORA: tuple[Corpus, ...] = (
         prefix="garak_",
     ),
     Corpus(
+        "garak encodings",
+        "garak_encodings",
+        "NVIDIA/garak, as transforms",
+        "Apache-2.0",
+        VENDORED,
+    ),
+    Corpus(
         "Disclosed attacks",
         "disclosed",
         "published disclosures, rewritten to fictional names",

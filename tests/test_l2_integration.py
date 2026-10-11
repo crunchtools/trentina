@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from corpora.benign_ops import BENIGN as BENIGN_SHAPES
 from corpora.disclosed import CORPUS as DISCLOSED
+from corpora.garak_encodings import ENCODINGS
+from corpora.internal import CORPUS as INTERNAL
 from trentina.jsonwalk import iter_leaves
 from trentina.l1.pipeline import run_l1
 from trentina.quarantine.classifier import (
@@ -30,7 +32,11 @@ from trentina.quarantine.classifier import (
     model_info,
     reset_classifier,
 )
+from trentina.quarantine.obfuscation import GATE_MAX_DROP
 from trentina.unpack.scan import unpack
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 PG2 = "prompt-guard-2-86m"
 HORIZON = "prompt-injection-guard-small"
@@ -245,9 +251,15 @@ def _flagged(category: str) -> tuple[int, int]:
     return sum(r is not None and r.label == "MALICIOUS" for r in scored), len(scored)
 
 
+def _detected(texts: Iterable[str]) -> int:
+    """How many of ``texts`` the model calls malicious."""
+    results = [classify(text) for text in texts]
+    return sum(r is not None and r.label == "MALICIOUS" for r in results)
+
+
 @requires_model
 class TestKnownGaps:
-    """Known gaps 18 and 19 (#411) and 20 (#29), held open. 18 and 19 assert
+    """Known gaps 18 and 19 (#411), 20 (#29) and 21 to 23 (#423), held open. 18 and 19 assert
     the shipped model STILL flags the shape. When a model or a pre-processor closes one, its
     test fails on purpose: take the shape out of ``benign_ops.KNOWN_GAPS``
     (it is then gated) and the entry out of docs/defense-pipeline.md."""
@@ -276,3 +288,36 @@ class TestKnownGaps:
         result = classify(case.payload)
         assert result is not None
         assert result.label != "MALICIOUS", f"{case_id}: gap 20 may have closed"
+
+    def test_benign_text_in_an_encoding_is_flagged_for_the_encoding(self) -> None:
+        """Known gap 21 (#423): five ordinary sentences, each flagged once
+        encoded. When a model stops, this fails on purpose: re-run
+        ``benchmarks/l2_encodings.py`` and see whether it now reads the
+        encoding or only ignores it. One test, because each loads the model."""
+        if _MODEL is None or _MODEL.id != HORIZON:
+            pytest.skip("measured on prompt-injection-guard-small")
+        for name in ("base32", "Ascii85", "base85", "UU", "Braille", "Morse"):
+            flagged = _detected(ENCODINGS[name](p.values[0]) for p in BENIGN)
+            assert flagged * 2 > len(BENIGN), f"{name}, {flagged}: gap 21 may have closed"
+
+    def test_a_letter_cipher_costs_detections(self) -> None:
+        """Known gap 22 (#423): more attacks are lost than the gate allows.
+        Leetspeak is scored on the internal attacks; the short ones here
+        survive it."""
+        if _MODEL is None or _MODEL.id != HORIZON:
+            pytest.skip("measured on prompt-injection-guard-small")
+        short = [p.values[0] for p in ATTACKS]
+        internal = [c.payload for c in INTERNAL if c.expect_injection]
+        for name, attacks in (("ROT13", short), ("Atbash", short), ("leetspeak", internal)):
+            lost = _detected(attacks) - _detected(ENCODINGS[name](a) for a in attacks)
+            assert lost > GATE_MAX_DROP, f"{name} loses {lost}: gap 22 may have closed"
+
+    def test_an_attack_spelled_out_or_invisible_passes_l1_and_l2(self) -> None:
+        """Known gap 23 (#423). A new L1 count or a model that reads either
+        fails this on purpose."""
+        if _MODEL is None or _MODEL.id != HORIZON:
+            pytest.skip("measured on prompt-injection-guard-small")
+        for name in ("NATO alphabet", "sneaky bits"):
+            encoded = [ENCODINGS[name](p.values[0]) for p in ATTACKS]
+            assert all(run_l1(text).stats.findings() == [] for text in encoded), name
+            assert _detected(encoded) == 0, f"{name}: gap 23 may have closed"

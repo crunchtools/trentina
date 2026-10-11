@@ -170,6 +170,9 @@ max-complexity = 10
 # the same text on every run; nothing in it is a secret.
 # ARG005: every shape's maker takes the case index; most do not need it.
 "corpora/benign_ops.py" = ["S311", "ARG005"]
+# S311: garak's leetspeak swaps letters on a coin toss (#423); seeding the toss
+# with the text makes one text one encoding on every run.
+"corpora/garak_encodings.py" = ["S311"]
 "src/trentina/dbus_interface.py" = ["UP037", "C901", "TRY300"]
 # S603: PDFs are parsed in a child process so a hostile file can be killed
 # at a deadline (#369). argv is this interpreter and a constant module name;
@@ -191,6 +194,9 @@ max-complexity = 10
 # single-use-helper rule rather than split into helpers.
 "benchmarks/provider_benchmark.py" = ["E402", "PLR0915"]
 "benchmarks/l2_obfuscation.py" = ["E402"]
+"benchmarks/l2_encodings.py" = ["E402"]
+# S106: `bearer_token_env` names an environment variable; it holds no token.
+"benchmarks/l2_benign.py" = ["E402", "S106"]
 "benchmarks/l1_briefing.py" = ["E402"]
 "benchmarks/redact_input.py" = ["E402"]
 "benchmarks/l1_false_positives.py" = ["E402"]
