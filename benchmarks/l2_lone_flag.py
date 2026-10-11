@@ -148,14 +148,24 @@ def corpus_texts() -> dict[str, str]:
     return {case.id: case.payload for case in cases}
 
 
-def corpora_row(runs: list[dict[str, Any]], flagged: Callable[[str], bool]) -> Row:
-    """One judge's ``provider_benchmark.py`` results, every corpus it ran together."""
+def corpora_rows(runs: list[dict[str, Any]], flagged: Callable[[str], bool]) -> list[Row]:
+    """``provider_benchmark.py`` results, one row a judge over every corpus it ran.
+
+    A result holds one entry per provider it benchmarked, and a judge's
+    corpora may arrive as separate results; both are gathered by model.
+    """
     texts = corpus_texts()
-    rows = [case for run in runs for case in run["providers"][0]["cases"]]
-    known = [r for r in rows if r["id"] in texts and not r.get("error")]
-    judged = [Judged(texts[r["id"]], r["expect_injection"], bool(r["detected"])) for r in known]
-    judge = runs[0]["providers"][0]["model"]
-    return tally("internal, garak, disclosed", judge, judged, flagged, len(rows) - len(known))
+    by_judge: dict[str, list[dict[str, Any]]] = {}
+    for run in runs:
+        for provider in run["providers"]:
+            by_judge.setdefault(provider["model"], []).extend(provider["cases"])
+    rows = []
+    for judge, cases in by_judge.items():
+        known = [c for c in cases if c["id"] in texts and not c.get("error")]
+        judged = [Judged(texts[c["id"]], c["expect_injection"], bool(c["detected"])) for c in known]
+        source = "internal, garak, disclosed"
+        rows.append(tally(source, judge, judged, flagged, len(cases) - len(known)))
+    return rows
 
 
 def render(rows: list[Row]) -> str:
@@ -206,10 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     flagged = _l2_flags()
     rows = [pack_row(run, flagged) for run in _load(args.packs)]
     rows += [judged_row(run, flagged) for run in _load(args.judged)]
-    by_judge: dict[str, list[dict[str, Any]]] = {}
-    for run in _load(args.corpora):
-        by_judge.setdefault(run["providers"][0]["model"], []).append(run)
-    rows += [corpora_row(runs, flagged) for runs in by_judge.values()]
+    rows += corpora_rows(_load(args.corpora), flagged)
 
     model = model_info()
     print(f"L2: {model.id if model else '?'} at {model.threshold if model else '?'}\n")
