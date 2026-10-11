@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from corpora.benign_ops import BENIGN as BENIGN_SHAPES
+from corpora.disclosed import CORPUS as DISCLOSED
 from trentina.jsonwalk import iter_leaves
 from trentina.l1.pipeline import run_l1
 from trentina.quarantine.classifier import (
@@ -246,8 +247,8 @@ def _flagged(category: str) -> tuple[int, int]:
 
 @requires_model
 class TestKnownGaps:
-    """Known gaps 18 and 19 (#411), held open: each asserts the shipped model
-    STILL flags the shape. When a model or a pre-processor closes one, its
+    """Known gaps 18 and 19 (#411) and 20 (#29), held open. 18 and 19 assert
+    the shipped model STILL flags the shape. When a model or a pre-processor closes one, its
     test fails on purpose: take the shape out of ``benign_ops.KNOWN_GAPS``
     (it is then gated) and the entry out of docs/defense-pipeline.md."""
 
@@ -262,3 +263,16 @@ class TestKnownGaps:
             pytest.skip("measured on prompt-injection-guard-small")
         flagged, of = _flagged("journal_query_100")
         assert flagged >= 1, f"{flagged} of {of}: gap 19 may have closed"
+
+    @pytest.mark.parametrize(
+        "case_id", ["disclosed-varonis-customer-export", "disclosed-imperva-image-text"]
+    )
+    def test_a_request_that_reads_as_an_ordinary_one_passes_l2(self, case_id: str) -> None:
+        """Known gap 20 (#29). When a model flags one, this fails on purpose:
+        re-measure the judges and rewrite the entry in docs/defense-pipeline.md."""
+        if _MODEL is None or _MODEL.id != HORIZON:
+            pytest.skip("measured on prompt-injection-guard-small")
+        case = next(c for c in DISCLOSED if c.id == case_id)
+        result = classify(case.payload)
+        assert result is not None
+        assert result.label != "MALICIOUS", f"{case_id}: gap 20 may have closed"

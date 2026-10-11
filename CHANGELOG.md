@@ -35,6 +35,13 @@ under that name.
   measures and what it does not. `corpora/registry.py` is the same list as
   data, and a test fails when the two disagree.
 
+### Documented
+- Known gap 20 (#29): a request that reads as an ordinary one passes every
+  layer. Varonis's customer-export request is flagged by L1, L2 and none of
+  the four shipped judges; Imperva's bare install instruction passes L2 and
+  two of the four. `docs/benchmark.md` has L3 on the garak and disclosed
+  corpora for every shipped judge.
+
 ### Removed
 - `tests/test-injection.md`, which nothing read.
 
