@@ -252,8 +252,10 @@ def _as_read(payload: Any, category: str) -> str:
     the same counts, and as the router does (#431): the structured copy of
     the text dropped, the JSON text through the default pre-processors, then
     unpacked. A journal's text is reduced (#419)."""
-    blocks: list[Any] = [{"type": "text", "text": json.dumps(payload, separators=(",", ":"))}]
-    structured = _drop_duplicate_structured(payload, blocks)
+    document = isinstance(payload, str)  # a document is its text, not JSON
+    text = payload if document else json.dumps(payload, separators=(",", ":"))
+    blocks: list[Any] = [{"type": "text", "text": text}]
+    structured = _drop_duplicate_structured(None if document else payload, blocks)
     outcome = asyncio.run(
         transform_response(
             profile=_DEFAULTS,
@@ -282,7 +284,7 @@ def _detected(texts: Iterable[str]) -> int:
 
 @requires_model
 class TestKnownGaps:
-    """Known gaps 19 (#411, #431), 20 (#29) and 21 to 23 (#423), held open. 19 asserts
+    """Known gaps 19 (#411, #431), 20 (#29), 21 to 23 (#423) and 28 (#450), held open. 19 asserts
     the shipped model STILL flags the shapes. When a model or a pre-processor closes it, its
     tests fail on purpose: take the shape out of ``benign_ops.KNOWN_GAPS``
     (it is then gated) and the entry out of docs/defense-pipeline.md."""
@@ -300,6 +302,15 @@ class TestKnownGaps:
             pytest.skip("measured on prompt-injection-guard-small")
         flagged, of = _flagged(category)
         assert flagged >= 1, f"{category}, {flagged} of {of}: gap 19 may have narrowed"
+
+    def test_machine_written_meeting_notes_are_flagged_for_their_links(self) -> None:
+        """Known gap 28 (#450). The notes alone are read clean; the same notes
+        ending in bare links to a recording and a feedback form are not."""
+        if _MODEL is None or _MODEL.id != HORIZON:
+            pytest.skip("measured on prompt-injection-guard-small")
+        assert _flagged("meeting_notes_unlinked") == (0, 12)
+        flagged, of = _flagged("meeting_notes")
+        assert flagged >= 1, f"{flagged} of {of}: gap 28 may have closed"
 
     def test_a_hundred_line_journal_in_a_json_string_can_be_flagged(self) -> None:
         if _MODEL is None or _MODEL.id != HORIZON:

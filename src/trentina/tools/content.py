@@ -8,7 +8,7 @@ from typing import Any
 from ..defense import admission
 from ..errors import ContentSizeError
 from ..modes import Mode
-from .judged import check_blocklist, judge_and_deliver
+from .judged import check_blocklist, judge_and_deliver, pageable
 from .preprocess import prepare
 
 
@@ -37,8 +37,10 @@ async def judge_content(
     """
     # Before the blocklist and pre-processing: the agent's own text, so it is
     # told to split it rather than handed a refusal or flag's partial scan.
+    # Behind the gateway, text too large to judge in one call is judged and
+    # handed back in parts (#446), up to the most parts a response is cut into.
     tokens, cap = await admission(content)
-    if tokens > cap:
+    if tokens > cap and not pageable(tokens):
         raise ContentSizeError(tokens, cap)
 
     chash = _content_hash(content)

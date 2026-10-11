@@ -34,11 +34,11 @@ from mcp_types.version import (
 )
 
 from .. import __version__
-from ..database import record_gateway_call
+from ..database import is_blocked, record_gateway_call
 from ..defense import Provenance
 from ..errors import ModeNotPermittedError, PreProcessNotPermittedError
 from ..logsafe import exc_kind, redact_source
-from ..modes import Mode, parse_mode_arg, refusal_body
+from ..modes import BLOCKLIST_REASON, Mode, parse_mode_arg, refusal_body
 from ..outcomes import Outcome, classify_exception, refusal_of
 from ..preprocess.policy import PREPROCESS_PARAM
 from ..quarantine.limiter import Priority, l3_priority
@@ -66,7 +66,7 @@ from .compress import (
     maybe_trigger_compression,
     set_on_compressed,
 )
-from .context import current_call, current_session, profile_context
+from .context import PartsOffer, current_call, current_session, profile_context
 from .decoy import canned_result, keep_arguments, leaked_tokens, record_trip, served_tools
 from .destination import Destination, destination_of
 from .errors import BackendCallError, BackendResponseTooLargeError
@@ -1182,7 +1182,19 @@ async def _dispatch(
     # mode; the bound policy is what their refusals offer as alternatives.
     # The pre-processor request goes through as asked: its default depends on
     # what arrives, so the tool resolves it under the bound policy.
-    with profile_context(profile, policy, preprocess):
+    # A profile that can read part 2 may be handed a part 1 (#446).
+    reader = _part_reader(profile)
+    parts = (
+        PartsOffer(
+            backend_name,
+            tool_name,
+            served_name(profile, backend_name, tool_name) or tool_name,
+            reader,
+        )
+        if reader is not None
+        else None
+    )
+    with profile_context(profile, policy, preprocess, parts):
         return await call_internal_tool(
             tool_name,
             forwarded,
@@ -1623,6 +1635,20 @@ async def _hold_paged(
     return paged
 
 
+def _source_blocklisted(profile: Profile, paged: paging.Paged, mode: Mode) -> bool:
+    """Whether an internal tool's source went onto the caller's blocklist
+    since part 1 was read (#446): a later part of it flagged under block, in
+    this response or in another call's.
+
+    block after a flagged part is left to say which part was flagged.
+    """
+    if paged.source is None or mode is Mode.REDACT:
+        return False
+    if mode is Mode.BLOCK and paged.flagged_at is not None:
+        return False
+    return is_blocked(paged.source, profile.name, gateway_wide=profile.role == "operator")
+
+
 def _part_retry(refusal: dict[str, Any], reader: str, *, flagged: bool) -> str:
     """What a refused part's caller may try next, in the words a call uses."""
     spelled = _spelled_modes(refusal.get("alternatives") or [])
@@ -1682,6 +1708,14 @@ async def _deliver_part(
     reader = _part_reader(profile) or paging.READ_PART_TOOL
     marked_at, marked_by = paged.flagged_at, paged.flagged_by
     part = paged.parts[number - 1]
+    if _source_blocklisted(profile, paged, mode):
+        # As the tool refuses a fresh call (``judged.check_blocklist``): block
+        # and flag do not read a blocklisted source, redact does.
+        refusal = refusal_body(BLOCKLIST_REASON, mode, flagged_by="blocklist", policy=policy)
+        retry = _part_retry(refusal, reader, flagged=True)
+        return _refused_part(
+            paged, number, paging.gap_text(paged, number, BLOCKLIST_REASON, retry), refusal, None
+        )
     decision = await scan_tool_response(
         profile=profile,
         backend_name=paged.backend,
@@ -1697,6 +1731,10 @@ async def _deliver_part(
         ),
         hidden=paged.hidden,
         lead_in=part.lead_in,
+        source=paged.source,
+        source_type=paged.source_type or "tool_response",
+        domain=paged.domain,
+        blocklists=paged.blocklists,
     )
     warning = decision.warning
     by = (warning or {}).get("flagged_by")

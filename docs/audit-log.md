@@ -149,8 +149,8 @@ is refused (#442): `backend` is `egress`, `tool` is `connect`, and
 `destination` is `name:443` as the client named it (`destination_kind =
 tunnel`). `bytes_arrived` is what came back from the destination and
 `bytes_delivered` is what the agent sent to it. A name the profile does not
-list is `denied_allowlist`; a refused port, method, tunnel cap or first TLS
-record is `denied_guard` with the [reason](client-egress.md#refusals) in
+list is `denied_allowlist`; a refused port, method, tunnel cap, first TLS
+record or a lookup with no free resolver slot is `denied_guard` with the [reason](client-egress.md#refusals) in
 `error_message`; the egress guard's refusal is `blocked_defense`. No layer
 reads a tunnel, so there is no `detections` row to join.
 

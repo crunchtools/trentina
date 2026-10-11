@@ -261,7 +261,7 @@ reliably faster and 4096 and 8192 far slower. One cap bounds the scan (#225):
   the head and L3 reads the same token-bounded head (`classifier.head`), so
   `l2_truncated`/`l3_truncated` exist only on flag.
 
-A proxied text response over `Config.whole_tokens` (16K) is not judged in one
+A text response over `Config.whole_tokens` (16K) is not judged in one
 call (#340): `gateway/paging.py` cuts it once into parts of about
 `TRENTINA_PART_TOKENS` (12000; 0 is off), the router delivers part 1
 (`_hold_paged`, `_deliver_part`) and answers the `read_part` tool itself
@@ -269,8 +269,13 @@ call (#340): `gateway/paging.py` cuts it once into parts of about
 with the previous part's last 64 tokens as `lead_in`. The remainder is held
 in memory only, by a handle bound to the profile. Wording an agent reads is
 in `paging.py`; say "part", never "page" (wiki and PDF pages own that word).
-A profile without `read_part_tool` on its internal backend is not paged, and
-the internal tools are not paged yet.
+A profile without `read_part_tool` on its internal backend is not paged.
+`fetch`, `read` and `content` are paged too (#446), from the other side:
+`router._dispatch` binds a `context.PartsOffer`, `judged.judge_and_deliver`
+cuts and holds, judges part 1 and returns it in the tool's shape under
+`_trentina_part`; parts 2 on take `_read_part` like any other, judged as the
+tool's own source (`Paged.source`), so a late flag blocklists the URL.
+Standalone, unbound or a honeypot: no offer, nothing cut.
 
 Async callers must use `classify_async`. Calling the
 synchronous `classify()` from a coroutine blocks the event loop for the whole
@@ -575,13 +580,16 @@ replaced.
   verifies the hostname), and follows redirects by hand, checking each hop.
   Refusal reasons are a closed set and never name the address. Never give an
   outbound `httpx.AsyncClient` an agent-chosen URL without it. DNS lookups
-  are capped per profile (4) and gateway-wide (64), never queued (#291).
+  are capped per profile (4) and gateway-wide (64), never queued (#291):
+  past either, `resolver_busy` (#449).
 - `gateway/client_egress.py` — the CONNECT listener (#442) on `--egress-port`
   (8021), bound only when a profile has `client_egress`, started and stopped
   by `warmup.trentina_lifespan`. The peer address picks the profile (no
   credential, as #330); the name must be in `hosts`, port 443, and pass
   `egress.check_url`; the tunnel connects to a checked address
-  (`open_upstream` is the test seam). After `200` the first TLS record must
+  (`open_upstream` is the test seam). `_check` is one lookup per burst
+  (#449): tunnels to a name share the check in flight and its answer for
+  `CHECKED_TTL`; `resolver_busy` is 503 `denied_guard`, not a defense block. After `200` the first TLS record must
   be a ClientHello whose SNI is the CONNECT host, or the tunnel closes before
   a byte is forwarded (a handshake check only: it does not stop a different
   `Host` inside the TLS). One `gateway_calls` row per tunnel (`egress` /

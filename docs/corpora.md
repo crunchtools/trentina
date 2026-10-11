@@ -19,7 +19,7 @@ A detection rate means nothing without the set it was measured on. Three things 
 | [Internal](#internal) | `corpora/internal.py` | 44 attacks, 14 benign | ours | AGPL-3.0-or-later | vendored |
 | [L1 patterns](#l1-patterns) | `corpora/l1_patterns.py` | 48 attack and near-miss pairs | ours | AGPL-3.0-or-later | vendored |
 | [OWASP test list](#owasp-test-list) | `corpora/owasp.py` | 14 attacks | OWASP Cheat Sheet Series | CC-BY-SA-4.0 | vendored |
-| [Benign operations output](#benign-operations-output) | `corpora/benign_ops.py` | 225 benign | ours | AGPL-3.0-or-later | vendored |
+| [Benign operations output](#benign-operations-output) | `corpora/benign_ops.py` | 261 benign | ours | AGPL-3.0-or-later | vendored |
 | [Detonation](#detonation) | `corpora/detonation.py` | 12 carriers, 36 attack and 10 benign inserts | ours | AGPL-3.0-or-later | vendored |
 | [Jailbreak classification](#jailbreak-classification) | `corpora/jailbreak.py` | 262 test, 1,044 train | `jackhhao/jailbreak-classification` | Apache-2.0 | fetched |
 | [InjecAgent](#injecagent) | `corpora/injecagent.py` | 32 attack inserts | `uiuc-kang-lab/InjecAgent` | MIT | fetched |
@@ -61,11 +61,11 @@ The fourteen test inputs from the OWASP [LLM Prompt Injection Prevention Cheat S
 
 ### Benign operations output
 
-225 invented cases of what an operations agent actually reads (#411, #404): unit properties, journal lines, disk-usage listings, metrics rows, opaque identifiers, and short agent-forum replies. These are the shapes L2 refused in production after the default model changed.
+261 invented cases of what an operations agent actually reads (#411, #404, #450): unit properties, journal lines, disk-usage listings, metrics rows, opaque identifiers, short agent-forum replies, and machine-written meeting notes with and without their links. These are the shapes L2 refused in production after the default model changed.
 
 - **Where it came from.** Generated from a fixed seed (411), so a case id names the same text on every run. Every line is invented; none comes from a production host.
 - **Why it is here.** The internal corpus has fourteen benign cases, all prose written to look like an attack. Nothing in any gate looked like routine tool output until this did.
-- **Rules.** 195 cases are gated: the image build fails a model that refuses more than 2% of them. Three shapes the shipped model is known to flag (`KNOWN_GAPS`, all logs) are measured on every build and never dropped; they are [known gap](defense-pipeline.md#known-gaps) 19. Each case is read as the router reads a tool response (#431). One case in four is the tuning split, by hash of its id.
+- **Rules.** 207 cases are gated: the image build fails a model that refuses more than 2% of them. Four shapes the shipped model is known to flag (`KNOWN_GAPS`: three logs, and meeting notes that end in bare links) are measured on every build and never dropped; they are [known gaps](defense-pipeline.md#known-gaps) 19 and 28. Each case is read as the router reads a tool response (#431). One case in four is the tuning split, by hash of its id.
 - **Read by.** `benchmarks/l2_benign.py` (the image build's benign gate), `tests/test_benign_gate.py`, `tests/test_coverage_gaps.py`, `tests/test_l2_integration.py`.
 
 ### Detonation

@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS verdict_cache (
 );
 """
 
-PERIMETER_VERSION = "17"
+PERIMETER_VERSION = "18"
 """Bump whenever a change could alter what a scan CONCLUDES: a new detector, a
 retuned L3 prompt, a different L2 model or threshold set. Rows stamped with any
 other value are swept on load, so an older perimeter's verdict is unusable

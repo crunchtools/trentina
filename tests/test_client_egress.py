@@ -12,6 +12,8 @@ import contextlib
 import ipaddress
 import sqlite3
 import ssl
+import threading
+import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -601,3 +603,185 @@ class TestAFirstBlockNeedsARestart:
             self._active(tmp_path, listening=True), GatewayConfig(profiles={"agent1": _profile()})
         )
         assert not any("client_egress" in note for note in notes)
+
+
+class TestABurstIsOneLookup:
+    """#449: a client opens its connections together, and a lookup never queues."""
+
+    @staticmethod
+    def _counting(monkeypatch: pytest.MonkeyPatch, answer: list[str]) -> list[str]:
+        asked: list[str] = []
+
+        def lookup(host: str, _port: int) -> list[str]:
+            asked.append(host)
+            return answer
+
+        monkeypatch.setattr(egress, "_lookup", lookup)
+        return asked
+
+    async def test_tunnels_that_start_together_share_one_lookup(
+        self,
+        listener: dict[str, Profile],
+        upstream: _Upstream,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        release = threading.Event()
+        asked: list[str] = []
+
+        def slow(host: str, _port: int) -> list[str]:
+            asked.append(host)
+            release.wait(5)
+            return [PUBLIC_ADDRESS]
+
+        monkeypatch.setattr(egress, "_lookup", slow)
+        burst = [asyncio.create_task(_connect()) for _ in range(12)]
+        try:
+            # More tunnels than the profile has resolver slots, all waiting.
+            for _ in range(200):
+                if client_egress._open.get("agent1", 0) == len(burst):
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            release.set()
+        answers = await asyncio.gather(*burst)
+        assert all(response.startswith(b"HTTP/1.1 200") for response, _r, _w in answers)
+        assert asked == [ALLOWED]
+        for _response, _reader, writer in answers:
+            writer.close()
+
+    async def test_a_checked_name_answers_the_next_tunnel_until_it_expires(
+        self,
+        listener: dict[str, Profile],
+        upstream: _Upstream,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        asked = self._counting(monkeypatch, [PUBLIC_ADDRESS])
+        for _ in range(3):
+            response, _reader, writer = await _connect()
+            assert response.startswith(b"HTTP/1.1 200")
+            writer.close()
+        assert asked == [ALLOWED]
+
+        key = ("agent1", ALLOWED)
+        _until, target = client_egress._checked[key]
+        client_egress._checked[key] = (time.monotonic() - 1, target)
+        response, _reader, writer = await _connect()
+        assert response.startswith(b"HTTP/1.1 200")
+        assert asked == [ALLOWED, ALLOWED]
+        writer.close()
+
+    async def test_a_refusal_is_not_kept(
+        self,
+        listener: dict[str, Profile],
+        upstream: _Upstream,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._counting(monkeypatch, ["10.0.0.5"])
+        refused, _reader, writer = await _connect()
+        assert refused.startswith(b"HTTP/1.1 403")
+        writer.close()
+        assert client_egress._checked == {}
+
+        self._counting(monkeypatch, [PUBLIC_ADDRESS])
+        response, _reader, writer = await _connect()
+        assert response.startswith(b"HTTP/1.1 200")
+        writer.close()
+
+    async def test_another_profile_does_not_read_this_ones_answer(
+        self, listener: dict[str, Profile], upstream: _Upstream
+    ) -> None:
+        _response, _reader, writer = await _connect()
+        writer.close()
+        assert list(client_egress._checked) == [("agent1", ALLOWED)]
+
+    async def test_no_free_resolver_slot_is_busy_and_not_a_defense_block(
+        self,
+        listener: dict[str, Profile],
+        upstream: _Upstream,
+        audit_db: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        taken = threading.BoundedSemaphore(1)
+        taken.acquire()
+        monkeypatch.setattr(egress, "_lookup_slots", taken)
+        response, reader, writer = await _connect()
+        assert response.startswith(b"HTTP/1.1 503")
+        assert b"X-Trentina-Reason: resolver_busy\r\n" in response
+        assert await _closed(reader)
+        (row,) = await _settled(audit_db)
+        assert (row["outcome"], row["error_message"]) == ("denied_guard", "resolver_busy")
+        assert upstream.connections == 0
+        writer.close()
+
+    async def test_a_refusal_after_an_expired_answer_leaves_nothing_behind(
+        self,
+        listener: dict[str, Profile],
+        upstream: _Upstream,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The stale answer is not what a later tunnel connects to."""
+        self._counting(monkeypatch, [PUBLIC_ADDRESS])
+        _response, _reader, writer = await _connect()
+        writer.close()
+        key = ("agent1", ALLOWED)
+        other = ("agent2", ALLOWED)
+        _until, target = client_egress._checked[key]
+        client_egress._checked[key] = (time.monotonic() - 1, target)
+        client_egress._checked[other] = (time.monotonic() - 1, target)
+
+        self._counting(monkeypatch, ["10.0.0.5"])
+        refused, _reader, writer = await _connect()
+        assert refused.startswith(b"HTTP/1.1 403")
+        writer.close()
+        assert key not in client_egress._checked
+        # Another profile's entry is its own: neither read nor removed here.
+        assert other in client_egress._checked
+
+    async def test_a_cancelled_check_keeps_nothing_and_is_asked_again(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        release = asyncio.Event()
+        calls = 0
+
+        async def check(_url: str) -> egress.ResolvedTarget:
+            nonlocal calls
+            calls += 1
+            await release.wait()
+            return egress.ResolvedTarget(ALLOWED, 443, (PUBLIC_ADDRESS,))
+
+        monkeypatch.setattr(client_egress, "check_url", check)
+        profile = _profile()
+        key = (profile.name, ALLOWED)
+        waiting = asyncio.create_task(client_egress._check(profile, ALLOWED))
+        while not calls:  # until the shared check itself is running
+            await asyncio.sleep(0)
+        client_egress._checking[key].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        assert key not in client_egress._checked
+        assert key not in client_egress._checking
+
+        release.set()
+        target = await client_egress._check(profile, ALLOWED)
+        assert target.addresses == (PUBLIC_ADDRESS,)
+        assert calls == 2
+        assert client_egress._checked.pop(key)[1] is target
+
+    async def test_a_client_that_hangs_up_does_not_cancel_the_check_for_the_others(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        release = asyncio.Event()
+
+        async def check(_url: str) -> egress.ResolvedTarget:
+            await release.wait()
+            return egress.ResolvedTarget(ALLOWED, 443, (PUBLIC_ADDRESS,))
+
+        monkeypatch.setattr(client_egress, "check_url", check)
+        profile = _profile()
+        gone = asyncio.create_task(client_egress._check(profile, ALLOWED))
+        stays = asyncio.create_task(client_egress._check(profile, ALLOWED))
+        await asyncio.sleep(0)
+        gone.cancel()
+        release.set()
+        assert (await stays).addresses == (PUBLIC_ADDRESS,)
+        client_egress._checked.clear()

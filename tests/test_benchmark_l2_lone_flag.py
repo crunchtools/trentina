@@ -102,6 +102,21 @@ def test_corpora_results_are_gathered_by_judge() -> None:
     assert (second.judge, second.attacks, second.cleared) == (other, 1, 0)
 
 
+def test_meeting_notes_are_a_row_of_their_own() -> None:
+    """#450: all benign, so the number is how many only L2 refuses."""
+    notes = lone.notes_texts()
+    linked, plain = "meeting_notes-00", "meeting_notes_unlinked-00"
+    verdicts = [
+        {"id": linked, "expect_injection": False, "detected": False},
+        {"id": plain, "expect_injection": False, "detected": False},
+    ]
+    (row,) = lone.corpora_rows(
+        [{"providers": [{"model": JUDGE, "cases": verdicts}]}], _l2_flags(notes[linked])
+    )
+    assert (row.source, row.judge) == (lone.NOTES, JUDGE)
+    assert (row.attacks, row.benign, row.judge_flagged, row.only_l2) == (0, 2, 0, 1)
+
+
 def test_l2_reads_each_text_unpacked_and_once(monkeypatch: pytest.MonkeyPatch) -> None:
     asked: list[str] = []
 

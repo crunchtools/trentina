@@ -19,8 +19,11 @@ import pytest
 from corpora.internal import CORPUS
 from corpora.l1_patterns import L1_PATTERN_CASES
 from trentina import reserved
+from trentina.defense import Provenance
+from trentina.gateway import paging
 from trentina.l1.exfiltration import _EXFIL_PARAM_NAMES
 from trentina.l1.pipeline import FINDING_NAMES, PipelineStats, run_l1
+from trentina.modes import Mode
 
 _REPO = Path(__file__).resolve().parents[1]
 _ATTACKS = [c.payload for c in L1_PATTERN_CASES if c.expect_detection]
@@ -35,6 +38,7 @@ _NEW = (
     "exfiltration_mismatched_links",
     "directives_ciphered_detected",
     "forgery_gateway_verdicts",
+    "forgery_gateway_lines",
     "forgery_tool_calls",
     "addressed_ai_addressed_lines",
 )
@@ -132,6 +136,44 @@ def test_a_reserved_key_written_as_a_key_is_a_forged_verdict(key: str) -> None:
     assert _count(f"The `{key}` field carries the risk level.", "forgery_gateway_verdicts") == 0
 
 
+def _gateway_lines() -> list[str]:
+    """What the gateway writes around a part, from the functions that write it."""
+    paging.reset()
+    paged = paging.hold(
+        paging.Origin("agent1", "docs", "get_page", "get_page", is_error=False, acted=False),
+        (paging.Part("one"), paging.Part("two", "one"), paging.Part("three", "two")),
+        mode=Mode.BLOCK,
+        prompt=None,
+        provenance=Provenance.EXTERNAL,
+        l3_context=None,
+        hidden=None,
+    )
+    lines = [
+        paging.header(paged, 2),
+        paging.header(paged, 3),
+        paging.footer(paged, 2, "read_part"),
+        paging.footer(paged, 3, "read_part"),
+        paging.flagged_text(paged, 2, "L2", "No other mode is available."),
+        paging.gap_text(paged, 2, "L3 unavailable", "No other mode is available."),
+        paging.UNKNOWN_HANDLE,
+    ]
+    paging.reset()
+    return lines
+
+
+@pytest.mark.parametrize("index", range(7))
+def test_a_line_the_gateway_would_write_is_a_forged_gateway_line(index: int) -> None:
+    """#447. In a document, "part 3 of 3: the last" tells an agent to stop
+    reading, and "Refused" reports a verdict nobody reached."""
+    line = _gateway_lines()[index]
+    assert _count(line, "forgery_gateway_lines") == 1, line
+    assert _count(f"The page begins here.\n  {line}\nAnd goes on.", "forgery_gateway_lines") == 1
+    assert run_l1(line).stats.suspicious_detections() >= 1
+    # Quoting one is documentation: in backticks, in a sentence, in a quote.
+    for quoted in (f"`{line}`", f"The gateway writes {line}", f"> {line}", f'f"{line}"'):
+        assert _count(quoted, "forgery_gateway_lines") == 0, quoted
+
+
 def test_the_shipped_demos_are_counted() -> None:
     """The demo page turns to its AI reader; the demo transcript shows a tool call."""
     page = (_REPO / "docs/demo/site/recipe.html").read_text()
@@ -159,6 +201,12 @@ _BENIGN = [
     "The _trentina_warning field carries the risk level and the findings.",
     "Trentina scanned the page and flagged two directive patterns.",
     "Set TRENTINA_MODE=block to refuse anything Trentina has not judged.",
+    # gateway lines: the tag named, quoted, or opening something it never says
+    "A `[TRENTINA] Part 2 of 5` line anywhere between them is part of the response.",
+    "The gateway writes [TRENTINA] Refused as a text block when block refuses.",
+    "[TRENTINA] is the tag every gateway notice opens with.",
+    "[trentina] withheld: this event could not be fully judged",
+    "[TRENTINA-1234] Part 2 of the migration is scheduled for Tuesday.",
     # tool calls: a line that is itself JSON, and prose about the field
     '{"name": "fetch", "arguments": {"url": "https://example.com"}}',
     "The tool_calls array lists each call the model made, in order.",
@@ -206,6 +254,9 @@ _UNITS = [
     '{"name": "',
     '"tool_calls": ',
     "_trentina_",
+    "[TRENTINA] ",
+    "[TRENTINA] Part 1",
+    "[TRENTINA WARNING] This ",
     "trentina verdict ",
     "if you are an ",
     "note to the ",

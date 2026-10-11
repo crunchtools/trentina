@@ -439,6 +439,10 @@ async def scan_tool_response(
     policy: ModePolicy | None = None,
     hidden: HiddenStats | None = None,
     lead_in: str = "",
+    source: str | None = None,
+    source_type: str = "tool_response",
+    domain: str | None = None,
+    blocklists: bool = True,
 ) -> IngressDecision:
     """Judge one tool response and decide its fate under the call's mode.
 
@@ -463,6 +467,12 @@ async def scan_tool_response(
     delivered again. Scanning more than is delivered is the call site's
     decision (``docs/defense-pipeline.md``, "Where the line falls").
 
+    ``source``, ``source_type`` and ``domain`` are given for a later part of
+    an internal tool's response (#446): the URL, path or content hash the
+    tool judged part 1 as, so a flag is recorded against it and ``block``
+    puts it on the caller's blocklist, unless ``blocklists`` is False (an
+    allowlisted source). Without them the source is the backend and tool.
+
     Flags are recorded to the detections table (source_type="tool_response")
     except on a verdict-cache hit.
     """
@@ -485,7 +495,10 @@ async def scan_tool_response(
     briefing = hashlib.sha256((l3_context or "").encode()).hexdigest()[:16]
     key = _cache_key(
         profile,
-        f"response:{profile.name}:{mode.value}:{provenance.value}:{briefing}",
+        # The source too, when the call names one: a hit records nothing, and
+        # the same text from another URL must still reach that URL's row.
+        f"response:{profile.name}:{mode.value}:{provenance.value}:{briefing}"
+        + (f":{hashlib.sha256(source.encode()).hexdigest()[:16]}" if source else ""),
         joined
         + json.dumps(unscannable, sort_keys=True)
         + (json.dumps(asdict(hidden), sort_keys=True) if hidden is not None else ""),
@@ -511,11 +524,12 @@ async def scan_tool_response(
         pipeline.stats.hidden = pipeline.stats.hidden.at_least(hidden)
     verdict = await defend(
         joined,
-        source=f"{profile.name}:{backend_name}:{tool_name}",
-        source_type="tool_response",
+        source=source or f"{profile.name}:{backend_name}:{tool_name}",
+        source_type=source_type,
         precomputed_l1=pipeline,
         defense=profile.defense,
         provenance=provenance,
+        domain=domain,
         l3_context=l3_context,
         stop_on_partial=mode is not Mode.FLAG,
         attribution={
@@ -523,7 +537,7 @@ async def scan_tool_response(
             "backend": backend_name,
             "tool": tool_name,
             "direction": "response",
-            "blocked": mode is Mode.BLOCK,
+            "blocked": mode is Mode.BLOCK and blocklists,
             "call_ref": current_call.get() or None,
         },
     )

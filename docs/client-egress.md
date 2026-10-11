@@ -72,7 +72,10 @@ In order, each one deterministic:
 4. **The name resolves outward.** It goes through the same
    [egress guard](deployment-hardening.md) as every gateway-side fetch: every
    address it resolves to must be global, and the tunnel connects to an
-   address that was checked, not to a second lookup.
+   address that was checked, not to a second lookup. A client opens its
+   connections in a burst, so tunnels to one name that start together share
+   one check, and its answer serves that profile's tunnels to that name for
+   five seconds more (#449). A refusal is never kept.
 5. **The client opens TLS naming the host it asked for.** The gateway answers
    `200`, then reads the client's first TLS record before forwarding a byte.
    It must be a ClientHello whose server name (SNI) is the CONNECT host. A
@@ -107,6 +110,7 @@ A refusal before the tunnel opens carries its reason in an
 | 405 | `method` | Not `CONNECT`. |
 | 502 | `connect_failed` | No checked address accepted the connection. |
 | 503 | `busy` | The profile already holds its 16 tunnels. |
+| 503 | `resolver_busy` | No DNS lookup slot was free (a profile has 4, and they do not queue). The name was not checked; try again. |
 
 After `200` the client is speaking TLS, so the tunnel is simply closed and the
 reason is in the audit row: `no_hello`, `not_tls` or `sni_mismatch`.
@@ -122,8 +126,8 @@ from the destination and `bytes_delivered` is what the agent sent to it.
 |---------|------|
 | `ok` | The tunnel opened and later closed, by either end or by the idle timeout. |
 | `denied_allowlist` | `host_not_listed`. |
-| `denied_guard` | `port`, `method`, `malformed`, `busy`, `no_hello`, `not_tls`, `sni_mismatch`. |
-| `blocked_defense` | The egress guard refused the name. |
+| `denied_guard` | `port`, `method`, `malformed`, `busy`, `resolver_busy`, `no_hello`, `not_tls`, `sni_mismatch`. |
+| `blocked_defense` | The egress guard refused the name: `non_global_address`, `unresolvable`. |
 | `backend_error` | `connect_failed`. |
 
 A burst of `denied_allowlist` rows names the hosts a client wanted and did not
