@@ -648,7 +648,37 @@ the false-positive floor.
 
 It needs judge quota, so it runs as the `paging` job of the
 `Benchmark - decoy tools` workflow, once per shipped judge, on merged code.
-Its result decides whether the part briefing gets a prompt-pack entry.
+
+2026-10-11, at `ac230d8` (1.9.0), each judge through OpenRouter with its own
+prompt pack, three votes a part. No L2 model in the job, so every number is
+L3 alone. Parts are cut on words.
+
+| judge | caught whole, of 44 | adjacent, 25% | adjacent, 50% | adjacent, 75% | apart | parts with no attack flagged |
+|---|---|---|---|---|---|---|
+| `google/gemini-3.5-flash-lite` (the default) | 30 | 27 of 30 | 30 of 30 | 29 of 30 | 25 of 30 | 0 of 6 |
+| `google/gemini-3.8-flash` | 30 | 30 of 30 | 30 of 30 | 30 of 30 | 27 of 30 | 0 of 6 |
+| `google/gemini-2.5-flash-lite` | 23 | 23 of 23 | 23 of 23 | 23 of 23 | 12 of 23 | 0 of 6 |
+| `anthropic/claude-haiku-4.5` | 17 of 38 answered | 17 of 17 | 17 of 17 | 17 of 17 | 10 of 17 | 6 unanswered |
+
+Three things it says.
+
+- **A cut between two parts that touch costs L3 little.** The default judge
+  loses 3 of 30 at the worst cut and none at the middle one; the other three
+  lose none. The lead-in and the part briefing do their job, and the briefing
+  flags no part that holds no attack. So the part briefing gets no
+  prompt-pack entry: there is no loss here for one to recover.
+- **Pieces in parts that do not touch are lost more often**, and nothing a
+  part is told can change that: 5 of 30 for the default judge, 3 of 30 for
+  3.8 Flash, 11 of 23 and 7 of 17 for the other two. Three attacks are lost
+  by every judge that caught them whole (`exfil-append-secret-files`,
+  `tool-read-shadow-file`, `tool-send-approval-email`): each is an
+  instruction and its object, and half of either reads as nothing. This is
+  known gap 27, now with its number.
+- **The larger loss is not the cut.** Whole, inside one 48,000-character
+  part, the default judge catches 30 of the 44 attacks. That is L3 with no
+  L2 beside it reading an attack as one paragraph in about 12,000 tokens of
+  benign text, which is what a part is. Haiku left 6 of 44 unanswered and
+  every control, so its row is of what it answered.
 
     TRENTINA_MODEL_PROVIDER=openrouter QUARANTINE_MODEL=<judge> uv run python benchmarks/paging_l3.py
 
@@ -781,10 +811,26 @@ So the corpus carries the pair, read as the gate reads every case:
 | `meeting_notes`: the notes, the records links and the sign-off link (known gap 28, not gated) | 5 of 18 | 2 of 6 | 0.985 |
 | `meeting_notes_unlinked`: the same notes, no links (gated) | 0 of 7 | 0 of 5 | 0.013 |
 
-Scored by `benchmarks/l2_benign.py` on every image build. What a lone L2 flag
-on this shape is worth against what L3 makes of it is
-`benchmarks/l2_lone_flag.py` over `provider_benchmark.py --corpus
-meeting-notes`.
+Scored by `benchmarks/l2_benign.py` on every image build.
+
+**What the lone flag is worth here: nothing.** The same 36 documents (24
+linked, 12 unlinked) went to each shipped judge (`provider_benchmark.py
+--corpus notes`, the `corpora` job, 2026-10-11 at `ac230d8`), and
+`benchmarks/l2_lone_flag.py` joined the verdicts with L2's:
+
+| judge | benign | judge flags | only L2 flags |
+|---|---|---|---|
+| `google/gemini-3.5-flash-lite` (the default) | 36 | 0 | 7 |
+| `google/gemini-3.8-flash` | 36 | 0 | 7 |
+| `anthropic/claude-haiku-4.5` | 36 | 0 | 7 |
+| `google/gemini-2.5-flash-lite` | 36 | 7 | 7 |
+
+L2 flags 7 of the 24 linked notes and the supported judges clear all 36, so
+every one of the seven is a refusal under block that only L2 makes, on a
+document with no attack in it. Gemini 2.5 Flash-Lite, the deprecated judge,
+flags 7 too, and not the same ones: all seven are *unlinked* notes, the shape
+L2 reads clean. That is known gap 25 (a benign document that carries
+instructions for its human reader), on the judge that gap is about.
 
 ### A log in a JSON string (#419)
 

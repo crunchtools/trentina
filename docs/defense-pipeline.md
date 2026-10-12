@@ -505,9 +505,13 @@ one does; the rest name the benchmark that measured them.
     untrusted. L2 on an attack the boundary cuts in two: 33 to 34 of 35
     caught with no lead-in, 34 to 35 with it
     ([benchmark](benchmark.md#an-attack-cut-by-a-part-boundary-340)). L3 on
-    a split attack, cut across two parts and with its halves in parts that
-    do not touch, is `benchmarks/paging_l3.py` (#448,
-    [method](benchmark.md#l3-on-a-split-attack-448)). Also by design: a
+    the same cut, by the default judge with no L2 beside it: 27 to 30 of the
+    30 it catches whole. With the two halves in parts that do not touch it
+    catches 25 of 30, and three attacks that are an instruction and its
+    object are lost by every judge measured (#448,
+    [benchmark](benchmark.md#l3-on-a-split-attack-448)). Whole, inside one
+    part, it catches 30 of 44: a part is about 12,000 tokens of text around
+    whatever is in it. Also by design: a
     response with an image or a blob in it is not cut (gap 13), a part of a
     JSON response is text and not valid JSON on its own, and part N+1 is
     judged when it is asked for and not ahead of the request.
@@ -525,7 +529,9 @@ one does; the rest name the benchmark that measured them.
     19 it is an identifier the model reads as encoded text, and there is
     nothing for a pre-processor to remove that the agent does not need; it
     is fixed at model selection. `block` refuses such a document and offers
-    `redact`, which returned a verified extraction on production. Scored on
+    `redact`, which returned a verified extraction on production. The flag
+    is L2's alone: every supported judge clears all 36 invented notes, so
+    each of the 7 that L2 flags is refused on its word only. Scored on
     every image build, outside the gate's budget
     ([benchmark](benchmark.md#meeting-notes-and-their-links-450)). Tested,
     in the image (`tests/test_l2_integration.py`).
