@@ -346,12 +346,14 @@ def _settle(key: tuple[str, str], task: asyncio.Task[ResolvedTarget]) -> None:
     _checked[key] = (time.monotonic() + CHECKED_TTL, task.result())
 
 
-async def _check(profile: Profile, host: str) -> ResolvedTarget:
+async def checked_target(profile: Profile, host: str) -> ResolvedTarget:
     """``host``'s checked addresses, from one lookup per burst (#449).
 
     Tunnels to one name that start together share the check in flight, and
     ones that start within ``CHECKED_TTL`` of it share its answer. The check
     is shielded: a client that hangs up does not cancel it for the others.
+    The git transport asks here too (#453), for a host an operator named in
+    ``git_remotes``: one profile's burst is one burst, whichever way it leaves.
 
     Raises:
         EgressRefusedError: the egress guard refused the name.
@@ -374,7 +376,7 @@ async def _connect(
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
     """Resolve ``host`` through the egress guard and connect to what was checked."""
     try:
-        target = await _check(profile, host)
+        target = await checked_target(profile, host)
     except EgressRefusedError as exc:
         if exc.reason == RESOLVER_BUSY:
             raise TunnelRefusedError(

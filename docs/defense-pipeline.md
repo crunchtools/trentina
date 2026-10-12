@@ -46,6 +46,8 @@ Everything entering through the gateway is judged at its ingress — the firewal
 - **LLM completions** through the proxy, judged post-stream (`llm_completion`).
 - **Alert webhooks** (`alert`), and the standalone web tools (`safe_*`, `quarantine_*`).
 
+**Two paths through the gateway do not cross the pipeline.** Bytes in a [client egress](client-egress.md) tunnel are TLS the gateway holds no key for (known gap 26). On the [git transport](git-transport.md) a pack is one the gateway could inflate and does not, and a ref listing is one it reads only to drop hidden and malformed names (known gap 29). On both, what the gateway decides is deterministic and recorded (the host; the repository and the branch), and what it carries is judged by no layer. They are exceptions to rule 1 of the [layer contract](#layer-contract), stated here so that rule is not read as covering them.
+
 **The mode is per call, the policy per profile.** `defense.modes` lists what the agent may choose through `trentina_mode`, which the gateway inserts into every tool; `defense.enforcement` is the default an omitted mode resolves to — `flag` (content delivered intact with a `_trentina_warning`) or `block` (flagged responses refused). See [Profiles](profiles.md#content-modes). `TRENTINA_ENFORCEMENT_OVERRIDE=flag` is the kill switch, and beats the call's own choice.
 
 `redact` cannot be the enforcement mode, because `enforcement` is the default an omitted `trentina_mode` resolves to, and a call that omits the mode carries no extraction prompt. It is available per call through `defense.modes` since 0.32.0: the call supplies the question, `trentina_mode: {"redact": "<question>"}` since 0.39.0 (a separate `trentina_prompt` before), which is what a proxied response lacked. `extract`, its pre-0.25.0 spelling, loads as `block`.
@@ -265,6 +267,8 @@ gaps below.
 | Other Matrix media (`audio/*`, `video/*`, `application/octet-stream`, which is what an E2EE attachment is) under withhold | a refusal | nothing | refused: nothing reads it |
 | A Matrix room event the gateway could not decrypt, under withhold | the withheld notice in its place; the rest of the response as judged | nothing | withheld, and counted in the warning |
 | Bytes in a [client egress](client-egress.md) tunnel | as the destination sent them | nothing: they are TLS and the gateway holds no key | not judged; the tunnel decides the host and records the bytes (gap 26) |
+| A pack carried by the [git transport](git-transport.md), in either direction: file contents, file names, commit messages | as the forge sent it; a push, as the agent sent it | nothing. The gateway reads the request line, a push's command list and ref listings, and decides on those | not judged; the route decides the repository and the branch and records the bytes (gap 29) |
+| A ref listing on the git transport: branch and tag names | each name that is one token of printable ASCII, at most 255 bytes, outside a hidden namespace | nothing. The gateway reads each line to drop the rest | not judged; names are bounded, not read for meaning (gap 29) |
 | Any of those three under `unjudged: annotate` | as it arrived, media with the warning header | nothing | forwarded unjudged, by the operator's choice |
 | A proxied response that is only text, or an internal tool's (`fetch`, `read`, `content`) behind the gateway, over 16K L2 tokens and within 16 parts (192K) | one part of about 12K tokens per call, the first from the call itself and the rest from `read_part` (#340, #446) | each part whole, behind the last 64 tokens of the part before | judged a part at a time; block withholds a flagged part and every later one |
 | Over the admission cap (`CLASSIFIER_MAX_TOKENS`, 32,768 L2 tokens) and not delivered in parts: a response with an image or blob in it, one over 16 parts, any response to a profile without `read_part`, a honeypot's, an internal tool's standalone | block and redact: a refusal; flag: as it arrived | flag: the head only | refused |
@@ -535,6 +539,33 @@ one does; the rest name the benchmark that measured them.
     every image build, outside the gate's budget
     ([benchmark](benchmark.md#meeting-notes-and-their-links-450)). Tested,
     in the image (`tests/test_l2_integration.py`).
+29. **No layer reads what the git transport carries** (#453). A profile
+    with a `git` block clones, fetches and pushes through `/git`. The
+    gateway terminates that connection, so this is a choice and not a
+    limit. It reads the repository, the endpoint, the protocol, a fetch
+    request, a push's command list and every ref listing, and enforces its
+    deterministic rules on them. It hands none of it to L1, L2 or L3. Two
+    things reach the agent unjudged. The first is the pack, in either
+    direction (file contents, file names, commit and tag messages, author
+    names), with the side-band stream it travels in, which also carries the
+    forge's own progress and status lines: it is passed on without being
+    looked at, so an instruction written into a file or a commit message
+    reaches the agent's checkout as written, and a push carries out
+    whatever the agent put in it, to any repository and branch its lists
+    allow. The second is the ref listing: branch and tag names are text
+    someone with push access chose, and the gateway only drops hidden
+    namespaces and any name that is not one token of printable ASCII, at
+    most 255 bytes. A name can still be words joined by hyphens. The
+    gateway cannot tell the owner's commits from an outsider's: a merged
+    pull request, a dependency bot's commit and a stranger's edit are all
+    history on a branch the profile may fetch. Hidden refs (`refs/pull/` by
+    default) are dropped from listings and refused by name, which removes
+    the names only: a `want` for an object id is not restricted, so a
+    commit the forge will serve by id can be fetched by a client that
+    learned the id elsewhere. List only the repositories the agent works
+    on, keep `push_refs` to a namespace of its own that nothing deploys
+    from, and treat a checkout as untrusted content. Tested, the `want`
+    against a real git server.
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 

@@ -337,6 +337,131 @@ class TestPinning:
         assert recorder.dialled == []
 
 
+class TestOpenPinned:
+    """``open_pinned`` (#453): one request to checked addresses, nothing followed."""
+
+    @staticmethod
+    async def _target(monkeypatch: pytest.MonkeyPatch, host: str) -> egress.ResolvedTarget:
+        monkeypatch.setattr(egress, "_lookup", lambda _h, _p: [PUBLIC_ADDRESS])
+        return await egress.check_url(f"https://{host}/")
+
+    @pytest.mark.parametrize("status", [301, 302, 303, 307, 308, 300])
+    async def test_a_redirect_is_refused_and_its_location_never_requested(
+        self, monkeypatch: pytest.MonkeyPatch, status: int
+    ) -> None:
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(str(request.url))
+            return httpx.Response(status, headers={"Location": "https://forge.example/other"})
+
+        route(monkeypatch, handler)
+        target = await self._target(monkeypatch, "forge.example")
+        with pytest.raises(EgressRefusedError) as exc:
+            async with egress.open_pinned(
+                "GET", "https://forge.example/repo", target, idle=5, headers={"Authorization": "x"}
+            ):
+                raise AssertionError("a redirect must not be yielded")
+        assert exc.value.reason == "redirect"
+        assert seen == ["https://forge.example/repo"]
+
+    async def test_only_the_given_headers_and_identity_are_sent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent.update(request.headers)
+            return httpx.Response(200, content=b"ok")
+
+        route(monkeypatch, handler)
+        target = await self._target(monkeypatch, "forge.example")
+        async with egress.open_pinned(
+            "GET",
+            "https://forge.example/repo",
+            target,
+            idle=5,
+            headers={"Authorization": "Basic abc", "Accept-Encoding": "gzip"},
+        ) as resp:
+            assert await resp.aread() == b"ok"
+        assert sent["accept-encoding"] == "identity"
+        assert sent["authorization"] == "Basic abc"
+        # Besides the caller's own, only what httpx sets on every request.
+        assert set(sent) == {
+            "host",
+            "authorization",
+            "accept-encoding",
+            "accept",
+            "connection",
+            "user-agent",
+        }
+
+    async def test_an_encoded_answer_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        route(
+            monkeypatch,
+            lambda _request: httpx.Response(
+                200, headers={"Content-Encoding": "gzip"}, content=b"x"
+            ),
+        )
+        target = await self._target(monkeypatch, "forge.example")
+        with pytest.raises(EgressRefusedError) as exc:
+            async with egress.open_pinned(
+                "GET", "https://forge.example/repo", target, idle=5, headers={}
+            ):
+                raise AssertionError("an encoded answer must not be yielded")
+        assert exc.value.reason == "encoded"
+
+    async def test_a_streamed_body_is_sent_as_it_is_read(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        received = bytearray()
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            async for piece in request.stream:
+                received.extend(piece)
+            return httpx.Response(200, content=b"done")
+
+        async def body() -> Any:
+            yield b"one "
+            yield b"two"
+
+        route(monkeypatch, handler)
+        target = await self._target(monkeypatch, "forge.example")
+        async with egress.open_pinned(
+            "POST", "https://forge.example/repo", target, idle=5, headers={}, content=body()
+        ) as resp:
+            assert resp.status_code == 200
+        assert bytes(received) == b"one two"
+
+    async def test_a_url_for_another_host_than_the_checked_one_is_never_dialled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recorder = _RecordingBackend()
+        monkeypatch.setattr(egress, "_socket_backend", lambda: recorder)
+        target = await self._target(monkeypatch, "forge.example")
+        with pytest.raises(EgressRefusedError) as exc:
+            async with egress.open_pinned(
+                "GET", "https://elsewhere.example/repo", target, idle=5, headers={}
+            ):
+                raise AssertionError("an unchecked host must not be reached")
+        assert exc.value.reason == "unresolvable"
+        assert recorder.dialled == []
+
+    async def test_it_dials_the_checked_address_and_verifies_the_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recorder = _RecordingBackend()
+        monkeypatch.setattr(egress, "_socket_backend", lambda: recorder)
+        target = await self._target(monkeypatch, "forge.example")
+        monkeypatch.setattr(egress, "_lookup", lambda _h, _p: ["10.0.0.9"])  # a later answer
+        async with egress.open_pinned(
+            "GET", "https://forge.example/repo", target, idle=5, headers={}
+        ) as resp:
+            assert await resp.aread() == b"ok"
+        assert recorder.dialled == [PUBLIC_ADDRESS]
+        assert recorder.server_hostnames == ["forge.example"]
+
+
 class TestNothingLeaks:
     async def test_refusal_names_no_address_or_host(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

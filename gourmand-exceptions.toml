@@ -780,3 +780,27 @@ check = "redundant_error_handling"
 path = "src/trentina/gateway/client_egress.py"
 justification = "_audit writes the gateway_calls row for a tunnel that has already been served or refused. A database error there is logged by kind and dropped, exactly as router._audit and llm_proxy._audit do: raising would turn a lost audit row into a failed connection for a client that did nothing wrong, and the tunnel is already closed. The loss is visible in the journal."
 classification = "by_design"
+
+[[exceptions]]
+check = "redundant_error_handling"
+path = "src/trentina/gateway/git_transport.py"
+justification = "_Operation.finish writes the gateway_calls row for a git request that has already been carried or refused. A database error there is logged by kind and dropped, exactly as router._audit, llm_proxy._audit and client_egress._audit do: raising from the response's finally would turn a lost audit row into a broken clone for a client that did nothing wrong, after the bytes have gone. The loss is visible in the journal."
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/git_transport.py"
+justification = "_admit is reported as identical to _parse_openrouter_search in quarantine/agent.py. One admits a git request by its remote, path, service, protocol and repository lists; the other reads search results out of an OpenRouter response. They share a run of look-up-then-raise-if-missing statements, nothing else. Structural collision, not duplication."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/git_wire.py"
+justification = "PktReader.take is reported as identical to _entry in unpack/scan.py. One reads git's pkt-line framing off a byte buffer (four hex digits of length, three special packets, a payload); the other reads one entry of an archive listing. They share a run of bounds checks that return or raise before a slice, nothing else. Structural collision, not duplication."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/tools/reload.py"
+justification = "_unapplied is reported as identical to build_warning in warning.py. One names the sections of a reloaded profiles.yaml that are bound at startup and so were not applied (now including git_remotes, #453); the other assembles the _trentina_warning attached to delivered content. They share a run of if-then-append statements, nothing else. Structural collision, not duplication."
+classification = "gourmand_bug"

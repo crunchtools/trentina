@@ -24,8 +24,10 @@ from .drivers import build_preprocessors
 from .errors import ProfileConfigError
 from .filter import filter_tools
 from .profile import (
+    GIT_REMOTE_NAME_RE,
     HONEYTOKEN_MIN_CHARS,
     AlertIngressConfig,
+    GitRemote,
     MatrixIngressConfig,
     Profile,
     is_matrix_user_id,
@@ -43,6 +45,7 @@ class GatewayConfig:
     profiles: dict[str, Profile]
     llm_providers: dict[str, Any] = field(default_factory=dict)
     matrix: dict[str, Any] = field(default_factory=dict)
+    git_remotes: dict[str, GitRemote] = field(default_factory=dict)
     session_ttl_seconds: float = 300.0
     max_sessions_per_profile: int = 10
 
@@ -114,6 +117,8 @@ def _build_profile(name: str, body: Any) -> Profile:
     _resolve_oauth_client_secret(name, profile)
     _resolve_oauth_audience(name, profile)
     _resolve_llm_key_secrets(name, profile)
+    for remote, grant in profile.git.items():
+        grant.token = _require_env(name, grant.token_env, f"git.{remote} token")
     _expand_backend_env_refs(name, profile)
     _check_drivers(name, profile)
     _check_destination_params(name, profile)
@@ -627,6 +632,44 @@ def _check_egress_networks(registry: dict[str, Profile]) -> None:
                         )
 
 
+def _load_git_remotes(section: Any, registry: dict[str, Profile]) -> dict[str, GitRemote]:
+    """Parse ``git_remotes`` and hold every profile's ``git`` block to it (#453).
+
+    Checked here, not where the route is registered, so a reload refuses the
+    same file a restart would: a grant for a remote nobody configured would
+    otherwise be a token loaded for an upstream that does not exist.
+
+    Raises:
+        ProfileConfigError: the section is not a mapping, a name or an entry
+            does not validate, or a profile names a remote that is not here.
+    """
+    if section is None:
+        section = {}
+    if not isinstance(section, dict):
+        raise ProfileConfigError("git_remotes must be a mapping of remote name to upstream")
+    remotes: dict[str, GitRemote] = {}
+    for name, body in section.items():
+        if not isinstance(name, str) or not GIT_REMOTE_NAME_RE.match(name):
+            raise ProfileConfigError("git_remotes: a remote name must match ^[a-z][a-z0-9-]*$")
+        if not isinstance(body, dict):
+            raise ProfileConfigError(f"git_remotes.{name}: must be a mapping")
+        try:
+            remotes[name] = GitRemote(**body)
+        except ValidationError as exc:
+            reasons = "; ".join(
+                f"{'.'.join(map(str, e['loc'])) or 'entry'}: {e['msg']}" for e in exc.errors()
+            )
+            raise ProfileConfigError(f"git_remotes.{name}: {reasons}") from exc
+    for profile_name, profile in sorted(registry.items()):
+        for remote in profile.git:
+            if remote not in remotes:
+                raise ProfileConfigError(
+                    f"Profile {profile_name!r} git names remote {remote!r}, "
+                    "which is not a git_remotes entry"
+                )
+    return remotes
+
+
 def load_profiles(path: Path | str) -> GatewayConfig:
     """Load gateway configuration from YAML.
 
@@ -667,6 +710,7 @@ def load_profiles(path: Path | str) -> GatewayConfig:
     _check_judges(registry)
     _check_matrix_networks(registry)
     _check_egress_networks(registry)
+    git_remotes = _load_git_remotes(cfg_data.get("git_remotes"), registry)
 
     logger.info(
         "gateway: loaded %d profile(s): %s",
@@ -686,6 +730,7 @@ def load_profiles(path: Path | str) -> GatewayConfig:
         profiles=registry,
         llm_providers=llm_section if isinstance(llm_section, dict) else {},
         matrix=matrix_section if isinstance(matrix_section, dict) else {},
+        git_remotes=git_remotes,
         session_ttl_seconds=float(gateway_section.get("session_ttl_seconds", 300.0)),
         max_sessions_per_profile=int(gateway_section.get("max_sessions_per_profile", 10)),
     )
@@ -711,7 +756,10 @@ class ActiveConfig:
     and only when some profile asked for it. OAuth is in this set
     because the provider and its authorization-server routes bind at startup —
     turning ``oauth.enabled`` on for a profile in the YAML and reloading cannot
-    conjure a provider that boot did not build.
+    conjure a provider that boot did not build. The ``/git`` route (#453) is
+    registered only when the file had a ``git_remotes`` section at startup;
+    once it is, the remotes and every profile's ``git`` block are read per
+    request and so do reload.
     """
 
     path: Path
@@ -721,6 +769,7 @@ class ActiveConfig:
     matrix_route_registered: bool
     oauth_route_registered: bool
     egress_listener_configured: bool = False
+    git_route_registered: bool = False
 
 
 _active: ActiveConfig | None = None
@@ -749,6 +798,7 @@ def register_active_config(
         egress_listener_configured=any(
             p.client_egress is not None for p in config.profiles.values()
         ),
+        git_route_registered=bool(config.git_remotes),
     )
 
 
@@ -774,6 +824,7 @@ def replace_active_config(config: GatewayConfig) -> None:
         matrix_route_registered=_active.matrix_route_registered,
         oauth_route_registered=_active.oauth_route_registered,
         egress_listener_configured=_active.egress_listener_configured,
+        git_route_registered=_active.git_route_registered,
     )
 
 

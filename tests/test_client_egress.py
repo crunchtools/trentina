@@ -752,7 +752,7 @@ class TestABurstIsOneLookup:
         monkeypatch.setattr(client_egress, "check_url", check)
         profile = _profile()
         key = (profile.name, ALLOWED)
-        waiting = asyncio.create_task(client_egress._check(profile, ALLOWED))
+        waiting = asyncio.create_task(client_egress.checked_target(profile, ALLOWED))
         while not calls:  # until the shared check itself is running
             await asyncio.sleep(0)
         client_egress._checking[key].cancel()
@@ -762,7 +762,7 @@ class TestABurstIsOneLookup:
         assert key not in client_egress._checking
 
         release.set()
-        target = await client_egress._check(profile, ALLOWED)
+        target = await client_egress.checked_target(profile, ALLOWED)
         assert target.addresses == (PUBLIC_ADDRESS,)
         assert calls == 2
         assert client_egress._checked.pop(key)[1] is target
@@ -778,8 +778,8 @@ class TestABurstIsOneLookup:
 
         monkeypatch.setattr(client_egress, "check_url", check)
         profile = _profile()
-        gone = asyncio.create_task(client_egress._check(profile, ALLOWED))
-        stays = asyncio.create_task(client_egress._check(profile, ALLOWED))
+        gone = asyncio.create_task(client_egress.checked_target(profile, ALLOWED))
+        stays = asyncio.create_task(client_egress.checked_target(profile, ALLOWED))
         await asyncio.sleep(0)
         gone.cancel()
         release.set()
