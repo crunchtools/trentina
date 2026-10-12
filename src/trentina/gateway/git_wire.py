@@ -138,8 +138,9 @@ def parse_repo_path(path: str, raw_path: bytes) -> RepoPath:
     The path is ``<owner>/<repo>[.git]/`` and then exactly ``info/refs``,
     ``git-upload-pack`` or ``git-receive-pack``. Owner and name are
     ``[A-Za-z0-9_.-]+`` with no ``..``, and are returned lower-case, the name
-    without ``.git``: what is matched against the profile's lists is what the
-    upstream URL is built from.
+    without ``.git`` (one suffix; a name that still ends in it is refused):
+    what is matched against the profile's lists is what the upstream URL is
+    built from.
 
     Args:
         path: the part of the URL path after the remote, percent-decoded as
@@ -160,6 +161,11 @@ def parse_repo_path(path: str, raw_path: bytes) -> RepoPath:
     if ".." in path:
         raise GitRefusedError(HTTPStatus.BAD_REQUEST, "name")
     owner, repo = owner.lower(), repo.lower().removesuffix(_GIT_SUFFIX)
+    # One suffix is taken off and no more. A forge that takes off two would
+    # read ``x-srv.git.git`` as ``x-srv`` after a ``deny`` of ``*-srv`` had
+    # read it as ``x-srv.git``; no forge lets a repository end in ``.git``.
+    if repo.endswith(_GIT_SUFFIX):
+        raise GitRefusedError(HTTPStatus.BAD_REQUEST, "name")
     for name in (owner, repo):
         if not _NAME_RE.fullmatch(name) or name == ".":
             raise GitRefusedError(HTTPStatus.BAD_REQUEST, "name")

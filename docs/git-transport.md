@@ -127,7 +127,8 @@ there and nothing is sent upstream.
    a caller cannot list the remotes other profiles use.
 3. **The path is `owner/name[.git]/` and one of three endpoints:**
    `info/refs`, `git-upload-pack`, `git-receive-pack`. Owner and name are
-   `[A-Za-z0-9_.-]`, at most 100 characters, with no `..`. A `%` anywhere in
+   `[A-Za-z0-9_.-]`, at most 100 characters, with no `..`, and a name
+   may not end in `.git` once one `.git` is taken off. A `%` anywhere in
    the path is refused: no valid name needs encoding, so an encoded slash or
    dot is a path written to be read two ways. The upstream URL is built from
    the validated parts, lower-cased, with `.git` added; nothing the caller

@@ -86,6 +86,8 @@ class TestRepoPath:
             "acme/x..git/info/refs",
             "acme/./info/refs",
             "acme/.git/info/refs",
+            "acme/widgets.git.git/info/refs",
+            "acme/widgets-srv.GIT.git/info/refs",
             "/widgets/info/refs",
             "acme//info/refs",
             "ac me/widgets/info/refs",
