@@ -207,6 +207,9 @@ class PktReader:
         self._at = 0
 
     def feed(self, arrived: bytes) -> None:
+        """Add ``arrived`` to what is held, after dropping every byte ``take``
+        has already returned. Part of a pkt-line stays held until a later
+        ``feed`` completes it."""
         del self._held[: self._at]
         self._at = 0
         self._held += arrived

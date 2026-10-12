@@ -533,7 +533,6 @@ async def _push(request: Request, op: _Operation, grant: GitGrant) -> bytes | As
     # The first byte after the flush is enough to refuse it: nothing more is read.
     if len(head) != len(b"0000") or await anext(pieces, None) is not None:
         raise GitRefusedError(HTTPStatus.BAD_REQUEST, "malformed")
-    op.sent = len(head)
     return head
 
 
@@ -607,7 +606,8 @@ async def _relay(
     except ValueError:
         logger.warning("git transport: a ref listing could not be filtered; ended it")
         op.settle(Outcome.BLOCKED_DEFENSE, "advertisement")
-    except httpx.TimeoutException:
+    except httpx.TimeoutException as exc:
+        logger.warning("git transport: upstream idle mid-stream err=%s", logsafe.exc_kind(exc))
         op.settle(Outcome.BACKEND_ERROR, "upstream_idle")
     except httpx.HTTPError as exc:
         logger.warning("git transport: upstream failed mid-stream err=%s", logsafe.exc_kind(exc))
@@ -689,9 +689,13 @@ async def _carry(request: Request, op: _Operation) -> Response:
             content = await _push(request, op, admitted.grant)
         else:
             content, listing = await _negotiation(request, admitted)
-            op.sent = len(content)
 
     resp = await _send(op, admitted, request.method, headers, content)
+    if isinstance(content, bytes):
+        # Counted once the forge has it: a request the guard refused, or one
+        # that never connected, delivered nothing. A streamed push counts
+        # itself as it is read.
+        op.sent = len(content)
     if resp.status_code != _OK:
         passed = resp.status_code in _PASSED_STATUSES
         raise GitRefusedError(

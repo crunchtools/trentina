@@ -889,6 +889,18 @@ class TestWhereItGoes:
         assert row["outcome"] == "blocked_defense"
         assert stack.forge.requests == []
 
+    async def test_a_request_the_guard_refused_delivered_no_bytes(
+        self, stack: _Stack, audit_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(egress, "_lookup", lambda _host, _port: ["10.0.0.7"])
+        response = await stack.client.post(
+            f"{stack.url}/acme/widgets/git-upload-pack",
+            content=pkt(b"want " + ONE + b"\n") + FLUSH,
+            headers={"Content-Type": UPLOAD_REQUEST},
+        )
+        row = await _refused(audit_db, response, 403, "non_global_address")
+        assert row["bytes_delivered"] == 0
+
     async def test_one_inward_answer_among_public_ones_is_enough(
         self, stack: _Stack, audit_db: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
