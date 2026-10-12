@@ -21,6 +21,19 @@ L3 needs one provider. Set `TRENTINA_MODEL_PROVIDER` and that provider's key:
 `/proc/<pid>/environ`. Behind the gateway, each profile's `llm_keys` is used
 instead; see [Operator Profile](operator.md).
 
+## The configuration file
+
+Gateway mode reads one YAML file, `TRENTINA_PROFILES_PATH`. Its top-level
+sections:
+
+| Section | Description |
+|---------|-------------|
+| `profiles` | One entry per consumer. See [Per-Agent Profiles](profiles.md). |
+| `llm_providers` | The providers the [LLM proxy](llm-proxying.md) may reach. |
+| `matrix` | The [Matrix reverse proxy](network-isolation.md). |
+| `git_remotes` | The forges the [git transport](git-transport.md) may reach; a profile's `git` block names them. |
+| `gateway` | Session lifetime and count. |
+
 ## Command-line flags
 
 | Flag | Default | Description |

@@ -146,9 +146,13 @@ commerce keeps flowing, and nothing dangerous gets in.
 17. **[Client Egress](docs/client-egress.md).** An agent's own HTTPS client,
     tunnelled to the hosts its profile lists and to nothing else, by source
     network with no credential in the proxy URL. Recorded, not read.
-18. **[Matrix Reverse Proxy](docs/network-isolation.md).** Agents on an
+18. **[Git Transport](docs/git-transport.md).** Clone, fetch and push to the
+    repositories and branches a profile lists, with a forge token the agent
+    never holds. The repository and the refs are decided and recorded; a
+    pack's contents are not read.
+19. **[Matrix Reverse Proxy](docs/network-isolation.md).** Agents on an
     isolated network reach Matrix through the gateway rather than the internet.
-19. **[Cockpit Plugin](docs/cockpit-plugin.md).** A live dashboard of layers,
+20. **[Cockpit Plugin](docs/cockpit-plugin.md).** A live dashboard of layers,
     blocklist and pipeline events in the Cockpit console.
 
 ## Quick Start
@@ -227,6 +231,7 @@ Then point Claude Code at it:
 | [Matrix Bridge](docs/matrix-bridge.md) | E2EE termination and two-way judging |
 | [Matrix Reverse Proxy](docs/network-isolation.md) | Matrix for agents on an isolated network |
 | [Client Egress](docs/client-egress.md) | A CONNECT tunnel to listed hosts for the agent's own client |
+| [Git Transport](docs/git-transport.md) | Clone, fetch and push to listed repositories and branches |
 | [Deployment Hardening](docs/deployment-hardening.md) | Container flags, secrets, egress, the startup check |
 | [Cockpit Plugin](docs/cockpit-plugin.md) | Live defense pipeline dashboard |
 | [Internal: Gateway Design](docs/internal/gateway-design.md) | Original design document, for contributors |

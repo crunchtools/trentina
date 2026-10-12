@@ -18,6 +18,9 @@ Three kinds, each stored beside the call in ``gateway_calls``:
   that argument's value — the channel, recipient, repo or queue — truncated.
 - ``tunnel``: for a client-egress tunnel (#442), ``host:port`` as the client
   named it on its CONNECT line. The row's backend is ``egress``.
+- ``git``: for the git transport (#453), ``owner/name`` as the gateway
+  validated and lower-cased it, then for a push a space and each ref it
+  named. The remote is the row's backend, ``git:<remote>``.
 
 The value is caller-chosen, so it lives in the audit database only, which no
 tool reads raw. It never goes to the log (#262), and ``quarantine_stats``
@@ -53,6 +56,7 @@ class DestinationKind(StrEnum):
     PARAM = "param"
     MODEL = "model"
     TUNNEL = "tunnel"
+    GIT = "git"
 
 
 @dataclass(frozen=True)

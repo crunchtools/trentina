@@ -22,10 +22,10 @@ Each gateway call writes one row to the `gateway_calls` table:
 | `duration_ms` | integer | `234` |
 | `error_message` | text | `null` (or error message) |
 | `outcome` | text | `ok`, `blocked_defense`, … (see below) |
-| `bytes_arrived` / `bytes_delivered` | integer | response size before and after minifying; for a [tunnel](#client-egress-tunnels), bytes from and to the destination |
+| `bytes_arrived` / `bytes_delivered` | integer | response size before and after minifying; for a [tunnel](#client-egress-tunnels) or a [git request](#git-transport), bytes from and to the destination |
 | `normalized` | text (JSON) | `{"feed_id": "dropped: below minimum 1"}`: arguments dropped before forwarding ([normalization](gateway.md#argument-normalization)) |
 | `destination` | text | `docs.example.org#1a2b3c4d5e6f7a8b`, `q#…`, `C0OPS`: where the call was pointed ([call destinations](profiles.md#call-destinations)). Never logged |
-| `destination_kind` | text | `fetch`, `search`, `param`, `model` or `tunnel`; NULL when the tool names no destination |
+| `destination_kind` | text | `fetch`, `search`, `param`, `model`, `tunnel` or `git`; NULL when the tool names no destination |
 | `session` | text | `3f9a…`: a fingerprint of the MCP session the call arrived on. NULL for a client that sends no session header |
 | `call_ref` | text | `8c1d…`: a random reference for this call. A `detections` row raised by the call carries the same one |
 | `content_digest` | text | `b27e…`: a fingerprint of the delivered result. NULL when nothing was delivered |
@@ -153,6 +153,22 @@ list is `denied_allowlist`; a refused port, method, tunnel cap, first TLS
 record or a lookup with no free resolver slot is `denied_guard` with the [reason](client-egress.md#refusals) in
 `error_message`; the egress guard's refusal is `blocked_defense`. No layer
 reads a tunnel, so there is no `detections` row to join.
+
+### Git transport
+
+Every request through the [git transport](git-transport.md) writes a row when
+it ends or is refused (#453): `backend` is `git:<remote>`, `tool` is `fetch`
+or `push`, and `destination` is `owner/name`, lower-cased
+(`destination_kind = git`), followed for a push by the refs it named. One git
+command is several requests, so it is a short run of rows. `bytes_arrived` is
+what came back from the forge and `bytes_delivered` is what the agent sent to
+it. A repository or branch outside the profile's lists is `denied_allowlist`;
+every other rule of the route is `denied_guard`, with the
+[reason](git-transport.md#refusals) in `error_message`; the egress guard's
+refusal of the upstream is `blocked_defense`. `ok` means the gateway carried
+the request, not that the forge accepted a push. A caller whose token is no
+profile's gets `401` and no row. No layer reads a pack, so there is no
+`detections` row to join.
 
 ## Accessing Audit Data
 

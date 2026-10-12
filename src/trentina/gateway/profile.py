@@ -1290,6 +1290,203 @@ class ClientEgressConfig(BaseModel):
         return hosts
 
 
+GIT_REMOTE_NAME_RE = PROVIDER_NAME_RE
+_GIT_USERNAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+# One owner or repository segment of a pattern: a name, with `*` for any run
+# of name characters. No `?` and no `[`, so fnmatch reads nothing else in it.
+_GIT_REPO_GLOB = r"[a-z0-9_.*-]{1,100}"
+_GIT_REPO_PATTERN_RE = re.compile(rf"{_GIT_REPO_GLOB}/{_GIT_REPO_GLOB}")
+_GIT_DENY_PATTERN_RE = re.compile(rf"(?:{_GIT_REPO_GLOB}/)?{_GIT_REPO_GLOB}")
+_GIT_BRANCH_PATTERN_RE = re.compile(r"refs/heads/[A-Za-z0-9_./*+@-]{1,200}")
+_GIT_HIDDEN_PREFIX_RE = re.compile(r"refs/[A-Za-z0-9_./-]{1,100}/")
+_MAX_GIT_PATTERNS = 64
+
+GIT_PULL_REFS = "refs/pull/"
+"""Where GitHub, Gitea and Forgejo keep every pull request's head, an
+outsider's included. Hidden from a client by default."""
+
+
+def _git_patterns(values: list[str], grammar: re.Pattern[str], field: str) -> list[str]:
+    """``values`` when every one matches ``grammar`` and none repeats.
+
+    The error counts the bad entries and never quotes one, like every other
+    list in a profile (``hide_input_in_errors``).
+    """
+    bad = sum(1 for value in values if not grammar.fullmatch(value) or ".." in value)
+    if bad:
+        raise ValueError(f"{field}: {bad} entries are not patterns this field accepts")
+    if len(set(values)) != len(values):
+        raise ValueError(f"{field} lists a pattern twice")
+    return values
+
+
+class GitRemote(BaseModel):
+    """One forge the git transport may reach (#453): ``git_remotes.<name>``.
+
+    The upstream is an origin and nothing more. A repository's URL is built
+    from it and from an owner and name the gateway validated, so nothing a
+    caller sends is ever part of the host.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    upstream: str = Field(..., description="The forge's origin: https://<dns name>, port 443")
+    username: str = Field(
+        default="x-access-token",
+        description=(
+            "HTTP Basic username sent with a profile's token. GitHub takes "
+            "x-access-token; GitLab takes oauth2."
+        ),
+    )
+    hidden_refs: list[str] = Field(
+        default_factory=lambda: [GIT_PULL_REFS],
+        max_length=_MAX_GIT_PATTERNS,
+        description=(
+            "Ref namespaces never listed to a client, as prefixes ending in '/'. "
+            "Default refs/pull/; GitLab's is refs/merge-requests/."
+        ),
+    )
+
+    @field_validator("upstream")
+    @classmethod
+    def _upstream_is_an_https_origin(cls, value: str) -> str:
+        parts = urlparse(value)
+        if (
+            parts.scheme != "https"
+            or not is_dns_name(parts.netloc)
+            or parts.path not in ("", "/")
+            or parts.params
+            or parts.query
+            or parts.fragment
+        ):
+            raise ValueError(
+                "upstream must be https://<lower-case dns name>, with no port, "
+                "userinfo, path or query"
+            )
+        return f"https://{parts.netloc}"
+
+    @field_validator("username")
+    @classmethod
+    def _username_is_plain(cls, value: str) -> str:
+        if not _GIT_USERNAME_RE.fullmatch(value):
+            raise ValueError("username must match [A-Za-z0-9_.-]+")
+        return value
+
+    @field_validator("hidden_refs")
+    @classmethod
+    def _hidden_refs_are_namespaces(cls, values: list[str]) -> list[str]:
+        return _git_patterns(values, _GIT_HIDDEN_PREFIX_RE, "hidden_refs")
+
+    @property
+    def host(self) -> str:
+        """The upstream's DNS name: what the egress guard checks and pins."""
+        return self.upstream.removeprefix("https://")
+
+
+class GitGrant(BaseModel):
+    """What one profile may do on one git remote (#453): ``git.<remote>``.
+
+    Repositories are ``owner/name`` patterns, lower-case, where ``*`` stands
+    for any run of name characters and never crosses the ``/``. They are
+    compared with the owner and name the caller asked for, lower-cased.
+    ``deny`` wins over both lists and may also be a bare name pattern, which
+    then holds for every owner.
+
+    The gateway enforces the repository and, on a push, the ref. It does not
+    read what a fetch brings back or what a push carries: known gap 29.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    token_env: str = Field(..., description="Env var naming this profile's token for the forge")
+    token: SecretStr | None = Field(
+        default=None, exclude=True, description="Resolved token (load-time only)"
+    )
+    fetch: list[str] = Field(
+        default_factory=list,
+        max_length=_MAX_GIT_PATTERNS,
+        description="owner/name patterns the profile may clone and fetch",
+    )
+    push: list[str] = Field(
+        default_factory=list,
+        max_length=_MAX_GIT_PATTERNS,
+        description="owner/name patterns the profile may push to; a list, never a switch",
+    )
+    push_refs: list[str] = Field(
+        default_factory=list,
+        max_length=_MAX_GIT_PATTERNS,
+        description=(
+            "Branch patterns a push may create or move, each under refs/heads/. "
+            "Here '*' crosses '/'. A tag or a delete is refused whatever is listed."
+        ),
+    )
+    deny: list[str] = Field(
+        default_factory=list,
+        max_length=_MAX_GIT_PATTERNS,
+        description="Patterns refused for fetch and push alike; a bare name holds for any owner",
+    )
+
+    @field_validator("token_env")
+    @classmethod
+    def _env_name_is_uppercase_identifier(cls, value: str) -> str:
+        if not ENV_NAME_RE.match(value):
+            raise ValueError(f"token_env {value!r} must be an UPPERCASE env-var identifier")
+        return value
+
+    @field_validator("fetch", "push")
+    @classmethod
+    def _repositories_name_an_owner(cls, values: list[str]) -> list[str]:
+        """Lower-cased, since that is how a request is compared."""
+        lowered = [value.lower() for value in values]
+        return _git_patterns(lowered, _GIT_REPO_PATTERN_RE, "fetch and push")
+
+    @field_validator("deny")
+    @classmethod
+    def _deny_holds_for_any_owner_when_bare(cls, values: list[str]) -> list[str]:
+        checked = _git_patterns([value.lower() for value in values], _GIT_DENY_PATTERN_RE, "deny")
+        return [value if "/" in value else f"*/{value}" for value in checked]
+
+    @field_validator("push_refs")
+    @classmethod
+    def _push_refs_are_branches(cls, values: list[str]) -> list[str]:
+        return _git_patterns(values, _GIT_BRANCH_PATTERN_RE, "push_refs")
+
+    @model_validator(mode="after")
+    def _a_grant_grants_something(self) -> GitGrant:
+        if not self.fetch and not self.push:
+            raise ValueError("a git grant must list at least one fetch or push pattern")
+        if bool(self.push) != bool(self.push_refs):
+            raise ValueError("push and push_refs go together: which repositories, which branches")
+        return self
+
+    def allows(self, operation: Literal["fetch", "push"], owner: str, repo: str) -> str | None:
+        """Why ``owner/repo`` is refused for ``operation``, or None when it is allowed.
+
+        Args:
+            operation: which list is asked.
+            owner: the owner, lower-case and already validated.
+            repo: the repository name, lower-case, without ``.git``.
+
+        Returns:
+            ``repo_denied``, ``repo_not_listed`` or None.
+        """
+
+        def listed(patterns: list[str]) -> bool:
+            return any(
+                fnmatchcase(owner, pattern.partition("/")[0])
+                and fnmatchcase(repo, pattern.partition("/")[2])
+                for pattern in patterns
+            )
+
+        if listed(self.deny):
+            return "repo_denied"
+        return None if listed(getattr(self, operation)) else "repo_not_listed"
+
+    def may_move(self, ref: str) -> bool:
+        """True when a push may create or move ``ref``: a listed branch."""
+        return any(fnmatchcase(ref, pattern) for pattern in self.push_refs)
+
+
 def _valid_server_name(value: str) -> bool:
     """The Matrix server-name grammar: a DNS name, an IPv4 address or a
     bracketed IPv6 literal, then an optional port in 1-65535."""
@@ -1876,6 +2073,13 @@ class Profile(BaseModel):
         default=None,
         description="CONNECT tunnel for the agent's own client (optional, #442)",
     )
+    git: dict[str, GitGrant] = Field(
+        default_factory=dict,
+        description=(
+            "Repositories the profile may fetch and push through the git "
+            "transport, keyed by a git_remotes name (optional, #453)"
+        ),
+    )
     oauth: OAuthConfig | None = Field(
         default=None,
         description="Google-backed OAuth access for this profile (optional)",
@@ -1936,6 +2140,8 @@ class Profile(BaseModel):
         for channel in ("alert_ingress", "matrix_ingress", "matrix_bridge", "client_egress"):
             if getattr(self, channel) is not None:
                 problems.append(f"{channel} does not apply")
+        if self.git:
+            problems.append("git does not apply")
         if problems:
             raise ValueError(f"honeypot profile: {'; '.join(problems)}")
         return self
@@ -1985,6 +2191,16 @@ class Profile(BaseModel):
         for name in v:
             if not PROVIDER_NAME_RE.match(name):
                 raise ValueError(f"Provider name {name!r} must match ^[a-z][a-z0-9-]*$")
+        return v
+
+    @field_validator("git")
+    @classmethod
+    def git_remote_names_match_re(cls, v: dict[str, GitGrant]) -> dict[str, GitGrant]:
+        """Each git key must be a remote slug. That it names a configured
+        ``git_remotes`` entry is checked by the loader, which holds that list."""
+        for name in v:
+            if not GIT_REMOTE_NAME_RE.match(name):
+                raise ValueError(f"git remote name {name!r} must match ^[a-z][a-z0-9-]*$")
         return v
 
     @model_validator(mode="after")

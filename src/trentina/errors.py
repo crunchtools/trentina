@@ -52,6 +52,7 @@ EGRESS_REASONS = frozenset(
         "too_many_redirects",
         "downgrade",
         "encoded",
+        "redirect",
     }
 )
 

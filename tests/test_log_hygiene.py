@@ -419,6 +419,83 @@ class TestProxies:
             await asyncio.gather(*llm_proxy._scan_tasks)
         assert any("post-hoc completion scan failed" in r.getMessage() for r in captured.records)
 
+    async def test_git_transport_carried_and_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, captured: _Capture
+    ) -> None:
+        """#453: a repository name, a ref, a query, a header and a body the
+        caller chose, through a carried fetch, a carried push and five
+        refusals. The repository is in the upstream URL httpx would log."""
+        from trentina import database, egress
+        from trentina.gateway import client_egress, git_transport
+
+        from . import git_harness as harness
+        from .egress_harness import PUBLIC_ADDRESS
+
+        monkeypatch.setenv("QUARANTINE_DB", str(tmp_path / "trentina.db"))
+        config_mod._config = None
+        database._db = None
+        client_egress._checked.clear()
+        profiles = {"agent1": harness.profile(fetch=("acme/*",), push=("acme/*",))}
+        active = SimpleNamespace(config=SimpleNamespace(git_remotes=harness.remotes()))
+        monkeypatch.setattr(git_transport, "get_active_config", lambda: active)
+        monkeypatch.setattr(egress, "_lookup", lambda _host, _port: [PUBLIC_ADDRESS])
+        forge = harness.Scripted()
+        bearer = {"Authorization": f"Bearer {harness.GATEWAY_TOKEN}", "X-Canary": CANARY}
+        refs = f"/acme/{CANARY}/info/refs?service=git-upload-pack"
+        push = {"Content-Type": "application/x-git-receive-pack-request"}
+        try:
+            async with harness.serving(forge.app()) as forge_port:
+                transport = harness.ToForge(forge_port)
+                monkeypatch.setattr(egress, "PinnedTransport", lambda _backend: transport)
+                async with (
+                    harness.serving(harness.gateway_app(profiles)) as port,
+                    httpx.AsyncClient(headers=bearer) as client,
+                ):
+                    url = f"http://127.0.0.1:{port}/git/{harness.REMOTE}"
+                    statuses = [
+                        (await client.get(url + refs)).status_code,
+                        (
+                            await client.post(
+                                f"{url}/acme/{CANARY}/git-receive-pack",
+                                content=harness.push_body(
+                                    (harness.ONE, harness.TWO, f"refs/heads/agent/{CANARY}")
+                                ),
+                                headers=push,
+                            )
+                        ).status_code,
+                        (
+                            await client.get(f"{url}/{CANARY}/{CANARY}/info/refs?{CANARY}")
+                        ).status_code,
+                        (
+                            await client.get(f"{url}/{CANARY}/x/info/refs?service={CANARY}")
+                        ).status_code,
+                        (await client.get(f"{url}/acme/x/{CANARY}")).status_code,
+                        (
+                            await client.get(url + refs, headers={"Git-Protocol": CANARY})
+                        ).status_code,
+                        (
+                            await client.post(
+                                f"{url}/acme/{CANARY}/git-receive-pack",
+                                content=harness.push_body(
+                                    (harness.ONE, harness.TWO, f"refs/heads/{CANARY}")
+                                ),
+                                headers=push,
+                            )
+                        ).status_code,
+                        (
+                            await client.get(
+                                url.replace(harness.REMOTE, CANARY) + refs,
+                            )
+                        ).status_code,
+                    ]
+        finally:
+            database._db = None
+            config_mod._config = None
+            client_egress._checked.clear()
+        assert statuses == [200, 200, 400, 400, 404, 400, 403, 403]
+        assert len(forge.requests) == 2
+        assert any("git transport: refused" in r.getMessage() for r in captured.records)
+
 
 # ------------------------------------------------------------ refusals and housekeeping (#292)
 

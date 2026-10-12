@@ -366,6 +366,8 @@ be reconstructed from the database instead of guessed at:
   (`docs.example.org#1a2b3c4d5e6f7a8b`). A path or query that carries a token
   is never stored.
 - `search`: `q#` and the query's hash. Repeats show; the words do not.
+- `git`: for the [git transport](git-transport.md), `owner/name` as the
+  gateway validated it, then for a push the refs it named.
 - A proxied tool records the value of the one parameter its backend declares:
 
 ```yaml
@@ -639,9 +641,11 @@ Some sections cannot reload, because their routes bind at startup: the
 agent-scope reload never moves its own `matrix_bridge` at all, nor adds,
 removes or re-points its own `matrix_ingress.source_networks` (the network is
 the Matrix proxy's credential, #330), nor its own `client_egress` block
-(#442); each is reported under `operator_only`. Adding the first
-`client_egress` block needs a restart, because its listener is bound at
-startup.
+(#442), nor its own `git` block (#453); each is reported under
+`operator_only`. Adding the first `client_egress` block needs a restart,
+because its listener is bound at startup, and so does adding the first
+`git_remotes` entry, because its route is. Once that route exists, an
+operator reload applies an edit to `git_remotes` or to a `git` block.
 
 ## Related
 
@@ -650,3 +654,4 @@ startup.
 - [Parameter Guards](parameter-guards.md) — argument-level restrictions
 - [Defense Pipeline](defense-pipeline.md) — L1/L2/L3 configuration details
 - [Client Egress](client-egress.md) — the `client_egress` block
+- [Git Transport](git-transport.md) — `git_remotes` and the `git` block

@@ -1,8 +1,8 @@
 # trentina Constitution
 
-> **Version:** 2.7.0
+> **Version:** 2.8.0
 > **Ratified:** 2026-09-22
-> **Amended:** 2026-10-11
+> **Amended:** 2026-10-12
 > **Status:** Active
 > **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.24.0
 > **Profile:** Security Gateway
@@ -262,6 +262,7 @@ justification in `gourmand-exceptions.toml`.
 | PyPI | not published; `mcp-trentina-crunchtools` stops at 0.54.1 |
 | HTTP port | 8019 |
 | Client egress port | 8021 (CONNECT only; bound when a profile has `client_egress`) |
+| Git transport | `/git/{remote}/{owner}/{repo}` on the HTTP port (smart HTTP only; registered when the file has `git_remotes`) |
 | HTTP clients | httpx (application), httpx2 (MCP transport) |
 | Extra stack | beautifulsoup4, markdownify, SQLite; pypdf, rapidocr and opencv-python-headless (each run only in a child process, #369, #370) |
 
@@ -296,3 +297,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.5.1 | 2026-10-11 | The window L2 scans in is the model's, stated in its manifest beside polarity and threshold (#438); the shipped model states 512 |
 | 2.6.0 | 2026-10-11 | A proxied text response too large to judge in one call is delivered in judged parts (#340) where it was refused: each part is admitted and read whole, behind the last tokens of the part before it. Known gap 27: such a response is judged a part at a time |
 | 2.7.0 | 2026-10-11 | The internal tools' responses are delivered in judged parts too (#446), each part judged as the tool's source. L1 counts a line written to look like the gateway's own (#447). Known gap 28: L2 flags machine-written meeting notes that end in bare links (#450) |
+| 2.8.0 | 2026-10-12 | Git transport (#453): a route carries git's smart HTTP to the repositories a profile lists, with the forge token injected by the gateway. The gateway terminates the connection, so it reads and enforces everything that is deterministic text (the path, the service, the protocol, a fetch request, a push's command list, ref listings) and hands none of it to the three layers: a pack is passed on unread and ref names are bounded but not judged, which is known gap 29 and a stated exception to the first rule of the layer contract. The block is perimeter: held on an agent reload, refused on a honeypot. `PERIMETER_VERSION` does not move: the route reaches no verdict a cache holds |

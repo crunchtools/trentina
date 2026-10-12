@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from .gateway.profile import Profile
     from .gateway.sessions import SessionRegistry
 
-__version__ = "1.9.0"
+__version__ = "1.10.0"
 
 DEFAULT_PORT = 8019
 DEFAULT_EGRESS_PORT = 8021
@@ -122,6 +122,30 @@ def _register_push_ingresses(
     register_bridge_routes(mcp_server, profiles, data_dir, other_agents=other_agents)
 
 
+def _register_proxies(mcp_server: FastMCP, gateway_config: GatewayConfig) -> dict[str, Any]:
+    """The routes that carry an agent's own traffic out: model calls, Matrix
+    and git (#453). Each binds at startup, and only if the file configures it.
+
+    Returns:
+        The enabled LLM providers, which the active config and the startup
+        scrub both need.
+    """
+    from .gateway.git_transport import register_git_routes
+    from .gateway.llm_proxy import load_llm_providers, register_llm_routes
+    from .gateway.matrix_proxy import register_matrix_routes
+
+    llm_providers = load_llm_providers(gateway_config.llm_providers)
+    register_llm_routes(mcp_server, llm_providers, gateway_config.profiles)
+    if gateway_config.matrix.get("enabled"):
+        register_matrix_routes(
+            mcp_server,
+            gateway_config.profiles,
+            upstream=gateway_config.matrix.get("upstream", "https://matrix-client.matrix.org"),
+        )
+    register_git_routes(mcp_server, gateway_config.git_remotes, gateway_config.profiles)
+    return llm_providers
+
+
 def _run_with_gateway(mcp_server: FastMCP, *, host: str, port: int, log_level: str) -> None:
     """Run trentina with gateway routes wired in via FastMCP's custom_route API.
 
@@ -145,9 +169,7 @@ def _run_with_gateway(mcp_server: FastMCP, *, host: str, port: int, log_level: s
     from .gateway import load_profiles, register_internal_server, register_with_fastmcp
     from .gateway.circuit import breaker
     from .gateway.compress import load_compression_cache, set_profiles
-    from .gateway.llm_proxy import load_llm_providers, register_llm_routes
     from .gateway.loader import matrix_other_agents, register_active_config
-    from .gateway.matrix_proxy import register_matrix_routes
     from .gateway.service import log_service_identity
     from .gateway.sessions import session_registry
 
@@ -190,19 +212,7 @@ def _run_with_gateway(mcp_server: FastMCP, *, host: str, port: int, log_level: s
         len(gateway_config.profiles),
     )
 
-    llm_providers = load_llm_providers(gateway_config.llm_providers)
-    register_llm_routes(mcp_server, llm_providers, gateway_config.profiles)
-
-    if gateway_config.matrix.get("enabled"):
-        matrix_upstream = gateway_config.matrix.get(
-            "upstream",
-            "https://matrix-client.matrix.org",
-        )
-        register_matrix_routes(
-            mcp_server,
-            gateway_config.profiles,
-            upstream=matrix_upstream,
-        )
+    llm_providers = _register_proxies(mcp_server, gateway_config)
 
     # Bridge mapping stores live beside the blocklist, like perimeter.db.
     _register_push_ingresses(

@@ -576,6 +576,111 @@ class TestPerimeterIsOperatorOnly:
         assert result["reloaded"] is False
 
 
+BETA_GIT_YAML = (
+    BASE_YAML.replace(
+        "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n",
+        "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n"
+        "    git:\n"
+        "      forge:\n"
+        "        token_env: TEST_BETA_TOKEN\n"
+        "        fetch: [acme/*]\n"
+        "        push: [acme/widgets]\n"
+        "        push_refs: ['refs/heads/beta/*']\n",
+    )
+    + "git_remotes:\n  forge:\n    upstream: https://git.example.com\n"
+)
+
+# The edit a talked-round agent would want: every repository, every branch.
+BETA_GIT_WIDENED_YAML = BETA_GIT_YAML.replace(
+    "        push: [acme/widgets]\n        push_refs: ['refs/heads/beta/*']\n",
+    "        push: ['*/*']\n        push_refs: ['refs/heads/*']\n",
+)
+
+
+class TestGitIsOperatorOnly:
+    """#453: which repositories and branches an agent may push to is not the
+    agent's to reload. ``llm_keys`` is not held; this block is."""
+
+    async def test_agent_cannot_widen_its_own_grant(self, profiles_path: Path) -> None:
+        profiles_path.write_text(BETA_GIT_YAML, encoding="utf-8")
+        await _reload_as("alpha")  # the operator puts the grant in force
+
+        profiles_path.write_text(BETA_GIT_WIDENED_YAML, encoding="utf-8")
+        result = await _reload_as("beta")
+
+        assert result["reloaded"] is True
+        grant = _registry()["beta"].git["forge"]
+        assert grant.push == ["acme/widgets"]
+        assert grant.push_refs == ["refs/heads/beta/*"]
+        assert not grant.may_move("refs/heads/main")
+        assert "git" in result["not_applied"]["operator_only"]
+
+    async def test_agent_cannot_give_itself_a_grant(self, profiles_path: Path) -> None:
+        profiles_path.write_text(BETA_GIT_YAML, encoding="utf-8")
+        result = await _reload_as("beta")
+
+        assert _registry()["beta"].git == {}
+        assert "git" in result["not_applied"]["operator_only"]
+
+    async def test_agent_cannot_drop_its_own_deny(self, profiles_path: Path) -> None:
+        denied = BETA_GIT_YAML.replace(
+            "        fetch: [acme/*]\n", "        fetch: [acme/*]\n        deny: ['*-private']\n"
+        )
+        profiles_path.write_text(denied, encoding="utf-8")
+        await _reload_as("alpha")
+
+        profiles_path.write_text(BETA_GIT_YAML, encoding="utf-8")
+        result = await _reload_as("beta")
+
+        assert _registry()["beta"].git["forge"].deny == ["*/*-private"]
+        assert "git" in result["not_applied"]["operator_only"]
+
+    async def test_operator_reload_applies_it(self, profiles_path: Path) -> None:
+        profiles_path.write_text(BETA_GIT_YAML, encoding="utf-8")
+        await _reload_as("alpha")
+
+        profiles_path.write_text(BETA_GIT_WIDENED_YAML, encoding="utf-8")
+        result = await _reload_as("alpha")
+
+        assert result["reloaded"] is True
+        assert _registry()["beta"].git["forge"].push == ["*/*"]
+        assert "git" in result["changes"]["beta"]["fields_changed"]
+
+    async def test_operator_reload_applies_an_edited_remote(self, profiles_path: Path) -> None:
+        profiles_path.write_text(BETA_GIT_YAML, encoding="utf-8")
+        await _reload_as("alpha")
+        active = get_active_config()
+        assert active is not None
+        assert active.config.git_remotes["forge"].host == "git.example.com"
+
+        profiles_path.write_text(
+            BETA_GIT_YAML.replace("git.example.com", "git.example.org"), encoding="utf-8"
+        )
+        await _reload_as("alpha")
+        active = get_active_config()
+        assert active is not None
+        assert active.config.git_remotes["forge"].host == "git.example.org"
+
+    async def test_a_first_remote_on_a_gateway_started_without_one_needs_a_restart(
+        self, profiles_path: Path
+    ) -> None:
+        profiles_path.write_text(BETA_GIT_YAML, encoding="utf-8")
+        result = await _reload_as("alpha")
+
+        assert any("git_remotes" in note and "restart" in note for note in result["not_applied"])
+
+    async def test_a_dangling_remote_refuses_the_reload(self, profiles_path: Path) -> None:
+        profiles_path.write_text(
+            BETA_GIT_YAML.replace("  forge:\n    upstream", "  other:\n    upstream"),
+            encoding="utf-8",
+        )
+        result = await _reload_as("alpha")
+
+        assert result["reloaded"] is False
+        assert "git_remotes" in result["error"]
+        assert _registry()["beta"].git == {}
+
+
 class TestDefenseIsOperatorOnly:
     """An agent cannot loosen its own defense block by reloading (#298)."""
 

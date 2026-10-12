@@ -240,6 +240,9 @@ new pattern goes into that file's attack, benign and linearity tables.
 
 - A second listener, `--egress-port` (8021): HTTP `CONNECT` only, for a
   profile's `client_egress` (#442). Not a route on the app below.
+- `GET|POST /git/{remote}/{owner}/{repo}[.git]/{info/refs,git-upload-pack,git-receive-pack}` —
+  the git transport (#453), registered only when the file has `git_remotes`.
+  Bearer token picks the profile, as on `/llm`.
 - `GET /health` — unauthenticated liveness probe returning `{status, classifier, profiles}`.
   A timeout here means the asyncio event loop is blocked, not merely that a
   backend is slow.
@@ -425,7 +428,8 @@ operator; a live gateway with no bound caller is refused.
   `role` or `defense` block (held, reported as `operator_only`, #298).
   Operator: the whole file, plus what it could not apply — `llm_providers`,
   `matrix`, ingress routes and proxy-mode `oauth` clients/redirects bind at
-  startup.
+  startup. An agent reload also holds its own `git` block (#453);
+  `llm_keys` is not held.
 
 ## OAuth token binding (#298)
 
@@ -587,7 +591,7 @@ replaced.
   by `warmup.trentina_lifespan`. The peer address picks the profile (no
   credential, as #330); the name must be in `hosts`, port 443, and pass
   `egress.check_url`; the tunnel connects to a checked address
-  (`open_upstream` is the test seam). `_check` is one lookup per burst
+  (`open_upstream` is the test seam). `checked_target` is one lookup per burst
   (#449): tunnels to a name share the check in flight and its answer for
   `CHECKED_TTL`; `resolver_busy` is 503 `denied_guard`, not a defense block. After `200` the first TLS record must
   be a ClientHello whose SNI is the CONNECT host, or the tunnel closes before
@@ -596,6 +600,31 @@ replaced.
   `connect`, `DestinationKind.TUNNEL`). Nothing reads the bytes: known gap 26.
   The block is held on an agent reload (`_hold_perimeter_fields`) and refused
   on a honeypot.
+- `gateway/git_transport.py` + `gateway/git_wire.py` — the git transport
+  (#453, `docs/git-transport.md`): git's smart HTTP on the main port, to the
+  repositories a profile's `git.<remote>` lists (`GitGrant`, `GitRemote` in
+  `profile.py`; top-level `git_remotes`). `git_wire.py` is the reading, with
+  no I/O: the path, pkt-lines, a push's command list, an upload-pack
+  request, and `RefFilter` for ref listings. `git_transport.py` is the
+  route: caller by bearer (`resolve_profile_by_token`), every header and the
+  URL built from validated parts, the profile's token injected as Basic,
+  upstream through `egress.open_pinned` on `client_egress.checked_target`'s
+  address. A push's commands are read to their flush before a byte is
+  forwarded (`_command_list`), each ref held to `push_refs`, tags and
+  deletes refused. A fetch request is read whole (8 MiB, inflated) and sent
+  on inflated. No redirect is followed. Responses stream through
+  `_Relayed`, which finishes the operation once (slot, upstream, audit row)
+  however the response ends, and holds every `send` to `IDLE_TIMEOUT`. One
+  `gateway_calls` row per HTTP request (`git:<remote>`, `fetch`/`push`,
+  `DestinationKind.GIT`). Reasons are the closed set `git_wire.REASONS`. A
+  pack is never read, either way, and a listed ref name is bounded
+  (`MAX_LISTED_REF`, printable ASCII) but not judged: known gap 29. A new rule on text the
+  route can read goes in `git_wire.py`; nothing there may parse a pack.
+  `tests/git_harness.py` runs real `git` against `git http-backend`.
+- `egress.open_pinned` — one request to an already-checked `ResolvedTarget`,
+  streamed body, idle timeout, no deadline, and any 3xx refused as
+  `redirect`. `open_guarded` (deadline, redirects followed and checked) is
+  still the call for a fetch.
 - `tools/` — Tool implementations called by server.py wrappers
 - `database.py` — SQLite blocklist for cumulative detection memory, keyed on
   (profile, source) since #263: `is_blocked(source, profile)` sees the

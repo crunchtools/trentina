@@ -10,10 +10,41 @@ under that name.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-10-12
+
+### Added
+- Git transport (#453): a route on the main port,
+  `/git/{remote}/{owner}/{repo}[.git]/...`, that carries git's smart HTTP
+  protocol (v0, v1 and v2) to a forge named in a new top-level `git_remotes`
+  section. A profile's new `git` block lists, per remote, the repositories
+  it may `fetch` and `push`, the branches a push may move (`push_refs`) and
+  a `deny` list, with the profile's forge token in `token_env`. The caller
+  is its gateway bearer token; none of its headers go upstream and the
+  token is injected, so the agent holds no forge credential. A push's
+  command list is read before the pack is forwarded: a ref outside
+  `push_refs`, a tag and a delete are refused. Pull-request refs are dropped
+  from ref listings and refused by name. Upstream goes through the egress
+  guard, pinned, and no redirect is followed. Each request writes one audit
+  row (`git:<remote>`, `fetch` / `push`, `destination_kind = git`) with the
+  repository, the refs of a push and the bytes each way. An agent's own
+  reload cannot change the block, and a honeypot profile cannot have one.
+  See [docs/git-transport.md](docs/git-transport.md).
+- Known gap 29: no layer reads what the git transport carries. A pack is
+  passed on unread in both directions, ref names are bounded (one token of
+  printable ASCII, at most 255 bytes) and not judged, the gateway cannot
+  tell the owner's commits from an outsider's, and a `want` for an object id
+  is not restricted.
+- `egress.open_pinned`: one request to an address that was already checked,
+  with a streamed body, an idle timeout in place of a deadline, and any
+  redirect refused (`redirect`, a new egress reason). `open_guarded` is
+  unchanged.
+
 ### Changed
 - Known gaps 27 and 28 carry their L3 measurements (#448, #450): an attack
   split across parts, and what a lone L2 flag on meeting notes is worth.
   `docs/benchmark.md`.
+- `client_egress._check` is `client_egress.checked_target`: the git
+  transport shares the tunnel's one-lookup-per-burst check.
 
 ## [1.9.0] - 2026-10-11
 

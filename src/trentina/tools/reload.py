@@ -230,6 +230,11 @@ def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
             "client_egress added but its listener was not started (no profile "
             "had one at startup) — restart to serve it"
         )
+    if not active.git_route_registered and new_config.git_remotes:
+        notes.append(
+            "git_remotes added but /git was not registered at startup (the "
+            "file had none) — restart to serve it"
+        )
     notes.extend(_unapplied_delegated(current, new_config))
     for name, profile in sorted(new_config.profiles.items()):
         notes.extend(_unapplied_proxy_oauth_for(current.profiles.get(name), profile, name))
@@ -388,18 +393,16 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
         if old != getattr(after.defense, field_name):
             setattr(after.defense, field_name, old)
             held.append(f"defense.{field_name}")
-    # The bridge block is perimeter end to end: where the plaintext side
-    # lives, who may write to it, what a flagged message becomes. None of it
-    # is an agent's performance knob, so the whole block is held.
-    if after.matrix_bridge != before.matrix_bridge:
-        after.matrix_bridge = before.matrix_bridge
-        held.append("matrix_bridge")
-    # Where the agent's own client may be tunnelled, and which addresses
-    # speak for it (#442). An agent able to reload its own host list could
-    # add the one host it was talked into wanting.
-    if after.client_egress != before.client_egress:
-        after.client_egress = before.client_egress
-        held.append("client_egress")
+    # Three blocks are perimeter end to end, so each is held whole: where
+    # the bridge's plaintext side lives and what a flagged message becomes;
+    # where the agent's own client may be tunnelled (#442); which
+    # repositories and branches it may push to, with which token (#453).
+    # llm_keys is not held and git is: a key buys model calls, while one
+    # more pattern is one more place a talked-round agent can write to.
+    for block in ("matrix_bridge", "client_egress", "git"):
+        if getattr(after, block) != getattr(before, block):
+            setattr(after, block, getattr(before, block))
+            held.append(block)
     held.extend(_hold_matrix_networks(before, after))
     b = before.matrix_ingress
     a = after.matrix_ingress

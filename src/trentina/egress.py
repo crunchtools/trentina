@@ -16,6 +16,9 @@ Three rules, each closing a way round the one before:
 - It asks for ``identity`` and refuses a body that arrives encoded anyway
   (#276). httpx decompresses before any caller can count, so a size cap on
   a gzip or brotli body is checked after the bomb has gone off.
+- ``open_pinned`` is the same pin for a caller that streams a body out and a
+  body back and holds the check itself (the git transport, #453). It follows
+  no redirect at all: a 3xx is refused as ``redirect``.
 
 ``TRENTINA_FETCH_ALLOW_PRIVATE`` lifts the address rule only.
 """
@@ -49,6 +52,8 @@ ALLOWED_PORTS = frozenset({80, 443})
 MAX_REDIRECTS = 5
 IDENTITY = "identity"
 RESOLVE_TIMEOUT = 10.0
+CONNECT_TIMEOUT = 10.0
+_REDIRECTS = range(300, 400)
 MAX_LOOKUPS = 64
 """Lookups in flight at once, gateway-wide, counting ones whose caller timed out.
 
@@ -379,6 +384,74 @@ async def _open_guarded(
         resp.history = history
         try:
             if request.method != "HEAD" and is_encoded(resp):
+                log.warning("egress: refused a content-encoded response")
+                raise EgressRefusedError("encoded")
+            yield resp
+        finally:
+            await resp.aclose()
+
+
+@asynccontextmanager
+async def open_pinned(
+    method: str,
+    url: str,
+    target: ResolvedTarget,
+    *,
+    idle: float,
+    headers: dict[str, str],
+    content: bytes | AsyncIterator[bytes] | None = None,
+) -> AsyncIterator[httpx.Response]:
+    """Send one request to addresses that were already checked, and follow nothing.
+
+    For a caller whose bodies are too large to hold and whose exchange has no
+    natural wall-clock bound (a git clone or push, #453). ``open_guarded``
+    stays the call for everything else.
+
+    Args:
+        method: HTTP method.
+        url: the URL to send to. Its host and port must be ``target``'s: the
+            pinned backend dials nothing else, so a URL for another host is
+            refused as ``unresolvable`` before a byte leaves.
+        target: what ``check_url`` returned for that host. The caller holds
+            it, so one check can serve a burst of requests.
+        idle: seconds any one read or write may take. There is no deadline
+            on the whole exchange; a peer that keeps bytes moving is served.
+        headers: the caller's headers, sent with ``Accept-Encoding:
+            identity``. Nothing else is added but what httpx sets on every
+            request (``Host``, ``Connection``, and ``Accept`` and
+            ``User-Agent`` where the caller gave none).
+        content: the request body, whole or as a stream sent as it is read.
+
+    Yields the ``httpx.Response``, still streaming; read it with
+    ``aiter_raw``. It is closed, with its client, when the context exits.
+
+    Raises:
+        EgressRefusedError: ``redirect`` for any 3xx, whatever its
+            ``Location``: a redirect followed here would carry the caller's
+            injected credential to a host nobody checked. ``encoded`` for a
+            body that arrives content-encoded. ``unresolvable`` when ``url``
+            is not for the checked host.
+        httpx.TimeoutException: a connect, read or write passed its limit.
+        httpx.HTTPError: the connection failed. Either can also be raised
+            later, while the caller reads the response it was handed.
+    """
+    backend = PinnedBackend()
+    backend.pin(target)
+    sent = {k: v for k, v in headers.items() if k.lower() != "accept-encoding"}
+    sent["Accept-Encoding"] = IDENTITY
+    async with httpx.AsyncClient(
+        transport=PinnedTransport(backend),
+        timeout=httpx.Timeout(idle, connect=CONNECT_TIMEOUT),
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
+        request = client.build_request(method, url, headers=sent, content=content)
+        resp = await client.send(request, stream=True)
+        try:
+            if resp.status_code in _REDIRECTS:
+                log.warning("egress: refused a redirect on a pinned request")
+                raise EgressRefusedError("redirect")
+            if is_encoded(resp):
                 log.warning("egress: refused a content-encoded response")
                 raise EgressRefusedError("encoded")
             yield resp
