@@ -353,6 +353,21 @@ class TestRefusedBeforeConnecting:
         held.close()
         writer.close()
 
+    async def test_a_fan_out_of_parallel_streams_fits(
+        self, listener: dict[str, Profile], upstream: _Upstream
+    ) -> None:
+        tunnels = [await _connect() for _ in range(client_egress.MAX_TUNNELS_PER_PROFILE)]
+        assert all(response.startswith(b"HTTP/1.1 200") for response, _r, _w in tunnels)
+        over, _reader, refused = await _connect()
+        assert b"X-Trentina-Reason: busy" in over
+        refused.close()
+        tunnels.pop()[2].close()
+        await asyncio.sleep(0.05)
+        again, _reader2, writer = await _connect()
+        assert again.startswith(b"HTTP/1.1 200")
+        for _response, _r, held in [*tunnels, (None, None, writer)]:
+            held.close()
+
     async def test_a_caller_in_no_profiles_network_gets_nothing(
         self, listener: dict[str, Profile], upstream: _Upstream, audit_db: Path
     ) -> None:
