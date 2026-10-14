@@ -10,6 +10,14 @@ under that name.
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-10-14
+
+### Fixed
+
+- Client egress: a profile may hold 64 tunnels, not 16. One profile serves
+  every session of its agent, and a fan-out of parallel subagents streaming
+  from one API filled the 16 and had its further connections refused `busy`.
+
 ## [1.10.0] - 2026-10-12
 
 ### Added

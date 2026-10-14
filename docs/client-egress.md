@@ -97,7 +97,7 @@ is, at worst, a path to whatever else that front end will serve under that
 handshake. Prefer names whose servers answer only for themselves, and read
 "listed hosts" as "listed TLS endpoints".
 
-A profile holds at most 16 tunnels at once, and a tunnel with no byte in
+A profile holds at most 64 tunnels at once, and a tunnel with no byte in
 either direction for 15 minutes is closed.
 
 ## Refusals
@@ -114,7 +114,7 @@ A refusal before the tunnel opens carries its reason in an
 | 403 | `non_global_address`, `unresolvable` | The egress guard refused the name. |
 | 405 | `method` | Not `CONNECT`. |
 | 502 | `connect_failed` | No checked address accepted the connection. |
-| 503 | `busy` | The profile already holds its 16 tunnels. |
+| 503 | `busy` | The profile already holds its 64 tunnels. |
 | 503 | `resolver_busy` | No DNS lookup slot was free (a profile has 4, and they do not queue). The name was not checked; try again. |
 
 After `200` the client is speaking TLS, so the tunnel is simply closed and the

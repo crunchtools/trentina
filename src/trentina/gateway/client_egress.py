@@ -72,8 +72,11 @@ IDLE_TIMEOUT = 900.0
 """Seconds with no byte in either direction before a tunnel is closed. A
 client holding a streaming response sees keep-alives well inside this."""
 
-MAX_TUNNELS_PER_PROFILE = 16
-"""Tunnels one profile may hold open. A client pools a handful per host."""
+MAX_TUNNELS_PER_PROFILE = 64
+"""Tunnels one profile may hold open. A client pools a handful per host, but
+one profile serves every session of its agent: a fan-out of parallel
+subagents holds one streaming tunnel each for minutes. At 16, fifteen such
+streams to one API refused the rest (2026-10-14)."""
 
 CHECKED_TTL = 5.0
 """Seconds a name's checked addresses answer the same profile's next tunnel
