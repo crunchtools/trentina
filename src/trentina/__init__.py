@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from .gateway.profile import Profile
     from .gateway.sessions import SessionRegistry
 
-__version__ = "1.11.1"
+__version__ = "1.11.2"
 
 DEFAULT_PORT = 8019
 DEFAULT_EGRESS_PORT = 8021

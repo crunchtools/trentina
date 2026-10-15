@@ -116,6 +116,9 @@ async def start_dbus() -> None:
         _dbus_started = True
         logger.info("D-Bus interface registered: com.crunchtools.Trentina1")
 
+    except (OSError, TimeoutError) as exc:
+        # No socket, or one that never answers: expected in a container, so no traceback.
+        logger.warning("D-Bus unavailable — interface disabled: %r", exc)  # logsafe: ours
     except Exception:
         logger.warning("D-Bus unavailable — interface disabled", exc_info=True)  # logsafe: ours
 

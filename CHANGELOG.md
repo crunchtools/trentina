@@ -10,6 +10,14 @@ under that name.
 
 ## [Unreleased]
 
+## [1.11.2] - 2026-10-15
+
+### Fixed
+
+- A host without a reachable system bus logs one line at startup, naming the
+  error, instead of a full traceback. A failure other than the connection
+  keeps its traceback.
+
 ### Documentation
 
 - Guarded execution's figures (#456), per shipped judge: every judge refused
