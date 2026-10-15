@@ -10,6 +10,19 @@ under that name.
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-10-14
+
+### Fixed
+
+- Guarded execution (#456): the judge was told to look harder at a call from
+  a session that was delivered flagged content, and the default judge read
+  that as a reason to refuse routine work, five of 24 routine calls on the
+  first benchmark run. The prompt now says a flagged session raises scrutiny
+  for calls that move private data, credentials or anything to a new
+  destination only, and that naming a credential is not carrying one.
+- `benchmarks/gatekeeper.py --json` failed after printing its table: a
+  Counter does not survive `dataclasses.asdict`.
+
 ## [1.11.0] - 2026-10-14
 
 ### Added
