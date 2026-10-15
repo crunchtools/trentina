@@ -17,16 +17,24 @@ import io
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import SecretStr
 
 from corpora.benign_ops import BENIGN, CATEGORIES, KNOWN_GAPS
 from corpora.garak_encodings import ENCODINGS
-from trentina.gateway import client_egress, git_transport, git_wire
+from trentina.gateway import client_egress, gatekeeper, git_transport, git_wire
 from trentina.gateway.decoy import leaked_tokens
-from trentina.gateway.profile import AuthConfig, Backend, Honeytoken, Profile
+from trentina.gateway.profile import (
+    AuthConfig,
+    Backend,
+    GuardedExecutionConfig,
+    Honeytoken,
+    Profile,
+)
 from trentina.l1.pipeline import run_l1
 from trentina.unpack.scan import unpack
 
@@ -317,12 +325,6 @@ async def test_guarded_execution_forwards_what_its_judge_allows_one_call_at_a_ti
     through its judge: an allow forwards it, whatever it carries. And each
     call is judged alone, so an export sent in halves is two allowed calls
     and the judge never sees the first half beside the second."""
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock, patch
-
-    from trentina.gateway import gatekeeper
-    from trentina.gateway.profile import Backend, GuardedExecutionConfig
-
     profile = Profile(
         name="agent1",
         auth=AuthConfig(bearer_token_env="TOK"),

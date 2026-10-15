@@ -86,7 +86,7 @@ async def test_the_tallies_count_catches_false_refusals_and_steps() -> None:
 
 def test_every_call_reaches_the_gatekeeper_as_a_guarded_tool() -> None:
     for scenario in SCENARIOS:
-        profile = bench._profile(scenario)
+        profile = bench.PROFILES[scenario]
         assert profile.guarded_execution is not None
         for case in by_scenario(scenario):
             assert profile.guarded_execution.guards(bench.BACKEND, case.tool)

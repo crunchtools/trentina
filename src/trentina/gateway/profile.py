@@ -1292,6 +1292,8 @@ class ClientEgressConfig(BaseModel):
 
 _MAX_GUARDED_POLICY_CHARS = 4000
 GUARDED_TIMEOUT_DEFAULT = 30.0
+GUARDED_TIMEOUT_MIN = 5.0
+GUARDED_TIMEOUT_MAX = 120.0
 
 
 class GuardedExecutionConfig(BaseModel):
@@ -1329,8 +1331,8 @@ class GuardedExecutionConfig(BaseModel):
     )
     timeout_seconds: float = Field(
         default=GUARDED_TIMEOUT_DEFAULT,
-        ge=5,
-        le=120,
+        ge=GUARDED_TIMEOUT_MIN,
+        le=GUARDED_TIMEOUT_MAX,
         description="How long a judgment may take before the call is refused.",
     )
 

@@ -42,6 +42,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from corpora.gatekeeper import CASES, POLICIES, SCENARIOS, GateCase
+from trentina.config import get_config
 from trentina.gateway import gatekeeper
 from trentina.gateway.profile import AuthConfig, Backend, GuardedExecutionConfig, Profile
 
@@ -80,16 +81,19 @@ class Tally:
     wrongly_refused: list[str] = field(default_factory=list)
 
 
-def _profile(scenario: str) -> Profile:
-    """A profile whose one backend guards every tool the scenario's calls use."""
-    tools = sorted({case.tool for case in CASES if case.scenario == scenario})
-    profile = Profile(
+PROFILES: dict[str, Profile] = {
+    scenario: Profile(
         name=f"bench-{scenario.replace('_', '-')}",
-        auth=AuthConfig(bearer_token_env="BENCH"),
+        auth=AuthConfig(bearer_token_env="BENCH"),  # noqa: S106 - an env var's name
         backends={BACKEND: Backend(url="http://bench:1/mcp", tools_allow=["*"])},
-        guarded_execution=GuardedExecutionConfig(policy=POLICIES[scenario], tools={BACKEND: tools}),
+        guarded_execution=GuardedExecutionConfig(
+            policy=POLICIES[scenario],
+            tools={BACKEND: sorted({c.tool for c in CASES if c.scenario == scenario})},
+        ),
     )
-    return profile
+    for scenario in SCENARIOS
+}
+"""Per scenario, a profile whose one backend guards every tool its calls use."""
 
 
 def _facts(case: GateCase) -> gatekeeper.CallFacts:
@@ -105,11 +109,11 @@ def _facts(case: GateCase) -> gatekeeper.CallFacts:
 
 async def judge(case: GateCase) -> Vote:
     """One call through ``gatekeeper.evaluate``, as the router sends it."""
-    profile = _profile(case.scenario)
-    assert profile.guarded_execution is not None
-    refusal = await gatekeeper.evaluate(
-        profile, profile.guarded_execution, _facts(case), case.arguments
-    )
+    profile = PROFILES[case.scenario]
+    guarded = profile.guarded_execution
+    if guarded is None:
+        raise RuntimeError(f"profile for {case.scenario} guards nothing")
+    refusal = await gatekeeper.evaluate(profile, guarded, _facts(case), case.arguments)
     return Vote(None if refusal is None else refusal.reason)
 
 
@@ -129,11 +133,11 @@ def count(tally: Tally, case: GateCase, vote: Vote) -> None:
     if not vote.answered:
         tally.unanswered += 1
         return
-    refused = vote.reason is not None
-    if refused:
-        assert vote.reason is not None
-        tally.by_step["arguments" if vote.reason in ARGUMENT_STEP else "judge"] += 1
-        tally.by_reason[vote.reason] += 1
+    reason = vote.reason
+    refused = reason is not None
+    if reason is not None:
+        tally.by_step["arguments" if reason in ARGUMENT_STEP else "judge"] += 1
+        tally.by_reason[reason] += 1
     if case.expect_refuse:
         tally.attacks += 1
         tally.attacks_refused += refused
@@ -214,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     # The arguments step records what it flags: into a scratch database,
     # never the developer's own.
     os.environ.setdefault("QUARANTINE_DB", str(Path(tempfile.mkdtemp()) / "bench.db"))
-    model = os.environ.get("QUARANTINE_MODEL", "default")
+    model = get_config().model
 
     scenarios, total = asyncio.run(
         run(CASES, _concurrent(judge, args.concurrency), votes=max(args.votes, 1))
