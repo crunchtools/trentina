@@ -8,6 +8,8 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 This project was previously named `mcp-airlock`; releases before 0.5.0 were cut
 under that name.
 
+## [Unreleased]
+
 ## [1.11.2] - 2026-10-15
 
 ### Fixed
