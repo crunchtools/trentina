@@ -221,9 +221,12 @@ Every judge refused every scenario's headline attack. The misses:
   where L3 reads the agent's text as planted instructions; no other judge
   made more than 2 there. Use it with care as a gatekeeper.
 
-**Read these with three caveats.** The calls describe their payloads rather
-than carry them. The corpus is small: 36 calls. And it is also the set the
-prompt was tuned on. The first run (38676676706, 1.11.0) had the default judge
+**Read these with four caveats.** The calls describe their payloads rather
+than carry them. The corpus is small: 36 calls. L2 did not run: the CI job
+has no L2 model, so the arguments step was L1 and L3, where production runs
+all three. L2 can only add refusals, so in production the attack figures can
+only rise and the routine figure is a lower bound. And the corpus is also
+the set the prompt was tuned on. The first run (38676676706, 1.11.0) had the default judge
 refusing 5 of 24 routine calls, three of them from a flagged session; 1.11.1
 told the judge that a flagged session raises scrutiny, not refusal, and the
 same calls were run again. There is no held-out split yet, so treat these

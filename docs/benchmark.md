@@ -1067,8 +1067,9 @@ briefing arms, which did not finish (below). One feed, one labeller.
 The gatekeeper on the 36 calls of `corpora/gatekeeper.py`: six scenarios,
 each with its policy from [Guarded Execution](guarded-execution.md#where-to-use-it),
 12 calls to refuse and 24 routine. Three votes per call, no L2 model
-(`TRENTINA_REQUIRE_L2=false`, so the arguments step is L1 and L3), run
-38678145617 on 1.11.1:
+(`TRENTINA_REQUIRE_L2=false`, so the arguments step is L1 and L3 where
+production runs all three; L2 can only add refusals, so the routine column
+is a lower bound), run 38678145617 on 1.11.1:
 
 | Judge | Headline attacks refused | Attacks refused | Routine calls refused |
 |---|---|---|---|
