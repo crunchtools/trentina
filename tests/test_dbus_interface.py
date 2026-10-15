@@ -194,6 +194,35 @@ class TestGracefulDegradation:
 
         assert not dbi._dbus_started
 
+    @pytest.mark.asyncio
+    async def test_a_missing_socket_logs_one_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        import trentina.dbus_interface as dbi
+
+        dbi._dbus_started = False
+
+        mock_bus_mod = MagicMock()
+        mock_msg_bus_instance = AsyncMock()
+        mock_msg_bus_instance.connect = AsyncMock(side_effect=FileNotFoundError("no socket"))
+        mock_bus_mod.MessageBus.return_value = mock_msg_bus_instance
+
+        with (
+            caplog.at_level("WARNING", logger="trentina.dbus_interface"),
+            patch.object(dbi, "_has_dbus_fast", return_value=True),
+            patch.dict(
+                "sys.modules",
+                {
+                    "dbus_fast": MagicMock(),
+                    "dbus_fast.aio": mock_bus_mod,
+                },
+            ),
+        ):
+            await dbi.start_dbus()
+
+        assert not dbi._dbus_started
+        (record,) = caplog.records
+        assert record.exc_info is None
+        assert "no socket" in record.getMessage()
+
 
 class TestEventDataShapes:
     """Verify event data contains expected fields."""
