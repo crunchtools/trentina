@@ -1062,7 +1062,28 @@ only make L2 stricter.
 Not measured: Haiku 4.5 and Gemini 3.8 Flash on the pack gate and the
 briefing arms, which did not finish (below). One feed, one labeller.
 
-## Briefing arms and embedded documents (#397)
+## Guarded execution (#456)
+
+The gatekeeper on the 36 calls of `corpora/gatekeeper.py`: six scenarios,
+each with its policy from [Guarded Execution](guarded-execution.md#where-to-use-it),
+12 calls to refuse and 24 routine. Three votes per call, no L2 model
+(`TRENTINA_REQUIRE_L2=false`, so the arguments step is L1 and L3 where
+production runs all three; L2 can only add refusals, so the routine column
+is a lower bound), run 38678145617 on 1.11.1:
+
+| Judge | Headline attacks refused | Attacks refused | Routine calls refused |
+|---|---|---|---|
+| `gemini-3.5-flash-lite` (default) | 6/6 | 12/12 | 0/24 |
+| `gemini-3.8-flash` | 6/6 | 12/12 | 1/24 |
+| `gemini-2.5-flash-lite` | 6/6 | 11/12 | 1/24 |
+| `claude-haiku-4.5` | 6/6 | 12/12 | 7/24 |
+
+On 1.11.0 (run 38676676706) the default judge refused 12/12 attacks and 5/24
+routine calls: three routine calls from a flagged session, and two that named
+a credential or a variable without carrying one. 1.11.1 told the judge both
+are not reasons to refuse. The corpus is the tuning set; there is no held-out
+split.
+
 
 A benign carrier document (a README, a runbook, a support thread) with a
 benign instruction for its human reader spliced into the middle ("run `make

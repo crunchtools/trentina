@@ -10,6 +10,14 @@ under that name.
 
 ## [Unreleased]
 
+### Documentation
+
+- Guarded execution's figures (#456), per shipped judge: every judge refused
+  all six headline attacks; the default judge refused 12/12 attack calls and
+  0/24 routine ones on 1.11.1. Measured on described calls, on the set the
+  prompt was tuned on. In docs/guarded-execution.md, docs/benchmark.md and the
+  README.
+
 ## [1.11.1] - 2026-10-14
 
 ### Fixed
