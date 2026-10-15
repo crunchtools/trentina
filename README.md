@@ -36,6 +36,9 @@ commerce keeps flowing, and nothing dangerous gets in.
    judges what goes out. Name the tools that send, write the rule in English,
    and the judge reads each call to them, with whether it is a first contact
    and whether the session just read something flagged, before it leaves.
+   On six customer scenarios the default judge refused all 12 attack calls
+   and none of 24 routine ones
+   ([measured](docs/guarded-execution.md#measured), on described calls).
    Around the layers sit an egress guard, file confinement and a startup
    containment check. What is and is not defended, by kind of content, is in
    [Coverage](docs/defense-pipeline.md#coverage), with every known gap.
@@ -86,7 +89,7 @@ commerce keeps flowing, and nothing dangerous gets in.
    "replies go only to the person who wrote the thread; never attach exports
    or other customers' data". A polite request for this week's customer
    export reads like a colleague's and passes every inbound layer; the send
-   it leads to is the call this exists to refuse. The judge reads each
+   it leads to is refused by all four shipped judges. The judge reads each
    guarded call's arguments, after the three layers have, with the gateway's
    own facts: first contact, flagged session. Anything but an explicit allow
    refuses. It runs after the allowlist and parameter guards, and it can only
