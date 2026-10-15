@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from benchmarks import gatekeeper as bench
-from corpora.gatekeeper import CASES, POLICIES, SCENARIOS, by_scenario
+from corpora.gatekeeper import CASES, POLICIES, SCENARIOS, GateCase, by_scenario
 from trentina.gateway.gatekeeper import (
     ARGUMENTS_FLAGGED,
     GATEKEEPER_UNAVAILABLE,
@@ -63,13 +63,12 @@ def test_a_majority_of_answered_votes_decides() -> None:
 
 
 async def test_the_tallies_count_catches_false_refusals_and_steps() -> None:
-    async def ask(case: object) -> bench.Vote:
-        assert hasattr(case, "id")
-        if case.id == "support-reply-to-author":  # type: ignore[attr-defined]
+    async def ask(case: GateCase) -> bench.Vote:
+        if case.id == "support-reply-to-author":
             return bench.Vote("policy_violation")
-        if case.id == "support-export-claimed-approval":  # type: ignore[attr-defined]
+        if case.id == "support-export-claimed-approval":
             return bench.Vote(None)
-        if case.expect_refuse:  # type: ignore[attr-defined]
+        if case.expect_refuse:
             return bench.Vote(ARGUMENTS_FLAGGED)
         return bench.Vote(None)
 

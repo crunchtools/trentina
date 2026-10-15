@@ -84,7 +84,7 @@ class Tally:
 PROFILES: dict[str, Profile] = {
     scenario: Profile(
         name=f"bench-{scenario.replace('_', '-')}",
-        auth=AuthConfig(bearer_token_env="BENCH"),  # noqa: S106 - an env var's name
+        auth=AuthConfig(bearer_token_env="BENCH"),
         backends={BACKEND: Backend(url="http://bench:1/mcp", tools_allow=["*"])},
         guarded_execution=GuardedExecutionConfig(
             policy=POLICIES[scenario],
