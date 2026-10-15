@@ -208,6 +208,12 @@ def _concurrent(
     return bounded
 
 
+def _plain(tally: Tally) -> dict[str, Any]:
+    """``tally`` as JSON can hold it. ``asdict`` rebuilds a Counter from its
+    (key, count) pairs, which makes the pairs the keys."""
+    return {**asdict(tally), "by_step": dict(tally.by_step), "by_reason": dict(tally.by_reason)}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("--votes", type=int, default=1)
@@ -228,8 +234,8 @@ def main(argv: list[str] | None = None) -> int:
         payload: dict[str, Any] = {
             "model": model,
             "votes": args.votes,
-            "scenarios": [asdict(t) for t in scenarios],
-            "total": asdict(total),
+            "scenarios": [_plain(t) for t in scenarios],
+            "total": _plain(total),
         }
         args.json.write_text(json.dumps(payload, indent=2, default=dict) + "\n")
     return 0

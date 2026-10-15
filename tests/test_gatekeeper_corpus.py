@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -89,3 +90,10 @@ def test_every_call_reaches_the_gatekeeper_as_a_guarded_tool() -> None:
         assert profile.guarded_execution is not None
         for case in by_scenario(scenario):
             assert profile.guarded_execution.guards(bench.BACKEND, case.tool)
+
+
+def test_the_tallies_write_as_json() -> None:
+    tally = bench.Tally("all")
+    tally.by_step["judge"] += 2
+    tally.by_reason["policy_violation"] += 2
+    assert json.loads(json.dumps(bench._plain(tally)))["by_reason"] == {"policy_violation": 2}
