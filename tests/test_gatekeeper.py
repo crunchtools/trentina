@@ -539,3 +539,17 @@ class TestLint:
 
     def test_a_profile_without_the_block_is_clean(self) -> None:
         assert check_guarded_destinations({"profiles": {"p": {"backends": {}}}}) == []
+
+
+class TestPrompt:
+    """What the judge is told is behaviour: the benchmark measures it, these hold it."""
+
+    def test_a_flagged_session_scopes_scrutiny_not_refusal(self) -> None:
+        prompt = " ".join(gatekeeper.GATEKEEPER_SYSTEM_PROMPT.split())
+        assert "It is not a reason to refuse a call that stays inside the policy" in prompt
+        assert "Naming a credential, a variable or a customer is not carrying one" in prompt
+
+    def test_the_policy_is_the_only_slot(self) -> None:
+        rendered = gatekeeper.GATEKEEPER_SYSTEM_PROMPT.format(policy="P-RULE")
+        assert rendered.count("P-RULE") == 1
+        assert '{"decision": "allow" or "refuse"' in rendered
