@@ -81,6 +81,7 @@ class Tally:
     wrongly_refused: list[str] = field(default_factory=list)
 
 
+# Per scenario, a profile whose one backend guards every tool its calls use.
 PROFILES: dict[str, Profile] = {
     scenario: Profile(
         name=f"bench-{scenario.replace('_', '-')}",
@@ -93,7 +94,6 @@ PROFILES: dict[str, Profile] = {
     )
     for scenario in SCENARIOS
 }
-"""Per scenario, a profile whose one backend guards every tool its calls use."""
 
 
 def _facts(case: GateCase) -> gatekeeper.CallFacts:
