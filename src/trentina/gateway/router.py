@@ -71,6 +71,7 @@ from .decoy import canned_result, keep_arguments, leaked_tokens, record_trip, se
 from .destination import Destination, destination_of
 from .errors import BackendCallError, BackendResponseTooLargeError
 from .filter import filter_tools
+from .gatekeeper import judge_call
 from .guards import check_parameter_guards, check_response_guards
 from .ingress_defense import effective_mode, scan_tool_list, scan_tool_response
 from .internal import call_internal_tool, list_internal_tools
@@ -94,6 +95,7 @@ from .names import (
     served_name,
 )
 from .schema_compact import compact_tool
+from .session_marks import mark_flagged
 from .surface import (
     BackendSurface,
     Stage,
@@ -881,21 +883,18 @@ async def _tools_call(profile: Profile, req_id: Any, params: dict[str, Any]) -> 
     normalized = _normalize_arguments(profile, backend, backend_name, tool_name, forwarded)
     forwarded = normalized.arguments
 
-    refused = _refuse_arguments(
-        backend,
-        tool_name,
-        {**forwarded, MODE_PARAM: mode.value, PROMPT_PARAM: prompt},
-        normalized,
+    refused = await _refuse_call(
+        profile, backend, backend_name, tool_name, forwarded, mode, prompt, normalized, dest
     )
     if refused is not None:
-        outcome, message = refused
+        outcome, message, recorded = refused
         _audit(
             profile.name,
             backend_name,
             tool_name,
             outcome,
             0,
-            message,
+            recorded,
             normalized=normalized.dropped or None,
             destination=dest,
         )
@@ -1011,6 +1010,37 @@ def _oversize_refusal(mode: Mode, policy: ModePolicy) -> dict[str, Any]:
     return body
 
 
+async def _refuse_call(
+    profile: Profile,
+    backend: Backend,
+    backend_name: str,
+    tool_name: str,
+    forwarded: dict[str, Any],
+    mode: Mode,
+    prompt: str | None,
+    normalized: Normalized,
+    dest: Destination | None,
+) -> tuple[Outcome, str, str] | None:
+    """Every refusal of a call's arguments: outcome, what the agent is told, what is audited.
+
+    The guards and the schema first; guarded execution last (#456), so the
+    cheap and certain rules have spoken before a model is asked anything.
+    """
+    refused = _refuse_arguments(
+        backend,
+        tool_name,
+        {**forwarded, MODE_PARAM: mode.value, PROMPT_PARAM: prompt},
+        normalized,
+    )
+    if refused is not None:
+        outcome, message = refused
+        return outcome, message, message
+    gated = await judge_call(profile, backend, backend_name, tool_name, forwarded, dest)
+    if gated is not None:
+        return Outcome.DENIED_GATEKEEPER, gated.message, gated.audit
+    return None
+
+
 def _refuse_arguments(
     backend: Backend, tool_name: str, judged: dict[str, Any], normalized: Normalized
 ) -> tuple[Outcome, str] | None:
@@ -1115,6 +1145,7 @@ async def _deliver(
             destination=destination,
         )
         raise
+    _mark_session(assembled, None if not backend.is_internal else call_result)
     if normalized or assembled.stripped:
         # REPLACED, never merged into what the result carries (#265): built
         # from the perimeter's own verdict and the gateway's own notes only.
@@ -1155,6 +1186,38 @@ async def _deliver(
         content_digest=digest,
     )
     return assembled.result
+
+
+def _mark_session(assembled: Assembled, internal: Any = None) -> None:
+    """Mark the session when content it receives was flagged or partly judged (#456).
+
+    Guarded execution reads the mark before a guarded call leaves. A refused
+    response reached the agent as a refusal, not as content, so it does not
+    mark. An internal tool judges its own content and says so in the result
+    it returns, which is where its warning is read (``internal``).
+    """
+    if assembled.outcome not in (Outcome.OK, Outcome.TOOL_ERROR):
+        return
+    if assembled.warning is not None or (internal is not None and _carries_warning(internal)):
+        mark_flagged(current_session.get())
+
+
+def _carries_warning(call_result: Any) -> bool:
+    """Whether an internal tool's result carries the perimeter's ``_trentina_warning``."""
+    structured = call_result.structured_content
+    if isinstance(structured, dict):
+        return bool(structured.get(WARNING_KEY))
+    for block in call_result.content or ():
+        text = block.get("text") if isinstance(block, dict) else None
+        if not isinstance(text, str) or WARNING_KEY not in text:
+            continue
+        try:
+            body = json.loads(text)
+        except ValueError:
+            continue
+        if isinstance(body, dict) and body.get(WARNING_KEY):
+            return True
+    return False
 
 
 async def _dispatch(
@@ -1877,6 +1940,7 @@ async def _read_part(
         )
 
     assembled = await _deliver_part(profile, paged, number, mode=mode, prompt=prompt, policy=policy)
+    _mark_session(assembled)
     delivered, digest = await asyncio.to_thread(wire_digest, assembled.result)
     _audit(
         profile.name,

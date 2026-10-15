@@ -413,6 +413,33 @@ check_trentina_fanout --db /data/trentina.db \
     --hosts-warn 20 --hosts-crit 50 --comms-warn 30 --comms-crit 100
 ```
 
+## Guarded Execution
+
+`guarded_execution` names the tools whose calls the profile's judge reads
+before they are forwarded, and the rule it reads them against, in plain
+English (#456). Anything but an explicit allow refuses the call.
+
+```yaml
+  agent1:
+    backends:
+      gws-personal:
+        url: "http://gws-personal:8000/mcp"
+        tools_allow: [search_gmail_messages, send_gmail_message]
+        destination_params:
+          send_gmail_message: to    # gives the gatekeeper its first-contact fact
+    guarded_execution:
+      policy: |
+        Mail goes only to example.com addresses. No customer data in bulk.
+      tools:
+        gws-personal: [send_gmail_message]
+```
+
+Guarded tools are exact names on backends the profile has, each allowed by
+that backend's `tools_allow`, or the file does not load. The block is
+perimeter: an agent's own reload cannot change it, and a honeypot cannot
+have one. Scenarios, the policy-writing guide, refusal codes and what it
+cannot do are in [Guarded Execution](guarded-execution.md).
+
 ## Decoy Tools and Honeytokens
 
 Two tripwires with no model behind them (#357). Both are for the case the

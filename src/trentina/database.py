@@ -235,6 +235,12 @@ def _migrate(db: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_gateway_calls_session "
         "ON gateway_calls(session, id) WHERE session IS NOT NULL"
     )
+    # Has this profile sent here before: the gatekeeper's first-contact fact
+    # (#456), one probe per guarded call.
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_gateway_calls_sent_to "
+        "ON gateway_calls(profile, destination) WHERE outcome = 'ok'"
+    )
     db.commit()
 
     detection_columns = {row["name"] for row in db.execute("PRAGMA table_info(detections)")}
@@ -790,6 +796,26 @@ def get_fanout(window_seconds: int = FANOUT_WINDOW_SECONDS) -> dict[str, Any]:
             for row in rows
         },
     }
+
+
+def has_sent_to(profile: str, destination: str, kind: str) -> bool:
+    """Whether *profile* has a completed call to *destination* on record (#456).
+
+    Completed means outcome ``ok``: a refused or failed call reached nobody.
+    The audit is swept after ``TRENTINA_AUDIT_RETENTION_DAYS``, so this is
+    "within retention", and a destination last used before that is a first
+    contact again. One probe on ``idx_gateway_calls_sent_to``.
+    """
+    row = (
+        _read_db()
+        .execute(
+            "SELECT 1 FROM gateway_calls WHERE profile = ? AND destination = ? "
+            "AND destination_kind = ? AND outcome = 'ok' LIMIT 1",
+            (profile, destination, kind),
+        )
+        .fetchone()
+    )
+    return row is not None
 
 
 def get_recent_destinations(

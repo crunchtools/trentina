@@ -393,13 +393,14 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
         if old != getattr(after.defense, field_name):
             setattr(after.defense, field_name, old)
             held.append(f"defense.{field_name}")
-    # Three blocks are perimeter end to end, so each is held whole: where
+    # Four blocks are perimeter end to end, so each is held whole: where
     # the bridge's plaintext side lives and what a flagged message becomes;
     # where the agent's own client may be tunnelled (#442); which
-    # repositories and branches it may push to, with which token (#453).
-    # llm_keys is not held and git is: a key buys model calls, while one
-    # more pattern is one more place a talked-round agent can write to.
-    for block in ("matrix_bridge", "client_egress", "git"):
+    # repositories and branches it may push to, with which token (#453);
+    # which of its calls are judged before they leave, and by what rule
+    # (#456). llm_keys is not held and git is: a key buys model calls, while
+    # one more pattern is one more place a talked-round agent can write to.
+    for block in ("matrix_bridge", "client_egress", "git", "guarded_execution"):
         if getattr(after, block) != getattr(before, block):
             setattr(after, block, getattr(before, block))
             held.append(block)

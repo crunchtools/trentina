@@ -112,6 +112,7 @@ blocked 34 hostile pages.
 | `denied_allowlist` | blocked | Tool not permitted for this profile. |
 | `denied_guard` | blocked | A parameter guard rejected the arguments. |
 | `denied_response_guard` | blocked | A response guard rejected the backend's result. |
+| `denied_gatekeeper` | blocked | [Guarded execution](guarded-execution.md) refused the call before it was forwarded. The message is the reason code, then what the gatekeeper was told: `first_contact` and `session_flagged`. |
 | `decoy_tripped` | tripped | A [decoy tool](profiles.md#decoy-tools-and-honeytokens) was called, or a planted credential was in a call's arguments. An alarm about the caller. |
 | `tool_error` | failed | Backend completed but reported `isError`. |
 | `backend_error` | failed | Upstream failed: network, timeout, auth, 4xx/5xx. |
@@ -222,8 +223,8 @@ defense got mistaken for a broken one.
 
 ### Denial Monitoring
 
-`denied_allowlist`, `denied_guard` and `denied_response_guard` rows record
-calls the gateway refused. A consumer repeatedly probing tools outside its
+`denied_allowlist`, `denied_guard`, `denied_response_guard` and
+`denied_gatekeeper` rows record calls the gateway refused. A consumer repeatedly probing tools outside its
 allowlist is a signal worth alerting on — it can indicate a misconfigured
 client or a hijacked agent. These were previously not recorded at all.
 

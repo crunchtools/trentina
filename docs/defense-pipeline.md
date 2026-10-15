@@ -427,6 +427,8 @@ one does; the rest name the benchmark that measured them.
     scores it 0.007, and none of the four shipped judges flags it. Nothing in
     the text separates it from a real colleague's mail, so detection is the
     wrong control; what stops it is a limit on what the agent may send.
+    [Guarded execution](guarded-execution.md) is that limit (#456): it
+    judges the call the request leads to, not the request.
     Imperva's bare install instruction is the same shape with a URL: L2
     scores it 0.254, and two of the four shipped judges (Gemini 3.5
     Flash-Lite, Gemini 3.8 Flash) pass it
@@ -566,6 +568,17 @@ one does; the rest name the benchmark that measured them.
     on, keep `push_refs` to a namespace of its own that nothing deploys
     from, and treat a checkout as untrusted content. Tested, the `want`
     against a real git server.
+30. **Guarded execution is a model, and judges one call at a time**
+    (#456). A call to a guarded tool is forwarded when the profile's judge
+    answers allow, and nothing else in the gatekeeper reads its content: a
+    call that reads as routine to the judge passes, whatever it carries.
+    Each call is judged alone. Data sent in many small calls, each within
+    the policy, is never seen as one export, and the only memory between
+    calls is the first-contact fact and the session's flagged mark. Keep
+    every rule that can be stated exactly in a parameter guard, which no
+    answer from a model can override. Measured per scenario by
+    `benchmarks/gatekeeper.py` ([Guarded Execution](guarded-execution.md#measured)).
+    Tested (`tests/test_coverage_gaps.py`).
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 

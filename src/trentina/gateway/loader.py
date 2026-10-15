@@ -122,6 +122,7 @@ def _build_profile(name: str, body: Any) -> Profile:
     _expand_backend_env_refs(name, profile)
     _check_drivers(name, profile)
     _check_destination_params(name, profile)
+    _check_guarded_tools(name, profile)
     _resolve_matrix_bridge_secrets(name, profile)
     if profile.alert_ingress is not None:
         _resolve_alert_ingress_secrets(name, profile.alert_ingress)
@@ -144,6 +145,25 @@ def _check_destination_params(name: str, profile: Profile) -> None:
             if not filter_tools([{"name": tool}], backend):
                 raise ProfileConfigError(
                     f"Profile {name!r}: backends.{backend_name}.destination_params."
+                    f"{tool}: the tool is not allowed on this backend"
+                )
+
+
+def _check_guarded_tools(name: str, profile: Profile) -> None:
+    """Refuse a guarded tool the backend's allowlist never serves (#456).
+
+    The same reasoning as ``destination_params``: a rule for a tool the agent
+    can never call is a misspelling, and the call the operator meant to
+    guard is the one it fails to name.
+    """
+    if profile.guarded_execution is None:
+        return
+    for backend_name, tools in profile.guarded_execution.tools.items():
+        backend = profile.backends[backend_name]
+        for tool in tools:
+            if not filter_tools([{"name": tool}], backend):
+                raise ProfileConfigError(
+                    f"Profile {name!r}: guarded_execution.tools.{backend_name}."
                     f"{tool}: the tool is not allowed on this backend"
                 )
 
