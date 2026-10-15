@@ -1290,6 +1290,80 @@ class ClientEgressConfig(BaseModel):
         return hosts
 
 
+_MAX_GUARDED_POLICY_CHARS = 4000
+GUARDED_TIMEOUT_DEFAULT = 30.0
+GUARDED_TIMEOUT_MIN = 5.0
+GUARDED_TIMEOUT_MAX = 120.0
+
+
+class GuardedExecutionConfig(BaseModel):
+    """Calls to the tools named here are judged before they are forwarded (#456).
+
+    The inbound layers judge what an agent reads. A request that reads like a
+    colleague's passes them (known gap 20), and what stops it is a judgment of
+    the call it leads to: who it goes to, what it carries, and what the
+    session read first. ``gateway/gatekeeper.py`` asks the profile's judge
+    that question, with ``policy`` as the rule, and refuses on anything but
+    an explicit allow.
+
+    The gatekeeper only subtracts. An allowed call still passes every other
+    rule, and nothing the judge writes reaches the agent.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    policy: str = Field(
+        ...,
+        min_length=1,
+        max_length=_MAX_GUARDED_POLICY_CHARS,
+        description=(
+            "The operator's rule for these calls, in plain language. It is "
+            "given to the judge and never to the agent."
+        ),
+    )
+    tools: dict[str, list[str]] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Backend name to the exact tool names whose calls are judged. No "
+            "globs: each name is one decision an operator made."
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=GUARDED_TIMEOUT_DEFAULT,
+        ge=GUARDED_TIMEOUT_MIN,
+        le=GUARDED_TIMEOUT_MAX,
+        description="How long a judgment may take before the call is refused.",
+    )
+
+    @field_validator("policy")
+    @classmethod
+    def _policy_has_text(cls, policy: str) -> str:
+        if not policy.strip():
+            raise ValueError("guarded_execution.policy is empty")
+        return policy
+
+    @field_validator("tools")
+    @classmethod
+    def _tools_are_exact_names(cls, tools: dict[str, list[str]]) -> dict[str, list[str]]:
+        for backend, names in tools.items():
+            if not names:
+                raise ValueError(f"guarded_execution.tools.{backend} names no tool")
+            if len(set(names)) != len(names):
+                raise ValueError(f"guarded_execution.tools.{backend} lists a tool twice")
+            bad = sum(1 for name in names if not DESTINATION_NAME_RE.fullmatch(name))
+            if bad:
+                raise ValueError(
+                    f"guarded_execution.tools.{backend}: {bad} entries are not exact "
+                    "tool names (no globs)"
+                )
+        return tools
+
+    def guards(self, backend: str, tool: str) -> bool:
+        """Whether a call to ``tool`` on ``backend`` is judged."""
+        return tool in self.tools.get(backend, ())
+
+
 GIT_REMOTE_NAME_RE = PROVIDER_NAME_RE
 _GIT_USERNAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 # One owner or repository segment of a pattern: a name, with `*` for any run
@@ -2080,6 +2154,13 @@ class Profile(BaseModel):
             "transport, keyed by a git_remotes name (optional, #453)"
         ),
     )
+    guarded_execution: GuardedExecutionConfig | None = Field(
+        default=None,
+        description=(
+            "Tools whose calls a gatekeeper judges against a written policy "
+            "before they are forwarded (optional, #456)"
+        ),
+    )
     oauth: OAuthConfig | None = Field(
         default=None,
         description="Google-backed OAuth access for this profile (optional)",
@@ -2142,8 +2223,28 @@ class Profile(BaseModel):
                 problems.append(f"{channel} does not apply")
         if self.git:
             problems.append("git does not apply")
+        if self.guarded_execution is not None:
+            problems.append("guarded_execution does not apply")
         if problems:
             raise ValueError(f"honeypot profile: {'; '.join(problems)}")
+        return self
+
+    @model_validator(mode="after")
+    def guarded_tools_name_real_backends(self) -> Profile:
+        """Every guarded tool is on a backend this profile has, and a real one.
+
+        A name that matches no backend is a rule that never fires, which is a
+        typo the operator should hear about at load. A decoy is answered by
+        nothing, so there is no call to judge.
+        """
+        if self.guarded_execution is None:
+            return self
+        for name in self.guarded_execution.tools:
+            backend = self.backends.get(name)
+            if backend is None:
+                raise ValueError(f"guarded_execution.tools.{name}: no such backend")
+            if backend.is_decoy:
+                raise ValueError(f"guarded_execution.tools.{name}: a decoy backend is not judged")
         return self
 
     @model_validator(mode="after")

@@ -10,6 +10,31 @@ under that name.
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-10-14
+
+### Added
+
+- Guarded execution (#456): a profile's new `guarded_execution` block names
+  tools, per backend, whose calls the profile's judge reads against a
+  `policy` written in plain English before they are forwarded. The call's
+  arguments cross L1, L2 and L3 first; the judge is then given the policy,
+  the gateway's own facts (the destination, whether the profile has
+  completed a call there before, whether the session was delivered flagged
+  content) and the arguments as untrusted data, and answers allow or refuse
+  from a closed schema. Anything but an explicit allow refuses, including a
+  judge that is absent, slow or off-schema. A refusal is a `-32602` error
+  carrying a reason code only, audited as the new outcome
+  `denied_gatekeeper`. It runs after the allowlist and parameter guards and
+  can only take away. An agent's own reload cannot change the block, and a
+  honeypot profile cannot have one. The profile lint reports a guarded tool
+  with no `destination_params` entry. See
+  [docs/guarded-execution.md](docs/guarded-execution.md), with six
+  scenarios and their policies.
+- `benchmarks/gatekeeper.py` and `corpora/gatekeeper.py`: the six scenarios
+  as calls to judge, and a `gatekeeper` job in `benchmark-decoys.yml`. Until
+  it has run on merged code the control is documented as unmeasured.
+- Known gap 30: guarded execution is a model, and judges one call at a time.
+
 ## [1.10.1] - 2026-10-14
 
 ### Fixed

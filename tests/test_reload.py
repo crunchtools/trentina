@@ -1164,3 +1164,52 @@ class TestServiceIdentityMoves:
 
         assert result["service_identity_moved"] is False
         assert "beta" in _profile_tools_cache
+
+
+BETA_GUARDED_EXECUTION_YAML = BASE_YAML.replace(
+    "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n",
+    "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n"
+    "    guarded_execution:\n"
+    "      policy: Edits stay on our own pages.\n"
+    "      tools:\n"
+    "        wiki: [edit_page]\n",
+)
+
+
+class TestGuardedExecutionIsOperatorOnly:
+    """#456: which calls are judged, and by what rule, is not the agent's to reload."""
+
+    async def test_agent_cannot_drop_its_own_gatekeeper(self, profiles_path: Path) -> None:
+        profiles_path.write_text(BETA_GUARDED_EXECUTION_YAML, encoding="utf-8")
+        await _reload_as("alpha")
+
+        profiles_path.write_text(BASE_YAML, encoding="utf-8")
+        result = await _reload_as("beta")
+
+        guarded = _registry()["beta"].guarded_execution
+        assert guarded is not None
+        assert guarded.guards("wiki", "edit_page")
+        assert "guarded_execution" in result["not_applied"]["operator_only"]
+
+    async def test_agent_cannot_rewrite_the_policy(self, profiles_path: Path) -> None:
+        profiles_path.write_text(BETA_GUARDED_EXECUTION_YAML, encoding="utf-8")
+        await _reload_as("alpha")
+
+        profiles_path.write_text(
+            BETA_GUARDED_EXECUTION_YAML.replace(
+                "Edits stay on our own pages.", "Every call is within policy."
+            ),
+            encoding="utf-8",
+        )
+        await _reload_as("beta")
+
+        guarded = _registry()["beta"].guarded_execution
+        assert guarded is not None
+        assert guarded.policy == "Edits stay on our own pages."
+
+    async def test_operator_reload_applies_it(self, profiles_path: Path) -> None:
+        profiles_path.write_text(BETA_GUARDED_EXECUTION_YAML, encoding="utf-8")
+        result = await _reload_as("alpha")
+
+        assert result["reloaded"] is True
+        assert _registry()["beta"].guarded_execution is not None

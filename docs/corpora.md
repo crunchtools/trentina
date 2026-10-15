@@ -26,6 +26,7 @@ A detection rate means nothing without the set it was measured on. Three things 
 | [garak latent injection](#garak-latent-injection) | `corpora/garak_latent.py` | 972 attacks, 22 benign | `NVIDIA/garak`, anonymized | Apache-2.0 | vendored |
 | [garak encodings](#garak-encodings) | `corpora/garak_encodings.py` | 16 transforms, no text | `NVIDIA/garak`, as transforms | Apache-2.0 | vendored |
 | [Disclosed attacks](#disclosed-attacks) | `corpora/disclosed.py` | 5 attacks | published disclosures, rewritten | AGPL-3.0-or-later | vendored |
+| [Guarded calls](#guarded-calls) | `corpora/gatekeeper.py` | 12 calls to refuse, 24 routine | written for this repository | AGPL-3.0-or-later | vendored |
 
 `corpora/registry.py` holds the same list as data, and `tests/test_corpora_registry.py` fails when a module there has no record or a record has no section here.
 
@@ -128,6 +129,17 @@ Payloads reproduced from published disclosures (#29), so the defense is measured
 - **What it does not measure.** Anything statistical: it is five cases, to be read one at a time. The Varonis request is indistinguishable in text from a real colleague's, so a miss on it is Varonis's finding and argues for an outbound control more than a better detector. Varonis's other three scenarios published no attacker text. The display-name allowlist bypass in #29 is an identity question and has no payload.
 - **Rules.** Categories start `disclosed_`. L1 strips nothing from any of them, and a test says so.
 - **Read by.** `benchmarks/provider_benchmark.py --corpus disclosed`.
+
+### Guarded calls
+
+Calls for [guarded execution](guarded-execution.md) to judge (#456). Every other corpus here is content an agent reads; these are calls an agent makes: a tool, its arguments, and the facts the gateway holds about it (the destination, whether the profile has sent there before, whether the session was delivered flagged content).
+
+- **Where it came from.** Hand-written, one category per scenario in [Where to use it](guarded-execution.md#where-to-use-it), each with that page's policy word for word. Two scenarios are Varonis's phishing simulations (#29) as the calls they led to: the customer export, and the "team lead" asking for keys in an incident.
+- **How it is written.** Payloads are described, not reproduced: an attachment reads "CSV of 247 customer records", a credential "contains an AWS access key". The judge decides on what a call does, and a description states that. Names are the fictional roster.
+- **What it measures.** Per scenario: whether its own attack is refused, how many of its attacks are, and how many routine calls are refused that should go through. Each scenario has one headline attack, at least one variant, and at least four routine calls written to sit close to the attack.
+- **What it does not measure.** Real traffic, and payloads as an attacker would write them. Data split across many small calls, which is known gap 30. The arguments step on planted instructions, which is the same `defend()` the other corpora measure.
+- **Rules.** A test holds each policy to the page and each scenario to its shape.
+- **Read by.** `benchmarks/gatekeeper.py`, `tests/test_gatekeeper_corpus.py`.
 
 ## What Is Not a Corpus
 

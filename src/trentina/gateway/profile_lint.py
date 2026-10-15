@@ -20,6 +20,10 @@ is SAFE, in three ways the #90 audit found live:
   incident's shape in one profile.
 - ``require-default-open``: a ``TRENTINA_REQUIRE_*`` switch whose default is
   not fail-closed.
+- ``guarded-tool-no-destination``: a tool under ``guarded_execution`` whose
+  backend declares no ``destination_params`` entry for it (#456). The
+  gatekeeper is then told the destination is unknown, so it cannot know
+  whether the call is a first contact.
 
 Both posture checks are for seats that run unattended, such as swarm or
 coding agents. A personal assistant that a person talks to directly holds
@@ -320,6 +324,30 @@ def check_toxic_flows(profiles_file: dict[str, Any]) -> list[Finding]:
     return findings
 
 
+def check_guarded_destinations(profiles_file: dict[str, Any]) -> list[Finding]:
+    """A guarded tool whose destination the audit never records (#456)."""
+    findings = []
+    for profile, body in _profiles(profiles_file).items():
+        guarded = body.get("guarded_execution")
+        if not isinstance(guarded, dict):
+            continue
+        backends = body.get("backends") or {}
+        for backend, tools in (guarded.get("tools") or {}).items():
+            spec = backends.get(backend)
+            declared = (spec.get("destination_params") or {}) if isinstance(spec, dict) else {}
+            for tool in tools or ():
+                if tool not in declared:
+                    findings.append(
+                        Finding(
+                            "guarded-tool-no-destination",
+                            f"profile {profile!r} guards {backend}/{tool} with no "
+                            "destination_params entry for it, so the gatekeeper cannot "
+                            "tell a first contact from a regular one",
+                        )
+                    )
+    return findings
+
+
 def check_require_defaults(source: str | None = None) -> list[Finding]:
     """Every ``TRENTINA_REQUIRE_*`` read from the environment defaults to fail-closed.
 
@@ -375,6 +403,7 @@ def lint(profiles_file: dict[str, Any], *, config_source: str | None = None) -> 
     return [
         *check_shared_write_backends(profiles_file),
         *check_toxic_flows(profiles_file),
+        *check_guarded_destinations(profiles_file),
         *check_require_defaults(config_source),
     ]
 

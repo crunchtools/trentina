@@ -1,8 +1,8 @@
 # trentina Constitution
 
-> **Version:** 2.8.0
+> **Version:** 2.9.0
 > **Ratified:** 2026-09-22
-> **Amended:** 2026-10-12
+> **Amended:** 2026-10-14
 > **Status:** Active
 > **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.24.0
 > **Profile:** Security Gateway
@@ -26,7 +26,7 @@ the agent follows because it cannot tell data from instructions.
   whether plain, obfuscated, encoded, hidden in markup, or inside an archive,
   office file, PDF or image; a server steering an agent toward tools that
   bypass the gateway; an agent's own calls leaving its policy (tool filters,
-  parameter and response guards, egress).
+  parameter and response guards, egress, guarded execution).
 - **Assumed compromised:** the L3 judge. It reads hostile content, so it has
   no tools, no memory and no ability to act, and its prose is never delivered.
 - **Not defended:** a user jailbreaking their own model directly (the judge
@@ -179,6 +179,32 @@ Captured content is not a test fixture. An attack found there enters a
 corpus only rewritten by hand, with every third party's name, handle and
 host replaced (constitution XVII, profile VII).
 
+## Guarded Execution
+
+A profile's `guarded_execution` block names tools whose calls the profile's
+judge reads, against an operator's policy in plain language, before they are
+forwarded (#456). It asks the judge a second question, and four rules keep
+that inside the threat model, which assumes the judge compromised:
+
+- **It only subtracts.** An allow grants nothing: the call still passes the
+  allowlist, the parameter guards and every other rule, which all run first.
+  No answer from the judge forwards a call another rule refused.
+- **It fails closed.** No judge, an error, a timeout, a malformed or
+  off-schema answer, a leaked canary, and any answer but an explicit allow
+  refuse the call.
+- **The arguments are judged before the judge reads them.** They are the
+  agent's text, so they cross L1, L2 and L3 through `defend()` like any
+  payload, and a flag or an unfinished read refuses. The judge is then
+  called through `quarantine_generate`: no tools, a canary, a closed schema.
+- **Nothing it writes reaches the agent.** The agent is told a reason code
+  from a closed set; the policy and the judge's output stay in the gateway.
+
+The facts the judge is given (first contact, from the audit; a session's
+flagged mark, held in memory) are the gateway's own, written by
+deterministic code. The block is perimeter: held on an agent reload, refused
+on a honeypot. `PERIMETER_VERSION` does not move: no scan reaches a
+different conclusion. That the judge is a model is known gap 30.
+
 ## Blocklist Integrity
 
 The SQLite blocklist is writable by deterministic code only. The Q-Agent
@@ -298,3 +324,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.6.0 | 2026-10-11 | A proxied text response too large to judge in one call is delivered in judged parts (#340) where it was refused: each part is admitted and read whole, behind the last tokens of the part before it. Known gap 27: such a response is judged a part at a time |
 | 2.7.0 | 2026-10-11 | The internal tools' responses are delivered in judged parts too (#446), each part judged as the tool's source. L1 counts a line written to look like the gateway's own (#447). Known gap 28: L2 flags machine-written meeting notes that end in bare links (#450) |
 | 2.8.0 | 2026-10-12 | Git transport (#453): a route carries git's smart HTTP to the repositories a profile lists, with the forge token injected by the gateway. The gateway terminates the connection, so it reads and enforces everything that is deterministic text (the path, the service, the protocol, a fetch request, a push's command list, ref listings) and hands none of it to the three layers: a pack is passed on unread and ref names are bounded but not judged, which is known gap 29 and a stated exception to the first rule of the layer contract. The block is perimeter: held on an agent reload, refused on a honeypot. `PERIMETER_VERSION` does not move: the route reaches no verdict a cache holds |
+| 2.9.0 | 2026-10-14 | Guarded execution (#456): a profile names tools whose calls its judge reads against an operator's plain-language policy before they are forwarded. It only subtracts, fails closed, judges the arguments with the three layers before the judge reads them, and returns a closed reason code. The block is perimeter: held on an agent reload, refused on a honeypot. Known gap 30: the gatekeeper is a model and judges one call at a time |

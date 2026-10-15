@@ -77,6 +77,14 @@ class Outcome(str, Enum):
     the decision is operator-authored policy, not a model's risk verdict.
     """
 
+    DENIED_GATEKEEPER = "denied_gatekeeper"
+    """Guarded execution refused the call before it was forwarded (#456).
+
+    The judge read the call against the profile's written policy and did not
+    allow it, or could not be asked. Distinct from ``DENIED_GUARD``: that is
+    a pattern the operator wrote, this is a model's reading of a rule.
+    """
+
     DECOY_TRIPPED = "decoy_tripped"
     """A decoy tool was called, or a planted credential was in a call's
     arguments (#357). Neither blocked nor failed: an alarm about the caller.
@@ -100,6 +108,7 @@ BLOCKED_OUTCOMES: frozenset[Outcome] = frozenset(
         Outcome.DENIED_ALLOWLIST,
         Outcome.DENIED_GUARD,
         Outcome.DENIED_RESPONSE_GUARD,
+        Outcome.DENIED_GATEKEEPER,
     }
 )
 """Policy outcomes. The gateway did its job; nothing is broken."""

@@ -17,16 +17,24 @@ import io
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import SecretStr
 
 from corpora.benign_ops import BENIGN, CATEGORIES, KNOWN_GAPS
 from corpora.garak_encodings import ENCODINGS
-from trentina.gateway import client_egress, git_transport, git_wire
+from trentina.gateway import client_egress, gatekeeper, git_transport, git_wire
 from trentina.gateway.decoy import leaked_tokens
-from trentina.gateway.profile import AuthConfig, Backend, Honeytoken, Profile
+from trentina.gateway.profile import (
+    AuthConfig,
+    Backend,
+    GuardedExecutionConfig,
+    Honeytoken,
+    Profile,
+)
 from trentina.l1.pipeline import run_l1
 from trentina.unpack.scan import unpack
 
@@ -310,3 +318,39 @@ async def test_a_pack_and_a_ref_name_cross_the_git_transport_unjudged() -> None:
 
     page = Path(__file__).parents[1].joinpath("docs/defense-pipeline.md").read_text()
     assert "29. **No layer reads what the git transport carries**" in page
+
+
+async def test_guarded_execution_forwards_what_its_judge_allows_one_call_at_a_time() -> None:
+    """Gap 30 (#456). The gatekeeper reads a guarded call's content only
+    through its judge: an allow forwards it, whatever it carries. And each
+    call is judged alone, so an export sent in halves is two allowed calls
+    and the judge never sees the first half beside the second."""
+    profile = Profile(
+        name="agent1",
+        auth=AuthConfig(bearer_token_env="TOK"),
+        backends={"mail": Backend(url="http://mail:1/mcp", tools_allow=["*"])},
+        guarded_execution=GuardedExecutionConfig(
+            policy="No customer data in bulk.", tools={"mail": ["send_message"]}
+        ),
+    )
+    assert profile.guarded_execution is not None
+    facts = gatekeeper.CallFacts("mail", "send_message", "bob@example.net", "param", True, True)
+    judge = AsyncMock(return_value={"decision": "allow", "reason": "within_policy"})
+    halves = (
+        {"to": "bob@example.net", "attachment": "[customer records 1 to 120]"},
+        {"to": "bob@example.net", "attachment": "[customer records 121 to 247]"},
+    )
+    with (
+        patch.object(gatekeeper, "defend", AsyncMock(return_value=SimpleNamespace(flagged=False))),
+        patch.object(gatekeeper, "gaps_of", lambda _v: SimpleNamespace(blocking=lambda: False)),
+        patch.object(gatekeeper, "quarantine_generate", judge),
+        patch.object(gatekeeper, "llm_available", lambda: True),
+    ):
+        for half in halves:
+            assert (
+                await gatekeeper.evaluate(profile, profile.guarded_execution, facts, half) is None
+            )
+    assert "records 1 to 120" not in judge.await_args.args[0]
+
+    page = Path(__file__).parents[1].joinpath("docs/defense-pipeline.md").read_text()
+    assert "30. **Guarded execution is a model, and judges one call at a time**" in page

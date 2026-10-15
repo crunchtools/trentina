@@ -116,7 +116,7 @@ The guard is checked against the RESOLVED mode — an omitted `trentina_mode` be
 Parameter guards run after the tool-name allowlist check and before the backend call:
 
 ```
-Parse tool name → Backend exists? → Tool in allowlist? → Resolve trentina_mode and trentina_preprocess → Parameter guards → Backend call
+Parse tool name → Backend exists? → Tool in allowlist? → Resolve trentina_mode and trentina_preprocess → Parameter guards → Guarded execution (if the tool is guarded) → Backend call
 ```
 
 A rejected call returns immediately. The backend never sees the request. The error message is terse and does not include the rejected value (to avoid leaking guard configuration to the agent).
@@ -129,9 +129,15 @@ semantic — a memory search, a wiki query — the sensitive material is in the
 [response guards](response-guards.md), which apply the same constraint to the
 result.
 
+A parameter guard also cannot judge meaning: whether a mail body is a bulk
+export, or a chat message carries a credential. For that, list the tool under
+[guarded execution](guarded-execution.md), which runs after the guards and
+asks the profile's judge to read the call against a rule written in English.
+
 ## Related
 
 - [Response Guards](response-guards.md) — the same evaluator, applied to what a tool returns
+- [Guarded Execution](guarded-execution.md) — a judge reads the call against a written policy, after the guards
 - [Tool Filtering](tool-filtering.md) — controlling which tools are visible
 - [Per-Agent Profiles](profiles.md) — where parameter guards are configured
 - [Defense Pipeline](defense-pipeline.md) — content inspection after the call succeeds

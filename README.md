@@ -10,7 +10,8 @@ Trentina is an MCP gateway that sits between your AI agents and everything they
 touch: MCP servers, the web, Matrix, LLM providers and monitoring alerts. Every
 agent gets one endpoint and its own profile. Behind that endpoint Trentina
 stops prompt injection at every ingress and shrinks what reaches the context
-window. It also enforces policy the agent cannot talk its way past and handles
+window. It judges what agents send out against a policy you write in plain
+English, enforces policy the agent cannot talk its way past, and handles
 OAuth for web clients like claude.ai and gemini.google.com. The same gateway
 can serve a personal assistant, a coding agent and a swarm, wired however you
 like. It is named after the 1377 *trentino* of Ragusa, where ships anchored
@@ -31,6 +32,10 @@ commerce keeps flowing, and nothing dangerous gets in.
    Guard 2 86M one variable away. On our attacks planted inside long
    documents the default catches 21 of 39 where Prompt Guard 2 catches 4,
    2.4x faster on CPU. L3 reads everything L2 lets through.
+   The layers judge what comes in; [guarded execution](docs/guarded-execution.md)
+   judges what goes out. Name the tools that send, write the rule in English,
+   and the judge reads each call to them, with whether it is a first contact
+   and whether the session just read something flagged, before it leaves.
    Around the layers sit an egress guard, file confinement and a startup
    containment check. What is and is not defended, by kind of content, is in
    [Coverage](docs/defense-pipeline.md#coverage), with every known gap.
@@ -76,83 +81,94 @@ commerce keeps flowing, and nothing dangerous gets in.
    runs L1 ∥ L2, then L3 briefed with both. The profile's mode decides delivery,
    never detection: `block` refuses, `flag` delivers the exact bytes with a
    verdict, `redact` returns an answer L3 extracted and a second pass verified.
-2. **[Prompt Packs](docs/l3-prompt-tuning.md).** The L3 judge's prompts,
+2. **[Guarded Execution](docs/guarded-execution.md).** A policy in plain
+   English for the calls that leave. A support agent's `send_message` gets
+   "replies go only to the person who wrote the thread; never attach exports
+   or other customers' data". A polite request for this week's customer
+   export reads like a colleague's and passes every inbound layer; the send
+   it leads to is the call this exists to refuse. The judge reads each
+   guarded call's arguments, after the three layers have, with the gateway's
+   own facts: first contact, flagged session. Anything but an explicit allow
+   refuses. It runs after the allowlist and parameter guards, and it can only
+   take away.
+   [Six scenarios](docs/guarded-execution.md#where-to-use-it) with their policies.
+3. **[Prompt Packs](docs/l3-prompt-tuning.md).** The L3 judge's prompts,
    tuned and measured for one exact model. On held-out benign content the
    generic prompts flag 19% on Gemini 2.5 Flash Lite and 47% on Gemini 3.8
    Flash; the shipped packs bring that to 2% and 0%, and catch every
    planted-instruction case the generic prompts catch. Packs ship for four
    judges, each through a held-out gate, and an operator can tune their own
    for any model.
-3. **[Content Tools](docs/quarantine-tools.md).** `fetch`, `read`, `dir`,
+4. **[Content Tools](docs/quarantine-tools.md).** `fetch`, `read`, `dir`,
    `content` and `search`, built-in tools that bring outside content in
    through the pipeline. Fetches go through an egress guard that refuses
    private addresses and checks every redirect. Reads are confined to
    configured roots.
-4. **[Cumulative Detection Memory](docs/blocklist.md).** A refused source stays
+5. **[Cumulative Detection Memory](docs/blocklist.md).** A refused source stays
    refused for that profile until its entry expires, whatever a probabilistic
    layer thinks on the next run.
-5. **[Matrix Bridge](docs/matrix-bridge.md).** Terminates end-to-end
+6. **[Matrix Bridge](docs/matrix-bridge.md).** Terminates end-to-end
    encryption in a separate process so every message, in both directions,
    crosses the pipeline.
-6. **[Deployment Hardening](docs/deployment-hardening.md).** Container flags,
+7. **[Deployment Hardening](docs/deployment-hardening.md).** Container flags,
    secrets from files, network isolation, and a startup check that warns or
    refuses on containment gaps.
 
 ### Token savings
 
-6. **[Tool Filtering](docs/tool-filtering.md).** Allowlists and denylists,
+8. **[Tool Filtering](docs/tool-filtering.md).** Allowlists and denylists,
    exact or glob. A tool a profile can't use never enters its context window.
-7. **[Tool Description Compression](docs/compression.md).** Tool and parameter
+9. **[Tool Description Compression](docs/compression.md).** Tool and parameter
    descriptions are compressed once by the operator's model and cached. Schemas
    are compacted, and tools are served under short names.
-8. **[Minified Responses](docs/profiles.md#minifying-and-exact-text).** HTML
-   becomes Markdown, logs and JSON arrays are grouped by
-   [petit](https://github.com/crunchtools/petit), quoted mail threads collapse.
-   Minifying fails open: if it breaks, the agent gets the original.
+10. **[Minified Responses](docs/profiles.md#minifying-and-exact-text).** HTML
+    becomes Markdown, logs and JSON arrays are grouped by
+    [petit](https://github.com/crunchtools/petit), quoted mail threads collapse.
+    Minifying fails open: if it breaks, the agent gets the original.
 
 ### Determinism
 
-9. **[Parameter Guards](docs/parameter-guards.md).** Per-tool allow/deny
-   patterns on argument values: "this agent may send mail, but only to
-   `user@example.com`." Refused before the backend is called.
-10. **[Response Guards](docs/response-guards.md).** The same constraint on what
+11. **[Parameter Guards](docs/parameter-guards.md).** Per-tool allow/deny
+    patterns on argument values: "this agent may send mail, but only to
+    `user@example.com`." Refused before the backend is called.
+12. **[Response Guards](docs/response-guards.md).** The same constraint on what
     a backend returns, for semantic tools where nothing in the arguments is
     matchable.
-11. **[Gateway Audit Log](docs/audit-log.md).** Every call, with profile,
+13. **[Gateway Audit Log](docs/audit-log.md).** Every call, with profile,
     backend, tool, outcome, bytes in and out, and duration. It tells you
     which guards fired and which allowlisted tools no agent ever uses.
 
 ### Authentication
 
-12. **[Authentication](docs/authentication.md).** Static bearer, OAuth proxy
+14. **[Authentication](docs/authentication.md).** Static bearer, OAuth proxy
     with DCR, OAuth proxy with a provisioned client, or a delegated external
     issuer, each set per profile. The tokens Trentina issues are bound to
     their profile.
-13. **[LLM Key Proxying](docs/llm-proxying.md).** Agents call models through
+15. **[LLM Key Proxying](docs/llm-proxying.md).** Agents call models through
     the gateway, which adds the real key. Request bodies are allowlisted and
     re-serialized, so a provider can't become a side door out of a
     `--network=none` container.
 
 ### Architectural flexibility
 
-14. **[MCP Gateway](docs/gateway.md).** One endpoint per profile in front of
+16. **[MCP Gateway](docs/gateway.md).** One endpoint per profile in front of
     any number of streamable-HTTP MCP backends, with circuit breakers, hot
     reload and argument normalization.
-15. **[Per-Agent Profiles](docs/profiles.md).** Each consumer gets its own
+17. **[Per-Agent Profiles](docs/profiles.md).** Each consumer gets its own
     backends, tools, defense mode, pre-processors and authentication.
-16. **[Operator Profile](docs/operator.md).** Trentina is built to be run by an
+18. **[Operator Profile](docs/operator.md).** Trentina is built to be run by an
     agent. The operator seat installs, reloads and administers the gateway, and
     is the identity its own model calls bill to.
-17. **[Client Egress](docs/client-egress.md).** An agent's own HTTPS client,
+19. **[Client Egress](docs/client-egress.md).** An agent's own HTTPS client,
     tunnelled to the hosts its profile lists and to nothing else, by source
     network with no credential in the proxy URL. Recorded, not read.
-18. **[Git Transport](docs/git-transport.md).** Clone, fetch and push to the
+20. **[Git Transport](docs/git-transport.md).** Clone, fetch and push to the
     repositories and branches a profile lists, with a forge token the agent
     never holds. The repository and the refs are decided and recorded; a
     pack's contents are not read.
-19. **[Matrix Reverse Proxy](docs/network-isolation.md).** Agents on an
+21. **[Matrix Reverse Proxy](docs/network-isolation.md).** Agents on an
     isolated network reach Matrix through the gateway rather than the internet.
-20. **[Cockpit Plugin](docs/cockpit-plugin.md).** A live dashboard of layers,
+22. **[Cockpit Plugin](docs/cockpit-plugin.md).** A live dashboard of layers,
     blocklist and pipeline events in the Cockpit console.
 
 ## Quick Start
@@ -224,6 +240,7 @@ Then point Claude Code at it:
 | [Tool Filtering](docs/tool-filtering.md) | Allowlists, denylists, glob patterns |
 | [Description Compression](docs/compression.md) | Description compression and schema compaction |
 | [Token Routing](docs/token-routing.md) | Response reduction (implemented); delegation (proposed) |
+| [Guarded Execution](docs/guarded-execution.md) | A judge reads calls to listed tools against a policy in plain English |
 | [Parameter Guards](docs/parameter-guards.md) | Per-tool argument validation |
 | [Response Guards](docs/response-guards.md) | Per-tool result validation |
 | [Audit Log](docs/audit-log.md) | Call recording, stats, monitoring |
