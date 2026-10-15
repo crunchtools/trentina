@@ -154,6 +154,30 @@ class TestFixtures:
         assert lint_file(REPO / "examples" / "profiles-agent1.yaml") == []
 
 
+class TestOAuthSubjects:
+    """#458: an OAuth seat should name the account, not just the address."""
+
+    @staticmethod
+    def _file(**oauth: Any) -> dict[str, Any]:
+        return {"profiles": {"seat": {"oauth": {"enabled": True, **oauth}}}}
+
+    def test_email_only_is_a_finding(self) -> None:
+        profiles_file = self._file(allowed_emails=["a@b.co"])
+        (finding,) = profile_lint.check_oauth_subjects(profiles_file)
+        assert finding.code == "oauth-email-only"
+        assert "'seat'" in finding.message
+
+    def test_pinned_subjects_are_clean(self) -> None:
+        profiles_file = self._file(allowed_emails=["a@b.co"], allowed_subjects=[1001])
+        assert profile_lint.check_oauth_subjects(profiles_file) == []
+
+    def test_oauth_off_is_clean(self) -> None:
+        profiles_file = {
+            "profiles": {"seat": {"oauth": {"enabled": False, "allowed_emails": ["a@b.co"]}}}
+        }
+        assert profile_lint.check_oauth_subjects(profiles_file) == []
+
+
 class TestRequireDefaults:
     def test_the_real_config_is_fail_closed(self) -> None:
         assert check_require_defaults() == []

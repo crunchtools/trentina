@@ -153,6 +153,53 @@ class TestVerifyOAuth:
         with pytest.raises(OAuthForbiddenError, match="verified email"):
             await verify_oauth("Bearer tok", profile, provider)
 
+    async def test_email_only_profile_ignores_sub(self) -> None:
+        profile = _oauth_profile("alice@example.com")
+        provider = _StubProvider(
+            {"tok": _StubAccessToken({"email": "alice@example.com", "email_verified": True})}
+        )
+        await verify_oauth("Bearer tok", profile, provider)
+
+    async def test_pinned_subject_passes(self) -> None:
+        profile = _oauth_profile("alice@example.com")
+        assert profile.oauth is not None
+        profile.oauth.allowed_subjects = ["1001"]
+        provider = _StubProvider(
+            {
+                "tok": _StubAccessToken(
+                    {"sub": "1001", "email": "alice@example.com", "email_verified": True}
+                )
+            }
+        )
+        await verify_oauth("Bearer tok", profile, provider)
+
+    @pytest.mark.parametrize("sub", ["2002", None, ""])
+    async def test_a_reassigned_email_is_forbidden(self, sub: str | None) -> None:
+        """#458: the address is allowlisted and verified, but the account is not Alice's."""
+        profile = _oauth_profile("alice@example.com")
+        assert profile.oauth is not None
+        profile.oauth.allowed_subjects = ["1001"]
+        claims = {"email": "alice@example.com", "email_verified": True}
+        if sub is not None:
+            claims["sub"] = sub
+        provider = _StubProvider({"tok": _StubAccessToken(claims)})
+        with pytest.raises(OAuthForbiddenError, match="subject not permitted"):
+            await verify_oauth("Bearer tok", profile, provider)
+
+    async def test_a_pinned_subject_still_needs_the_email(self) -> None:
+        profile = _oauth_profile("alice@example.com")
+        assert profile.oauth is not None
+        profile.oauth.allowed_subjects = ["1001"]
+        provider = _StubProvider(
+            {
+                "tok": _StubAccessToken(
+                    {"sub": "1001", "email": "eve@evil.com", "email_verified": True}
+                )
+            }
+        )
+        with pytest.raises(OAuthForbiddenError, match="email not permitted"):
+            await verify_oauth("Bearer tok", profile, provider)
+
     async def test_email_not_on_allowlist_is_forbidden(self) -> None:
         profile = _oauth_profile("alice@example.com")
         provider = _StubProvider(

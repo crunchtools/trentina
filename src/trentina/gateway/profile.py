@@ -1837,6 +1837,16 @@ class OAuthConfig(BaseModel):
             "— an OAuth seat open to any Google account is never intended."
         ),
     )
+    allowed_subjects: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Google account IDs (the token's `sub`) permitted through this "
+            "profile. When set, a token must match a subject AND an email: "
+            "Google can hand an address to a different account, never a sub "
+            "(#458). Empty keeps email-only matching. The `oauth ok` log line "
+            "prints the sub of every login."
+        ),
+    )
     client_id: str | None = Field(
         default=None,
         description=(
@@ -2020,6 +2030,25 @@ class OAuthConfig(BaseModel):
             if not sep or not local or "." not in domain:
                 raise ValueError(f"allowed_emails entry {raw!r} is not an email address")
             normalized.append(email)
+        return normalized
+
+    @field_validator("allowed_subjects", mode="before")
+    @classmethod
+    def subjects_are_bare_ids(cls, v: Any) -> list[str]:
+        """Strip each entry and reject blanks; a sub is compared exactly, never case-folded.
+
+        Runs before type checking because a Google sub is all digits, so an
+        unquoted one reaches us from YAML as an int. ``str()`` of a Python int
+        is exact at any length, unlike a float, so it is taken as written.
+        """
+        normalized: list[str] = []
+        for raw in v if isinstance(v, list) else [v]:
+            # bool is an int; anything else (a float, null) is not an ID at all.
+            is_id = isinstance(raw, str | int) and not isinstance(raw, bool)
+            subject = str(raw).strip() if is_id else ""
+            if not subject or any(c.isspace() for c in subject):
+                raise ValueError(f"allowed_subjects entry {raw!r} is not a Google account ID")
+            normalized.append(subject)
         return normalized
 
     @model_validator(mode="after")

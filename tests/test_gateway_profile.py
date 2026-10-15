@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from trentina.gateway.errors import ProfileConfigError
@@ -61,6 +62,21 @@ class TestOAuthConfig:
     def test_extra_key_forbidden(self) -> None:
         with pytest.raises(ValidationError):
             OAuthConfig(enabled=True, allowed_emails=["a@b.co"], sneaky=1)
+
+    def test_subjects_default_empty(self) -> None:
+        cfg = OAuthConfig(enabled=True, allowed_emails=["a@b.co"])
+        assert cfg.allowed_subjects == []
+
+    def test_an_unquoted_yaml_sub_is_taken_exactly(self) -> None:
+        """#458: a 21-digit sub reaches us from YAML as an int, and must not round."""
+        parsed = yaml.safe_load("allowed_subjects: [108123456789012345678, ' 42 ']")
+        cfg = OAuthConfig(enabled=True, allowed_emails=["a@b.co"], **parsed)
+        assert cfg.allowed_subjects == ["108123456789012345678", "42"]
+
+    @pytest.mark.parametrize("bad", ["", "  ", "1 2", True, 1.5, None])
+    def test_malformed_subject_rejected(self, bad: object) -> None:
+        with pytest.raises(ValidationError, match="not a Google account ID"):
+            OAuthConfig(enabled=True, allowed_emails=["a@b.co"], allowed_subjects=[bad])
 
     def test_profile_oauth_optional_and_default_none(self) -> None:
         p = Profile(name="x", auth=AuthConfig(bearer_token_env="X"))
