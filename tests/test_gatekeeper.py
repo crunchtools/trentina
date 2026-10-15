@@ -186,6 +186,9 @@ class TestRefusals:
         "answer",
         [
             {"decision": "refuse", "reason": "within_policy"},
+            {"decision": "allow", "reason": "credential_material"},
+            {"decision": "allow", "reason": "made_up"},
+            {"decision": "allow"},
             {"decision": "refuse", "reason": "made_up"},
             {"decision": "maybe", "reason": "within_policy"},
             {"reason": "within_policy"},
@@ -412,6 +415,33 @@ class TestRouter:
             resp = await route_jsonrpc(p, _call("send_message"))
         assert "not in allow list" in resp["error"]["message"]
         judge.defend.assert_not_awaited()
+
+    async def test_a_flagged_delivery_marks_the_session_the_next_call_reads(self) -> None:
+        session_marks.clear()
+        backend = AsyncMock(
+            return_value=BackendCall(
+                content=[{"type": "text", "text": "a mail"}],
+                is_error=False,
+                structured_content=None,
+            )
+        )
+        scanned = SimpleNamespace(
+            warning={"flagged_by": "L2"}, blocked=False, refusal=None, extraction=None
+        )
+        token = current_session.set("fp-1")
+        try:
+            with (
+                patch("trentina.gateway.router.call_backend_tool", backend),
+                patch("trentina.gateway.router._audit"),
+                patch(
+                    "trentina.gateway.router.scan_tool_response", AsyncMock(return_value=scanned)
+                ),
+            ):
+                await route_jsonrpc(_profile(), _call("get_message"))
+            facts = gatekeeper.gather_facts(_profile(), "mail", "send_message", None)
+        finally:
+            current_session.reset(token)
+        assert facts.session_flagged is True
 
     def test_the_outcome_is_a_policy_outcome(self) -> None:
         assert Outcome.DENIED_GATEKEEPER in BLOCKED_OUTCOMES

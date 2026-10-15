@@ -301,9 +301,10 @@ async def _ask(cfg: GuardedExecutionConfig, facts: CallFacts, arguments: str) ->
         return GATEKEEPER_UNAVAILABLE
     decision = parsed.get("decision")
     reason = parsed.get("reason")
-    if decision == "allow":
+    if decision == "allow" and reason == "within_policy":
         return None
     if decision == "refuse" and reason in JUDGE_REASONS and reason != "within_policy":
         return str(reason)
-    # A refusal that names no reason, or calls itself within policy, is still one.
+    # An allow that gives another reason contradicts itself, and a refusal
+    # that names no reason is still one: neither is an explicit allow.
     return "other"

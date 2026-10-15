@@ -89,6 +89,12 @@ sentences is usually right.
 - **Do not put secrets in it.** The policy is sent to the judge's provider
   with every guarded call.
 
+What leaves the gateway for each guarded call: the policy, the facts, and the
+arguments. They go to the profile's own judge provider, the one that already
+reads every response the agent is delivered, under the same quarantine. No
+provider sees anything it would not see without guarded execution, except the
+policy and the call it is asked about.
+
 ## Configuration
 
 ```yaml
