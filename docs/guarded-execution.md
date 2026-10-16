@@ -174,7 +174,10 @@ The judge is given three things, kept apart:
 (`TRENTINA_AUDIT_RETENTION_DAYS`, 90 days by default). Only completed calls
 count: a refused or failed call reached nobody. A session's flagged mark is
 held in memory for 12 hours, far longer than the 5 idle minutes that end a
-session. A client that sends no session ID gets "unknown".
+session. A client that sends no session ID gets "unknown". The table holds
+10,000 marks; past that the oldest is dropped, and until a dropped mark would
+have expired, a session with no mark also gets "unknown", so a flood of
+flagged sessions cannot make an older one read as clean.
 
 The judge is the profile's own L3 model, called under the same rules as
 every L3 request: no tools, a per-request canary, and a closed JSON schema

@@ -15,7 +15,7 @@ from trentina.database import has_sent_to, record_gateway_call
 from trentina.errors import QuarantineAgentError
 from trentina.gateway import gatekeeper, session_marks
 from trentina.gateway.backend import BackendCall
-from trentina.gateway.context import current_session
+from trentina.gateway.context import current_call, current_session
 from trentina.gateway.destination import Destination, DestinationKind
 from trentina.gateway.loader import ProfileConfigError, load_profiles
 from trentina.gateway.profile import AuthConfig, Backend, GuardedExecutionConfig, Profile
@@ -347,12 +347,48 @@ class TestSessionMarks:
         now[0] += session_marks.MARK_TTL_SECONDS + 1
         assert session_marks.was_flagged("s") is False
 
-    def test_the_table_is_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_the_table_is_bounded_and_a_dropped_mark_is_unknown_not_clean(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#457: flooding the table must not launder an older flagged session."""
+        now = [1000.0]
+        monkeypatch.setattr(session_marks.time, "monotonic", lambda: now[0])
         monkeypatch.setattr(session_marks, "MAX_MARKS", 2)
         for s in ("a", "b", "c"):
             session_marks.mark_flagged(s)
-        assert session_marks.was_flagged("a") is False
+        assert len(session_marks._marks) == 2
+        assert session_marks.was_flagged("a") is None
+        assert session_marks.was_flagged("never-seen") is None
         assert session_marks.was_flagged("c") is True
+        now[0] += session_marks.MARK_TTL_SECONDS + 1
+        assert session_marks.was_flagged("a") is False
+
+    def test_a_dropped_mark_refuses_an_opted_in_seat(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(session_marks, "MAX_MARKS", 1)
+        session_marks.mark_flagged("victim")
+        session_marks.mark_flagged("flood")
+        token = current_session.set("victim")
+        try:
+            facts = gatekeeper.gather_facts(_profile(), "mail", "send_message", None)
+        finally:
+            current_session.reset(token)
+        assert facts.session_flagged is None
+
+    def test_the_first_mark_logs_its_call_ref_once(self, caplog: pytest.LogCaptureFixture) -> None:
+        flagged = Assembled(result={}, outcome=Outcome.OK, warning={"flagged_by": "L2"})
+        session_token = current_session.set("s-0123456789")
+        try:
+            with caplog.at_level("INFO", logger="trentina.gateway.router"):
+                for ref in ("ref-one", "ref-two"):
+                    call_token = current_call.set(ref)
+                    try:
+                        _mark_session(flagged)
+                    finally:
+                        current_call.reset(call_token)
+        finally:
+            current_session.reset(session_token)
+        marks = [r.getMessage() for r in caplog.records if "marked flagged" in r.getMessage()]
+        assert marks == ["gateway: session s-012345… marked flagged by call_ref=ref-one"]
 
     @pytest.mark.parametrize(
         ("outcome", "warning", "marked"),

@@ -23,6 +23,13 @@ under that name.
 - The first flagged mark on a session is logged once, with the `call_ref` of
   the response that carried the flag.
 
+### Fixed
+
+- A full session-marks table no longer launders a flagged session. Dropping
+  the oldest mark once made that session read as clean; until a dropped mark
+  would have expired, an unmarked session now reads as unknown, which
+  `refuse_when_flagged` refuses (#457).
+
 ## [1.12.0] - 2026-10-15
 
 ### Added
