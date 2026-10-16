@@ -363,16 +363,27 @@ class TestSessionMarks:
         now[0] += session_marks.MARK_TTL_SECONDS + 1
         assert session_marks.was_flagged("a") is False
 
-    def test_a_dropped_mark_refuses_an_opted_in_seat(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_a_dropped_mark_refuses_an_opted_in_seat(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(session_marks, "MAX_MARKS", 1)
         session_marks.mark_flagged("victim")
         session_marks.mark_flagged("flood")
+        profile = _profile(refuse_when_flagged=True)
+        assert profile.guarded_execution is not None
         token = current_session.set("victim")
         try:
-            facts = gatekeeper.gather_facts(_profile(), "mail", "send_message", None)
+            facts = gatekeeper.gather_facts(profile, "mail", "send_message", None)
+            with _Judge() as judge:
+                refusal = await gatekeeper.evaluate(
+                    profile, profile.guarded_execution, facts, dict(_ARGS)
+                )
         finally:
             current_session.reset(token)
         assert facts.session_flagged is None
+        assert refusal is not None
+        assert refusal.reason == gatekeeper.SESSION_FLAGGED
+        judge.generate.assert_not_awaited()
 
     def test_the_first_mark_logs_its_call_ref_once(self, caplog: pytest.LogCaptureFixture) -> None:
         flagged = Assembled(result={}, outcome=Outcome.OK, warning={"flagged_by": "L2"})
