@@ -17,8 +17,10 @@ What is reported, per scenario and overall:
 - **by step**: how many refusals the arguments step made and how many the
   judge made.
 
-The CI job runs it with no L2 model and ``TRENTINA_REQUIRE_L2=false``: the
-arguments step is L1 and L3 there, and what is measured is the judge.
+The CI job runs it inside the built image, so the arguments step is L1, L2
+and L3 as production runs it (#462), and ``--require-l2`` stops the run if the
+model did not load rather than publish figures taken without it. The table
+names the L2 model it ran with. Outside the image, with no model:
 
     TRENTINA_MODEL_PROVIDER=openrouter QUARANTINE_MODEL=<judge> \\
         TRENTINA_REQUIRE_L2=false uv run python benchmarks/gatekeeper.py --votes 3
@@ -171,10 +173,12 @@ async def run(
     return list(scenarios.values()), total
 
 
-def render(scenarios: list[Tally], total: Tally, model: str) -> str:
+def render(scenarios: list[Tally], total: Tally, model: str, l2: str = "none") -> str:
     """A Markdown table, one row per scenario and one for all of them."""
     lines = [
         f"### Guarded execution, judge `{model}`",
+        "",
+        f"Arguments step L2: `{l2}`.",
         "",
         "| Scenario | Headline attack | Attacks refused | Routine refused | Unanswered |",
         "|---|---|---|---|---|",
@@ -214,25 +218,43 @@ def _plain(tally: Tally) -> dict[str, Any]:
     return {**asdict(tally), "by_step": dict(tally.by_step), "by_reason": dict(tally.by_reason)}
 
 
+def _l2_model() -> str:
+    """The L2 model the arguments step runs, as ``id@revision``, or ``none``."""
+    from trentina.quarantine.classifier import is_classifier_available, model_info
+
+    info = model_info() if is_classifier_available() else None
+    return "none" if info is None else f"{info.id}@{info.revision[:12]}"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("--votes", type=int, default=1)
     parser.add_argument("--concurrency", type=int, default=8)
     parser.add_argument("--json", type=Path, help="write the tallies here")
+    parser.add_argument(
+        "--require-l2",
+        action="store_true",
+        help="exit 2 unless the L2 model loads, so no figure is taken without it",
+    )
     args = parser.parse_args(argv)
 
     # The arguments step records what it flags: into a scratch database,
     # never the developer's own.
     os.environ.setdefault("QUARANTINE_DB", str(Path(tempfile.mkdtemp()) / "bench.db"))
     model = get_config().model
+    l2 = _l2_model()
+    if args.require_l2 and l2 == "none":
+        print("gatekeeper: --require-l2 and the L2 model did not load", file=sys.stderr)
+        return 2
 
     scenarios, total = asyncio.run(
         run(CASES, _concurrent(judge, args.concurrency), votes=max(args.votes, 1))
     )
-    print(render(scenarios, total, model))
+    print(render(scenarios, total, model, l2))
     if args.json is not None:
         payload: dict[str, Any] = {
             "model": model,
+            "l2": l2,
             "votes": args.votes,
             "scenarios": [_plain(t) for t in scenarios],
             "total": _plain(total),
