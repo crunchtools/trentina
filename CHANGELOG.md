@@ -10,6 +10,18 @@ under that name.
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-10-15
+
+### Added
+
+- `oauth.allowed_subjects` pins an OAuth profile to Google account IDs (the
+  `sub` claim). When set, a token must match a subject and an email. An email
+  address can be given to a different Google account, whose token then carries
+  it verified; a sub is never reused. Unset, matching stays email-only. The
+  `oauth ok` log line already prints each login's sub (#458).
+- `profile_lint` reports `oauth-email-only` for an enabled OAuth profile with
+  emails and no subjects.
+
 ## [1.11.2] - 2026-10-15
 
 ### Fixed

@@ -194,6 +194,8 @@ profiles:
       enabled: true
       allowed_emails:
         - alice@example.com
+      allowed_subjects:
+        - "108123456789012345678"   # alice's Google account ID
 ```
 
 ```bash
@@ -211,7 +213,19 @@ but an env var's value stays in `/proc/<pid>/environ` for the life of the
 process; a file-mounted secret never enters the environment at all.
 
 `enabled: true` requires a non-empty `allowed_emails`; a seat open to any Google
-account fails validation. Registrations persist across a restart under
+account fails validation.
+
+Pin `allowed_subjects` too. An email address can move to a different Google
+account: a Workspace admin renames a user or re-issues a departed one's
+address, or a custom domain lapses and someone else registers it. The new
+holder's token carries the allowlisted email, verified. The `sub` claim is the
+account's ID and Google never reuses it, so with `allowed_subjects` set a token
+must match both. The `gateway: oauth ok profile=… sub=…` log line prints the
+sub of every login; copy it from there. Left empty, the profile matches on
+email alone and `profile_lint` reports `oauth-email-only`. Like
+`allowed_emails`, it applies on reload. It works the same in delegated mode.
+
+Registrations persist across a restart under
 `FASTMCP_HOME`, which the image sets to `/data/fastmcp`; mount that path to a
 volume. Override the env var only if you relocate the store.
 

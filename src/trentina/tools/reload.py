@@ -271,9 +271,9 @@ def _unapplied_delegated(current: GatewayConfig, new_config: GatewayConfig) -> l
     delegated profile outright — validates cleanly and changes nothing, which
     is the silent no-op this whole function exists to prevent.
 
-    `allowed_emails` is deliberately absent: it is read from the profile on
-    every request, so it DOES apply live. That is the one key an operator edits
-    under pressure, and it keeps working.
+    `allowed_emails` and `allowed_subjects` are deliberately absent: they are
+    read from the profile on every request, so they DO apply live. Those are
+    the keys an operator edits under pressure, and they keep working.
     """
     notes: list[str] = []
     for name, profile in sorted(new_config.profiles.items()):
@@ -312,8 +312,8 @@ def _unapplied_delegated_for(before: Profile | None, after: Profile, name: str) 
 #: The proxy-mode ``oauth`` fields the built-in proxy reads once, at startup:
 #: the provisioned clients, the redirect allowlist every self-registering
 #: client is checked against, and the set of resources ``/authorize`` accepts
-#: and binds tokens to. ``allowed_emails`` is missing on purpose: it is read
-#: per request and does apply live.
+#: and binds tokens to. ``allowed_emails`` and ``allowed_subjects`` are
+#: missing on purpose: they are read per request and do apply live.
 PROXY_OAUTH_STARTUP_FIELDS = (
     "enabled",
     "client_id",

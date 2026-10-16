@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from .errors import AuthError, OAuthChallengeError, OAuthForbiddenError
 
 if TYPE_CHECKING:
-    from .profile import Profile
+    from .profile import OAuthConfig, Profile
 
 
 def _email_verified(value: Any) -> bool:
@@ -94,7 +94,9 @@ async def verify_oauth(
             another profile — caller returns 401 with a ``WWW-Authenticate``
             challenge so the client discovers the flow.
         OAuthForbiddenError: token valid but the email is absent, unverified,
-            or not on ``profile.oauth.allowed_emails`` — caller returns 403.
+            or not on ``profile.oauth.allowed_emails``, or the profile pins
+            ``allowed_subjects`` and the ``sub`` is not on it — caller
+            returns 403.
     """
     if verifier is None:
         # An enabled profile with no verifier means the gateway failed to build
@@ -129,15 +131,31 @@ async def verify_oauth(
     if await bound_profile(presented) != profile.name:
         raise OAuthChallengeError("token was not issued for this profile")
 
-    claims = access.claims or {}
+    _check_identity(access.claims or {}, profile.oauth)
+    return access
+
+
+def _check_identity(claims: dict[str, Any], oauth: OAuthConfig) -> None:
+    """Admit a verified identity only if the profile's allowlists name it.
+
+    Raises:
+        OAuthForbiddenError: the email is absent, unverified or not allowed,
+            or the profile pins subjects and this ``sub`` is not one of them.
+    """
     email = claims.get("email")
     if not email or not _email_verified(claims.get("email_verified")):
         raise OAuthForbiddenError("token has no verified email")
 
-    if email.strip().lower() not in profile.oauth.allowed_emails:
+    if email.strip().lower() not in oauth.allowed_emails:
         raise OAuthForbiddenError("email not permitted for profile")
 
-    return access
+    # TRUST: sub in allowed_subjects -> the account, not just the address.
+    # Google can give an address to a different account (a renamed Workspace
+    # user, a lapsed custom domain), and that account's token carries the
+    # allowlisted email verified. It never reuses a sub (#458).
+    subjects = oauth.allowed_subjects
+    if subjects and str(claims.get("sub") or "") not in subjects:
+        raise OAuthForbiddenError("subject not permitted for profile")
 
 
 def resolve_profile_by_token(

@@ -1,7 +1,7 @@
 """Posture lint for profiles.yaml (#269, from the #90 audit).
 
 The loader decides whether a profiles file is VALID. This decides whether it
-is SAFE, in three ways the #90 audit found live:
+is SAFE, in the ways the #90 audit and its successors found live:
 
 - ``shared-write-backend``: two profiles reach the same backend URL and both
   hold a write tool on it. Whatever one writes the other can read, which is a
@@ -24,6 +24,9 @@ is SAFE, in three ways the #90 audit found live:
   backend declares no ``destination_params`` entry for it (#456). The
   gatekeeper is then told the destination is unknown, so it cannot know
   whether the call is a first contact.
+- ``oauth-email-only``: an OAuth profile with ``allowed_emails`` and no
+  ``allowed_subjects`` (#458). Google can reassign an address to another
+  account, which then passes the allowlist; it never reassigns a ``sub``.
 
 Both posture checks are for seats that run unattended, such as swarm or
 coding agents. A personal assistant that a person talks to directly holds
@@ -348,6 +351,25 @@ def check_guarded_destinations(profiles_file: dict[str, Any]) -> list[Finding]:
     return findings
 
 
+def check_oauth_subjects(profiles_file: dict[str, Any]) -> list[Finding]:
+    """An OAuth seat that admits whoever holds an address, not an account (#458)."""
+    findings = []
+    for profile, body in _profiles(profiles_file).items():
+        oauth = body.get("oauth")
+        if not isinstance(oauth, dict) or not oauth.get("enabled"):
+            continue
+        if oauth.get("allowed_emails") and not oauth.get("allowed_subjects"):
+            findings.append(
+                Finding(
+                    "oauth-email-only",
+                    f"profile {profile!r} admits OAuth by email alone, which Google can "
+                    "reassign to another account; add the sub from its 'oauth ok' log "
+                    "line to oauth.allowed_subjects",
+                )
+            )
+    return findings
+
+
 def check_require_defaults(source: str | None = None) -> list[Finding]:
     """Every ``TRENTINA_REQUIRE_*`` read from the environment defaults to fail-closed.
 
@@ -404,6 +426,7 @@ def lint(profiles_file: dict[str, Any], *, config_source: str | None = None) -> 
         *check_shared_write_backends(profiles_file),
         *check_toxic_flows(profiles_file),
         *check_guarded_destinations(profiles_file),
+        *check_oauth_subjects(profiles_file),
         *check_require_defaults(config_source),
     ]
 
