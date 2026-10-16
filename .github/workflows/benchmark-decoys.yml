@@ -14,7 +14,8 @@ name: Benchmark - decoy tools
 # is benchmarks/paging_l3.py for every shipped judge: an attack split across
 # the parts of a response delivered in parts (#448). `gatekeeper` is
 # benchmarks/gatekeeper.py for every shipped judge: guarded execution on the
-# calls in corpora/gatekeeper.py (#456). `tune` is benchmarks/prompt_pack.py for one judge
+# calls in corpora/gatekeeper.py (#456), run inside the image this checkout
+# builds so the arguments step includes L2 (#462). `tune` is benchmarks/prompt_pack.py for one judge
 # with a candidate pack handed in as an input (#397): the pack is data the
 # merged harness reads, so a pack can be tuned without unreviewed code ever
 # running beside the key. Started by hand, never by a push or a pull request: it
@@ -439,7 +440,7 @@ jobs:
     name: gatekeeper ${{ matrix.model }}
     if: github.ref == 'refs/heads/main' && inputs.job == 'gatekeeper'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -452,32 +453,37 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          version: "latest"
+      # The image this checkout builds, so the arguments step is L1, L2 and
+      # L3 with the pinned model that passed its gates, as production runs it
+      # (#462). Built without the key: no build step ever sees it.
+      - name: Build the image
+        run: docker build -f Containerfile -t trentina:bench .
 
-      # Dependencies install without the key: no install hook ever sees it.
-      - name: Install dependencies
-        run: |
-          uv python install 3.14
-          uv sync --all-extras --locked
-
-      # Every call through gatekeeper.evaluate, three votes each. No L2 model
-      # here, so L2 is not required: the arguments step is L1 and L3, and what
-      # is measured is the judge.
+      # Every call through gatekeeper.evaluate, three votes each, inside the
+      # image. --require-l2 fails the job if the model did not load, rather
+      # than publish figures taken without it. The benchmark and corpus are
+      # mounted read-only; the image's own package is the code measured.
       - name: Judge the guarded calls
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          TRENTINA_MODEL_PROVIDER: openrouter
           QUARANTINE_MODEL: ${{ matrix.model }}
           QUARANTINE_REASONING_EFFORT: ${{ matrix.reasoning }}
-          TRENTINA_REQUIRE_L2: "false"
         run: |
           set -o pipefail
-          mkdir -p results
-          uv run --no-sync python benchmarks/gatekeeper.py --votes 3 --concurrency 8 \
-            --json results/gatekeeper.json | tee -a "$GITHUB_STEP_SUMMARY"
+          mkdir -p results && chmod 777 results
+          docker run --rm \
+            --read-only --tmpfs /tmp --cap-drop=all \
+            --security-opt no-new-privileges \
+            --entrypoint python \
+            -v "$GITHUB_WORKSPACE/benchmarks:/bench/benchmarks:ro" \
+            -v "$GITHUB_WORKSPACE/corpora:/bench/corpora:ro" \
+            -v "$GITHUB_WORKSPACE/results:/results" \
+            -e OPENROUTER_API_KEY -e QUARANTINE_MODEL -e QUARANTINE_REASONING_EFFORT \
+            -e TRENTINA_MODEL_PROVIDER=openrouter \
+            -e QUARANTINE_DB=/tmp/bench.db \
+            trentina:bench \
+            /bench/benchmarks/gatekeeper.py --require-l2 --votes 3 --concurrency 8 \
+              --json /results/gatekeeper.json | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Artifact name
         id: slug

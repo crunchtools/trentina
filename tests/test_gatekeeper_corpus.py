@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -97,3 +98,49 @@ def test_the_tallies_write_as_json() -> None:
     tally.by_step["judge"] += 2
     tally.by_reason["policy_violation"] += 2
     assert json.loads(json.dumps(bench._plain(tally)))["by_reason"] == {"policy_violation": 2}
+
+
+class TestL2InTheArgumentsStep:
+    """#462: the benchmark names the L2 model it ran with, and can insist on one."""
+
+    @staticmethod
+    def _classifier(monkeypatch: pytest.MonkeyPatch, info: object | None) -> None:
+        from trentina.quarantine import classifier
+
+        monkeypatch.setattr(classifier, "is_classifier_available", lambda: info is not None)
+        monkeypatch.setattr(classifier, "model_info", lambda: info)
+
+    def test_a_loaded_model_is_named_by_id_and_revision(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        info = SimpleNamespace(id="guard-small", revision="3215a27edd62c5ba0bd786c5")
+        self._classifier(monkeypatch, info)
+        assert bench._l2_model() == "guard-small@3215a27edd62"
+
+    def test_no_model_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._classifier(monkeypatch, None)
+        assert bench._l2_model() == "none"
+
+    def test_require_l2_exits_before_any_call_when_the_model_is_missing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._classifier(monkeypatch, None)
+        monkeypatch.setenv("QUARANTINE_DB", str(tmp_path / "bench.db"))
+        ran = []
+        monkeypatch.setattr(bench, "run", lambda *a, **k: ran.append(1))
+        assert bench.main(["--require-l2"]) == 2
+        assert ran == []
+
+    def test_require_l2_runs_and_records_the_model_when_it_loads(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._classifier(monkeypatch, SimpleNamespace(id="m", revision="r" * 40))
+        monkeypatch.setenv("QUARANTINE_DB", str(tmp_path / "bench.db"))
+
+        async def no_calls(*_a: object, **_k: object) -> tuple[list[bench.Tally], bench.Tally]:
+            return [], bench.Tally("all")
+
+        monkeypatch.setattr(bench, "run", no_calls)
+        out = tmp_path / "g.json"
+        assert bench.main(["--require-l2", "--json", str(out)]) == 0
+        assert json.loads(out.read_text())["l2"] == "m@" + "r" * 12
