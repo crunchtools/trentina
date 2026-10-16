@@ -10,6 +10,16 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+
+- Security gates that could never fail now can. pip-audit read the report as
+  a list when pip-audit writes a dict, threw, and the fallback counted zero
+  vulnerabilities; the container Trivy scan ran with exit code 0 from an
+  unpinned `@master`; and "Verify container starts" ended in `|| true`. The
+  scan now fails a PR on fixable HIGH/CRITICAL findings (accepted ones go in
+  `.trivyignore` with a reason), pip-audit fails on an unreadable report, and
+  the start check passes only if the gateway is still running after 5s.
+
 ### Documentation
 
 - Guarded execution's figures re-measured with L2 in the arguments step, the

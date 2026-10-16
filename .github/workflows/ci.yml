@@ -173,7 +173,11 @@ jobs:
 
       - name: Verify container starts
         run: |
-          timeout 5 docker run --rm trentina:test || true
+          # Still running when timeout kills it (124) is the pass; any other
+          # exit means the gateway died on startup.
+          rc=0
+          timeout 5 docker run --rm trentina:test || rc=$?
+          test "$rc" -eq 124
 
       # The real test of a native wheel in a distroless image. The runtime
       # stage copies only site-packages plus libstdc++, so an extension
