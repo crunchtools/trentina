@@ -4,3 +4,13 @@
 #
 # # Not reachable: we never call X. Accepted by Josui (CTO), review 2026-12-31
 # CVE-2026-00000
+
+# pip 26.2's vendored urllib3 2.7.0, msgpack 1.1.2 and pkg_resources
+# (setuptools 70.3.0), reported from pip/_vendor/bom.cdx.json. pip ships in
+# the Hummingbird python base, distroless runtime included, so it cannot be
+# removed here; this service never runs pip. Drop these once the base ships
+# a fixed pip. Accepted by Josui (CTO) 2026-10-16, review 2026-11-16.
+CVE-2026-97687
+CVE-2026-97689
+GHSA-6v7p-g79w-8964
+CVE-2025-47273
