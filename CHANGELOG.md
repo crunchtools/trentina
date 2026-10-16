@@ -10,6 +10,13 @@ under that name.
 
 ## [Unreleased]
 
+### Documentation
+
+- Guarded execution's figures re-measured with L2 in the arguments step, the
+  benchmark now running inside the built image (#462): every judge refused
+  all six headline attacks; the default judge refused 12/12 attack calls and
+  1/24 routine ones (run 38902648617).
+
 ## [1.13.0] - 2026-10-16
 
 ### Added
