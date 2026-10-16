@@ -104,7 +104,9 @@ jobs:
         run: |
           docker build -f Containerfile -t trentina:scan .
 
-      - name: Run Trivy vulnerability scanner
+      # Two runs: the SARIF one feeds code scanning and never fails, the table
+      # one gates PRs and prints the findings, which SARIF output hides.
+      - name: Run Trivy vulnerability scanner (SARIF)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: "trentina:scan"
@@ -114,9 +116,22 @@ jobs:
           trivyignores: .trivyignore
           format: "sarif"
           output: "trivy-results.sarif"
-          # Without this, trivy-action drops the severity filter for SARIF and gates on every severity
+          # Without this, trivy-action drops the severity filter for SARIF
           limit-severities-for-sarif: true
-          exit-code: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+          exit-code: "0"
+
+      - name: Gate on Trivy findings (PRs only)
+        if: github.event_name == 'pull_request'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: "trentina:scan"
+          scanners: vuln
+          severity: "CRITICAL,HIGH"
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          format: "table"
+          exit-code: "1"
+          skip-setup-trivy: true
 
       - name: Upload Trivy scan results
         uses: github/codeql-action/upload-sarif@v4
