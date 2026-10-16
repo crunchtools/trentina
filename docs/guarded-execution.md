@@ -115,6 +115,7 @@ profiles:
       tools:
         mail: [send_message]
       timeout_seconds: 30         # optional, 5 to 120
+      refuse_when_flagged: false  # optional; true for unattended seats
 ```
 
 | Field | Required | Meaning |
@@ -122,6 +123,28 @@ profiles:
 | `policy` | yes | The rule, in plain language, up to 4,000 characters. |
 | `tools` | yes | Backend name to the exact tool names whose calls are judged. No globs. |
 | `timeout_seconds` | no | How long a judgment may take before the call is refused. Default 30. |
+| `refuse_when_flagged` | no | Refuse these calls without asking the judge once the session has been delivered flagged content. Default false. |
+
+### Refusing a flagged session outright
+
+By default a flagged session is one fact the judge weighs, and routine work
+goes on in a session that once read a suspicious mail. `refuse_when_flagged:
+true` hardens that: from the first flagged or partly judged response a
+session receives, every guarded call it makes is refused with
+`session_flagged`, and the layers and the judge are not asked (#457). A
+client that sends no session ID is refused the same way, because a session
+the gateway cannot identify is not one it knows is clean. Unguarded tools are
+untouched.
+
+Turn it on for seats that run unattended: a swarm or coding agent that reads
+mail, tickets or web pages and nobody watches. Leave it off for an assistant
+a person talks to. Those read flagged content routinely, often because the
+person asked them to read about an attack, and would lose their guarded tools
+for the rest of the session. A new session starts clean.
+
+The first mark on a session is logged once, with the `call_ref` of the call
+whose response carried the flag, so the audit row that tainted it can be
+found.
 
 The profile fails to load when a guarded backend does not exist, is a decoy,
 or when a guarded tool is not allowed on its backend: a rule for a tool the
@@ -151,7 +174,10 @@ The judge is given three things, kept apart:
 (`TRENTINA_AUDIT_RETENTION_DAYS`, 90 days by default). Only completed calls
 count: a refused or failed call reached nobody. A session's flagged mark is
 held in memory for 12 hours, far longer than the 5 idle minutes that end a
-session. A client that sends no session ID gets "unknown".
+session. A client that sends no session ID gets "unknown". The table holds
+10,000 marks; past that the oldest is dropped, and until a dropped mark would
+have expired, a session with no mark also gets "unknown", so a flood of
+flagged sessions cannot make an older one read as clean.
 
 The judge is the profile's own L3 model, called under the same rules as
 every L3 request: no tools, a per-request canary, and a closed JSON schema
@@ -176,6 +202,7 @@ Refused by guarded execution: bulk_private_data
 | `other` | judge | A refusal with no listed reason, or an answer that was not an explicit allow. |
 | `arguments_flagged` | layers | L1, L2 or L3 flagged the arguments. |
 | `arguments_unjudged` | layers | The layers could not finish reading the arguments. |
+| `session_flagged` | gateway | `refuse_when_flagged` is set, and this session was delivered flagged content or sent no session ID. |
 | `gatekeeper_unavailable` | gateway | No judge is configured, or it failed, timed out, answered off-schema or leaked its canary. |
 
 It fails closed. Anything other than an explicit allow refuses the call.

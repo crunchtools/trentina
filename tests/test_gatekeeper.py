@@ -15,7 +15,7 @@ from trentina.database import has_sent_to, record_gateway_call
 from trentina.errors import QuarantineAgentError
 from trentina.gateway import gatekeeper, session_marks
 from trentina.gateway.backend import BackendCall
-from trentina.gateway.context import current_session
+from trentina.gateway.context import current_call, current_session
 from trentina.gateway.destination import Destination, DestinationKind
 from trentina.gateway.loader import ProfileConfigError, load_profiles
 from trentina.gateway.profile import AuthConfig, Backend, GuardedExecutionConfig, Profile
@@ -77,6 +77,7 @@ class _Judge:
             patch.object(gatekeeper, "gather_facts", self._facts),
         ]
         self.first_contact: bool | None = True
+        self.session_flagged: bool | None = False
 
     async def _generate(self, *_a: Any, **_k: Any) -> dict[str, Any]:
         if isinstance(self.answer, BaseException):
@@ -92,7 +93,7 @@ class _Judge:
             destination=dest.value if dest else None,
             destination_kind=dest.kind.value if dest else None,
             first_contact=self.first_contact,
-            session_flagged=False,
+            session_flagged=self.session_flagged,
         )
 
     def __enter__(self) -> _Judge:
@@ -209,6 +210,46 @@ class TestRefusals:
         assert refusal.audit.endswith("first_contact=yes session_flagged=no")
 
 
+class TestRefuseWhenFlagged:
+    """#457: an opted-in seat loses its guarded tools once its session is flagged."""
+
+    @pytest.mark.parametrize("session_flagged", [True, None])
+    async def test_a_flagged_or_unknown_session_is_refused_unasked(
+        self, session_flagged: bool | None
+    ) -> None:
+        with _Judge() as judge:
+            judge.session_flagged = session_flagged
+            refusal = await _judge(_profile(refuse_when_flagged=True))
+        assert refusal is not None
+        assert refusal.reason == gatekeeper.SESSION_FLAGGED
+        judge.defend.assert_not_awaited()
+        judge.generate.assert_not_awaited()
+
+    async def test_a_clean_session_is_still_judged(self) -> None:
+        with _Judge() as judge:
+            assert await _judge(_profile(refuse_when_flagged=True)) is None
+        judge.generate.assert_awaited_once()
+
+    async def test_off_by_default_the_judge_weighs_the_flag(self) -> None:
+        with _Judge() as judge:
+            judge.session_flagged = True
+            assert await _judge(_profile()) is None
+        judge.generate.assert_awaited_once()
+
+    async def test_an_unguarded_tool_keeps_working_in_a_flagged_session(self) -> None:
+        with _Judge() as judge:
+            judge.session_flagged = True
+            profile = _profile(refuse_when_flagged=True)
+            assert await _judge(profile, tool="list_folders") is None
+
+    def test_only_the_first_mark_reports_itself(self) -> None:
+        session_marks.clear()
+        assert session_marks.mark_flagged("s1") is True
+        assert session_marks.mark_flagged("s1") is False
+        assert session_marks.mark_flagged("") is False
+        session_marks.clear()
+
+
 class TestFailsClosed:
     async def test_no_judge_configured(self) -> None:
         with _Judge(llm=False):
@@ -306,12 +347,59 @@ class TestSessionMarks:
         now[0] += session_marks.MARK_TTL_SECONDS + 1
         assert session_marks.was_flagged("s") is False
 
-    def test_the_table_is_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_the_table_is_bounded_and_a_dropped_mark_is_unknown_not_clean(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#457: flooding the table must not launder an older flagged session."""
+        now = [1000.0]
+        monkeypatch.setattr(session_marks.time, "monotonic", lambda: now[0])
         monkeypatch.setattr(session_marks, "MAX_MARKS", 2)
         for s in ("a", "b", "c"):
             session_marks.mark_flagged(s)
-        assert session_marks.was_flagged("a") is False
+        assert len(session_marks._marks) == 2
+        assert session_marks.was_flagged("a") is None
+        assert session_marks.was_flagged("never-seen") is None
         assert session_marks.was_flagged("c") is True
+        now[0] += session_marks.MARK_TTL_SECONDS + 1
+        assert session_marks.was_flagged("a") is False
+
+    async def test_a_dropped_mark_refuses_an_opted_in_seat(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(session_marks, "MAX_MARKS", 1)
+        session_marks.mark_flagged("victim")
+        session_marks.mark_flagged("flood")
+        profile = _profile(refuse_when_flagged=True)
+        assert profile.guarded_execution is not None
+        token = current_session.set("victim")
+        try:
+            facts = gatekeeper.gather_facts(profile, "mail", "send_message", None)
+            with _Judge() as judge:
+                refusal = await gatekeeper.evaluate(
+                    profile, profile.guarded_execution, facts, dict(_ARGS)
+                )
+        finally:
+            current_session.reset(token)
+        assert facts.session_flagged is None
+        assert refusal is not None
+        assert refusal.reason == gatekeeper.SESSION_FLAGGED
+        judge.generate.assert_not_awaited()
+
+    def test_the_first_mark_logs_its_call_ref_once(self, caplog: pytest.LogCaptureFixture) -> None:
+        flagged = Assembled(result={}, outcome=Outcome.OK, warning={"flagged_by": "L2"})
+        session_token = current_session.set("s-0123456789")
+        try:
+            with caplog.at_level("INFO", logger="trentina.gateway.router"):
+                for ref in ("ref-one", "ref-two"):
+                    call_token = current_call.set(ref)
+                    try:
+                        _mark_session(flagged)
+                    finally:
+                        current_call.reset(call_token)
+        finally:
+            current_session.reset(session_token)
+        marks = [r.getMessage() for r in caplog.records if "marked flagged" in r.getMessage()]
+        assert marks == ["gateway: session s-012345… marked flagged by call_ref=ref-one"]
 
     @pytest.mark.parametrize(
         ("outcome", "warning", "marked"),

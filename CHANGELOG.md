@@ -10,6 +10,26 @@ under that name.
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-10-16
+
+### Added
+
+- `guarded_execution.refuse_when_flagged`, off by default. Once a session
+  has been delivered flagged or partly judged content, its guarded calls are
+  refused with `session_flagged` for the rest of the session, without asking
+  the layers or the judge. A call with no session ID is refused the same way.
+  For unattended seats; an interactive one reads flagged content routinely
+  (#457).
+- The first flagged mark on a session is logged once, with the `call_ref` of
+  the response that carried the flag.
+
+### Fixed
+
+- A full session-marks table no longer launders a flagged session. Dropping
+  the oldest mark once made that session read as clean; until a dropped mark
+  would have expired, an unmarked session now reads as unknown, which
+  `refuse_when_flagged` refuses (#457).
+
 ## [1.12.0] - 2026-10-15
 
 ### Added
