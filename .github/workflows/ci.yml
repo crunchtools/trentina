@@ -174,9 +174,10 @@ jobs:
       - name: Verify container starts
         run: |
           # Still running when timeout kills it (124) is the pass; any other
-          # exit means the gateway died on startup.
+          # exit means the gateway died on startup. /data is a volume in
+          # production; here a tmpfs stands in for it.
           rc=0
-          timeout 5 docker run --rm trentina:test || rc=$?
+          timeout 5 docker run --rm --tmpfs /data:mode=1777 trentina:test || rc=$?
           test "$rc" -eq 124
 
       # The real test of a native wheel in a distroless image. The runtime

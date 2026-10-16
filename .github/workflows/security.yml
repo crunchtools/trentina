@@ -117,7 +117,6 @@ jobs:
           # Without this, trivy-action drops the severity filter for SARIF and gates on every severity
           limit-severities-for-sarif: true
           exit-code: ${{ github.event_name == 'pull_request' && '1' || '0' }}
-          version: "v0.68.2"
 
       - name: Upload Trivy scan results
         uses: github/codeql-action/upload-sarif@v4

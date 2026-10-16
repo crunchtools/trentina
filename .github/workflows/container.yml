@@ -103,7 +103,6 @@ jobs:
           format: "table"
           exit-code: "0"
           severity: "CRITICAL,HIGH"
-          version: "v0.68.2"
 
   build-and-push-ghcr:
     runs-on: ubuntu-latest

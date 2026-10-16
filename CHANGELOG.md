@@ -19,6 +19,10 @@ under that name.
   scan now fails a PR on fixable HIGH/CRITICAL findings (accepted ones go in
   `.trivyignore` with a reason), pip-audit fails on an unreadable report, and
   the start check passes only if the gateway is still running after 5s.
+- Turning them on found what they had hidden: pyjwt 2.13.0 carried 14
+  advisories (now 2.15.1), the pinned Trivy v0.68.2 no longer downloads so
+  the post-push scan had been failing silently (now the action's default),
+  and the container had never started in CI for want of a writable `/data`.
 
 ### Documentation
 
