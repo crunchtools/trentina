@@ -1329,6 +1329,16 @@ class GuardedExecutionConfig(BaseModel):
             "globs: each name is one decision an operator made."
         ),
     )
+    refuse_when_flagged: bool = Field(
+        default=False,
+        description=(
+            "Refuse these calls outright, without asking the judge, once the "
+            "session has been delivered flagged or partly judged content, and "
+            "for the rest of that session (#457). A call whose session the "
+            "gateway cannot identify is refused too. For unattended seats: an "
+            "interactive one reads flagged content routinely."
+        ),
+    )
     timeout_seconds: float = Field(
         default=GUARDED_TIMEOUT_DEFAULT,
         ge=GUARDED_TIMEOUT_MIN,

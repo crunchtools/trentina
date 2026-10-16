@@ -24,14 +24,20 @@ MAX_MARKS = 10_000
 _marks: OrderedDict[str, float] = OrderedDict()
 
 
-def mark_flagged(session: str) -> None:
-    """Record that *session* was delivered flagged or partly judged content."""
+def mark_flagged(session: str) -> bool:
+    """Record that *session* was delivered flagged or partly judged content.
+
+    Returns True when this is the session's first live mark, so the caller
+    can log the call that tainted it once rather than on every flag after.
+    """
     if not session:
-        return
+        return False
+    first = not was_flagged(session)
     _marks[session] = time.monotonic()
     _marks.move_to_end(session)
     while len(_marks) > MAX_MARKS:
         _marks.popitem(last=False)
+    return first
 
 
 def was_flagged(session: str) -> bool | None:

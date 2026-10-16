@@ -18,6 +18,8 @@ A guarded call is held to three steps, in order, before it is forwarded:
    call there before (``database.has_sent_to``), and whether this session
    was delivered flagged content (``session_marks``). These are the
    gateway's own facts, not the agent's.
+   With ``refuse_when_flagged`` set, a flagged (or unidentifiable) session
+   is refused here, before the layers or the judge are asked (#457).
 3. **The judge decides.** ``quarantine_generate`` asks the profile's judge,
    with the operator's ``policy`` as the rule, for one closed-enum verdict.
    Anything but an explicit ``allow`` refuses, and so does a judge that is
@@ -66,6 +68,7 @@ JUDGE_REASONS = (
 ARGUMENTS_FLAGGED = "arguments_flagged"
 ARGUMENTS_UNJUDGED = "arguments_unjudged"
 GATEKEEPER_UNAVAILABLE = "gatekeeper_unavailable"
+SESSION_FLAGGED = "session_flagged"
 
 REFUSAL_PREFIX = "Refused by guarded execution: "
 
@@ -259,6 +262,10 @@ async def evaluate(
     arguments: dict[str, Any],
 ) -> GateRefusal | None:
     """Steps 1 and 3 for a call whose facts are known. The benchmark's entry point."""
+    # ``is not False``: None means the client sent no session, and a session
+    # we cannot ask about is not evidence that it is clean.
+    if cfg.refuse_when_flagged and facts.session_flagged is not False:
+        return GateRefusal(SESSION_FLAGGED, facts)
     text = json.dumps(arguments, sort_keys=True, ensure_ascii=False, default=str)
     verdict = await defend(
         text,

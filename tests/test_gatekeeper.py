@@ -77,6 +77,7 @@ class _Judge:
             patch.object(gatekeeper, "gather_facts", self._facts),
         ]
         self.first_contact: bool | None = True
+        self.session_flagged: bool | None = False
 
     async def _generate(self, *_a: Any, **_k: Any) -> dict[str, Any]:
         if isinstance(self.answer, BaseException):
@@ -92,7 +93,7 @@ class _Judge:
             destination=dest.value if dest else None,
             destination_kind=dest.kind.value if dest else None,
             first_contact=self.first_contact,
-            session_flagged=False,
+            session_flagged=self.session_flagged,
         )
 
     def __enter__(self) -> _Judge:
@@ -207,6 +208,46 @@ class TestRefusals:
         assert POLICY not in refusal.message
         assert POLICY not in refusal.audit
         assert refusal.audit.endswith("first_contact=yes session_flagged=no")
+
+
+class TestRefuseWhenFlagged:
+    """#457: an opted-in seat loses its guarded tools once its session is flagged."""
+
+    @pytest.mark.parametrize("session_flagged", [True, None])
+    async def test_a_flagged_or_unknown_session_is_refused_unasked(
+        self, session_flagged: bool | None
+    ) -> None:
+        with _Judge() as judge:
+            judge.session_flagged = session_flagged
+            refusal = await _judge(_profile(refuse_when_flagged=True))
+        assert refusal is not None
+        assert refusal.reason == gatekeeper.SESSION_FLAGGED
+        judge.defend.assert_not_awaited()
+        judge.generate.assert_not_awaited()
+
+    async def test_a_clean_session_is_still_judged(self) -> None:
+        with _Judge() as judge:
+            assert await _judge(_profile(refuse_when_flagged=True)) is None
+        judge.generate.assert_awaited_once()
+
+    async def test_off_by_default_the_judge_weighs_the_flag(self) -> None:
+        with _Judge() as judge:
+            judge.session_flagged = True
+            assert await _judge(_profile()) is None
+        judge.generate.assert_awaited_once()
+
+    async def test_an_unguarded_tool_keeps_working_in_a_flagged_session(self) -> None:
+        with _Judge() as judge:
+            judge.session_flagged = True
+            profile = _profile(refuse_when_flagged=True)
+            assert await _judge(profile, tool="list_folders") is None
+
+    def test_only_the_first_mark_reports_itself(self) -> None:
+        session_marks.clear()
+        assert session_marks.mark_flagged("s1") is True
+        assert session_marks.mark_flagged("s1") is False
+        assert session_marks.mark_flagged("") is False
+        session_marks.clear()
 
 
 class TestFailsClosed:

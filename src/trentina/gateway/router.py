@@ -1199,7 +1199,15 @@ def _mark_session(assembled: Assembled, internal: Any = None) -> None:
     if assembled.outcome not in (Outcome.OK, Outcome.TOOL_ERROR):
         return
     if assembled.warning is not None or (internal is not None and _carries_warning(internal)):
-        mark_flagged(current_session.get())
+        session = current_session.get()
+        if mark_flagged(session):
+            # The taint's origin, once per session: the call_ref joins it to
+            # the audit row of the response that carried the flag (#457).
+            logger.info(
+                "gateway: session %s… marked flagged by call_ref=%s",
+                session[:8],
+                current_call.get() or "?",
+            )
 
 
 def _carries_warning(call_result: Any) -> bool:
