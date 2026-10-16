@@ -37,7 +37,7 @@ commerce keeps flowing, and nothing dangerous gets in.
    and the judge reads each call to them, with whether it is a first contact
    and whether the session just read something flagged, before it leaves.
    On six customer scenarios the default judge refused all 12 attack calls
-   and none of 24 routine ones
+   and 1 of 24 routine ones
    ([measured](docs/guarded-execution.md#measured), on described calls).
    Around the layers sit an egress guard, file confinement and a startup
    containment check. What is and is not defended, by kind of content, is in
