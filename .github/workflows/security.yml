@@ -40,17 +40,15 @@ jobs:
 
       - name: Run pip-audit
         id: audit
-        continue-on-error: true
+        # pip-audit exits 1 when it finds vulnerabilities; the count below
+        # decides that. A missing or unparseable report must fail the step,
+        # not read as zero -- that is how this gate went silent before.
         run: |
           uv run pip-audit --format=json --output=audit-results.json || true
           uv run pip-audit --format=markdown --output=audit-results.md || true
 
-          if [ -f audit-results.json ]; then
-            VULN_COUNT=$(cat audit-results.json | python -c "import sys,json; data=json.load(sys.stdin); print(len([d for d in data if d.get('vulns', [])]))" 2>/dev/null || echo "0")
-            echo "vuln_count=$VULN_COUNT" >> $GITHUB_OUTPUT
-          else
-            echo "vuln_count=0" >> $GITHUB_OUTPUT
-          fi
+          VULN_COUNT=$(uv run python -c "import json; d=json.load(open('audit-results.json')); print(sum(1 for p in d['dependencies'] if p.get('vulns')))")
+          echo "vuln_count=$VULN_COUNT" >> $GITHUB_OUTPUT
 
       - name: Upload audit results
         if: always()
@@ -106,13 +104,34 @@ jobs:
         run: |
           docker build -f Containerfile -t trentina:scan .
 
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+      # Two runs: the SARIF one feeds code scanning and never fails, the table
+      # one gates PRs and prints the findings, which SARIF output hides.
+      - name: Run Trivy vulnerability scanner (SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: "trentina:scan"
+          scanners: vuln
+          severity: "CRITICAL,HIGH"
+          ignore-unfixed: true
+          trivyignores: .trivyignore
           format: "sarif"
           output: "trivy-results.sarif"
+          # Without this, trivy-action drops the severity filter for SARIF
+          limit-severities-for-sarif: true
+          exit-code: "0"
+
+      - name: Gate on Trivy findings (PRs only)
+        if: github.event_name == 'pull_request'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: "trentina:scan"
+          scanners: vuln
           severity: "CRITICAL,HIGH"
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          format: "table"
+          exit-code: "1"
+          skip-setup-trivy: true
 
       - name: Upload Trivy scan results
         uses: github/codeql-action/upload-sarif@v4

@@ -173,7 +173,28 @@ jobs:
 
       - name: Verify container starts
         run: |
-          timeout 5 docker run --rm trentina:test || true
+          # As production runs it, then /health must answer. The default stdio
+          # transport exits on the EOF of a detached stdin, so it proves
+          # nothing. /data is a volume in production; a tmpfs stands in here.
+          mkdir -p ci-gateway
+          printf 'profiles:\n  ci:\n    auth:\n      bearer_token_env: CI_TOKEN\n    backends: {}\n' \
+            > ci-gateway/profiles.yaml
+          openssl rand -hex 16 > ci-gateway/token
+          chmod -R a+rX ci-gateway
+          docker run -d --name trentina-start -p 127.0.0.1:8019:8019 \
+            --read-only --tmpfs /tmp --tmpfs /data:mode=1777 \
+            --cap-drop=all --security-opt no-new-privileges \
+            -v "$PWD/ci-gateway:/etc/trentina:ro" \
+            -e TRENTINA_GATEWAY_ENABLED=1 -e CI_TOKEN_FILE=/etc/trentina/token \
+            trentina:test --transport streamable-http --host 0.0.0.0 --port 8019
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8019/health; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs trentina-start 2>&1 | tail -20
+          docker rm -f trentina-start >/dev/null
+          test "$ok" -eq 1
 
       # The real test of a native wheel in a distroless image. The runtime
       # stage copies only site-packages plus libstdc++, so an extension

@@ -10,6 +10,20 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+
+- Security gates that could never fail now can. pip-audit read the report as
+  a list when pip-audit writes a dict, threw, and the fallback counted zero
+  vulnerabilities; the container Trivy scan ran with exit code 0 from an
+  unpinned `@master`; and "Verify container starts" ended in `|| true`. The
+  scan now fails a PR on fixable HIGH/CRITICAL findings (accepted ones go in
+  `.trivyignore` with a reason), pip-audit fails on an unreadable report, and
+  the start check passes only if the gateway is still running after 5s.
+- Turning them on found what they had hidden: pyjwt 2.13.0 carried 14
+  advisories (now 2.15.1), the pinned Trivy v0.68.2 no longer downloads so
+  the post-push scan had been failing silently (now the action's default),
+  and the container had never started in CI for want of a writable `/data`.
+
 ### Documentation
 
 - Guarded execution's figures re-measured with L2 in the arguments step, the
