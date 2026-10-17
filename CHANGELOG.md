@@ -10,6 +10,17 @@ under that name.
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-10-17
+
+### Added
+
+- The LLM proxy reads the gateway token from `x-api-key` on the Anthropic
+  shape when `Authorization` is absent. Anthropic SDKs send their key that
+  way to any base URL they do not know to want Bearer, so an agent such as
+  Hermes on `anthropic_messages` could not authenticate. `Authorization`
+  still wins when both are sent, other shapes still require it, and the
+  token is never forwarded.
+
 ### Documentation
 
 - The README is cut back to a front page: a short intro, the five promises at

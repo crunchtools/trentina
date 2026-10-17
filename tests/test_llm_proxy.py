@@ -339,6 +339,13 @@ class TestProxyLlm:
         resp = client.post("/llm/nonesuch/v1/x", headers={"authorization": "Bearer agent1-tok"})
         assert resp.status_code == 404
 
+    def test_x_api_key_is_not_a_token_off_anthropic(self) -> None:
+        """Only the Anthropic shape reads the gateway token from x-api-key."""
+        providers, profiles = self._fixtures()
+        client = self._client(providers, profiles)
+        resp = client.post("/llm/gemini/v1/x", headers={"x-api-key": "agent1-tok"})
+        assert resp.status_code == 401
+
     def test_missing_token_401(self) -> None:
         providers, profiles = self._fixtures()
         client = self._client(providers, profiles)
@@ -507,6 +514,39 @@ class TestProxyAdmission:
         assert "x-stainless-lang" not in sent
         assert "authorization" not in sent
         assert sent["x-api-key"] == "agent1-key"
+
+    def _post_x_api_key(self, client: TestClient, **headers: str) -> Any:
+        return client.post(
+            "/llm/anthropic/v1/messages",
+            headers=headers,
+            content=json.dumps(_PLAIN).encode(),
+        )
+
+    def test_x_api_key_carries_gateway_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Anthropic SDKs send their key as x-api-key to a proxy (Hermes does)."""
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch)
+        resp = self._post_x_api_key(client, **{"x-api-key": "agent1-tok"})
+        assert resp.status_code == 200
+        sent = {k.lower(): v for k, v in fake.captured_headers.items()}
+        assert sent["x-api-key"] == "agent1-key"
+        assert "agent1-tok" not in sent.values()
+
+    def test_wrong_x_api_key_401(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch)
+        resp = self._post_x_api_key(client, **{"x-api-key": "not-a-token"})
+        assert resp.status_code == 401
+        assert not fake.sent
+
+    def test_authorization_wins_over_x_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch)
+        resp = self._post_x_api_key(
+            client, authorization="Bearer not-a-token", **{"x-api-key": "agent1-tok"}
+        )
+        assert resp.status_code == 401
+        assert not fake.sent
 
     def test_duplicate_key_refused_before_upstream(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Raw bytes would let the provider's parser read the other ``tools``."""
