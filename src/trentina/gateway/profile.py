@@ -2338,6 +2338,10 @@ class Profile(BaseModel):
                 cfg.local.as_token_env,
                 cfg.local.hs_token_env,
             )
+            # Within one bridge too: a bridge_token_env that is also the
+            # hs_token_env would let the bridge process pose as the homeserver.
+            if len(set(envs)) != len(envs):
+                raise ValueError(f"{label}: its four token envs must all differ")
             for env in envs:
                 if (other := seen_envs.setdefault(env, label)) != label:
                     raise ValueError(f"{label}: token env {env} is also {other}'s")

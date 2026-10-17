@@ -92,7 +92,8 @@ _SLOW_SECONDS = 5.0
 
 
 class BridgeUnavailableError(RuntimeError):
-    """The bridge process refused or did not answer. Conduit retries the txn."""
+    """The bridge process did not answer, or answered "not now" (a 5xx, or
+    a 401/403/408/429). Conduit retries the txn."""
 
 
 class BridgeRefusedError(RuntimeError):
@@ -552,9 +553,11 @@ class ProfileBridge:
     async def outbound(self, txn_id: str, events: list[dict[str, Any]]) -> None:
         """Carry the agent's events in one appservice transaction upstream.
 
-        Raises BridgeUnavailableError when the bridge cannot take one, so the
-        transaction is not acked and Conduit sends it again; events already
-        carried are skipped on the retry.
+        Raises BridgeUnavailableError when the bridge cannot take one now, so
+        the transaction is not acked and Conduit sends it again; events already
+        carried are skipped on the retry. An event the bridge answers it can
+        never carry (``BridgeRefusedError``) is dropped and the agent told, so
+        it holds up nothing behind it.
         """
         async with self._outbound_lock:
             if await self.mapping.seen(f"txn:{txn_id}"):

@@ -50,3 +50,6 @@ Thumbs.db
 benchmarks/results/
 corpora/data/
 .claude/worktrees/
+
+# Sync-tool conflict copies (a stale snapshot of a file, never source)
+*.conflict[0-9]*

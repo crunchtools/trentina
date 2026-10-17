@@ -99,6 +99,14 @@ class TestConfig:
         with pytest.raises(ValidationError, match="is also matrix_bridge's"):
             Profile.model_validate(_body(rcs=rcs))
 
+    def test_one_bridge_may_not_reuse_its_own_token_env(self) -> None:
+        """A bridge token that is also the hs_token would let the bridge
+        process pose as the homeserver and inject "agent" events."""
+        rcs = _bridge(2, RCS_ID, **RCS_LOCAL)
+        rcs["local"]["hs_token_env"] = "B2"
+        with pytest.raises(ValidationError, match="four token envs must all differ"):
+            Profile.model_validate(_body(rcs=rcs))
+
     def test_two_channels_may_not_share_an_appservice_token(self) -> None:
         rcs = _bridge(2, RCS_ID, **RCS_LOCAL)
         rcs["local"]["hs_token_env"] = "H1"
@@ -332,6 +340,26 @@ class TestRegister:
         for body, expected in ((only_matrix, False), (_body(), True)):
             mcp = FakeMCP()
             register_bridge_routes(mcp, {"agent1": _resolved(body)}, tmp_path / str(expected))
-            assert ("/bridge/{profile}/{channel}/event" in mcp.paths) is expected
+            prefix = "/bridge/as/{profile}/{channel}/_matrix/app/v1"
+            for path in (
+                "/bridge/{profile}/{channel}/event",
+                f"{prefix}/transactions/{{txn}}",
+                f"{prefix}/users/{{user}}",
+                f"{prefix}/rooms/{{alias}}",
+                f"{prefix}/ping",
+            ):
+                assert (path in mcp.paths) is expected, path
             assert "/bridge/{profile}/event" in mcp.paths
+            assert "/bridge/as/{profile}/_matrix/app/v1/transactions/{txn}" in mcp.paths
             await routes_mod.close_bridges()
+
+
+class TestYamlErrors:
+    def test_a_parse_error_names_the_place_not_the_line(self, tmp_path: Path) -> None:
+        """A malformed line can hold an inline secret; the error must not quote it."""
+        path = tmp_path / "profiles.yaml"
+        path.write_text("profiles:\n  a:\n    key: sk-live-SECRET: oops\n", encoding="utf-8")
+        with pytest.raises(ProfileConfigError) as err:
+            load_profiles(path)
+        assert "line 3" in str(err.value)
+        assert "SECRET" not in str(err.value)
