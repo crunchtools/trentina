@@ -620,19 +620,18 @@ class _SecurityMaker(_Maker):
     def issue_list(self, issues: int) -> dict[str, Any]:
         """``list_issues`` on a tracker of a security gateway."""
         r = self.r
-        return {
-            "issues": [
+        items = []
+        for _ in range(issues):
+            n = r.randrange(1, 500)
+            items.append(
                 {
-                    "number": r.randrange(1, 500),
+                    "number": n,
                     "title": r.choice(_TITLES),
                     "state": r.choice(("open", "closed")),
-                    "html_url": (
-                        f"https://github.com/example-org/gateway/issues/{r.randrange(1, 500)}"
-                    ),
+                    "html_url": f"https://github.com/example-org/gateway/issues/{n}",
                 }
-                for _ in range(issues)
-            ]
-        }
+            )
+        return {"issues": items}
 
     def created_issue(self) -> dict[str, Any]:
         """``create_issue``'s reply: a number, a URL and a title (#474)."""
@@ -677,7 +676,7 @@ def _build() -> tuple[Benign, ...]:
         ),
         # Appended after meeting_notes_unlinked for the same reason (#474).
         ("security_docs", 8, lambda i: m.security_doc((2, 6, 12, 20)[i % 4])),
-        ("detector_source", 8, lambda i: m.detector_source((3, 8, 20, 40)[i % 4])),
+        ("detector_source", 16,lambda i: m.detector_source((3, 8, 20, 40)[i % 4])),
         ("issue_list", 8, lambda i: m.issue_list((10, 30, 60, 100)[i % 4])),
         ("created_issue", 8, lambda i: m.created_issue()),
     ]
