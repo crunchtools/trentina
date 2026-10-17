@@ -441,6 +441,14 @@ it. `verify_oauth` asks the verifier's `bound_profile` and challenges any
 answer but the profile being called; a verifier without `bound_profile` is
 refused. Delegated verifiers answer their own profile (audience pin).
 
+## README budget (#475)
+
+The README is a front page of at most 900 words (`tests/test_readme_budget.py`).
+A feature PR adds ONE line to it, a Documentation table row, and puts everything
+else (scenarios, figures, model comparisons) in `docs/`. The five promises stay
+2–3 lines each with at most one figure. Raising the budget is a deliberate
+change to the test.
+
 ## Development
 
 ```bash

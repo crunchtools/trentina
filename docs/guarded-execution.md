@@ -47,6 +47,13 @@ Each row is also a category of the benchmark corpus, `corpora/gatekeeper.py`,
 with the policy above word for word, so the measured results below are for
 these exact rules.
 
+In the first row, a polite request for this week's customer export reads like
+a colleague's and passes every inbound layer; the send it leads to is refused
+by all four shipped judges. The judge reads each guarded call's arguments,
+after the three layers have, with the gateway's own facts: first contact and
+flagged session. Anything but an explicit allow refuses. It runs after the
+allowlist and parameter guards, and it can only take away.
+
 **Getting started.** Guard one tool. Read the audit's `denied_gatekeeper`
 rows for a week, then tighten the policy or add the next tool.
 

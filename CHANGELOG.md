@@ -10,6 +10,17 @@ under that name.
 
 ## [Unreleased]
 
+### Documentation
+
+- The README is cut back to a front page: a short intro, the five promises at
+  2–3 lines each, Quick Start and one Documentation table (the Capabilities
+  list is merged into it). The guarded-execution policy walk-through, the
+  prompt-pack false-positive figures, and the compression and production
+  figures it dropped now live in `docs/guarded-execution.md`,
+  `docs/l3-prompt-tuning.md`, `docs/compression.md` and
+  `docs/token-routing.md`. `tests/test_readme_budget.py` holds it to 900 words
+  (#475).
+
 ### Fixed
 
 - Security gates that could never fail now can. pip-audit read the report as
