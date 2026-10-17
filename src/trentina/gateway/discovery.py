@@ -31,7 +31,6 @@ from typing import TYPE_CHECKING, Any
 
 from . import paging
 from .names import resolve_name
-from .profile import DISCOVERY_TOOLS
 from .tool_search import Entry, ToolIndex
 
 if TYPE_CHECKING:
@@ -195,7 +194,8 @@ def _index(
     cached = _indexes.get(profile.name)
     if cached is not None and cached[0] is aggregate:
         return cached[1], cached[2]
-    tools = [t for t in aggregate if t["name"] not in DISCOVERY_TOOLS]
+    shadowed = meta_names(profile)
+    tools = [t for t in aggregate if t["name"] not in shadowed]
     entries = []
     for tool in tools:
         backend = (resolve_name(profile, tool["name"]) or ("", ""))[0]
@@ -289,19 +289,22 @@ def load(
         # A fingerprint is one session, and a session one profile; a
         # mismatch is a reload or a collision, and either starts afresh.
         names = set()
-    before = len(names)
+    added = []
     for name in picked:
+        if name in names:
+            continue
         if len(names) >= MAX_LOADED:
             break
         names.add(name)
+        added.append(name)
     _loaded[session] = (profile.name, names)
     body = {
-        "loaded": picked,
+        "loaded": added,
         "note": (
             "Your tool list has changed. If your client did not refresh it, list tools again."
         ),
     }
-    return _text(body), len(names) > before
+    return _text(body), bool(added)
 
 
 def _text(body: dict[str, Any]) -> dict[str, Any]:

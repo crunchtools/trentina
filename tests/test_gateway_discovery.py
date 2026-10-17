@@ -72,6 +72,13 @@ async def _list_tools(backend_name: str, _backend: Backend) -> list[dict[str, An
 
 
 @pytest.fixture(autouse=True)
+def _fresh_sessions() -> Iterator[None]:
+    session_registry.reset()
+    yield
+    session_registry.reset()
+
+
+@pytest.fixture(autouse=True)
 def backends(tmp_path: Any) -> Iterator[list[tuple[str, str, dict[str, Any]]]]:
     """Mocked backends and a private audit database; yields the calls forwarded."""
     forwarded: list[tuple[str, str, dict[str, Any]]] = []
@@ -261,7 +268,8 @@ class TestDynamic:
 
     async def test_load_a_category_grows_this_session_only_and_notifies_it(self) -> None:
         p = _profile("dynamic")
-        mine, other = session_fingerprint("session-a"), session_fingerprint("session-b")
+        ids = session_registry.create_session("disc"), session_registry.create_session("disc")
+        mine, other = (session_fingerprint(i) for i in ids)
         with patch.object(session_registry, "notify_session") as notify:
             notify.return_value = asyncio.Future()
             notify.return_value.set_result(True)
@@ -287,25 +295,34 @@ class TestDynamic:
 
     async def test_load_by_query(self) -> None:
         p = _profile("dynamic")
-        token = current_session.set(session_fingerprint("session-q"))
+        token = current_session.set(session_fingerprint(session_registry.create_session("disc")))
         try:
             resp = await _call(p, "load_tools", {"query": "restart a unit"})
             loaded = json.loads(resp["result"]["content"][0]["text"])["loaded"]
             assert loaded[0] == f"systemd{SEP}unit_restart"
+            # Already loaded: reported as nothing new.
+            again = await _call(p, "load_tools", {"query": "restart a unit"})
+            assert json.loads(again["result"]["content"][0]["text"])["loaded"] == []
         finally:
             current_session.reset(token)
 
+    async def test_a_session_that_ended_mid_call_keeps_nothing(self) -> None:
+        token = current_session.set(session_fingerprint("never-registered"))
+        try:
+            await _call(_profile("dynamic"), "load_tools", {"category": "mail"})
+        finally:
+            current_session.reset(token)
+        assert session_fingerprint("never-registered") not in discovery._loaded
+
     async def test_an_ended_session_forgets_what_it_loaded(self) -> None:
-        registry = SessionRegistry()
-        registry.on_remove(discovery.forget_session)
-        sid = registry.create_session("disc")
+        sid = session_registry.create_session("disc")
         token = current_session.set(session_fingerprint(sid))
         try:
             await _call(_profile("dynamic"), "load_tools", {"category": "mail"})
         finally:
             current_session.reset(token)
         assert session_fingerprint(sid) in discovery._loaded
-        registry.delete_session(sid)
+        session_registry.delete_session(sid)
         assert session_fingerprint(sid) not in discovery._loaded
 
 

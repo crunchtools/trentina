@@ -285,6 +285,13 @@ class SessionRegistry:
                 return await self._push_tools_changed(session.session_id)
         return False
 
+    def holds(self, profile_name: str, fingerprint: str) -> bool:
+        """Whether a live session of ``profile_name`` has this fingerprint."""
+        return any(
+            session_fingerprint(s.session_id) == fingerprint
+            for s in self.get_sessions_for_profile(profile_name)
+        )
+
     def on_remove(self, callback: Callable[[str], None]) -> None:
         """Call ``callback(fingerprint)`` whenever a session ends, for state
         held per session elsewhere (``discovery.py``'s loaded tools)."""

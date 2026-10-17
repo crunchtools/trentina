@@ -82,6 +82,12 @@ instructions, are the gateway's and the operator's (backend and category
 names from the profile), never a backend's. `PERIMETER_VERSION` does not
 move.
 
+Category names, and backend names where no category groups them, reach the
+agent: in the instructions, the `category` enums and `describe_backend`'s
+prefix. Under `short_names` an agent did not otherwise see backend names.
+Name categories for what an agent should know; on a honeypot, never let a
+name say which backends are decoys.
+
 ## Helping a client that searches by itself
 
 Claude Code sees tool names and server instructions until it searches. Two

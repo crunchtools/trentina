@@ -1029,7 +1029,11 @@ async def _discovery_call(
             result = discovery.find(profile, aggregated, arguments)
         else:
             result, grew = discovery.load(profile, aggregated, session, arguments)
-            if grew:
+            if not session_registry.holds(profile.name, session):
+                # It ended while the aggregate was built, after its own
+                # forget_session ran: nothing else would drop this set.
+                discovery.forget_session(session)
+            elif grew:
                 await session_registry.notify_session(profile.name, session)
     except ValueError as exc:
         # The messages are ours and quote nothing the caller sent.
