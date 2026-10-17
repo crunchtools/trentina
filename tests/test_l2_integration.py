@@ -322,7 +322,7 @@ class TestKnownGaps:
             pytest.skip("measured on prompt-injection-guard-small")
         shapes = ("security_docs", "detector_source", "issue_list", "created_issue")
         counts = [_flagged(category) for category in shapes]
-        assert all(of == 8 for _, of in counts)
+        assert all(of >= 8 for _, of in counts), counts
         assert sum(flagged for flagged, _ in counts) >= 1, f"{counts}: gap 31 may have closed"
 
     def test_a_hundred_line_journal_in_a_json_string_can_be_flagged(self) -> None:

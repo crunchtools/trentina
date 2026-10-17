@@ -16,7 +16,7 @@ API key theft is particularly dangerous because:
 
 ## How It Works
 
-Trentina exposes LLM API proxy endpoints at `/llm/{provider}/{path}` that mirror the upstream APIs. The agent authenticates with its **gateway bearer token** (the same token it uses for `/gateway/{profile}/mcp`). Trentina resolves which profile the token belongs to, strips the agent's `Authorization` header, injects the real API key for that profile, forwards to the upstream provider, and returns the response. Streaming (SSE) and non-streaming responses are forwarded transparently.
+Trentina exposes LLM API proxy endpoints at `/llm/{provider}/{path}` that mirror the upstream APIs. The agent authenticates with its **gateway bearer token** (the same token it uses for `/gateway/{profile}/mcp`), as `Authorization: Bearer`; on the Anthropic shape it may instead send it as `x-api-key`, which is how Anthropic SDKs send a key to a proxy. Trentina resolves which profile the token belongs to, strips the agent's token header, injects the real API key for that profile, forwards to the upstream provider, and returns the response. Streaming (SSE) and non-streaming responses are forwarded transparently.
 
 ### Per-Profile Keys and Rate-Limit Isolation
 
@@ -31,7 +31,7 @@ Authentication is **mandatory**:
 | Authenticated profile has no `llm_keys` entry for `{provider}` | `502` |
 | Authenticated profile has a key for `{provider}` | Inject the profile's key, forward |
 
-The caller's `Authorization` header is never forwarded upstream. Trentina's own Q-Agent does not go through `/llm/`; it calls providers directly, but with the same `llm_keys`. Judging a profile's tool response bills that profile's key. Judging a shared tool description, or compressing one, is the gateway's own work, and bills the operator's key ([operator.md](operator.md#service-identity)). The global `GEMINI_API_KEY` applies only when no operator is declared.
+The caller's token (`Authorization` or `x-api-key`) is never forwarded upstream. Trentina's own Q-Agent does not go through `/llm/`; it calls providers directly, but with the same `llm_keys`. Judging a profile's tool response bills that profile's key. Judging a shared tool description, or compressing one, is the gateway's own work, and bills the operator's key ([operator.md](operator.md#service-identity)). The global `GEMINI_API_KEY` applies only when no operator is declared.
 
 ### What the Proxy Admits
 

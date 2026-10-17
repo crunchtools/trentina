@@ -10,6 +10,17 @@ under that name.
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-10-17
+
+### Added
+
+- The LLM proxy reads the gateway token from `x-api-key` on the Anthropic
+  shape when `Authorization` is absent. Anthropic SDKs send their key that
+  way to any base URL they do not know to want Bearer, so an agent such as
+  Hermes on `anthropic_messages` could not authenticate. `Authorization`
+  still wins when both are sent, other shapes still require it, and the
+  token is never forwarded.
+
 ### Documentation
 
 - The README is cut back to a front page: a short intro, the five promises at
@@ -23,6 +34,14 @@ under that name.
 
 ### Fixed
 
+- `test_benign_gate` failed on main since #478: all 16 `detector_source`
+  cases hashed into the held-out split (a 1-in-100 draw), so the shape was
+  never on both sides. It has 19 cases now, one of them in tuning; the corpus
+  is 296. Only the two known-gap shapes drawn after it move, and neither is
+  gated.
+- `test_writing_about_attacks_can_be_flagged` asserted 8 cases per shape,
+  but `detector_source` had 16; #478 merged with that build red. It now
+  asserts at least 8.
 - Security gates that could never fail now can. pip-audit read the report as
   a list when pip-audit writes a dict, threw, and the fallback counted zero
   vulnerabilities; the container Trivy scan ran with exit code 0 from an

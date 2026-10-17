@@ -676,7 +676,7 @@ def _build() -> tuple[Benign, ...]:
         ),
         # Appended after meeting_notes_unlinked for the same reason (#474).
         ("security_docs", 8, lambda i: m.security_doc((2, 6, 12, 20)[i % 4])),
-        ("detector_source", 16,lambda i: m.detector_source((3, 8, 20, 40)[i % 4])),
+        ("detector_source", 19, lambda i: m.detector_source((3, 8, 20, 40)[i % 4])),
         ("issue_list", 8, lambda i: m.issue_list((10, 30, 60, 100)[i % 4])),
         ("created_issue", 8, lambda i: m.created_issue()),
     ]
@@ -688,7 +688,7 @@ def _build() -> tuple[Benign, ...]:
 
 
 BENIGN: tuple[Benign, ...] = _build()
-"""The corpus: 293 cases across eighteen shapes."""
+"""The corpus: 296 cases across eighteen shapes."""
 
 KNOWN_GAPS: tuple[str, ...] = (
     "journal_query",

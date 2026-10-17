@@ -238,7 +238,7 @@ def register_llm_routes(
     """Wire ``/llm/{provider}/{path:path}`` onto the FastMCP server.
 
     The endpoint authenticates each request against the caller's gateway
-    bearer token (via ``profiles``) and injects that profile's provider key.
+    token (via ``profiles``) and injects that profile's provider key.
 
     Cross-validation runs before the no-providers early return: a profile that
     declares ``llm_keys`` for a provider that does not exist is a misconfig
@@ -336,6 +336,21 @@ async def _read_body(request: Request) -> bytes:
     return bytes(body)
 
 
+def _caller_token(request: Request, api: LlmApi | None) -> str | None:
+    """The caller's gateway token, as an ``Authorization`` value.
+
+    Anthropic SDKs send their key as ``x-api-key`` to any base URL they do
+    not know to want Bearer, so on the Anthropic shape that header carries
+    the gateway token when ``Authorization`` is absent. It is never
+    forwarded: ``forward_headers`` drops it and the profile's key replaces it.
+    """
+    authorization = request.headers.get("authorization")
+    if authorization is not None or api is not LlmApi.ANTHROPIC:
+        return authorization
+    api_key = request.headers.get("x-api-key")
+    return f"Bearer {api_key}" if api_key else None
+
+
 async def _proxy_llm(
     request: Request,
     providers: dict[str, LlmProvider],
@@ -343,10 +358,11 @@ async def _proxy_llm(
 ) -> Response:
     """Admit one LLM request and forward it to the upstream provider.
 
-    Authenticates against the caller's gateway bearer token, resolves the
+    Authenticates against the caller's gateway token (``Authorization:
+    Bearer``, or ``x-api-key`` on the Anthropic shape), resolves the
     calling profile, admits the request through ``llm_policy`` and injects
     that profile's provider key. Only allowlisted caller headers reach the
-    provider; the caller's ``Authorization`` is never one of them.
+    provider; the caller's token is never one of them.
     """
     started = time.monotonic()
     provider_name = request.path_params.get("provider", "")
@@ -360,7 +376,7 @@ async def _proxy_llm(
             media_type=PLAIN_TEXT,
         )
 
-    profile = resolve_profile_by_token(request.headers.get("authorization"), profiles)
+    profile = resolve_profile_by_token(_caller_token(request, provider.api), profiles)
     if profile is None:
         return Response(
             content="Unauthorized",
