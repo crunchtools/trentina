@@ -139,7 +139,7 @@ The image ships that one model. Meta's `prompt-guard-2-86m` shipped beside it fr
 
 **The obfuscation gate is enforced.** The image build classifies every corpus attack plain and under six transforms with the shipped model and writes the result into its `trentina-model.json` (`benchmarks/l2_obfuscation.py --record`); a model that fails stops the build. At startup the gateway reads the record: a model with a failing record, or none, is logged as `l2_obfuscation_gate_failed` or `l2_obfuscation_gate_unrecorded`, and under `TRENTINA_REQUIRE_HARDENED` the gateway refuses to start. The gate's state is part of the verdict stamp. garak's sixteen further encodings are measured against the model and gate nothing (`benchmarks/l2_encodings.py`, #423): the model reads quoted-printable and MIME, which barely change the text, and none of the others; base16 and hex are decoded before it is asked, and the rest are known gaps 21 to 23. To run your own model, export it and record the gate against it before you point `CLASSIFIER_MODEL_PATH` at it.
 
-**So is the benign gate (#411).** The same build then runs the model, at the threshold it ships with, over 261 invented benign cases of the shapes production refused (unit properties, journals, disk-usage and container listings, metrics rows, replies that carry an identifier, agent-forum replies, machine-written meeting notes), 207 of them gated, each read as the gateway reads a tool response: through the default pre-processors, the text block and then every string of the structured content, unpacked. A model that flags more than 2% of the held-out cases stops the build (`benchmarks/l2_benign.py --record`). The record carries the threshold it was taken at, so a gateway started with another `CLASSIFIER_THRESHOLD` reports `l2_benign_gate_unrecorded` until the gate is run at that one. Numbers, and the shapes the shipped model still flags (known gaps 19 and 28), are in [benchmark.md](benchmark.md#l2-benign-gate-411-404).
+**So is the benign gate (#411).** The same build then runs the model, at the threshold it ships with, over 293 invented benign cases of the shapes production refused (unit properties, journals, disk-usage and container listings, metrics rows, replies that carry an identifier, agent-forum replies, machine-written meeting notes, writing about attacks), 207 of them gated, each read as the gateway reads a tool response: through the default pre-processors, the text block and then every string of the structured content, unpacked. A model that flags more than 2% of the held-out cases stops the build (`benchmarks/l2_benign.py --record`). The record carries the threshold it was taken at, so a gateway started with another `CLASSIFIER_THRESHOLD` reports `l2_benign_gate_unrecorded` until the gate is run at that one. Numbers, and the shapes the shipped model still flags (known gaps 19, 28 and 31), are in [benchmark.md](benchmark.md#l2-benign-gate-411-404).
 
 Measured on our corpora (`docs/benchmark.md`, #350), the default catches 36 of 39 internal attacks to Prompt Guard 2's 8, and 21 of 39 when they are planted inside long benign documents to Prompt Guard 2's 4, flagging 3 of 150 benign documents to Prompt Guard 2's 0, at 2.4x the throughput on CPU. Two English-only DeBERTa models, ProtectAI's v2 and PIGuard, were measured and rejected (#353): they flag 29 and 67 of the 150. Prompt Guard 2 is the better detector of DAN-style direct jailbreaks (624 vs 520 of 666 on the jackhhao set, 1 and 3 false positives of 640).
 
@@ -249,6 +249,7 @@ gaps below.
 | Text in base32, Ascii85, base85, uuencoding, Braille or Morse | as it arrived | the encoding as it arrived; nothing decodes it | judged, but L2 flags nearly all of it whatever it says (gap 21) |
 | Text in ROT13, Atbash or leetspeak | as it arrived | as it arrived; L1 matches its directive patterns through ROT13 | judged, with L2 detections lost and benign text flagged (gap 22) |
 | Text spelled in the NATO alphabet, or written in invisible binary ("sneaky bits") | as it arrived | as it arrived | judged, and passed by L1 and L2 (gap 23) |
+| Writing about attacks: security documentation, a detector's source, a security gateway's issue list or issue reply | as it arrived | as it arrived | judged, but L2 may flag it whatever it says (gap 31) |
 | Text in quoted-printable or MIME encoding | as it arrived | as it arrived, soft line breaks included | judged; L2 reads through it (42 of 44 attacks against 41 plain, 6 of 86 benign texts flagged) |
 | Text hidden in Unicode variant selectors | as it arrived | as it arrived; L1 counts the run | judged; L1's count alone refuses it, whatever it says |
 | Binary that is a key, an executable or random bytes, 64 characters or more, whose characters read as noise | as it arrived | a label naming its type and size | judged |
@@ -579,6 +580,23 @@ one does; the rest name the benchmark that measured them.
     answer from a model can override. Measured per scenario by
     `benchmarks/gatekeeper.py` ([Guarded Execution](guarded-execution.md#measured)).
     Tested (`tests/test_coverage_gaps.py`).
+31. **L2 flags writing about attacks** (#474). Security documentation,
+    the source of a detector and the issue tracker of a security gateway
+    are full of the phrases an injection uses. Seen through the josui
+    profile on 2026-10-16: Anthropic's tool-search docs page and a proxy's
+    `src/index.ts`, each about 0.97; a `list_issues` of 100 issues refused
+    whole because part 1 of 4 flagged; and the short `create_issue` reply
+    (number, URL, title) flagged on its title alone. Invented cases of the
+    shapes are in `corpora/benign_ops.py` (`security_docs`,
+    `detector_source`, `issue_list`, `created_issue`), scored on every image
+    build outside the gate's budget. This is a decision, not an oversight:
+    the threshold and the model are not changed for one content shape, and
+    L3 does not overrule a lone L2 flag, which would break the layer
+    contract. `block` refuses and offers `redact`. Any threshold or model
+    change goes through the benchmark work (#471). The scores of the
+    original three cases were not recorded in this change; the false-positive
+    rate for the class is whatever `benchmarks/l2_benign.py` reports for
+    these categories. Tested, in the image (`tests/test_l2_integration.py`).
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 
