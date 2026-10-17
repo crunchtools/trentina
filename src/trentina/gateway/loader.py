@@ -697,8 +697,10 @@ def load_profiles(path: Path | str) -> GatewayConfig:
     llm_providers, and matrix configuration sections.
 
     Raises:
-        ProfileConfigError: file missing, YAML invalid, schema violated, or
-            an env var named in `auth.bearer_token_env` is unset.
+        ProfileConfigError: file missing, YAML invalid, schema violated, or a
+            secret a profile needs (its bearer token, a bridge's tokens, any
+            other ``*_env`` it names) is unset, empty or in an unreadable
+            ``_FILE``.
     """
     config_path = Path(path)
     if not config_path.is_file():
