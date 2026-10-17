@@ -636,7 +636,14 @@ class ProfileBridge:
                 },
             )
         except BridgeRefusedError as exc:
-            await self._undeliverable(room, event_id, exc)
+            logger.warning(
+                "matrix_bridge: bridge %s answered %d to outbound %s for %s",
+                exc.path,
+                exc.status,
+                event_id,
+                self.label,
+            )
+            await self._undeliverable(room, event_id)
             return None
         return str(sent["event_id"])
 
@@ -653,18 +660,18 @@ class ProfileBridge:
                 {"room_id": room.remote_id, "event_id": target, "txn_id": _txn("rdo", event_id)},
             )
         except BridgeRefusedError as exc:
-            await self._undeliverable(room, event_id, exc)
+            logger.warning(
+                "matrix_bridge: bridge %s answered %d to outbound %s for %s",
+                exc.path,
+                exc.status,
+                event_id,
+                self.label,
+            )
+            await self._undeliverable(room, event_id)
 
-    async def _undeliverable(self, room: Room, event_id: str, exc: BridgeRefusedError) -> None:
+    async def _undeliverable(self, room: Room, event_id: str) -> None:
         """Tell the agent the bridge will never carry this event (#483)."""
         self.outbound_refused += 1
-        logger.warning(
-            "matrix_bridge: bridge %s answered %d to outbound %s for %s",
-            exc.path,
-            exc.status,
-            event_id,
-            self.label,
-        )
         await self.appservice.notice(
             room,
             f"[trentina] your message was not sent: the {self.channel} channel cannot carry it",
