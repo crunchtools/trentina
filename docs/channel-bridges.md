@@ -109,9 +109,13 @@ as `@tel<digits>:rcs.invalid` (the agent sees `@rcs_tel<digits>=3arcs.invalid:<s
 | `RCS_WEBHOOK_HOST`/`_PORT` (8473) | public webhook, behind the proxy only |
 | `RCS_WEBHOOK_URL` | the exact https URL set in Twilio: the signature covers it |
 | `RCS_AGENT_USER_ID` | the profile's `bridges.rcs.public_user_id` |
-| `RCS_OWNER_NUMBER`, `RCS_OWNER_NAME` | the one number accepted (E.164), and its display name |
+| `RCS_OWNER_NUMBER`, `RCS_OWNER_NAME` (`Owner (phone)`) | the one number accepted (E.164), and its display name |
+| `RCS_ROOM_TOPIC` | the room's topic, which the agent reads (default: lower trust than Matrix; confirm destructive actions there) |
+| `RCS_SERVER` (`rcs.invalid`) | the server name the synthetic IDs live under |
 | `RCS_TWILIO_ACCOUNT_SID`, `RCS_TWILIO_AUTH_TOKEN`, `RCS_TWILIO_MESSAGING_SERVICE_SID` | the agent's account (a subaccount per agent keeps one agent's token from speaking as another) |
 | `BRIDGE_STORE_DIR` (`/data`) | `rcs.db`, 0600: the inbox and the sent log |
+| `RCS_TWILIO_API` (`https://api.twilio.com`) | the API base, for tests |
+| `BRIDGE_LOG_LEVEL` (`WARNING`) | as the Matrix bridge's |
 
 Inbound, `POST /twilio/inbound` refuses anything unsigned (403), for
 another account (ignored), or from any number but the owner's (403). A

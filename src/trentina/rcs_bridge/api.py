@@ -60,9 +60,13 @@ class RedactRequest(BaseModel):
     txn_id: str = Field(min_length=1)
 
 
-def _twiml(status: int = 200) -> Response:
-    """An empty TwiML reply: taken, and nothing to answer with."""
-    return Response(_EMPTY_TWIML, status_code=status, media_type="text/xml")
+class TwiMLResponse(Response):
+    """An empty TwiML reply: taken, and nothing to answer the owner with."""
+
+    media_type = "text/xml"
+
+    def __init__(self, status_code: int = 200) -> None:
+        super().__init__(_EMPTY_TWIML, status_code=status_code)
 
 
 class _Private:
@@ -123,8 +127,7 @@ class _Public:
 
     async def inbound(self, request: Request) -> Response:
         # TRUST: a webhook from the public internet becomes a message for the agent
-        #   untrusted: everything in the request until the signature verifies,
-        #     and the message text after it (the owner's phone, or whoever holds it)
+        #   untrusted: the whole request until its signature verifies; the text after
         #   judged-by: the gateway's L1/L2/L3, once forwarded; nothing here
         #   on-failure: fail-closed; unsigned, foreign or non-owner requests are
         #     refused and nothing is stored
@@ -137,7 +140,7 @@ class _Public:
         message = self._bridge.backend.parse(form)
         if message is None:
             # Signed, but not a message for us (a status callback): fine.
-            return _twiml()
+            return TwiMLResponse()
         if not hmac.compare_digest(
             message.sender.encode(), self._bridge.settings.owner_number.encode()
         ):
@@ -150,17 +153,17 @@ class _Public:
             taken = await self._bridge.accept(message)
         except InboxFullError:
             logger.error("bridge[%s]: inbox full; the gateway is not taking messages", self._label)
-            return _twiml(503)
+            return TwiMLResponse(HTTPStatus.SERVICE_UNAVAILABLE)
         if not taken:
             logger.info(
                 "bridge[%s]: duplicate webhook %s", self._label, redact_source(message.message_id)
             )
-        return _twiml()
+        return TwiMLResponse()
 
     async def _signed_form(self, request: Request) -> list[tuple[str, str]] | Response:
         """The form of a request the provider signed, or the response refusing it."""
         if request.headers.get("content-type", "").split(";")[0].strip() != _FORM:
-            return Response(status_code=415)
+            return Response(status_code=HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
         try:
             raw = await read_capped(request, WEBHOOK_MAX_BYTES)
             form = parse_qsl(raw.decode("utf-8"), keep_blank_values=True)

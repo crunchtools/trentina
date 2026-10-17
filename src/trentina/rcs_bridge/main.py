@@ -29,10 +29,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("trentina.rcs_bridge")
 
 
-def _server(app: Starlette, host: str, port: int) -> uvicorn.Server:
-    return uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
-
-
 async def _run(settings: RcsSettings) -> None:
     backend = TwilioBackend(
         account_sid=settings.account_sid,
@@ -42,21 +38,14 @@ async def _run(settings: RcsSettings) -> None:
     )
     bridge = RcsBridge(settings, backend, RcsStore(settings.store_dir / "rcs.db"))
     try:
-        tasks = [
-            asyncio.create_task(bridge.run(), name="deliver"),
-            asyncio.create_task(
-                _server(
-                    build_private_app(bridge), settings.listen_host, settings.listen_port
-                ).serve(),
-                name="api",
-            ),
-            asyncio.create_task(
-                _server(
-                    build_public_app(bridge), settings.webhook_host, settings.webhook_port
-                ).serve(),
-                name="webhook",
-            ),
+        listeners: list[tuple[str, Starlette, str, int]] = [
+            ("api", build_private_app(bridge), settings.listen_host, settings.listen_port),
+            ("webhook", build_public_app(bridge), settings.webhook_host, settings.webhook_port),
         ]
+        tasks = [asyncio.create_task(bridge.run(), name="deliver")]
+        for name, app, host, port in listeners:
+            config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+            tasks.append(asyncio.create_task(uvicorn.Server(config).serve(), name=name))
         try:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:

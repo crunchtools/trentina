@@ -113,7 +113,11 @@ class TwilioBackend:
             )
         except (httpx.HTTPError, TimeoutError, ValueError) as exc:
             raise BackendError(f"twilio: {exc_kind(exc)}") from exc
-        reply = _json(raw)
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            parsed = None
+        reply: dict[str, Any] = parsed if isinstance(parsed, dict) else {}
         if resp.status_code in (HTTPStatus.OK, HTTPStatus.CREATED):
             sid = reply.get("sid")
             if isinstance(sid, str) and sid:
@@ -124,11 +128,3 @@ class TwilioBackend:
         # The code is Twilio's error number, not its text: the text can echo
         # the body or the number.
         raise BackendError(f"twilio: {resp.status_code} code={code}", permanent=permanent)
-
-
-def _json(raw: bytes) -> dict[str, Any]:
-    try:
-        value = json.loads(raw)
-    except ValueError:
-        return {}
-    return value if isinstance(value, dict) else {}
