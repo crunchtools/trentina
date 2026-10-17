@@ -101,6 +101,11 @@ class BridgeRefusedError(RuntimeError):
     Retrying cannot help, and holding the transaction would stall every
     reply behind it, so the event is dropped and the agent told."""
 
+    def __init__(self, path: str, status: int) -> None:
+        super().__init__(f"bridge {path} -> {status}")
+        self.path = path
+        self.status = status
+
 
 # Client errors a bridge may answer that mean "not now" rather than "never".
 _RETRYABLE_4XX = frozenset({401, 403, 408, 429})
@@ -653,7 +658,13 @@ class ProfileBridge:
     async def _undeliverable(self, room: Room, event_id: str, exc: BridgeRefusedError) -> None:
         """Tell the agent the bridge will never carry this event (#483)."""
         self.outbound_refused += 1
-        logger.warning("matrix_bridge: %s refused outbound %s for %s", exc, event_id, self.label)
+        logger.warning(
+            "matrix_bridge: bridge %s answered %d to outbound %s for %s",
+            exc.path,
+            exc.status,
+            event_id,
+            self.label,
+        )
         await self.appservice.notice(
             room,
             f"[trentina] your message was not sent: the {self.channel} channel cannot carry it",
@@ -692,7 +703,7 @@ class ProfileBridge:
             raise BridgeUnavailableError(f"bridge {path}: {exc_kind(exc)}") from exc
         status = resp.status_code
         if 400 <= status < 500 and status not in _RETRYABLE_4XX:
-            raise BridgeRefusedError(f"bridge {path} -> {status}")
+            raise BridgeRefusedError(path, status)
         if status != 200:
             raise BridgeUnavailableError(f"bridge {path} -> {status}")
         try:
