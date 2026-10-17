@@ -52,9 +52,10 @@ def _http_url(name: str, value: str) -> str:
 _MAX_PORT = 65535
 
 
-def parse_port(value: str) -> int:
+def parse_port(name: str, value: str) -> int:
+    """``value`` as a TCP port (1-65535); SettingsError naming ``name`` if not."""
     if not value.isdigit() or not 0 < int(value) <= _MAX_PORT:
-        raise SettingsError(f"BRIDGE_LISTEN_PORT must be a port number, got {value!r}")
+        raise SettingsError(f"{name} must be a port number, got {value!r}")
     return int(value)
 
 
@@ -72,6 +73,7 @@ def private_gateway_url(value: str) -> str:
 
 
 def required_setting(name: str, reader: Callable[[str], str] = read_secret_env) -> str:
+    """``read_setting``, but an unset or empty value is a SettingsError."""
     value = read_setting(name, reader)
     if not value:
         raise SettingsError(f"{name} (or {name}_FILE) is required")
@@ -128,7 +130,9 @@ class BridgeSettings:
             ingress_token=required_setting("BRIDGE_INGRESS_TOKEN"),
             bridge_token=required_setting("BRIDGE_TOKEN"),
             listen_host=os.environ.get("BRIDGE_LISTEN_HOST", "127.0.0.1"),
-            listen_port=parse_port(os.environ.get("BRIDGE_LISTEN_PORT", str(DEFAULT_PORT))),
+            listen_port=parse_port(
+                "BRIDGE_LISTEN_PORT", os.environ.get("BRIDGE_LISTEN_PORT", str(DEFAULT_PORT))
+            ),
             device_name=os.environ.get("BRIDGE_DEVICE_NAME", "Trentina bridge"),
             device_id=os.environ.get("BRIDGE_DEVICE_ID", ""),
             access_token=read_setting("BRIDGE_ACCESS_TOKEN"),

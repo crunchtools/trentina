@@ -575,3 +575,41 @@ class TestRun:
             await patched["run"](patched["settings"])
         assert sorted(patched["cancelled"]) == ["api", "deliver"]
         assert patched["closed"]
+
+
+class TestTimedPrune:
+    async def test_the_loop_prunes_without_a_wake_and_a_wake_still_delivers(
+        self, rig: Rig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(bridge_mod, "PRUNE_EVERY", 0.01)
+        prunes = {"n": 0}
+        real_prune = rig.store.prune
+
+        async def counting() -> None:
+            prunes["n"] += 1
+            await real_prune()
+
+        monkeypatch.setattr(rig.store, "prune", counting)
+        task = asyncio.create_task(rig.bridge.run())
+        for _ in range(300):
+            await _real_sleep(0.005)
+            if prunes["n"] >= 3:
+                break
+        assert prunes["n"] >= 3, "the loop never pruned on its own"
+        await rig.bridge.accept(Inbound("SM1", OWNER, "woken"))
+        for _ in range(300):
+            await _real_sleep(0.005)
+            if not await rig.store.pending():
+                break
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert rig.gateway.events[-1]["content"]["body"] == "woken"
+
+
+def test_a_bad_port_names_its_own_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, good in _ENV.items():
+        monkeypatch.setenv(key, good)
+    monkeypatch.setenv("RCS_WEBHOOK_PORT", "99999")
+    with pytest.raises(SettingsError, match="RCS_WEBHOOK_PORT"):
+        RcsSettings.from_env()

@@ -127,9 +127,13 @@ class RcsSettings:
             server=server,
             store_dir=Path(os.environ.get("BRIDGE_STORE_DIR", "/data")),
             listen_host=os.environ.get("BRIDGE_LISTEN_HOST", "127.0.0.1"),
-            listen_port=parse_port(os.environ.get("BRIDGE_LISTEN_PORT", str(DEFAULT_API_PORT))),
+            listen_port=parse_port(
+                "BRIDGE_LISTEN_PORT", os.environ.get("BRIDGE_LISTEN_PORT", str(DEFAULT_API_PORT))
+            ),
             webhook_host=os.environ.get("RCS_WEBHOOK_HOST", "127.0.0.1"),
-            webhook_port=parse_port(os.environ.get("RCS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))),
+            webhook_port=parse_port(
+                "RCS_WEBHOOK_PORT", os.environ.get("RCS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
+            ),
             webhook_url=_https_url("RCS_WEBHOOK_URL", required_setting("RCS_WEBHOOK_URL")),
             account_sid=_sid(
                 "RCS_TWILIO_ACCOUNT_SID", "account", required_setting("RCS_TWILIO_ACCOUNT_SID")
