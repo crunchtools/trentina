@@ -2358,6 +2358,10 @@ class Profile(BaseModel):
             problems.append("git does not apply")
         if self.guarded_execution is not None:
             problems.append("guarded_execution does not apply")
+        if self.tool_discovery != ToolDiscoveryConfig():
+            # Gateway tools it does not name, and categories that could
+            # say which backends are decoys (#473).
+            problems.append("tool_discovery does not apply")
         if problems:
             raise ValueError(f"honeypot profile: {'; '.join(problems)}")
         return self

@@ -338,7 +338,96 @@ async def test_notify_session_reaches_one_session() -> None:
     assert not await registry.notify_session("disc", "")
 
 
+@pytest.mark.asyncio
+class TestEdges:
+    async def test_read_part_is_always_listed_but_only_the_internal_one(self) -> None:
+        for mode in ("search", "dynamic"):
+            p = Profile(
+                short_names=False,
+                name="disc",
+                auth=AuthConfig(bearer_token_env="TEST"),
+                backends={
+                    "web": Backend(url="internal://web", tools_allow=["read_part_tool"]),
+                    "mail": Backend(url="http://mail:8000/mcp", tools_allow=["*"]),
+                },
+                tool_discovery=ToolDiscoveryConfig(mode=mode),
+            )
+            part = [{"name": "read_part_tool", "description": "Next part.", "inputSchema": {}}]
+
+            async def internal(part: list[dict[str, Any]] = part) -> list[dict[str, Any]]:
+                return [dict(t) for t in part]
+
+            with (
+                patch.dict(TOOLS, {"mail": part}),
+                patch("trentina.gateway.router.list_internal_tools", side_effect=internal),
+            ):
+                names = await _names(p)
+            assert f"web{SEP}read_part_tool" in names
+            assert f"mail{SEP}read_part_tool" not in names
+
+    async def test_malformed_call_tool_reaches_no_backend(
+        self, backends: list[tuple[str, str, dict[str, Any]]]
+    ) -> None:
+        p = _profile()
+        for arguments in (
+            [],
+            {},
+            {"name": 7},
+            {"name": ["x"]},
+            {"name": f"systemd{SEP}unit_restart", "arguments": []},
+        ):
+            resp = await _call(p, "call_tool", arguments)
+            assert resp["error"]["code"] == -32602
+        assert backends == []
+        outcomes = _outcomes()
+        assert outcomes[("", "call_tool")] == {"denied_guard": 1}
+        assert outcomes[("systemd", "unit_restart")] == {"denied_guard": 1}
+
+    async def test_call_tool_without_arguments_calls_with_none(
+        self, backends: list[tuple[str, str, dict[str, Any]]]
+    ) -> None:
+        resp = await _call(_profile(), "call_tool", {"name": f"systemd{SEP}unit_restart"})
+        assert resp["result"]["content"][0]["text"] == "done"
+        assert backends == [("systemd", "unit_restart", {})]
+
+    async def test_an_unhashable_category_is_refused_not_raised(self) -> None:
+        for tool, arguments in (
+            ("find_tools", {"query": "x", "category": ["mail"]}),
+            ("find_tools", {"query": "x", "category": {"a": 1}}),
+        ):
+            resp = await _call(_profile(), tool, arguments)
+            assert resp["error"]["code"] == -32602
+
+    async def test_the_loaded_set_stops_at_its_cap(self) -> None:
+        p = _profile("dynamic")
+        token = current_session.set(session_fingerprint(session_registry.create_session("disc")))
+        try:
+            with (
+                patch.object(discovery, "MAX_LOADED", 1),
+                patch.object(session_registry, "notify_session") as notify,
+            ):
+                notify.return_value = asyncio.Future()
+                notify.return_value.set_result(True)
+                first = await _call(p, "load_tools", {"category": "mail"})
+                second = await _call(p, "load_tools", {"category": "systemd"})
+            assert len(json.loads(first["result"]["content"][0]["text"])["loaded"]) == 1
+            assert json.loads(second["result"]["content"][0]["text"])["loaded"] == []
+            assert notify.call_count == 1
+        finally:
+            current_session.reset(token)
+
+
 class TestConfig:
+    def test_a_honeypot_takes_no_discovery(self) -> None:
+        with pytest.raises(ValidationError, match="tool_discovery does not apply"):
+            Profile(
+                name="pot",
+                auth=AuthConfig(bearer_token_env="TEST"),
+                honeypot=True,
+                defense={"enforcement": "flag", "modes": ["flag"]},
+                tool_discovery=ToolDiscoveryConfig(mode="search"),
+            )
+
     def test_a_category_must_name_a_backend_of_the_profile(self) -> None:
         with pytest.raises(ValidationError, match="backends not in this profile"):
             _profile(categories={"x": ["nope"]})

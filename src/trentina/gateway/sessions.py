@@ -20,6 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ..logsafe import exc_kind
 from .context import session_fingerprint
 
 if TYPE_CHECKING:
@@ -308,12 +309,11 @@ class SessionRegistry:
             try:
                 await self._notification_callback(session_id, notification)
                 delivered = True
-            except Exception:
-                # nosemgrep: trentina-log-exception-text -- logsafe: ours
-                logger.warning(  # logsafe: ours — a stream error; the payload is ours
-                    "sessions: failed to notify session=%s",
+            except Exception as exc:
+                logger.warning(
+                    "sessions: failed to notify session=%s: %s",
                     session_id[:8],
-                    exc_info=True,
+                    exc_kind(exc),
                 )
 
         for queue in list(self._subscribers.get(session_id, ())):
