@@ -33,6 +33,7 @@ class StubBridge:
         profile = _profile()
         self.profile = profile
         self.cfg = profile.matrix_bridge
+        self.label = profile.name
         self.inbound_events: list[dict[str, Any]] = []
         self.transactions: list[tuple[str, list[Any]]] = []
         self.fail_outbound = False
@@ -57,7 +58,7 @@ def stub() -> StubBridge:
 
 @pytest.fixture
 def client(stub: StubBridge) -> TestClient:
-    bridges: Any = {"agent1": stub}
+    bridges: Any = {("agent1", "matrix"): stub}
     handlers = BridgeRoutes(bridges)
     prefix = "/bridge/as/{profile}/_matrix/app/v1"
     app = Starlette(

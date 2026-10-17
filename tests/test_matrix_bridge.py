@@ -588,6 +588,49 @@ class TestOutbound:
         await rig.bridge.outbound("t1", [_agent_event("$a1"), _agent_event("$a2")])
         assert [s["content"]["body"] for s in rig.upstream.sent] == ["on it", "on it"]
 
+    async def test_an_event_the_bridge_can_never_carry_is_dropped_and_told(
+        self, rig_factory: Any
+    ) -> None:
+        """A 4xx that means "never" (#483) must not hold the transaction: the
+        event is dropped, the agent told, and the next one still goes."""
+        rig = rig_factory()
+        await rig.bridge.inbound(_message())
+        rig.upstream.status = 422
+        await rig.bridge.outbound("t1", [_agent_event("$a1")])
+        assert rig.bridge.outbound_refused == 1
+        assert "cannot carry it" in rig.conduit.sent[-1]["content"]["body"]
+        rig.upstream.status = 200
+        await rig.bridge.outbound("t1", [_agent_event("$a1")])
+        await rig.bridge.outbound("t2", [_agent_event("$a2")])
+        assert len(rig.upstream.sent) == 1
+
+    async def test_a_redaction_the_bridge_cannot_carry_is_dropped_and_told(
+        self, rig_factory: Any
+    ) -> None:
+        rig = rig_factory()
+        await rig.bridge.inbound(_message())
+        await rig.bridge.outbound("t1", [_agent_event("$a1")])
+        rig.upstream.status = 422
+        redaction = _agent_event("$x") | {
+            "type": "m.room.redaction",
+            "redacts": "$a1",
+            "content": {},
+        }
+        await rig.bridge.outbound("t2", [redaction])
+        assert rig.bridge.outbound_refused == 1
+        assert "cannot carry it" in rig.conduit.sent[-1]["content"]["body"]
+        rig.upstream.status = 200
+        await rig.bridge.outbound("t3", [_agent_event("$a2")])
+        assert [s["path"] for s in rig.upstream.sent] == ["/send", "/send"]
+
+    @pytest.mark.parametrize("status", [401, 403, 408, 429])
+    async def test_a_4xx_that_means_not_now_is_retried(self, rig_factory: Any, status: int) -> None:
+        rig = rig_factory()
+        await rig.bridge.inbound(_message())
+        rig.upstream.status = status
+        with pytest.raises(BridgeUnavailableError):
+            await rig.bridge.outbound("t1", [_agent_event("$a1")])
+
 
 class TestRewrite:
     def test_escaping_is_the_spec_mapping(self) -> None:
@@ -1286,7 +1329,7 @@ class TestUnbridgedAgents:
             {"agent1": _profile()}, tmp_path, frozenset({UNBRIDGED_AGENT})
         )
         try:
-            bridge = bridges["agent1"]
+            bridge = bridges[("agent1", "matrix")]
             assert await bridge.inbound(_from(UNBRIDGED_AGENT.upper())) == "dropped"
             assert await bridge.mapping.agent_present(ROOM) is True
         finally:

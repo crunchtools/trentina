@@ -26,6 +26,7 @@ from .filter import filter_tools
 from .profile import (
     GIT_REMOTE_NAME_RE,
     HONEYTOKEN_MIN_CHARS,
+    MATRIX_CHANNEL,
     AlertIngressConfig,
     GitRemote,
     MatrixIngressConfig,
@@ -123,7 +124,7 @@ def _build_profile(name: str, body: Any) -> Profile:
     _check_drivers(name, profile)
     _check_destination_params(name, profile)
     _check_guarded_tools(name, profile)
-    _resolve_matrix_bridge_secrets(name, profile)
+    _resolve_bridge_secrets(name, profile)
     if profile.alert_ingress is not None:
         _resolve_alert_ingress_secrets(name, profile.alert_ingress)
 
@@ -207,29 +208,28 @@ def _check_drivers(name: str, profile: Profile) -> None:
             channel=Channel.MATRIX,
             profile_name=name,
         )
-    if profile.matrix_bridge is not None:
+    for bridge in profile.channel_bridges().values():
         build_preprocessors(
-            profile.matrix_bridge.preprocess,
+            bridge.preprocess,
             channel=Channel.MATRIX_BRIDGE,
             profile_name=name,
         )
 
 
-def _resolve_matrix_bridge_secrets(name: str, profile: Profile) -> None:
-    """Resolve an enabled bridge's four tokens, failing closed on any gap.
+def _resolve_bridge_secrets(name: str, profile: Profile) -> None:
+    """Resolve every enabled bridge's four tokens, failing closed on any gap.
 
     A disabled block resolves nothing: nothing reads its tokens, and demanding
     them would make an operator provision secrets to write down a plan.
     """
-    bridge = profile.matrix_bridge
-    if bridge is None or not bridge.enabled:
-        return
-    bridge.bridge_token = _require_env(name, bridge.bridge_token_env, "matrix_bridge bridge token")
-    bridge.ingress_token = _require_env(
-        name, bridge.ingress_token_env, "matrix_bridge ingress token"
-    )
-    bridge.local.as_token = _require_env(name, bridge.local.as_token_env, "matrix_bridge as_token")
-    bridge.local.hs_token = _require_env(name, bridge.local.hs_token_env, "matrix_bridge hs_token")
+    for channel, bridge in profile.channel_bridges().items():
+        if not bridge.enabled:
+            continue
+        what = "matrix_bridge" if channel == MATRIX_CHANNEL else f"bridges.{channel}"
+        bridge.bridge_token = _require_env(name, bridge.bridge_token_env, f"{what} bridge token")
+        bridge.ingress_token = _require_env(name, bridge.ingress_token_env, f"{what} ingress token")
+        bridge.local.as_token = _require_env(name, bridge.local.as_token_env, f"{what} as_token")
+        bridge.local.hs_token = _require_env(name, bridge.local.hs_token_env, f"{what} hs_token")
 
 
 def _resolve_bearer_token(name: str, profile: Profile) -> None:
@@ -697,8 +697,10 @@ def load_profiles(path: Path | str) -> GatewayConfig:
     llm_providers, and matrix configuration sections.
 
     Raises:
-        ProfileConfigError: file missing, YAML invalid, schema violated, or
-            an env var named in `auth.bearer_token_env` is unset.
+        ProfileConfigError: file missing, YAML invalid, schema violated, or a
+            secret a profile needs (its bearer token, a bridge's tokens, any
+            other ``*_env`` it names) is unset, empty or in an unreadable
+            ``_FILE``.
     """
     config_path = Path(path)
     if not config_path.is_file():
@@ -712,7 +714,13 @@ def load_profiles(path: Path | str) -> GatewayConfig:
     try:
         cfg_data: Any = yaml.safe_load(raw_text)
     except yaml.YAMLError as exc:
-        raise ProfileConfigError(f"Invalid YAML in {config_path}: {exc}") from exc
+        # The problem and its position only: str(exc) quotes the offending
+        # source line, which in this file can be a line holding a secret.
+        mark = getattr(exc, "problem_mark", None)
+        where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        problem = getattr(exc, "problem", None) or type(exc).__name__
+        # from None: a chained cause would print the snippet in a traceback.
+        raise ProfileConfigError(f"Invalid YAML in {config_path}{where}: {problem}") from None
 
     if not isinstance(cfg_data, dict):
         raise ProfileConfigError(f"Profiles file {config_path} must contain a top-level mapping")

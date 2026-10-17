@@ -792,14 +792,26 @@ class TestBridgeIsOperatorOnly:
         profiles_path.write_text(ALPHA_ONLY_YAML, encoding="utf-8")
         result = await _reload_as("alpha")
 
-        assert any("matrix_bridge changed for ['beta']" in n for n in result["not_applied"])
+        assert any("bridges changed for ['beta']" in n for n in result["not_applied"])
+
+    async def test_a_profile_with_no_bridge_moves_no_bridge(self, profiles_path: Path) -> None:
+        """Adding or removing a profile that has no bridge is not a bridge change."""
+        profiles_path.write_text(ALPHA_ONLY_YAML, encoding="utf-8")
+        await _reload_as("alpha")
+        profiles_path.write_text(BASE_YAML, encoding="utf-8")
+        added = await _reload_as("alpha")
+        profiles_path.write_text(ALPHA_ONLY_YAML, encoding="utf-8")
+        removed = await _reload_as("alpha")
+
+        for result in (added, removed):
+            assert not any("bridges changed" in str(n) for n in result["not_applied"])
 
     async def test_operator_reload_says_a_restart_is_needed(self, profiles_path: Path) -> None:
         profiles_path.write_text(BETA_BRIDGE_YAML, encoding="utf-8")
         result = await _reload_as("alpha")
 
         assert result["reloaded"] is True
-        assert any("matrix_bridge changed for ['beta']" in n for n in result["not_applied"])
+        assert any("bridges changed for ['beta']" in n for n in result["not_applied"])
 
 
 class TestUnknownCaller:

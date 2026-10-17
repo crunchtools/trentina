@@ -49,6 +49,7 @@ from ...reserved import WARNING_KEY, strip_reserved, with_stripped
 from ...warning import build_warning
 from ..context import profile_context
 from ..matrix_relation import withheld_relation
+from ..profile import MATRIX_CHANNEL
 from .rewrite import IdMap, judged_view, referenced_ids, rewrite_content
 
 if TYPE_CHECKING:
@@ -91,7 +92,24 @@ _SLOW_SECONDS = 5.0
 
 
 class BridgeUnavailableError(RuntimeError):
-    """The bridge process refused or did not answer. Conduit retries the txn."""
+    """The bridge process did not answer, or answered "not now" (a 5xx, or
+    a 401/403/408/429). Conduit retries the txn."""
+
+
+class BridgeRefusedError(RuntimeError):
+    """The bridge process answered that this event can never be carried: a
+    type its channel has no form for, or a body it will not take (#483).
+    Retrying cannot help, and holding the transaction would stall every
+    reply behind it, so the event is dropped and the agent told."""
+
+    def __init__(self, path: str, status: int) -> None:
+        super().__init__(f"bridge {path} -> {status}")
+        self.path = path
+        self.status = status
+
+
+# Client errors a bridge may answer that mean "not now" rather than "never".
+_RETRYABLE_4XX = frozenset({401, 403, 408, 429})
 
 
 class _Stages:
@@ -147,11 +165,16 @@ class ProfileBridge:
         appservice: AppService,
         client: httpx.AsyncClient | None = None,
         other_agents: frozenset[str] = frozenset(),
+        channel: str = MATRIX_CHANNEL,
     ) -> None:
-        cfg = profile.matrix_bridge
+        cfg = profile.channel_bridges().get(channel)
         if cfg is None or cfg.bridge_token is None:
-            raise ValueError(f"profile {profile.name!r} has no enabled matrix_bridge")
+            raise ValueError(f"profile {profile.name!r} has no enabled {channel} bridge")
         self.profile = profile
+        self.channel = channel
+        # What logs and audit call this bridge. The matrix channel keeps the
+        # bare profile name, so alerts written before #483 still match.
+        self.label = profile.name if channel == MATRIX_CHANNEL else f"{profile.name}/{channel}"
         self.cfg: MatrixBridgeConfig = cfg
         self.mapping = mapping
         self.appservice = appservice
@@ -162,8 +185,10 @@ class ProfileBridge:
         self._outbound_lock = asyncio.Lock()
         # Case-folded: a Matrix ID that differs only in case is still that
         # agent as far as this rule goes, and matching more is the safe side.
+        # The profile's own upstream IDs on every channel are not "another
+        # agent" (#483): the same agent reached by a second path.
         self._other_agents = frozenset(a.casefold() for a in other_agents) - {
-            cfg.public_user_id.casefold()
+            c.public_user_id.casefold() for c in profile.channel_bridges().values()
         }
         # The agent's events refused since start, by the agent rule or the
         # judge: each is a message it believes it sent (#317). /health sums it.
@@ -212,7 +237,7 @@ class ProfileBridge:
             "matrix_bridge: dropped %s %s for %s: %s",
             direction,
             redact_source(event_id),
-            self.profile.name,
+            self.label,
             reason,
         )
         # As router._audit does: a failed audit write never fails the event,
@@ -220,7 +245,7 @@ class ProfileBridge:
         with contextlib.suppress(Exception):
             record_gateway_call(
                 self.profile.name,
-                _AUDIT_BACKEND,
+                _AUDIT_BACKEND if self.channel == MATRIX_CHANNEL else f"{self.channel}_bridge",
                 direction,
                 Outcome.DENIED_GUARD.value,
                 0,
@@ -247,7 +272,7 @@ class ProfileBridge:
         with profile_context(self.profile):
             result = await defend_json(
                 scanned,
-                source=f"matrix_bridge:{self.profile.name}:{room}",
+                source=f"matrix_bridge:{self.label}:{room}",
                 source_type="matrix_bridge",
                 defense=self.profile.defense,
                 record=True,
@@ -280,7 +305,7 @@ class ProfileBridge:
             # The sender chose the type and, in an old room, the id (#262).
             kind = event.get("type")
             stages.report(
-                f"{self.profile.name} inbound {redact_source(str(event.get('event_id')))} "
+                f"{self.label} inbound {redact_source(str(event.get('event_id')))} "
                 f"{kind if isinstance(kind, str) and kind in _CARRIED else 'other'} {outcome}"
             )
         return outcome
@@ -302,7 +327,7 @@ class ProfileBridge:
                 "matrix_bridge: stripped %d reserved key(s) from inbound %s for %s",
                 stripped,
                 redact_source(event_id),
-                self.profile.name,
+                self.label,
             )
 
         uncarried = await self._inbound_uncarried(event, event_type, remote_room)
@@ -333,7 +358,7 @@ class ProfileBridge:
             logger.warning(
                 "matrix_bridge: withheld inbound %s for %s: %s",
                 redact_source(event_id),
-                self.profile.name,
+                self.label,
                 reason,
             )
             # A withheld reaction has nothing to stand in for: it is dropped.
@@ -468,9 +493,7 @@ class ProfileBridge:
         # Held until the agent is in, so the room's first messages (which the
         # bridge forwards next) are not written before it can read them.
         if not await self.appservice.wait_for_agent(room):
-            logger.warning(
-                "matrix_bridge: %s has not joined a new room; carrying on", self.profile.name
-            )
+            logger.warning("matrix_bridge: %s has not joined a new room; carrying on", self.label)
         return "mapped"
 
     async def _inbound_left(self, remote_room: str) -> str:
@@ -495,7 +518,7 @@ class ProfileBridge:
         await self.mapping.forget_room(room)
         logger.warning(
             "matrix_bridge: retired %s's room %s: the bridge left it upstream",
-            self.profile.name,
+            self.label,
             room.local_id,
         )
         return "retired"
@@ -530,9 +553,11 @@ class ProfileBridge:
     async def outbound(self, txn_id: str, events: list[dict[str, Any]]) -> None:
         """Carry the agent's events in one appservice transaction upstream.
 
-        Raises BridgeUnavailableError when the bridge cannot take one, so the
-        transaction is not acked and Conduit sends it again; events already
-        carried are skipped on the retry.
+        Raises BridgeUnavailableError when the bridge cannot take one now, so
+        the transaction is not acked and Conduit sends it again; events already
+        carried are skipped on the retry. An event the bridge answers it can
+        never carry (``BridgeRefusedError``) is dropped and the agent told, so
+        it holds up nothing behind it.
         """
         async with self._outbound_lock:
             if await self.mapping.seen(f"txn:{txn_id}"):
@@ -572,7 +597,7 @@ class ProfileBridge:
             logger.warning(
                 "matrix_bridge: withheld outbound %s for %s: %s",
                 event_id,
-                self.profile.name,
+                self.label,
                 reason,
             )
             await self.appservice.notice(
@@ -582,26 +607,48 @@ class ProfileBridge:
             )
             await self.mapping.mark(key)
             stages.lap("notice")
-            stages.report(f"{self.profile.name} outbound {event_id} withheld")
+            stages.report(f"{self.label} outbound {event_id} withheld")
             return
 
         out = rewrite_content(content, await self._outbound_ids(content))
         if out is None:
             await self.mapping.mark(key)
             return
-        sent = await self._bridge(
-            "/send",
-            {
-                "room_id": remote_room,
-                "type": event_type,
-                "content": out,
-                "txn_id": _txn("out", event_id),
-            },
-        )
-        await self.mapping.put_event(str(sent["event_id"]), event_id)
+        sent = await self._send_upstream(room, event_type, out, event_id)
+        if sent is not None:
+            await self.mapping.put_event(sent, event_id)
         await self.mapping.mark(key)
         stages.lap("send")
-        stages.report(f"{self.profile.name} outbound {event_id} {event_type} sent")
+        stages.report(
+            f"{self.label} outbound {event_id} {event_type} {'sent' if sent else 'refused'}"
+        )
+
+    async def _send_upstream(
+        self, room: Room, event_type: str, content: dict[str, Any], event_id: str
+    ) -> str | None:
+        """The upstream event ID of one judged event the bridge sent, or None
+        when the bridge refused it for good and the agent was told."""
+        try:
+            sent = await self._bridge(
+                "/send",
+                {
+                    "room_id": room.remote_id,
+                    "type": event_type,
+                    "content": content,
+                    "txn_id": _txn("out", event_id),
+                },
+            )
+        except BridgeRefusedError as exc:
+            logger.warning(
+                "matrix_bridge: bridge %s answered %d to outbound %s for %s",
+                exc.path,
+                exc.status,
+                event_id,
+                self.label,
+            )
+            await self._undeliverable(room, event_id)
+            return None
+        return str(sent["event_id"])
 
     async def _outbound_redaction(self, event: dict[str, Any], room: Room) -> None:
         """Mirror the agent's redaction upstream, unless the room is refused."""
@@ -610,9 +657,28 @@ class ProfileBridge:
         target = await self.mapping.remote_event(str(redacts)) if redacts else None
         if target is None or await self._refused_outbound(room, event_id):
             return
-        await self._bridge(
-            "/redact",
-            {"room_id": room.remote_id, "event_id": target, "txn_id": _txn("rdo", event_id)},
+        try:
+            await self._bridge(
+                "/redact",
+                {"room_id": room.remote_id, "event_id": target, "txn_id": _txn("rdo", event_id)},
+            )
+        except BridgeRefusedError as exc:
+            logger.warning(
+                "matrix_bridge: bridge %s answered %d to outbound %s for %s",
+                exc.path,
+                exc.status,
+                event_id,
+                self.label,
+            )
+            await self._undeliverable(room, event_id)
+
+    async def _undeliverable(self, room: Room, event_id: str) -> None:
+        """Tell the agent the bridge will never carry this event (#483)."""
+        self.outbound_refused += 1
+        await self.appservice.notice(
+            room,
+            f"[trentina] your message was not sent: the {self.channel} channel cannot carry it",
+            _txn("wo", event_id),
         )
 
     async def _refused_outbound(self, room: Room, event_id: str) -> bool:
@@ -645,8 +711,11 @@ class ProfileBridge:
             )
         except (httpx.HTTPError, TimeoutError, ValueError) as exc:
             raise BridgeUnavailableError(f"bridge {path}: {exc_kind(exc)}") from exc
-        if resp.status_code != 200:
-            raise BridgeUnavailableError(f"bridge {path} -> {resp.status_code}")
+        status = resp.status_code
+        if 400 <= status < 500 and status not in _RETRYABLE_4XX:
+            raise BridgeRefusedError(path, status)
+        if status != 200:
+            raise BridgeUnavailableError(f"bridge {path} -> {status}")
         try:
             reply = json.loads(raw)
         except ValueError as exc:
