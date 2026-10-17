@@ -248,8 +248,9 @@ def _unapplied_bridges(current: GatewayConfig, new_config: GatewayConfig) -> lis
     validates the edit and applies none."""
 
     def bridges_of(config: GatewayConfig, name: str) -> Any:
+        # A profile added or removed with no bridges moved no bridge.
         profile = config.profiles.get(name)
-        return None if profile is None else profile.channel_bridges()
+        return {} if profile is None else profile.channel_bridges()
 
     moved = sorted(
         name

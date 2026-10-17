@@ -124,7 +124,7 @@ def _build_profile(name: str, body: Any) -> Profile:
     _check_drivers(name, profile)
     _check_destination_params(name, profile)
     _check_guarded_tools(name, profile)
-    _resolve_matrix_bridge_secrets(name, profile)
+    _resolve_bridge_secrets(name, profile)
     if profile.alert_ingress is not None:
         _resolve_alert_ingress_secrets(name, profile.alert_ingress)
 
@@ -216,7 +216,7 @@ def _check_drivers(name: str, profile: Profile) -> None:
         )
 
 
-def _resolve_matrix_bridge_secrets(name: str, profile: Profile) -> None:
+def _resolve_bridge_secrets(name: str, profile: Profile) -> None:
     """Resolve every enabled bridge's four tokens, failing closed on any gap.
 
     A disabled block resolves nothing: nothing reads its tokens, and demanding
@@ -712,7 +712,12 @@ def load_profiles(path: Path | str) -> GatewayConfig:
     try:
         cfg_data: Any = yaml.safe_load(raw_text)
     except yaml.YAMLError as exc:
-        raise ProfileConfigError(f"Invalid YAML in {config_path}: {exc}") from exc
+        # The problem and its position only: str(exc) quotes the offending
+        # source line, which in this file can be a line holding a secret.
+        mark = getattr(exc, "problem_mark", None)
+        where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        problem = getattr(exc, "problem", None) or type(exc).__name__
+        raise ProfileConfigError(f"Invalid YAML in {config_path}{where}: {problem}") from exc
 
     if not isinstance(cfg_data, dict):
         raise ProfileConfigError(f"Profiles file {config_path} must contain a top-level mapping")

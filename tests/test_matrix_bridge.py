@@ -604,6 +604,25 @@ class TestOutbound:
         await rig.bridge.outbound("t2", [_agent_event("$a2")])
         assert len(rig.upstream.sent) == 1
 
+    async def test_a_redaction_the_bridge_cannot_carry_is_dropped_and_told(
+        self, rig_factory: Any
+    ) -> None:
+        rig = rig_factory()
+        await rig.bridge.inbound(_message())
+        await rig.bridge.outbound("t1", [_agent_event("$a1")])
+        rig.upstream.status = 422
+        redaction = _agent_event("$x") | {
+            "type": "m.room.redaction",
+            "redacts": "$a1",
+            "content": {},
+        }
+        await rig.bridge.outbound("t2", [redaction])
+        assert rig.bridge.outbound_refused == 1
+        assert "cannot carry it" in rig.conduit.sent[-1]["content"]["body"]
+        rig.upstream.status = 200
+        await rig.bridge.outbound("t3", [_agent_event("$a2")])
+        assert [s["path"] for s in rig.upstream.sent] == ["/send", "/send"]
+
     @pytest.mark.parametrize("status", [401, 403, 408, 429])
     async def test_a_4xx_that_means_not_now_is_retried(self, rig_factory: Any, status: int) -> None:
         rig = rig_factory()
