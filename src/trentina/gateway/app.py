@@ -8,7 +8,7 @@ returning an SSE stream when the ``Accept`` header includes
 tracked via the ``Mcp-Session-Id`` response header.
 
 ``GET /gateway/{profile}/mcp`` opens an SSE stream for server-initiated
-notifications (e.g. ``tools/listChanged`` on circuit breaker state changes).
+notifications (e.g. ``tools/list_changed`` on circuit breaker state changes).
 
 ``DELETE /gateway/{profile}/mcp`` tears down a session.
 """
@@ -16,7 +16,6 @@ notifications (e.g. ``tools/listChanged`` on circuit breaker state changes).
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -31,7 +30,7 @@ from ..httpbody import STATUS_TOO_LARGE, RequestBodyCap, TooLargeError
 from ..logsafe import exc_kind, exc_where, redact_source, safe_address
 from ..quarantine.classifier import classifier_status
 from .auth import verify_bearer, verify_oauth
-from .context import current_session
+from .context import current_session, session_fingerprint
 from .errors import (
     AuthError,
     BackendCallError,
@@ -461,7 +460,7 @@ async def _handle_get(
     """Open a long-lived SSE stream for server-push notifications.
 
     Requires a valid ``Mcp-Session-Id`` header.  The stream stays open
-    until the client disconnects; ``notifications/tools/listChanged`` frames
+    until the client disconnects; ``notifications/tools/list_changed`` frames
     are delivered when circuit breaker state affects this session's profile
     (see :meth:`SessionRegistry.broadcast_tools_changed`).  Keepalive comment
     frames are interleaved during idle periods to hold the socket open.
@@ -679,7 +678,7 @@ async def _handle_post(
 
     # Each request is its own task, so the binding ends with it. The id is a
     # bearer of the session: only its fingerprint reaches the audit.
-    current_session.set(hashlib.sha256(session_id.encode()).hexdigest()[:16] if session_id else "")
+    current_session.set(session_fingerprint(session_id))
     try:
         response = await route_jsonrpc(profile, body)
     except ProfileNotFoundError:

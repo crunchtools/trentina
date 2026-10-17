@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from .gateway.profile import Profile
     from .gateway.sessions import SessionRegistry
 
-__version__ = "1.14.0"
+__version__ = "1.15.0"
 
 DEFAULT_PORT = 8019
 DEFAULT_EGRESS_PORT = 8021
@@ -1253,7 +1253,7 @@ def _wire_circuit_notifications(
     """Connect circuit breaker state changes to session notification broadcast.
 
     When a circuit opens or closes, determines which profiles use the
-    affected backend URL and broadcasts ``tools/listChanged`` to all
+    affected backend URL and broadcasts ``tools/list_changed`` to all
     active sessions for those profiles.
     """
     from .gateway.circuit import State

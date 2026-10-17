@@ -77,6 +77,13 @@ justification = "Not single-use: called from 14 test functions, verified by grep
 classification = "gourmand_bug"
 
 [[exceptions]]
+check = "single_use_helpers"
+path = "tests/test_gateway_discovery.py"
+pattern = "_outcomes"
+justification = "Not single-use: called from 7 test methods across three classes, verified by grep. The same per-class undercount as the tests/test_reload.py `_registry` entry above. Upstream: https://gitlab.com/mattdm/gourmand/-/issues/25"
+classification = "gourmand_bug"
+
+[[exceptions]]
 check = "redundant_error_handling"
 path = "src/trentina/gateway/circuit.py"
 pattern = "_notify"

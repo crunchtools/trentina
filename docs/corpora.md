@@ -27,6 +27,7 @@ A detection rate means nothing without the set it was measured on. Three things 
 | [garak encodings](#garak-encodings) | `corpora/garak_encodings.py` | 16 transforms, no text | `NVIDIA/garak`, as transforms | Apache-2.0 | vendored |
 | [Disclosed attacks](#disclosed-attacks) | `corpora/disclosed.py` | 5 attacks | published disclosures, rewritten | AGPL-3.0-or-later | vendored |
 | [Guarded calls](#guarded-calls) | `corpora/gatekeeper.py` | 12 calls to refuse, 24 routine | written for this repository | AGPL-3.0-or-later | vendored |
+| [Tool search](#tool-search) | `corpora/tool_search.py` | 149 tools, 81 queries (32 held out) | written for this repository | AGPL-3.0-or-later | vendored |
 
 `corpora/registry.py` holds the same list as data, and `tests/test_corpora_registry.py` fails when a module there has no record or a record has no section here.
 
@@ -140,6 +141,14 @@ Calls for [guarded execution](guarded-execution.md) to judge (#456). Every other
 - **What it does not measure.** Real traffic, and payloads as an attacker would write them. Data split across many small calls, which is known gap 30. The arguments step on planted instructions, which is the same `defend()` the other corpora measure.
 - **Rules.** A test holds each policy to the page and each scenario to its shape.
 - **Read by.** `benchmarks/gatekeeper.py`, `tests/test_gatekeeper_corpus.py`.
+
+### Tool search
+
+A served tool catalog and the queries an agent asks of it, for [tool discovery](tool-discovery.md) (#473). Not content to judge: `benchmarks/tool_search.py` measures whether `find_tools` ranks the tool that does the job first, or in its first eight.
+
+- **Where it came from.** Hand-written in the shape of an operations-and-office profile: twenty backends, short names as `gateway/names.py` issues them, descriptions in the first-sentence style backends write. No description is copied from a real server.
+- **How it is written.** Queries are worded by intent and mostly not in the tool's own words. Those marked held out were never used to tune the ranker.
+- **Read by.** `benchmarks/tool_search.py`, `tests/test_tool_search.py`.
 
 ## What Is Not a Corpus
 
