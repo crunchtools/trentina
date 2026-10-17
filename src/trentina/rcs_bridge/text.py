@@ -34,18 +34,23 @@ def chunks(text: str, limit: int) -> list[str]:
     paragraph, then a line, then a space, and only mid-word as a last resort.
     Empty text is no message at all."""
     out: list[str] = []
-    rest = text.strip()
-    while len(rest) > limit:
-        window = rest[: limit + 1]
+    text = text.strip()
+    start, end = 0, len(text)
+    # A cursor over one string: each chunk is sliced once, never the rest.
+    while end - start > limit:
         cut = -1
         for sep in ("\n\n", "\n", " "):
-            cut = window.rfind(sep, 0, limit + 1)
-            if cut > limit // 2:
+            cut = text.rfind(sep, start, start + limit + 1)
+            if cut - start > limit // 2:
                 break
-        if cut <= 0:
-            cut = limit
-        out.append(rest[:cut].rstrip())
-        rest = rest[cut:].lstrip()
-    if rest:
-        out.append(rest)
+        # No separator in the back half: cut at the limit, so a space near
+        # the front does not make a message of two words.
+        if cut - start <= limit // 2:
+            cut = start + limit
+        out.append(text[start:cut].rstrip())
+        start = cut
+        while start < end and text[start].isspace():
+            start += 1
+    if start < end:
+        out.append(text[start:end])
     return out

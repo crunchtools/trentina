@@ -424,3 +424,154 @@ class TestSettings:
         monkeypatch.setenv(name, value)
         with pytest.raises(SettingsError):
             RcsSettings.from_env()
+
+
+class TestEdges:
+    def test_a_full_inbox_answers_503_and_holds_nothing_new(
+        self, rig: Rig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from trentina.rcs_bridge import store as store_mod
+
+        monkeypatch.setattr(store_mod, "MAX_INBOX", 1)
+        client = TestClient(build_public_app(rig.bridge))
+        assert _post(client, _form(MessageSid="SM1")).status_code == 200
+        assert _post(client, _form(MessageSid="SM2")).status_code == 503
+        assert [m.message_id for m in asyncio.run(rig.store.pending())] == ["SM1"]
+
+    def test_a_non_ascii_signature_is_refused_not_raised(self, rig: Rig) -> None:
+        backend = rig.bridge.backend
+        assert backend.verify(WEBHOOK, list(_form().items()), "ség") is False
+
+    @pytest.mark.parametrize("status", [401, 403, 429, 503])
+    async def test_a_not_now_from_the_gateway_is_retried(self, rig: Rig, status: int) -> None:
+        await rig.bridge.accept(Inbound("SM1", OWNER, "one"))
+        rig.gateway.statuses = [200, status, status]  # the announcement, then the message
+        await _drain(rig)
+        assert rig.gateway.events[-1]["content"]["body"] == "one"
+
+    async def test_a_never_from_the_gateway_drops_that_message_only(self, rig: Rig) -> None:
+        await rig.bridge.accept(Inbound("SM1", OWNER, "one"))
+        await rig.bridge.accept(Inbound("SM2", OWNER, "two"))
+        rig.gateway.statuses = [200, 422]  # the announcement, then SM1; neither recorded
+        await _drain(rig)
+        assert [e["content"]["body"] for e in rig.gateway.events] == ["two"]
+        assert await rig.store.pending() == []
+
+    async def test_a_transport_failure_is_retried(self, rig: Rig) -> None:
+        calls = {"n": 0}
+        real = rig.gateway
+
+        def flaky(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise httpx.ConnectError("gateway restarting")
+            return real(request)
+
+        rig.bridge._gateway = httpx.AsyncClient(transport=httpx.MockTransport(flaky))
+        await rig.bridge.accept(Inbound("SM1", OWNER, "one"))
+        await _drain(rig)
+        assert rig.gateway.events[-1]["content"]["body"] == "one"
+
+    async def test_old_records_are_pruned_and_new_ones_kept(
+        self, rig: Rig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from trentina.rcs_bridge import store as store_mod
+
+        await rig.store.record("old", 0, "SMold")
+        await rig.store.put(Inbound("SM1", OWNER, "x"))
+        await rig.store.delivered("SM1")
+        later = store_mod.time.time() + (store_mod.RETENTION_DAYS + 1) * 86400
+        await rig.store.record("new", 0, "SMnew")
+        rig.store._db.execute("UPDATE sent SET created = ? WHERE txn_id = 'new'", (later,))
+        monkeypatch.setattr(store_mod.time, "time", lambda: later)
+        await rig.store.prune()
+        assert await rig.store.sent("old") == {}
+        assert await rig.store.sent("new") == {0: "SMnew"}
+        assert await rig.bridge.accept(Inbound("SM1", OWNER, "x"))
+
+    def test_an_existing_store_is_made_private(self, tmp_path: Path) -> None:
+        path = tmp_path / "rcs.db"
+        path.touch(mode=0o644)
+        path.chmod(0o644)
+        RcsStore(path).close()
+        assert path.stat().st_mode & 0o777 == 0o600
+
+    def test_the_twilio_api_must_be_https(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for key, good in _ENV.items():
+            monkeypatch.setenv(key, good)
+        monkeypatch.setenv("RCS_TWILIO_API", "http://api.twilio.com")
+        with pytest.raises(SettingsError):
+            RcsSettings.from_env()
+
+
+class TestChunkBoundaries:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            # A line break in the back half wins over a space.
+            ("a" * 6 + "\n" + "b" * 5, ["a" * 6, "b" * 5]),
+            # Only spaces: the last one in the window.
+            ("aaa bbbb cccc", ["aaa bbbb", "cccc"]),
+            # A separator only in the front half: cut at the limit.
+            ("ab " + "c" * 12, ["ab ccccccc", "ccccc"]),
+        ],
+    )
+    def test_where_a_chunk_ends(self, text: str, expected: list[str]) -> None:
+        parts = chunks(text, 10)
+        assert parts == expected
+        assert all(len(p) <= 10 for p in parts)
+
+    def test_nothing_but_split_whitespace_is_lost(self) -> None:
+        text = " ".join(f"word{i}" for i in range(500))
+        assert " ".join(chunks(text, 37)).split() == text.split()
+
+
+class TestRun:
+    """``main._run``: any one task ending ends them all, and closes the bridge."""
+
+    @pytest.fixture
+    def patched(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+        from trentina.rcs_bridge import main as main_mod
+
+        seen: dict[str, Any] = {"cancelled": [], "closed": False, "fail": None}
+
+        async def forever(name: str) -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                seen["cancelled"].append(name)
+                raise
+
+        async def run(_self: RcsBridge) -> None:
+            await forever("deliver")
+
+        async def serve(server: Any) -> None:
+            if server.config.port == 8473:  # the webhook listener ends
+                if seen["fail"] is not None:
+                    raise seen["fail"]
+                return
+            await forever("api")
+
+        async def aclose(_self: RcsBridge) -> None:
+            seen["closed"] = True
+
+        monkeypatch.setattr(main_mod.RcsBridge, "run", run)
+        monkeypatch.setattr(main_mod.RcsBridge, "aclose", aclose)
+        monkeypatch.setattr(main_mod.uvicorn.Server, "serve", serve)
+        seen["run"] = main_mod._run
+        seen["settings"] = _settings(tmp_path)
+        return seen
+
+    async def test_one_ending_cancels_the_rest_and_closes(self, patched: dict[str, Any]) -> None:
+        await patched["run"](patched["settings"])
+        assert sorted(patched["cancelled"]) == ["api", "deliver"]
+        assert patched["closed"]
+
+    async def test_one_failing_is_raised_after_the_rest_are_cancelled(
+        self, patched: dict[str, Any]
+    ) -> None:
+        patched["fail"] = OSError("port in use")
+        with pytest.raises(OSError, match="port in use"):
+            await patched["run"](patched["settings"])
+        assert sorted(patched["cancelled"]) == ["api", "deliver"]
+        assert patched["closed"]

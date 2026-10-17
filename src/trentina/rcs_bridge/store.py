@@ -64,6 +64,9 @@ class RcsStore:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         os.close(os.open(path, os.O_CREAT | os.O_RDWR, 0o600))
+        # Also when the file already existed with a looser mode. SQLite gives
+        # the -wal and -shm files the database file's mode.
+        os.chmod(path, 0o600)
         self._db = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)

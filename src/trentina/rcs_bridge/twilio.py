@@ -16,7 +16,6 @@ import base64
 import hashlib
 import hmac
 import json
-import logging
 from http import HTTPStatus
 from typing import Any
 
@@ -25,8 +24,6 @@ import httpx
 from ..httpbody import request_capped
 from ..logsafe import exc_kind
 from .backend import BackendError, Inbound
-
-logger = logging.getLogger(__name__)
 
 _TIMEOUT = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
 _DEADLINE = 30.0
@@ -73,7 +70,9 @@ class TwilioBackend:
         await self._client.aclose()
 
     def verify(self, url: str, form: list[tuple[str, str]], signature_header: str) -> bool:
-        if not signature_header:
+        if not signature_header or not signature_header.isascii():
+            # A real signature is base64; anything else is not one, and must
+            # be refused rather than raise in the comparison.
             return False
         expected = signature(self._auth_token, url, form)
         return hmac.compare_digest(expected.encode("ascii"), signature_header.encode("ascii"))

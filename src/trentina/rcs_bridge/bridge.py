@@ -15,6 +15,7 @@ gateway's ``txn_id`` as it goes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 from typing import TYPE_CHECKING, Any
@@ -37,6 +38,9 @@ ROOM_ANNOUNCE = "org.crunchtools.trentina.room"
 ROOM_REFUSED = "refused"
 _TEXT_TYPES = frozenset({"m.text", "m.notice", "m.emote"})
 _MAX_BACKOFF = 60.0
+# The store is pruned at least this often, so a bridge that only sends still
+# drops old send records.
+PRUNE_EVERY = 3600.0
 _GATEWAY_TIMEOUT = httpx.Timeout(connect=5.0, read=60.0, write=10.0, pool=5.0)
 
 
@@ -159,7 +163,8 @@ class RcsBridge:
                 await self.forward(self._payload(message))
                 await self.store.delivered(message.message_id)
             await self.store.prune()
-            await self._wake.wait()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._wake.wait(), PRUNE_EVERY)
 
     async def forward(self, payload: dict[str, Any]) -> str:
         """POST to the gateway until it takes the event; its outcome.
@@ -200,6 +205,11 @@ class RcsBridge:
         self, room_id: str, event_type: str, content: dict[str, Any], txn_id: str
     ) -> str:
         """Send one judged event to the owner's phone; the event ID it gets.
+
+        At least once, per chunk: a chunk is recorded once Twilio answers, so
+        one whose answer is lost (a timeout after Twilio took it) is sent
+        again on the gateway's retry. Twilio's Messages API takes no
+        idempotency key, so this is the strongest guarantee it allows.
 
         Raises:
             RefusedError: not a text message in the owner's room, or empty.

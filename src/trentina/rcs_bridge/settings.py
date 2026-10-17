@@ -13,7 +13,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from ..bridge.settings import SettingsError, _port, _private_gateway, _read, _required
+from ..bridge.settings import (
+    SettingsError,
+    parse_port,
+    private_gateway_url,
+    read_setting,
+    required_setting,
+)
 from ..gateway.loader import read_env_or_file, read_secret_env
 from ..gateway.profile import is_matrix_user_id
 
@@ -53,9 +59,10 @@ def _https_url(name: str, value: str) -> str:
 
 
 def _api_url(value: str) -> str:
+    """Where the auth token goes, as Basic auth: TLS only, whatever the host."""
     parsed = urlparse(value)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        raise SettingsError("RCS_TWILIO_API must be an http(s) URL")
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise SettingsError("RCS_TWILIO_API must be an https URL with no credentials")
     return value.rstrip("/")
 
 
@@ -98,20 +105,20 @@ class RcsSettings:
 
     @classmethod
     def from_env(cls) -> RcsSettings:
-        agent = _required("RCS_AGENT_USER_ID", read_env_or_file)
+        agent = required_setting("RCS_AGENT_USER_ID", read_env_or_file)
         if not is_matrix_user_id(agent):
             raise SettingsError("RCS_AGENT_USER_ID must be a Matrix user ID")
         server = os.environ.get("RCS_SERVER", DEFAULT_SERVER)
         if not is_matrix_user_id(f"@x:{server}"):
             raise SettingsError("RCS_SERVER must be a Matrix server name")
         return cls(
-            profile=_required("BRIDGE_PROFILE", read_env_or_file),
+            profile=required_setting("BRIDGE_PROFILE", read_env_or_file),
             channel=os.environ.get("BRIDGE_CHANNEL", "rcs"),
-            gateway_url=_private_gateway(_required("BRIDGE_GATEWAY_URL")),
-            ingress_token=_required("BRIDGE_INGRESS_TOKEN"),
-            bridge_token=_required("BRIDGE_TOKEN"),
+            gateway_url=private_gateway_url(required_setting("BRIDGE_GATEWAY_URL")),
+            ingress_token=required_setting("BRIDGE_INGRESS_TOKEN"),
+            bridge_token=required_setting("BRIDGE_TOKEN"),
             agent_user_id=agent,
-            owner_number=_e164("RCS_OWNER_NUMBER", _required("RCS_OWNER_NUMBER")),
+            owner_number=_e164("RCS_OWNER_NUMBER", required_setting("RCS_OWNER_NUMBER")),
             owner_name=os.environ.get("RCS_OWNER_NAME", "Owner (phone)"),
             room_topic=os.environ.get(
                 "RCS_ROOM_TOPIC",
@@ -120,18 +127,18 @@ class RcsSettings:
             server=server,
             store_dir=Path(os.environ.get("BRIDGE_STORE_DIR", "/data")),
             listen_host=os.environ.get("BRIDGE_LISTEN_HOST", "127.0.0.1"),
-            listen_port=_port(os.environ.get("BRIDGE_LISTEN_PORT", str(DEFAULT_API_PORT))),
+            listen_port=parse_port(os.environ.get("BRIDGE_LISTEN_PORT", str(DEFAULT_API_PORT))),
             webhook_host=os.environ.get("RCS_WEBHOOK_HOST", "127.0.0.1"),
-            webhook_port=_port(os.environ.get("RCS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))),
-            webhook_url=_https_url("RCS_WEBHOOK_URL", _required("RCS_WEBHOOK_URL")),
+            webhook_port=parse_port(os.environ.get("RCS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))),
+            webhook_url=_https_url("RCS_WEBHOOK_URL", required_setting("RCS_WEBHOOK_URL")),
             account_sid=_sid(
-                "RCS_TWILIO_ACCOUNT_SID", "account", _required("RCS_TWILIO_ACCOUNT_SID")
+                "RCS_TWILIO_ACCOUNT_SID", "account", required_setting("RCS_TWILIO_ACCOUNT_SID")
             ),
-            auth_token=_required("RCS_TWILIO_AUTH_TOKEN", read_secret_env),
+            auth_token=required_setting("RCS_TWILIO_AUTH_TOKEN", read_secret_env),
             messaging_service_sid=_sid(
                 "RCS_TWILIO_MESSAGING_SERVICE_SID",
                 "service",
-                _required("RCS_TWILIO_MESSAGING_SERVICE_SID"),
+                required_setting("RCS_TWILIO_MESSAGING_SERVICE_SID"),
             ),
-            twilio_api=_api_url(_read("RCS_TWILIO_API") or DEFAULT_TWILIO_API),
+            twilio_api=_api_url(read_setting("RCS_TWILIO_API") or DEFAULT_TWILIO_API),
         )
