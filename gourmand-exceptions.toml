@@ -302,6 +302,12 @@ classification = "by_design"
 
 [[exceptions]]
 check = "hidden_env_config"
+path = "src/trentina/rcs_bridge/settings.py"
+justification = "Every BRIDGE_* and RCS_* variable read here is the RCS bridge process's own configuration surface, documented with its default in docs/channel-bridges.md's RCS bridge table. Like the Matrix bridge it reads its own environment rather than profiles.yaml: it holds the provider credential and nothing of the gateway's (spec 020)."
+classification = "by_design"
+
+[[exceptions]]
+check = "hidden_env_config"
 path = "src/trentina/bridge/main.py"
 justification = "BRIDGE_LOG_LEVEL and BRIDGE_STORE_DIR are documented with their defaults in docs/matrix-bridge.md's Bridge process table. main.py reads BRIDGE_STORE_DIR itself only for import-mautrix, which runs before a full BridgeSettings can be built (the upstream tokens are not needed to import a store)."
 classification = "by_design"
