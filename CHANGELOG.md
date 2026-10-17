@@ -10,6 +10,19 @@ under that name.
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-10-17
+
+### Added
+
+- The RCS channel bridge (#485): `python -m trentina.rcs_bridge.main run`,
+  one per agent, puts the agent in its owner's phone messages app as a
+  branded RCS thread through Twilio. It speaks the channel-bridge contract
+  (#483), so every message is judged by the gateway both ways. Inbound
+  webhooks are signature-checked, pinned to one account and one number, and
+  queued to disk before they are acknowledged. Outbound replies are flattened
+  to plain text and chunked at 1,600 characters, idempotently. A `Backend`
+  protocol keeps the provider swappable. See `docs/channel-bridges.md`.
+
 ## [1.15.0] - 2026-10-17
 
 ### Added

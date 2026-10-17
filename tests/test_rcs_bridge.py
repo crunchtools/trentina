@@ -1,0 +1,426 @@
+"""The RCS bridge (#485): Twilio in, the gateway out, and back.
+
+What these pin down: nothing reaches the store unless Twilio signed it and
+the owner sent it; nothing in the store is lost to a gateway outage or a
+restart; a reply is sent once per chunk however often the gateway retries;
+and anything RCS cannot carry is a 422, the gateway's "never".
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qsl, urlencode
+
+import httpx
+import pytest
+from starlette.testclient import TestClient
+
+from trentina.bridge.settings import SettingsError
+from trentina.rcs_bridge import bridge as bridge_mod
+from trentina.rcs_bridge.api import build_private_app, build_public_app
+from trentina.rcs_bridge.backend import Inbound
+from trentina.rcs_bridge.bridge import RcsBridge, RefusedError, UnavailableError
+from trentina.rcs_bridge.settings import RcsSettings
+from trentina.rcs_bridge.store import RcsStore
+from trentina.rcs_bridge.text import chunks, flatten
+from trentina.rcs_bridge.twilio import MAX_BODY, TwilioBackend, signature
+
+ACCOUNT = "AC" + "0" * 32
+SERVICE = "MG" + "a" * 32
+TOKEN = "twilio-auth-token"
+OWNER = "+15551234567"
+WEBHOOK = "https://rcs.example.com/agent1/twilio/inbound"
+BRIDGE_TOKEN = "bridge-secret"
+
+
+def _settings(store_dir: Path) -> RcsSettings:
+    return RcsSettings(
+        profile="agent1",
+        channel="rcs",
+        gateway_url="http://10.89.0.2:8019",
+        ingress_token="ingress-secret",
+        bridge_token="bridge-secret",
+        agent_user_id="@agent1:rcs.invalid",
+        owner_number=OWNER,
+        owner_name="Owner (phone)",
+        room_topic="lower trust",
+        server="rcs.invalid",
+        store_dir=store_dir,
+        listen_host="127.0.0.1",
+        listen_port=8472,
+        webhook_host="127.0.0.1",
+        webhook_port=8473,
+        webhook_url=WEBHOOK,
+        account_sid=ACCOUNT,
+        auth_token=TOKEN,
+        messaging_service_sid=SERVICE,
+        twilio_api="https://api.twilio.test",
+    )
+
+
+class FakeTwilio:
+    """The Messages API: records each form, answers a sid or a set failure."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, str]] = []
+        # Statuses to answer before succeeding, one per request.
+        self.fail: list[tuple[int, dict[str, Any]]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        assert request.url.path == f"/2010-04-01/Accounts/{ACCOUNT}/Messages.json"
+        assert request.headers["authorization"].startswith("Basic ")
+        if self.fail:
+            status, body = self.fail.pop(0)
+            return httpx.Response(status, json=body)
+        self.sent.append(dict(parse_qsl(request.content.decode())))
+        return httpx.Response(201, json={"sid": f"SM{len(self.sent):032d}"})
+
+
+class FakeGateway:
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+        self.statuses: list[int] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/bridge/agent1/rcs/event"
+        assert request.headers["authorization"] == "Bearer ingress-secret"
+        if self.statuses:
+            return httpx.Response(self.statuses.pop(0), json={})
+        event = json.loads(request.content)
+        self.events.append(event)
+        return httpx.Response(200, json={"outcome": "delivered"})
+
+
+class Rig:
+    def __init__(self, tmp_path: Path) -> None:
+        self.settings = _settings(tmp_path)
+        self.twilio = FakeTwilio()
+        self.gateway = FakeGateway()
+        backend = TwilioBackend(
+            account_sid=ACCOUNT,
+            auth_token=TOKEN,
+            messaging_service_sid=SERVICE,
+            api="https://api.twilio.test",
+            client=httpx.AsyncClient(transport=httpx.MockTransport(self.twilio)),
+        )
+        self.store = RcsStore(tmp_path / "rcs.db")
+        self.bridge = RcsBridge(
+            self.settings,
+            backend,
+            self.store,
+            gateway=httpx.AsyncClient(transport=httpx.MockTransport(self.gateway)),
+        )
+
+
+@pytest.fixture
+def rig(tmp_path: Path) -> Rig:
+    return Rig(tmp_path)
+
+
+_real_sleep = asyncio.sleep
+
+
+@pytest.fixture(autouse=True)
+def _no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bridge's retry backoff, made instant but still a yield."""
+
+    async def instant(_seconds: float) -> None:
+        await _real_sleep(0)
+
+    monkeypatch.setattr(bridge_mod.asyncio, "sleep", instant)
+
+
+def _form(**overrides: str) -> dict[str, str]:
+    return {
+        "AccountSid": ACCOUNT,
+        "MessageSid": "SM" + "1" * 32,
+        "From": f"rcs:{OWNER}",
+        "To": "rcs:agent1_agent",
+        "Body": "ship it",
+        "NumMedia": "0",
+    } | overrides
+
+
+def _post(client: TestClient, form: dict[str, str], *, token: str = TOKEN) -> httpx.Response:
+    return client.post(
+        "/twilio/inbound",
+        content=urlencode(form),
+        headers={
+            "content-type": "application/x-www-form-urlencoded",
+            "x-twilio-signature": signature(token, WEBHOOK, list(form.items())),
+        },
+    )
+
+
+async def _drain(rig: Rig) -> None:
+    """Run the delivery loop until the inbox is empty, then stop it."""
+    task = asyncio.create_task(rig.bridge.run())
+    for _ in range(500):
+        await _real_sleep(0.001)
+        if rig.bridge.ready.is_set() and not await rig.store.pending():
+            break
+    else:
+        pytest.fail("the inbox never drained")
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+class TestSignature:
+    def test_it_is_twilio_pythons(self) -> None:
+        """Computed by twilio-python 9.x ``RequestValidator.compute_signature``
+        over the same URL and parameters."""
+        params = [
+            ("AccountSid", "AC" + "0" * 32),
+            ("MessageSid", "SM" + "1" * 32),
+            ("From", "rcs:+15551234567"),
+            ("To", "rcs:kagetora_agent"),
+            ("Body", "Deploy it? & yes = 100% ✓"),
+            ("NumMedia", "0"),
+        ]
+        url = "https://rcs.example.com/kagetora/twilio/inbound"
+        assert signature("12345", url, params) == "0MOBtZuCnN17v98D5/82+Rz9L3g="
+
+
+class TestWebhook:
+    def test_a_signed_message_from_the_owner_is_held(self, rig: Rig) -> None:
+        resp = _post(TestClient(build_public_app(rig.bridge)), _form())
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/xml")
+        pending = asyncio.run(rig.store.pending())
+        assert [(m.sender, m.body) for m in pending] == [(OWNER, "ship it")]
+
+    @pytest.mark.parametrize(
+        ("form", "token", "status"),
+        [
+            (_form(), "wrong-token", 403),
+            (_form(From="rcs:+15559999999"), TOKEN, 403),
+            (_form(From="+15559999999"), TOKEN, 403),
+        ],
+    )
+    def test_unsigned_or_foreign_is_refused_and_nothing_held(
+        self, rig: Rig, form: dict[str, str], token: str, status: int
+    ) -> None:
+        resp = _post(TestClient(build_public_app(rig.bridge)), form, token=token)
+        assert resp.status_code == status
+        assert asyncio.run(rig.store.pending()) == []
+
+    def test_another_accounts_or_a_status_callback_is_answered_and_ignored(self, rig: Rig) -> None:
+        client = TestClient(build_public_app(rig.bridge))
+        assert _post(client, _form(AccountSid="AC" + "9" * 32)).status_code == 200
+        status_callback = _form(MessageStatus="delivered")
+        del status_callback["Body"]
+        assert _post(client, status_callback).status_code == 200
+        assert asyncio.run(rig.store.pending()) == []
+
+    def test_a_tampered_body_fails_the_signature(self, rig: Rig) -> None:
+        form = _form()
+        headers = {
+            "content-type": "application/x-www-form-urlencoded",
+            "x-twilio-signature": signature(TOKEN, WEBHOOK, list(form.items())),
+        }
+        tampered = urlencode(form | {"Body": "rm -rf /"})
+        client = TestClient(build_public_app(rig.bridge))
+        assert client.post("/twilio/inbound", content=tampered, headers=headers).status_code == 403
+
+    def test_a_retried_webhook_is_held_once(self, rig: Rig) -> None:
+        client = TestClient(build_public_app(rig.bridge))
+        assert _post(client, _form()).status_code == 200
+        assert _post(client, _form()).status_code == 200
+        assert len(asyncio.run(rig.store.pending())) == 1
+
+    def test_not_a_form_or_too_large_is_refused(self, rig: Rig) -> None:
+        client = TestClient(build_public_app(rig.bridge))
+        assert client.post("/twilio/inbound", json=_form()).status_code == 415
+        big = _form(Body="x" * 40_000)
+        assert _post(client, big).status_code == 413
+
+
+class TestDelivery:
+    async def test_the_room_is_announced_then_the_message_delivered(self, rig: Rig) -> None:
+        await rig.bridge.accept(Inbound("SM1", OWNER, "ship it"))
+        await _drain(rig)
+        announce, message = rig.gateway.events
+        assert announce["type"] == "org.crunchtools.trentina.room"
+        assert announce["room_id"] == "!agent1-owner:rcs.invalid"
+        assert announce["room"]["members"] == ["@tel15551234567:rcs.invalid"]
+        assert announce["room"]["is_direct"] is True
+        assert message["sender"] == "@tel15551234567:rcs.invalid"
+        assert message["sender_displayname"] == "Owner (phone)"
+        assert message["content"] == {"msgtype": "m.text", "body": "ship it"}
+        assert message["event_id"] == "$rcs-SM1"
+        assert await rig.store.pending() == []
+
+    async def test_a_gateway_outage_loses_nothing(self, rig: Rig) -> None:
+        await rig.bridge.accept(Inbound("SM1", OWNER, "one"))
+        rig.gateway.statuses = [503, 503]
+        await _drain(rig)
+        assert [e.get("content", {}).get("body") for e in rig.gateway.events] == [None, "one"]
+
+    async def test_a_restart_delivers_what_was_held(self, tmp_path: Path) -> None:
+        first = RcsStore(tmp_path / "rcs.db")
+        await first.put(Inbound("SM1", OWNER, "held"))
+        first.close()
+        rig = Rig(tmp_path)
+        await _drain(rig)
+        assert rig.gateway.events[-1]["content"]["body"] == "held"
+
+    async def test_a_delivered_message_stays_a_duplicate(self, rig: Rig) -> None:
+        assert await rig.bridge.accept(Inbound("SM1", OWNER, "one"))
+        await _drain(rig)
+        assert not await rig.bridge.accept(Inbound("SM1", OWNER, "one"))
+
+    async def test_an_attachment_is_named_not_dropped(self, rig: Rig) -> None:
+        await rig.bridge.accept(Inbound("SM1", OWNER, "", attachments=2))
+        await _drain(rig)
+        assert "2 attachment(s) not carried" in rig.gateway.events[-1]["content"]["body"]
+
+
+ROOM = "!agent1-owner:rcs.invalid"
+
+
+class TestSend:
+    async def test_a_text_goes_to_the_owner_over_rcs_only(self, rig: Rig) -> None:
+        content = {"msgtype": "m.text", "body": "**Done.** See [the PR](https://x/1)"}
+        event_id = await rig.bridge.send(ROOM, "m.room.message", content, "out1")
+        (form,) = rig.twilio.sent
+        assert form == {
+            "MessagingServiceSid": SERVICE,
+            "To": f"rcs:{OWNER}",
+            "Body": "Done. See the PR (https://x/1)",
+        }
+        assert event_id == f"$rcs-SM{1:032d}"
+
+    async def test_a_retry_sends_only_the_chunks_that_did_not_go(self, rig: Rig) -> None:
+        body = "\n\n".join(["a" * 1000, "b" * 1000, "c" * 1000])
+        content = {"msgtype": "m.text", "body": body}
+        rig.twilio.fail = [(201, {"sid": "SMfirst"}), (500, {"code": 20500})]
+        with pytest.raises(UnavailableError):
+            await rig.bridge.send(ROOM, "m.room.message", content, "out1")
+        first = await rig.bridge.send(ROOM, "m.room.message", content, "out1")
+        again = await rig.bridge.send(ROOM, "m.room.message", content, "out1")
+        assert first == again == "$rcs-SMfirst"
+        assert [f["Body"][0] for f in rig.twilio.sent] == ["b", "c"]
+
+    @pytest.mark.parametrize(
+        ("event_type", "content"),
+        [
+            ("m.reaction", {"m.relates_to": {"key": "+1"}}),
+            ("m.room.message", {"msgtype": "m.image", "body": "x.png"}),
+            ("m.room.message", {"msgtype": "m.text", "body": "   "}),
+            ("m.room.message", {"msgtype": "m.text"}),
+        ],
+    )
+    async def test_what_rcs_cannot_carry_is_refused(
+        self, rig: Rig, event_type: str, content: dict[str, Any]
+    ) -> None:
+        with pytest.raises(RefusedError):
+            await rig.bridge.send(ROOM, event_type, content, "out1")
+        assert rig.twilio.sent == []
+
+    async def test_only_the_owners_room(self, rig: Rig) -> None:
+        with pytest.raises(RefusedError):
+            await rig.bridge.send("!other:rcs.invalid", "m.room.message", {"body": "x"}, "t")
+
+    async def test_a_body_twilio_refuses_for_good_is_refused(self, rig: Rig) -> None:
+        rig.twilio.fail = [(400, {"code": 21617})]
+        with pytest.raises(RefusedError):
+            await rig.bridge.send(ROOM, "m.room.message", {"msgtype": "m.text", "body": "x"}, "t")
+
+
+class TestPrivateApi:
+    def _client(self, rig: Rig) -> TestClient:
+        return TestClient(build_private_app(rig.bridge))
+
+    def _send(self, client: TestClient, body: dict[str, Any], token: str = BRIDGE_TOKEN) -> int:
+        resp = client.post("/send", json=body, headers={"Authorization": f"Bearer {token}"})
+        return resp.status_code
+
+    def test_the_gateway_contract(self, rig: Rig) -> None:
+        client = self._client(rig)
+        text = {
+            "room_id": ROOM,
+            "type": "m.room.message",
+            "content": {"msgtype": "m.text", "body": "hi"},
+            "txn_id": "t1",
+        }
+        assert self._send(client, text, token="wrong") == 401
+        assert self._send(client, text) == 200
+        assert self._send(client, text | {"type": "m.reaction", "txn_id": "t2"}) == 422
+        assert self._send(client, text | {"extra": 1}) == 400
+        redact = {"room_id": ROOM, "event_id": "$e", "txn_id": "t3"}
+        headers = {"Authorization": "Bearer bridge-secret"}
+        assert client.post("/redact", json=redact, headers=headers).status_code == 422
+        rig.twilio.fail = [(503, {"code": 20503})]
+        assert self._send(client, text | {"txn_id": "t4"}) == 502
+
+    def test_health_is_ready_once_the_room_is_announced(self, rig: Rig) -> None:
+        client = self._client(rig)
+        assert client.get("/health").status_code == 503
+        rig.bridge.ready.set()
+        assert client.get("/health").status_code == 200
+
+
+class TestText:
+    def test_markup_goes_and_meaning_stays(self) -> None:
+        body = "# Status\n\n**All green.** `make test` passed.\n```\nok\n```\n[docs](https://d)"
+        assert flatten("m.text", body) == (
+            "Status\n\nAll green. `make test` passed.\nok\ndocs (https://d)"
+        )
+        assert flatten("m.emote", "waves") == "* waves"
+        assert flatten("m.text", "[https://x](https://x)") == "https://x"
+
+    def test_chunks_split_at_paragraphs_and_never_exceed_the_limit(self) -> None:
+        text = "\n\n".join(["p" * 900, "q" * 900, "r" * 900])
+        parts = chunks(text, MAX_BODY)
+        assert [p[0] for p in parts] == ["p", "q", "r"]
+        assert all(len(p) <= MAX_BODY for p in parts)
+        assert chunks("w" * 3500, MAX_BODY) == ["w" * 1600, "w" * 1600, "w" * 300]
+        assert chunks("  ", MAX_BODY) == []
+
+
+_ENV = {
+    "BRIDGE_PROFILE": "agent1",
+    "BRIDGE_GATEWAY_URL": "http://10.89.0.2:8019",
+    "BRIDGE_INGRESS_TOKEN": "i",
+    "BRIDGE_TOKEN": "b",
+    "RCS_AGENT_USER_ID": "@agent1:rcs.invalid",
+    "RCS_OWNER_NUMBER": OWNER,
+    "RCS_WEBHOOK_URL": WEBHOOK,
+    "RCS_TWILIO_ACCOUNT_SID": ACCOUNT,
+    "RCS_TWILIO_AUTH_TOKEN": TOKEN,
+    "RCS_TWILIO_MESSAGING_SERVICE_SID": SERVICE,
+}
+
+
+class TestSettings:
+    def test_a_complete_environment_loads(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for name, value in _ENV.items():
+            monkeypatch.setenv(name, value)
+        settings = RcsSettings.from_env()
+        assert settings.owner_user_id == "@tel15551234567:rcs.invalid"
+        assert settings.room_id == "!agent1-owner:rcs.invalid"
+        assert settings.twilio_api == "https://api.twilio.com"
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            ("RCS_OWNER_NUMBER", "5551234567"),
+            ("RCS_WEBHOOK_URL", "http://rcs.example.com/in"),
+            ("RCS_TWILIO_ACCOUNT_SID", "SK" + "0" * 32),
+            ("RCS_TWILIO_MESSAGING_SERVICE_SID", "PN" + "0" * 32),
+            ("RCS_AGENT_USER_ID", "agent1"),
+            ("BRIDGE_GATEWAY_URL", "http://8.8.8.8:8019"),
+        ],
+    )
+    def test_a_bad_value_is_fatal(
+        self, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+    ) -> None:
+        for key, good in _ENV.items():
+            monkeypatch.setenv(key, good)
+        monkeypatch.setenv(name, value)
+        with pytest.raises(SettingsError):
+            RcsSettings.from_env()

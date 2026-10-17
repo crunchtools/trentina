@@ -93,3 +93,34 @@ the appservice transaction unacknowledged, so Conduit retries it.
 
 Everything the gateway receives is untrusted and capped (#267). The bridge
 gets back only what the judge passed.
+
+## The RCS bridge (#485)
+
+`python -m trentina.rcs_bridge.main run` (`trentina-rcs-bridge`), one per
+agent, from the same image. It carries one agent's Twilio RCS sender and one
+owner's phone: a single DM room, `!<agent>-owner:rcs.invalid`, with the owner
+as `@tel<digits>:rcs.invalid` (the agent sees `@rcs_tel<digits>=3arcs.invalid:<server>`).
+
+| Variable | |
+|---|---|
+| `BRIDGE_PROFILE`, `BRIDGE_CHANNEL` (`rcs`) | which gateway bridge this is |
+| `BRIDGE_GATEWAY_URL`, `BRIDGE_INGRESS_TOKEN`, `BRIDGE_TOKEN` | as the Matrix bridge's |
+| `BRIDGE_LISTEN_HOST`/`_PORT` (8472) | private API, the gateway's network only |
+| `RCS_WEBHOOK_HOST`/`_PORT` (8473) | public webhook, behind the proxy only |
+| `RCS_WEBHOOK_URL` | the exact https URL set in Twilio: the signature covers it |
+| `RCS_AGENT_USER_ID` | the profile's `bridges.rcs.public_user_id` |
+| `RCS_OWNER_NUMBER`, `RCS_OWNER_NAME` | the one number accepted (E.164), and its display name |
+| `RCS_TWILIO_ACCOUNT_SID`, `RCS_TWILIO_AUTH_TOKEN`, `RCS_TWILIO_MESSAGING_SERVICE_SID` | the agent's account (a subaccount per agent keeps one agent's token from speaking as another) |
+| `BRIDGE_STORE_DIR` (`/data`) | `rcs.db`, 0600: the inbox and the sent log |
+
+Inbound, `POST /twilio/inbound` refuses anything unsigned (403), for
+another account (ignored), or from any number but the owner's (403). A
+message is written to the store before Twilio hears 200, because Twilio does
+not retry, and leaves the store only once the gateway has it. Attachments are
+named, not carried.
+
+Outbound, text, notices and emotes go out as plain text (markdown flattened)
+in chunks of at most 1,600 characters, recorded per chunk so a retried
+`/send` resends only what did not go. Everything else, and `/redact`, is a
+422. US RCS text is billed per 160-byte segment, so a long reply costs
+several messages.
