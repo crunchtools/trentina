@@ -312,6 +312,19 @@ class TestKnownGaps:
         flagged, of = _flagged("meeting_notes")
         assert flagged >= 1, f"{flagged} of {of}: gap 28 may have closed"
 
+    def test_writing_about_attacks_can_be_flagged(self) -> None:
+        """Known gap 31 (#474). Asserted over the four shapes together, since
+        production flagged real documents of each but the invented cases were
+        not scored per shape when the gap was recorded. When none flags, the
+        gap may have closed: gate the shapes. The per-shape rate is
+        ``benchmarks/l2_benign.py``'s."""
+        if _MODEL is None or _MODEL.id != HORIZON:
+            pytest.skip("measured on prompt-injection-guard-small")
+        shapes = ("security_docs", "detector_source", "issue_list", "created_issue")
+        counts = [_flagged(category) for category in shapes]
+        assert all(of == 8 for _, of in counts)
+        assert sum(flagged for flagged, _ in counts) >= 1, f"{counts}: gap 31 may have closed"
+
     def test_a_hundred_line_journal_in_a_json_string_can_be_flagged(self) -> None:
         if _MODEL is None or _MODEL.id != HORIZON:
             pytest.skip("measured on prompt-injection-guard-small")

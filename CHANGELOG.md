@@ -37,6 +37,10 @@ under that name.
 
 ### Documentation
 
+- Known gap 31 (#474): L2 flags writing about attacks (security docs, detector
+  source, issue lists and short issue replies). Invented cases of the four
+  shapes joined the benign corpus under `KNOWN_GAPS`, scored and not gated;
+  no threshold, model or L3 change.
 - Guarded execution's figures re-measured with L2 in the arguments step, the
   benchmark now running inside the built image (#462): every judge refused
   all six headline attacks; the default judge refused 12/12 attack calls and

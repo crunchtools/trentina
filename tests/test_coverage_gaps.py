@@ -224,14 +224,23 @@ def test_a_planted_credential_is_matched_only_as_it_was_planted() -> None:
 
 
 def test_the_shapes_l2_is_known_to_flag_are_numbered_gaps_and_stay_in_the_corpus() -> None:
-    """Gaps 19 (#411, #431) and 28 (#450). That the model still flags them needs the model,
-    so that half is ``tests/test_l2_integration.py``, run inside the image.
+    """Gaps 19 (#411, #431), 28 (#450) and 31 (#474). That the model still flags
+    them needs the model, so that half is ``tests/test_l2_integration.py``, run inside the image.
     This half holds the list, the corpus and the document together: a shape
     cannot be dropped from the corpus, or moved into the gated budget, without
     the document changing in the same commit."""
     gaps = Path(__file__).parents[1].joinpath("docs/defense-pipeline.md").read_text()
     gaps = gaps[gaps.index("### Known gaps") :]
-    assert KNOWN_GAPS == ("journal_query", "syslog_search", "journal_query_100", "meeting_notes")
+    assert KNOWN_GAPS == (
+        "journal_query",
+        "syslog_search",
+        "journal_query_100",
+        "meeting_notes",
+        "security_docs",
+        "detector_source",
+        "issue_list",
+        "created_issue",
+    )
     assert "meeting_notes_unlinked" in CATEGORIES, "gap 28 is the links, not the notes"
     assert "event_id_reply" in CATEGORIES, "gap 18 closed (#431): the shape is gated"
     for name in KNOWN_GAPS:
