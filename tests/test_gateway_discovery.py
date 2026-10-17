@@ -300,6 +300,7 @@ class TestDynamic:
             resp = await _call(p, "load_tools", {"query": "restart a unit"})
             loaded = json.loads(resp["result"]["content"][0]["text"])["loaded"]
             assert loaded[0] == f"systemd{SEP}unit_restart"
+            assert _outcomes()[("", "load_tools")] == {"ok": 1}
             # Already loaded: reported as nothing new.
             again = await _call(p, "load_tools", {"query": "restart a unit"})
             assert json.loads(again["result"]["content"][0]["text"])["loaded"] == []
@@ -379,9 +380,9 @@ class TestEdges:
             resp = await _call(p, "call_tool", arguments)
             assert resp["error"]["code"] == -32602
         assert backends == []
-        outcomes = _outcomes()
-        assert outcomes[("", "call_tool")] == {"denied_guard": 1}
-        assert outcomes[("systemd", "unit_restart")] == {"denied_guard": 1}
+        audited = _outcomes()
+        assert audited[("", "call_tool")] == {"denied_guard": 1}
+        assert audited[("systemd", "unit_restart")] == {"denied_guard": 1}
 
     async def test_call_tool_without_arguments_calls_with_none(
         self, backends: list[tuple[str, str, dict[str, Any]]]
