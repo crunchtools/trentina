@@ -719,7 +719,8 @@ def load_profiles(path: Path | str) -> GatewayConfig:
         mark = getattr(exc, "problem_mark", None)
         where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
         problem = getattr(exc, "problem", None) or type(exc).__name__
-        raise ProfileConfigError(f"Invalid YAML in {config_path}{where}: {problem}") from exc
+        # from None: a chained cause would print the snippet in a traceback.
+        raise ProfileConfigError(f"Invalid YAML in {config_path}{where}: {problem}") from None
 
     if not isinstance(cfg_data, dict):
         raise ProfileConfigError(f"Profiles file {config_path} must contain a top-level mapping")
