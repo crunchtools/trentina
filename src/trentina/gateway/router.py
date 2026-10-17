@@ -50,7 +50,7 @@ from ..reserved import (
     strip_reserved,
     with_stripped,
 )
-from . import paging
+from . import discovery, paging
 from .args import Normalized, normalize_arguments
 from .backend import (
     cached_tool_read_only,
@@ -96,6 +96,7 @@ from .names import (
 )
 from .schema_compact import compact_tool
 from .session_marks import mark_flagged
+from .sessions import session_registry
 from .surface import (
     BackendSurface,
     Stage,
@@ -163,6 +164,7 @@ def _on_backend_evicted(url: str) -> None:
 
 
 on_backend_cache_evict(_on_backend_evicted)
+session_registry.on_remove(discovery.forget_session)
 
 
 def _rebuild_after_compression() -> None:
@@ -230,6 +232,7 @@ def reset_profile_tools_cache() -> None:
         invalidate_profile_cache(name)
     _profile_inflight.clear()
     forget_issued_names()
+    discovery.reset()
 
 
 def _audit(
@@ -389,8 +392,15 @@ async def route_jsonrpc(profile: Profile, request: dict[str, Any]) -> dict[str, 
             if profile.short_names
             else f"Tool names are namespaced as <backend>{NAMESPACE_SEP}<tool>."
         )
-        instructions = (
-            f"trentina gateway, profile={profile.name}. {naming} {mode_instructions(profile)}"
+        instructions = " ".join(
+            part
+            for part in (
+                f"trentina gateway, profile={profile.name}.",
+                naming,
+                discovery.instructions(profile),
+                mode_instructions(profile),
+            )
+            if part
         ).rstrip()
         return _ok(
             req_id,
@@ -429,11 +439,10 @@ async def _route_tools_list(profile: Profile, req_id: Any) -> dict[str, Any]:
     Checks the per-profile cache first. On miss, coalesces concurrent callers
     for the same profile onto a single fan-out (single-flight).
     """
-    cached = _profile_tools_cache.get(profile.name)
-    if cached is not None:
-        return _ok(req_id, {"tools": cached})
-    aggregated = await ensure_profile_build(profile)
-    return _ok(req_id, {"tools": aggregated})
+    aggregated = _profile_tools_cache.get(profile.name)
+    if aggregated is None:
+        aggregated = await ensure_profile_build(profile)
+    return _ok(req_id, {"tools": discovery.shape(profile, aggregated, current_session.get())})
 
 
 def ensure_profile_build(profile: Profile) -> asyncio.Future[list[dict[str, Any]]]:
@@ -554,6 +563,7 @@ async def _build_profile_tools(
                     namespaced_tool, preprocess_policy_for(profile, backend, tool["name"])
                 )
             )
+            namespaced_tool = discovery.describe(profile, backend_name, namespaced_tool)
             namespaced_tool["name"] = f"{backend_name}{NAMESPACE_SEP}{tool['name']}"
             namespaced.append(namespaced_tool)
         shaped = await asyncio.to_thread(Stage.of, namespaced)
@@ -619,6 +629,12 @@ async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[
         if not isinstance(params, dict):
             _audit(profile.name, "", "", Outcome.DENIED_GUARD, 0, "params must be an object")
             return _err(req_id, JSONRPC_INVALID_PARAMS, "params must be an object")
+        name = params.get("name")
+        if isinstance(name, str) and name in discovery.meta_names(profile):
+            arguments = params.get("arguments")
+            return await _discovery_call(
+                profile, req_id, name, {} if arguments is None else arguments
+            )
         return await _tools_call(profile, req_id, params)
     except Exception as exc:
         if not _call_audited.get():
@@ -743,8 +759,7 @@ def _leaked(profile: Profile, req_id: Any, params: Any, leaked: list[str]) -> di
     caller does next is recorded too.
     """
     what = f"honeytoken {', '.join(leaked)}"
-    sent = params if isinstance(params, dict) else {}
-    served_name, arguments = sent.get("name", ""), sent.get("arguments")
+    served_name, arguments = _reached_for(profile, params)
     target = _resolve_target(profile, served_name)
     if target is None:
         return _tripped(profile.name, "", redact_source(served_name), req_id, what, None, None)
@@ -770,6 +785,17 @@ def _leaked(profile: Profile, req_id: Any, params: Any, leaked: list[str]) -> di
     if answer is not None:
         keep_arguments(profile, backend_name, tool_name, arguments)
     return response
+
+
+def _reached_for(profile: Profile, params: Any) -> tuple[Any, Any]:
+    """The name and arguments a request reached for: through ``call_tool``,
+    the tool it names (#473)."""
+    sent = params if isinstance(params, dict) else {}
+    name, arguments = sent.get("name", ""), sent.get("arguments")
+    if name == discovery.CALL_TOOL and name in discovery.meta_names(profile):
+        inner = arguments if isinstance(arguments, dict) else {}
+        return inner.get("name", ""), inner.get("arguments")
+    return name, arguments
 
 
 def _resolve_target(profile: Profile, served_name: object) -> tuple[str, str, Backend] | None:
@@ -968,6 +994,54 @@ async def _tools_call(profile: Profile, req_id: Any, params: dict[str, Any]) -> 
         minify=minify,
         normalized=normalized.dropped,
         destination=dest,
+    )
+    return _ok(req_id, result)
+
+
+async def _discovery_call(
+    profile: Profile, req_id: Any, name: str, arguments: Any
+) -> dict[str, Any]:
+    """Answer a discovery tool (#473): ``call_tool`` by routing the tool it
+    names, ``find_tools`` and ``load_tools`` from the served aggregate.
+
+    ``call_tool`` writes no row of its own: the call it carries writes the
+    one row, under the real (backend, tool), through every rule a direct
+    call meets. A discovery tool cannot be called through it.
+    """
+    if not isinstance(arguments, dict):
+        message = "arguments must be an object"
+        _audit(profile.name, "", name, Outcome.DENIED_GUARD, 0, message)
+        return _err(req_id, JSONRPC_INVALID_PARAMS, message)
+    if name == discovery.CALL_TOOL:
+        inner = arguments.get("name", "")
+        if not isinstance(inner, str) or inner in discovery.meta_names(profile):
+            return _unknown_tool(profile, req_id, inner)
+        return await _tools_call(
+            profile, req_id, {"name": inner, "arguments": arguments.get("arguments")}
+        )
+    t0 = time.monotonic()
+    aggregated = _profile_tools_cache.get(profile.name)
+    if aggregated is None:
+        aggregated = await ensure_profile_build(profile)
+    session = current_session.get()
+    try:
+        if name == discovery.FIND_TOOLS:
+            result = discovery.find(profile, aggregated, arguments)
+        else:
+            result, grew = discovery.load(profile, aggregated, session, arguments)
+            if grew:
+                await session_registry.notify_session(profile.name, session)
+    except ValueError as exc:
+        # The messages are ours and quote nothing the caller sent.
+        _audit(profile.name, "", name, Outcome.DENIED_GUARD, 0, str(exc))
+        return _err(req_id, JSONRPC_INVALID_PARAMS, str(exc))
+    _audit(
+        profile.name,
+        "",
+        name,
+        Outcome.OK,
+        int((time.monotonic() - t0) * 1000),
+        bytes_delivered=wire_bytes(result),
     )
     return _ok(req_id, result)
 

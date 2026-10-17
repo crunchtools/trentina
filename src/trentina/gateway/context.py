@@ -8,6 +8,7 @@ tool calls without changing the MCP protocol or tool signatures.
 
 from __future__ import annotations
 
+import hashlib
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -50,6 +51,12 @@ _current_parts: ContextVar[PartsOffer | None] = ContextVar("current_parts_offer"
 # sends no session header.
 current_session: ContextVar[str] = ContextVar("current_session", default="")
 current_call: ContextVar[str] = ContextVar("current_call", default="")
+
+
+def session_fingerprint(session_id: str) -> str:
+    """What ``current_session`` holds for an MCP session id: the id is a
+    bearer of the session, so only this reaches the audit."""
+    return hashlib.sha256(session_id.encode()).hexdigest()[:16] if session_id else ""
 
 
 @contextmanager

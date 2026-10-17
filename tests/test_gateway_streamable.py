@@ -442,7 +442,7 @@ class TestSSEEventStream:
             frame = await stream.__anext__()
             assert frame.startswith("event: message\ndata: ")
             payload = json.loads(frame.split("data: ", 1)[1].strip())
-            assert payload["method"] == "notifications/tools/listChanged"
+            assert payload["method"] == "notifications/tools/list_changed"
             assert "event: endpoint" not in frame
         finally:
             await stream.aclose()
@@ -549,7 +549,7 @@ class TestCircuitToSSEDelivery:
 
         assert not queue.empty()
         notification = queue.get_nowait()
-        assert notification["method"] == "notifications/tools/listChanged"
+        assert notification["method"] == "notifications/tools/list_changed"
 
     @pytest.mark.asyncio
     async def test_unaffected_profile_not_notified(self) -> None:
