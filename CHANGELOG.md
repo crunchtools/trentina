@@ -34,6 +34,11 @@ under that name.
 
 ### Fixed
 
+- `test_benign_gate` failed on main since #478: all 16 `detector_source`
+  cases hashed into the held-out split (a 1-in-100 draw), so the shape was
+  never on both sides. It has 19 cases now, one of them in tuning; the corpus
+  is 296. Only the two known-gap shapes drawn after it move, and neither is
+  gated.
 - Security gates that could never fail now can. pip-audit read the report as
   a list when pip-audit writes a dict, threw, and the fallback counted zero
   vulnerabilities; the container Trivy scan ran with exit code 0 from an

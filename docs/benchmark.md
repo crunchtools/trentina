@@ -691,7 +691,7 @@ to 11 to 29: metrics rows, journals, unit properties, disk usage. Across
 every profile, L3 called 313 of 401 L2 detections clean (#411).
 
 `benchmarks/l2_benign.py` is the gate for that side. The corpus
-(`corpora/benign_ops.py`) is 293 invented cases of the shapes that were
+(`corpora/benign_ops.py`) is 296 invented cases of the shapes that were
 refused, generated from a fixed seed; no line of it comes from a production
 host. Each case is read exactly as the gateway reads a tool response:
 through the default pre-processors (`transform_response`), the text block
