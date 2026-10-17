@@ -81,11 +81,15 @@ event is in Conduit, or deliberately withheld or skipped, and dedupes on
 **Gateway to bridge:** Bearer `bridge_token` on `bridge_url`.
 
 - `POST /send` `{room_id, type, content, txn_id}`. The bridge answers
-  `{"event_id": ...}`, idempotent on `txn_id`. A type or content the channel
-  cannot carry is refused with a 4xx.
-- `POST /redact` `{room_id, event_id, txn_id}`. A channel that cannot unsend
-  answers 501.
+  `{"event_id": ...}`, idempotent on `txn_id`.
+- `POST /redact` `{room_id, event_id, txn_id}`.
 - `GET /health`: 200 when ready, 503 while starting.
+
+A 4xx other than 401, 403, 408 or 429 means "never": a type the channel has
+no form for, or a channel that cannot unsend (RCS answers `/redact` with
+422). The gateway drops that event, counts it in `/health`'s
+`outbound_refused`, and posts the agent a notice. Any other failure leaves
+the appservice transaction unacknowledged, so Conduit retries it.
 
 Everything the gateway receives is untrusted and capped (#267). The bridge
 gets back only what the judge passed.

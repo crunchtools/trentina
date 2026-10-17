@@ -588,6 +588,30 @@ class TestOutbound:
         await rig.bridge.outbound("t1", [_agent_event("$a1"), _agent_event("$a2")])
         assert [s["content"]["body"] for s in rig.upstream.sent] == ["on it", "on it"]
 
+    async def test_an_event_the_bridge_can_never_carry_is_dropped_and_told(
+        self, rig_factory: Any
+    ) -> None:
+        """A 4xx that means "never" (#483) must not hold the transaction: the
+        event is dropped, the agent told, and the next one still goes."""
+        rig = rig_factory()
+        await rig.bridge.inbound(_message())
+        rig.upstream.status = 422
+        await rig.bridge.outbound("t1", [_agent_event("$a1")])
+        assert rig.bridge.outbound_refused == 1
+        assert "cannot carry it" in rig.conduit.sent[-1]["content"]["body"]
+        rig.upstream.status = 200
+        await rig.bridge.outbound("t1", [_agent_event("$a1")])
+        await rig.bridge.outbound("t2", [_agent_event("$a2")])
+        assert len(rig.upstream.sent) == 1
+
+    @pytest.mark.parametrize("status", [401, 403, 408, 429])
+    async def test_a_4xx_that_means_not_now_is_retried(self, rig_factory: Any, status: int) -> None:
+        rig = rig_factory()
+        await rig.bridge.inbound(_message())
+        rig.upstream.status = status
+        with pytest.raises(BridgeUnavailableError):
+            await rig.bridge.outbound("t1", [_agent_event("$a1")])
+
 
 class TestRewrite:
     def test_escaping_is_the_spec_mapping(self) -> None:

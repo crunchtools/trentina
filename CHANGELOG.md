@@ -27,6 +27,13 @@ under that name.
 
 ### Changed
 
+- A bridge answering `/send` or `/redact` with a 4xx other than 401, 403,
+  408 or 429 no longer stalls the channel. That answer means the event can
+  never be carried, so the gateway drops it, counts it in `outbound_refused`
+  and posts the agent a notice. It used to leave the transaction
+  unacknowledged, and Conduit retried it, and every reply behind it,
+  forever. The Matrix bridge's 400 (malformed) and 413 (too large) now take
+  this path.
 - `reload_profiles` reports `bridges changed for [...]` (was
   `matrix_bridge changed for [...]`) when any channel's bridge moved.
 

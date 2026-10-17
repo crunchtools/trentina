@@ -95,6 +95,17 @@ class BridgeUnavailableError(RuntimeError):
     """The bridge process refused or did not answer. Conduit retries the txn."""
 
 
+class BridgeRefusedError(RuntimeError):
+    """The bridge process answered that this event can never be carried: a
+    type its channel has no form for, or a body it will not take (#483).
+    Retrying cannot help, and holding the transaction would stall every
+    reply behind it, so the event is dropped and the agent told."""
+
+
+# Client errors a bridge may answer that mean "not now" rather than "never".
+_RETRYABLE_4XX = frozenset({401, 403, 408, 429})
+
+
 class _Stages:
     """Wall-clock time per stage of one event, for the line that closes it."""
 
@@ -595,19 +606,34 @@ class ProfileBridge:
         if out is None:
             await self.mapping.mark(key)
             return
-        sent = await self._bridge(
-            "/send",
-            {
-                "room_id": remote_room,
-                "type": event_type,
-                "content": out,
-                "txn_id": _txn("out", event_id),
-            },
-        )
-        await self.mapping.put_event(str(sent["event_id"]), event_id)
+        sent = await self._send_upstream(room, event_type, out, event_id)
+        if sent is not None:
+            await self.mapping.put_event(sent, event_id)
         await self.mapping.mark(key)
         stages.lap("send")
-        stages.report(f"{self.label} outbound {event_id} {event_type} sent")
+        stages.report(
+            f"{self.label} outbound {event_id} {event_type} {'sent' if sent else 'refused'}"
+        )
+
+    async def _send_upstream(
+        self, room: Room, event_type: str, content: dict[str, Any], event_id: str
+    ) -> str | None:
+        """The upstream event ID of one judged event the bridge sent, or None
+        when the bridge refused it for good and the agent was told."""
+        try:
+            sent = await self._bridge(
+                "/send",
+                {
+                    "room_id": room.remote_id,
+                    "type": event_type,
+                    "content": content,
+                    "txn_id": _txn("out", event_id),
+                },
+            )
+        except BridgeRefusedError as exc:
+            await self._undeliverable(room, event_id, exc)
+            return None
+        return str(sent["event_id"])
 
     async def _outbound_redaction(self, event: dict[str, Any], room: Room) -> None:
         """Mirror the agent's redaction upstream, unless the room is refused."""
@@ -616,9 +642,22 @@ class ProfileBridge:
         target = await self.mapping.remote_event(str(redacts)) if redacts else None
         if target is None or await self._refused_outbound(room, event_id):
             return
-        await self._bridge(
-            "/redact",
-            {"room_id": room.remote_id, "event_id": target, "txn_id": _txn("rdo", event_id)},
+        try:
+            await self._bridge(
+                "/redact",
+                {"room_id": room.remote_id, "event_id": target, "txn_id": _txn("rdo", event_id)},
+            )
+        except BridgeRefusedError as exc:
+            await self._undeliverable(room, event_id, exc)
+
+    async def _undeliverable(self, room: Room, event_id: str, exc: BridgeRefusedError) -> None:
+        """Tell the agent the bridge will never carry this event (#483)."""
+        self.outbound_refused += 1
+        logger.warning("matrix_bridge: %s refused outbound %s for %s", exc, event_id, self.label)
+        await self.appservice.notice(
+            room,
+            f"[trentina] your message was not sent: the {self.channel} channel cannot carry it",
+            _txn("wo", event_id),
         )
 
     async def _refused_outbound(self, room: Room, event_id: str) -> bool:
@@ -651,8 +690,11 @@ class ProfileBridge:
             )
         except (httpx.HTTPError, TimeoutError, ValueError) as exc:
             raise BridgeUnavailableError(f"bridge {path}: {exc_kind(exc)}") from exc
-        if resp.status_code != 200:
-            raise BridgeUnavailableError(f"bridge {path} -> {resp.status_code}")
+        status = resp.status_code
+        if 400 <= status < 500 and status not in _RETRYABLE_4XX:
+            raise BridgeRefusedError(f"bridge {path} -> {status}")
+        if status != 200:
+            raise BridgeUnavailableError(f"bridge {path} -> {status}")
         try:
             reply = json.loads(raw)
         except ValueError as exc:
