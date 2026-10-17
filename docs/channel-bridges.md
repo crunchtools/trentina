@@ -41,9 +41,9 @@ Each channel is its own appservice registration on the agent's Conduit.
 Conduit pushes an agent's event to every appservice whose namespace a room
 member matches, so the profile refuses two channels that share a bridge URL,
 any token env var, or an overlapping namespace (one prefix starting the
-other, or a sender inside another's prefix) on one homeserver. Register the
-channel like the matrix one, with its own id, tokens, sender and regex, and
-the channel in the URL:
+other, or a sender inside another's prefix) on one `server_name`. Register
+the channel like the matrix one, with its own id, tokens, sender and regex,
+and the channel in the URL:
 
     url: http://<gateway ip>:8019/bridge/as/agent1/rcs
     sender_localpart: trentina_rcs

@@ -2342,15 +2342,17 @@ class Profile(BaseModel):
                 if (other := seen_envs.setdefault(env, label)) != label:
                     raise ValueError(f"{label}: token env {env} is also {other}'s")
             local = cfg.local
-            for prior_label, homeserver, prefix, sender in spaces:
-                if homeserver != local.homeserver:
+            # By server_name, not URL: one Conduit reached by IP in one block
+            # and by hostname in another is still one set of namespaces.
+            for prior_label, server, prefix, sender in spaces:
+                if server != local.server_name:
                     continue
                 if _namespaces_overlap(prefix, sender, local.user_prefix, local.sender_localpart):
                     raise ValueError(
                         f"{label}: its appservice namespace overlaps {prior_label}'s "
                         "on the same homeserver"
                     )
-            spaces.append((label, local.homeserver, local.user_prefix, local.sender_localpart))
+            spaces.append((label, local.server_name, local.user_prefix, local.sender_localpart))
         return self
 
     @model_validator(mode="after")

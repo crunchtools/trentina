@@ -121,8 +121,15 @@ class TestConfig:
             Profile.model_validate(_body(rcs=_bridge(2, RCS_ID, **local)))
 
     def test_the_same_namespace_on_another_homeserver_is_fine(self) -> None:
-        rcs = _bridge(2, RCS_ID, homeserver="http://10.0.11.3:6167")
+        rcs = _bridge(2, RCS_ID, homeserver="http://10.0.11.3:6167", server_name="agent2.local")
         assert "rcs" in Profile.model_validate(_body(rcs=rcs)).channel_bridges()
+
+    def test_one_homeserver_by_another_url_is_still_one(self) -> None:
+        """Namespaces are per server_name: a second URL for the same Conduit
+        does not make its namespaces separate."""
+        rcs = _bridge(2, RCS_ID, homeserver="http://conduit-agent1:6167")
+        with pytest.raises(ValidationError, match="namespace overlaps"):
+            Profile.model_validate(_body(rcs=rcs))
 
     def test_a_honeypot_carries_no_bridges(self) -> None:
         body = _body()
