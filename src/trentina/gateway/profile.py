@@ -1725,6 +1725,27 @@ def is_matrix_user_id(value: str, *, historical: bool = False) -> bool:
     )
 
 
+# The channel ``matrix_bridge`` is; every other bridge is keyed in ``bridges``.
+MATRIX_CHANNEL = "matrix"
+_CHANNEL_RE = re.compile(r"^[a-z][a-z0-9]{0,15}$")
+
+
+def _namespaces_overlap(prefix_a: str, sender_a: str, prefix_b: str, sender_b: str) -> bool:
+    """Whether two appservices on one homeserver could claim the same user.
+
+    A namespace is ``@<prefix>.*`` plus the appservice's own sender, so two
+    overlap when either prefix starts the other, when the senders are one
+    user, or when either sender falls in the other's prefix.
+    """
+    return (
+        prefix_a.startswith(prefix_b)
+        or prefix_b.startswith(prefix_a)
+        or sender_a == sender_b
+        or sender_a.startswith(prefix_b)
+        or sender_b.startswith(prefix_a)
+    )
+
+
 class MatrixBridgeConfig(BaseModel):
     """Matrix E2EE termination by bridge (#162, spec 015).
 
@@ -2182,6 +2203,13 @@ class Profile(BaseModel):
         default=None,
         description="Matrix E2EE termination by bridge (optional, #162)",
     )
+    bridges: dict[str, MatrixBridgeConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Further upstream channels (rcs, ...), keyed by channel name, each a "
+            "bridge speaking matrix_bridge's wire contract (optional, #483)"
+        ),
+    )
     client_egress: ClientEgressConfig | None = Field(
         default=None,
         description="CONNECT tunnel for the agent's own client (optional, #442)",
@@ -2260,12 +2288,69 @@ class Profile(BaseModel):
         for channel in ("alert_ingress", "matrix_ingress", "matrix_bridge", "client_egress"):
             if getattr(self, channel) is not None:
                 problems.append(f"{channel} does not apply")
+        if self.bridges:
+            problems.append("bridges does not apply")
         if self.git:
             problems.append("git does not apply")
         if self.guarded_execution is not None:
             problems.append("guarded_execution does not apply")
         if problems:
             raise ValueError(f"honeypot profile: {'; '.join(problems)}")
+        return self
+
+    def channel_bridges(self) -> dict[str, MatrixBridgeConfig]:
+        """Every bridge this profile declares, by channel: ``matrix_bridge``
+        as ``matrix``, then ``bridges`` (#483). Enabled or not."""
+        out = {} if self.matrix_bridge is None else {MATRIX_CHANNEL: self.matrix_bridge}
+        out.update(self.bridges)
+        return out
+
+    @model_validator(mode="after")
+    def bridge_channels_are_named(self) -> Profile:
+        """A channel name is a short slug, and ``matrix`` is ``matrix_bridge``'s."""
+        for name in self.bridges:
+            if name == MATRIX_CHANNEL:
+                raise ValueError("bridges.matrix: the matrix channel is matrix_bridge")
+            if not _CHANNEL_RE.match(name):
+                raise ValueError(f"bridges.{name}: a channel name is [a-z][a-z0-9]{{0,15}}")
+        return self
+
+    @model_validator(mode="after")
+    def bridges_do_not_share_a_path(self) -> Profile:
+        """Each channel is its own upstream with its own registration (#483).
+
+        Two channels sharing a bridge URL or a token would hand one bridge the
+        other's traffic or credential. Two appservice namespaces that overlap
+        on one homeserver are worse: Conduit pushes the agent's reply to every
+        appservice whose namespace a room member matches, so a second channel
+        could carry the first one's conversations upstream.
+        """
+        seen_urls: dict[str, str] = {}
+        seen_envs: dict[str, str] = {}
+        spaces: list[tuple[str, str, str, str]] = []
+        for channel, cfg in self.channel_bridges().items():
+            label = "matrix_bridge" if channel == MATRIX_CHANNEL else f"bridges.{channel}"
+            if (other := seen_urls.setdefault(cfg.bridge_url, label)) != label:
+                raise ValueError(f"{label}: bridge_url is also {other}'s")
+            envs = (
+                cfg.bridge_token_env,
+                cfg.ingress_token_env,
+                cfg.local.as_token_env,
+                cfg.local.hs_token_env,
+            )
+            for env in envs:
+                if (other := seen_envs.setdefault(env, label)) != label:
+                    raise ValueError(f"{label}: token env {env} is also {other}'s")
+            local = cfg.local
+            for prior_label, homeserver, prefix, sender in spaces:
+                if homeserver != local.homeserver:
+                    continue
+                if _namespaces_overlap(prefix, sender, local.user_prefix, local.sender_localpart):
+                    raise ValueError(
+                        f"{label}: its appservice namespace overlaps {prior_label}'s "
+                        "on the same homeserver"
+                    )
+            spaces.append((label, local.homeserver, local.user_prefix, local.sender_localpart))
         return self
 
     @model_validator(mode="after")

@@ -49,6 +49,7 @@ from ...reserved import WARNING_KEY, strip_reserved, with_stripped
 from ...warning import build_warning
 from ..context import profile_context
 from ..matrix_relation import withheld_relation
+from ..profile import MATRIX_CHANNEL
 from .rewrite import IdMap, judged_view, referenced_ids, rewrite_content
 
 if TYPE_CHECKING:
@@ -147,11 +148,16 @@ class ProfileBridge:
         appservice: AppService,
         client: httpx.AsyncClient | None = None,
         other_agents: frozenset[str] = frozenset(),
+        channel: str = MATRIX_CHANNEL,
     ) -> None:
-        cfg = profile.matrix_bridge
+        cfg = profile.channel_bridges().get(channel)
         if cfg is None or cfg.bridge_token is None:
-            raise ValueError(f"profile {profile.name!r} has no enabled matrix_bridge")
+            raise ValueError(f"profile {profile.name!r} has no enabled {channel} bridge")
         self.profile = profile
+        self.channel = channel
+        # What logs and audit call this bridge. The matrix channel keeps the
+        # bare profile name, so alerts written before #483 still match.
+        self.label = profile.name if channel == MATRIX_CHANNEL else f"{profile.name}/{channel}"
         self.cfg: MatrixBridgeConfig = cfg
         self.mapping = mapping
         self.appservice = appservice
@@ -162,8 +168,10 @@ class ProfileBridge:
         self._outbound_lock = asyncio.Lock()
         # Case-folded: a Matrix ID that differs only in case is still that
         # agent as far as this rule goes, and matching more is the safe side.
+        # The profile's own upstream IDs on every channel are not "another
+        # agent" (#483): the same agent reached by a second path.
         self._other_agents = frozenset(a.casefold() for a in other_agents) - {
-            cfg.public_user_id.casefold()
+            c.public_user_id.casefold() for c in profile.channel_bridges().values()
         }
         # The agent's events refused since start, by the agent rule or the
         # judge: each is a message it believes it sent (#317). /health sums it.
@@ -212,7 +220,7 @@ class ProfileBridge:
             "matrix_bridge: dropped %s %s for %s: %s",
             direction,
             redact_source(event_id),
-            self.profile.name,
+            self.label,
             reason,
         )
         # As router._audit does: a failed audit write never fails the event,
@@ -220,7 +228,7 @@ class ProfileBridge:
         with contextlib.suppress(Exception):
             record_gateway_call(
                 self.profile.name,
-                _AUDIT_BACKEND,
+                _AUDIT_BACKEND if self.channel == MATRIX_CHANNEL else f"{self.channel}_bridge",
                 direction,
                 Outcome.DENIED_GUARD.value,
                 0,
@@ -247,7 +255,7 @@ class ProfileBridge:
         with profile_context(self.profile):
             result = await defend_json(
                 scanned,
-                source=f"matrix_bridge:{self.profile.name}:{room}",
+                source=f"matrix_bridge:{self.label}:{room}",
                 source_type="matrix_bridge",
                 defense=self.profile.defense,
                 record=True,
@@ -280,7 +288,7 @@ class ProfileBridge:
             # The sender chose the type and, in an old room, the id (#262).
             kind = event.get("type")
             stages.report(
-                f"{self.profile.name} inbound {redact_source(str(event.get('event_id')))} "
+                f"{self.label} inbound {redact_source(str(event.get('event_id')))} "
                 f"{kind if isinstance(kind, str) and kind in _CARRIED else 'other'} {outcome}"
             )
         return outcome
@@ -302,7 +310,7 @@ class ProfileBridge:
                 "matrix_bridge: stripped %d reserved key(s) from inbound %s for %s",
                 stripped,
                 redact_source(event_id),
-                self.profile.name,
+                self.label,
             )
 
         uncarried = await self._inbound_uncarried(event, event_type, remote_room)
@@ -333,7 +341,7 @@ class ProfileBridge:
             logger.warning(
                 "matrix_bridge: withheld inbound %s for %s: %s",
                 redact_source(event_id),
-                self.profile.name,
+                self.label,
                 reason,
             )
             # A withheld reaction has nothing to stand in for: it is dropped.
@@ -468,9 +476,7 @@ class ProfileBridge:
         # Held until the agent is in, so the room's first messages (which the
         # bridge forwards next) are not written before it can read them.
         if not await self.appservice.wait_for_agent(room):
-            logger.warning(
-                "matrix_bridge: %s has not joined a new room; carrying on", self.profile.name
-            )
+            logger.warning("matrix_bridge: %s has not joined a new room; carrying on", self.label)
         return "mapped"
 
     async def _inbound_left(self, remote_room: str) -> str:
@@ -495,7 +501,7 @@ class ProfileBridge:
         await self.mapping.forget_room(room)
         logger.warning(
             "matrix_bridge: retired %s's room %s: the bridge left it upstream",
-            self.profile.name,
+            self.label,
             room.local_id,
         )
         return "retired"
@@ -572,7 +578,7 @@ class ProfileBridge:
             logger.warning(
                 "matrix_bridge: withheld outbound %s for %s: %s",
                 event_id,
-                self.profile.name,
+                self.label,
                 reason,
             )
             await self.appservice.notice(
@@ -582,7 +588,7 @@ class ProfileBridge:
             )
             await self.mapping.mark(key)
             stages.lap("notice")
-            stages.report(f"{self.profile.name} outbound {event_id} withheld")
+            stages.report(f"{self.label} outbound {event_id} withheld")
             return
 
         out = rewrite_content(content, await self._outbound_ids(content))
@@ -601,7 +607,7 @@ class ProfileBridge:
         await self.mapping.put_event(str(sent["event_id"]), event_id)
         await self.mapping.mark(key)
         stages.lap("send")
-        stages.report(f"{self.profile.name} outbound {event_id} {event_type} sent")
+        stages.report(f"{self.label} outbound {event_id} {event_type} sent")
 
     async def _outbound_redaction(self, event: dict[str, Any], room: Room) -> None:
         """Mirror the agent's redaction upstream, unless the room is refused."""

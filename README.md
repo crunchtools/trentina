@@ -121,6 +121,7 @@ Then point Claude Code at it:
 | [Audit Log](docs/audit-log.md) | Call recording, stats, monitoring |
 | [LLM Key Proxying](docs/llm-proxying.md) | Provider keys kept inside the gateway |
 | [Matrix Bridge](docs/matrix-bridge.md) | E2EE termination and two-way judging |
+| [Channel Bridges](docs/channel-bridges.md) | More than one upstream per agent (RCS, ...) and the bridge wire contract |
 | [Matrix Reverse Proxy](docs/network-isolation.md) | Matrix for agents on an isolated network |
 | [Client Egress](docs/client-egress.md) | A CONNECT tunnel to listed hosts for the agent's own client |
 | [Git Transport](docs/git-transport.md) | Clone, fetch and push to listed repositories and branches |

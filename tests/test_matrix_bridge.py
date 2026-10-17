@@ -1286,7 +1286,7 @@ class TestUnbridgedAgents:
             {"agent1": _profile()}, tmp_path, frozenset({UNBRIDGED_AGENT})
         )
         try:
-            bridge = bridges["agent1"]
+            bridge = bridges[("agent1", "matrix")]
             assert await bridge.inbound(_from(UNBRIDGED_AGENT.upper())) == "dropped"
             assert await bridge.mapping.agent_present(ROOM) is True
         finally:

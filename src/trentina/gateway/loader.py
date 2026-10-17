@@ -26,6 +26,7 @@ from .filter import filter_tools
 from .profile import (
     GIT_REMOTE_NAME_RE,
     HONEYTOKEN_MIN_CHARS,
+    MATRIX_CHANNEL,
     AlertIngressConfig,
     GitRemote,
     MatrixIngressConfig,
@@ -207,29 +208,28 @@ def _check_drivers(name: str, profile: Profile) -> None:
             channel=Channel.MATRIX,
             profile_name=name,
         )
-    if profile.matrix_bridge is not None:
+    for bridge in profile.channel_bridges().values():
         build_preprocessors(
-            profile.matrix_bridge.preprocess,
+            bridge.preprocess,
             channel=Channel.MATRIX_BRIDGE,
             profile_name=name,
         )
 
 
 def _resolve_matrix_bridge_secrets(name: str, profile: Profile) -> None:
-    """Resolve an enabled bridge's four tokens, failing closed on any gap.
+    """Resolve every enabled bridge's four tokens, failing closed on any gap.
 
     A disabled block resolves nothing: nothing reads its tokens, and demanding
     them would make an operator provision secrets to write down a plan.
     """
-    bridge = profile.matrix_bridge
-    if bridge is None or not bridge.enabled:
-        return
-    bridge.bridge_token = _require_env(name, bridge.bridge_token_env, "matrix_bridge bridge token")
-    bridge.ingress_token = _require_env(
-        name, bridge.ingress_token_env, "matrix_bridge ingress token"
-    )
-    bridge.local.as_token = _require_env(name, bridge.local.as_token_env, "matrix_bridge as_token")
-    bridge.local.hs_token = _require_env(name, bridge.local.hs_token_env, "matrix_bridge hs_token")
+    for channel, bridge in profile.channel_bridges().items():
+        if not bridge.enabled:
+            continue
+        what = "matrix_bridge" if channel == MATRIX_CHANNEL else f"bridges.{channel}"
+        bridge.bridge_token = _require_env(name, bridge.bridge_token_env, f"{what} bridge token")
+        bridge.ingress_token = _require_env(name, bridge.ingress_token_env, f"{what} ingress token")
+        bridge.local.as_token = _require_env(name, bridge.local.as_token_env, f"{what} as_token")
+        bridge.local.hs_token = _require_env(name, bridge.local.hs_token_env, f"{what} hs_token")
 
 
 def _resolve_bearer_token(name: str, profile: Profile) -> None:

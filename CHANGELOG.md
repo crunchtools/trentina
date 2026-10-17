@@ -10,6 +10,26 @@ under that name.
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-10-17
+
+### Added
+
+- A profile can be reached on more than one upstream channel (#483, spec
+  020). `bridges: {<channel>: ...}` holds every channel beyond
+  `matrix_bridge`, with the same schema, each one a bridge process speaking
+  the same wire contract on `/bridge/{profile}/{channel}/event` and its own
+  Conduit appservice registration on `/bridge/as/{profile}/{channel}/...`.
+  The profile refuses two channels that share a bridge URL, a token env var
+  or an overlapping appservice namespace on one homeserver. The agent rule
+  (#264) covers every channel's identity. Existing `matrix_bridge` profiles,
+  paths, stores and log labels are unchanged. `docs/channel-bridges.md`
+  documents the contract a new channel implements.
+
+### Changed
+
+- `reload_profiles` reports `bridges changed for [...]` (was
+  `matrix_bridge changed for [...]`) when any channel's bridge moved.
+
 ## [1.14.0] - 2026-10-17
 
 ### Added
