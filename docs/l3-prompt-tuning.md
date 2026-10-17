@@ -171,4 +171,9 @@ Trentina, not what you may run.
 
 ## What has been measured
 
-See [benchmark.md](benchmark.md#l3-prompt-packs-354).
+On held-out benign content the generic prompts flag 19% on Gemini 2.5 Flash
+Lite and 47% on Gemini 3.8 Flash; the shipped packs bring that to 2% and 0%,
+and catch every planted-instruction case the generic prompts catch. Packs ship
+for four judges, each through a held-out gate, and an operator can tune their
+own for any model. The full tables are in
+[benchmark.md](benchmark.md#l3-prompt-packs-354).

@@ -8,6 +8,8 @@ Trentina compresses MCP tool descriptions as they pass through the gateway, redu
 
 MCP servers ship verbose tool descriptions. A typical Google Workspace backend has 130 tools, each with multi-paragraph descriptions, inline examples, and detailed parameter documentation. Across 20+ backends, this can consume 15-25K tokens of context on tool definitions alone — before the agent does any actual work.
 
+In the Crunchtools deployment, 154 tool descriptions went from 62K to 17K characters.
+
 Agents don't need verbose descriptions to use tools correctly. Tool names, parameter names, and type schemas carry enough signal for capable models. The prose is redundant.
 
 ## How It Works
