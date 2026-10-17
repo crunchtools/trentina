@@ -363,3 +363,5 @@ class TestYamlErrors:
             load_profiles(path)
         assert "line 3" in str(err.value)
         assert "SECRET" not in str(err.value)
+        assert err.value.__cause__ is None
+        assert err.value.__suppress_context__
