@@ -29,7 +29,7 @@ class SettingsError(RuntimeError):
     """A required setting is missing. Fatal at startup."""
 
 
-def _read(name: str, reader: Callable[[str], str] = read_secret_env) -> str:
+def read_setting(name: str, reader: Callable[[str], str] = read_secret_env) -> str:
     """A value from ``NAME`` or ``NAME_FILE``, with one error type for every
     way it can be unusable. The profile name, which every log line carries
     on purpose, passes ``read_env_or_file`` so it is not held out of the log
@@ -52,13 +52,14 @@ def _http_url(name: str, value: str) -> str:
 _MAX_PORT = 65535
 
 
-def _port(value: str) -> int:
+def parse_port(name: str, value: str) -> int:
+    """``value`` as a TCP port (1-65535); SettingsError naming ``name`` if not."""
     if not value.isdigit() or not 0 < int(value) <= _MAX_PORT:
-        raise SettingsError(f"BRIDGE_LISTEN_PORT must be a port number, got {value!r}")
+        raise SettingsError(f"{name} must be a port number, got {value!r}")
     return int(value)
 
 
-def _private_gateway(value: str) -> str:
+def private_gateway_url(value: str) -> str:
     """The gateway receives decrypted events and the ingress token, so it
     must be on a private host, by the same rule as the gateway's own bridge
     URLs; no userinfo or fragment either."""
@@ -71,8 +72,9 @@ def _private_gateway(value: str) -> str:
         raise SettingsError(f"BRIDGE_GATEWAY_URL: {exc}") from exc
 
 
-def _required(name: str, reader: Callable[[str], str] = read_secret_env) -> str:
-    value = _read(name, reader)
+def required_setting(name: str, reader: Callable[[str], str] = read_secret_env) -> str:
+    """``read_setting``, but an unset or empty value is a SettingsError."""
+    value = read_setting(name, reader)
     if not value:
         raise SettingsError(f"{name} (or {name}_FILE) is required")
     return value
@@ -84,7 +86,7 @@ def _inviters() -> frozenset[str]:
     ``_FILE`` form like one so a unit can mount it. Empty is legal and means
     no invite is accepted; a malformed entry is fatal rather than skipped,
     because a typo would otherwise shut out the one person meant to get in."""
-    raw = _read("BRIDGE_ALLOWED_INVITERS")
+    raw = read_setting("BRIDGE_ALLOWED_INVITERS")
     ids = {part.strip() for part in raw.split(",") if part.strip()}
     bad = sum(1 for user in ids if not is_matrix_user_id(user, historical=True))
     if bad:
@@ -117,21 +119,23 @@ class BridgeSettings:
     @classmethod
     def from_env(cls) -> BridgeSettings:
         return cls(
-            profile=_required("BRIDGE_PROFILE", read_env_or_file),
+            profile=required_setting("BRIDGE_PROFILE", read_env_or_file),
             homeserver=_http_url(
                 "BRIDGE_HOMESERVER", os.environ.get("BRIDGE_HOMESERVER", DEFAULT_HOMESERVER)
             ),
-            user_id=_required("BRIDGE_USER_ID"),
+            user_id=required_setting("BRIDGE_USER_ID"),
             store_dir=Path(os.environ.get("BRIDGE_STORE_DIR", "/data")),
-            pickle_key=_required("BRIDGE_PICKLE_KEY"),
-            gateway_url=_private_gateway(_required("BRIDGE_GATEWAY_URL")),
-            ingress_token=_required("BRIDGE_INGRESS_TOKEN"),
-            bridge_token=_required("BRIDGE_TOKEN"),
+            pickle_key=required_setting("BRIDGE_PICKLE_KEY"),
+            gateway_url=private_gateway_url(required_setting("BRIDGE_GATEWAY_URL")),
+            ingress_token=required_setting("BRIDGE_INGRESS_TOKEN"),
+            bridge_token=required_setting("BRIDGE_TOKEN"),
             listen_host=os.environ.get("BRIDGE_LISTEN_HOST", "127.0.0.1"),
-            listen_port=_port(os.environ.get("BRIDGE_LISTEN_PORT", str(DEFAULT_PORT))),
+            listen_port=parse_port(
+                "BRIDGE_LISTEN_PORT", os.environ.get("BRIDGE_LISTEN_PORT", str(DEFAULT_PORT))
+            ),
             device_name=os.environ.get("BRIDGE_DEVICE_NAME", "Trentina bridge"),
             device_id=os.environ.get("BRIDGE_DEVICE_ID", ""),
-            access_token=_read("BRIDGE_ACCESS_TOKEN"),
-            password=_read("BRIDGE_PASSWORD"),
+            access_token=read_setting("BRIDGE_ACCESS_TOKEN"),
+            password=read_setting("BRIDGE_PASSWORD"),
             allowed_inviters=_inviters(),
         )

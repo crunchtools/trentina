@@ -1,7 +1,7 @@
 # Specification: Tool Discovery
 
-> **Spec ID:** 020-tool-discovery
-> **Status:** Implemented (1.15.0)
+> **Spec ID:** 021-tool-discovery
+> **Status:** Implemented (1.17.0)
 > **Version:** 0.1.0
 > **Author:** crunchtools
 > **Date:** 2026-10-17

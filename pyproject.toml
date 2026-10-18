@@ -1,6 +1,6 @@
 [project]
 name = "trentina"
-version = "1.15.0"
+version = "1.17.0"
 description = "MCP gateway for AI agents — prompt-injection defense, token savings, deterministic policy, OAuth, per-agent profiles"
 requires-python = ">=3.11"
 license = "AGPL-3.0-or-later"
@@ -101,6 +101,7 @@ dev = [
 [project.scripts]
 trentina = "trentina:main"
 trentina-bridge = "trentina.bridge.main:main"
+trentina-rcs-bridge = "trentina.rcs_bridge.main:main"
 
 [build-system]
 requires = ["hatchling"]

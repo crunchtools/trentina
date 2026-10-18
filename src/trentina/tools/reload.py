@@ -243,17 +243,23 @@ def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
 
 
 def _unapplied_bridges(current: GatewayConfig, new_config: GatewayConfig) -> list[str]:
-    """Name the profiles whose ``matrix_bridge`` moved: a bridge binds its
-    endpoints at startup, so a reload validates the edit and applies none."""
+    """Name the profiles whose bridges moved (``matrix_bridge`` or
+    ``bridges``, #483): a bridge binds its endpoints at startup, so a reload
+    validates the edit and applies none."""
+
+    def bridges_of(config: GatewayConfig, name: str) -> Any:
+        # A profile added or removed with no bridges moved no bridge.
+        profile = config.profiles.get(name)
+        return {} if profile is None else profile.channel_bridges()
+
     moved = sorted(
         name
         for name in set(current.profiles) | set(new_config.profiles)
-        if getattr(current.profiles.get(name), "matrix_bridge", None)
-        != getattr(new_config.profiles.get(name), "matrix_bridge", None)
+        if bridges_of(current, name) != bridges_of(new_config, name)
     )
     if not moved:
         return []
-    return [f"matrix_bridge changed for {moved}: restart to apply"]
+    return [f"bridges changed for {moved}: restart to apply"]
 
 
 def _uses_oauth_proxy(profile: Profile) -> bool:

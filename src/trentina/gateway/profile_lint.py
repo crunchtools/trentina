@@ -289,7 +289,7 @@ def _open_fetch(body: dict[str, Any]) -> str | None:
 
 
 def _public_inbox(body: dict[str, Any]) -> str | None:
-    for key in ("alert_ingress", "matrix_ingress", "matrix_bridge"):
+    for key in ("alert_ingress", "matrix_ingress", "matrix_bridge", "bridges"):
         if body.get(key):
             return key
     return None

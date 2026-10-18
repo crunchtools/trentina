@@ -1,6 +1,6 @@
 # Plan: Tool Discovery
 
-> **Spec ID:** 020-tool-discovery
+> **Spec ID:** 021-tool-discovery
 > **Status:** Complete
 > **Last Updated:** 2026-10-17
 
