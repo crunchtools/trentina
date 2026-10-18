@@ -10,6 +10,14 @@ under that name.
 
 ## [Unreleased]
 
+## [1.17.1] - 2026-10-18
+
+### Fixed
+
+- `load_tools` no longer reports a core tool as loaded. The core is always
+  listed, so naming it in `loaded` claimed a change that never happened
+  (#473).
+
 ## [1.17.0] - 2026-10-17
 
 ### Added
