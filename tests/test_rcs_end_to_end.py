@@ -122,7 +122,9 @@ class TestEndToEnd:
         assert not any("ignore your rules" in b for b in bodies)
         assert any("withheld" in b for b in bodies)
 
-    async def test_a_reaction_is_dropped_and_the_agent_told(self, wired: Wired) -> None:
+    async def test_a_reaction_is_dropped_without_a_word_to_the_agent(self, wired: Wired) -> None:
+        """Hermes reacts on every turn and takes the reaction back; neither
+        may cost a message or tell the agent its message was not sent."""
         await wired.phone_says("SM1", "status?")
         target = await wired.gateway.mapping.local_event("$rcs-SM1")
         assert target is not None
@@ -133,7 +135,14 @@ class TestEndToEnd:
             },
         }
         await wired.gateway.outbound("t1", [reaction])
-        await wired.gateway.outbound("t2", [wired.agent_reply("$a2", "still here")])
+        undo = wired.agent_reply("$a2", "") | {
+            "type": "m.room.redaction",
+            "redacts": "$a1",
+            "content": {"redacts": "$a1"},
+        }
+        await wired.gateway.outbound("t2", [undo])
+        await wired.gateway.outbound("t3", [wired.agent_reply("$a3", "still here")])
         assert [s["Body"] for s in wired.rcs.twilio.sent] == ["still here"]
-        assert wired.gateway.outbound_refused == 1
-        assert "cannot carry it" in wired.conduit.sent[-1]["content"]["body"]
+        assert wired.gateway.outbound_refused == 0
+        bodies = [s["content"].get("body", "") for s in wired.conduit.sent]
+        assert not any("cannot carry it" in b for b in bodies)

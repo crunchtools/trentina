@@ -10,6 +10,20 @@ under that name.
 
 ## [Unreleased]
 
+## [1.18.1] - 2026-10-18
+
+### Fixed
+
+- The RCS bridge's default room topic no longer gets every text withheld. The
+  gateway judges the topic with every message, and the old one ("confirm
+  destructive actions in Matrix") scored as an injection. It now only
+  describes the room (RT #1529).
+- The RCS bridge accepts and drops reactions, and their redactions, instead
+  of refusing them. Hermes reacts on every turn, and each refusal told the
+  agent its message was not sent.
+- An edit goes out over RCS as its new text, marked `(edited) `, instead of
+  the `* ` fallback body.
+
 ## [1.18.0] - 2026-10-18
 
 ### Changed

@@ -29,6 +29,7 @@ DEFAULT_TWILIO_API = "https://api.twilio.com"
 # The synthetic server the owner's and the room's IDs live under. Reserved by
 # RFC 2606, so no real homeserver can ever be named this.
 DEFAULT_SERVER = "rcs.invalid"
+DEFAULT_ROOM_TOPIC = "Text messages with the owner's phone over RCS"
 
 _E164_RE = re.compile(r"^\+[1-9][0-9]{6,14}$")
 _ACCOUNT_SID_RE = re.compile(r"^AC[0-9a-f]{32}$")
@@ -129,10 +130,10 @@ class RcsSettings:
             agent_user_id=agent,
             owner_number=_e164("RCS_OWNER_NUMBER", required_setting("RCS_OWNER_NUMBER")),
             owner_name=os.environ.get("RCS_OWNER_NAME", "Owner (phone)"),
-            room_topic=os.environ.get(
-                "RCS_ROOM_TOPIC",
-                "RCS/SMS: lower trust than Matrix. Confirm destructive actions in Matrix.",
-            ),
+            # The gateway judges the topic with every message, so it must
+            # describe, never instruct: the old "confirm destructive actions
+            # in Matrix" scored as an injection and withheld every text.
+            room_topic=os.environ.get("RCS_ROOM_TOPIC", DEFAULT_ROOM_TOPIC),
             server=server,
             store_dir=Path(os.environ.get("BRIDGE_STORE_DIR", "/data")),
             listen_host=os.environ.get("BRIDGE_LISTEN_HOST", "127.0.0.1"),

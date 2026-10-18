@@ -25,7 +25,7 @@ from starlette.routing import Route
 
 from ..httpbody import TooLargeError, read_capped, where_invalid
 from ..logsafe import redact_source
-from .bridge import RefusedError, UnavailableError
+from .bridge import DROPPED_PREFIX, RefusedError, UnavailableError
 from .store import InboxFullError
 
 if TYPE_CHECKING:
@@ -110,6 +110,9 @@ class _Private:
         body = await self._parse(request, RedactRequest)
         if isinstance(body, JSONResponse):
             return body
+        if body.event_id.startswith(DROPPED_PREFIX):
+            # A dropped reaction was never sent, so there is nothing to unsend.
+            return JSONResponse({"event_id": body.event_id})
         # RCS has no unsend. "Never", so the gateway tells the agent.
         return JSONResponse({"error": "rcs cannot unsend"}, status_code=422)
 
