@@ -19,11 +19,12 @@ import pytest
 from starlette.testclient import TestClient
 
 from trentina.bridge.settings import SettingsError
+from trentina.quarantine.classifier import classify, is_classifier_available
 from trentina.rcs_bridge import bridge as bridge_mod
 from trentina.rcs_bridge.api import build_private_app, build_public_app
 from trentina.rcs_bridge.backend import Inbound
 from trentina.rcs_bridge.bridge import RcsBridge, RefusedError, UnavailableError
-from trentina.rcs_bridge.settings import RcsSettings
+from trentina.rcs_bridge.settings import DEFAULT_ROOM_TOPIC, RcsSettings
 from trentina.rcs_bridge.store import RcsStore
 from trentina.rcs_bridge.text import chunks, flatten
 from trentina.rcs_bridge.twilio import MAX_BODY, TwilioBackend, signature
@@ -308,8 +309,11 @@ class TestSend:
     @pytest.mark.parametrize(
         ("event_type", "content"),
         [
-            ("m.reaction", {"m.relates_to": {"key": "+1"}}),
             ("m.room.message", {"msgtype": "m.image", "body": "x.png"}),
+            (
+                "m.room.message",
+                {"msgtype": "m.text", "body": "* x", "m.relates_to": {"rel_type": "m.replace"}},
+            ),
             ("m.room.message", {"msgtype": "m.text", "body": "   "}),
             ("m.room.message", {"msgtype": "m.text"}),
         ],
@@ -320,6 +324,25 @@ class TestSend:
         with pytest.raises(RefusedError):
             await rig.bridge.send(ROOM, event_type, content, "out1")
         assert rig.twilio.sent == []
+
+    async def test_a_reaction_is_dropped_not_refused(self, rig: Rig) -> None:
+        content = {"m.relates_to": {"rel_type": "m.annotation", "key": "\U0001f440"}}
+        first = await rig.bridge.send(ROOM, "m.reaction", content, "r1")
+        again = await rig.bridge.send(ROOM, "m.reaction", content, "r1")
+        assert first == again
+        assert first.startswith(bridge_mod.DROPPED_PREFIX)
+        assert rig.twilio.sent == []
+
+    async def test_an_edit_goes_out_as_its_new_text(self, rig: Rig) -> None:
+        content = {
+            "msgtype": "m.text",
+            "body": "* Done at 5.",
+            "m.new_content": {"msgtype": "m.text", "body": "Done at 5."},
+            "m.relates_to": {"rel_type": "m.replace", "event_id": "$x"},
+        }
+        await rig.bridge.send(ROOM, "m.room.message", content, "e1")
+        (form,) = rig.twilio.sent
+        assert form["Body"] == "(edited) Done at 5."
 
     async def test_only_the_owners_room(self, rig: Rig) -> None:
         with pytest.raises(RefusedError):
@@ -349,11 +372,16 @@ class TestPrivateApi:
         }
         assert self._send(client, text, token="wrong") == 401
         assert self._send(client, text) == 200
-        assert self._send(client, text | {"type": "m.reaction", "txn_id": "t2"}) == 422
+        image = {"msgtype": "m.image", "body": "x.png"}
+        assert self._send(client, text | {"content": image, "txn_id": "t2"}) == 422
         assert self._send(client, text | {"extra": 1}) == 400
         redact = {"room_id": ROOM, "event_id": "$e", "txn_id": "t3"}
         headers = {"Authorization": "Bearer bridge-secret"}
         assert client.post("/redact", json=redact, headers=headers).status_code == 422
+        reaction = text | {"type": "m.reaction", "content": {}, "txn_id": "t5"}
+        dropped = client.post("/send", json=reaction, headers=headers).json()["event_id"]
+        undo = redact | {"event_id": dropped}
+        assert client.post("/redact", json=undo, headers=headers).status_code == 200
         rig.twilio.fail = [(503, {"code": 20503})]
         assert self._send(client, text | {"txn_id": "t4"}) == 502
 
@@ -394,6 +422,13 @@ _ENV = {
     "RCS_TWILIO_AUTH_TOKEN": TOKEN,
     "RCS_TWILIO_SENDER_ID": SENDER,
 }
+
+
+@pytest.mark.skipif(not is_classifier_available(), reason="Prompt Guard model not available")
+def test_the_default_room_topic_is_not_judged_an_injection() -> None:
+    """The gateway judges the topic with every message: one that reads as an
+    instruction gets every text withheld (RT #1529)."""
+    assert classify(DEFAULT_ROOM_TOPIC).label == "BENIGN"
 
 
 class TestSettings:

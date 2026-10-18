@@ -37,11 +37,28 @@ logger = logging.getLogger(__name__)
 ROOM_ANNOUNCE = "org.crunchtools.trentina.room"
 ROOM_REFUSED = "refused"
 _TEXT_TYPES = frozenset({"m.text", "m.notice", "m.emote"})
+# The event ID a dropped reaction gets: the gateway maps it like any other, so
+# its later redaction comes back here and is answered as done.
+DROPPED_PREFIX = "$rcs-dropped-"
+EDITED_PREFIX = "(edited) "
 _MAX_BACKOFF = 60.0
 # The store is pruned at least this often, so a bridge that only sends still
 # drops old send records.
 PRUNE_EVERY = 3600.0
 _GATEWAY_TIMEOUT = httpx.Timeout(connect=5.0, read=60.0, write=10.0, pool=5.0)
+
+
+def _carried_text(content: dict[str, Any]) -> tuple[Any, Any]:
+    """The msgtype and body a message carries: an edit's are its new
+    content's, with the body marked as an edit; an edit without new content
+    carries nothing."""
+    relates = content.get("m.relates_to")
+    if not (isinstance(relates, dict) and relates.get("rel_type") == "m.replace"):
+        return content.get("msgtype"), content.get("body")
+    new = content.get("m.new_content")
+    if not isinstance(new, dict) or not isinstance(new.get("body"), str):
+        return None, None
+    return new.get("msgtype"), EDITED_PREFIX + new["body"]
 
 
 class RefusedError(ValueError):
@@ -206,6 +223,12 @@ class RcsBridge:
     ) -> str:
         """Send one judged event to the owner's phone; the event ID it gets.
 
+        A reaction is accepted and dropped: on RCS it would be a billed
+        message that says nothing the owner needs, and refusing it would
+        tell the agent, every turn, that its message was not sent. An edit
+        goes out as its new text, marked as an edit, since a phone cannot
+        replace a message it already has.
+
         At least once, per chunk: a chunk is recorded once Twilio answers, so
         one whose answer is lost (a timeout after Twilio took it) is sent
         again on the gateway's retry. Twilio's Messages API takes no
@@ -218,8 +241,9 @@ class RcsBridge:
         """
         if room_id != self.settings.room_id:
             raise RefusedError("not the owner's room")
-        msgtype = content.get("msgtype")
-        body = content.get("body")
+        if event_type == "m.reaction":
+            return DROPPED_PREFIX + hashlib.sha256(txn_id.encode()).hexdigest()[:32]
+        msgtype, body = _carried_text(content)
         if (
             event_type != "m.room.message"
             or msgtype not in _TEXT_TYPES

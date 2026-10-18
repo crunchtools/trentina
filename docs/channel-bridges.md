@@ -110,7 +110,7 @@ as `@tel<digits>:rcs.invalid` (the agent sees `@rcs_tel<digits>=3arcs.invalid:<s
 | `RCS_WEBHOOK_URL` | the exact https URL set in Twilio: the signature covers it |
 | `RCS_AGENT_USER_ID` | the profile's `bridges.rcs.public_user_id` |
 | `RCS_OWNER_NUMBER`, `RCS_OWNER_NAME` (`Owner (phone)`) | the one number accepted (E.164), and its display name |
-| `RCS_ROOM_TOPIC` | the room's topic, which the agent reads (default: lower trust than Matrix; confirm destructive actions there) |
+| `RCS_ROOM_TOPIC` | the room's topic, which the agent reads (default: text messages with the owner's phone over RCS). The gateway judges it with every message, so it must describe, never instruct: a topic that reads as an instruction gets every text withheld. Put trust guidance in the agent's own instructions |
 | `RCS_SERVER` (`rcs.invalid`) | the server name the synthetic IDs live under |
 | `RCS_TWILIO_ACCOUNT_SID`, `RCS_TWILIO_AUTH_TOKEN` | the agent's account (a subaccount per agent keeps one agent's token from speaking as another) |
 | `RCS_TWILIO_SENDER_ID` | the RCS sender's ID (`rcs:` optional). Messages go `From` it, so there is no Messaging Service, which Twilio allows an RCS sender into only after carrier approval, and no SMS fallback |
@@ -126,6 +126,9 @@ named, not carried.
 
 Outbound, text, notices and emotes go out as plain text (markdown flattened)
 in chunks of at most 1,600 characters, recorded per chunk so a retried
-`/send` resends only what did not go. Everything else, and `/redact`, is a
-422. US RCS text is billed per 160-byte segment, so a long reply costs
+`/send` resends only what did not go. An edit goes out as its new text,
+prefixed `(edited) `. A reaction is accepted and dropped, and so is its
+redaction: on RCS it would be a billed message saying nothing, and refusing
+it would tell the agent its message was not sent. Everything else, and any
+other `/redact`, is a 422. US RCS text is billed per 160-byte segment, so a long reply costs
 several messages.
