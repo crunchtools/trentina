@@ -203,8 +203,8 @@ class ProfileBridge:
         # The agent's events refused since start, by the agent rule or the
         # judge: each is a message it believes it sent (#317). /health sums it.
         self.outbound_refused = 0
-        # Per local room, the agent's typing state last forwarded and when.
-        self._typing: dict[str, tuple[bool, float]] = {}
+        # Per local room where the agent is typing, when that was last carried.
+        self._typing: dict[str, float] = {}
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -729,28 +729,40 @@ class ProfileBridge:
             user_ids = content.get("user_ids")
             typing = isinstance(user_ids, list) and self.appservice.agent_id in user_ids
             now = time.monotonic()
-            last = self._typing.get(local_room)
-            if last is not None and last[0] == typing:
-                if not typing or now - last[1] < _TYPING_REFRESH:
-                    continue
-            elif last is None and not typing:
+            since = self._typing.get(local_room)
+            # Only rooms where the agent is typing are held, so this stays as
+            # small as the rooms it is typing in at once.
+            if not typing and since is None:
                 continue
-            try:
-                room = await self.appservice.room_for_local(local_room)
-                if room is None or await self._relay_refusal(room.remote_id) is not None:
-                    continue
-                self._typing[local_room] = (typing, now)
-                await self._bridge(
-                    "/typing",
-                    {"room_id": room.remote_id, "typing": typing},
-                    deadline=_TYPING_DEADLINE,
-                )
-            except (BridgeRefusedError, BridgeUnavailableError, ConduitError, OSError) as exc:
-                # A bridge without /typing answers 404; a bubble is not worth
-                # a log line at the level production runs at.
-                logger.debug(
-                    "matrix_bridge: typing for %s not carried: %s", self.label, exc_kind(exc)
-                )
+            if typing and since is not None and now - since < _TYPING_REFRESH:
+                continue
+            if await self._send_typing(local_room, typing):
+                if typing:
+                    self._typing[local_room] = now
+                else:
+                    self._typing.pop(local_room, None)
+            else:
+                # Not carried: forget it, so the agent's next push tries again
+                # and a stop never waits on a start that did not go.
+                self._typing.pop(local_room, None)
+
+    async def _send_typing(self, local_room: str, typing: bool) -> bool:
+        """Ask the bridge to show or clear the agent's typing; whether it went."""
+        try:
+            room = await self.appservice.room_for_local(local_room)
+            if room is None or await self._relay_refusal(room.remote_id) is not None:
+                return False
+            reply = await self._bridge(
+                "/typing",
+                {"room_id": room.remote_id, "typing": typing},
+                deadline=_TYPING_DEADLINE,
+            )
+        except (BridgeRefusedError, BridgeUnavailableError, ConduitError, OSError) as exc:
+            # A bridge without /typing answers 404; a bubble is not worth a
+            # log line at the level production runs at.
+            logger.debug("matrix_bridge: typing for %s not carried: %s", self.label, exc_kind(exc))
+            return False
+        return reply.get("shown") is True
 
     async def _bridge(
         self, path: str, body: dict[str, Any], *, deadline: float = _BRIDGE_DEADLINE

@@ -665,7 +665,7 @@ class TestTypingApi:
         resp = TestClient(build_app(_bridge(tmp_path, nio))).post(
             "/typing", json={"room_id": ROOM, "typing": typing}, headers=self.AUTH
         )
-        assert resp.status_code == 200
+        assert resp.json() == {"shown": True}
         assert nio.typed == [(ROOM, typing, TYPING_TIMEOUT_MS)]
 
     def test_a_room_not_held_is_not_typed_into(self, tmp_path: Path) -> None:
@@ -673,7 +673,7 @@ class TestTypingApi:
         resp = TestClient(build_app(_bridge(tmp_path, nio))).post(
             "/typing", json={"room_id": "!gone:matrix.org", "typing": True}, headers=self.AUTH
         )
-        assert resp.status_code == 200, "a missed bubble is not the gateway's to retry"
+        assert (resp.status_code, resp.json()) == (200, {"shown": False})
         assert nio.typed == []
 
     def test_a_homeserver_failure_is_still_answered(self, tmp_path: Path) -> None:
@@ -681,7 +681,7 @@ class TestTypingApi:
         resp = TestClient(build_app(_bridge(tmp_path, nio))).post(
             "/typing", json={"room_id": ROOM, "typing": True}, headers=self.AUTH
         )
-        assert resp.status_code == 200
+        assert (resp.status_code, resp.json()) == (200, {"shown": False})
 
     def test_a_malformed_typing_is_refused(self, tmp_path: Path) -> None:
         resp = TestClient(build_app(_bridge(tmp_path, TypingNio()))).post(

@@ -120,11 +120,13 @@ class _Handlers:
         try:
             await self._bridge.typing(body.room_id, body.typing)
         except SendError as exc:
-            # A missed bubble: logged quietly, and nothing for the gateway to retry.
+            # Best effort: 200 either way, and the gateway tries again on the
+            # agent's next push rather than retrying this one.
             logger.info(
                 "bridge[%s]: typing not shown: %s", self._bridge.settings.profile, exc_kind(exc)
             )
-        return JSONResponse({})
+            return JSONResponse({"shown": False})
+        return JSONResponse({"shown": True})
 
     async def health(self, _request: Request) -> JSONResponse:
         ready = self._bridge.ready.is_set()

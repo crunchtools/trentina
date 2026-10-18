@@ -144,6 +144,7 @@ class FakeBridge:
     """The bridge process's /send and /redact."""
 
     status: int = 200
+    shown: bool = True
     sent: list[dict[str, Any]] = field(default_factory=list)
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -152,6 +153,8 @@ class FakeBridge:
             return httpx.Response(self.status, text="down")
         body = json.loads(request.content)
         self.sent.append({"path": request.url.path, **body})
+        if request.url.path == "/typing":
+            return httpx.Response(200, json={"shown": self.shown})
         return httpx.Response(200, json={"event_id": f"$remote{len(self.sent)}"})
 
 
@@ -698,6 +701,25 @@ class TestTyping:
         rig.upstream.status = status
         await rig.bridge.typing([_typing(AGENT)])
         assert rig.bridge.outbound_refused == 0
+
+    async def test_a_bubble_not_shown_is_tried_again_on_the_next_push(
+        self, rig_factory: Any
+    ) -> None:
+        rig = rig_factory()
+        await rig.bridge.inbound(_message())
+        rig.upstream.shown = False
+        await rig.bridge.typing([_typing(AGENT)])
+        rig.upstream.shown = True
+        await rig.bridge.typing([_typing(AGENT)])
+        assert [s["typing"] for s in rig.upstream.sent] == [True, True]
+
+    async def test_only_rooms_being_typed_in_are_held(self, rig_factory: Any) -> None:
+        rig = rig_factory()
+        await rig.bridge.inbound(_message())
+        await rig.bridge.typing([_typing(AGENT)])
+        assert len(rig.bridge._typing) == 1
+        await rig.bridge.typing([_typing()])
+        assert rig.bridge._typing == {}
 
 
 class TestRewrite:

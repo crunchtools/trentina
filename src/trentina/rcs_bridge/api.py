@@ -129,13 +129,12 @@ class _Private:
             return body
         try:
             await self._bridge.typing(body.room_id, body.typing)
-        except RefusedError as exc:
-            logger.warning("bridge[%s]: refused typing: %s", self._label, exc.reason)
-            return JSONResponse({"error": "not carried"}, status_code=422)
-        except UnavailableError as exc:
-            # A missed bubble: logged quietly, and nothing for the gateway to retry.
+        except (RefusedError, UnavailableError) as exc:
+            # Best effort, as on the Matrix bridge: 200 either way, and the
+            # gateway tries again on the agent's next push.
             logger.info("bridge[%s]: typing not shown: %s", self._label, exc.reason)
-        return JSONResponse({})
+            return JSONResponse({"shown": False})
+        return JSONResponse({"shown": True})
 
     async def health(self, _request: Request) -> JSONResponse:
         ready = self._bridge.ready.is_set()

@@ -84,8 +84,9 @@ event is in Conduit, or deliberately withheld or skipped, and dedupes on
   `{"event_id": ...}`, idempotent on `txn_id`.
 - `POST /redact` `{room_id, event_id, txn_id}`.
 - `POST /typing` `{room_id, typing}` (#1533): whether the agent is typing
-  there. Best effort: answer 200 whether or not it was shown, so the
-  gateway never retries it. It carries nothing to judge. The gateway sends
+  there. Best effort: answer 200 with `{"shown": true|false}`, never an
+  error for a bubble that did not go; the gateway tries again on the
+  agent's next push, not by retrying. It carries nothing to judge. The gateway sends
   a change, and a still-typing agent again every 15 s, since upstream
   indicators lapse. It reads only `m.typing` from the transaction's
   ephemeral section, which the homeserver sends only to a registration

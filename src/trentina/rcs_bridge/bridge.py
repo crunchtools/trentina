@@ -242,6 +242,8 @@ class RcsBridge:
         try:
             await self.backend.send_typing(self.settings.owner_number)
         except BackendError as exc:
+            # Not shown, so the next push may try again at once.
+            self._typing_at = float("-inf")
             raise UnavailableError(exc.reason) from exc
 
     async def send(

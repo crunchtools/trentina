@@ -405,17 +405,19 @@ class TestTyping:
         headers = {"Authorization": f"Bearer {BRIDGE_TOKEN}"}
         body = {"room_id": ROOM, "typing": True}
 
-        def post(json: dict[str, Any], auth: dict[str, str] = headers) -> int:
-            return client.post("/typing", json=json, headers=auth).status_code
+        def post(json: dict[str, Any], auth: dict[str, str] = headers) -> tuple[int, Any]:
+            resp = client.post("/typing", json=json, headers=auth)
+            return resp.status_code, resp.json()
 
-        assert post(body, {"Authorization": "Bearer x"}) == 401
-        assert post(body | {"extra": 1}) == 400
-        assert post(body | {"typing": "yes"}) == 400
-        assert post(body | {"room_id": "!other:rcs.invalid"}) == 422
+        assert post(body, {"Authorization": "Bearer x"})[0] == 401
+        assert post(body | {"extra": 1})[0] == 400
+        assert post(body | {"typing": "yes"})[0] == 400
+        # Best effort, as on the Matrix bridge: never an error for a bubble.
+        assert post(body | {"room_id": "!other:rcs.invalid"}) == (200, {"shown": False})
         rig.twilio.fail = [(503, {"code": 20503})]
-        # A missed bubble is not the gateway's to retry.
-        assert post(body) == 200
-        assert rig.twilio.typing == []
+        assert post(body) == (200, {"shown": False})
+        assert post(body) == (200, {"shown": True}), "a failure does not hold the throttle"
+        assert len(rig.twilio.typing) == 1
 
 
 class TestPrivateApi:
