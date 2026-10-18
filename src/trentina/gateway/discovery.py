@@ -291,7 +291,8 @@ def load(
         names = set()
     added = []
     for name in picked:
-        if name in names:
+        # The core is listed already: loading it would grow nothing.
+        if name in names or _core(profile, name):
             continue
         if len(names) >= MAX_LOADED:
             break

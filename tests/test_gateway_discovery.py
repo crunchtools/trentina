@@ -307,6 +307,18 @@ class TestDynamic:
         finally:
             current_session.reset(token)
 
+    async def test_load_does_not_report_the_core_as_loaded(self) -> None:
+        p = _profile("dynamic")
+        token = current_session.set(session_fingerprint(session_registry.create_session("disc")))
+        try:
+            resp = await _call(p, "load_tools", {"category": "systemd"})
+            loaded = json.loads(resp["result"]["content"][0]["text"])["loaded"]
+            assert loaded
+            assert f"systemd{SEP}unit_status" not in loaded
+            assert f"systemd{SEP}unit_status" in await _names(p)
+        finally:
+            current_session.reset(token)
+
     async def test_a_session_that_ended_mid_call_keeps_nothing(self) -> None:
         token = current_session.set(session_fingerprint("never-registered"))
         try:
