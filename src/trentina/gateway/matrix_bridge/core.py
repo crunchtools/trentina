@@ -741,10 +741,13 @@ class ProfileBridge:
                     self._typing[local_room] = now
                 else:
                     self._typing.pop(local_room, None)
-            else:
-                # Not carried: forget it, so the agent's next push tries again
-                # and a stop never waits on a start that did not go.
+            elif typing:
+                # A start not carried: forget it, so the next push tries again.
                 self._typing.pop(local_room, None)
+            else:
+                # A stop not carried: still held, and due, so the next push of
+                # either kind goes at once. Upstream lapses it meanwhile.
+                self._typing[local_room] = float("-inf")
 
     async def _send_typing(self, local_room: str, typing: bool) -> bool:
         """Ask the bridge to show or clear the agent's typing; whether it went."""

@@ -713,6 +713,17 @@ class TestTyping:
         await rig.bridge.typing([_typing(AGENT)])
         assert [s["typing"] for s in rig.upstream.sent] == [True, True]
 
+    async def test_a_stop_not_carried_is_tried_again(self, rig_factory: Any) -> None:
+        rig = rig_factory()
+        await rig.bridge.inbound(_message())
+        await rig.bridge.typing([_typing(AGENT)])
+        rig.upstream.shown = False
+        await rig.bridge.typing([_typing()])
+        rig.upstream.shown = True
+        await rig.bridge.typing([_typing()])
+        assert [s["typing"] for s in rig.upstream.sent] == [True, False, False]
+        assert rig.bridge._typing == {}
+
     async def test_only_rooms_being_typed_in_are_held(self, rig_factory: Any) -> None:
         rig = rig_factory()
         await rig.bridge.inbound(_message())
