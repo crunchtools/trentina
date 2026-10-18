@@ -334,6 +334,16 @@ tools/list and tools/call see them; everything behind the edge uses the real
 (backend, tool). A repeated `structuredContent` is dropped before the scan
 (`router._drop_duplicate_structured`).
 
+`tool_discovery` (#473, `gateway/discovery.py`, `docs/tool-discovery.md`)
+lists less for a client without its own tool search: `search` serves a core
+set plus `find_tools`/`call_tool`, `dynamic` serves `load_tools` and pushes
+`notifications/tools/list_changed` (that spelling; `listChanged` is only the
+capability key) to one session. `call_tool` re-enters `_tools_call` with the
+inner name and writes no row of its own, so every rule and the audit see
+the real tool; keep it that way. `find_tools` reads only the served
+aggregate (`tool_search.py`), never a backend. Leave it off for Claude Code:
+its hooks key on real names.
+
 Until 0.32.0 the mode was the tool's NAME prefix (#193), so the agent chose
 its own posture and nothing enforced it. Now the policy does:
 

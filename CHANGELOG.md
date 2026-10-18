@@ -10,6 +10,30 @@ under that name.
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-10-17
+
+### Added
+
+- Tool discovery for clients without their own tool search (#473), a
+  profile's `tool_discovery`, off by default. `search` lists a core set plus
+  `find_tools` and `call_tool`; `call_tool` re-enters the router with the
+  real name, so the call meets every rule a direct one does and is audited
+  and gatekept as the real backend and tool. `dynamic` lists the core plus
+  `load_tools` and pushes `notifications/tools/list_changed` to the one
+  session that loaded more. Search is BM25F with a trigram fallback, local
+  and deterministic; `benchmarks/tool_search.py` measures recall@8 of 1.000
+  on a 149-tool corpus (`docs/tool-discovery.md`).
+- `tool_discovery.categories` names categories of backends in the session
+  instructions, and `describe_backend` leads each served description with
+  its category. Both help a client that searches natively, and rename
+  nothing.
+
+### Fixed
+
+- The gateway pushed `notifications/tools/listChanged`, a method MCP does not
+  define; the spec's is `notifications/tools/list_changed`. A client
+  following the spec ignored every circuit-breaker and reload notice.
+
 ## [1.16.0] - 2026-10-17
 
 ### Added

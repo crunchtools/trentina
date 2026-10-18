@@ -7,7 +7,7 @@ belonging to a specific profile.
 Sessions are lightweight tracking objects — transport-level session
 management is handled by the MCP framework.  This registry maps
 profile names to their active session IDs so the gateway can broadcast
-``notifications/tools/listChanged`` when a circuit breaker state change
+``notifications/tools/list_changed`` when a circuit breaker state change
 affects a profile's tool list.
 """
 
@@ -18,7 +18,13 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from ..logsafe import exc_kind
+from .context import session_fingerprint
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +33,7 @@ DEFAULT_MAX_SESSIONS_PER_PROFILE = 10
 
 SUBSCRIBER_QUEUE_MAXSIZE = 32
 """Bound per subscriber queue so a stalled SSE reader can't grow memory
-without limit. listChanged is idempotent, so dropping a frame on a full
+without limit. list_changed is idempotent, so dropping a frame on a full
 queue is harmless — the client re-requests tools/list on the next one."""
 
 REASON_TTL_EXPIRED = "ttl_expired"
@@ -75,6 +81,7 @@ class SessionRegistry:
     _notification_callback: Any = field(default=None)
     _subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = field(default_factory=dict)
     _tombstones: dict[str, Tombstone] = field(default_factory=dict)
+    _remove_hooks: list[Callable[[str], None]] = field(default_factory=list)
 
     def set_notification_callback(self, callback: Any) -> None:
         """Register a callback for pushing notifications to transport sessions.
@@ -243,7 +250,7 @@ class SessionRegistry:
         return affected
 
     async def broadcast_tools_changed(self, profile_name: str) -> int:
-        """Push ``notifications/tools/listChanged`` to all sessions for a profile.
+        """Push ``notifications/tools/list_changed`` to all sessions for a profile.
 
         Delivers to each session's live SSE subscriber queues (the built-in
         transport) and, when set, to :attr:`_notification_callback`.  Returns
@@ -253,46 +260,72 @@ class SessionRegistry:
         if not sessions:
             return 0
 
-        notification: dict[str, Any] = {
-            "jsonrpc": "2.0",
-            "method": "notifications/tools/listChanged",
-        }
-
         notified = 0
         for session in sessions:
-            delivered = False
-
-            if self._notification_callback is not None:
-                try:
-                    await self._notification_callback(session.session_id, notification)
-                    delivered = True
-                except Exception:
-                    # nosemgrep: trentina-log-exception-text -- logsafe: ours
-                    logger.warning(  # logsafe: ours — a stream error; the payload is ours
-                        "sessions: failed to notify session=%s",
-                        session.session_id[:8],
-                        exc_info=True,
-                    )
-
-            for queue in list(self._subscribers.get(session.session_id, ())):
-                try:
-                    queue.put_nowait(dict(notification))
-                    delivered = True
-                except asyncio.QueueFull:
-                    logger.warning(
-                        "sessions: subscriber queue full, dropped listChanged for session=%s",
-                        session.session_id[:8],
-                    )
-
-            if delivered:
+            if await self._push_tools_changed(session.session_id):
                 notified += 1
         if notified:
             logger.info(
-                "sessions: broadcast tools/listChanged to %d session(s) for profile=%s",
+                "sessions: broadcast tools/list_changed to %d session(s) for profile=%s",
                 notified,
                 profile_name,
             )
         return notified
+
+    async def notify_session(self, profile_name: str, fingerprint: str) -> bool:
+        """Push ``notifications/tools/list_changed`` to the one session whose
+        fingerprint (``context.session_fingerprint``) is ``fingerprint``.
+
+        For a tool list that changed for one session alone (#473). The router
+        knows a session only by its fingerprint, never its id.
+        """
+        if not fingerprint:
+            return False
+        for session in self.get_sessions_for_profile(profile_name):
+            if session_fingerprint(session.session_id) == fingerprint:
+                return await self._push_tools_changed(session.session_id)
+        return False
+
+    def holds(self, profile_name: str, fingerprint: str) -> bool:
+        """Whether a live session of ``profile_name`` has this fingerprint."""
+        return any(
+            session_fingerprint(s.session_id) == fingerprint
+            for s in self.get_sessions_for_profile(profile_name)
+        )
+
+    def on_remove(self, callback: Callable[[str], None]) -> None:
+        """Call ``callback(fingerprint)`` whenever a session ends, for state
+        held per session elsewhere (``discovery.py``'s loaded tools)."""
+        self._remove_hooks.append(callback)
+
+    async def _push_tools_changed(self, session_id: str) -> bool:
+        """Deliver one list_changed to a session's streams; whether any took it."""
+        notification: dict[str, Any] = {
+            "jsonrpc": "2.0",
+            "method": "notifications/tools/list_changed",
+        }
+        delivered = False
+        if self._notification_callback is not None:
+            try:
+                await self._notification_callback(session_id, notification)
+                delivered = True
+            except Exception as exc:
+                logger.warning(
+                    "sessions: failed to notify session=%s: %s",
+                    session_id[:8],
+                    exc_kind(exc),
+                )
+
+        for queue in list(self._subscribers.get(session_id, ())):
+            try:
+                queue.put_nowait(dict(notification))
+                delivered = True
+            except asyncio.QueueFull:
+                logger.warning(
+                    "sessions: subscriber queue full, dropped list_changed for session=%s",
+                    session_id[:8],
+                )
+        return delivered
 
     @property
     def active_count(self) -> int:
@@ -314,6 +347,8 @@ class SessionRegistry:
         self._subscribers.pop(session_id, None)
         if session is None:
             return False
+        for hook in self._remove_hooks:
+            hook(session_fingerprint(session_id))
         profile_set = self._profile_index.get(session.profile_name)
         if profile_set is not None:
             profile_set.discard(session_id)

@@ -195,6 +195,11 @@ profiles:
         name_tag: work       # work_send_gmail_message, not mail_work_send_...
 ```
 
+A client without its own tool search can be listed less:
+`tool_discovery.mode: search` serves a core set plus `find_tools` and
+`call_tool`, and `dynamic` serves `load_tools` and announces the rest per
+session. Off by default; see [Tool Discovery](tool-discovery.md).
+
 ## Roles
 
 One gateway process serves every profile out of one config file, one database

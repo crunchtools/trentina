@@ -1374,6 +1374,93 @@ class GuardedExecutionConfig(BaseModel):
         return tool in self.tools.get(backend, ())
 
 
+DISCOVERY_TOOLS = frozenset({"find_tools", "call_tool", "load_tools"})
+"""The gateway's own discovery tools (#473), served only under ``tool_discovery``."""
+TOP_K_DEFAULT = 8
+TOP_K_MAX = 25
+
+
+class ToolDiscoveryConfig(BaseModel):
+    """How a client without its own tool search finds tools (#473).
+
+    ``search`` lists a small core plus ``find_tools`` and ``call_tool``;
+    ``dynamic`` lists the core plus ``load_tools`` and whatever the session
+    has loaded, announced with ``notifications/tools/list_changed``. Both
+    keep the real tool behind every rule a direct call meets. ``off`` (the
+    default) lists everything, as before, and still takes ``categories``
+    and ``describe_backend``, which help a client that searches natively.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    mode: Literal["off", "search", "dynamic"] = Field(
+        default="off",
+        description=(
+            "off: list every tool. search: core + find_tools/call_tool. "
+            "dynamic: core + load_tools, more announced per session. Leave "
+            "off for a client that searches tools itself, such as Claude "
+            "Code: its permissions and hooks key on the real names."
+        ),
+    )
+    core: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Served tool names (globs) always listed under search and "
+            "dynamic. read_part is always listed when the profile has it."
+        ),
+    )
+    top_k: int = Field(
+        default=TOP_K_DEFAULT,
+        ge=1,
+        le=TOP_K_MAX,
+        description="Most tools find_tools returns, and load_tools loads for a query.",
+    )
+    categories: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Category name to the backends in it. Unset: one category per "
+            "backend, named after it. Named in the session instructions."
+        ),
+    )
+    describe_backend: bool = Field(
+        default=False,
+        description=(
+            "Begin each served description with '<category>: ' so a search "
+            "over descriptions finds a tool by what it belongs to. Renames "
+            "nothing."
+        ),
+    )
+
+    @field_validator("core")
+    @classmethod
+    def _core_patterns(cls, core: list[str]) -> list[str]:
+        bad = sum(1 for pattern in core if not GLOB_PATTERN_RE.match(pattern))
+        if bad:
+            raise ValueError(f"tool_discovery.core: {bad} entries are not tool name patterns")
+        if any(pattern in DISCOVERY_TOOLS for pattern in core):
+            raise ValueError("tool_discovery.core names a discovery tool, which is always listed")
+        return core
+
+    @field_validator("categories")
+    @classmethod
+    def _categories_named(cls, categories: dict[str, list[str]]) -> dict[str, list[str]]:
+        seen: set[str] = set()
+        for name, backends in categories.items():
+            if not BACKEND_NAME_RE.match(name):
+                raise ValueError(f"category {name!r} must match ^[a-z][a-z0-9-]*$")
+            if not backends:
+                raise ValueError(f"tool_discovery.categories.{name} names no backend")
+            if seen & set(backends):
+                raise ValueError("tool_discovery.categories puts a backend in two categories")
+            seen.update(backends)
+        return categories
+
+    @property
+    def lists_everything(self) -> bool:
+        """Whether tools/list serves the whole aggregate, as without this block."""
+        return self.mode == "off"
+
+
 GIT_REMOTE_NAME_RE = PROVIDER_NAME_RE
 _GIT_USERNAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 # One owner or repository segment of a pattern: a name, with `*` for any run
@@ -2232,6 +2319,13 @@ class Profile(BaseModel):
         default=None,
         description="Google-backed OAuth access for this profile (optional)",
     )
+    tool_discovery: ToolDiscoveryConfig = Field(
+        default_factory=ToolDiscoveryConfig,
+        description=(
+            "How a client without its own tool search finds tools: list "
+            "everything (default), find/call, or load per session (#473)"
+        ),
+    )
     honeypot: bool = Field(
         default=False,
         description=(
@@ -2285,15 +2379,19 @@ class Profile(BaseModel):
             problems.append("role must be agent")
         if self.defense.enforcement != "flag" or self.defense.modes not in (None, ["flag"]):
             problems.append("defense.enforcement and defense.modes must be flag only")
-        for channel in ("alert_ingress", "matrix_ingress", "matrix_bridge", "client_egress"):
-            if getattr(self, channel) is not None:
-                problems.append(f"{channel} does not apply")
-        if self.bridges:
-            problems.append("bridges does not apply")
-        if self.git:
-            problems.append("git does not apply")
-        if self.guarded_execution is not None:
-            problems.append("guarded_execution does not apply")
+        set_anyway = {
+            "alert_ingress": self.alert_ingress is not None,
+            "matrix_ingress": self.matrix_ingress is not None,
+            "matrix_bridge": self.matrix_bridge is not None,
+            "client_egress": self.client_egress is not None,
+            "bridges": bool(self.bridges),
+            "git": bool(self.git),
+            "guarded_execution": self.guarded_execution is not None,
+            # Gateway tools it does not name, and categories that could
+            # say which backends are decoys (#473).
+            "tool_discovery": self.tool_discovery != ToolDiscoveryConfig(),
+        }
+        problems += [f"{field} does not apply" for field, is_set in set_anyway.items() if is_set]
         if problems:
             raise ValueError(f"honeypot profile: {'; '.join(problems)}")
         return self
@@ -2376,6 +2474,24 @@ class Profile(BaseModel):
             if backend.is_decoy:
                 raise ValueError(f"guarded_execution.tools.{name}: a decoy backend is not judged")
         return self
+
+    @model_validator(mode="after")
+    def categories_name_real_backends(self) -> Profile:
+        """Every backend a category names is one this profile has (#473)."""
+        for name, backends in self.tool_discovery.categories.items():
+            missing = sum(1 for b in backends if b not in self.backends)
+            if missing:
+                raise ValueError(
+                    f"tool_discovery.categories.{name}: {missing} backends not in this profile"
+                )
+        return self
+
+    def category_of(self, backend: str) -> str:
+        """The category a backend's tools belong to: the one naming it, else its own name."""
+        for name, backends in self.tool_discovery.categories.items():
+            if backend in backends:
+                return name
+        return backend
 
     @model_validator(mode="after")
     def honeytokens_are_named_and_every_reference_resolves(self) -> Profile:

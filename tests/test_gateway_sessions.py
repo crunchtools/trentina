@@ -159,7 +159,7 @@ class TestBroadcast:
 
         for call in callback.call_args_list:
             notification = call.args[1]
-            assert notification["method"] == "notifications/tools/listChanged"
+            assert notification["method"] == "notifications/tools/list_changed"
 
     @pytest.mark.asyncio
     async def test_broadcast_to_empty_profile_returns_zero(self) -> None:
@@ -198,7 +198,7 @@ class TestSubscribers:
         assert count == 1
 
         notification = queue.get_nowait()
-        assert notification["method"] == "notifications/tools/listChanged"
+        assert notification["method"] == "notifications/tools/list_changed"
         assert notification["jsonrpc"] == "2.0"
 
     @pytest.mark.asyncio
@@ -210,8 +210,8 @@ class TestSubscribers:
 
         count = await registry.broadcast_tools_changed("alice")
         assert count == 1
-        assert q1.get_nowait()["method"] == "notifications/tools/listChanged"
-        assert q2.get_nowait()["method"] == "notifications/tools/listChanged"
+        assert q1.get_nowait()["method"] == "notifications/tools/list_changed"
+        assert q2.get_nowait()["method"] == "notifications/tools/list_changed"
 
     @pytest.mark.asyncio
     async def test_broadcast_only_targets_matching_profile(self) -> None:

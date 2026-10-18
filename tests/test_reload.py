@@ -383,7 +383,7 @@ class TestAppliedReload:
         result = await _reload_as("alpha")
 
         assert result["sessions_notified"] == {"alpha": 1}
-        assert queue.get_nowait()["method"] == "notifications/tools/listChanged"
+        assert queue.get_nowait()["method"] == "notifications/tools/list_changed"
 
 
 class TestOperatorScope:
@@ -1163,7 +1163,7 @@ class TestServiceIdentityMoves:
 
         await _reload_as("alpha")
 
-        assert queue.get_nowait()["method"] == "notifications/tools/listChanged"
+        assert queue.get_nowait()["method"] == "notifications/tools/list_changed"
 
     async def test_an_unrelated_edit_leaves_the_others_cached(self, profiles_path: Path) -> None:
         _profile_tools_cache["beta"] = []
