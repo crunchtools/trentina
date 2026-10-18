@@ -29,7 +29,7 @@ from trentina.rcs_bridge.text import chunks, flatten
 from trentina.rcs_bridge.twilio import MAX_BODY, TwilioBackend, signature
 
 ACCOUNT = "AC" + "0" * 32
-SERVICE = "MG" + "a" * 32
+SENDER = "kagetora_abc123_agent"
 TOKEN = "twilio-auth-token"
 OWNER = "+15551234567"
 WEBHOOK = "https://rcs.example.com/agent1/twilio/inbound"
@@ -56,7 +56,7 @@ def _settings(store_dir: Path) -> RcsSettings:
         webhook_url=WEBHOOK,
         account_sid=ACCOUNT,
         auth_token=TOKEN,
-        messaging_service_sid=SERVICE,
+        sender_id=SENDER,
         twilio_api="https://api.twilio.test",
     )
 
@@ -102,7 +102,7 @@ class Rig:
         backend = TwilioBackend(
             account_sid=ACCOUNT,
             auth_token=TOKEN,
-            messaging_service_sid=SERVICE,
+            sender_id=SENDER,
             api="https://api.twilio.test",
             client=httpx.AsyncClient(transport=httpx.MockTransport(self.twilio)),
         )
@@ -288,7 +288,7 @@ class TestSend:
         event_id = await rig.bridge.send(ROOM, "m.room.message", content, "out1")
         (form,) = rig.twilio.sent
         assert form == {
-            "MessagingServiceSid": SERVICE,
+            "From": f"rcs:{SENDER}",
             "To": f"rcs:{OWNER}",
             "Body": "Done. See the PR (https://x/1)",
         }
@@ -392,7 +392,7 @@ _ENV = {
     "RCS_WEBHOOK_URL": WEBHOOK,
     "RCS_TWILIO_ACCOUNT_SID": ACCOUNT,
     "RCS_TWILIO_AUTH_TOKEN": TOKEN,
-    "RCS_TWILIO_MESSAGING_SERVICE_SID": SERVICE,
+    "RCS_TWILIO_SENDER_ID": SENDER,
 }
 
 
@@ -405,13 +405,20 @@ class TestSettings:
         assert settings.room_id == "!agent1-owner:rcs.invalid"
         assert settings.twilio_api == "https://api.twilio.com"
 
+    def test_the_sender_id_may_carry_its_rcs_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for name, value in _ENV.items():
+            monkeypatch.setenv(name, value)
+        monkeypatch.setenv("RCS_TWILIO_SENDER_ID", f"rcs:{SENDER}")
+        assert RcsSettings.from_env().sender_id == SENDER
+
     @pytest.mark.parametrize(
         ("name", "value"),
         [
             ("RCS_OWNER_NUMBER", "5551234567"),
             ("RCS_WEBHOOK_URL", "http://rcs.example.com/in"),
             ("RCS_TWILIO_ACCOUNT_SID", "SK" + "0" * 32),
-            ("RCS_TWILIO_MESSAGING_SERVICE_SID", "PN" + "0" * 32),
+            ("RCS_TWILIO_SENDER_ID", "rcs:brand agent"),
+            ("RCS_TWILIO_SENDER_ID", "MG" + "0" * 32 + "/x"),
             ("RCS_AGENT_USER_ID", "agent1"),
             ("BRIDGE_GATEWAY_URL", "http://8.8.8.8:8019"),
         ],

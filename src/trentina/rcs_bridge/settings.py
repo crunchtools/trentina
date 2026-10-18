@@ -31,10 +31,8 @@ DEFAULT_TWILIO_API = "https://api.twilio.com"
 DEFAULT_SERVER = "rcs.invalid"
 
 _E164_RE = re.compile(r"^\+[1-9][0-9]{6,14}$")
-_SID_RE = {
-    "account": re.compile(r"^AC[0-9a-f]{32}$"),
-    "service": re.compile(r"^MG[0-9a-f]{32}$"),
-}
+_ACCOUNT_SID_RE = re.compile(r"^AC[0-9a-f]{32}$")
+_SENDER_ID_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 
 
 def _e164(name: str, value: str) -> str:
@@ -43,10 +41,21 @@ def _e164(name: str, value: str) -> str:
     return value
 
 
-def _sid(name: str, kind: str, value: str) -> str:
-    if not _SID_RE[kind].match(value):
-        raise SettingsError(f"{name} is not a Twilio {kind} SID")
+def _account_sid(value: str) -> str:
+    if not _ACCOUNT_SID_RE.match(value):
+        raise SettingsError("RCS_TWILIO_ACCOUNT_SID is not a Twilio account SID")
     return value
+
+
+def _sender_id(value: str) -> str:
+    """The RCS sender's ID from its Settings page, with or without `rcs:`.
+    Sending from it directly needs no Messaging Service, which Twilio only
+    allows an RCS sender into after carrier approval, and can never fall
+    back to SMS."""
+    sender = value.removeprefix("rcs:")
+    if not _SENDER_ID_RE.match(sender):
+        raise SettingsError("RCS_TWILIO_SENDER_ID is not an RCS sender ID")
+    return sender
 
 
 def _https_url(name: str, value: str) -> str:
@@ -89,7 +98,7 @@ class RcsSettings:
     webhook_url: str
     account_sid: str
     auth_token: str
-    messaging_service_sid: str
+    sender_id: str
     twilio_api: str
 
     @property
@@ -135,14 +144,8 @@ class RcsSettings:
                 "RCS_WEBHOOK_PORT", os.environ.get("RCS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
             ),
             webhook_url=_https_url("RCS_WEBHOOK_URL", required_setting("RCS_WEBHOOK_URL")),
-            account_sid=_sid(
-                "RCS_TWILIO_ACCOUNT_SID", "account", required_setting("RCS_TWILIO_ACCOUNT_SID")
-            ),
+            account_sid=_account_sid(required_setting("RCS_TWILIO_ACCOUNT_SID")),
             auth_token=required_setting("RCS_TWILIO_AUTH_TOKEN", read_secret_env),
-            messaging_service_sid=_sid(
-                "RCS_TWILIO_MESSAGING_SERVICE_SID",
-                "service",
-                required_setting("RCS_TWILIO_MESSAGING_SERVICE_SID"),
-            ),
+            sender_id=_sender_id(required_setting("RCS_TWILIO_SENDER_ID")),
             twilio_api=_api_url(read_setting("RCS_TWILIO_API") or DEFAULT_TWILIO_API),
         )

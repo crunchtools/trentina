@@ -48,20 +48,20 @@ def _number(address: str) -> str:
 
 
 class TwilioBackend:
-    """One Twilio account and the Messaging Service holding one agent's sender."""
+    """One Twilio account and one agent's RCS sender."""
 
     def __init__(
         self,
         *,
         account_sid: str,
         auth_token: str,
-        messaging_service_sid: str,
+        sender_id: str,
         api: str = "https://api.twilio.com",
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._account_sid = account_sid
         self._auth_token = auth_token
-        self._service = messaging_service_sid
+        self._from = f"rcs:{sender_id}"
         self._url = f"{api}/2010-04-01/Accounts/{account_sid}/Messages.json"
         # nosemgrep: trentina-httpx-client-outside-egress -- operator URL
         self._client = client or httpx.AsyncClient(timeout=_TIMEOUT)
@@ -100,7 +100,7 @@ class TwilioBackend:
         )
 
     async def send_text(self, to: str, body: str) -> str:
-        form = {"MessagingServiceSid": self._service, "To": f"rcs:{to}", "Body": body}
+        form = {"From": self._from, "To": f"rcs:{to}", "Body": body}
         try:
             resp, raw = await request_capped(
                 self._client,
