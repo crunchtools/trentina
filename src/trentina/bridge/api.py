@@ -51,8 +51,17 @@ class RedactRequest(BaseModel):
     txn_id: str = Field(min_length=1)
 
 
+class TypingRequest(BaseModel):
+    """Whether the agent is typing in one upstream room (#1533)."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    room_id: str = Field(min_length=1)
+    typing: bool
+
+
 class _Handlers:
-    """The three endpoints, sharing one bridge and one token check."""
+    """The endpoints, sharing one bridge and one token check."""
 
     def __init__(self, bridge: Bridge) -> None:
         self._bridge = bridge
@@ -104,6 +113,21 @@ class _Handlers:
             return JSONResponse({"error": "redact failed"}, status_code=502)
         return JSONResponse({"event_id": body.event_id})
 
+    async def typing(self, request: Request) -> JSONResponse:
+        body = await self._parse(request, TypingRequest)
+        if isinstance(body, JSONResponse):
+            return body
+        try:
+            await self._bridge.typing(body.room_id, body.typing)
+        except SendError as exc:
+            # Best effort: 200 either way, and the gateway tries again on the
+            # agent's next push rather than retrying this one.
+            logger.info(
+                "bridge[%s]: typing not shown: %s", self._bridge.settings.profile, exc_kind(exc)
+            )
+            return JSONResponse({"shown": False})
+        return JSONResponse({"shown": True})
+
     async def health(self, _request: Request) -> JSONResponse:
         ready = self._bridge.ready.is_set()
         return JSONResponse(
@@ -113,12 +137,13 @@ class _Handlers:
 
 
 def build_app(bridge: Bridge) -> Starlette:
-    """The Starlette app serving ``/send``, ``/redact`` and ``/health``."""
+    """The Starlette app serving ``/send``, ``/redact``, ``/typing`` and ``/health``."""
     handlers = _Handlers(bridge)
     return Starlette(
         routes=[
             Route("/send", handlers.send, methods=["POST"]),
             Route("/redact", handlers.redact, methods=["POST"]),
+            Route("/typing", handlers.typing, methods=["POST"]),
             Route("/health", handlers.health, methods=["GET"]),
         ]
     )

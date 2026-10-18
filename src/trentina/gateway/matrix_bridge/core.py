@@ -50,6 +50,7 @@ from ...warning import build_warning
 from ..context import profile_context
 from ..matrix_relation import withheld_relation
 from ..profile import MATRIX_CHANNEL
+from .appservice import ConduitError
 from .rewrite import IdMap, judged_view, referenced_ids, rewrite_content
 
 if TYPE_CHECKING:
@@ -85,6 +86,15 @@ _AUDIT_BACKEND = "matrix_bridge"
 _BRIDGE_TIMEOUT = httpx.Timeout(connect=5.0, read=60.0, write=10.0, pool=5.0)
 # Wall clock for one bridge call, the reply included (#295).
 _BRIDGE_DEADLINE = 90.0
+
+# The agent's typing (#1533). Best effort: a short deadline, so a slow bridge
+# costs a typing bubble and never holds the transaction behind it.
+_TYPING = "m.typing"
+_TYPING_DEADLINE = 5.0
+# A still-typing agent is re-sent this often. Upstream indicators lapse on
+# their own (RCS shows one about 20 s, the Matrix bridge sets 30 s), and the
+# homeserver pushes on every refresh the agent makes (Hermes: every 2 s).
+_TYPING_REFRESH = 15.0
 
 # An event slower than this is logged at WARNING, which production runs at, so
 # a stalled turn shows where its time went without turning on INFO.
@@ -193,6 +203,8 @@ class ProfileBridge:
         # The agent's events refused since start, by the agent rule or the
         # judge: each is a message it believes it sent (#317). /health sums it.
         self.outbound_refused = 0
+        # Per local room where the agent is typing, when that was last carried.
+        self._typing: dict[str, float] = {}
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -696,7 +708,68 @@ class ProfileBridge:
         )
         return True
 
-    async def _bridge(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+    # --------------------------------------------------------------- typing
+
+    async def typing(self, ephemeral: list[dict[str, Any]]) -> None:
+        """Carry the agent's typing upstream (#1533). Never raises.
+
+        ``ephemeral`` is a transaction's ephemeral section (MSC2409); only
+        ``m.typing`` is read, and only whether the agent is in it. Nothing
+        else in it reaches the bridge, so there is nothing to judge. A state
+        is sent when it changes, and a still-true one every
+        ``_TYPING_REFRESH`` seconds, since upstream indicators lapse.
+        """
+        for edu in ephemeral:
+            if not isinstance(edu, dict) or edu.get("type") != _TYPING:
+                continue
+            local_room = edu.get("room_id")
+            content = edu.get("content")
+            if not isinstance(local_room, str) or not isinstance(content, dict):
+                continue
+            user_ids = content.get("user_ids")
+            typing = isinstance(user_ids, list) and self.appservice.agent_id in user_ids
+            now = time.monotonic()
+            since = self._typing.get(local_room)
+            # Only rooms where the agent is typing are held, so this stays as
+            # small as the rooms it is typing in at once.
+            if not typing and since is None:
+                continue
+            if typing and since is not None and now - since < _TYPING_REFRESH:
+                continue
+            if await self._send_typing(local_room, typing):
+                if typing:
+                    self._typing[local_room] = now
+                else:
+                    self._typing.pop(local_room, None)
+            elif typing:
+                # A start not carried: forget it, so the next push tries again.
+                self._typing.pop(local_room, None)
+            else:
+                # A stop not carried: still held, and due, so the next push of
+                # either kind goes at once. Upstream lapses it meanwhile.
+                self._typing[local_room] = float("-inf")
+
+    async def _send_typing(self, local_room: str, typing: bool) -> bool:
+        """Ask the bridge to show or clear the agent's typing; whether it went."""
+        try:
+            room = await self.appservice.room_for_local(local_room)
+            if room is None or await self._relay_refusal(room.remote_id) is not None:
+                return False
+            reply = await self._bridge(
+                "/typing",
+                {"room_id": room.remote_id, "typing": typing},
+                deadline=_TYPING_DEADLINE,
+            )
+        except (BridgeRefusedError, BridgeUnavailableError, ConduitError, OSError) as exc:
+            # A bridge without /typing answers 404; a bubble is not worth a
+            # log line at the level production runs at.
+            logger.debug("matrix_bridge: typing for %s not carried: %s", self.label, exc_kind(exc))
+            return False
+        return reply.get("shown") is True
+
+    async def _bridge(
+        self, path: str, body: dict[str, Any], *, deadline: float = _BRIDGE_DEADLINE
+    ) -> dict[str, Any]:
         # The bridge process is untrusted: its reply is read under the #267
         # cap and a deadline (#295), and none of its text goes into the
         # error, which callers log.
@@ -705,7 +778,7 @@ class ProfileBridge:
                 self._client,
                 "POST",
                 f"{self.cfg.bridge_url}{path}",
-                deadline=_BRIDGE_DEADLINE,
+                deadline=deadline,
                 json=body,
                 headers={"Authorization": f"Bearer {self._bridge_token}"},
             )

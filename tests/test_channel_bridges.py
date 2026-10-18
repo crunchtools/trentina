@@ -265,6 +265,9 @@ class StubBridge:
     async def outbound(self, txn: str, _events: list[Any]) -> None:
         self.transactions.append(txn)
 
+    async def typing(self, _ephemeral: list[Any]) -> None:
+        return None
+
 
 _EVENT = {"room_id": "!r:rcs.invalid", "event_id": "$e", "sender": "@s:rcs.invalid", "type": "x"}
 

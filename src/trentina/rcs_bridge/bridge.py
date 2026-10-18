@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import hashlib
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -46,6 +47,9 @@ _MAX_BACKOFF = 60.0
 # drops old send records.
 PRUNE_EVERY = 3600.0
 _GATEWAY_TIMEOUT = httpx.Timeout(connect=5.0, read=60.0, write=10.0, pool=5.0)
+# At most one typing indicator per this many seconds (#1533). Twilio shows
+# one about 20 s, and the gateway re-sends a still-typing agent every 15 s.
+TYPING_EVERY = 12.0
 
 
 def _carried_text(content: dict[str, Any]) -> tuple[Any, Any]:
@@ -107,6 +111,7 @@ class RcsBridge:
         )
         self._wake = asyncio.Event()
         self._send_lock = asyncio.Lock()
+        self._typing_at = float("-inf")
         self.ready = asyncio.Event()
 
     async def aclose(self) -> None:
@@ -217,6 +222,29 @@ class RcsBridge:
             backoff = min(backoff * 2, _MAX_BACKOFF)
 
     # ----------------------------------------------------------- outbound
+
+    async def typing(self, room_id: str, typing: bool) -> None:
+        """Show the agent typing on the owner's phone (#1533). Best effort.
+
+        Stopping is a no-op: RCS has no stop, and the reply clears the
+        bubble. Starting is throttled to one indicator per ``TYPING_EVERY``.
+
+        Raises:
+            RefusedError: not the owner's room.
+            UnavailableError: the provider did not take it.
+        """
+        if room_id != self.settings.room_id:
+            raise RefusedError("not the owner's room")
+        now = time.monotonic()
+        if not typing or now - self._typing_at < TYPING_EVERY:
+            return
+        self._typing_at = now
+        try:
+            await self.backend.send_typing(self.settings.owner_number)
+        except BackendError as exc:
+            # Not shown, so the next push may try again at once.
+            self._typing_at = float("-inf")
+            raise UnavailableError(exc.reason) from exc
 
     async def send(
         self, room_id: str, event_type: str, content: dict[str, Any], txn_id: str

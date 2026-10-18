@@ -100,8 +100,9 @@ class AgentEvent(BaseModel):
 
 class Transaction(BaseModel):
     """An appservice transaction: the spec's sections, stable and MSC2409's
-    unstable spelling. Only ``events`` is carried; the bridge moves timeline
-    events, not presence, receipts or to-device traffic."""
+    unstable spelling. ``events`` is carried, and from the ephemeral section
+    only whether the agent is typing (#1533); never presence, receipts or
+    to-device traffic."""
 
     model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
 
@@ -294,6 +295,8 @@ class BridgeRoutes:
         except (BridgeUnavailableError, ConduitError, OSError) as exc:
             logger.warning("matrix_bridge: outbound failed for %s: %s", bridge.label, exc_kind(exc))
             return _refused(503, "M_UNKNOWN", "bridge unavailable, retry")
+        # After the events, so a stop never overtakes the reply it follows.
+        await bridge.typing(txn.ephemeral or txn.unstable_ephemeral or [])
         return JSONResponse({})
 
     async def query(self, request: Request) -> Response:
