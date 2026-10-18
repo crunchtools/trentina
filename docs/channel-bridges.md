@@ -112,7 +112,8 @@ as `@tel<digits>:rcs.invalid` (the agent sees `@rcs_tel<digits>=3arcs.invalid:<s
 | `RCS_OWNER_NUMBER`, `RCS_OWNER_NAME` (`Owner (phone)`) | the one number accepted (E.164), and its display name |
 | `RCS_ROOM_TOPIC` | the room's topic, which the agent reads (default: lower trust than Matrix; confirm destructive actions there) |
 | `RCS_SERVER` (`rcs.invalid`) | the server name the synthetic IDs live under |
-| `RCS_TWILIO_ACCOUNT_SID`, `RCS_TWILIO_AUTH_TOKEN`, `RCS_TWILIO_MESSAGING_SERVICE_SID` | the agent's account (a subaccount per agent keeps one agent's token from speaking as another) |
+| `RCS_TWILIO_ACCOUNT_SID`, `RCS_TWILIO_AUTH_TOKEN` | the agent's account (a subaccount per agent keeps one agent's token from speaking as another) |
+| `RCS_TWILIO_SENDER_ID` | the RCS sender's ID (`rcs:` optional). Messages go `From` it, so there is no Messaging Service, which Twilio allows an RCS sender into only after carrier approval, and no SMS fallback |
 | `BRIDGE_STORE_DIR` (`/data`) | `rcs.db`, 0600: the inbox and the sent log |
 | `RCS_TWILIO_API` (`https://api.twilio.com`) | the API base, for tests |
 | `BRIDGE_LOG_LEVEL` (`WARNING`) | as the Matrix bridge's |

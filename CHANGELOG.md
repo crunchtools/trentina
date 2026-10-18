@@ -10,6 +10,17 @@ under that name.
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-10-18
+
+### Changed
+
+- The RCS bridge sends `From` the agent's RCS sender ID
+  (`RCS_TWILIO_SENDER_ID`) and no longer takes
+  `RCS_TWILIO_MESSAGING_SERVICE_SID`. Twilio lets an RCS sender into a
+  Messaging Service only after carrier approval, so a sender still in tester
+  mode had no service to name. Sending from the sender itself also rules out
+  an SMS fallback (RT #1529).
+
 ## [1.17.1] - 2026-10-18
 
 ### Fixed

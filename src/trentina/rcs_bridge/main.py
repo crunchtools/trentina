@@ -33,7 +33,7 @@ async def _run(settings: RcsSettings) -> None:
     backend = TwilioBackend(
         account_sid=settings.account_sid,
         auth_token=settings.auth_token,
-        messaging_service_sid=settings.messaging_service_sid,
+        sender_id=settings.sender_id,
         api=settings.twilio_api,
     )
     bridge = RcsBridge(settings, backend, RcsStore(settings.store_dir / "rcs.db"))
