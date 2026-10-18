@@ -67,12 +67,21 @@ class FakeTwilio:
 
     def __init__(self) -> None:
         self.sent: list[dict[str, str]] = []
+        self.typing: list[dict[str, Any]] = []
         # Statuses to answer before succeeding, one per request.
         self.fail: list[tuple[int, dict[str, Any]]] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
-        assert request.url.path == f"/2010-04-01/Accounts/{ACCOUNT}/Messages.json"
         assert request.headers["authorization"].startswith("Basic ")
+        if request.url.host == "messaging.twilio.test":
+            assert request.url.path == "/v3/Indicators/Typing.json"
+            assert request.headers["content-type"] == "application/json"
+            if self.fail:
+                status, body = self.fail.pop(0)
+                return httpx.Response(status, json=body)
+            self.typing.append(json.loads(request.content))
+            return httpx.Response(200, json={"success": True})
+        assert request.url.path == f"/2010-04-01/Accounts/{ACCOUNT}/Messages.json"
         if self.fail:
             status, body = self.fail.pop(0)
             return httpx.Response(status, json=body)
@@ -105,6 +114,7 @@ class Rig:
             auth_token=TOKEN,
             sender_id=SENDER,
             api="https://api.twilio.test",
+            messaging_api="https://messaging.twilio.test",
             client=httpx.AsyncClient(transport=httpx.MockTransport(self.twilio)),
         )
         self.store = RcsStore(tmp_path / "rcs.db")
@@ -354,6 +364,60 @@ class TestSend:
             await rig.bridge.send(ROOM, "m.room.message", {"msgtype": "m.text", "body": "x"}, "t")
 
 
+class TestTyping:
+    """The agent's typing on the owner's phone (#1533)."""
+
+    async def test_typing_starts_the_indicator(self, rig: Rig) -> None:
+        await rig.bridge.typing(ROOM, True)
+        assert rig.twilio.typing == [
+            {"channel": "RCS", "from": f"rcs:{SENDER}", "to": OWNER, "event": "START"}
+        ]
+        assert rig.twilio.sent == []
+
+    async def test_a_burst_is_one_indicator_until_it_lapses(
+        self, rig: Rig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = [1000.0]
+        monkeypatch.setattr(bridge_mod.time, "monotonic", lambda: clock[0])
+        for _ in range(5):
+            await rig.bridge.typing(ROOM, True)
+        assert len(rig.twilio.typing) == 1
+        clock[0] += bridge_mod.TYPING_EVERY
+        await rig.bridge.typing(ROOM, True)
+        assert len(rig.twilio.typing) == 2
+
+    async def test_stopping_sends_nothing(self, rig: Rig) -> None:
+        await rig.bridge.typing(ROOM, False)
+        assert rig.twilio.typing == []
+
+    async def test_only_the_owners_room(self, rig: Rig) -> None:
+        with pytest.raises(RefusedError):
+            await rig.bridge.typing("!other:rcs.invalid", True)
+        assert rig.twilio.typing == []
+
+    async def test_a_provider_failure_is_unavailable(self, rig: Rig) -> None:
+        rig.twilio.fail = [(500, {"code": 20500})]
+        with pytest.raises(UnavailableError):
+            await rig.bridge.typing(ROOM, True)
+
+    def test_the_gateway_contract(self, rig: Rig) -> None:
+        client = TestClient(build_private_app(rig.bridge))
+        headers = {"Authorization": f"Bearer {BRIDGE_TOKEN}"}
+        body = {"room_id": ROOM, "typing": True}
+
+        def post(json: dict[str, Any], auth: dict[str, str] = headers) -> int:
+            return client.post("/typing", json=json, headers=auth).status_code
+
+        assert post(body, {"Authorization": "Bearer x"}) == 401
+        assert post(body | {"extra": 1}) == 400
+        assert post(body | {"typing": "yes"}) == 400
+        assert post(body | {"room_id": "!other:rcs.invalid"}) == 422
+        rig.twilio.fail = [(503, {"code": 20503})]
+        # A missed bubble is not the gateway's to retry.
+        assert post(body) == 200
+        assert rig.twilio.typing == []
+
+
 class TestPrivateApi:
     def _client(self, rig: Rig) -> TestClient:
         return TestClient(build_private_app(rig.bridge))
@@ -439,6 +503,7 @@ class TestSettings:
         assert settings.owner_user_id == "@tel15551234567:rcs.invalid"
         assert settings.room_id == "!agent1-owner:rcs.invalid"
         assert settings.twilio_api == "https://api.twilio.com"
+        assert settings.twilio_messaging_api == "https://messaging.twilio.com"
 
     def test_the_sender_id_may_carry_its_rcs_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for name, value in _ENV.items():
@@ -538,11 +603,21 @@ class TestEdges:
         RcsStore(path).close()
         assert path.stat().st_mode & 0o777 == 0o600
 
-    def test_the_twilio_api_must_be_https(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            ("RCS_TWILIO_API", "http://api.twilio.com"),
+            ("RCS_TWILIO_MESSAGING_API", "http://messaging.twilio.com"),
+            ("RCS_TWILIO_MESSAGING_API", "https://u:p@messaging.twilio.com"),
+        ],
+    )
+    def test_the_twilio_apis_must_be_https(
+        self, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+    ) -> None:
         for key, good in _ENV.items():
             monkeypatch.setenv(key, good)
-        monkeypatch.setenv("RCS_TWILIO_API", "http://api.twilio.com")
-        with pytest.raises(SettingsError):
+        monkeypatch.setenv(name, value)
+        with pytest.raises(SettingsError, match=name):
             RcsSettings.from_env()
 
 

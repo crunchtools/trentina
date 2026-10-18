@@ -26,6 +26,8 @@ from ..gateway.profile import is_matrix_user_id
 DEFAULT_API_PORT = 8472
 DEFAULT_WEBHOOK_PORT = 8473
 DEFAULT_TWILIO_API = "https://api.twilio.com"
+# The typing indicator lives on Twilio's Messaging API host, not the core one.
+DEFAULT_TWILIO_MESSAGING_API = "https://messaging.twilio.com"
 # The synthetic server the owner's and the room's IDs live under. Reserved by
 # RFC 2606, so no real homeserver can ever be named this.
 DEFAULT_SERVER = "rcs.invalid"
@@ -68,11 +70,11 @@ def _https_url(name: str, value: str) -> str:
     return value
 
 
-def _api_url(value: str) -> str:
+def _api_url(name: str, value: str) -> str:
     """Where the auth token goes, as Basic auth: TLS only, whatever the host."""
     parsed = urlparse(value)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-        raise SettingsError("RCS_TWILIO_API must be an https URL with no credentials")
+        raise SettingsError(f"{name} must be an https URL with no credentials")
     return value.rstrip("/")
 
 
@@ -101,6 +103,7 @@ class RcsSettings:
     auth_token: str
     sender_id: str
     twilio_api: str
+    twilio_messaging_api: str = DEFAULT_TWILIO_MESSAGING_API
 
     @property
     def owner_user_id(self) -> str:
@@ -148,5 +151,11 @@ class RcsSettings:
             account_sid=_account_sid(required_setting("RCS_TWILIO_ACCOUNT_SID")),
             auth_token=required_setting("RCS_TWILIO_AUTH_TOKEN", read_secret_env),
             sender_id=_sender_id(required_setting("RCS_TWILIO_SENDER_ID")),
-            twilio_api=_api_url(read_setting("RCS_TWILIO_API") or DEFAULT_TWILIO_API),
+            twilio_api=_api_url(
+                "RCS_TWILIO_API", read_setting("RCS_TWILIO_API") or DEFAULT_TWILIO_API
+            ),
+            twilio_messaging_api=_api_url(
+                "RCS_TWILIO_MESSAGING_API",
+                read_setting("RCS_TWILIO_MESSAGING_API") or DEFAULT_TWILIO_MESSAGING_API,
+            ),
         )

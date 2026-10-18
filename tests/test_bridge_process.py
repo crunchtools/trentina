@@ -27,6 +27,7 @@ from nio import (
     RoomForgetResponse,
     RoomLeaveResponse,
     RoomSendResponse,
+    RoomTypingResponse,
     ShareGroupSessionError,
     SyncError,
 )
@@ -43,7 +44,7 @@ from starlette.testclient import TestClient
 from trentina.bridge import client as client_mod
 from trentina.bridge import main as main_mod
 from trentina.bridge.api import build_app
-from trentina.bridge.client import Bridge, SendError, membership_digest
+from trentina.bridge.client import TYPING_TIMEOUT_MS, Bridge, SendError, membership_digest
 from trentina.bridge.import_mautrix import SessionImportError, import_mautrix
 from trentina.bridge.settings import BridgeSettings, SettingsError
 
@@ -631,6 +632,62 @@ class TestRedactApi:
             "/redact", json={"room_id": ROOM, "event_id": "$x", "txn_id": "rd1"}, headers=self.AUTH
         )
         assert resp.status_code == 502
+
+
+@dataclass
+class TypingNio(FakeNio):
+    fail: Exception | None = None
+    typed: list[tuple[str, bool, int]] = field(default_factory=list)
+
+    async def room_typing(self, room_id: str, typing_state: bool = True, timeout: int = 0) -> Any:
+        if self.fail is not None:
+            raise self.fail
+        self.typed.append((room_id, typing_state, timeout))
+        return RoomTypingResponse(room_id)
+
+
+class TestTypingApi:
+    """The agent's typing, shown upstream (#1533)."""
+
+    AUTH: ClassVar[dict[str, str]] = {"Authorization": "Bearer bridge-secret"}
+
+    def test_typing_needs_the_gateways_token(self, tmp_path: Path) -> None:
+        nio = TypingNio()
+        resp = TestClient(build_app(_bridge(tmp_path, nio))).post(
+            "/typing", json={"room_id": ROOM, "typing": True}
+        )
+        assert resp.status_code == 401
+        assert nio.typed == []
+
+    @pytest.mark.parametrize("typing", [True, False])
+    def test_typing_reaches_the_homeserver(self, tmp_path: Path, typing: bool) -> None:
+        nio = TypingNio()
+        resp = TestClient(build_app(_bridge(tmp_path, nio))).post(
+            "/typing", json={"room_id": ROOM, "typing": typing}, headers=self.AUTH
+        )
+        assert resp.status_code == 200
+        assert nio.typed == [(ROOM, typing, TYPING_TIMEOUT_MS)]
+
+    def test_a_room_not_held_is_not_typed_into(self, tmp_path: Path) -> None:
+        nio = TypingNio()
+        resp = TestClient(build_app(_bridge(tmp_path, nio))).post(
+            "/typing", json={"room_id": "!gone:matrix.org", "typing": True}, headers=self.AUTH
+        )
+        assert resp.status_code == 200, "a missed bubble is not the gateway's to retry"
+        assert nio.typed == []
+
+    def test_a_homeserver_failure_is_still_answered(self, tmp_path: Path) -> None:
+        nio = TypingNio(fail=OSError("down"))
+        resp = TestClient(build_app(_bridge(tmp_path, nio))).post(
+            "/typing", json={"room_id": ROOM, "typing": True}, headers=self.AUTH
+        )
+        assert resp.status_code == 200
+
+    def test_a_malformed_typing_is_refused(self, tmp_path: Path) -> None:
+        resp = TestClient(build_app(_bridge(tmp_path, TypingNio()))).post(
+            "/typing", json={"room_id": ROOM, "typing": "yes"}, headers=self.AUTH
+        )
+        assert resp.status_code == 400
 
 
 class TestSettings:

@@ -60,6 +60,13 @@ class RedactRequest(BaseModel):
     txn_id: str = Field(min_length=1)
 
 
+class TypingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    room_id: str = Field(min_length=1)
+    typing: bool
+
+
 class TwiMLResponse(Response):
     """An empty TwiML reply: taken, and nothing to answer the owner with."""
 
@@ -115,6 +122,20 @@ class _Private:
             return JSONResponse({"event_id": body.event_id})
         # RCS has no unsend. "Never", so the gateway tells the agent.
         return JSONResponse({"error": "rcs cannot unsend"}, status_code=422)
+
+    async def typing(self, request: Request) -> JSONResponse:
+        body = await self._parse(request, TypingRequest)
+        if isinstance(body, JSONResponse):
+            return body
+        try:
+            await self._bridge.typing(body.room_id, body.typing)
+        except RefusedError as exc:
+            logger.warning("bridge[%s]: refused typing: %s", self._label, exc.reason)
+            return JSONResponse({"error": "not carried"}, status_code=422)
+        except UnavailableError as exc:
+            # A missed bubble: logged quietly, and nothing for the gateway to retry.
+            logger.info("bridge[%s]: typing not shown: %s", self._label, exc.reason)
+        return JSONResponse({})
 
     async def health(self, _request: Request) -> JSONResponse:
         ready = self._bridge.ready.is_set()
@@ -187,6 +208,7 @@ def build_private_app(bridge: RcsBridge) -> Starlette:
         routes=[
             Route("/send", handlers.send, methods=["POST"]),
             Route("/redact", handlers.redact, methods=["POST"]),
+            Route("/typing", handlers.typing, methods=["POST"]),
             Route("/health", handlers.health, methods=["GET"]),
         ]
     )

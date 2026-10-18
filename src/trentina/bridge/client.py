@@ -37,6 +37,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 import httpx
+from aiohttp import ClientError
 from nio import (
     AsyncClient,
     AsyncClientConfig,
@@ -46,6 +47,7 @@ from nio import (
     RoomForgetResponse,
     RoomLeaveResponse,
     RoomSendResponse,
+    RoomTypingResponse,
     ShareGroupSessionError,
     SyncError,
     SyncResponse,
@@ -81,6 +83,10 @@ ROOM_REFUSED = "refused"
 MAX_PENDING = 1000
 _SYNC_TIMEOUT_MS = 30_000
 _MAX_BACKOFF = 60.0
+# How long an upstream typing bubble lasts unless refreshed or cleared. The
+# gateway refreshes a still-typing agent every 15 s (#1533).
+TYPING_TIMEOUT_MS = 30_000
+_TYPING_DEADLINE = 10.0
 
 
 class SendError(RuntimeError):
@@ -789,6 +795,24 @@ class Bridge:
         async with self._send_lock:
             resp = await self.client.room_redact(room_id, event_id, tx_id=txn_id)
         if not hasattr(resp, "event_id"):
+            raise SendError(str(resp))
+
+    async def typing(self, room_id: str, typing: bool) -> None:
+        """Show or clear the agent's typing upstream (#1533). Best effort.
+
+        Not under the send lock: a bubble must not wait behind a send, and
+        typing is never encrypted (an EDU, not a room event).
+        """
+        if not self._held(room_id):
+            raise SendError(f"not holding {room_id}")
+        try:
+            resp = await asyncio.wait_for(
+                self.client.room_typing(room_id, typing, timeout=TYPING_TIMEOUT_MS),
+                _TYPING_DEADLINE,
+            )
+        except (LocalProtocolError, ClientError, OSError, TimeoutError) as exc:
+            raise SendError(type(exc).__name__) from exc
+        if not isinstance(resp, RoomTypingResponse):
             raise SendError(str(resp))
 
     async def aclose(self) -> None:

@@ -10,6 +10,22 @@ under that name.
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-10-18
+
+### Added
+
+- The agent's typing reaches the owner on every channel (RT #1533). The
+  gateway reads `m.typing` from an appservice transaction's ephemeral
+  section and asks the bridge to show it, through a new `POST /typing` in the
+  wire contract. The bridge answers 200 even when nothing was shown, and the
+  gateway never retries. The Matrix bridge sets typing on the upstream room.
+  The RCS bridge sends Twilio's typing indicator, at most one every 12 s;
+  RCS has no stop, so the reply clears it. New setting:
+  `RCS_TWILIO_MESSAGING_API`.
+- This needs a homeserver that pushes ephemeral events to appservices, and
+  `receive_ephemeral: true` in each registration. Conduit does neither;
+  `docs/matrix-bridge.md` now describes tuwunel.
+
 ## [1.18.1] - 2026-10-18
 
 ### Fixed

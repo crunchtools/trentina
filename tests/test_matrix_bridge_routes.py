@@ -36,6 +36,8 @@ class StubBridge:
         self.label = profile.name
         self.inbound_events: list[dict[str, Any]] = []
         self.transactions: list[tuple[str, list[Any]]] = []
+        self.typings: list[list[dict[str, Any]]] = []
+        self.order: list[str] = []
         self.fail_outbound = False
         self.fail_inbound: Exception | None = None
 
@@ -49,6 +51,11 @@ class StubBridge:
         if self.fail_outbound:
             raise BridgeUnavailableError("down")
         self.transactions.append((txn, events))
+        self.order.append("events")
+
+    async def typing(self, ephemeral: list[dict[str, Any]]) -> None:
+        self.typings.append(ephemeral)
+        self.order.append("typing")
 
 
 @pytest.fixture
@@ -196,6 +203,38 @@ class TestAppservice:
         assert txn == "t1"
         assert event["content"] == {"body": "hi"}
         assert event["sender"] == "@agent1:agent1.local"
+
+    @pytest.mark.parametrize("key", ["ephemeral", "de.sorunome.msc2409.ephemeral"])
+    def test_typing_follows_the_events_it_came_with(
+        self, stub: StubBridge, client: TestClient, key: str
+    ) -> None:
+        pushed = {
+            "event_id": "$a",
+            "room_id": "!l:agent1.local",
+            "sender": "@agent1:agent1.local",
+            "type": "m.room.message",
+            "content": {"body": "done"},
+        }
+        typing = {"type": "m.typing", "room_id": "!l:agent1.local", "content": {"user_ids": []}}
+        resp = client.put(
+            TXN_PATH,
+            json={"events": [pushed], key: [typing]},
+            headers={"Authorization": "Bearer hs-secret"},
+        )
+        assert resp.status_code == 200
+        assert stub.typings == [[typing]]
+        assert stub.order == ["events", "typing"]
+
+    def test_no_typing_is_carried_from_a_transaction_not_acked(
+        self, stub: StubBridge, client: TestClient
+    ) -> None:
+        stub.fail_outbound = True
+        typing = {"type": "m.typing", "room_id": "!l:agent1.local", "content": {"user_ids": []}}
+        resp = client.put(
+            TXN_PATH, json={"ephemeral": [typing]}, headers={"Authorization": "Bearer hs-secret"}
+        )
+        assert resp.status_code == 503
+        assert stub.typings == []
 
     def test_a_field_the_spec_does_not_define_is_refused(
         self, stub: StubBridge, client: TestClient

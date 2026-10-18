@@ -83,6 +83,14 @@ event is in Conduit, or deliberately withheld or skipped, and dedupes on
 - `POST /send` `{room_id, type, content, txn_id}`. The bridge answers
   `{"event_id": ...}`, idempotent on `txn_id`.
 - `POST /redact` `{room_id, event_id, txn_id}`.
+- `POST /typing` `{room_id, typing}` (#1533): whether the agent is typing
+  there. Best effort: answer 200 whether or not it was shown, so the
+  gateway never retries it. It carries nothing to judge. The gateway sends
+  a change, and a still-typing agent again every 15 s, since upstream
+  indicators lapse. It reads only `m.typing` from the transaction's
+  ephemeral section, which the homeserver sends only to a registration
+  with `receive_ephemeral: true`. Typing goes upstream only: the agent never
+  sees the owner's.
 - `GET /health`: 200 when ready, 503 while starting.
 
 A 4xx other than 401, 403, 408 or 429 means "never": a type the channel has
@@ -116,6 +124,7 @@ as `@tel<digits>:rcs.invalid` (the agent sees `@rcs_tel<digits>=3arcs.invalid:<s
 | `RCS_TWILIO_SENDER_ID` | the RCS sender's ID (`rcs:` optional). Messages go `From` it, so there is no Messaging Service, which Twilio allows an RCS sender into only after carrier approval, and no SMS fallback |
 | `BRIDGE_STORE_DIR` (`/data`) | `rcs.db`, 0600: the inbox and the sent log |
 | `RCS_TWILIO_API` (`https://api.twilio.com`) | the API base, for tests |
+| `RCS_TWILIO_MESSAGING_API` (`https://messaging.twilio.com`) | the typing indicator's API base, for tests |
 | `BRIDGE_LOG_LEVEL` (`WARNING`) | as the Matrix bridge's |
 
 Inbound, `POST /twilio/inbound` refuses anything unsigned (403), for
@@ -123,6 +132,11 @@ another account (ignored), or from any number but the owner's (403). A
 message is written to the store before Twilio hears 200, because Twilio does
 not retry, and leaves the store only once the gateway has it. Attachments are
 named, not carried.
+
+The agent's typing shows on the owner's phone through Twilio's typing
+indicator (`POST {RCS_TWILIO_MESSAGING_API}/v3/Indicators/Typing.json`,
+default host `https://messaging.twilio.com`), at most one every 12 s. RCS has
+no stop: the bubble lapses after about 20 s or when the reply arrives.
 
 Outbound, text, notices and emotes go out as plain text (markdown flattened)
 in chunks of at most 1,600 characters, recorded per chunk so a retried

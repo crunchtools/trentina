@@ -284,14 +284,18 @@ unchanged; the new key and its copies stay unused beside it, and a rerun
 starts again. Everyone who had verified the account sees its identity change and
 verifies it again.
 
-## Conduit
+## The local homeserver
 
-One per profile, on the agent's internal network only:
+One per profile, on the agent's internal network only. It is
+[tuwunel](https://github.com/matrix-construct/tuwunel) (Conduit until
+#1533: Conduit never pushes ephemeral events to an appservice, so the agent's
+typing never reached the gateway). Tuwunel still reads Conduit's `CONDUIT_*`
+environment and takes over a Conduit RocksDB in place on first boot. The
+containers and units keep the name `conduit-<profile>`.
 
 ```toml
 [global]
 server_name = "agent1.local"
-database_backend = "rocksdb"
 database_path = "/var/lib/matrix-conduit/"
 address = "0.0.0.0"
 port = 6167
@@ -301,11 +305,11 @@ allow_check_for_updates = false
 trusted_servers = []
 ```
 
-Conduit registers appservices from its admin room, not from a file. Once,
+Appservices are registered from the admin room. Once,
 with a temporary `registration_token`: register the admin user (it joins
 `#admins`), register the agent's user, then post
 
-    @conduit:agent1.local: register-appservice
+    !admin appservices register
     ```
     id: trentina
     url: http://<gateway ip on this network>:8019/bridge/as/agent1
@@ -313,6 +317,7 @@ with a temporary `registration_token`: register the admin user (it joins
     hs_token: <AGENT1_HS_TOKEN>
     sender_localpart: trentina
     rate_limited: false
+    receive_ephemeral: true
     namespaces:
       users:
         - exclusive: true
@@ -321,4 +326,6 @@ with a temporary `registration_token`: register the admin user (it joins
       rooms: []
     ```
 
-and remove the registration token.
+and remove the registration token. `receive_ephemeral` is what carries the
+agent's typing (see [channel-bridges.md](channel-bridges.md)); without it
+everything else still works. Registering the same `id` again replaces it.

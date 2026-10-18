@@ -632,6 +632,74 @@ class TestOutbound:
             await rig.bridge.outbound("t1", [_agent_event("$a1")])
 
 
+def _typing(*users: str, room: str = "!local1:agent1.local") -> dict[str, Any]:
+    return {"type": "m.typing", "room_id": room, "content": {"user_ids": list(users)}}
+
+
+class TestTyping:
+    """The agent's typing, carried upstream from the ephemeral section (#1533)."""
+
+    async def test_the_agent_typing_and_stopping_goes_upstream(self, rig_factory: Any) -> None:
+        rig = rig_factory()
+        await rig.bridge.inbound(_message())
+        await rig.bridge.typing([_typing(AGENT)])
+        await rig.bridge.typing([_typing()])
+        assert [(s["path"], s["room_id"], s["typing"]) for s in rig.upstream.sent] == [
+            ("/typing", ROOM, True),
+            ("/typing", ROOM, False),
+        ]
+        assert len(rig.judged) == 1, "typing carries nothing to judge"
+
+    async def test_only_a_change_or_a_due_refresh_is_sent(
+        self, rig_factory: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rig = rig_factory()
+        await rig.bridge.inbound(_message())
+        clock = [1000.0]
+        monkeypatch.setattr(core.time, "monotonic", lambda: clock[0])
+        for _ in range(4):
+            await rig.bridge.typing([_typing(AGENT)])
+        assert len(rig.upstream.sent) == 1
+        clock[0] += core._TYPING_REFRESH
+        await rig.bridge.typing([_typing(AGENT)])
+        assert len(rig.upstream.sent) == 2
+        await rig.bridge.typing([_typing()])
+        await rig.bridge.typing([_typing()])
+        assert [s["typing"] for s in rig.upstream.sent] == [True, True, False]
+
+    async def test_others_typing_and_other_ephemera_are_not_carried(self, rig_factory: Any) -> None:
+        rig = rig_factory()
+        await rig.bridge.inbound(_message())
+        stand_in = rig.conduit.sent[0]["as"]
+        await rig.bridge.typing(
+            [
+                _typing(stand_in),
+                {"type": "m.receipt", "room_id": "!local1:agent1.local", "content": {}},
+                {"type": "m.presence", "content": {"presence": "online"}},
+                _typing(AGENT, room="!unmapped:agent1.local"),
+                {"type": "m.typing", "room_id": 7, "content": {"user_ids": [AGENT]}},
+                {"type": "m.typing", "room_id": "!local1:agent1.local", "content": "x"},
+                "junk",
+            ]
+        )
+        assert rig.upstream.sent == []
+
+    async def test_a_room_refused_by_the_agent_rule_is_not_carried(self, rig_factory: Any) -> None:
+        rig = rig_factory(reported=False)
+        room = await rig.bridge.appservice.ensure_room(ROOM, name="Ops", topic="", is_direct=False)
+        assert await rig.bridge.appservice.room_for_local(room.local_id) is not None
+        await rig.bridge.typing([_typing(AGENT, room=room.local_id)])
+        assert rig.upstream.sent == []
+
+    @pytest.mark.parametrize("status", [404, 422, 502])
+    async def test_a_bridge_failure_never_raises(self, rig_factory: Any, status: int) -> None:
+        rig = rig_factory()
+        await rig.bridge.inbound(_message())
+        rig.upstream.status = status
+        await rig.bridge.typing([_typing(AGENT)])
+        assert rig.bridge.outbound_refused == 0
+
+
 class TestRewrite:
     def test_escaping_is_the_spec_mapping(self) -> None:
         assert escape_localpart("@Scott_M:matrix.org") == "_scott___m=3amatrix.org"

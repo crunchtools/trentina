@@ -27,6 +27,7 @@ from .backend import BackendError, Inbound
 
 _TIMEOUT = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
 _DEADLINE = 30.0
+_TYPING_DEADLINE = 5.0
 # Twilio's own cap on a message body.
 MAX_BODY = 1600
 _ATTACHMENTS_MAX = 10
@@ -57,12 +58,14 @@ class TwilioBackend:
         auth_token: str,
         sender_id: str,
         api: str = "https://api.twilio.com",
+        messaging_api: str = "https://messaging.twilio.com",
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._account_sid = account_sid
         self._auth_token = auth_token
         self._from = f"rcs:{sender_id}"
         self._url = f"{api}/2010-04-01/Accounts/{account_sid}/Messages.json"
+        self._typing_url = f"{messaging_api}/v3/Indicators/Typing.json"
         # nosemgrep: trentina-httpx-client-outside-egress -- operator URL
         self._client = client or httpx.AsyncClient(timeout=_TIMEOUT)
 
@@ -127,3 +130,24 @@ class TwilioBackend:
         # The code is Twilio's error number, not its text: the text can echo
         # the body or the number.
         raise BackendError(f"twilio: {resp.status_code} code={code}", permanent=permanent)
+
+    async def send_typing(self, to: str) -> None:
+        """Show the agent typing on ``to``'s phone (#1533).
+
+        Twilio's v3 Typing Indicator API: JSON, START only. The bubble lasts
+        about 20 s or until the next message arrives; there is no stop.
+        """
+        body = {"channel": "RCS", "from": self._from, "to": to, "event": "START"}
+        try:
+            resp, _raw = await request_capped(
+                self._client,
+                "POST",
+                self._typing_url,
+                deadline=_TYPING_DEADLINE,
+                json=body,
+                auth=(self._account_sid, self._auth_token),
+            )
+        except (httpx.HTTPError, TimeoutError, ValueError) as exc:
+            raise BackendError(f"twilio typing: {exc_kind(exc)}") from exc
+        if resp.status_code not in (HTTPStatus.OK, HTTPStatus.CREATED, HTTPStatus.ACCEPTED):
+            raise BackendError(f"twilio typing: {resp.status_code}")
