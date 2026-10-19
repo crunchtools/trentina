@@ -39,7 +39,7 @@ from .errors import (
     ProfileNotFoundError,
 )
 from .google_verifier import token_digest
-from .matrix_bridge.routes import outbound_refused
+from .matrix_bridge.routes import media_refused, outbound_refused
 from .router import JSONRPC_INTERNAL_ERROR, route_jsonrpc
 from .sessions import SessionRegistry, session_registry
 
@@ -416,7 +416,7 @@ def _health_payload(registry: dict[str, Profile]) -> Response:
     # in quarantine_stats' gateway_audit (backend matrix_bridge, #317).
     refused = outbound_refused()
     if refused is not None:
-        body["matrix_bridge"] = {"outbound_refused": refused}
+        body["matrix_bridge"] = {"outbound_refused": refused, "media_refused": media_refused()}
     return JSONResponse(body)
 
 

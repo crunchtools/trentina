@@ -23,17 +23,18 @@ from __future__ import annotations
 import hmac
 import logging
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.responses import JSONResponse, Response
 
-from ...httpbody import TooLargeError, read_capped, where_invalid
+from ...httpbody import MAX_BODY_BYTES, TooLargeError, read_capped, where_invalid
 from ...logsafe import exc_kind
 from ..profile import MATRIX_CHANNEL
 from .appservice import AppService, ConduitError
 from .core import BridgeUnavailableError, ProfileBridge
 from .mapping import BridgeMapping
+from .media import MAX_MEDIA_B64, MAX_NAME_CHARS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -62,6 +63,18 @@ class RoomInfo(BaseModel):
     members: list[str] | None = None
 
 
+class MediaItem(BaseModel):
+    """The main media of an event, fetched (and decrypted) by the bridge (#491)."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    status: Literal["ok", "too_large", "unavailable"]
+    # What the upstream server or the sender called it; only a hint, since
+    # the gateway reads the bytes' own signature first.
+    content_type: str = Field(default="", max_length=MAX_NAME_CHARS)
+    base64: str = Field(default="", max_length=MAX_MEDIA_B64)
+
+
 class BridgeEvent(BaseModel):
     """One upstream event, as the bridge process hands it over. Our own wire
     format, so anything unexpected in it is refused."""
@@ -76,6 +89,11 @@ class BridgeEvent(BaseModel):
     content: dict[str, Any] = Field(default_factory=dict)
     redacts: str | None = None
     room: RoomInfo = Field(default_factory=RoomInfo)
+    media: MediaItem | None = None
+
+
+# An event with its attachment as base64, plus the event itself.
+EVENT_BODY_CAP = MAX_MEDIA_B64 + MAX_BODY_BYTES
 
 
 class AgentEvent(BaseModel):
@@ -210,6 +228,14 @@ def outbound_refused() -> int | None:
     return sum(b.outbound_refused for b in _registered)
 
 
+def media_refused() -> int | None:
+    """Attachments that could not cross since start, either way, every bridge
+    summed; None when no bridge is running (#491)."""
+    if not _registered:
+        return None
+    return sum(b.media_refused for b in _registered)
+
+
 async def close_bridges() -> None:
     """Close every registered bridge's clients and store. Called on shutdown."""
     while _registered:
@@ -245,7 +271,7 @@ class BridgeRoutes:
         if bridge is None:
             return _refused(401, "M_UNKNOWN_TOKEN", "unauthorized")
         try:
-            event = BridgeEvent.model_validate_json(await read_capped(request))
+            event = BridgeEvent.model_validate_json(await read_capped(request, EVENT_BODY_CAP))
         except TooLargeError:
             return _refused(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "M_TOO_LARGE", "event too large")
         except ValidationError as exc:

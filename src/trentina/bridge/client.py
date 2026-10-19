@@ -57,6 +57,7 @@ from nio.exceptions import EncryptionError, LocalProtocolError
 from nio.store import SqliteStore
 
 from ..logsafe import redact_source
+from . import media
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -118,6 +119,7 @@ class Bridge:
         *,
         client: AsyncClient | None = None,
         gateway: httpx.AsyncClient | None = None,
+        media: httpx.AsyncClient | None = None,
     ) -> None:
         self.settings = settings
         settings.store_dir.mkdir(parents=True, exist_ok=True)
@@ -134,6 +136,12 @@ class Bridge:
         )
         # nosemgrep: trentina-httpx-client-outside-egress -- operator env URL
         self._gateway = gateway or httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=5.0))
+        # Upstream media (#491). Its own client: nio's session is aiohttp, and
+        # this one must never follow a redirect off the homeserver. The host is
+        # always BRIDGE_HOMESERVER; an mxc's server and ID are quoted path
+        # segments under it, checked against the spec's charset first.
+        # nosemgrep: trentina-httpx-client-outside-egress -- operator env URL
+        self._media = media or httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0))
         self._send_lock = asyncio.Lock()
         # Sync and send both drive nio's crypto state (key upload, query and
         # claim, group-session sharing, key requests), which is not safe to
@@ -577,7 +585,18 @@ class Bridge:
                 redact_source(room_id),
             )
             return
-        await self.forward(self._payload(room_id, source))
+        payload = self._payload(room_id, source)
+        content = payload["content"]
+        media_ref = media.media_source(event_type, content) if isinstance(content, dict) else None
+        if media_ref is not None:
+            payload["media"] = await media.fetch(
+                self._media,
+                self.settings.homeserver,
+                str(self.client.access_token),
+                media_ref,
+                content,
+            )
+        await self.forward(payload)
 
     def _payload(self, room_id: str, source: dict[str, Any]) -> dict[str, Any]:
         room: MatrixRoom | None = self.client.rooms.get(room_id)
@@ -790,6 +809,32 @@ class Bridge:
             raise SendError(f"refusing to send {event_type} unencrypted into {room_id}")
         return encrypted_type, dict(encrypted)
 
+    async def upload(
+        self, room_id: str, plaintext: bytes, content_type: str, filename: str
+    ) -> dict[str, Any]:
+        """Upload judged media for a send into ``room_id`` (#491): ``{"url"}``,
+        or ``{"file"}`` encrypted when the room is.
+
+        Raises:
+            SendError: not now (a room not held, a 5xx, a rate limit).
+            media.UploadRefusedError: never; the homeserver answered a 4xx.
+        """
+        room = self.client.rooms.get(room_id)
+        if room is None or not self._held(room_id):
+            raise SendError(f"not holding {room_id}")
+        try:
+            return await media.upload(
+                self._media,
+                self.settings.homeserver,
+                str(self.client.access_token),
+                plaintext,
+                content_type,
+                filename,
+                encrypted=bool(room.encrypted),
+            )
+        except media.UploadError as exc:
+            raise SendError(f"upload: {exc}") from exc
+
     async def redact(self, room_id: str, event_id: str, txn_id: str) -> None:
         """Redact upstream. ``txn_id`` makes a retried redaction the same one."""
         async with self._send_lock:
@@ -817,4 +862,5 @@ class Bridge:
 
     async def aclose(self) -> None:
         await self._gateway.aclose()
+        await self._media.aclose()
         await self.client.close()

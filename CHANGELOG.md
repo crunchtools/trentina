@@ -10,6 +10,22 @@ under that name.
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-10-18
+
+### Added
+
+- Photos and files cross the Matrix bridge in both directions (#491).
+  Neither side can resolve the other's `mxc://` URIs, so the bridge fetches
+  (and, in an encrypted room, decrypts) inbound media and sends the bytes
+  with the event. Outbound, the gateway fetches the agent's media from its
+  homeserver, and the bridge uploads it, encrypted where the room is. The
+  gateway judges every attachment with its event: OCR for an image, text
+  as text, and anything else is the `binary_unread` gap. It re-hosts the
+  attachment on the receiving side and never delivers a URI from the other.
+  The cap is 6 MiB per attachment, and thumbnails are dropped. New: a
+  `media` field on the bridge's event, a bridge `POST /upload`, and
+  `/health` `matrix_bridge.media_refused`.
+
 ## [1.19.0] - 2026-10-18
 
 ### Added

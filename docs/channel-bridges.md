@@ -77,11 +77,20 @@ event is in Conduit, or deliberately withheld or skipped, and dedupes on
 - `org.crunchtools.trentina.room_left`: retire a room's mirror.
 - `m.room.message`, `m.reaction`, `m.sticker`: judged and carried.
   `m.room.redaction`: mirrored, never judged (it can only remove).
+- An event whose content names media (`url` or `file`) carries its bytes
+  in `media` `{status, content_type, base64}` (#491): `status` is `ok` (with
+  `base64` holding the bytes, at most 6 MiB), `too_large` or `unavailable`. One
+  without `media`, or not `ok`, is withheld. See
+  [matrix-bridge.md](matrix-bridge.md#attachments-491).
 
 **Gateway to bridge:** Bearer `bridge_token` on `bridge_url`.
 
 - `POST /send` `{room_id, type, content, txn_id}`. The bridge answers
   `{"event_id": ...}`, idempotent on `txn_id`.
+- `POST /upload` `{room_id, content_type, filename, base64}` (#491): judged
+  media as base64. The bridge answers `{"url": mxc}`, or `{"file": ...}` in
+  an encrypted room, and the gateway puts it in the `/send` that follows. A
+  channel that cannot carry media answers 404, and the agent is told.
 - `POST /redact` `{room_id, event_id, txn_id}`.
 - `POST /typing` `{room_id, typing}` (#1533): whether the agent is typing
   there. Best effort: answer 200 with `{"shown": true|false}`, never an

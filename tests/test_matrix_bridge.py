@@ -1609,4 +1609,4 @@ class TestOutboundRefusedCount:
         assert "matrix_bridge" not in json.loads(app_mod._health_payload({}).body)
         monkeypatch.setattr(routes_mod, "_registered", [rig.bridge])
         health = json.loads(app_mod._health_payload({}).body)
-        assert health["matrix_bridge"] == {"outbound_refused": 2}
+        assert health["matrix_bridge"] == {"outbound_refused": 2, "media_refused": 0}
