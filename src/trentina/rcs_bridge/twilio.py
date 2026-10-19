@@ -94,7 +94,19 @@ def _number(address: str) -> str:
 
 
 class TwilioBackend:
-    """One Twilio account and one agent's RCS sender."""
+    """One Twilio account and one agent's RCS sender.
+
+    Args:
+        account_sid, auth_token: the account, as Basic auth on every API call.
+        sender_id: the RCS sender messages go ``From``.
+        api, messaging_api: API bases, overridden for tests.
+        client: an HTTP client for the API, instead of a fresh one.
+        cdn: how an inbound attachment's CDN hop is fetched: ``url`` in, the
+            final status, content type and body out, read under
+            ``MAX_MEDIA_BYTES``, with no credentials and every hop checked.
+            Default ``guarded_get``; tests pass a stand-in for the egress
+            guard, which dials real addresses.
+    """
 
     def __init__(
         self,

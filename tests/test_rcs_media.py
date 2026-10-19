@@ -11,18 +11,21 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import dataclasses
 import sqlite3
 from typing import TYPE_CHECKING, Any
 
+import httpx
 import pytest
 from starlette.testclient import TestClient
 
+from trentina.httpbody import TooLargeError
 from trentina.rcs_bridge import store as store_mod
 from trentina.rcs_bridge import twilio as twilio_mod
 from trentina.rcs_bridge.api import build_private_app, build_public_app
 from trentina.rcs_bridge.backend import Inbound
-from trentina.rcs_bridge.bridge import RefusedError
+from trentina.rcs_bridge.bridge import RefusedError, UnavailableError
 from trentina.rcs_bridge.settings import RcsSettings
 from trentina.rcs_bridge.store import RcsStore
 from trentina.rcs_bridge.twilio import TwilioBackend, guarded_get
@@ -31,6 +34,7 @@ from .image_files import picture
 from .test_rcs_bridge import _ENV, MEDIA_PREFIX, OWNER, Rig, _drain, _form, _post
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
 
 PNG = picture("x")
@@ -212,10 +216,22 @@ class TestHosting:
         rig.bridge.settings = dataclasses.replace(rig.bridge.settings, media_url=None)
         assert _upload(rig).status_code == 422
 
-    def test_a_hostile_content_type_is_served_as_octets(self, rig: Rig) -> None:
-        media_id = _held_id(_upload(rig, content_type="text/html\r\nSet-Cookie: x"))
+    @pytest.mark.parametrize(
+        "content_type",
+        ["text/html", "image/svg+xml", "application/xhtml+xml", "text/html\r\nSet-Cookie: x"],
+    )
+    def test_active_content_is_served_as_octets_and_sandboxed(
+        self, rig: Rig, content_type: str
+    ) -> None:
+        media_id = _held_id(_upload(rig, content_type=content_type))
         served = TestClient(build_public_app(rig.bridge)).get(f"/media/{media_id}")
         assert served.headers["content-type"] == "application/octet-stream"
+        assert served.headers["content-security-policy"] == "default-src 'none'; sandbox"
+
+    def test_a_parameter_on_an_allowed_type_is_dropped(self, rig: Rig) -> None:
+        media_id = _held_id(_upload(rig, content_type="text/plain; charset=utf-8"))
+        served = TestClient(build_public_app(rig.bridge)).get(f"/media/{media_id}")
+        assert served.headers["content-type"].startswith("text/plain")
 
 
 def _image(url: str, **extra: Any) -> dict[str, Any]:
@@ -245,6 +261,24 @@ class TestSend:
         first, *rest = rig.twilio.sent
         assert first["MediaUrl"].endswith(media_id)
         assert first["Body"].startswith("word")
+        assert rest
+        assert all("MediaUrl" not in r for r in rest)
+
+    async def test_a_failed_caption_chunk_is_retried_without_the_media(
+        self, rig: Rig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        media_id = _held_id(_upload(rig))
+        content = _image(f"mxc://rcs.invalid/{media_id}", body="word " * 400, filename="c.png")
+        rig.twilio.fail_after = 1
+        rig.twilio.fail = [(500, {})]
+        with pytest.raises(UnavailableError):
+            await rig.bridge.send(ROOM, "m.room.message", content, "out1")
+        assert len(rig.twilio.sent) == 1
+        # The retry comes after the media expired: what is left still goes.
+        monkeypatch.setattr(store_mod, "MEDIA_TTL", -1.0)
+        await rig.bridge.send(ROOM, "m.room.message", content, "out1")
+        first, *rest = rig.twilio.sent
+        assert "MediaUrl" in first
         assert rest
         assert all("MediaUrl" not in r for r in rest)
 
@@ -279,6 +313,56 @@ class TestSend:
             "txn_id": "t1",
         }
         assert client.post("/send", json=body, headers=AUTH).status_code == 422
+
+
+def _guard_answering(monkeypatch: pytest.MonkeyPatch, resp: httpx.Response) -> list[Any]:
+    """``egress.open_guarded`` replaced by one answering ``resp``; the calls."""
+    calls: list[Any] = []
+
+    @contextlib.asynccontextmanager
+    async def fake(method: str, url: str, **kwargs: Any) -> AsyncIterator[httpx.Response]:
+        calls.append((method, url, kwargs))
+        yield resp
+
+    monkeypatch.setattr(twilio_mod.egress, "open_guarded", fake)
+    return calls
+
+
+class TestGuardedGet:
+    """The CDN hop's own reading, with the guard's network half stood in."""
+
+    async def test_it_reads_the_body_with_no_credentials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        resp = httpx.Response(200, content=PNG, headers={"content-type": "image/png"})
+        calls = _guard_answering(monkeypatch, resp)
+        assert await guarded_get("https://cdn.example/x") == (200, "image/png", PNG)
+        [(method, url, kwargs)] = calls
+        assert (method, url) == ("GET", "https://cdn.example/x")
+        assert "headers" not in kwargs
+        assert kwargs["deadline"] == twilio_mod.MEDIA_DEADLINE
+
+    async def test_a_declared_length_over_the_cap_is_refused_unread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(twilio_mod, "MAX_MEDIA_BYTES", 16)
+        resp = httpx.Response(200, content=PNG)
+        _guard_answering(monkeypatch, resp)
+        with pytest.raises(TooLargeError):
+            await guarded_get("https://cdn.example/x")
+
+    async def test_an_undeclared_body_is_cut_off_at_the_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(twilio_mod, "MAX_MEDIA_BYTES", 16)
+
+        async def drip() -> AsyncIterator[bytes]:
+            for _ in range(10):
+                yield b"x" * 8
+
+        _guard_answering(monkeypatch, httpx.Response(200, content=drip()))
+        with pytest.raises(TooLargeError):
+            await guarded_get("https://cdn.example/x")
 
 
 class TestStore:

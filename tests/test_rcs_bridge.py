@@ -76,6 +76,8 @@ class FakeTwilio:
         self.typing: list[dict[str, Any]] = []
         # Statuses to answer before succeeding, one per request.
         self.fail: list[tuple[int, dict[str, Any]]] = []
+        # Messages that go before ``fail`` starts answering.
+        self.fail_after = 0
         # Media SID -> (content type, bytes), served from the CDN.
         self.media: dict[str, tuple[str, bytes]] = {}
         self.cdn_base = "https://cdn.twilio.test"
@@ -93,8 +95,10 @@ class FakeTwilio:
         return httpx.Response(200, content=body, headers={"content-type": content_type})
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
-        if request.url.host == "cdn.twilio.test" or "/Media/" in request.url.path:
-            return self._media(request)
+        is_media = request.url.host == "cdn.twilio.test" or "/Media/" in request.url.path
+        return self._media(request) if is_media else self._api(request)
+
+    def _api(self, request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"].startswith("Basic ")
         if request.url.host == "messaging.twilio.test":
             assert request.url.path == "/v3/Indicators/Typing.json"
@@ -105,7 +109,7 @@ class FakeTwilio:
             self.typing.append(json.loads(request.content))
             return httpx.Response(200, json={"success": True})
         assert request.url.path == f"/2010-04-01/Accounts/{ACCOUNT}/Messages.json"
-        if self.fail:
+        if self.fail and len(self.sent) >= self.fail_after:
             status, body = self.fail.pop(0)
             return httpx.Response(status, json=body)
         self.sent.append(dict(parse_qsl(request.content.decode())))

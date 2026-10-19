@@ -54,6 +54,23 @@ _MSGTYPE_BY_KIND = {"image": "m.image", "video": "m.video", "audio": "m.audio"}
 _MEDIA_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,255}")
 _CONTENT_TYPE_RE = re.compile(r"[A-Za-z0-9.+-]{1,127}/[A-Za-z0-9.+-]{1,127}")
 _OCTET = "application/octet-stream"
+# What an outbound attachment may be served as. Anything else, HTML and SVG
+# above all, goes as octets: the public route is on a real origin.
+_SERVED_TYPES = frozenset(
+    {
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/webp",
+        "video/mp4",
+        "video/3gpp",
+        "audio/mpeg",
+        "audio/mp4",
+        "audio/ogg",
+        "application/pdf",
+        "text/plain",
+    }
+)
 # The event ID a dropped reaction gets: the gateway maps it like any other, so
 # its later redaction comes back here and is answered as done.
 DROPPED_PREFIX = "$rcs-dropped-"
@@ -93,6 +110,13 @@ def _media_holder(content: dict[str, Any]) -> dict[str, Any]:
     ):
         return new
     return content
+
+
+def _placeholder_id(message: Inbound, idx: int) -> str:
+    """A media ID to name an inbound attachment by: Twilio's own, when it is
+    one an ``mxc://`` URI can carry."""
+    media_id = message.media[idx][0].rstrip("/").rpartition("/")[2]
+    return media_id if _MEDIA_ID_RE.fullmatch(media_id) else f"{message.message_id}-{idx}"
 
 
 def _caption(holder: dict[str, Any]) -> str:
@@ -212,22 +236,18 @@ class RcsBridge:
     def _media_content(self, message: Inbound, idx: int) -> dict[str, Any]:
         """The event for one attachment. Its ``url`` only names the media for
         the gateway, which strips it and re-hosts the bytes sent alongside."""
-        url, declared = message.media[idx]
+        declared = message.media[idx][1]
         declared = declared[:MAX_NAME_CHARS] if _CONTENT_TYPE_RE.fullmatch(declared) else ""
         name = f"attachment-{idx + 1}{mimetypes.guess_extension(declared) or ''}"
-        media_id = url.rstrip("/").rpartition("/")[2]
-        if not _MEDIA_ID_RE.fullmatch(media_id):
-            media_id = f"{message.message_id}-{idx}"
-        content: dict[str, Any] = {
+        info = {"info": {"mimetype": declared}} if declared else {}
+        return {
             "msgtype": _MSGTYPE_BY_KIND.get(declared.partition("/")[0], "m.file"),
             # The owner's text rides on the first attachment, as its caption.
             "body": (message.body if idx == 0 and message.body else name),
             "filename": name,
-            "url": f"mxc://{self.settings.server}/{media_id}",
+            "url": f"mxc://{self.settings.server}/{_placeholder_id(message, idx)}",
+            **info,
         }
-        if declared:
-            content["info"] = {"mimetype": declared}
-        return content
 
     async def _deliver(self, message: Inbound) -> None:
         """Hand one message to the gateway: its text, or one event per
@@ -325,7 +345,8 @@ class RcsBridge:
             raise RefusedError("not the owner's room")
         if self.settings.media_url is None:
             raise RefusedError("no public media URL configured")
-        if not _CONTENT_TYPE_RE.fullmatch(content_type):
+        content_type = content_type.partition(";")[0].strip().lower()
+        if content_type not in _SERVED_TYPES:
             content_type = _OCTET
         media_id = secrets.token_urlsafe(32)
         try:
@@ -377,9 +398,11 @@ class RcsBridge:
             raise RefusedError("not the owner's room")
         if event_type == "m.reaction":
             return DROPPED_PREFIX + hashlib.sha256(txn_id.encode()).hexdigest()[:32]
-        pieces, media_link = await self._pieces(event_type, content)
         async with self._send_lock:
             done = await self.store.sent(txn_id)
+            # Once the media went, a retry needs only the chunks after it,
+            # and must not fail because the media has since expired.
+            pieces, media_link = await self._pieces(event_type, content, need_media=0 not in done)
             for idx, piece in enumerate(pieces):
                 if idx in done:
                     continue
@@ -395,10 +418,10 @@ class RcsBridge:
         return f"$rcs-{done[0]}"
 
     async def _pieces(
-        self, event_type: str, content: dict[str, Any]
+        self, event_type: str, content: dict[str, Any], *, need_media: bool = True
     ) -> tuple[list[str], str | None]:
         """The chunks a message goes as, and the attachment's public URL if
-        it has one.
+        it has one and ``need_media``.
 
         Raises:
             RefusedError: no RCS form for it, empty, or media not held here.
@@ -408,7 +431,7 @@ class RcsBridge:
             raise RefusedError("no RCS form for this type")
         if msgtype in _MEDIA_TYPES:
             holder = _media_holder(content)
-            media_link = await self._media_link(holder)
+            media_link = await self._media_link(holder) if need_media else None
             # Without a caption the media goes alone, as one empty chunk.
             return chunks(flatten("m.text", _caption(holder)), MAX_BODY) or [""], media_link
         if msgtype not in _TEXT_TYPES:

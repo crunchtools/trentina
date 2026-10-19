@@ -249,7 +249,13 @@ class _Public:
         return Response(
             body,
             media_type=content_type,
-            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                # Only allowlisted types are held, and nothing served here
+                # may run even if a browser opens it.
+                "Content-Security-Policy": "default-src 'none'; sandbox",
+            },
         )
 
     async def _signed_form(self, request: Request) -> list[tuple[str, str]] | Response:
