@@ -126,13 +126,14 @@ as `@tel<digits>:rcs.invalid` (the agent sees `@rcs_tel<digits>=3arcs.invalid:<s
 | `BRIDGE_LISTEN_HOST`/`_PORT` (8472) | private API, the gateway's network only |
 | `RCS_WEBHOOK_HOST`/`_PORT` (8473) | public webhook, behind the proxy only |
 | `RCS_WEBHOOK_URL` | the exact https URL set in Twilio: the signature covers it |
+| `RCS_MEDIA_URL` | the public https base of `GET /media/{id}` (default: `RCS_WEBHOOK_URL` with `/media` for `/twilio/inbound`; with neither, outbound media is off) |
 | `RCS_AGENT_USER_ID` | the profile's `bridges.rcs.public_user_id` |
 | `RCS_OWNER_NUMBER`, `RCS_OWNER_NAME` (`Owner (phone)`) | the one number accepted (E.164), and its display name |
 | `RCS_ROOM_TOPIC` | the room's topic, which the agent reads (default: text messages with the owner's phone over RCS). The gateway judges it with every message, so it must describe, never instruct: a topic that reads as an instruction gets every text withheld. Put trust guidance in the agent's own instructions |
 | `RCS_SERVER` (`rcs.invalid`) | the server name the synthetic IDs live under |
 | `RCS_TWILIO_ACCOUNT_SID`, `RCS_TWILIO_AUTH_TOKEN` | the agent's account (a subaccount per agent keeps one agent's token from speaking as another) |
 | `RCS_TWILIO_SENDER_ID` | the RCS sender's ID (`rcs:` optional). Messages go `From` it, so there is no Messaging Service, which Twilio allows an RCS sender into only after carrier approval, and no SMS fallback |
-| `BRIDGE_STORE_DIR` (`/data`) | `rcs.db`, 0600: the inbox and the sent log |
+| `BRIDGE_STORE_DIR` (`/data`) | `rcs.db`, 0600: the inbox, the sent log, and outbound attachments while they are served |
 | `RCS_TWILIO_API` (`https://api.twilio.com`) | the API base, for tests |
 | `RCS_TWILIO_MESSAGING_API` (`https://messaging.twilio.com`) | the typing indicator's API base, for tests |
 | `BRIDGE_LOG_LEVEL` (`WARNING`) | as the Matrix bridge's |
@@ -140,8 +141,23 @@ as `@tel<digits>:rcs.invalid` (the agent sees `@rcs_tel<digits>=3arcs.invalid:<s
 Inbound, `POST /twilio/inbound` refuses anything unsigned (403), for
 another account (ignored), or from any number but the owner's (403). A
 message is written to the store before Twilio hears 200, because Twilio does
-not retry, and leaves the store only once the gateway has it. Attachments are
-named, not carried.
+not retry, and leaves the store only once the gateway has it.
+
+Attachments (#493). Inbound, the webhook stores each `MediaUrlN` and its
+type, never the bytes. At delivery the bridge fetches each one with the
+account's credentials, from this account's media only
+(`{RCS_TWILIO_API}/2010-04-01/Accounts/{sid}/Messages/…/Media/…`). The first hop follows
+nothing. Twilio's redirect to its CDN is fetched without credentials through
+the egress guard, which refuses any hop to a non-global address. Both hops
+read under the 6 MiB cap. It sends each as its own event (`m.image`, `m.video`, `m.audio`
+or `m.file`) with the `media` item. The text rides on the first as its
+caption. The gateway judges and re-hosts each one, as for the Matrix bridge.
+Outbound, `POST /upload` holds the judged bytes under a
+`secrets.token_urlsafe(32)` ID and answers `mxc://rcs.invalid/<id>`. A
+`/send` naming it goes to Twilio as `MediaUrl` = `{RCS_MEDIA_URL}/<id>`, and
+Twilio fetches it from the public listener's `GET /media/{id}`. An ID is
+served for an hour and at most 64 are held. Media the bridge does not hold is
+a 422. Route `/<agent>/media/` (GET) to the webhook port in the proxy.
 
 The agent's typing shows on the owner's phone through Twilio's typing
 indicator (`POST {RCS_TWILIO_MESSAGING_API}/v3/Indicators/Typing.json`,

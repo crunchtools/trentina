@@ -19,8 +19,10 @@ import pytest
 from starlette.testclient import TestClient
 
 from trentina.bridge.settings import SettingsError
+from trentina.httpbody import request_capped
 from trentina.quarantine.classifier import classify, is_classifier_available
 from trentina.rcs_bridge import bridge as bridge_mod
+from trentina.rcs_bridge import twilio as twilio_mod
 from trentina.rcs_bridge.api import build_private_app, build_public_app
 from trentina.rcs_bridge.backend import Inbound
 from trentina.rcs_bridge.bridge import RcsBridge, RefusedError, UnavailableError
@@ -62,16 +64,37 @@ def _settings(store_dir: Path) -> RcsSettings:
     )
 
 
+MEDIA_PREFIX = f"https://api.twilio.test/2010-04-01/Accounts/{ACCOUNT}/Messages/MM1/Media/"
+
+
 class FakeTwilio:
-    """The Messages API: records each form, answers a sid or a set failure."""
+    """The Messages API: records each form, answers a sid or a set failure.
+    Inbound media (#493) answers with a redirect to a CDN, as Twilio does."""
 
     def __init__(self) -> None:
         self.sent: list[dict[str, str]] = []
         self.typing: list[dict[str, Any]] = []
         # Statuses to answer before succeeding, one per request.
         self.fail: list[tuple[int, dict[str, Any]]] = []
+        # Media SID -> (content type, bytes), served from the CDN.
+        self.media: dict[str, tuple[str, bytes]] = {}
+        self.cdn_base = "https://cdn.twilio.test"
+
+    def _media(self, request: httpx.Request) -> httpx.Response:
+        """A media URL redirects to the CDN, which serves the bytes unauthenticated."""
+        sid = request.url.path.rsplit("/", 1)[1]
+        if sid not in self.media:
+            return httpx.Response(404)
+        if request.url.host != "cdn.twilio.test":
+            assert request.headers["authorization"].startswith("Basic ")
+            return httpx.Response(307, headers={"location": f"{self.cdn_base}/{sid}"})
+        assert "authorization" not in request.headers, "auth leaked to the CDN"
+        content_type, body = self.media[sid]
+        return httpx.Response(200, content=body, headers={"content-type": content_type})
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.host == "cdn.twilio.test" or "/Media/" in request.url.path:
+            return self._media(request)
         assert request.headers["authorization"].startswith("Basic ")
         if request.url.host == "messaging.twilio.test":
             assert request.url.path == "/v3/Indicators/Typing.json"
@@ -109,13 +132,23 @@ class Rig:
         self.settings = _settings(tmp_path)
         self.twilio = FakeTwilio()
         self.gateway = FakeGateway()
+        client = httpx.AsyncClient(transport=httpx.MockTransport(self.twilio))
+
+        async def cdn(url: str) -> tuple[int, str, bytes]:
+            """The CDN hop, through the fake instead of the egress guard."""
+            resp, raw = await request_capped(
+                client, "GET", url, deadline=5.0, limit=twilio_mod.MAX_MEDIA_BYTES
+            )
+            return resp.status_code, resp.headers.get("content-type", ""), raw
+
         backend = TwilioBackend(
             account_sid=ACCOUNT,
             auth_token=TOKEN,
             sender_id=SENDER,
             api="https://api.twilio.test",
             messaging_api="https://messaging.twilio.test",
-            client=httpx.AsyncClient(transport=httpx.MockTransport(self.twilio)),
+            client=client,
+            cdn=cdn,
         )
         self.store = RcsStore(tmp_path / "rcs.db")
         self.bridge = RcsBridge(
@@ -283,11 +316,6 @@ class TestDelivery:
         assert await rig.bridge.accept(Inbound("SM1", OWNER, "one"))
         await _drain(rig)
         assert not await rig.bridge.accept(Inbound("SM1", OWNER, "one"))
-
-    async def test_an_attachment_is_named_not_dropped(self, rig: Rig) -> None:
-        await rig.bridge.accept(Inbound("SM1", OWNER, "", attachments=2))
-        await _drain(rig)
-        assert "2 attachment(s) not carried" in rig.gateway.events[-1]["content"]["body"]
 
 
 ROOM = "!agent1-owner:rcs.invalid"

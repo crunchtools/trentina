@@ -10,6 +10,11 @@ Nothing is lost inbound: the webhook writes a message to the store before
 Twilio hears 200, and it leaves the store only when the gateway acks it.
 Nothing is sent twice outbound: each chunk of a reply is recorded by the
 gateway's ``txn_id`` as it goes.
+
+Media (#493): an attachment from the owner is fetched from Twilio at
+delivery and handed to the gateway with its event, which judges and re-hosts
+it. One the agent sends arrives judged through ``/upload``; the bridge holds
+it under an unguessable ID and Twilio fetches it from the public listener.
 """
 
 from __future__ import annotations
@@ -18,13 +23,18 @@ import asyncio
 import contextlib
 import hashlib
 import logging
+import mimetypes
+import re
+import secrets
 import time
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from ..bridge.media import MAX_NAME_CHARS
 from ..logsafe import exc_kind, redact_source
 from .backend import BackendError, Inbound
+from .store import MediaFullError
 from .text import chunks, flatten
 from .twilio import MAX_BODY
 
@@ -38,6 +48,12 @@ logger = logging.getLogger(__name__)
 ROOM_ANNOUNCE = "org.crunchtools.trentina.room"
 ROOM_REFUSED = "refused"
 _TEXT_TYPES = frozenset({"m.text", "m.notice", "m.emote"})
+_MEDIA_TYPES = frozenset({"m.image", "m.file", "m.video", "m.audio"})
+# The msgtype an attachment from the phone gets, by its declared type.
+_MSGTYPE_BY_KIND = {"image": "m.image", "video": "m.video", "audio": "m.audio"}
+_MEDIA_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,255}")
+_CONTENT_TYPE_RE = re.compile(r"[A-Za-z0-9.+-]{1,127}/[A-Za-z0-9.+-]{1,127}")
+_OCTET = "application/octet-stream"
 # The event ID a dropped reaction gets: the gateway maps it like any other, so
 # its later redaction comes back here and is answered as done.
 DROPPED_PREFIX = "$rcs-dropped-"
@@ -63,6 +79,27 @@ def _carried_text(content: dict[str, Any]) -> tuple[Any, Any]:
     if not isinstance(new, dict) or not isinstance(new.get("body"), str):
         return None, None
     return new.get("msgtype"), EDITED_PREFIX + new["body"]
+
+
+def _media_holder(content: dict[str, Any]) -> dict[str, Any]:
+    """The content that names an event's media: an edit's new content, else
+    the content itself."""
+    new = content.get("m.new_content")
+    relates = content.get("m.relates_to")
+    if (
+        isinstance(relates, dict)
+        and relates.get("rel_type") == "m.replace"
+        and isinstance(new, dict)
+    ):
+        return new
+    return content
+
+
+def _caption(holder: dict[str, Any]) -> str:
+    """An attachment's caption: its body when a separate ``filename`` names
+    the file, since otherwise the body is only the file's name."""
+    body, name = holder.get("body"), holder.get("filename")
+    return body if isinstance(body, str) and isinstance(name, str) and body != name else ""
 
 
 class RefusedError(ValueError):
@@ -159,22 +196,50 @@ class RcsBridge:
             self._wake.set()
         return taken
 
-    def _payload(self, message: Inbound) -> dict[str, Any]:
+    def _payload(self, message: Inbound, content: dict[str, Any], idx: int = 0) -> dict[str, Any]:
         s = self.settings
-        body = message.body
-        if message.attachments:
-            # Media is not carried yet; the agent still learns it was sent.
-            note = f"[{message.attachments} attachment(s) not carried over RCS]"
-            body = f"{body}\n{note}" if body else note
+        suffix = f"-{idx}" if idx else ""
         return {
             "room_id": s.room_id,
-            "event_id": f"$rcs-{message.message_id}",
+            "event_id": f"$rcs-{message.message_id}{suffix}",
             "sender": s.owner_user_id,
             "sender_displayname": s.owner_name,
             "type": "m.room.message",
-            "content": {"msgtype": "m.text", "body": body},
+            "content": content,
             "room": self._room_info(),
         }
+
+    def _media_content(self, message: Inbound, idx: int) -> dict[str, Any]:
+        """The event for one attachment. Its ``url`` only names the media for
+        the gateway, which strips it and re-hosts the bytes sent alongside."""
+        url, declared = message.media[idx]
+        declared = declared[:MAX_NAME_CHARS] if _CONTENT_TYPE_RE.fullmatch(declared) else ""
+        name = f"attachment-{idx + 1}{mimetypes.guess_extension(declared) or ''}"
+        media_id = url.rstrip("/").rpartition("/")[2]
+        if not _MEDIA_ID_RE.fullmatch(media_id):
+            media_id = f"{message.message_id}-{idx}"
+        content: dict[str, Any] = {
+            "msgtype": _MSGTYPE_BY_KIND.get(declared.partition("/")[0], "m.file"),
+            # The owner's text rides on the first attachment, as its caption.
+            "body": (message.body if idx == 0 and message.body else name),
+            "filename": name,
+            "url": f"mxc://{self.settings.server}/{media_id}",
+        }
+        if declared:
+            content["info"] = {"mimetype": declared}
+        return content
+
+    async def _deliver(self, message: Inbound) -> None:
+        """Hand one message to the gateway: its text, or one event per
+        attachment, each fetched just before it goes so only one is ever
+        held in memory."""
+        if not message.media:
+            await self.forward(self._payload(message, {"msgtype": "m.text", "body": message.body}))
+            return
+        for idx in range(len(message.media)):
+            payload = self._payload(message, self._media_content(message, idx), idx)
+            payload["media"] = await self.backend.fetch_media(message.media[idx][0])
+            await self.forward(payload)
 
     async def run(self) -> None:
         """Announce the room, then deliver the inbox, in order, forever."""
@@ -182,7 +247,7 @@ class RcsBridge:
         while True:
             self._wake.clear()
             for message in await self.store.pending():
-                await self.forward(self._payload(message))
+                await self._deliver(message)
                 await self.store.delivered(message.message_id)
             await self.store.prune()
             with contextlib.suppress(TimeoutError):
@@ -246,6 +311,46 @@ class RcsBridge:
             self._typing_at = float("-inf")
             raise UnavailableError(exc.reason) from exc
 
+    async def upload(
+        self, room_id: str, plaintext: bytes, content_type: str, _filename: str
+    ) -> dict[str, str]:
+        """Hold one judged attachment for Twilio to fetch; the ``mxc`` URI the
+        gateway sends it under, which only this bridge resolves (#493).
+
+        Raises:
+            RefusedError: not the owner's room, or no public media URL.
+            UnavailableError: ``MAX_HELD_MEDIA`` already held; try later.
+        """
+        if room_id != self.settings.room_id:
+            raise RefusedError("not the owner's room")
+        if self.settings.media_url is None:
+            raise RefusedError("no public media URL configured")
+        if not _CONTENT_TYPE_RE.fullmatch(content_type):
+            content_type = _OCTET
+        media_id = secrets.token_urlsafe(32)
+        try:
+            await self.store.hold_media(media_id, content_type, plaintext)
+        except MediaFullError as exc:
+            raise UnavailableError("media store full") from exc
+        return {"url": f"mxc://{self.settings.server}/{media_id}"}
+
+    async def _media_link(self, holder: dict[str, Any]) -> str:
+        """The public URL Twilio fetches an uploaded attachment from.
+
+        Raises:
+            RefusedError: not media this bridge holds (expired, or never
+                uploaded here).
+        """
+        server, _, media_id = str(holder.get("url") or "").removeprefix("mxc://").partition("/")
+        if (
+            server != self.settings.server
+            or self.settings.media_url is None
+            or not _MEDIA_ID_RE.fullmatch(media_id)
+            or await self.store.held_media(media_id) is None
+        ):
+            raise RefusedError("attachment not held by this bridge")
+        return f"{self.settings.media_url}/{media_id}"
+
     async def send(
         self, room_id: str, event_type: str, content: dict[str, Any], txn_id: str
     ) -> str:
@@ -263,7 +368,8 @@ class RcsBridge:
         idempotency key, so this is the strongest guarantee it allows.
 
         Raises:
-            RefusedError: not a text message in the owner's room, or empty.
+            RefusedError: not a text or media message in the owner's room,
+                empty, or media this bridge does not hold.
             UnavailableError: the provider did not take a chunk; the chunks
                 that went are recorded, so the gateway's retry sends the rest.
         """
@@ -271,23 +377,14 @@ class RcsBridge:
             raise RefusedError("not the owner's room")
         if event_type == "m.reaction":
             return DROPPED_PREFIX + hashlib.sha256(txn_id.encode()).hexdigest()[:32]
-        msgtype, body = _carried_text(content)
-        if (
-            event_type != "m.room.message"
-            or msgtype not in _TEXT_TYPES
-            or not isinstance(body, str)
-        ):
-            raise RefusedError("no RCS form for this type")
-        pieces = chunks(flatten(str(msgtype), body), MAX_BODY)
-        if not pieces:
-            raise RefusedError("empty message")
+        pieces, media_link = await self._pieces(event_type, content)
         async with self._send_lock:
             done = await self.store.sent(txn_id)
             for idx, piece in enumerate(pieces):
                 if idx in done:
                     continue
                 try:
-                    done[idx] = await self.backend.send_text(self.settings.owner_number, piece)
+                    done[idx] = await self._send_piece(piece, media_link if idx == 0 else None)
                 except BackendError as exc:
                     # Permanent even after earlier chunks went: retrying the
                     # same chunk would fail the same way, forever.
@@ -296,3 +393,33 @@ class RcsBridge:
                     raise UnavailableError(exc.reason) from exc
                 await self.store.record(txn_id, idx, done[idx])
         return f"$rcs-{done[0]}"
+
+    async def _pieces(
+        self, event_type: str, content: dict[str, Any]
+    ) -> tuple[list[str], str | None]:
+        """The chunks a message goes as, and the attachment's public URL if
+        it has one.
+
+        Raises:
+            RefusedError: no RCS form for it, empty, or media not held here.
+        """
+        msgtype, body = _carried_text(content)
+        if event_type != "m.room.message" or not isinstance(body, str):
+            raise RefusedError("no RCS form for this type")
+        if msgtype in _MEDIA_TYPES:
+            holder = _media_holder(content)
+            media_link = await self._media_link(holder)
+            # Without a caption the media goes alone, as one empty chunk.
+            return chunks(flatten("m.text", _caption(holder)), MAX_BODY) or [""], media_link
+        if msgtype not in _TEXT_TYPES:
+            raise RefusedError("no RCS form for this type")
+        pieces = chunks(flatten(str(msgtype), body), MAX_BODY)
+        if not pieces:
+            raise RefusedError("empty message")
+        return pieces, None
+
+    async def _send_piece(self, piece: str, media_link: str | None) -> str:
+        """One chunk to the owner, with the attachment when it carries one."""
+        if media_link is None:
+            return await self.backend.send_text(self.settings.owner_number, piece)
+        return await self.backend.send_media(self.settings.owner_number, media_link, piece)
