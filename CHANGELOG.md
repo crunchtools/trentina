@@ -10,6 +10,18 @@ under that name.
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-10-19
+
+### Added
+
+- Photos and files cross the RCS bridge in both directions (#493), on the
+  #491 contract. Inbound, the bridge fetches each Twilio attachment at
+  delivery, from this account's media only, under the 6 MiB cap, and hands
+  it to the gateway to judge and re-host, one event per attachment.
+  Outbound, `POST /upload` holds the judged bytes under an unguessable ID,
+  and Twilio fetches them from the public `GET /media/{id}` (`RCS_MEDIA_URL`,
+  which defaults to beside the webhook) for an hour.
+
 ## [1.20.0] - 2026-10-18
 
 ### Added

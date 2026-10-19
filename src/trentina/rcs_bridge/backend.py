@@ -8,7 +8,7 @@ send one text; the bridge, the queue and the gateway contract stay the same.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class BackendError(RuntimeError):
@@ -29,7 +29,9 @@ class Inbound:
     message_id: str
     sender: str  # E.164
     body: str
-    attachments: int = 0
+    # ``(url, declared content type)`` of each attachment, fetched only at
+    # delivery (#493): the webhook answers before any bytes move.
+    media: tuple[tuple[str, str], ...] = ()
 
 
 class Backend(Protocol):
@@ -46,6 +48,17 @@ class Backend(Protocol):
 
     async def send_text(self, to: str, body: str) -> str:
         """Send one text to an E.164 number; the provider's message ID."""
+        ...
+
+    async def send_media(self, to: str, media_url: str, body: str) -> str:
+        """Send media the provider fetches from ``media_url``, with an
+        optional caption; the provider's message ID."""
+        ...
+
+    async def fetch_media(self, url: str) -> dict[str, Any]:
+        """One inbound attachment as the gateway's ``media`` item: ``status``
+        ok with ``content_type`` and ``base64``, or too_large/unavailable.
+        Never raises."""
         ...
 
     async def send_typing(self, to: str) -> None:

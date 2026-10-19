@@ -12,22 +12,38 @@ the request, which behind a proxy would differ by scheme, host or port.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
 import json
+import logging
+import re
 from http import HTTPStatus
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from ..httpbody import request_capped
+from .. import egress
+from ..bridge.media import MAX_MEDIA_BYTES, MAX_NAME_CHARS, MEDIA_DEADLINE
+from ..errors import EgressRefusedError
+from ..httpbody import EncodedBodyError, TooLargeError, request_capped
 from ..logsafe import exc_kind
 from .backend import BackendError, Inbound
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    # GET one URL with no credentials, every hop checked; the final status,
+    # content type and body, read under ``MAX_MEDIA_BYTES``.
+    CdnFetch = Callable[[str], Awaitable[tuple[int, str, bytes]]]
+
+logger = logging.getLogger(__name__)
 
 _TIMEOUT = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
 _DEADLINE = 30.0
 _TYPING_DEADLINE = 5.0
+_CDN_TIMEOUT = 20.0
 # Twilio's own cap on a message body.
 MAX_BODY = 1600
 _ATTACHMENTS_MAX = 10
@@ -43,13 +59,54 @@ def signature(auth_token: str, url: str, form: list[tuple[str, str]]) -> str:
     return base64.b64encode(digest.digest()).decode("ascii")
 
 
+async def guarded_get(url: str) -> tuple[int, str, bytes]:
+    """The CDN hop of an inbound attachment (#493), through the egress guard.
+
+    Twilio's media URL redirects to a CDN, and wherever that points is
+    checked on its resolved address, as is every hop after it, so a redirect
+    to an internal address is refused. No credentials go: they are Twilio's,
+    and the CDN URL is signed on its own.
+
+    Raises:
+        TooLargeError: the body passed ``MAX_MEDIA_BYTES``.
+        EgressRefusedError: a hop failed the check, or the body was
+            encoded.
+        httpx.HTTPError, TimeoutError: as the fetch raises them.
+    """
+    async with egress.open_guarded(
+        "GET", url, timeout=_CDN_TIMEOUT, deadline=MEDIA_DEADLINE
+    ) as resp:
+        declared = resp.headers.get("content-length")
+        if declared is not None and (not declared.isdigit() or int(declared) > MAX_MEDIA_BYTES):
+            raise TooLargeError(f"response over {MAX_MEDIA_BYTES} bytes")
+        received = bytearray()
+        # Identity only (open_guarded refuses anything else): wire bytes.
+        async for chunk in resp.aiter_bytes():
+            received.extend(chunk)
+            if len(received) > MAX_MEDIA_BYTES:
+                raise TooLargeError(f"response over {MAX_MEDIA_BYTES} bytes")
+        return resp.status_code, resp.headers.get("content-type", ""), bytes(received)
+
+
 def _number(address: str) -> str:
     """``rcs:+15551234567`` or ``+15551234567`` as the bare E.164 number."""
     return address.removeprefix("rcs:").strip()
 
 
 class TwilioBackend:
-    """One Twilio account and one agent's RCS sender."""
+    """One Twilio account and one agent's RCS sender.
+
+    Args:
+        account_sid, auth_token: the account, as Basic auth on every API call.
+        sender_id: the RCS sender messages go ``From``.
+        api, messaging_api: API bases, overridden for tests.
+        client: an HTTP client for the API, instead of a fresh one.
+        cdn: how an inbound attachment's CDN hop is fetched: ``url`` in, the
+            final status, content type and body out, read under
+            ``MAX_MEDIA_BYTES``, with no credentials and every hop checked.
+            Default ``guarded_get``; tests pass a stand-in for the egress
+            guard, which dials real addresses.
+    """
 
     def __init__(
         self,
@@ -60,11 +117,19 @@ class TwilioBackend:
         api: str = "https://api.twilio.com",
         messaging_api: str = "https://messaging.twilio.com",
         client: httpx.AsyncClient | None = None,
+        cdn: CdnFetch | None = None,
     ) -> None:
         self._account_sid = account_sid
+        self._cdn = cdn or guarded_get
         self._auth_token = auth_token
         self._from = f"rcs:{sender_id}"
         self._url = f"{api}/2010-04-01/Accounts/{account_sid}/Messages.json"
+        # Where this account's inbound media lives; a webhook naming any other
+        # URL is not fetched, signed or not.
+        self._media_url = re.compile(
+            re.escape(f"{api}/2010-04-01/Accounts/{account_sid}/Messages/")
+            + r"[A-Za-z0-9]{1,64}/Media/[A-Za-z0-9]{1,64}"
+        )
         self._typing_url = f"{messaging_api}/v3/Indicators/Typing.json"
         # nosemgrep: trentina-httpx-client-outside-egress -- operator URL
         self._client = client or httpx.AsyncClient(timeout=_TIMEOUT)
@@ -92,18 +157,85 @@ class TwilioBackend:
         if not message_id or "Body" not in fields:
             return None
         try:
-            attachments = min(int(fields.get("NumMedia", "0") or 0), _ATTACHMENTS_MAX)
+            count = min(int(fields.get("NumMedia", "0") or 0), _ATTACHMENTS_MAX)
         except ValueError:
-            attachments = 0
+            count = 0
+        # An attachment with no URL still counts: it is delivered as one the
+        # bridge could not fetch, so the agent hears of it.
+        media = tuple(
+            (fields.get(f"MediaUrl{i}", ""), fields.get(f"MediaContentType{i}", ""))
+            for i in range(max(count, 0))
+        )
         return Inbound(
             message_id=message_id,
             sender=_number(fields.get("From", "")),
             body=fields["Body"],
-            attachments=max(attachments, 0),
+            media=media,
         )
 
     async def send_text(self, to: str, body: str) -> str:
-        form = {"From": self._from, "To": f"rcs:{to}", "Body": body}
+        return await self._post_message({"From": self._from, "To": f"rcs:{to}", "Body": body})
+
+    async def send_media(self, to: str, media_url: str, body: str) -> str:
+        """Twilio fetches ``media_url`` itself, so it must be public (#493)."""
+        form = {"From": self._from, "To": f"rcs:{to}", "MediaUrl": media_url}
+        if body:
+            form["Body"] = body
+        return await self._post_message(form)
+
+    async def fetch_media(self, url: str) -> dict[str, Any]:
+        """One inbound attachment, from this account's media only (#493).
+
+        The first hop goes to Twilio with the account's credentials and
+        follows nothing. Twilio answers with a redirect to its CDN, which is
+        fetched without them through the egress guard (``guarded_get``).
+        Either body is read under the gateway's cap.
+        """
+        if self._media_url.fullmatch(url) is None:
+            logger.warning("rcs bridge: inbound media URL is not this account's")
+            return {"status": "unavailable"}
+        try:
+            async with asyncio.timeout(MEDIA_DEADLINE):
+                status, content_type, raw = await self._fetch_media(url)
+        except TooLargeError:
+            return {"status": "too_large"}
+        except (
+            httpx.HTTPError,
+            TimeoutError,
+            EncodedBodyError,
+            EgressRefusedError,
+        ) as exc:
+            logger.warning("rcs bridge: media fetch failed: %s", exc_kind(exc))
+            return {"status": "unavailable"}
+        if status != HTTPStatus.OK or not raw:
+            logger.warning("rcs bridge: media fetch answered %d", status)
+            return {"status": "unavailable"}
+        return {
+            "status": "ok",
+            "content_type": content_type[:MAX_NAME_CHARS],
+            "base64": base64.b64encode(raw).decode("ascii"),
+        }
+
+    async def _fetch_media(self, url: str) -> tuple[int, str, bytes]:
+        """Twilio's answer for a media URL, or its CDN's after one redirect."""
+        resp, raw = await request_capped(
+            self._client,
+            "GET",
+            url,
+            deadline=MEDIA_DEADLINE,
+            limit=MAX_MEDIA_BYTES,
+            auth=(self._account_sid, self._auth_token),
+        )
+        location = resp.headers.get("location")
+        if not resp.is_redirect or not location:
+            return resp.status_code, resp.headers.get("content-type", ""), raw
+        hop = resp.url.join(location)
+        if hop.scheme != "https":
+            raise EgressRefusedError("downgrade")
+        return await self._cdn(str(hop))
+
+    async def _post_message(self, form: dict[str, str]) -> str:
+        """Create one message; its sid."""
         try:
             resp, raw = await request_capped(
                 self._client,

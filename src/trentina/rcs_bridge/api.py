@@ -1,19 +1,25 @@
 """The RCS bridge's two HTTP surfaces, on two listeners.
 
 * Private (``BRIDGE_LISTEN_*``, the gateway's network only): ``/send``,
-  ``/redact`` and ``/health``, Bearer ``BRIDGE_TOKEN``, the same contract as
-  the Matrix bridge's (``bridge/api.py``).
+  ``/upload``, ``/redact``, ``/typing`` and ``/health``, Bearer
+  ``BRIDGE_TOKEN``, the same contract as the Matrix bridge's
+  (``bridge/api.py``).
 * Public (``RCS_WEBHOOK_*``, reached only through the proxy):
   ``POST /twilio/inbound``. Nothing on it is trusted until the provider's
   signature checks out over the configured URL, and then only a message from
   the owner's number is taken. Everything else is refused without reading
-  further, and without logging what it said.
+  further, and without logging what it said. And ``GET /media/{id}``
+  (#493): an attachment the gateway judged and the agent sent, for Twilio
+  to fetch, by an ID nobody can guess, for ``MEDIA_TTL``.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hmac
 import logging
+import re
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import parse_qsl
@@ -23,7 +29,8 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from ..httpbody import TooLargeError, read_capped, where_invalid
+from ..bridge.media import MAX_MEDIA_B64, MAX_NAME_CHARS
+from ..httpbody import MAX_BODY_BYTES, TooLargeError, read_capped, where_invalid
 from ..logsafe import redact_source
 from .bridge import DROPPED_PREFIX, RefusedError, UnavailableError
 from .store import InboxFullError
@@ -41,6 +48,10 @@ _Body = TypeVar("_Body", bound=BaseModel)
 WEBHOOK_MAX_BYTES = 32_768
 _EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
 _FORM = "application/x-www-form-urlencoded"
+# The media as base64, plus the rest of the request.
+_UPLOAD_BODY_CAP = MAX_MEDIA_B64 + MAX_BODY_BYTES
+# What ``RcsBridge.upload`` issues: ``secrets.token_urlsafe(32)``.
+_MEDIA_ID_RE = re.compile(r"[A-Za-z0-9_-]{43}")
 
 
 class SendRequest(BaseModel):
@@ -58,6 +69,18 @@ class RedactRequest(BaseModel):
     room_id: str = Field(min_length=1)
     event_id: str = Field(min_length=1)
     txn_id: str = Field(min_length=1)
+
+
+class UploadRequest(BaseModel):
+    """Judged media to hold for a send to the owner (#493), as the Matrix
+    bridge's ``UploadRequest``."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    room_id: str = Field(min_length=1)
+    content_type: str = Field(min_length=1, max_length=MAX_NAME_CHARS)
+    filename: str = Field(default="attachment", max_length=MAX_NAME_CHARS)
+    base64: str = Field(min_length=1, max_length=MAX_MEDIA_B64)
 
 
 class TypingRequest(BaseModel):
@@ -82,13 +105,15 @@ class _Private:
         self._label = f"{bridge.settings.profile}/{bridge.settings.channel}"
         self._expected = bridge.settings.bridge_token.encode("utf-8")
 
-    async def _parse(self, request: Request, model: type[_Body]) -> _Body | JSONResponse:
+    async def _parse(
+        self, request: Request, model: type[_Body], limit: int = MAX_BODY_BYTES
+    ) -> _Body | JSONResponse:
         header = request.headers.get("authorization", "")
         presented = header[7:].strip() if header.lower().startswith("bearer ") else ""
         if not presented or not hmac.compare_digest(presented.encode("utf-8"), self._expected):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         try:
-            return model.model_validate_json(await read_capped(request))
+            return model.model_validate_json(await read_capped(request, limit))
         except TooLargeError:
             return JSONResponse(
                 {"error": "too large"}, status_code=HTTPStatus.REQUEST_ENTITY_TOO_LARGE
@@ -112,6 +137,26 @@ class _Private:
             logger.warning("bridge[%s]: send failed: %s", self._label, exc.reason)
             return JSONResponse({"error": "send failed"}, status_code=502)
         return JSONResponse({"event_id": event_id})
+
+    async def upload(self, request: Request) -> JSONResponse:
+        body = await self._parse(request, UploadRequest, _UPLOAD_BODY_CAP)
+        if isinstance(body, JSONResponse):
+            return body
+        try:
+            plaintext = base64.b64decode(body.base64, validate=True)
+        except (binascii.Error, ValueError):
+            return JSONResponse({"error": "malformed"}, status_code=400)
+        try:
+            hosted = await self._bridge.upload(
+                body.room_id, plaintext, body.content_type, body.filename
+            )
+        except RefusedError as exc:
+            logger.warning("bridge[%s]: refused upload: %s", self._label, exc.reason)
+            return JSONResponse({"error": "not carried"}, status_code=422)
+        except UnavailableError as exc:
+            logger.warning("bridge[%s]: upload failed: %s", self._label, exc.reason)
+            return JSONResponse({"error": "upload failed"}, status_code=502)
+        return JSONResponse(hosted)
 
     async def redact(self, request: Request) -> JSONResponse:
         body = await self._parse(request, RedactRequest)
@@ -183,6 +228,36 @@ class _Public:
             )
         return TwiMLResponse()
 
+    async def media(self, request: Request) -> Response:
+        # TRUST: a public GET hands out an attachment the agent sent
+        #   untrusted: the request (anyone on the internet can send it)
+        #   judged-by: the gateway's L1/L2/L3 judged the bytes before /upload;
+        #     nothing unjudged is ever held here
+        #   on-failure: fail-closed; an unknown, malformed or expired ID is 404
+        #   owner: rcs_bridge.api._Public.media
+        #   evidence: T2 IDs are secrets.token_urlsafe(32), 256 bits; T3 the
+        #     store serves an ID only for MEDIA_TTL, then prunes it
+        media_id = str(request.path_params.get("media_id", ""))
+        held = (
+            await self._bridge.store.held_media(media_id)
+            if _MEDIA_ID_RE.fullmatch(media_id)
+            else None
+        )
+        if held is None:
+            return Response(status_code=HTTPStatus.NOT_FOUND)
+        content_type, body = held
+        return Response(
+            body,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                # Only allowlisted types are held, and nothing served here
+                # may run even if a browser opens it.
+                "Content-Security-Policy": "default-src 'none'; sandbox",
+            },
+        )
+
     async def _signed_form(self, request: Request) -> list[tuple[str, str]] | Response:
         """The form of a request the provider signed, or the response refusing it."""
         if request.headers.get("content-type", "").split(";")[0].strip() != _FORM:
@@ -206,6 +281,7 @@ def build_private_app(bridge: RcsBridge) -> Starlette:
     return Starlette(
         routes=[
             Route("/send", handlers.send, methods=["POST"]),
+            Route("/upload", handlers.upload, methods=["POST"]),
             Route("/redact", handlers.redact, methods=["POST"]),
             Route("/typing", handlers.typing, methods=["POST"]),
             Route("/health", handlers.health, methods=["GET"]),
@@ -215,4 +291,9 @@ def build_private_app(bridge: RcsBridge) -> Starlette:
 
 def build_public_app(bridge: RcsBridge) -> Starlette:
     handlers = _Public(bridge)
-    return Starlette(routes=[Route("/twilio/inbound", handlers.inbound, methods=["POST"])])
+    return Starlette(
+        routes=[
+            Route("/twilio/inbound", handlers.inbound, methods=["POST"]),
+            Route("/media/{media_id}", handlers.media, methods=["GET"]),
+        ]
+    )

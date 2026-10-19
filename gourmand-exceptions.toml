@@ -824,3 +824,42 @@ path = "src/trentina/gateway/matrix_bridge/core.py"
 pattern = "_hosted"
 justification = "Validates the untrusted bridge process's /upload reply against the spec's EncryptedFile shape (#491); a trust-boundary check named on its own so it reads as one"
 classification = "by_design"
+
+[[exceptions]]
+check = "absolute_paths"
+path = "src/trentina/rcs_bridge/api.py"
+justification = "The flagged string is the public URL route for GET media/{media_id} (#493) and its docstring, an HTTP path on the bridge's listener, not a filesystem path."
+classification = "by_design"
+
+[[exceptions]]
+check = "absolute_paths"
+path = "src/trentina/rcs_bridge/settings.py"
+justification = "The flagged string is the URL path appended to the webhook's base to form RCS_MEDIA_URL's default (#493), not a filesystem path."
+classification = "by_design"
+
+[[exceptions]]
+check = "absolute_paths"
+path = "src/trentina/rcs_bridge/twilio.py"
+justification = "The flagged string is a segment of Twilio's REST URL shape (Accounts, then Messages, then Media) in the regex that pins inbound media to this account (#493), not a filesystem path."
+classification = "by_design"
+
+[[exceptions]]
+check = "single_use_helpers"
+path = "src/trentina/rcs_bridge/bridge.py"
+pattern = "_payload"
+justification = "Called twice in _deliver (a text event, and each attachment's event) and from tests/test_rcs_end_to_end.py, verified by grep. It is the one place the gateway event envelope for the owner's room is built, so text and media events cannot drift apart."
+classification = "by_design"
+
+[[exceptions]]
+check = "single_use_helpers"
+path = "tests/test_rcs_bridge.py"
+pattern = "_api"
+justification = "FakeTwilio's dispatch target for the Messages and Typing APIs; __call__ routes each request to it or to _media. Inlining both puts conditional early returns at the top of __call__, which CH017 flags."
+classification = "by_design"
+
+[[exceptions]]
+check = "single_use_helpers"
+path = "tests/test_rcs_bridge.py"
+pattern = "_media"
+justification = "FakeTwilio's dispatch target for inbound media: the authenticated redirect from Twilio's media URL and the unauthenticated CDN that serves it (#493). The same dispatch split as the `_api` entry above."
+classification = "by_design"

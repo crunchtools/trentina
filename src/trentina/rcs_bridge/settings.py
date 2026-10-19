@@ -78,6 +78,22 @@ def _api_url(name: str, value: str) -> str:
     return value.rstrip("/")
 
 
+_WEBHOOK_SUFFIX = "/twilio/inbound"
+
+
+def _media_url(webhook_url: str) -> str | None:
+    """Where Twilio fetches the agent's attachments (#493): ``RCS_MEDIA_URL``,
+    else the webhook's URL with ``/media`` for its ``/twilio/inbound``, so the
+    proxy route that already reaches the webhook can reach it. None leaves
+    outbound media off."""
+    configured = read_setting("RCS_MEDIA_URL")
+    if configured:
+        return _https_url("RCS_MEDIA_URL", configured).rstrip("/")
+    if webhook_url.endswith(_WEBHOOK_SUFFIX):
+        return webhook_url.removesuffix(_WEBHOOK_SUFFIX) + "/media"
+    return None
+
+
 @dataclass(frozen=True)
 class RcsSettings:
     """Everything the RCS bridge needs to run."""
@@ -104,6 +120,8 @@ class RcsSettings:
     sender_id: str
     twilio_api: str
     twilio_messaging_api: str = DEFAULT_TWILIO_MESSAGING_API
+    # The public base URL of ``GET /media/{id}``; None, no outbound media.
+    media_url: str | None = None
 
     @property
     def owner_user_id(self) -> str:
@@ -122,6 +140,7 @@ class RcsSettings:
         if not is_matrix_user_id(agent):
             raise SettingsError("RCS_AGENT_USER_ID must be a Matrix user ID")
         server = os.environ.get("RCS_SERVER", DEFAULT_SERVER)
+        webhook_url = _https_url("RCS_WEBHOOK_URL", required_setting("RCS_WEBHOOK_URL"))
         if not is_matrix_user_id(f"@x:{server}"):
             raise SettingsError("RCS_SERVER must be a Matrix server name")
         return cls(
@@ -147,7 +166,7 @@ class RcsSettings:
             webhook_port=parse_port(
                 "RCS_WEBHOOK_PORT", os.environ.get("RCS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
             ),
-            webhook_url=_https_url("RCS_WEBHOOK_URL", required_setting("RCS_WEBHOOK_URL")),
+            webhook_url=webhook_url,
             account_sid=_account_sid(required_setting("RCS_TWILIO_ACCOUNT_SID")),
             auth_token=required_setting("RCS_TWILIO_AUTH_TOKEN", read_secret_env),
             sender_id=_sender_id(required_setting("RCS_TWILIO_SENDER_ID")),
@@ -158,4 +177,5 @@ class RcsSettings:
                 "RCS_TWILIO_MESSAGING_API",
                 read_setting("RCS_TWILIO_MESSAGING_API") or DEFAULT_TWILIO_MESSAGING_API,
             ),
+            media_url=_media_url(webhook_url),
         )
