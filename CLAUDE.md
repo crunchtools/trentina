@@ -249,7 +249,7 @@ new pattern goes into that file's attack, benign and linearity tables.
 
 ## Layer 2 scanning limits
 
-`read_attachment()` slides the model's window across the payload, so cost grows
+`classify()` slides the model's window across the payload, so cost grows
 linearly with input length. The window is the model's (#438): its manifest's
 `window_tokens` and `guard_tokens`, read into `ModelInfo`, else 512 and 64,
 never past the model's `max_position_embeddings`. The shipped model states
@@ -281,7 +281,7 @@ tool's own source (`Paged.source`), so a late flag blocklists the URL.
 Standalone, unbound or a honeypot: no offer, nothing cut.
 
 Async callers must use `classify_async`. Calling the
-synchronous `read_attachment()` from a coroutine blocks the event loop for the whole
+synchronous `classify()` from a coroutine blocks the event loop for the whole
 scan and takes the gateway down with it. The same holds for L1 (#295):
 `run_l1`, `run_l1_json` and a document processor's selection run under
 `asyncio.to_thread`, and `quarantine_stats` reads SQLite in a worker on

@@ -137,7 +137,9 @@ class Bridge:
         # nosemgrep: trentina-httpx-client-outside-egress -- operator env URL
         self._gateway = gateway or httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=5.0))
         # Upstream media (#491). Its own client: nio's session is aiohttp, and
-        # this one must never follow a redirect off the homeserver.
+        # this one must never follow a redirect off the homeserver. The host is
+        # always BRIDGE_HOMESERVER; an mxc's server and ID are quoted path
+        # segments under it, checked against the spec's charset first.
         # nosemgrep: trentina-httpx-client-outside-egress -- operator env URL
         self._media = media or httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0))
         self._send_lock = asyncio.Lock()
