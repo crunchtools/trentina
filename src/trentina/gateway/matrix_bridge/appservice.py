@@ -25,6 +25,7 @@ import httpx
 
 from ...httpbody import EncodedBodyError, TooLargeError, request_capped
 from .mapping import Room
+from .media import MAX_MEDIA_BYTES, TOO_LARGE, UNAVAILABLE, parse_mxc
 from .rewrite import escape_localpart
 
 if TYPE_CHECKING:
@@ -70,6 +71,16 @@ class ConduitError(RuntimeError):
     """Conduit refused a write. The caller does not ack, so it is retried."""
 
 
+class MediaRefusedError(RuntimeError):
+    """The agent's media cannot be carried, now or later: Conduit answered a
+    4xx for it, or it is over ``MAX_MEDIA_BYTES``. ``reason`` is from the
+    closed set in ``media.py``."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class AppService:
     """One profile's appservice client.
 
@@ -99,7 +110,7 @@ class AppService:
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._homeserver = homeserver
-        self._server_name = server_name
+        self._server_name = self.server_name = server_name
         self._token = as_token
         self._prefix = user_prefix
         self._mapping = mapping
@@ -424,6 +435,62 @@ class AppService:
             body=content,
         )
         return str(sent["event_id"])
+
+    async def upload(self, sender: str, data: bytes, content_type: str, name: str) -> str:
+        """Upload judged media as ``sender``; the local ``mxc://`` URI (#491)."""
+        try:
+            resp, raw = await request_capped(
+                self._client,
+                "POST",
+                f"{self._homeserver}/_matrix/media/v3/upload",
+                deadline=_DEADLINE,
+                params={"user_id": sender, "filename": name},
+                content=data,
+                headers={"Authorization": f"Bearer {self._token}", "Content-Type": content_type},
+            )
+        except (httpx.HTTPError, TimeoutError, TooLargeError, EncodedBodyError) as exc:
+            raise ConduitError(f"upload: {type(exc).__name__}") from exc
+        try:
+            uri = json.loads(raw).get("content_uri") if resp.status_code == 200 else None
+        except (ValueError, AttributeError) as exc:
+            raise ConduitError(f"upload -> {resp.status_code}, not a JSON object") from exc
+        mxc = parse_mxc(uri)
+        if mxc is None or mxc[0] != self._server_name:
+            raise ConduitError(f"upload -> {resp.status_code}, no local content_uri")
+        return str(uri)
+
+    async def download(self, server_name: str, media_id: str) -> bytes:
+        """The bytes of the agent's media, read under ``MAX_MEDIA_BYTES``.
+
+        Raises:
+            MediaRefusedError: over the cap, answered encoded, or a 4xx:
+                retrying cannot help.
+            ConduitError: Conduit unreachable or a 5xx; the transaction is
+                retried.
+        """
+        path = "/".join(quote(s, safe="") for s in (server_name, media_id))
+        try:
+            resp, raw = await request_capped(
+                self._client,
+                "GET",
+                f"{self._homeserver}/_matrix/client/v1/media/download/{path}",
+                deadline=_DEADLINE,
+                limit=MAX_MEDIA_BYTES,
+                headers={"Authorization": f"Bearer {self._token}"},
+            )
+        except TooLargeError as exc:
+            raise MediaRefusedError(TOO_LARGE) from exc
+        except EncodedBodyError as exc:
+            raise MediaRefusedError(UNAVAILABLE) from exc
+        except (httpx.HTTPError, TimeoutError) as exc:
+            raise ConduitError(f"download: {type(exc).__name__}") from exc
+        if 400 <= resp.status_code < 500 and resp.status_code != 429:
+            raise MediaRefusedError(UNAVAILABLE)
+        if resp.status_code != 200:
+            raise ConduitError(f"download -> {resp.status_code}")
+        if not raw:
+            raise MediaRefusedError(UNAVAILABLE)
+        return raw
 
     async def redact(self, local_room: str, sender: str, event_id: str, txn_id: str) -> None:
         await self._call(

@@ -817,3 +817,10 @@ check = "copy_paste_detection"
 path = "src/trentina/tools/reload.py"
 justification = "_unapplied is reported as identical to build_warning in warning.py. One names the sections of a reloaded profiles.yaml that are bound at startup and so were not applied (now including git_remotes, #453); the other assembles the _trentina_warning attached to delivered content. They share a run of if-then-append statements, nothing else. Structural collision, not duplication."
 classification = "gourmand_bug"
+
+[[exceptions]]
+check = "single_use_helpers"
+path = "src/trentina/gateway/matrix_bridge/core.py"
+pattern = "_hosted"
+justification = "Validates the untrusted bridge process's /upload reply against the spec's EncryptedFile shape (#491); a trust-boundary check named on its own so it reads as one"
+classification = "by_design"

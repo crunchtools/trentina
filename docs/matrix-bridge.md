@@ -67,6 +67,37 @@ relation as sent (#296); a withheld reaction is dropped. Under `flag` it is deli
 with `_trentina_warning` in its content. **Outbound**, only the agent's own
 events are carried; a refused one is not sent, and the agent gets a notice.
 
+### Attachments (#491)
+
+An `mxc://` URI names media on one homeserver, and neither side can resolve
+the other's: the agent's homeserver does not federate. So no URI crosses,
+in either direction; the bytes do, and they are judged with the event they
+came in, as one document.
+
+- **Inbound**, the bridge fetches the main media over the authenticated
+  media API (`/_matrix/client/v1/media/download`, no redirects), decrypts an
+  encrypted room's `file` (nio checks its sha256), and sends the bytes with
+  the event. The gateway judges them with the message, uploads them to the
+  agent's homeserver as the sender's stand-in, and delivers the event with
+  that local `url` in place of the upstream `url` or `file`.
+- **Outbound**, the gateway fetches the agent's media from its own
+  homeserver. Only a `url` on that server is fetched; any other is refused.
+  The gateway judges it, and the bridge uploads it upstream, encrypted for an
+  encrypted room.
+- **How it is read** goes by the bytes' signature first and the declared
+  type second. An image is read by OCR (#370). Text that decodes as UTF-8 is
+  read as text. Anything else is binary no layer read, the `binary_unread`
+  gap: withheld under `block`, delivered with `_trentina_warning` under
+  `flag`.
+- **Limits:** 6 MiB per attachment, OCR's own cap, with a 60-second fetch.
+  An attachment over the cap, or one that could not be fetched, is withheld
+  without being judged and counted in `/health`'s `media_refused`. Inbound
+  the agent gets the withheld notice; outbound it gets
+  `your message was not sent`.
+- **Thumbnails never cross.** Clients draw the picture from the main media.
+  An `<img src="mxc://…">` inside `formatted_body` is text and is judged as
+  such; it is not re-hosted.
+
 Each carried event ends with one log line giving its outcome, its total time
 and its stages: `wait` (behind the previous inbound event), `judge` (L1 ∥ L2 →
 L3), and `deliver`, `send` or `notice`. It is INFO, and WARNING once an event
@@ -166,7 +197,7 @@ away from. A rejected invite has no mirror and is not reported.
 
 ### Monitoring outbound refusals
 
-`GET /health` carries `{"matrix_bridge": {"outbound_refused": N}}` when a
+`GET /health` carries `{"matrix_bridge": {"outbound_refused": N, "media_refused": M}}` when a
 bridge runs: the agents' events refused outbound since start, by the agent
 rule or the judge, summed so the unauthenticated probe names no profile. Each
 is a message the agent believes it sent, so alert when it rises. Which

@@ -6,6 +6,8 @@ judged by the gateway; the bridge's job is to encrypt it and nothing else.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hmac
 import logging
 from http import HTTPStatus
@@ -16,9 +18,10 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from ..httpbody import TooLargeError, read_capped, where_invalid
+from ..httpbody import MAX_BODY_BYTES, TooLargeError, read_capped, where_invalid
 from ..logsafe import exc_kind
 from .client import SendError
+from .media import MAX_MEDIA_B64, MAX_NAME_CHARS, UploadRefusedError
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -60,6 +63,21 @@ class TypingRequest(BaseModel):
     typing: bool
 
 
+class UploadRequest(BaseModel):
+    """Judged media for the bridge to upload for a send into one room (#491)."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    room_id: str = Field(min_length=1)
+    content_type: str = Field(min_length=1, max_length=MAX_NAME_CHARS)
+    filename: str = Field(default="attachment", max_length=MAX_NAME_CHARS)
+    base64: str = Field(min_length=1, max_length=MAX_MEDIA_B64)
+
+
+# The media as base64, plus the rest of the request.
+_UPLOAD_BODY_CAP = MAX_MEDIA_B64 + MAX_BODY_BYTES
+
+
 class _Handlers:
     """The endpoints, sharing one bridge and one token check."""
 
@@ -67,14 +85,16 @@ class _Handlers:
         self._bridge = bridge
         self._expected = bridge.settings.bridge_token.encode("utf-8")
 
-    async def _parse(self, request: Request, model: type[_Body]) -> _Body | JSONResponse:
+    async def _parse(
+        self, request: Request, model: type[_Body], limit: int = MAX_BODY_BYTES
+    ) -> _Body | JSONResponse:
         """The validated body of an authorized request, or the response refusing it."""
         header = request.headers.get("authorization", "")
         presented = header[7:].strip() if header.lower().startswith("bearer ") else ""
         if not presented or not hmac.compare_digest(presented.encode("utf-8"), self._expected):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         try:
-            return model.model_validate_json(await read_capped(request))
+            return model.model_validate_json(await read_capped(request, limit))
         except TooLargeError:
             return JSONResponse(
                 {"error": "too large"}, status_code=HTTPStatus.REQUEST_ENTITY_TOO_LARGE
@@ -99,6 +119,33 @@ class _Handlers:
             )
             return JSONResponse({"error": "send failed"}, status_code=502)
         return JSONResponse({"event_id": event_id})
+
+    async def upload(self, request: Request) -> JSONResponse:
+        body = await self._parse(request, UploadRequest, _UPLOAD_BODY_CAP)
+        if isinstance(body, JSONResponse):
+            return body
+        try:
+            plaintext = base64.b64decode(body.base64, validate=True)
+        except (binascii.Error, ValueError):
+            return JSONResponse({"error": "malformed"}, status_code=400)
+        try:
+            hosted = await self._bridge.upload(
+                body.room_id, plaintext, body.content_type, body.filename
+            )
+        except UploadRefusedError as exc:
+            # Never: the gateway drops the event and tells the agent (#483).
+            logger.warning(
+                "bridge[%s]: upload refused upstream: %s",
+                self._bridge.settings.profile,
+                exc_kind(exc),
+            )
+            return JSONResponse({"error": "upload refused"}, status_code=422)
+        except SendError as exc:
+            logger.warning(
+                "bridge[%s]: upload failed: %s", self._bridge.settings.profile, exc_kind(exc)
+            )
+            return JSONResponse({"error": "upload failed"}, status_code=502)
+        return JSONResponse(hosted)
 
     async def redact(self, request: Request) -> JSONResponse:
         body = await self._parse(request, RedactRequest)
@@ -137,11 +184,13 @@ class _Handlers:
 
 
 def build_app(bridge: Bridge) -> Starlette:
-    """The Starlette app serving ``/send``, ``/redact``, ``/typing`` and ``/health``."""
+    """The Starlette app serving ``/send``, ``/upload``, ``/redact``, ``/typing``
+    and ``/health``."""
     handlers = _Handlers(bridge)
     return Starlette(
         routes=[
             Route("/send", handlers.send, methods=["POST"]),
+            Route("/upload", handlers.upload, methods=["POST"]),
             Route("/redact", handlers.redact, methods=["POST"]),
             Route("/typing", handlers.typing, methods=["POST"]),
             Route("/health", handlers.health, methods=["GET"]),

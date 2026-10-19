@@ -249,7 +249,7 @@ new pattern goes into that file's attack, benign and linearity tables.
 
 ## Layer 2 scanning limits
 
-`classify()` slides the model's window across the payload, so cost grows
+`read_attachment()` slides the model's window across the payload, so cost grows
 linearly with input length. The window is the model's (#438): its manifest's
 `window_tokens` and `guard_tokens`, read into `ModelInfo`, else 512 and 64,
 never past the model's `max_position_embeddings`. The shipped model states
@@ -281,7 +281,7 @@ tool's own source (`Paged.source`), so a late flag blocklists the URL.
 Standalone, unbound or a honeypot: no offer, nothing cut.
 
 Async callers must use `classify_async`. Calling the
-synchronous `classify()` from a coroutine blocks the event loop for the whole
+synchronous `read_attachment()` from a coroutine blocks the event loop for the whole
 scan and takes the gateway down with it. The same holds for L1 (#295):
 `run_l1`, `run_l1_json` and a document processor's selection run under
 `asyncio.to_thread`, and `quarantine_stats` reads SQLite in a worker on
@@ -706,6 +706,10 @@ replaced.
   sends `m.reaction` in the clear.
 - `gateway/matrix_bridge/` — the gateway's half: judges every bridged event in
   both directions and is the only writer into the agent's Conduit (appservice).
+  Attachments (#491, `media.py` here and in `bridge/`): no `mxc://` URI
+  crosses; the bytes ride base64 (event `media`, bridge `POST /upload`) and are
+  judged WITH the event (`scanned["attachment"]`), read by signature first
+  (`media.read_attachment`), capped at `ocr.MAX_IMAGE_BYTES`, thumbnails dropped.
 - `gateway/` — Per-consumer MCP gateway proxy with tool allowlists, parameter guards, and defense pipeline
   - `args.py` — schema-driven argument normalization (#241): drops an
     optional that is `""` or `null`, never one equal to its `default`, which

@@ -30,11 +30,13 @@ sees it instead of being dropped where only the log does.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import json
 import logging
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -50,7 +52,25 @@ from ...warning import build_warning
 from ..context import profile_context
 from ..matrix_relation import withheld_relation
 from ..profile import MATRIX_CHANNEL
-from .appservice import ConduitError
+from .appservice import ConduitError, MediaRefusedError
+from .media import (
+    FOREIGN,
+    MAX_MEDIA_BYTES,
+    STATUS_OK,
+    STATUS_REASONS,
+    TOO_LARGE,
+    UNAVAILABLE,
+    Attachment,
+    declared_type,
+    decode,
+    filename,
+    has_media,
+    main_holder,
+    parse_mxc,
+    read_attachment,
+    strip_media,
+    with_media,
+)
 from .rewrite import IdMap, judged_view, referenced_ids, rewrite_content
 
 if TYPE_CHECKING:
@@ -145,6 +165,47 @@ class _Stages:
         logger.log(level, "matrix_bridge: %s in %.2fs (%s)", what, total, " ".join(self._laps))
 
 
+def _sent_attachment(
+    content: dict[str, Any], media: Any
+) -> tuple[Attachment, None] | tuple[None, str]:
+    """The attachment the bridge fetched for ``content``, or why there is none.
+
+    The bridge's word on the type is only a hint after the sender's own
+    ``info.mimetype``; ``read_attachment`` reads the bytes' signature before either.
+    """
+    if not isinstance(media, dict):
+        return None, UNAVAILABLE
+    status = media.get("status")
+    if status != STATUS_OK:
+        return None, STATUS_REASONS.get(str(status), UNAVAILABLE)
+    media_bytes = decode(str(media.get("base64") or ""))
+    if not media_bytes:
+        return None, UNAVAILABLE
+    if len(media_bytes) > MAX_MEDIA_BYTES:
+        return None, TOO_LARGE
+    holder = main_holder(content) or content
+    return read_attachment(
+        media_bytes, declared_type(holder) or str(media.get("content_type") or "")
+    ), None
+
+
+def _hosted(reply: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None] | None:
+    """The upstream ``url`` or encrypted ``file`` the bridge uploaded to, or
+    None if its reply is neither. Only the spec's file keys are kept."""
+    url, file = reply.get("url"), reply.get("file")
+    if isinstance(file, dict):
+        kept = {k: file[k] for k in ("url", "key", "iv", "hashes", "v") if k in file}
+        if (
+            parse_mxc(kept.get("url"))
+            and isinstance(kept.get("key"), dict)
+            and isinstance(kept.get("iv"), str)
+            and isinstance(kept.get("hashes"), dict)
+        ):
+            return None, kept
+        return None
+    return (str(url), None) if parse_mxc(url) else None
+
+
 def _txn(prefix: str, event_id: str) -> str:
     """A transaction ID derived from the event, so a retry is idempotent."""
     return f"{prefix}{hashlib.sha256(event_id.encode()).hexdigest()[:32]}"
@@ -203,6 +264,9 @@ class ProfileBridge:
         # The agent's events refused since start, by the agent rule or the
         # judge: each is a message it believes it sent (#317). /health sums it.
         self.outbound_refused = 0
+        # Attachments that could not cross, either way, since start (#491):
+        # over the cap, or not fetchable. /health sums it.
+        self.media_refused = 0
         # Per local room where the agent is typing, when that was last carried.
         self._typing: dict[str, float] = {}
 
@@ -242,11 +306,13 @@ class ProfileBridge:
     def _is_other_agent(self, user_id: str) -> bool:
         return user_id.casefold() in self._other_agents
 
-    def _refuse(self, direction: str, reason: str, event_id: str) -> None:
-        """Log and audit one refusal by the agent rule. Names nobody: the
-        reason is from a closed set and the event ID is redacted (#262)."""
+    def _refuse(self, direction: str, reason: str, event_id: str, *, what: str = "dropped") -> None:
+        """Log and audit one refusal by the agent rule, or of an attachment.
+        Names nobody: the reason is from a closed set and the event ID is
+        redacted (#262)."""
         logger.warning(
-            "matrix_bridge: dropped %s %s for %s: %s",
+            "matrix_bridge: %s %s %s for %s: %s",
+            what,
             direction,
             redact_source(event_id),
             self.label,
@@ -296,13 +362,23 @@ class ProfileBridge:
             )
         return result.verdict
 
-    def _refusal(self, verdict: Any) -> str | None:
-        """Why this event may not be delivered as-is, or None."""
+    def _refusal(self, verdict: Any, *, unread: bool = False) -> str | None:
+        """Why this event may not be delivered as-is, or None.
+
+        ``unread``: it carries an attachment no layer can read (#491), the
+        ``binary_unread`` gap whatever the layers made of the rest.
+        """
         if self.cfg.enforcement != "block":
             return None
-        return refusal_reason(
-            verdict.flagged_by.value if verdict.flagged_by else None, gaps_of(verdict)
-        )
+        gaps = gaps_of(verdict)
+        if unread:
+            gaps = replace(gaps, binary_unread=True)
+        return refusal_reason(verdict.flagged_by.value if verdict.flagged_by else None, gaps)
+
+    def _media_refused(self, direction: str, reason: str, event_id: str) -> None:
+        """Count, log and audit an attachment that cannot cross (#491)."""
+        self.media_refused += 1
+        self._refuse(direction, reason, event_id, what="refused the attachment of")
 
     # -------------------------------------------------------------- inbound
 
@@ -354,18 +430,23 @@ class ProfileBridge:
             "peer": str(room.get("peer_displayname") or ""),
             "content": judged_view(content),
         }
-        verdict = await self._judge(scanned, room=remote_room, direction="inbound")
-        stages.lap("judge")
-        reason = self._refusal(verdict)
+        attachment, verdict, reason = await self._inbound_verdict(event, scanned, stages)
         local, stand_in = await self._place(event, scanned, withheld=reason is not None)
 
-        if reason is None:
+        if reason is None and verdict is not None:
             out_type = event_type
-            out = rewrite_content(content, await self._inbound_ids(content))
-            warning = with_stripped(build_warning(verdict), stripped)
+            out = await self._inbound_content(content, attachment, stand_in)
+            warning = with_stripped(
+                build_warning(
+                    verdict,
+                    extras={"binary_unread": True} if attachment and attachment.unread else None,
+                ),
+                stripped,
+            )
             if out is not None and warning is not None:
                 out[WARNING_KEY] = warning
         else:
+            reason = reason or "not judged"
             # Event IDs are opaque; who said it and where stays out of the log.
             logger.warning(
                 "matrix_bridge: withheld inbound %s for %s: %s",
@@ -388,6 +469,44 @@ class ProfileBridge:
         await self.mapping.put_event(event_id, local_event)
         await self.mapping.mark(key)
         return "withheld" if reason else "delivered"
+
+    async def _inbound_verdict(
+        self, event: dict[str, Any], scanned: dict[str, Any], stages: _Stages
+    ) -> tuple[Attachment | None, Any, str | None]:
+        """Judge an event with its attachment: ``(attachment, verdict, reason)``.
+
+        An attachment the bridge could not fetch is refused unjudged, with no
+        verdict: nothing arrived to judge, and nothing can be delivered.
+        """
+        content = event.get("content") or {}
+        attachment: Attachment | None = None
+        if has_media(content):
+            attachment, missing = _sent_attachment(content, event.get("media"))
+            if attachment is None:
+                missing = missing or UNAVAILABLE
+                self._media_refused("inbound", missing, str(event["event_id"]))
+                return None, None, missing
+            scanned["attachment"] = attachment.judged or ""
+        verdict = await self._judge(scanned, room=str(event["room_id"]), direction="inbound")
+        stages.lap("judge")
+        reason = self._refusal(verdict, unread=attachment is not None and attachment.unread)
+        return attachment, verdict, reason
+
+    async def _inbound_content(
+        self, content: dict[str, Any], attachment: Attachment | None, stand_in: str
+    ) -> dict[str, Any] | None:
+        """What a judged event delivers: its IDs translated and its media,
+        if any, re-hosted on the agent's homeserver as the sender's stand-in."""
+        if attachment is None:
+            return rewrite_content(content, await self._inbound_ids(content))
+        out = rewrite_content(strip_media(content), await self._inbound_ids(content))
+        if out is None:
+            return None
+        holder = main_holder(content) or content
+        url = await self.appservice.upload(
+            stand_in, attachment.media_bytes, attachment.content_type, filename(holder)
+        )
+        return with_media(out, content, url=url)
 
     async def _inbound_uncarried(
         self, event: dict[str, Any], event_type: str, remote_room: str
@@ -586,54 +705,74 @@ class ProfileBridge:
         key = f"out:{event_id}"
         if room is None or await self.mapping.seen(key):
             return
-        remote_room = room.remote_id
         event_type = str(event.get("type"))
-        content = event.get("content") or {}
-
         if event_type == _REDACTION:
             await self._outbound_redaction(event, room)
-            await self.mapping.mark(key)
-            return
-        if event_type not in _CARRIED or await self._refused_outbound(room, event_id):
-            await self.mapping.mark(key)
-            return
+        elif event_type in _CARRIED and not await self._refused_outbound(room, event_id):
+            await self._outbound_carried(event, room, event_id)
+        # Not reached when the bridge or the homeserver could not take it
+        # now: those raise, the transaction is not acked, and it comes back.
+        await self.mapping.mark(key)
 
+    async def _outbound_carried(self, event: dict[str, Any], room: Room, event_id: str) -> None:
+        """Judge one of the agent's messages, reactions or stickers, then send
+        it upstream or tell the agent why not."""
+        event_type = str(event.get("type"))
+        content = event.get("content") or {}
         stages = _Stages()
-        verdict = await self._judge(
-            {"content": judged_view(content)}, room=remote_room, direction="outbound"
-        )
+        attachment: Attachment | None = None
+        if has_media(content):
+            try:
+                attachment = await self._agent_attachment(content)
+            except MediaRefusedError as exc:
+                self._media_refused("outbound", exc.reason, event_id)
+                await self._not_sent(room, event_id, exc.reason)
+                return
+            stages.lap("fetch")
+        scanned: dict[str, Any] = {"content": judged_view(content)}
+        if attachment is not None:
+            scanned["attachment"] = attachment.judged or ""
+        verdict = await self._judge(scanned, room=room.remote_id, direction="outbound")
         stages.lap("judge")
-        reason = self._refusal(verdict)
+        reason = self._refusal(verdict, unread=attachment is not None and attachment.unread)
         if reason is not None:
-            self.outbound_refused += 1
             logger.warning(
                 "matrix_bridge: withheld outbound %s for %s: %s",
                 event_id,
                 self.label,
                 reason,
             )
-            await self.appservice.notice(
-                room,
-                f"[trentina] your message was not sent: {reason}",
-                _txn("wo", event_id),
-            )
-            await self.mapping.mark(key)
+            await self._not_sent(room, event_id, reason)
             stages.lap("notice")
             stages.report(f"{self.label} outbound {event_id} withheld")
             return
 
-        out = rewrite_content(content, await self._outbound_ids(content))
+        out = await self._outbound_content(content, attachment, room, event_id)
         if out is None:
-            await self.mapping.mark(key)
             return
         sent = await self._send_upstream(room, event_type, out, event_id)
         if sent is not None:
             await self.mapping.put_event(sent, event_id)
-        await self.mapping.mark(key)
         stages.lap("send")
         stages.report(
             f"{self.label} outbound {event_id} {event_type} {'sent' if sent else 'refused'}"
         )
+
+    async def _outbound_content(
+        self, content: dict[str, Any], attachment: Attachment | None, room: Room, event_id: str
+    ) -> dict[str, Any] | None:
+        """What a judged agent event sends upstream: its IDs translated and its
+        media, if any, uploaded by the bridge. None if it means nothing there,
+        or the bridge will never take its media (the agent was told)."""
+        if attachment is None:
+            return rewrite_content(content, await self._outbound_ids(content))
+        out = rewrite_content(strip_media(content), await self._outbound_ids(content))
+        if out is None:
+            return None
+        hosted = await self._upload_upstream(room, attachment, content, event_id)
+        if hosted is None:
+            return None
+        return with_media(out, content, url=hosted[0], file=hosted[1])
 
     async def _send_upstream(
         self, room: Room, event_type: str, content: dict[str, Any], event_id: str
@@ -661,6 +800,72 @@ class ProfileBridge:
             await self._undeliverable(room, event_id)
             return None
         return str(sent["event_id"])
+
+    async def _agent_attachment(self, content: dict[str, Any]) -> Attachment:
+        """The agent's attachment, fetched from its own homeserver (#491).
+
+        Only a plaintext ``url`` on that homeserver is fetched: the agent's
+        rooms are never encrypted, and a URI naming any other server is one
+        the gateway will not reach out to on the agent's say-so.
+
+        Raises:
+            MediaRefusedError: it cannot be carried, now or later.
+            ConduitError: the homeserver did not answer; the transaction is
+                retried.
+        """
+        holder = main_holder(content) or content
+        mxc = parse_mxc(holder.get("url")) if "file" not in holder else None
+        if mxc is None or mxc[0] != self.appservice.server_name:
+            raise MediaRefusedError(FOREIGN)
+        media_bytes = await self.appservice.download(*mxc)
+        return read_attachment(media_bytes, declared_type(holder))
+
+    async def _upload_upstream(
+        self, room: Room, attachment: Attachment, content: dict[str, Any], event_id: str
+    ) -> tuple[str | None, dict[str, Any] | None] | None:
+        """Have the bridge upload judged media upstream: its ``url``, or the
+        encrypted ``file`` in an encrypted room. None when it never will, and
+        the agent was told."""
+        holder = main_holder(content) or content
+        try:
+            reply = await self._bridge(
+                "/upload",
+                {
+                    "room_id": room.remote_id,
+                    "content_type": attachment.content_type,
+                    "filename": filename(holder),
+                    "base64": base64.b64encode(attachment.media_bytes).decode("ascii"),
+                },
+            )
+        except BridgeRefusedError as exc:
+            logger.warning(
+                "matrix_bridge: bridge %s answered %d to outbound %s for %s",
+                exc.path,
+                exc.status,
+                event_id,
+                self.label,
+            )
+            await self._undeliverable(room, event_id)
+            return None
+        # TRUST: the bridge process's /upload reply goes into the event sent upstream
+        #   untrusted: the url or file object (the bridge chooses both)
+        #   judged-by: nothing; it is an mxc URI and key material, held to the
+        #     spec's shape by _hosted, and it only goes back to the bridge
+        #   on-failure: fail-closed; a reply of any other shape is retried
+        #   owner: core.ProfileBridge._upload_upstream
+        #   evidence: T3 core module docstring (the bridge is untrusted; it can
+        #     withhold, never write); it could already send anything upstream
+        hosted = _hosted(reply)
+        if hosted is None:
+            raise BridgeUnavailableError("bridge /upload: no media URI in the reply")
+        return hosted
+
+    async def _not_sent(self, room: Room, event_id: str, reason: str) -> None:
+        """Tell the agent an event of its was refused, and count it."""
+        self.outbound_refused += 1
+        await self.appservice.notice(
+            room, f"[trentina] your message was not sent: {reason}", _txn("wo", event_id)
+        )
 
     async def _outbound_redaction(self, event: dict[str, Any], room: Room) -> None:
         """Mirror the agent's redaction upstream, unless the room is refused."""
@@ -701,11 +906,8 @@ class ProfileBridge:
         refusal = await self._relay_refusal(room.remote_id)
         if refusal is None:
             return False
-        self.outbound_refused += 1
         self._refuse("outbound", refusal, event_id)
-        await self.appservice.notice(
-            room, f"[trentina] your message was not sent: {refusal}", _txn("wo", event_id)
-        )
+        await self._not_sent(room, event_id, refusal)
         return True
 
     # --------------------------------------------------------------- typing

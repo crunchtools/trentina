@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, unquote
 
+from .media import has_media, strip_media
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -96,7 +98,13 @@ def judged_view(content: dict[str, Any]) -> dict[str, Any]:
     replace or drop, and only where they would: an ``event_id`` that is not a
     string is delivered as it arrived, so it stays in and is judged. The
     reaction ``key``, ``rel_type`` and every other field are judged as sent.
+
+    Media URIs, an encrypted file's key and hashes, and thumbnails are left
+    out too (#491): none crosses, and the attachment itself is judged in
+    their place.
     """
+    if has_media(content):
+        content = strip_media(content)
     relation = content.get("m.relates_to")
     if not isinstance(relation, dict):
         return content
