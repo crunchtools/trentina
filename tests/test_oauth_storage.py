@@ -5,10 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from fastmcp.server.auth.providers.google import GoogleProvider
 
+from trentina import _build_oauth_context
+from trentina.gateway.loader import GatewayConfig
 from trentina.gateway.oauth_binding import TokenBinding
 from trentina.gateway.oauth_storage import (
     StrictFernetEncryptionWrapper,
@@ -16,6 +19,7 @@ from trentina.gateway.oauth_storage import (
     harden_provider_storage,
 )
 from trentina.gateway.oauth_store import resolve_cullable
+from trentina.gateway.profile import AuthConfig, OAuthConfig, Profile
 
 KEY = "k" * 48
 COLLECTION = "trentina-token-bindings"
@@ -120,12 +124,6 @@ class TestGatewayWiring:
     async def test_built_provider_refuses_plaintext(
         self, home: Path, signing_key: str | None
     ) -> None:
-        from unittest.mock import patch
-
-        from trentina import _build_oauth_context
-        from trentina.gateway.loader import GatewayConfig
-        from trentina.gateway.profile import AuthConfig, OAuthConfig, Profile
-
         env = {
             "TRENTINA_OAUTH_GOOGLE_CLIENT_ID": "proxy-client.apps.googleusercontent.com",
             "TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET": "upstream-secret",
