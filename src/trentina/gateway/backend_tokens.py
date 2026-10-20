@@ -103,6 +103,9 @@ class BackendGrant(BaseModel):
     #: token (or the client secret sent with it) there.
     issuer: str
     token_endpoint: str
+    #: RFC 7009 endpoint, pinned at issue like ``token_endpoint``. None when the
+    #: server advertised none or the grant predates #499: never rediscovered.
+    revocation_endpoint: str | None = None
     #: The RFC 8707 resource it was issued for, sent again on refresh.
     resource: str | None = None
     #: The client it was issued to, and how that client authenticates.
@@ -124,6 +127,7 @@ class BackendClient(BaseModel):
     auth_method: AuthMethod = "none"
     issuer: str
     token_endpoint: str
+    revocation_endpoint: str | None = None
 
 
 class BackendFlow(BaseModel):
@@ -142,6 +146,7 @@ class BackendFlow(BaseModel):
     #: Whether the callback must carry ``iss`` (RFC 9207).
     iss_required: bool
     token_endpoint: str
+    revocation_endpoint: str | None = None
     authorize_url: str
     client_id: str
     auth_method: AuthMethod
@@ -172,6 +177,7 @@ class _SealedGrant(_Sealed):
     scopes: list[str]
     issuer: str
     token_endpoint: str
+    revocation_endpoint: str | None = None
     resource: str | None
     client_id: str
     auth_method: AuthMethod
@@ -185,6 +191,7 @@ class _SealedClient(_Sealed):
     auth_method: AuthMethod
     issuer: str
     token_endpoint: str
+    revocation_endpoint: str | None = None
 
 
 class _SealedFlow(_Sealed):
@@ -194,6 +201,7 @@ class _SealedFlow(_Sealed):
     issuer: str
     iss_required: bool
     token_endpoint: str
+    revocation_endpoint: str | None = None
     authorize_url: str
     client_id: str
     auth_method: AuthMethod
@@ -283,6 +291,7 @@ class BackendTokenStore:
             scopes=tuple(sealed.scopes),
             issuer=sealed.issuer,
             token_endpoint=sealed.token_endpoint,
+            revocation_endpoint=sealed.revocation_endpoint,
             resource=sealed.resource,
             client_id=sealed.client_id,
             auth_method=sealed.auth_method,
@@ -328,6 +337,7 @@ class BackendTokenStore:
                 scopes=list(stored.scopes),
                 issuer=stored.issuer,
                 token_endpoint=stored.token_endpoint,
+                revocation_endpoint=stored.revocation_endpoint,
                 resource=stored.resource,
                 client_id=stored.client_id,
                 auth_method=stored.auth_method,
@@ -354,6 +364,7 @@ class BackendTokenStore:
             auth_method=sealed.auth_method,
             issuer=sealed.issuer,
             token_endpoint=sealed.token_endpoint,
+            revocation_endpoint=sealed.revocation_endpoint,
         )
 
     async def put_client(
@@ -373,6 +384,7 @@ class BackendTokenStore:
                 auth_method=client.auth_method,
                 issuer=client.issuer,
                 token_endpoint=client.token_endpoint,
+                revocation_endpoint=client.revocation_endpoint,
             ),
         )
 
@@ -397,6 +409,7 @@ class BackendTokenStore:
                 issuer=flow.issuer,
                 iss_required=flow.iss_required,
                 token_endpoint=flow.token_endpoint,
+                revocation_endpoint=flow.revocation_endpoint,
                 authorize_url=flow.authorize_url,
                 client_id=flow.client_id,
                 auth_method=flow.auth_method,
@@ -421,6 +434,7 @@ class BackendTokenStore:
             issuer=sealed.issuer,
             iss_required=sealed.iss_required,
             token_endpoint=sealed.token_endpoint,
+            revocation_endpoint=sealed.revocation_endpoint,
             authorize_url=sealed.authorize_url,
             client_id=sealed.client_id,
             auth_method=sealed.auth_method,

@@ -318,8 +318,10 @@ async def backend_auth_tool(
       for this profile.
     - ``status``: which of this profile's OAuth backends are signed in, and
       until when. Never returns a token. Omit ``backend`` for all of them.
-    - ``revoke``: forget this profile's grant. The backend's own service is
-      not told; revoke the app there too to end its tokens everywhere.
+    - ``revoke``: forget this profile's grant, after asking the backend's
+      authorization server to revoke its tokens where it offers that. The
+      result's ``remote`` says how that went; if it did not succeed, revoke
+      the app in the service's own settings too.
 
     Args:
         action: start, status or revoke.

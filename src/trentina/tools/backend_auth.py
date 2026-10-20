@@ -20,7 +20,7 @@ from collections import deque
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from ..gateway.backend_oauth import FLOW_TTL, BackendAuthError, start
+from ..gateway.backend_oauth import FLOW_TTL, BackendAuthError, revoke_remote, start
 from ..gateway.backend_tokens import backend_token_store
 from ..gateway.errors import ScopeError
 from ..gateway.scope import CallerScope, current_scope, require_caller, resolve_backend
@@ -132,9 +132,9 @@ async def backend_auth_status(backend: str | None = None) -> dict[str, Any]:
 async def backend_auth_revoke(backend: str) -> dict[str, Any]:
     """Forget this profile's grant for ``backend``. The registration is kept.
 
-    The grant is dropped here; the authorization server is not told, so a
-    refresh token it issued stays valid there until it expires or the human
-    revokes the app in that service's settings.
+    The authorization server is told first when it advertised an RFC 7009
+    endpoint at sign-in (#499); that is best effort, and the grant is dropped
+    here whatever came of it. ``remote`` carries the closed result code.
     """
     try:
         _scope, profile = _own_oauth_backend(
@@ -146,8 +146,13 @@ async def backend_auth_revoke(backend: str) -> dict[str, Any]:
     if store is None:
         return {"backend": backend, "revoked": False, "error": "no_store"}
     started = time.monotonic()
+    remote: str | None = None
     try:
         async with store.locked(profile.name, backend):
+            cfg = profile.backends[backend]
+            grant = await store.get_grant(profile.name, backend, cfg)
+            if grant is not None:
+                remote = await revoke_remote(store, profile, backend, cfg, grant)
             revoked = await store.delete_grant(profile.name, backend)
     except Exception as exc:
         logger.warning("backend_auth revoke failed (%s)", exc_kind(exc))
@@ -155,4 +160,12 @@ async def backend_auth_revoke(backend: str) -> dict[str, Any]:
     from ..gateway.backend_oauth import _audit
 
     _audit(profile.name, backend, "oauth_revoke", started)
-    return {"backend": backend, "revoked": revoked}
+    result: dict[str, Any] = {"backend": backend, "revoked": revoked}
+    if remote is not None:
+        result["remote"] = remote
+        if remote != "revoked":
+            result["note"] = (
+                "The grant is deleted here, but the authorization server may still honor "
+                "its tokens. Revoke the app in the service's own settings."
+            )
+    return result

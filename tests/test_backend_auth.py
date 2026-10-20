@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -340,3 +341,130 @@ class TestNothingLeaks:
         with pytest.raises(BackendCallError):
             await _call(profiles["josui"])
         assert CANARY not in caplog.text
+
+
+class TestRevocationAtTheServer:
+    """RFC 7009 revocation at the endpoint pinned when the grant was issued (#499)."""
+
+    async def _revoke(self, server: Any, profile: Profile) -> dict[str, Any]:
+        await login(server, profile)
+        with profile_context(profile):
+            result = await backend_auth_revoke("era")
+        store = backend_tokens.backend_token_store()
+        assert store is not None
+        assert await store.get_grant(profile.name, "era", profile.backends["era"]) is None
+        return result
+
+    async def test_the_pinned_endpoint_is_told_refresh_token_first(
+        self, fake: _Backend, server: Any, profiles: dict[str, Profile]
+    ) -> None:
+        server.revocation = True
+        result = await self._revoke(server, profiles["josui"])
+        assert result["revoked"] is True
+        assert result["remote"] == "revoked"
+        assert [(r["token"], r["token_type_hint"]) for r in server.revoked] == [
+            ("refresh-1", "refresh_token"),
+            ("access-1", "access_token"),
+        ]
+        assert server.revoked[0]["authorization"].startswith("Basic ")
+
+    async def test_a_grant_without_a_pinned_endpoint_sends_nothing(
+        self, fake: _Backend, server: Any, profiles: dict[str, Profile]
+    ) -> None:
+        result = await self._revoke(server, profiles["josui"])
+        assert result["revoked"] is True
+        assert result["remote"] == "revocation_endpoint_not_pinned"
+        assert "settings" in result["note"]
+        assert server.revoked == []
+
+    async def test_the_endpoint_is_not_rediscovered_at_revoke(
+        self, fake: _Backend, server: Any, profiles: dict[str, Profile]
+    ) -> None:
+        await login(server, profiles["josui"])
+        server.revocation = True  # advertised only after the grant was issued
+        with profile_context(profiles["josui"]):
+            result = await backend_auth_revoke("era")
+        assert result["remote"] == "revocation_endpoint_not_pinned"
+        assert server.revoked == []
+
+    @pytest.mark.parametrize("status", [400, 503])
+    async def test_a_refusal_is_reported_and_the_grant_is_still_deleted(
+        self, fake: _Backend, server: Any, profiles: dict[str, Profile], status: int
+    ) -> None:
+        server.revocation = True
+        server.revoke_status = status
+        result = await self._revoke(server, profiles["josui"])
+        assert result["revoked"] is True
+        assert result["remote"] == "revocation_refused"
+        assert "body-must-not-leak" not in repr(result)
+
+    async def test_an_unreachable_server_is_reported_and_the_grant_is_still_deleted(
+        self,
+        fake: _Backend,
+        server: Any,
+        profiles: dict[str, Profile],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        server.revocation = True
+        await login(server, profiles["josui"])
+
+        async def down(*_a: Any, **_k: Any) -> Any:
+            raise backend_oauth.BackendAuthError("unreachable")
+
+        monkeypatch.setattr(backend_oauth, "_request", down)
+        with profile_context(profiles["josui"]):
+            result = await backend_auth_revoke("era")
+        assert result["revoked"] is True
+        assert result["remote"] == "revocation_unreachable"
+
+    async def test_a_slow_server_does_not_hold_up_the_delete(
+        self,
+        fake: _Backend,
+        server: Any,
+        profiles: dict[str, Profile],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        server.revocation = True
+        await login(server, profiles["josui"])
+
+        async def slow(*_a: Any, **_k: Any) -> Any:
+            await asyncio.sleep(10)
+
+        monkeypatch.setattr(backend_oauth, "_request", slow)
+        monkeypatch.setattr(backend_oauth, "REVOKE_DEADLINE", 0.01)
+        with profile_context(profiles["josui"]):
+            result = await backend_auth_revoke("era")
+        assert result["revoked"] is True
+        assert result["remote"] == "revocation_unreachable"
+
+    async def test_no_token_reaches_a_log(
+        self,
+        fake: _Backend,
+        server: Any,
+        profiles: dict[str, Profile],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        caplog.set_level(logging.DEBUG)
+        server.revocation = True
+        server.revoke_status = 400
+        await self._revoke(server, profiles["josui"])
+        assert "revocation refused (status 400)" in caplog.text
+        for secret in ("refresh-1", "access-1", "secret-client", "body-must-not-leak"):
+            assert secret not in caplog.text
+
+    async def test_a_grant_sealed_before_the_field_existed_still_opens(
+        self, fake: _Backend, profiles: dict[str, Profile]
+    ) -> None:
+        store = backend_tokens.backend_token_store()
+        assert store is not None
+        era = profiles["josui"].backends["era"]
+        async with store.locked("josui", "era"):
+            await store.put_grant("josui", "era", era, _grant("access-1"), expected_generation=0)
+        envelope = await store._records.get("josui:era", collection=backend_tokens._GRANTS)
+        record = json.loads(store._fernet.decrypt(envelope["ct"].encode()))
+        del record["revocation_endpoint"]
+        envelope["ct"] = store._fernet.encrypt(json.dumps(record).encode()).decode("ascii")
+        await store._records.put("josui:era", envelope, collection=backend_tokens._GRANTS)
+        old = await store.get_grant("josui", "era", era)
+        assert old is not None
+        assert old.revocation_endpoint is None
