@@ -27,6 +27,9 @@ is SAFE, in the ways the #90 audit and its successors found live:
 - ``oauth-email-only``: an OAuth profile with ``allowed_emails`` and no
   ``allowed_subjects`` (#458). Google can reassign an address to another
   account, which then passes the allowlist; it never reassigns a ``sub``.
+- ``agent-self-authorize``: an agent-role profile, not a declared assistant,
+  with ``auth.self_authorize`` on a backend (#479). It can start its own
+  logins, so the operator should have meant it.
 
 Both posture checks are for seats that run unattended, such as swarm or
 coding agents. A personal assistant that a person talks to directly holds
@@ -370,6 +373,32 @@ def check_oauth_subjects(profiles_file: dict[str, Any]) -> list[Finding]:
     return findings
 
 
+def check_self_authorize(profiles_file: dict[str, Any]) -> list[Finding]:
+    """An agent seat that can start its own backend logins (#479).
+
+    Not an error: a human still consents at the authorization server. But an
+    agent that can put an authorize link in front of that human is one more
+    way to be granted something, and the operator should have chosen it. A
+    declared assistant is exempt: the person it serves is the one consenting.
+    """
+    findings = []
+    exempt = assistants(profiles_file)
+    for profile, body in _profiles(profiles_file).items():
+        if body.get("role", "agent") != "agent" or profile in exempt:
+            continue
+        for backend, spec in (body.get("backends") or {}).items():
+            auth = spec.get("auth") if isinstance(spec, dict) else None
+            if isinstance(auth, dict) and auth.get("self_authorize") is True:
+                findings.append(
+                    Finding(
+                        "agent-self-authorize",
+                        f"profile {profile!r} is an agent seat that can start its own "
+                        f"login to backend {backend!r} (auth.self_authorize)",
+                    )
+                )
+    return findings
+
+
 def check_require_defaults(source: str | None = None) -> list[Finding]:
     """Every ``TRENTINA_REQUIRE_*`` read from the environment defaults to fail-closed.
 
@@ -427,6 +456,7 @@ def lint(profiles_file: dict[str, Any], *, config_source: str | None = None) -> 
         *check_toxic_flows(profiles_file),
         *check_guarded_destinations(profiles_file),
         *check_oauth_subjects(profiles_file),
+        *check_self_authorize(profiles_file),
         *check_require_defaults(config_source),
     ]
 

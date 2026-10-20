@@ -592,6 +592,43 @@ allowed only after the host, and its value must be URL-safe
     url: "http://rotv:8080/mcp?token=${ROTV_TOKEN}"
 ```
 
+## Backend OAuth
+
+> Configuration only so far: the login flow and its tools land with the rest
+> of #479.
+
+A backend that authenticates with MCP OAuth, and issues no API key, takes an
+`auth` block instead of a header. The gateway is the OAuth client, and every
+grant belongs to the profile that obtained it: a second profile listing the
+same backend never uses the first one's grant.
+
+```yaml
+backends:
+  era:
+    url: "https://context.era.app/mcp"
+    auth:
+      type: oauth
+      self_authorize: true      # this profile may start and revoke its own login
+      # For an authorization server without dynamic client registration:
+      # client_id: "..."
+      # client_secret_env: ERA_CLIENT_SECRET
+      # scopes: [read]
+```
+
+- `auth` excludes every other credential: an `Authorization`,
+  `Proxy-Authorization` or `Cookie` header, or a `${VAR}` in the `url`, is a
+  load error beside it. It applies to remote backends only.
+- `self_authorize` is off by default. Off, the backend is listed but reports
+  "needs auth", and this profile cannot change that. On an agent-role profile
+  that is not a declared assistant, `profile_lint` reports it
+  (`agent-self-authorize`).
+- Grants are encrypted under `TRENTINA_BACKEND_TOKEN_KEY_FILE`
+  ([configuration](configuration.md)) in `backend-oauth/` beside the audit DB.
+  Without that key, these backends report "needs auth" and nothing is stored.
+- A grant is bound to its profile name, its backend name and the backend URL's
+  host. Renaming either, or pointing the `url` at another host, means
+  authorizing again. Rotating the key drops every grant.
+
 ## Applying a Change
 
 Editing `profiles.yaml` does not change the running gateway. The router filters

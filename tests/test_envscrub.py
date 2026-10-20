@@ -86,6 +86,7 @@ class TestScrub:
         assert set(STARTUP_ONLY_SECRETS) == {
             "TRENTINA_OAUTH_JWT_SIGNING_KEY",
             "TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET",
+            "TRENTINA_BACKEND_TOKEN_KEY",
             "GEMINI_API_KEY",
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",

@@ -167,6 +167,7 @@ def _run_with_gateway(mcp_server: FastMCP, *, host: str, port: int, log_level: s
     """
     from .config import get_config
     from .gateway import load_profiles, register_internal_server, register_with_fastmcp
+    from .gateway.backend_tokens import configure_backend_tokens
     from .gateway.circuit import breaker
     from .gateway.compress import load_compression_cache, set_profiles
     from .gateway.loader import matrix_other_agents, register_active_config
@@ -176,6 +177,8 @@ def _run_with_gateway(mcp_server: FastMCP, *, host: str, port: int, log_level: s
     profiles_path = Path(os.environ.get("TRENTINA_PROFILES_PATH", "/etc/trentina/profiles.yaml"))
     logger.info("gateway: loading profiles from %s", profiles_path)
     gateway_config = load_profiles(profiles_path)
+    # Before _ready_to_serve scrubs the environment: the key is read once, here.
+    configure_backend_tokens(gateway_config.profiles)
 
     session_registry.session_ttl = gateway_config.session_ttl_seconds
     session_registry.max_sessions_per_profile = gateway_config.max_sessions_per_profile

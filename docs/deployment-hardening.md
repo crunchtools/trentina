@@ -56,7 +56,8 @@ process is not a deployment.
 ## Secrets
 
 Use the `_FILE` form for every secret: `TRENTINA_OAUTH_JWT_SIGNING_KEY_FILE`,
-`TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET_FILE`, `GEMINI_API_KEY_FILE`,
+`TRENTINA_BACKEND_TOKEN_KEY_FILE`, `TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET_FILE`,
+`GEMINI_API_KEY_FILE`,
 `OPENAI_API_KEY_FILE`, `ANTHROPIC_API_KEY_FILE`, `OPENROUTER_API_KEY_FILE`,
 every `${VAR}` a profile references, and the bridge's. `_FILE` wins when both
 are set. A value that arrives in the environment is popped from `os.environ`

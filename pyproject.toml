@@ -28,6 +28,11 @@ dependencies = [
     # protocol stack, which made the gateway the version ceiling for its own
     # fleet. Bound them separately so each side can move on its own.
     "mcp>=2.2,<3.0",
+    # Direct, not through fastmcp: gateway/backend_tokens.py encrypts the
+    # per-profile backend grants itself (#479), with its own envelope rather
+    # than fastmcp's store, so it must not depend on fastmcp keeping either.
+    "cryptography>=44",
+    "py-key-value-aio>=0.4.6,<0.5",
     # petit, as a library — preprocess/petit.py's line grouping.
     #
     # The DISTRIBUTION is petit-log-crunchtools; the IMPORT is `petit`. It has

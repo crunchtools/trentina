@@ -17,6 +17,8 @@ What is popped, and why each is safe:
 - ``TRENTINA_OAUTH_JWT_SIGNING_KEY`` and ``TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET``
   are read once in ``_build_oauth_context``, and the provider derives its keys
   from them there. Enabling OAuth later needs a restart anyway.
+- ``TRENTINA_BACKEND_TOKEN_KEY`` is read once by ``configure_backend_tokens``,
+  which derives the grant store's keys from it before the scrub (#479).
 - The ``Config`` keys (``GEMINI_API_KEY``, ``OPENAI_API_KEY``,
   ``ANTHROPIC_API_KEY``, ``OPENROUTER_API_KEY``) are read once, into the
   ``get_config()`` singleton, which is built before the scrub.
@@ -47,6 +49,7 @@ logger = logging.getLogger(__name__)
 STARTUP_ONLY_SECRETS = (
     "TRENTINA_OAUTH_JWT_SIGNING_KEY",
     "TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET",
+    "TRENTINA_BACKEND_TOKEN_KEY",
     "GEMINI_API_KEY",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",

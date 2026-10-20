@@ -3350,6 +3350,7 @@ version = "1.21.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
+    { name = "cryptography" },
     { name = "dbus-fast" },
     { name = "fastmcp" },
     { name = "httpx" },
@@ -3360,6 +3361,7 @@ dependencies = [
     { name = "onnxruntime" },
     { name = "opencv-python-headless" },
     { name = "petit-log-crunchtools" },
+    { name = "py-key-value-aio" },
     { name = "pydantic" },
     { name = "pypdf" },
     { name = "pyyaml" },
@@ -3385,6 +3387,7 @@ matrix = [
 [package.metadata]
 requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.12" },
+    { name = "cryptography", specifier = ">=44" },
     { name = "dbus-fast", specifier = ">=2.0" },
     { name = "fastmcp", specifier = ">=4.0,<5.0" },
     { name = "httpx", specifier = ">=0.28" },
@@ -3396,6 +3399,7 @@ requires-dist = [
     { name = "onnxruntime", specifier = ">=1.17" },
     { name = "opencv-python-headless", specifier = ">=4.10" },
     { name = "petit-log-crunchtools", specifier = ">=4.10.2" },
+    { name = "py-key-value-aio", specifier = ">=0.4.6,<0.5" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pypdf", specifier = ">=6.19" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
