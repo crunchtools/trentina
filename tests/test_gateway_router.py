@@ -93,7 +93,7 @@ class TestRouter:
         assert resp["error"]["code"] == -32601
 
     async def test_tools_list_aggregates_and_namespaces(self) -> None:
-        async def fake_list(backend_name: str, _backend: Backend) -> list[dict[str, Any]]:
+        async def fake_list(backend_name: str, _backend: Backend, *_: Any) -> list[dict[str, Any]]:
             if backend_name == "mcp-slack":
                 return [
                     {"name": "slack_list_channels", "description": "", "inputSchema": {}},
@@ -116,7 +116,7 @@ class TestRouter:
         ]
 
     async def test_tools_list_skips_unreachable_backend(self) -> None:
-        async def fake_list(backend_name: str, _backend: Backend) -> list[dict[str, Any]]:
+        async def fake_list(backend_name: str, _backend: Backend, *_: Any) -> list[dict[str, Any]]:
             if backend_name == "mcp-slack":
                 raise BackendCallError("simulated outage")
             return [{"name": "jira_search", "description": "", "inputSchema": {}}]
@@ -206,7 +206,7 @@ class TestRouter:
     async def test_tools_list_aggregates_http_and_internal(self) -> None:
         """Mixed-backend tools/list: http + internal both filtered and namespaced."""
 
-        async def fake_list(_backend_name: str, _backend: Backend) -> list[dict[str, Any]]:
+        async def fake_list(_backend_name: str, _backend: Backend, *_: Any) -> list[dict[str, Any]]:
             return [{"name": "slack_list_channels", "description": "", "inputSchema": {}}]
 
         async def fake_internal_list() -> list[dict[str, Any]]:
@@ -744,7 +744,7 @@ class TestRouter:
         in_flight = 0
         peak = 0
 
-        async def slow_list(backend_name: str, _backend: Backend) -> list[dict[str, Any]]:
+        async def slow_list(backend_name: str, _backend: Backend, *_: Any) -> list[dict[str, Any]]:
             nonlocal in_flight, peak
             in_flight += 1
             peak = max(peak, in_flight)
@@ -788,7 +788,7 @@ class TestRouter:
                 self.description = ""
                 self.inputSchema: dict[str, Any] = {}
 
-        async def fake_transport(url: str, _headers: Any) -> _FakeToolsResult:
+        async def fake_transport(url: str, _headers: Any, *_: Any) -> _FakeToolsResult:
             transport_calls.append(url)
             return _FakeToolsResult()
 
@@ -862,6 +862,7 @@ class TestProfileToolsCache:
         async def fake_list(
             _bn: str,
             _b: Backend,
+            *_: Any,
         ) -> list[dict[str, Any]]:
             return [{"name": "tool_a", "description": "", "inputSchema": {}}]
 
@@ -906,6 +907,7 @@ class TestProfileToolsCache:
         async def flaky_list(
             backend_name: str,
             _b: Backend,
+            *_: Any,
         ) -> list[dict[str, Any]]:
             if backend_name == "mcp-slack" and slack_down:
                 raise BackendCallError("simulated outage")
@@ -948,6 +950,7 @@ class TestProfileToolsCache:
         async def slow_list(
             backend_name: str,
             _b: Backend,
+            *_: Any,
         ) -> list[dict[str, Any]]:
             per_backend_calls[backend_name] = per_backend_calls.get(backend_name, 0) + 1
             await release.wait()
@@ -1188,7 +1191,7 @@ class TestSurfaceRecording:
 
     @staticmethod
     async def _list(profile: Profile) -> dict[str, Any]:
-        async def fake_list(backend_name: str, _backend: Backend) -> list[dict[str, Any]]:
+        async def fake_list(backend_name: str, _backend: Backend, *_: Any) -> list[dict[str, Any]]:
             if backend_name == "mcp-slack":
                 return [
                     {"name": "slack_list_channels", "description": "d" * 50, "inputSchema": {}},

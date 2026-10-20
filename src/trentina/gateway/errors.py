@@ -82,6 +82,26 @@ class BackendRejectedCallError(BackendCallError):
     outcome_hint = "tool_error"
 
 
+class BackendNeedsAuthError(BackendCallError):
+    """The calling profile holds no usable grant for an ``auth`` backend (#479).
+
+    Raised before the backend is contacted, or after it refused a freshly
+    refreshed grant. Never counts toward the circuit breaker: the backend is
+    fine, this profile has not been authorized to it. The message is what the
+    agent reads, so it says what to do.
+    """
+
+    outcome_hint = "needs_auth"
+
+    def __init__(self, backend: str) -> None:
+        super().__init__(
+            f"backend {backend!r} is not authorized for this profile: call "
+            f'backend_auth with action="start" and backend="{backend}", then send '
+            "the link it returns to your human"
+        )
+        self.backend = backend
+
+
 class BackendResponseTooLargeError(BackendCallError):
     """The backend's response passed the byte cap while it streamed (#267).
 

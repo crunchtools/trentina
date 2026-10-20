@@ -91,7 +91,7 @@ LISTS = {
 
 
 async def _list(profile: Profile) -> list[str]:
-    async def fake_list(name: str, _b: Any) -> list[dict[str, Any]]:
+    async def fake_list(name: str, _b: Any, *_: Any) -> list[dict[str, Any]]:
         return [{**t, "description": "d", "inputSchema": {}} for t in LISTS[name]]
 
     async def fake_scan(_p: Any, _b: str, _before: Any, tools: list[Any]) -> list[Any]:

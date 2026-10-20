@@ -88,7 +88,7 @@ class TestGrouping:
         """No outcome may be ungrouped, or totals silently stop reconciling."""
         for outcome in Outcome:
             allowed = {"ok", "blocked", "tripped", "failed"}
-            if outcome is Outcome.CANCELLED:
+            if outcome in (Outcome.CANCELLED, Outcome.NEEDS_AUTH):
                 allowed = {"unknown"}
             assert group_of(outcome.value) in allowed
 

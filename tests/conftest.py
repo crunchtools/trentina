@@ -5,9 +5,12 @@ from __future__ import annotations
 import contextlib
 import pathlib
 from collections.abc import Iterator
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.backend_oauth_harness import FakeServer, profile_with_era
 from trentina import config as config_mod
 from trentina import database as database_mod
 from trentina import logsafe
@@ -20,6 +23,9 @@ from trentina.gateway.matrix_proxy import reset_extractors
 from trentina.gateway.router import reset_profile_tools_cache
 from trentina.quarantine.limiter import reset_limiters
 from trentina.quarantine.providers import reset_provider
+
+if TYPE_CHECKING:
+    from trentina.gateway.profile import Profile
 
 
 @pytest.fixture(autouse=True)
@@ -157,3 +163,36 @@ def read_only_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     the router treats that as a tool that may write (#425).
     """
     monkeypatch.setattr("trentina.gateway.router.cached_tool_read_only", lambda _url, _tool: True)
+
+
+# ------------------------------------------------- backend OAuth (#479)
+
+#: A grant-store key of a generated key's length (``openssl rand -base64 48``).
+BACKEND_TOKEN_KEY = "k" * 64
+
+
+@pytest.fixture
+def server(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> FakeServer:
+    """The fake resource and authorization server, a key, and an empty grant store."""
+    from tests.egress_harness import route
+    from trentina.gateway import backend_oauth, backend_tokens
+
+    fake = FakeServer()
+    route(monkeypatch, fake.handle, {"internal.example": ["10.0.0.7"]})
+    monkeypatch.setenv(backend_tokens.KEY_ENV, BACKEND_TOKEN_KEY)
+    monkeypatch.setenv("TRENTINA_OAUTH_BASE_URL", "https://gw.example")
+    monkeypatch.setattr(backend_tokens, "_store", backend_tokens.open_backend_token_store(tmp_path))
+    monkeypatch.setattr(backend_oauth, "_live_flows", {})
+    monkeypatch.setattr(backend_oauth, "record_gateway_call", lambda *_a, **_k: None)
+    return fake
+
+
+@pytest.fixture
+def profiles(monkeypatch: pytest.MonkeyPatch) -> dict[str, Profile]:
+    """Two profiles holding the same OAuth backend, as the live config."""
+    from trentina.gateway import loader
+
+    live = {"josui": profile_with_era("josui"), "kagetora": profile_with_era("kagetora")}
+    active = SimpleNamespace(config=SimpleNamespace(profiles=live))
+    monkeypatch.setattr(loader, "get_active_config", lambda: active)
+    return live

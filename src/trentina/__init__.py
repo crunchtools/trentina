@@ -212,6 +212,7 @@ def _run_with_gateway(mcp_server: FastMCP, *, host: str, port: int, log_level: s
     )
 
     _wire_circuit_notifications(breaker, session_registry, gateway_config.profiles)
+    _wire_login_notifications(session_registry)
 
     logger.info(
         "gateway: registered %d profile(s) at /gateway/<profile>/mcp",
@@ -1249,6 +1250,23 @@ def _warm_classifier() -> None:
             "this; alert on it rather than assuming the layer is running.",
             classifier_status(),
         )
+
+
+def _wire_login_notifications(session_registry: Any) -> None:
+    """After a backend login, rebuild that profile's tool list and tell its sessions.
+
+    A backend with ``auth`` is skipped from a profile's tools/list while the
+    profile has no grant; once the human signs in, the client must hear that
+    the list changed or it keeps the old one until it reconnects (#479).
+    """
+    from .gateway.backend_oauth import on_grant_stored
+    from .gateway.router import invalidate_profile_cache
+
+    async def _after_login(profile_name: str) -> None:
+        invalidate_profile_cache(profile_name)
+        await session_registry.broadcast_tools_changed(profile_name)
+
+    on_grant_stored(_after_login)
 
 
 def _wire_circuit_notifications(

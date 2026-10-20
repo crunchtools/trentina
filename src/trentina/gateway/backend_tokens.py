@@ -583,9 +583,10 @@ def configure_backend_tokens(profiles: Mapping[str, Profile]) -> BackendTokenSto
     )
     if _store is None and wanting:
         logger.warning(
-            "gateway: backend OAuth configured for %d backend(s) but %s_FILE is unset; "
-            'they will report "needs auth"',
+            "gateway: backend OAuth configured for %d backend(s) but neither %s nor "
+            '%s_FILE is set; they will report "needs auth"',
             wanting,
+            KEY_ENV,
             KEY_ENV,
         )
     return _store

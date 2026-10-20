@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field
@@ -11,6 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import __version__
 from .modes import current_policy, parse_mode_arg
 from .tools import (
+    backend_auth_revoke,
+    backend_auth_start,
+    backend_auth_status,
     cache_flush,
     fetch_page,
     get_trentina_stats,
@@ -299,6 +302,36 @@ async def reconnect_backend_tool(backend: str) -> dict[str, Any]:
         backend: Backend name to reconnect (e.g. "postiz", "slack", "jira").
     """
     return await reconnect_backend(backend)
+
+
+@mcp.tool()
+async def backend_auth_tool(
+    action: Literal["start", "status", "revoke"], backend: str | None = None
+) -> dict[str, Any]:
+    """Sign this profile in to, or out of, a backend that uses OAuth.
+
+    - ``start``: returns a link to send to your human. It opens a gateway page
+      that names this profile and the backend, then sends them to the
+      backend's own sign-in; whatever account they choose is used for
+      everything this profile does with that backend. Works once, for 10
+      minutes. Use it when a tool call says the backend is not authorized
+      for this profile.
+    - ``status``: which of this profile's OAuth backends are signed in, and
+      until when. Never returns a token. Omit ``backend`` for all of them.
+    - ``revoke``: forget this profile's grant. The backend's own service is
+      not told; revoke the app there too to end its tokens everywhere.
+
+    Args:
+        action: start, status or revoke.
+        backend: The backend's name in your profile (e.g. "era").
+    """
+    if action == "status":
+        return await backend_auth_status(backend)
+    if not backend:
+        return {"error": f"{action} needs a backend"}
+    if action == "start":
+        return await backend_auth_start(backend)
+    return await backend_auth_revoke(backend)
 
 
 @mcp.tool()

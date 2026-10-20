@@ -55,6 +55,8 @@ from ..logsafe import exc_kind
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from ..gateway.profile import Profile
+
 logger = logging.getLogger(__name__)
 
 
@@ -83,8 +85,23 @@ def _configured_name(backends: Mapping[str, Any], name: str) -> str:
     return next(key for key in backends if key == name)
 
 
+async def _grant_holder(backend: str, holders: list[Profile]) -> Profile | None:
+    """The first of ``holders`` with a usable grant for ``backend`` (#479)."""
+    from ..gateway.backend_oauth import fresh_grant
+
+    for profile in holders:
+        if await fresh_grant(profile, backend) is not None:
+            return profile
+    return None
+
+
 async def _reset_one(
-    backend: str, url: str, cfg: Any, base: dict[str, Any], scope: CallerScope
+    backend: str,
+    url: str,
+    cfg: Any,
+    base: dict[str, Any],
+    scope: CallerScope,
+    holders: list[Profile],
 ) -> dict[str, Any]:
     """Reset, re-probe and report one backend URL.
 
@@ -110,13 +127,25 @@ async def _reset_one(
             "circuit": breaker.get_state(url).value,
         }
 
+    holder = None
+    if cfg.auth is not None:
+        # Fetched with a grant, so never evicted first: with no profile able
+        # to refill it, an evicted list would leave every profile with none.
+        holder = await _grant_holder(backend, holders)
+        if holder is None:
+            return {
+                **base,
+                "reconnected": False,
+                "error": 'needs a grant: authorize with backend_auth (action="start") first',
+                "circuit": breaker.get_state(url).value,
+            }
     breaker.reset(url)
     try:
-        if scope.is_operator:
+        if scope.is_operator and holder is None:
             evict_backend_cache_url(url)
             tools = await list_backend_tools(backend, cfg)
         else:
-            tools = await refresh_backend_tools(backend, cfg)
+            tools = await refresh_backend_tools(backend, cfg, holder)
     except BackendCallError as exc:
         return {
             **base,
@@ -162,7 +191,8 @@ async def reconnect_backend(backend: str) -> dict[str, Any]:
             url, cfg = resolve_backend(scope, backend)
             base = {"endpoint": _safe_endpoint(url), "scope": scope.label}
             name = _configured_name(scope.backends, backend)
-            results = [await _reset_one(name, url, cfg, base, scope)]
+            holders = [scope.profile] if scope.profile is not None else []
+            results = [await _reset_one(name, url, cfg, base, scope, holders)]
             return {
                 "backend": backend,
                 "scope": scope.label,
@@ -195,8 +225,11 @@ async def reconnect_backend(backend: str) -> dict[str, Any]:
         found = profile.backends.get(backend)
         if found is not None:
             name = _configured_name(profile.backends, backend)
-            entry = targets.setdefault(found.url, {"cfg": found, "profiles": set(), "name": name})
+            entry = targets.setdefault(
+                found.url, {"cfg": found, "profiles": set(), "name": name, "holders": []}
+            )
             entry["profiles"].add(profile.name)
+            entry["holders"].append(profile)
 
     if not targets:
         return {
@@ -212,7 +245,9 @@ async def reconnect_backend(backend: str) -> dict[str, Any]:
             "endpoint": _safe_endpoint(url),
             "profiles": sorted(entry["profiles"]),
         }
-        results.append(await _reset_one(entry["name"], url, entry["cfg"], base, scope))
+        results.append(
+            await _reset_one(entry["name"], url, entry["cfg"], base, scope, entry["holders"])
+        )
 
     return {
         "backend": backend,

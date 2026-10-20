@@ -130,7 +130,7 @@ class TestReconnectInvalidation:
             _profile_tools_cache[name] = [{"name": "shared__get_doc"}]
             _profile_backend_urls[name] = {SHARED_URL}
 
-        async def ok(_url: str, _headers: Any) -> ListToolsResult:
+        async def ok(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
             return ListToolsResult(tools=[Tool(name="get_doc", description="", input_schema={})])
 
         try:

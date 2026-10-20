@@ -13,11 +13,14 @@ in-flight fetch.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from http import HTTPStatus
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import httpx2
 from mcp import ClientSession
@@ -29,12 +32,24 @@ from mcp_types import INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND
 from ..database import delete_all_tool_lists, delete_tool_list, save_tool_list
 from ..logsafe import exc_kind, redact_source, safe_url
 from .circuit import breaker
-from .errors import BackendCallError, BackendRejectedCallError, BackendResponseTooLargeError
+from .context import get_current_profile
+from .errors import (
+    BackendCallError,
+    BackendNeedsAuthError,
+    BackendRejectedCallError,
+    BackendResponseTooLargeError,
+    GatewayError,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
-    from .profile import Backend
+    from .backend_tokens import BackendGrant
+    from .profile import Backend, Profile
+
+_T = TypeVar("_T")
+#: The POSTs whose 401 means "ran nothing, authorize and try again".
+_AUTH_METHODS = frozenset({"initialize", "tools/list", "tools/call"})
 
 
 BYTES_PER_TOKEN = 32
@@ -113,8 +128,29 @@ class ResponseCap:
     limit: int
     overflowed: bool = False
     encoded: bool = False
+    #: A request that ran nothing came back 401: the session's ``initialize``
+    #: or the ``tools/list`` / ``tools/call`` itself. A 401 on the SSE GET
+    #: stream is not counted; the SDK carries on past it (#479).
+    unauthorized: bool = False
+    #: The ``tools/call`` POST was answered 2xx: the backend may have run it,
+    #: so nothing about this call is retried, whatever fails after.
+    call_accepted: bool = False
+
+    async def tag(self, request: httpx2.Request) -> None:
+        """Request hook: note which JSON-RPC method a POST carries."""
+        if request.method == "POST":
+            try:
+                method = json.loads(request.content).get("method")
+            except (ValueError, AttributeError, httpx2.RequestNotRead):
+                method = None
+            request.extensions["trentina_method"] = method
 
     async def hook(self, response: httpx2.Response) -> None:
+        method = response.request.extensions.get("trentina_method")
+        if response.status_code == HTTPStatus.UNAUTHORIZED and method in _AUTH_METHODS:
+            self.unauthorized = True
+        elif method == "tools/call" and response.is_success:
+            self.call_accepted = True
         encoding = response.headers.get("content-encoding", "")
         if any(part.strip().lower() not in ("", "identity") for part in encoding.split(",")):
             self.encoded = True
@@ -124,6 +160,10 @@ class ResponseCap:
             self.overflowed = True
             await self._refuse(response, f"backend response over {self.limit} bytes")
         response.stream = _CappedStream(response.stream, self)
+
+    def reset(self) -> None:
+        """Clear what one attempt saw, before the next."""
+        self.overflowed = self.encoded = self.unauthorized = self.call_accepted = False
 
     @staticmethod
     async def _refuse(response: httpx2.Response, reason: str) -> None:
@@ -177,7 +217,7 @@ async def _connect_streamable_http(
     """
     cap = cap or ResponseCap(response_byte_cap())
     http_client = create_mcp_http_client(headers=_identity_headers(headers))
-    http_client.event_hooks = {"request": [], "response": [cap.hook]}
+    http_client.event_hooks = {"request": [cap.tag], "response": [cap.hook]}
     async with (
         http_client,
         streamable_http_client(url, http_client=http_client) as streams,
@@ -363,6 +403,7 @@ def reset_tool_list_cache() -> None:
 async def list_backend_tools(
     backend_name: str,
     backend: Backend,
+    profile: Profile | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch the tool list from one backend MCP server.
 
@@ -371,26 +412,32 @@ async def list_backend_tools(
     failure (only on explicit flush/reconnect), a transient backend outage can
     neither wipe nor bypass the last-known-good list: it keeps being served
     here. On a genuine miss, concurrent callers coalesce onto one in-flight
-    fetch per URL.
+    fetch per URL — per URL and profile for a backend with ``auth``, which is
+    fetched with that profile's own grant (#479).
+
+    The cache stays keyed by URL alone. For an ``auth`` backend that means the
+    list one profile fetched, with its own entitlements, is what every
+    profile on the URL is offered, each through its own allowlist; a profile
+    with no grant sees those tools and is told to authorize when it calls one.
+
+    ``profile`` is the profile the list is for. An ``auth`` backend is never
+    fetched without one: the startup warm-ups pass none, and skip it.
 
     Raises:
         BackendCallError: connection failure, protocol error, timeout, or
             circuit open — only on a cold miss with nothing cached to serve.
+        BackendNeedsAuthError: an ``auth`` backend, cold, with no grant.
     """
     cached = _tool_list_cache.get(backend.url)
     if cached is not None:
         return cached
-
-    inflight = _inflight.get(backend.url)
-    if inflight is None:
-        inflight = asyncio.ensure_future(_single_flight_fetch(backend_name, backend))
-        _inflight[backend.url] = inflight
-    return await inflight
+    return await _joined_fetch(backend_name, backend, profile)
 
 
 async def refresh_backend_tools(
     backend_name: str,
     backend: Backend,
+    profile: Profile | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch one backend's tool list afresh, replacing the cached one in place.
 
@@ -403,10 +450,24 @@ async def refresh_backend_tools(
     Raises:
         BackendCallError: as ``list_backend_tools`` on a cold miss.
     """
-    inflight = _inflight.get(backend.url)
+    return await _joined_fetch(backend_name, backend, profile)
+
+
+def _inflight_key(backend: Backend, profile: Profile | None) -> str:
+    """One fetch per URL; per URL and profile when the fetch carries a grant."""
+    if backend.auth is None:
+        return backend.url
+    return f"{backend.url}#{profile.name if profile else ''}"
+
+
+async def _joined_fetch(
+    backend_name: str, backend: Backend, profile: Profile | None
+) -> list[dict[str, Any]]:
+    key = _inflight_key(backend, profile)
+    inflight = _inflight.get(key)
     if inflight is None:
-        inflight = asyncio.ensure_future(_single_flight_fetch(backend_name, backend))
-        _inflight[backend.url] = inflight
+        inflight = asyncio.ensure_future(_single_flight_fetch(backend_name, backend, profile, key))
+        _inflight[key] = inflight
     return await inflight
 
 
@@ -418,9 +479,10 @@ async def revalidate_backend_tools(backend_name: str, backend: Backend) -> bool:
     someone ran ``reconnect_backend``, and arguments were judged against the
     schema of a tool that had since changed. A backend with nothing cached is
     left to the first build, and one that cannot be reached keeps its list.
+    An ``auth`` backend is left alone: there is no profile to fetch it as.
     """
     before = _tool_list_cache.get(backend.url)
-    if before is None:
+    if before is None or backend.auth is not None:
         return False
     try:
         return await refresh_backend_tools(backend_name, backend) != before
@@ -431,17 +493,20 @@ async def revalidate_backend_tools(backend_name: str, backend: Backend) -> bool:
 async def _single_flight_fetch(
     backend_name: str,
     backend: Backend,
+    profile: Profile | None,
+    key: str,
 ) -> list[dict[str, Any]]:
     """Run one fetch and drop its in-flight slot when done."""
     try:
-        return await _fetch_and_cache(backend_name, backend)
+        return await _fetch_and_cache(backend_name, backend, profile)
     finally:
-        _inflight.pop(backend.url, None)
+        _inflight.pop(key, None)
 
 
 async def _fetch_and_cache(
     backend_name: str,
     backend: Backend,
+    profile: Profile | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch one backend's tool list, cache it, and persist to SQLite.
 
@@ -449,15 +514,25 @@ async def _fetch_and_cache(
     directly and never evicts on failure), so there is never a stale entry to
     fall back on here — a failure simply raises.
     """
+    headers, grant = await _credentials(backend_name, backend, profile)
     if not breaker.allow(backend.url):
         raise BackendCallError(f"backend {backend_name!r} circuit open — skipped")
 
-    headers = backend.headers or None
+    cap = ResponseCap(response_byte_cap())
     try:
-        tools_result = await asyncio.wait_for(
-            _do_list_tools(backend.url, headers),
-            timeout=backend.list_timeout_seconds,
+        tools_result = await _with_reauth(
+            backend_name,
+            backend,
+            profile,
+            grant,
+            headers,
+            cap,
+            lambda sent: asyncio.wait_for(
+                _do_list_tools(backend.url, sent, cap), timeout=backend.list_timeout_seconds
+            ),
         )
+    except BackendNeedsAuthError:
+        raise
     except Exception as exc:
         breaker.record_failure(backend.url)
         logger.warning(
@@ -476,6 +551,90 @@ async def _fetch_and_cache(
     return tools
 
 
+#: Slots whose backend refused a just-refreshed grant, and until when no
+#: further refresh is tried for them: a backend that always answers 401
+#: must not cost a token-endpoint round trip on every call.
+_auth_cooldown: dict[str, float] = {}
+AUTH_COOLDOWN_SECONDS = 60.0
+
+
+def _cooldown_key(profile: Profile | None, backend_name: str) -> str:
+    return f"{profile.name if profile else ''}:{backend_name}"
+
+
+async def _credentials(
+    backend_name: str, backend: Backend, profile: Profile | None
+) -> tuple[dict[str, str] | None, BackendGrant | None]:
+    """The headers a request to this backend carries, and the grant behind them.
+
+    Resolved before the breaker is asked: a profile with no grant has not
+    reached the backend, and must neither count against the circuit nor
+    hold its half-open probe.
+    """
+    if backend.auth is None:
+        return backend.headers or None, None
+    from .backend_oauth import fresh_grant
+
+    grant = None
+    if (
+        profile is not None
+        and _auth_cooldown.get(_cooldown_key(profile, backend_name), 0.0) <= time.monotonic()
+    ):
+        grant = await fresh_grant(profile, backend_name)
+    if grant is None:
+        raise BackendNeedsAuthError(backend_name)
+    return _with_bearer(backend, grant), grant
+
+
+def _with_bearer(backend: Backend, grant: BackendGrant) -> dict[str, str]:
+    """The backend's headers plus the grant. No credential header is configured
+    beside ``auth`` (the profile refuses one), so nothing is overwritten."""
+    return {
+        **backend.headers,
+        "Authorization": f"Bearer {grant.access_token.get_secret_value()}",
+    }
+
+
+async def _with_reauth(
+    backend_name: str,
+    backend: Backend,
+    profile: Profile | None,
+    grant: BackendGrant | None,
+    headers: dict[str, str] | None,
+    cap: ResponseCap,
+    run: Callable[[dict[str, str] | None], Awaitable[_T]],
+) -> _T:
+    """``run(headers)``; on a 401 that ran nothing, refresh the grant and run it once more.
+
+    Only a 401 to the session's ``initialize``, ``tools/list`` or a
+    ``tools/call`` the backend never accepted is retried: that request did
+    nothing. A call the backend accepted is never sent twice.
+    """
+    try:
+        return await run(headers)
+    except Exception:
+        if grant is None or profile is None or not cap.unauthorized or cap.call_accepted:
+            raise
+    from .backend_oauth import fresh_grant
+
+    # It answered, so it is up; this is about the grant, not the circuit.
+    breaker.record_success(backend.url)
+    fresh = await fresh_grant(profile, backend_name, stale_generation=grant.generation)
+    if fresh is None:
+        raise BackendNeedsAuthError(backend_name)
+    cap.reset()
+    try:
+        return await run(_with_bearer(backend, fresh))
+    except Exception as exc:
+        if cap.unauthorized and not cap.call_accepted:
+            breaker.record_success(backend.url)
+            _auth_cooldown[_cooldown_key(profile, backend_name)] = (
+                time.monotonic() + AUTH_COOLDOWN_SECONDS
+            )
+            raise BackendNeedsAuthError(backend_name) from exc
+        raise
+
+
 async def call_backend_tool(
     backend_name: str,
     backend: Backend,
@@ -488,27 +647,44 @@ async def call_backend_tool(
     tool-list cache — a transient call error must not wipe the list and trigger a
     refetch storm on the next tools/list. The list refreshes only on flush.
 
+    A backend with ``auth`` is called with the calling profile's own grant,
+    which the router bound to this task (#479).
+
     Raises:
         BackendCallError: connection failure, protocol error, timeout, or
             circuit open.
+        BackendNeedsAuthError: the calling profile holds no usable grant.
     """
+    profile = get_current_profile()
+    if backend.auth is not None and profile is None:
+        raise GatewayError(f"backend {backend_name!r} needs a calling profile")
+    headers, grant = await _credentials(backend_name, backend, profile)
     if not breaker.allow(backend.url):
         raise BackendCallError(f"backend {backend_name!r} circuit open — skipped")
 
-    headers = backend.headers or None
     cap = ResponseCap(response_byte_cap())
     try:
-        result = await asyncio.wait_for(
-            _do_call_tool(
-                backend.url,
-                headers,
-                tool_name,
-                arguments,
-                validate_output=backend.validate_output_schema,
-                cap=cap,
+        result = await _with_reauth(
+            backend_name,
+            backend,
+            profile,
+            grant,
+            headers,
+            cap,
+            lambda sent: asyncio.wait_for(
+                _do_call_tool(
+                    backend.url,
+                    sent,
+                    tool_name,
+                    arguments,
+                    validate_output=backend.validate_output_schema,
+                    cap=cap,
+                ),
+                timeout=backend.timeout_seconds,
             ),
-            timeout=backend.timeout_seconds,
         )
+    except BackendNeedsAuthError:
+        raise
     except Exception as exc:
         if cap.overflowed:
             # The backend answered, at length: reachable, so not a breaker
@@ -574,10 +750,12 @@ async def call_backend_tool(
     )
 
 
-async def _do_list_tools(url: str, headers: dict[str, str] | None) -> Any:
+async def _do_list_tools(
+    url: str, headers: dict[str, str] | None, cap: ResponseCap | None = None
+) -> Any:
     """Open a fresh session and call list_tools."""
     async with (
-        _connect_streamable_http(url, headers) as (read, write),
+        _connect_streamable_http(url, headers, cap) as (read, write),
         ClientSession(read, write) as session,
     ):
         await session.initialize()
