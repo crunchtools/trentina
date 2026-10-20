@@ -788,3 +788,101 @@ class TestL3Briefing:
         from trentina.gateway.profile import Backend
 
         assert Backend(url="http://ops:8000/mcp").l3_briefing is None
+
+
+class TestBackendAuth:
+    """#479: a backend authenticated by a per-profile OAuth grant."""
+
+    def test_self_authorize_is_off_by_default(self) -> None:
+        backend = Backend(url="https://era.example/mcp", auth={"type": "oauth"})
+        assert backend.auth is not None
+        assert backend.auth.self_authorize is False
+
+    @pytest.mark.parametrize("header", ["Authorization", "proxy-authorization", "Cookie"])
+    def test_a_credential_header_beside_auth_is_refused(self, header: str) -> None:
+        with pytest.raises(ValidationError, match="cannot be combined"):
+            Backend(url="https://era.example/mcp", headers={header: "x"}, auth={"type": "oauth"})
+
+    def test_an_ordinary_header_beside_auth_is_fine(self) -> None:
+        backend = Backend(
+            url="https://era.example/mcp", headers={"X-Org": "1"}, auth={"type": "oauth"}
+        )
+        assert backend.headers == {"X-Org": "1"}
+
+    def test_a_url_credential_beside_auth_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match=r"\$\{VAR\}"):
+            Backend(url="https://era.example/mcp?key=${ERA_KEY}", auth={"type": "oauth"})
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://user:pw@era.example/mcp",
+            "https://era.example/mcp?api_key=abc",
+            "https://era.example/mcp?access_token=abc",
+            "https://era.example/mcp?Signature=abc",
+        ],
+    )
+    def test_a_static_url_credential_beside_auth_is_refused(self, url: str) -> None:
+        with pytest.raises(ValidationError, match="cannot be combined"):
+            Backend(url=url, auth={"type": "oauth"})
+
+    def test_an_ordinary_query_beside_auth_is_fine(self) -> None:
+        backend = Backend(url="https://era.example/mcp?org=crunchtools", auth={"type": "oauth"})
+        assert backend.auth is not None
+
+    def test_internal_and_decoy_backends_refuse_auth(self) -> None:
+        with pytest.raises(ValidationError, match="internal"):
+            Backend(url="internal://tools", auth={"type": "oauth"})
+        with pytest.raises(ValidationError, match="auth does not apply to a decoy"):
+            Backend(
+                url="decoy://bait",
+                decoys={"t": {"description": "d", "result": "r"}},
+                auth={"type": "oauth"},
+            )
+
+    def test_a_client_secret_needs_a_client_id(self) -> None:
+        with pytest.raises(ValidationError, match="requires client_id"):
+            Backend(
+                url="https://era.example/mcp",
+                auth={"type": "oauth", "client_secret_env": "ERA_SECRET"},
+            )
+
+    @pytest.mark.parametrize("scopes", [[], ["read write"], ['a"b']])
+    def test_scopes_are_scope_tokens(self, scopes: list[str]) -> None:
+        with pytest.raises(ValidationError):
+            Backend(url="https://era.example/mcp", auth={"type": "oauth", "scopes": scopes})
+
+    def test_the_client_secret_resolves_and_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = tmp_path / "profiles.yaml"
+        cfg.write_text(
+            yaml.safe_dump(
+                {
+                    "profiles": {
+                        "josui": {
+                            "auth": {"bearer_token_env": "JOSUI_BEARER"},
+                            "backends": {
+                                "era": {
+                                    "url": "https://era.example/mcp",
+                                    "auth": {
+                                        "type": "oauth",
+                                        "client_id": "c1",
+                                        "client_secret_env": "ERA_CLIENT_SECRET",
+                                    },
+                                }
+                            },
+                        }
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv("JOSUI_BEARER", "b" * 32)
+        monkeypatch.delenv("ERA_CLIENT_SECRET", raising=False)
+        with pytest.raises(ProfileConfigError, match="ERA_CLIENT_SECRET"):
+            load_profiles(cfg)
+        monkeypatch.setenv("ERA_CLIENT_SECRET", "s" * 32)
+        auth = load_profiles(cfg).profiles["josui"].backends["era"].auth
+        assert auth is not None
+        assert auth.client_secret is not None
+        assert auth.client_secret.get_secret_value() == "s" * 32

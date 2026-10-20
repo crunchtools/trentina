@@ -340,6 +340,10 @@ def _expand_backend_url(name: str, backend_name: str, url: str) -> str:
 
 def _expand_backend_env_refs(name: str, profile: Profile) -> None:
     for backend_name, backend in profile.backends.items():
+        if backend.auth is not None and backend.auth.client_secret_env:
+            backend.auth.client_secret = _require_env(
+                name, backend.auth.client_secret_env, f"backends.{backend_name}.auth client secret"
+            )
         backend.url = _expand_backend_url(name, backend_name, backend.url)
         if backend.headers:
             backend.headers = {

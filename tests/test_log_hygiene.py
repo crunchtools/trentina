@@ -589,6 +589,43 @@ class TestOAuthStore:
         assert all("RuntimeError at " in line for line in lines)
 
 
+class TestBackendTokenStore:
+    """#479: a grant store that fails, or holds garbage, logs no token."""
+
+    async def test_store_errors_and_bad_records(
+        self, captured: _Capture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from trentina.gateway.backend_tokens import KEY_ENV, open_backend_token_store
+        from trentina.gateway.profile import Backend
+
+        monkeypatch.setenv(KEY_ENV, "k" * 48)
+        store = open_backend_token_store(tmp_path)
+        assert store is not None
+        era = Backend(url="https://era.example/mcp", auth={"type": "oauth"})
+
+        class Broken:
+            async def get(self, key: str, *, collection: str) -> Any:
+                raise RuntimeError(f"{key} holds {CANARY}")
+
+        class Garbage:
+            def __init__(self, value: Any) -> None:
+                self.value = value
+
+            async def get(self, key: str, *, collection: str) -> Any:
+                return self.value
+
+        sealed_junk = store._fernet.encrypt(f'{{"slot": 1, "access_token": "{CANARY}"}}'.encode())
+        for records in (
+            Broken(),
+            Garbage({"access_token": CANARY}),
+            Garbage({"v": 1, "ct": sealed_junk.decode()}),
+        ):
+            store._records = records
+            assert await store.get_grant("josui", "era", era) is None
+        lines = [r.getMessage() for r in captured.records if "backend-tokens" in r.getMessage()]
+        assert len(lines) == 3
+
+
 # ------------------------------------------------------------ OAuth proxy
 
 

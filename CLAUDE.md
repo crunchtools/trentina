@@ -103,6 +103,11 @@ uv run trentina
   and `llm_providers` keys from `os.environ` unless a profile references the
   name (`reload_profiles` re-reads those). `/proc/self/environ` still holds
   every value: only `_FILE` keeps a secret out (#268).
+- `TRENTINA_BACKEND_TOKEN_KEY` / `TRENTINA_BACKEND_TOKEN_KEY_FILE` — encrypts the
+  per-(profile, backend) grants for `auth: {type: oauth}` backends (#479); at
+  least 32 characters (`openssl rand -base64 48`). Read once at startup by
+  `gateway/backend_tokens.py`, then scrubbed. Unset: those backends report
+  "needs auth" and nothing is stored. Rotating it drops every grant.
 - `TRENTINA_REGISTRATION_TTL_DAYS` — lifetime of a PROMOTED registration
   (default 90). A new one is provisional for an hour; a token exchange
   promotes it and every later exchange re-stamps it. See `gateway/oauth_store.py`.

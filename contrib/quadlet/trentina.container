@@ -32,6 +32,8 @@ Volume=/srv/trentina/config/profiles.yaml:/etc/trentina/profiles.yaml:ro,Z
 Volume=/srv/trentina/secrets:/run/secrets:ro,Z
 Environment=TRENTINA_GATEWAY_ENABLED=true
 Environment=TRENTINA_OAUTH_JWT_SIGNING_KEY_FILE=/run/secrets/oauth-jwt-signing-key
+# Only for backends with auth: {type: oauth} (#479):
+#Environment=TRENTINA_BACKEND_TOKEN_KEY_FILE=/run/secrets/backend-token-key
 Environment=OPENROUTER_API_KEY_FILE=/run/secrets/openrouter-api-key
 
 [Service]

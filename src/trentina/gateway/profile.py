@@ -16,7 +16,7 @@ import logging
 import re
 from fnmatch import fnmatchcase
 from typing import Annotated, Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse, urlsplit
 
 from pydantic import (
     BaseModel,
@@ -78,6 +78,7 @@ DECOY_RESULT_MAX_CHARS = 4096
 #: Backend settings that describe a server a decoy does not have.
 _REMOTE_ONLY_FIELDS = (
     "headers",
+    "auth",
     "parameter_guards",
     "response_guards",
     "destination_params",
@@ -495,6 +496,87 @@ class Honeytoken(BaseModel):
         return v
 
 
+#: Headers that carry a credential. A backend authorized through `auth`
+#: already has one; a second, static one beside it is a config error.
+_CREDENTIAL_HEADERS = frozenset({"authorization", "proxy-authorization", "cookie"})
+_SCOPE_RE = re.compile(r"^[\x21\x23-\x5b\x5d-\x7e]+$")  # RFC 6749 3.3 scope-token
+_ENV_REF_IN_URL_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+#: A query parameter whose name says it carries a credential.
+_CREDENTIAL_PARAM_RE = re.compile(r"(?i)(token|key|secret|passw|auth|sig|session|cred)")
+
+
+class BackendAuth(BaseModel):
+    """How the gateway authenticates to one backend on one profile's behalf (#479).
+
+    Today the only type is ``oauth``: the gateway is the MCP OAuth 2.1 client,
+    and every grant belongs to the (profile, backend) pair that obtained it.
+    The authorization server, registration endpoint and default scopes come
+    from the backend's own metadata (RFC 9728, RFC 8414); the fields here are
+    overrides for vendors that do not offer dynamic client registration.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    type: Literal["oauth"] = Field(..., description="Authentication scheme; only oauth today")
+    self_authorize: bool = Field(
+        default=False,
+        description=(
+            "Whether this profile may start, and revoke, its own login to this "
+            "backend. Off: the backend is listed but reports 'needs auth', and "
+            "this profile cannot change that."
+        ),
+    )
+    client_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description="A pre-registered client ID, for an authorization server without DCR",
+    )
+    client_secret_env: str | None = Field(
+        default=None,
+        description=(
+            "Env var name whose value is that client's secret. The secret "
+            "itself is never written in this file. Requires client_id."
+        ),
+    )
+    client_secret: SecretStr | None = Field(
+        default=None,
+        exclude=True,
+        description="Resolved client secret (load-time only)",
+    )
+    scopes: list[str] | None = Field(
+        default=None,
+        description="Scopes to request, overriding the backend's advertised ones",
+    )
+
+    @field_validator("client_secret_env")
+    @classmethod
+    def client_secret_env_is_uppercase_identifier(cls, v: str | None) -> str | None:
+        """Reject lowercase, leading digits, or non-identifier characters."""
+        if v is not None and not ENV_NAME_RE.match(v):
+            raise ValueError(f"client_secret_env {v!r} must be an UPPERCASE env-var identifier")
+        return v
+
+    @field_validator("scopes")
+    @classmethod
+    def scopes_are_scope_tokens(cls, v: list[str] | None) -> list[str] | None:
+        """Each scope is one RFC 6749 scope-token: printable, no space or quote."""
+        if v is not None:
+            if not v:
+                raise ValueError("scopes, when given, must name at least one scope")
+            for scope in v:
+                if not _SCOPE_RE.match(scope):
+                    raise ValueError(f"scope {scope!r} is not a valid RFC 6749 scope-token")
+        return v
+
+    @model_validator(mode="after")
+    def secret_needs_a_client(self) -> BackendAuth:
+        """A client secret belongs to a client ID; alone it identifies nothing."""
+        if self.client_secret_env is not None and self.client_id is None:
+            raise ValueError("client_secret_env requires client_id")
+        return self
+
+
 class Backend(BaseModel):
     """Per-profile backend MCP server config."""
 
@@ -526,6 +608,13 @@ class Backend(BaseModel):
     headers: dict[str, str] = Field(
         default_factory=dict,
         description="Extra HTTP headers to send to the backend",
+    )
+    auth: BackendAuth | None = Field(
+        default=None,
+        description=(
+            "Authenticate to this backend with a per-profile grant (#479). "
+            "Exclusive with a credential header or a ${VAR} in the URL."
+        ),
     )
     timeout_seconds: float = Field(
         default=30.0,
@@ -684,6 +773,32 @@ class Backend(BaseModel):
                 "destination_params does not apply to an internal:// backend: "
                 "fetch_tool and search_tool destinations are always recorded"
             )
+        return self
+
+    @model_validator(mode="after")
+    def auth_is_the_only_credential(self) -> Backend:
+        """A backend with ``auth`` carries no other credential.
+
+        Two credentials on one backend leave which one the backend honours to
+        the backend, and a static one beside a per-profile grant would be sent
+        for every profile alike, which is what ``auth`` exists to prevent.
+        Checked on the raw URL, before the loader expands ``${VAR}``.
+        """
+        if self.auth is None:
+            return self
+        if self.is_internal:
+            raise ValueError("auth does not apply to an internal:// backend")
+        clashing = sorted(k for k in self.headers if k.lower() in _CREDENTIAL_HEADERS)
+        if clashing:
+            raise ValueError(f"auth cannot be combined with the {', '.join(clashing)} header")
+        if _ENV_REF_IN_URL_RE.search(self.url):
+            raise ValueError("auth cannot be combined with a ${VAR} credential in the url")
+        parts = urlsplit(self.url)
+        if "@" in parts.netloc:
+            raise ValueError("auth cannot be combined with a user:password in the url")
+        named = [k for k, _ in parse_qsl(parts.query, keep_blank_values=True)]
+        if any(_CREDENTIAL_PARAM_RE.search(k) for k in named):
+            raise ValueError("auth cannot be combined with a credential query parameter in the url")
         return self
 
     @field_validator("url")

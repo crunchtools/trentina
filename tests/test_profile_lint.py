@@ -212,3 +212,30 @@ class TestEntrypoint:
 
     def test_module_is_runnable(self) -> None:
         assert callable(profile_lint.main)
+
+
+class TestSelfAuthorize:
+    """#479: an agent seat that can start its own backend logins."""
+
+    @staticmethod
+    def _file(role: str = "agent", **extra: Any) -> dict[str, Any]:
+        backend = {
+            "url": "https://era.example/mcp",
+            "auth": {"type": "oauth", "self_authorize": True},
+        }
+        return {"profiles": {"seat": {"role": role, "backends": {"era": backend}}}, **extra}
+
+    def test_an_agent_seat_is_a_finding(self) -> None:
+        (finding,) = profile_lint.check_self_authorize(self._file())
+        assert finding.code == "agent-self-authorize"
+        assert "'era'" in finding.message
+
+    def test_the_operator_and_assistants_are_clean(self) -> None:
+        assert profile_lint.check_self_authorize(self._file("operator")) == []
+        exempt = self._file(assistants={"profiles": ["seat"], "reason": "interactive"})
+        assert profile_lint.check_self_authorize(exempt) == []
+
+    def test_off_is_clean(self) -> None:
+        profiles_file = self._file()
+        profiles_file["profiles"]["seat"]["backends"]["era"]["auth"]["self_authorize"] = False
+        assert profile_lint.check_self_authorize(profiles_file) == []
