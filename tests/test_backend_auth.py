@@ -437,6 +437,55 @@ class TestRevocationAtTheServer:
         assert result["revoked"] is True
         assert result["remote"] == "revocation_unreachable"
 
+    async def test_the_grant_is_gone_and_the_lock_free_during_the_remote_call(
+        self,
+        fake: _Backend,
+        server: Any,
+        profiles: dict[str, Profile],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        profile = profiles["josui"]
+        await login(server, profile)
+        store = backend_tokens.backend_token_store()
+        assert store is not None
+        seen: dict[str, Any] = {}
+
+        async def remote(_s: Any, p: Profile, name: str, cfg: Any, grant: Any) -> str:
+            seen["grant"] = await store.get_grant(p.name, name, cfg)
+            async with store.locked(p.name, name):  # would deadlock if still held
+                seen["lock_free"] = True
+            seen["passed"] = grant
+            return "revoked"
+
+        monkeypatch.setattr(backend_auth, "revoke_remote", remote)
+        with profile_context(profile):
+            result = await backend_auth_revoke("era")
+        assert result == {"backend": "era", "revoked": True, "remote": "revoked"}
+        assert seen["grant"] is None
+        assert seen["lock_free"] is True
+        assert seen["passed"] is not None
+
+    async def test_the_local_delete_stands_when_the_remote_call_raises(
+        self,
+        fake: _Backend,
+        server: Any,
+        profiles: dict[str, Profile],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        profile = profiles["josui"]
+        await login(server, profile)
+
+        async def boom(*_a: Any, **_k: Any) -> str:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(backend_auth, "revoke_remote", boom)
+        with profile_context(profile):
+            result = await backend_auth_revoke("era")
+        assert result["error"] == "RuntimeError"
+        store = backend_tokens.backend_token_store()
+        assert store is not None
+        assert await store.get_grant(profile.name, "era", profile.backends["era"]) is None
+
     async def test_no_token_reaches_a_log(
         self,
         fake: _Backend,
