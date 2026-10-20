@@ -127,7 +127,9 @@ class TestTheGrantIsSent:
     ) -> None:
         await _store_grant(profiles["josui"])
         for _ in range(5):
-            with pytest.raises(BackendNeedsAuthError, match="backend_auth_start") as caught:
+            with pytest.raises(
+                BackendNeedsAuthError, match=r'backend_auth with action="start"'
+            ) as caught:
                 await _call(profiles["kagetora"])
         assert classify_exception(caught.value) is Outcome.NEEDS_AUTH
         assert fake.headers == []

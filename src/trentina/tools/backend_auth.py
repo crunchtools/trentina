@@ -77,7 +77,7 @@ def _within_rate(profile: str) -> bool:
 async def backend_auth_start(backend: str) -> dict[str, Any]:
     """Begin this profile's login to ``backend``; return the link for a human."""
     try:
-        scope, profile = _own_oauth_backend("backend_auth_start", backend)
+        scope, profile = _own_oauth_backend("backend_auth start", backend)
     except ScopeError as exc:
         return _refusal(backend, exc)
     if not _within_rate(profile.name):
@@ -87,7 +87,7 @@ async def backend_auth_start(backend: str) -> dict[str, Any]:
             profile, backend, authorized_by="operator" if scope.is_operator else "self"
         )
     except BackendAuthError as exc:
-        logger.info("backend_auth_start refused: %s", exc.code)
+        logger.info("backend_auth start refused: %s", exc.code)
         return {"backend": backend, "error": exc.code}
     return {
         "backend": backend,
@@ -103,7 +103,7 @@ async def backend_auth_start(backend: str) -> dict[str, Any]:
 async def backend_auth_status(backend: str | None = None) -> dict[str, Any]:
     """Which of this profile's OAuth backends hold a grant. No secrets."""
     try:
-        scope = require_caller("backend_auth_status")
+        scope = require_caller("backend_auth status")
         if backend is not None:
             resolve_backend(scope, backend)
     except ScopeError as exc:
@@ -138,7 +138,7 @@ async def backend_auth_revoke(backend: str) -> dict[str, Any]:
     """
     try:
         _scope, profile = _own_oauth_backend(
-            "backend_auth_revoke", backend, needs_self_authorize=True
+            "backend_auth revoke", backend, needs_self_authorize=True
         )
     except ScopeError as exc:
         return _refusal(backend, exc)
@@ -150,7 +150,7 @@ async def backend_auth_revoke(backend: str) -> dict[str, Any]:
         async with store.locked(profile.name, backend):
             revoked = await store.delete_grant(profile.name, backend)
     except Exception as exc:
-        logger.warning("backend_auth_revoke failed (%s)", exc_kind(exc))
+        logger.warning("backend_auth revoke failed (%s)", exc_kind(exc))
         return {"backend": backend, "revoked": False, "error": type(exc).__name__}
     from ..gateway.backend_oauth import _audit
 

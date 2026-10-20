@@ -136,7 +136,7 @@ async def _reset_one(
             return {
                 **base,
                 "reconnected": False,
-                "error": "needs a grant: authorize with backend_auth_start first",
+                "error": 'needs a grant: authorize with backend_auth (action="start") first',
                 "circuit": breaker.get_state(url).value,
             }
     breaker.reset(url)

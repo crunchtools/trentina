@@ -96,8 +96,8 @@ class BackendNeedsAuthError(BackendCallError):
     def __init__(self, backend: str) -> None:
         super().__init__(
             f"backend {backend!r} is not authorized for this profile: call "
-            f'backend_auth_start with backend="{backend}" and send the link it '
-            "returns to your human"
+            f'backend_auth with action="start" and backend="{backend}", then send '
+            "the link it returns to your human"
         )
         self.backend = backend
 
