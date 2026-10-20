@@ -38,6 +38,8 @@ GRANT = BackendGrant(
     expires_at=datetime.now(UTC) + timedelta(hours=1),
     scopes=("read",),
     issuer="https://auth.era.app",
+    token_endpoint="https://auth.era.app/token",
+    client_id="c1",
     obtained_at=datetime.now(UTC),
 )
 
@@ -89,7 +91,12 @@ class TestRoundTrip:
     ) -> None:
         store = _open(tmp_path, monkeypatch)
         await _put(store)
-        await store.put_client("josui", "era", ERA, BackendClient(client_id="c1", issuer="i"))
+        await store.put_client(
+            "josui",
+            "era",
+            ERA,
+            BackendClient(client_id="c1", issuer="i", token_endpoint="https://i/token"),
+        )
         assert await store.delete_grant("josui", "era")
         assert await store.get_grant("josui", "era", ERA) is None
         client = await store.get_client("josui", "era", ERA)
@@ -138,7 +145,12 @@ class TestTheDiskIsNotTrusted:
             "josui",
             "era",
             ERA,
-            BackendClient(client_id="c", client_secret=SecretStr(CANARY), issuer="i"),
+            BackendClient(
+                client_id="c",
+                client_secret=SecretStr(CANARY),
+                issuer="i",
+                token_endpoint="https://i/token",
+            ),
         )
         for path in (p for p in tmp_path.rglob("*") if p.is_file()):
             assert b"zqx7canary" not in path.read_bytes()

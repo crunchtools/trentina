@@ -863,3 +863,21 @@ path = "tests/test_rcs_bridge.py"
 pattern = "_media"
 justification = "FakeTwilio's dispatch target for inbound media: the authenticated redirect from Twilio's media URL and the unauthenticated CDN that serves it (#493). The same dispatch split as the `_api` entry above."
 classification = "by_design"
+
+[[exceptions]]
+check = "redundant_error_handling"
+path = "src/trentina/gateway/backend_oauth.py"
+justification = "_audit writes the gateway_calls row for a backend OAuth start, callback or refresh that has already happened. A database error there is logged by kind and dropped, exactly as router._audit, client_egress._audit and git_transport do: raising would fail a login whose grant is already stored, or a refresh whose token is already rotated. The loss is visible in the journal."
+classification = "by_design"
+
+[[exceptions]]
+check = "over_abstraction"
+path = "src/trentina/gateway/backend_tokens.py"
+justification = "_now is the one clock every grant, client and flow expiry is read against. Tests move it to expire a flow or a grant without sleeping; patching datetime itself would move every clock in the process."
+classification = "by_design"
+
+[[exceptions]]
+check = "hidden_env_config"
+path = "src/trentina/gateway/backend_oauth.py"
+justification = "public_base_url reads TRENTINA_OAUTH_BASE_URL, documented in docs/configuration.md with its default; the read moved here from __init__.py so the inbound OAuth provider and the backend OAuth pages build their URLs from one place."
+classification = "by_design"

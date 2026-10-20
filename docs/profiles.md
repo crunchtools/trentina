@@ -594,8 +594,8 @@ allowed only after the host, and its value must be URL-safe
 
 ## Backend OAuth
 
-> Configuration only so far: the login flow and its tools land with the rest
-> of #479.
+> The login flow is in place; the tools that start it and the router that
+> sends the grant land with the rest of #479.
 
 A backend that authenticates with MCP OAuth, and issues no API key, takes an
 `auth` block instead of a header. The gateway is the OAuth client, and every
@@ -628,6 +628,28 @@ backends:
 - A grant is bound to its profile name, its backend name and the backend URL's
   host. Renaming either, or pointing the `url` at another host, means
   authorizing again. Rotating the key drops every grant.
+- `issuer` pins the authorization server. Unset, the first one the backend's
+  metadata names is used, and a later change is refused until the grant is
+  revoked: a backend cannot quietly send its users to a new login server.
+
+How a login runs:
+
+1. The gateway reads the backend's metadata (RFC 9728, then RFC 8414),
+   requires PKCE with S256, and registers itself as a client if it has none
+   (RFC 7591). Every request goes through the egress guard: addresses
+   checked, redirects refused, the gateway's own host refused.
+2. It hands out a link to `<base>/oauth/backend/start`, a page that names the
+   backend and the profile before sending the human to the login server.
+   Whoever follows it decides whose account that profile uses.
+3. The login server sends the browser back to `<base>/oauth/backend/callback`
+   (allow that URL at the server if it does not take dynamic registration).
+   Each link works once, for 10 minutes; at most three are live per slot.
+4. Grants refresh against the token endpoint recorded when they were issued.
+   A refused refresh drops the grant (and the registration, for
+   `invalid_client`); a busy server drops nothing.
+
+`<base>` is `TRENTINA_OAUTH_BASE_URL`. The pages exist only when
+`TRENTINA_BACKEND_TOKEN_KEY_FILE` is set, and share a per-address rate limit.
 
 ## Applying a Change
 

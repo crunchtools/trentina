@@ -39,7 +39,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
@@ -70,11 +70,21 @@ RECORD_TTL = timedelta(days=365)
 _ENVELOPE_VERSION = 1
 _GRANTS = "backend-grants"
 _CLIENTS = "backend-clients"
+_FLOWS = "backend-flows"
 _HKDF_SALT = b"trentina-backend-tokens"
+
+
+#: How a client authenticates at the token endpoint (RFC 7591).
+AuthMethod = Literal["client_secret_basic", "client_secret_post", "none"]
 
 
 class GrantConflictError(Exception):
     """A grant write was based on a read that is no longer current."""
+
+
+def _now() -> datetime:
+    """The clock every expiry here is read against. Tests move it."""
+    return datetime.now(UTC)
 
 
 class BackendGrant(BaseModel):
@@ -87,9 +97,17 @@ class BackendGrant(BaseModel):
     token_type: str = Field(default="Bearer", description="The RFC 6750 scheme name")
     expires_at: datetime | None = None
     scopes: tuple[str, ...] = ()
-    #: The authorization server that issued it. A later flow compares this to
-    #: what discovery names now; a grant from another issuer is not reused.
+    #: The authorization server that issued it, and where it is refreshed.
+    #: Pinned at issue: a refresh never rediscovers, so a backend whose
+    #: metadata later names another server cannot redirect the refresh
+    #: token (or the client secret sent with it) there.
     issuer: str
+    token_endpoint: str
+    #: The RFC 8707 resource it was issued for, sent again on refresh.
+    resource: str | None = None
+    #: The client it was issued to, and how that client authenticates.
+    client_id: str
+    auth_method: AuthMethod = "none"
     obtained_at: datetime
     #: Set by the store: what ``put_grant`` must be handed back to replace it.
     generation: int = 0
@@ -102,7 +120,38 @@ class BackendClient(BaseModel):
 
     client_id: str
     client_secret: SecretStr | None = None
+    #: How the client authenticates at the token endpoint (RFC 7591).
+    auth_method: AuthMethod = "none"
     issuer: str
+    token_endpoint: str
+
+
+class BackendFlow(BaseModel):
+    """One authorization in progress: what the callback needs to finish it.
+
+    Keyed by a hash of its ``state``; the state itself is never stored. The
+    verifier is the PKCE secret, so this is as sensitive as a grant.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    profile: str
+    backend: str
+    origin: str
+    issuer: str
+    #: Whether the callback must carry ``iss`` (RFC 9207).
+    iss_required: bool
+    token_endpoint: str
+    authorize_url: str
+    client_id: str
+    auth_method: AuthMethod
+    verifier: SecretStr
+    redirect_uri: str
+    resource: str | None
+    scopes: tuple[str, ...]
+    #: Where the confirmation page finds this flow; dropped with it.
+    page_key: str
+    expires_at: datetime
 
 
 class _Sealed(BaseModel):
@@ -122,6 +171,10 @@ class _SealedGrant(_Sealed):
     expires_at: datetime | None
     scopes: list[str]
     issuer: str
+    token_endpoint: str
+    resource: str | None
+    client_id: str
+    auth_method: AuthMethod
     obtained_at: datetime
     generation: int
 
@@ -129,7 +182,26 @@ class _SealedGrant(_Sealed):
 class _SealedClient(_Sealed):
     client_id: str
     client_secret: str | None = Field(default=None, repr=False)
+    auth_method: AuthMethod
     issuer: str
+    token_endpoint: str
+
+
+class _SealedFlow(_Sealed):
+    key: str
+    profile: str
+    backend: str
+    issuer: str
+    iss_required: bool
+    token_endpoint: str
+    authorize_url: str
+    client_id: str
+    auth_method: AuthMethod
+    verifier: str = Field(repr=False)
+    redirect_uri: str
+    resource: str | None
+    scopes: list[str]
+    page_key: str
 
 
 _S = TypeVar("_S", bound=_Sealed)
@@ -152,8 +224,21 @@ def slot_key(profile: str, backend: str) -> str:
     return f"{profile}:{backend}"
 
 
+def flow_key(secret: str) -> str:
+    """The record key for a flow: a hash, so the state is never on disk."""
+    return hashlib.sha256(secret.encode()).hexdigest()
+
+
+def _reveal(value: SecretStr | None) -> str | None:
+    return None if value is None else value.get_secret_value()
+
+
+def _hide(value: str | None) -> SecretStr | None:
+    return None if value is None else SecretStr(value)
+
+
 class BackendTokenStore:
-    """Encrypted grants and client registrations, one slot per (profile, backend).
+    """Encrypted grants, client registrations and flows, one slot per (profile, backend).
 
     There is no listing: nothing reads a slot without naming its profile.
     """
@@ -163,6 +248,7 @@ class BackendTokenStore:
         self._fernet = fernet
         self._locks: dict[str, asyncio.Lock] = {}
         self._holders: dict[str, asyncio.Task[Any] | None] = {}
+        self._flow_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def locked(self, profile: str, backend: str) -> AsyncIterator[None]:
@@ -191,11 +277,15 @@ class BackendTokenStore:
             return None
         return BackendGrant(
             access_token=SecretStr(sealed.access_token),
-            refresh_token=None if sealed.refresh_token is None else SecretStr(sealed.refresh_token),
+            refresh_token=_hide(sealed.refresh_token),
             token_type=sealed.token_type,
             expires_at=sealed.expires_at,
             scopes=tuple(sealed.scopes),
             issuer=sealed.issuer,
+            token_endpoint=sealed.token_endpoint,
+            resource=sealed.resource,
+            client_id=sealed.client_id,
+            auth_method=sealed.auth_method,
             obtained_at=sealed.obtained_at,
             generation=sealed.generation,
         )
@@ -222,24 +312,25 @@ class BackendTokenStore:
             )
         current = await self.get_grant(profile, name, backend)
         if (current.generation if current else 0) != expected_generation:
-            raise GrantConflictError(slot_key(profile, name))
+            raise GrantConflictError(slot)
         stored = grant.model_copy(update={"generation": expected_generation + 1})
         await self._seal(
             _GRANTS,
+            slot,
             _SealedGrant(
-                slot=slot_key(profile, name),
+                slot=slot,
                 origin=backend_origin(backend.url),
-                stored_until=datetime.now(UTC) + RECORD_TTL,
+                stored_until=_now() + RECORD_TTL,
                 access_token=stored.access_token.get_secret_value(),
-                refresh_token=(
-                    None
-                    if stored.refresh_token is None
-                    else stored.refresh_token.get_secret_value()
-                ),
+                refresh_token=_reveal(stored.refresh_token),
                 token_type=stored.token_type,
                 expires_at=stored.expires_at,
                 scopes=list(stored.scopes),
                 issuer=stored.issuer,
+                token_endpoint=stored.token_endpoint,
+                resource=stored.resource,
+                client_id=stored.client_id,
+                auth_method=stored.auth_method,
                 obtained_at=stored.obtained_at,
                 generation=stored.generation,
             ),
@@ -259,27 +350,29 @@ class BackendTokenStore:
             return None
         return BackendClient(
             client_id=sealed.client_id,
-            client_secret=None if sealed.client_secret is None else SecretStr(sealed.client_secret),
+            client_secret=_hide(sealed.client_secret),
+            auth_method=sealed.auth_method,
             issuer=sealed.issuer,
+            token_endpoint=sealed.token_endpoint,
         )
 
     async def put_client(
         self, profile: str, name: str, backend: Backend, client: BackendClient
     ) -> None:
         """Record the slot's client registration."""
+        slot = slot_key(profile, name)
         await self._seal(
             _CLIENTS,
+            slot,
             _SealedClient(
-                slot=slot_key(profile, name),
+                slot=slot,
                 origin=backend_origin(backend.url),
-                stored_until=datetime.now(UTC) + RECORD_TTL,
+                stored_until=_now() + RECORD_TTL,
                 client_id=client.client_id,
-                client_secret=(
-                    None
-                    if client.client_secret is None
-                    else client.client_secret.get_secret_value()
-                ),
+                client_secret=_reveal(client.client_secret),
+                auth_method=client.auth_method,
                 issuer=client.issuer,
+                token_endpoint=client.token_endpoint,
             ),
         )
 
@@ -287,35 +380,101 @@ class BackendTokenStore:
         """Drop the slot's client registration."""
         return bool(await self._records.delete(slot_key(profile, name), collection=_CLIENTS))
 
-    # --------------------------------------------------------------- envelope
+    # ----------------------------------------------------------------- flows
 
-    async def _seal(self, collection: str, record: _Sealed) -> None:
-        token = self._fernet.encrypt(record.model_dump_json().encode())
-        await self._records.put(
-            record.slot,
-            {"v": _ENVELOPE_VERSION, "ct": token.decode("ascii")},
-            collection=collection,
-            ttl=RECORD_TTL.total_seconds(),
+    async def put_flow(self, key: str, flow: BackendFlow) -> None:
+        """Record a flow under ``key`` (a ``flow_key``) until it expires or is taken."""
+        await self._seal(
+            _FLOWS,
+            key,
+            _SealedFlow(
+                slot=slot_key(flow.profile, flow.backend),
+                origin=flow.origin,
+                stored_until=flow.expires_at,
+                key=key,
+                profile=flow.profile,
+                backend=flow.backend,
+                issuer=flow.issuer,
+                iss_required=flow.iss_required,
+                token_endpoint=flow.token_endpoint,
+                authorize_url=flow.authorize_url,
+                client_id=flow.client_id,
+                auth_method=flow.auth_method,
+                verifier=flow.verifier.get_secret_value(),
+                redirect_uri=flow.redirect_uri,
+                resource=flow.resource,
+                scopes=list(flow.scopes),
+                page_key=flow.page_key,
+            ),
+            ttl=max(1.0, (flow.expires_at - _now()).total_seconds()),
         )
 
-    async def _open(
-        self, collection: str, profile: str, name: str, backend: Backend, model: type[_S]
-    ) -> _S | None:
-        """Read, decrypt and check one slot's record; None for anything but a good one.
+    async def peek_flow(self, key: str) -> BackendFlow | None:
+        """The live flow under ``key``, left in place; None if absent or expired."""
+        sealed = await self._unseal(_FLOWS, key, _SealedFlow)
+        if sealed is None or sealed.key != key or sealed.stored_until <= _now():
+            return None
+        return BackendFlow(
+            profile=sealed.profile,
+            backend=sealed.backend,
+            origin=sealed.origin,
+            issuer=sealed.issuer,
+            iss_required=sealed.iss_required,
+            token_endpoint=sealed.token_endpoint,
+            authorize_url=sealed.authorize_url,
+            client_id=sealed.client_id,
+            auth_method=sealed.auth_method,
+            verifier=SecretStr(sealed.verifier),
+            redirect_uri=sealed.redirect_uri,
+            resource=sealed.resource,
+            scopes=tuple(sealed.scopes),
+            page_key=sealed.page_key,
+            expires_at=sealed.stored_until,
+        )
 
-        Every refusal is logged by slot (operator names) and exception class,
-        never by content: a record that fails to parse may hold a token.
+    async def take_flow(self, key: str) -> BackendFlow | None:
+        """The flow under ``key``, removed before it is returned: a state is spent once.
+
+        Serialized, so two callbacks racing on one state cannot both read it.
+        """
+        async with self._flow_lock:
+            flow = await self.peek_flow(key)
+            await self._records.delete(key, collection=_FLOWS)
+        return flow
+
+    async def drop_flow(self, key: str) -> None:
+        """Forget a flow without finishing it."""
+        await self._records.delete(key, collection=_FLOWS)
+
+    # --------------------------------------------------------------- envelope
+
+    async def _seal(
+        self, collection: str, key: str, record: _Sealed, *, ttl: float | None = None
+    ) -> None:
+        token = self._fernet.encrypt(record.model_dump_json().encode())
+        await self._records.put(
+            key,
+            {"v": _ENVELOPE_VERSION, "ct": token.decode("ascii")},
+            collection=collection,
+            ttl=RECORD_TTL.total_seconds() if ttl is None else ttl,
+        )
+
+    async def _unseal(self, collection: str, key: str, model: type[_S]) -> _S | None:
+        """Read and decrypt one record; None for anything that is not a good one.
+
+        Every refusal is logged by key (operator names, or a hash) and
+        exception class, never by content: a record that fails to parse may
+        hold a token.
         """
         from cryptography.fernet import InvalidToken
 
-        slot = slot_key(profile, name)
         try:
-            envelope = await self._records.get(slot, collection=collection)
+            envelope = await self._records.get(key, collection=collection)
         except Exception as exc:
             logger.warning(
                 "backend-tokens: %s %s unreadable (%s at %s)",
                 collection,
-                slot,
+                key,
                 exc_kind(exc),
                 exc_where(exc),
             )
@@ -325,22 +484,29 @@ class BackendTokenStore:
         # TRUST: a record read back from the data volume
         #   untrusted: the file's contents; anything with write access to /data wrote it
         #   judged-by: Fernet (authenticated encryption) under the derived key, then
-        #     the sealed slot and origin compared to the slot asked for and the live URL
+        #     the sealed slot, key and origin compared to what was asked for
         #   on-failure: fail-closed; the record reads as absent and the backend needs auth
-        #   owner: backend_tokens.BackendTokenStore._open
+        #   owner: backend_tokens.BackendTokenStore._unseal
         #   evidence: T2 test_backend_tokens planted-plaintext, copied-slot and moved-host cases
         ciphertext = envelope.get("ct") if isinstance(envelope, dict) else None
         if not isinstance(ciphertext, str) or envelope.get("v") != _ENVELOPE_VERSION:
-            logger.warning(
-                "backend-tokens: %s %s is not a sealed record; ignored", collection, slot
-            )
+            logger.warning("backend-tokens: %s %s is not a sealed record; ignored", collection, key)
             return None
         try:
-            sealed = model.model_validate_json(self._fernet.decrypt(ciphertext.encode("ascii")))
+            return model.model_validate_json(self._fernet.decrypt(ciphertext.encode("ascii")))
         except (InvalidToken, ValidationError, ValueError) as exc:
             logger.warning(
-                "backend-tokens: %s %s did not open (%s); ignored", collection, slot, exc_kind(exc)
+                "backend-tokens: %s %s did not open (%s); ignored", collection, key, exc_kind(exc)
             )
+            return None
+
+    async def _open(
+        self, collection: str, profile: str, name: str, backend: Backend, model: type[_S]
+    ) -> _S | None:
+        """One slot's record, if it is that slot's, for the backend's current host, and live."""
+        slot = slot_key(profile, name)
+        sealed = await self._unseal(collection, slot, model)
+        if sealed is None:
             return None
         if sealed.slot != slot:
             logger.warning(
@@ -350,7 +516,7 @@ class BackendTokenStore:
             logger.info(
                 "backend-tokens: %s %s was for another host; needs auth again", collection, slot
             )
-        elif sealed.stored_until > datetime.now(UTC):
+        elif sealed.stored_until > _now():
             return sealed
         return None
 

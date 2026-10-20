@@ -548,6 +548,23 @@ class BackendAuth(BaseModel):
         default=None,
         description="Scopes to request, overriding the backend's advertised ones",
     )
+    issuer: str | None = Field(
+        default=None,
+        description=(
+            "Pin the authorization server: discovery must name exactly this "
+            "issuer, or authorization is refused. Unset: the first one "
+            "discovered is used, and a later change is refused until the "
+            "grant is revoked."
+        ),
+    )
+
+    @field_validator("issuer")
+    @classmethod
+    def issuer_is_https(cls, v: str | None) -> str | None:
+        """An issuer is an https URL, compared byte-for-byte (RFC 8414 3.3)."""
+        if v is not None and not v.startswith("https://"):
+            raise ValueError("auth.issuer must be an https:// URL")
+        return v
 
     @field_validator("client_secret_env")
     @classmethod
