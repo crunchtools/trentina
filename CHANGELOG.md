@@ -10,6 +10,17 @@ under that name.
 
 ## [Unreleased]
 
+### Security
+
+- The inbound OAuth store no longer accepts plaintext records (#495).
+  py-key-value's `FernetEncryptionWrapper` returns a record without
+  ciphertext unchanged, so anyone able to write `/data/fastmcp` could plant a
+  token binding, upstream token set or client registration without the key.
+  The gateway now passes its own `client_storage` (same key, directory and
+  file layout as FastMCP's, so existing records stay readable) whose
+  wrapper treats such a record as a miss and logs a warning. Bad ciphertext
+  still reads as a miss, so key rotation still means re-registration.
+
 ### Added
 
 - `backend_auth(action="revoke")` now tells the authorization server (#499).
