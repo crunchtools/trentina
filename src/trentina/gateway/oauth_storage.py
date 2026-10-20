@@ -7,16 +7,17 @@ writer plants: a plaintext ``{"profile": "<operator>"}`` under a binding key,
 dropped into ``$FASTMCP_HOME/oauth-proxy/<fp>/``, is accepted without the key.
 ``StrictFernetEncryptionWrapper`` treats such a record as a miss.
 
-``build_client_storage`` rebuilds the store the way FastMCP does (same derived
-key, same directory, same sanitization strategies) so records already on disk
-stay readable. ``tests/test_oauth_storage.py`` pins that parity.
+``harden_client_storage`` makes the store the provider built for itself strict
+in place, rather than rebuilding it: a rebuild has to copy FastMCP's key
+derivation and directory layout, and drifts from them on an upgrade, which
+strands every record already on disk. ``tests/test_oauth_storage.py`` pins
+that records FastMCP writes stay readable.
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
-from typing import Any
+from typing import Any, cast
 
 from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
@@ -25,7 +26,6 @@ from .. import logsafe
 logger = logging.getLogger(__name__)
 
 _ENCRYPTED_DATA_KEY = "__encrypted_data__"
-_STORAGE_SALT = "fastmcp-storage-encryption-key"
 
 
 class StrictFernetEncryptionWrapper(FernetEncryptionWrapper):
@@ -44,37 +44,15 @@ class StrictFernetEncryptionWrapper(FernetEncryptionWrapper):
         return super()._decrypt_value(value)
 
 
-def client_storage_kwargs(signing_key: str | None) -> dict[str, Any]:
-    """The provider's ``client_storage`` argument; none without a signing key,
-    where FastMCP keeps its ephemeral default."""
-    if not signing_key:
-        return {}
-    return {"client_storage": build_client_storage(signing_key)}
+def harden_client_storage(storage: Any) -> StrictFernetEncryptionWrapper:
+    """Make the provider's own encrypted store refuse plaintext records.
 
-
-def build_client_storage(signing_key: str) -> StrictFernetEncryptionWrapper:
-    """The store ``OAuthProxy`` builds by default, with the strict wrapper."""
-    from cryptography.fernet import Fernet
-    from fastmcp import settings
-    from fastmcp.server.auth.jwt_issuer import derive_jwt_key
-    from key_value.aio.stores.filetree import (
-        FileTreeStore,
-        FileTreeV1CollectionSanitizationStrategy,
-        FileTreeV1KeySanitizationStrategy,
-    )
-
-    # derive_jwt_key already returns a urlsafe-base64 Fernet key.
-    encryption_key = derive_jwt_key(high_entropy_material=signing_key, salt=_STORAGE_SALT)
-    fingerprint = hashlib.sha256(encryption_key).hexdigest()[:12]
-    cache_dir = settings.home / "oauth-proxy" / fingerprint
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    file_store = FileTreeStore(
-        data_directory=cache_dir,
-        key_sanitization_strategy=FileTreeV1KeySanitizationStrategy(cache_dir),
-        collection_sanitization_strategy=FileTreeV1CollectionSanitizationStrategy(cache_dir),
-    )
-    return StrictFernetEncryptionWrapper(
-        key_value=file_store,
-        fernet=Fernet(key=encryption_key),
-        raise_on_decryption_error=False,
-    )
+    The subclass adds no state, so swapping the class keeps the key, the
+    directory and every adapter FastMCP already built over this object.
+    Anything but a plain ``FernetEncryptionWrapper`` is refused: the gateway
+    does not start on a store it cannot make strict.
+    """
+    if type(storage) is not FernetEncryptionWrapper:
+        raise RuntimeError("OAuth store: not a FernetEncryptionWrapper; cannot refuse plaintext")
+    storage.__class__ = StrictFernetEncryptionWrapper
+    return cast(StrictFernetEncryptionWrapper, storage)

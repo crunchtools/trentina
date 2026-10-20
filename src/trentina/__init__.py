@@ -856,7 +856,7 @@ def _build_proxy_provider(
     from fastmcp.server.auth.providers.google import GoogleProvider
 
     from .gateway.oauth_binding import BindTokensToProfile, profile_resources
-    from .gateway.oauth_storage import client_storage_kwargs
+    from .gateway.oauth_storage import harden_client_storage
     from .gateway.oauth_store import PromoteOnExchange
 
     class _GatewayGoogleProvider(BindTokensToProfile, PromoteOnExchange, GoogleProvider):
@@ -1075,9 +1075,7 @@ def _build_proxy_provider(
     # DCR store, and their presence is what turns on the client_secret_post
     # advertisement in get_routes. Built before the provider so the class
     # attribute is populated by the time FastMCP asks for routes.
-    # Our own store, so a plaintext record planted on disk reads as a miss (#495).
     provider = _GatewayGoogleProvider(
-        **client_storage_kwargs(signing_key),
         client_id=client_id,
         client_secret=client_secret,
         base_url=base_url,
@@ -1097,6 +1095,11 @@ def _build_proxy_provider(
         # fallback, so suppressing the flag advertises us as older than we are.
         enable_cimd=True,
     )
+    # FastMCP's own store, made strict in place, so a plaintext record planted
+    # on disk reads as a miss (#495). Without a signing key the store is
+    # FastMCP's ephemeral default and nothing on disk is read.
+    if signing_key:
+        harden_client_storage(provider._client_storage)
     # Provisioned confidential clients are resolved by get_client ahead of the
     # DCR store, and their presence is what turns on the client_secret_post
     # advertisement in get_routes. Built AFTER the provider so they can carry

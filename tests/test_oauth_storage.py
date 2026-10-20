@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastmcp.server.auth.providers.google import GoogleProvider
 
 from trentina.gateway.oauth_binding import TokenBinding
-from trentina.gateway.oauth_storage import StrictFernetEncryptionWrapper, build_client_storage
+from trentina.gateway.oauth_storage import StrictFernetEncryptionWrapper, harden_client_storage
 from trentina.gateway.oauth_store import resolve_cullable
 
 KEY = "k" * 48
@@ -23,6 +24,21 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+def _fastmcp_storage() -> Any:
+    """The store FastMCP builds for a provider with a signing key."""
+    return GoogleProvider(
+        client_id="id",
+        client_secret="secret",
+        base_url="https://gw.example",
+        jwt_signing_key=KEY,
+    )._client_storage
+
+
+def build_client_storage() -> StrictFernetEncryptionWrapper:
+    """The store the gateway serves from: FastMCP's own, made strict."""
+    return harden_client_storage(_fastmcp_storage())
+
+
 async def _plant(storage: StrictFernetEncryptionWrapper, collection: str, key: str) -> None:
     """Write a plaintext record straight into the file tree, under the wrapper."""
     await storage.key_value.put(key=key, value={"profile": "operator"}, collection=collection)
@@ -30,7 +46,7 @@ async def _plant(storage: StrictFernetEncryptionWrapper, collection: str, key: s
 
 class TestStrictStore:
     async def test_encrypted_round_trip(self, home: Path) -> None:
-        storage = build_client_storage(KEY)
+        storage = build_client_storage()
         await storage.put(key="k1", value={"a": 1}, collection="c")
         assert await storage.get(key="k1", collection="c") == {"a": 1}
 
@@ -38,14 +54,14 @@ class TestStrictStore:
         "collection", [COLLECTION, "mcp-upstream-tokens", "mcp-oauth-proxy-clients"]
     )
     async def test_plaintext_record_is_a_miss(self, home: Path, collection: str) -> None:
-        storage = build_client_storage(KEY)
+        storage = build_client_storage()
         await _plant(storage, collection, "token:up1")
         assert await storage.get(key="token:up1", collection=collection) is None
 
     async def test_plaintext_binding_is_not_read(self, home: Path) -> None:
         from key_value.aio.adapters.pydantic import PydanticAdapter
 
-        storage = build_client_storage(KEY)
+        storage = build_client_storage()
         await _plant(storage, COLLECTION, "token:up1")
         adapter = PydanticAdapter[TokenBinding](
             key_value=storage,
@@ -56,20 +72,19 @@ class TestStrictStore:
         assert await adapter.get(key="token:up1") is None
 
     async def test_cull_sweep_still_reaches_the_file_store(self, home: Path) -> None:
-        storage = build_client_storage(KEY)
+        storage = build_client_storage()
         assert resolve_cullable(storage) is storage.key_value
+
+    def test_only_a_fernet_store_is_accepted(self) -> None:
+        with pytest.raises(RuntimeError):
+            harden_client_storage(object())
 
 
 class TestParityWithFastMCP:
     async def test_same_directory_and_key_as_fastmcp(self, home: Path) -> None:
         """Records FastMCP's default store wrote stay readable, and the reverse."""
-        ours = build_client_storage(KEY)
-        theirs = GoogleProvider(
-            client_id="id",
-            client_secret="secret",
-            base_url="https://gw.example",
-            jwt_signing_key=KEY,
-        )._client_storage
+        theirs = _fastmcp_storage()
+        ours = build_client_storage()
         await theirs.put(key="k1", value={"a": 1}, collection="c")
         assert await ours.get(key="k1", collection="c") == {"a": 1}
         await ours.put(key="k2", value={"b": 2}, collection="c")
