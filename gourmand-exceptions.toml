@@ -628,6 +628,13 @@ justification = "A mixin is never instantiated -- it is mixed in, ahead of Promo
 classification = "by_design"
 
 [[exceptions]]
+check = "dead_structs"
+path = "src/trentina/gateway/oauth_storage.py"
+pattern = "StrictFernetEncryptionWrapper"
+justification = "Installed by class assignment, not construction: harden_client_storage sets __class__ on the FernetEncryptionWrapper FastMCP's OAuthProxy built, because FastMCP has already built its PydanticAdapters over that object and a new instance would leave them reading the lenient one. Reached in production from __init__._build_proxy_provider via harden_provider_storage (#495); tests/test_oauth_storage.py asserts the provider's store has this type afterwards."
+classification = "by_design"
+
+[[exceptions]]
 check = "copy_paste_detection"
 path = "src/trentina/gateway/ratelimit.py"
 pattern = "client_address"

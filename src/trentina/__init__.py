@@ -856,6 +856,7 @@ def _build_proxy_provider(
     from fastmcp.server.auth.providers.google import GoogleProvider
 
     from .gateway.oauth_binding import BindTokensToProfile, profile_resources
+    from .gateway.oauth_storage import harden_provider_storage
     from .gateway.oauth_store import PromoteOnExchange
 
     class _GatewayGoogleProvider(BindTokensToProfile, PromoteOnExchange, GoogleProvider):
@@ -1094,6 +1095,9 @@ def _build_proxy_provider(
         # fallback, so suppressing the flag advertises us as older than we are.
         enable_cimd=True,
     )
+    # FastMCP's own store, made strict in place, so a plaintext record planted
+    # on disk reads as a miss (#495).
+    harden_provider_storage(provider)
     # Provisioned confidential clients are resolved by get_client ahead of the
     # DCR store, and their presence is what turns on the client_secret_post
     # advertisement in get_routes. Built AFTER the provider so they can carry

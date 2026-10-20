@@ -213,7 +213,7 @@ jobs:
       - name: Build test runner image (adds shell + pytest to distroless)
         run: |
           docker build -f - -t trentina:test-runner . <<'EOF'
-          FROM quay.io/hummingbird/python:latest-builder AS test-deps
+          FROM quay.io/hummingbird/python:3.14-builder AS test-deps
           USER 0
           RUN pip install --no-cache-dir --prefix=/usr pytest pytest-asyncio
 

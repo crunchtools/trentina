@@ -10,6 +10,26 @@ under that name.
 
 ## [Unreleased]
 
+### Security
+
+- The inbound OAuth store no longer accepts plaintext records (#495).
+  py-key-value's `FernetEncryptionWrapper` returns a record without
+  ciphertext unchanged, so anyone able to write `/data/fastmcp` could plant a
+  token binding, upstream token set or client registration without the key.
+  The gateway now makes the store FastMCP builds strict in place (same key,
+  directory and file layout, so existing records stay readable): a record
+  without ciphertext is a miss and logs a warning. This holds with or without
+  `TRENTINA_OAUTH_JWT_SIGNING_KEY`, since FastMCP keeps the store on disk
+  either way. Bad ciphertext still reads as a miss, so key rotation still
+  means re-registration.
+
+### Fixed
+
+- Container builds pin `quay.io/hummingbird/python:3.14` (all stages, and the
+  CI test-runner stage) instead of `latest`, which moved to Python 3.15.0 on
+  2026-10-20; the locked `onnxruntime==1.30.0` has no 3.15 wheel, so every
+  build since had failed (crunchtools/constitution#66).
+
 ### Added
 
 - `backend_auth(action="revoke")` now tells the authorization server (#499).

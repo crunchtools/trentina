@@ -36,7 +36,11 @@
 # Builder variant includes DNF for installing libstdc++ and
 # other native deps needed by PyTorch/numpy ONNX conversion.
 # ============================================================
-FROM quay.io/hummingbird/python:latest-builder AS model-builder
+# Every stage is pinned to Python 3.14, not `latest`: the runtime stage copies
+# /usr/lib*/python3.14/site-packages, and when `latest` moved to 3.15 the
+# locked onnxruntime had no wheel for it and the build stopped. Moving to a new
+# Python is a deliberate change to these tags, the lock and those COPY lines.
+FROM quay.io/hummingbird/python:3.14-builder AS model-builder
 USER 0
 
 RUN pip install --no-cache-dir \
@@ -74,7 +78,7 @@ RUN python /usr/local/bin/export_l2_model.py \
 # must happen in a builder stage. Installed packages are copied
 # into the final distroless image.
 # ============================================================
-FROM quay.io/hummingbird/python:latest-builder AS pip-builder
+FROM quay.io/hummingbird/python:3.14-builder AS pip-builder
 USER 0
 
 WORKDIR /app
@@ -149,7 +153,7 @@ RUN cd /gate \
 # ============================================================
 # Stage 3: Runtime image (distroless — no shell, no dnf)
 # ============================================================
-FROM quay.io/hummingbird/python:latest
+FROM quay.io/hummingbird/python:3.14
 
 # Supplied by CI from the release metadata. It was a hardcoded "0.4.0" that
 # went unchanged through every release up to 0.7.0, so the image labelled
