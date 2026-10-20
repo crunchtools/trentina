@@ -9,7 +9,11 @@ import pytest
 from fastmcp.server.auth.providers.google import GoogleProvider
 
 from trentina.gateway.oauth_binding import TokenBinding
-from trentina.gateway.oauth_storage import StrictFernetEncryptionWrapper, harden_client_storage
+from trentina.gateway.oauth_storage import (
+    StrictFernetEncryptionWrapper,
+    harden_client_storage,
+    harden_provider_storage,
+)
 from trentina.gateway.oauth_store import resolve_cullable
 
 KEY = "k" * 48
@@ -78,6 +82,20 @@ class TestStrictStore:
     def test_only_a_fernet_store_is_accepted(self) -> None:
         with pytest.raises(RuntimeError):
             harden_client_storage(object())
+
+    def test_provider_without_a_store_is_refused(self) -> None:
+        with pytest.raises(RuntimeError):
+            harden_provider_storage(object(), persistent=True)
+
+    def test_provider_store_is_hardened_in_place(self, home: Path) -> None:
+        provider = GoogleProvider(
+            client_id="id",
+            client_secret="secret",
+            base_url="https://gw.example",
+            jwt_signing_key=KEY,
+        )
+        harden_provider_storage(provider, persistent=True)
+        assert type(provider._client_storage) is StrictFernetEncryptionWrapper
 
 
 class TestParityWithFastMCP:
