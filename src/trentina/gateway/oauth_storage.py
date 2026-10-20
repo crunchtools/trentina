@@ -65,14 +65,14 @@ def harden_client_storage(storage: Any) -> StrictFernetEncryptionWrapper:
     return cast("StrictFernetEncryptionWrapper", storage)
 
 
-def harden_provider_storage(provider: Any, *, persistent: bool) -> None:
+def harden_provider_storage(provider: Any) -> None:
     """Make the store an OAuth proxy ``provider`` built for itself strict.
 
-    ``persistent`` is false when the provider has no signing key: FastMCP's
-    store is then its ephemeral default, and nothing on disk is read.
+    Unconditional. Without ``jwt_signing_key`` FastMCP derives one from the
+    upstream client secret and still builds the same Fernet-wrapped
+    ``FileTreeStore`` under ``$FASTMCP_HOME``, so that store reads from disk
+    too and needs the same refusal.
     """
-    if not persistent:
-        return
     storage = getattr(provider, "_client_storage", None)
     if storage is None:
         raise RuntimeError("OAuth store: provider has no _client_storage; cannot refuse plaintext")

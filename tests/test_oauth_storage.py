@@ -86,16 +86,21 @@ class TestStrictStore:
 
     def test_provider_without_a_store_is_refused(self) -> None:
         with pytest.raises(RuntimeError):
-            harden_provider_storage(object(), persistent=True)
+            harden_provider_storage(object())
 
-    def test_ephemeral_provider_store_is_left_alone(self) -> None:
-        """No signing key: nothing on disk is read, so nothing is touched."""
-        sentinel = object()
-        provider = SimpleNamespace(_client_storage=sentinel)
-        harden_provider_storage(object(), persistent=False)
-        harden_provider_storage(provider, persistent=False)
-        assert provider._client_storage is sentinel
-        assert type(sentinel) is object
+    def test_provider_with_a_foreign_store_is_refused(self) -> None:
+        with pytest.raises(RuntimeError):
+            harden_provider_storage(SimpleNamespace(_client_storage=object()))
+
+    async def test_bad_ciphertext_is_a_miss(self, home: Path) -> None:
+        """Key rotation: a record sealed under another key reads as a miss."""
+        storage = build_client_storage()
+        await storage.key_value.put(
+            key="k1",
+            value={"__encrypted_data__": "bm90LWZlcm5ldA==", "__encryption_version__": 1},
+            collection="c",
+        )
+        assert await storage.get(key="k1", collection="c") is None
 
     def test_provider_store_is_hardened_in_place(self, home: Path) -> None:
         provider = GoogleProvider(
@@ -104,8 +109,42 @@ class TestStrictStore:
             base_url="https://gw.example",
             jwt_signing_key=KEY,
         )
-        harden_provider_storage(provider, persistent=True)
+        harden_provider_storage(provider)
         assert type(provider._client_storage) is StrictFernetEncryptionWrapper
+
+
+class TestGatewayWiring:
+    """The gateway's own provider serves from the strict store."""
+
+    @pytest.mark.parametrize("signing_key", [None, "s" * 48])
+    async def test_built_provider_refuses_plaintext(
+        self, home: Path, signing_key: str | None
+    ) -> None:
+        from unittest.mock import patch
+
+        from trentina import _build_oauth_context
+        from trentina.gateway.loader import GatewayConfig
+        from trentina.gateway.profile import AuthConfig, OAuthConfig, Profile
+
+        env = {
+            "TRENTINA_OAUTH_GOOGLE_CLIENT_ID": "proxy-client.apps.googleusercontent.com",
+            "TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET": "upstream-secret",
+            "TRENTINA_OAUTH_BASE_URL": "https://mcp.example.com",
+        }
+        if signing_key:
+            env["TRENTINA_OAUTH_JWT_SIGNING_KEY"] = signing_key
+        profile = Profile(
+            name="agent2",
+            auth=AuthConfig(bearer_token_env="A"),
+            oauth=OAuthConfig(enabled=True, allowed_emails=["alice@example.com"]),
+        )
+        with patch.dict("os.environ", env, clear=False):
+            ctx = _build_oauth_context(GatewayConfig(profiles={"agent2": profile}))
+        assert ctx is not None
+        storage = ctx.provider._client_storage
+        assert type(storage) is StrictFernetEncryptionWrapper
+        await _plant(storage, COLLECTION, "token:up1")
+        assert await storage.get(key="token:up1", collection=COLLECTION) is None
 
 
 class TestParityWithFastMCP:

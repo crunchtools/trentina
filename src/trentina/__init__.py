@@ -1097,7 +1097,7 @@ def _build_proxy_provider(
     )
     # FastMCP's own store, made strict in place, so a plaintext record planted
     # on disk reads as a miss (#495).
-    harden_provider_storage(provider, persistent=bool(signing_key))
+    harden_provider_storage(provider)
     # Provisioned confidential clients are resolved by get_client ahead of the
     # DCR store, and their presence is what turns on the client_secret_post
     # advertisement in get_routes. Built AFTER the provider so they can carry
