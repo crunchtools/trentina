@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [1.23.0] - 2026-10-20
+
 ### Security
 
 - The inbound OAuth store no longer accepts plaintext records (#495).
