@@ -10,6 +10,21 @@ under that name.
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-10-20
+
+### Added
+
+- Backend OAuth (#479). A backend with `auth: {type: oauth}` is called with
+  a grant that belongs to the calling profile, so MCP servers that only
+  speak OAuth 2.1 (Era is the first) can sit behind the gateway. The
+  gateway discovers the authorization server (RFC 9728, RFC 8414), requires
+  PKCE, registers itself if it must (RFC 7591), and refreshes against the
+  token endpoint recorded at sign-in. Grants are encrypted at rest under
+  `TRENTINA_BACKEND_TOKEN_KEY` and bound to their profile, backend and host.
+  Agents drive it with one admin tool, `backend_auth` (`start`, `status`,
+  `revoke`); a human finishes the sign-in on a gateway page that names the
+  profile first. A profile with no grant is told to sign in and never trips
+  the backend's circuit breaker.
 ## [1.21.0] - 2026-10-19
 
 ### Added
