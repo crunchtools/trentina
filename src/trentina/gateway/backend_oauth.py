@@ -88,6 +88,8 @@ MAX_FLOWS_PER_SLOT = 3
 MAX_REPLY_BYTES = 65_536
 #: Wall-clock seconds for one request and its whole reply.
 REQUEST_DEADLINE = 15.0
+#: Wall-clock seconds for one revocation request: a slow server must not hold up the local delete.
+REVOKE_DEADLINE = 5.0
 #: A grant this close to expiry is refreshed before it is used.
 REFRESH_MARGIN = timedelta(seconds=60)
 #: A query value on the public routes longer than this is refused unread.
@@ -224,6 +226,7 @@ class Discovered:
     authorization_endpoint: str
     token_endpoint: str
     registration_endpoint: str | None
+    revocation_endpoint: str | None
     scopes: tuple[str, ...]
     iss_required: bool
     #: ``token_endpoint_auth_methods_supported``; absent means basic (RFC 8414 2).
@@ -299,7 +302,12 @@ async def _server_metadata(profile: Profile, backend: Backend, issuer: str) -> A
         raise BackendAuthError("issuer_mismatch")
     if "S256" not in (asm.code_challenge_methods_supported or []):
         raise BackendAuthError("no_pkce")
-    endpoints = (asm.authorization_endpoint, asm.token_endpoint, asm.registration_endpoint)
+    endpoints = (
+        asm.authorization_endpoint,
+        asm.token_endpoint,
+        asm.registration_endpoint,
+        asm.revocation_endpoint,
+    )
     if _REQUIRE_HTTPS and any(e is not None and e.scheme != "https" for e in endpoints):
         raise BackendAuthError("not_https")
     return asm
@@ -334,6 +342,9 @@ async def discover(profile: Profile, backend: Backend) -> Discovered:
         registration_endpoint=(
             str(asm.registration_endpoint) if asm.registration_endpoint is not None else None
         ),
+        revocation_endpoint=(
+            str(asm.revocation_endpoint) if asm.revocation_endpoint is not None else None
+        ),
         scopes=tuple(scope.split()) if scope else (),
         iss_required=bool(asm.authorization_response_iss_parameter_supported),
         auth_methods=tuple(asm.token_endpoint_auth_methods_supported or ["client_secret_basic"]),
@@ -362,6 +373,7 @@ def _configured_client(backend: Backend, disc: Discovered) -> BackendClient | No
         auth_method=method,
         issuer=disc.issuer,
         token_endpoint=disc.token_endpoint,
+        revocation_endpoint=disc.revocation_endpoint,
     )
 
 
@@ -379,6 +391,7 @@ async def _client_for(
         existing is not None
         and existing.issuer == disc.issuer
         and existing.token_endpoint == disc.token_endpoint
+        and existing.revocation_endpoint == disc.revocation_endpoint
     ):
         return existing
     if disc.registration_endpoint is None:
@@ -417,6 +430,7 @@ async def _client_for(
         auth_method=granted,
         issuer=disc.issuer,
         token_endpoint=disc.token_endpoint,
+        revocation_endpoint=disc.revocation_endpoint,
     )
     await store.put_client(profile.name, name, backend, client)
     return client
@@ -570,6 +584,7 @@ async def start(profile: Profile, name: str, *, authorized_by: Literal["self", "
         issuer=disc.issuer,
         iss_required=disc.iss_required,
         token_endpoint=disc.token_endpoint,
+        revocation_endpoint=disc.revocation_endpoint,
         authorize_url=f"{disc.authorization_endpoint}{joiner}{urlencode(params)}",
         client_id=client.client_id,
         auth_method=client.auth_method,
@@ -611,6 +626,7 @@ def _grant_from(
     *,
     issuer: str,
     token_endpoint: str,
+    revocation_endpoint: str | None,
     resource: str | None,
     client: BackendClient,
     previous: BackendGrant | None = None,
@@ -638,6 +654,7 @@ def _grant_from(
         scopes=scopes,
         issuer=issuer,
         token_endpoint=token_endpoint,
+        revocation_endpoint=revocation_endpoint,
         resource=resource,
         client_id=client.client_id,
         auth_method=client.auth_method,
@@ -680,6 +697,7 @@ async def _exchange(
         reply,
         issuer=flow.issuer,
         token_endpoint=flow.token_endpoint,
+        revocation_endpoint=flow.revocation_endpoint,
         resource=flow.resource,
         client=client,
         scopes=flow.scopes,
@@ -808,6 +826,7 @@ async def _refresh(
         reply,
         issuer=grant.issuer,
         token_endpoint=grant.token_endpoint,
+        revocation_endpoint=grant.revocation_endpoint,
         resource=grant.resource,
         client=client,
         previous=grant,
@@ -815,6 +834,58 @@ async def _refresh(
     return await store.put_grant(
         profile.name, name, backend, fresh, expected_generation=grant.generation
     )
+
+
+# ------------------------------------------------------------------ revoke
+
+
+async def revoke_remote(
+    store: BackendTokenStore, profile: Profile, name: str, backend: Backend, grant: BackendGrant
+) -> str:
+    """Best-effort RFC 7009 revocation at the endpoint pinned in ``grant`` (#499).
+
+    Returns one of ``revoked``, ``revocation_endpoint_not_pinned``,
+    ``revocation_unreachable`` or ``revocation_refused``. A grant with no pinned
+    endpoint sends nothing: rediscovering now would hand the refresh token and
+    client secret to whatever the metadata names today. The refresh token goes
+    first, then the access token. Never raises, and never logs a token or a body.
+    """
+    if grant.revocation_endpoint is None:
+        return "revocation_endpoint_not_pinned"
+    client = await _client_of(store, profile, name, backend, grant.client_id)
+    if client is None:
+        client = BackendClient(
+            client_id=grant.client_id, auth_method="none", issuer=grant.issuer, token_endpoint=""
+        )
+    client = client.model_copy(update={"auth_method": grant.auth_method})
+    tokens = [("access_token", grant.access_token)]
+    if grant.refresh_token is not None:
+        tokens.insert(0, ("refresh_token", grant.refresh_token))
+    result = "revoked"
+    try:
+        # One deadline for the whole sequence, so the local delete waits at most this long.
+        async with asyncio.timeout(REVOKE_DEADLINE):
+            for hint, token in tokens:
+                form = {"token": token.get_secret_value(), "token_type_hint": hint}
+                headers = _client_auth(client, form)
+                reply = await _request(
+                    profile, "POST", grant.revocation_endpoint, form=form, headers=headers
+                )
+                if not HTTPStatus.OK <= reply.status < HTTPStatus.MULTIPLE_CHOICES:
+                    logger.info(
+                        "backend-oauth: revocation refused (status %d) at %s",
+                        reply.status,
+                        backend_origin(grant.issuer),
+                    )
+                    result = "revocation_refused"
+    except (BackendAuthError, TimeoutError) as exc:
+        logger.info(
+            "backend-oauth: revocation unreachable (%s) at %s",
+            exc.code if isinstance(exc, BackendAuthError) else "timeout",
+            backend_origin(grant.issuer),
+        )
+        return "revocation_unreachable"
+    return result
 
 
 # ------------------------------------------------------------------ routes

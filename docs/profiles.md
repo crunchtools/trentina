@@ -656,9 +656,14 @@ The agent drives it with one admin tool, `backend_auth`:
   human (at most 10 starts per profile per hour).
 - `backend_auth(action="status")` says which OAuth backends this profile is
   signed in to, and until when. It never returns a token.
-- `backend_auth(action="revoke", backend="era")` forgets the grant here. The
-  backend's own service is not told, so revoke the app there as well to end
-  its tokens everywhere. The registration is kept.
+- `backend_auth(action="revoke", backend="era")` forgets the grant here. If the
+  authorization server advertised an RFC 7009 `revocation_endpoint` when the
+  grant was issued, the refresh token and then the access token are sent
+  there first, best effort; `remote` in the result is `revoked`,
+  `revocation_endpoint_not_pinned` (a grant from before this, or a server
+  with none: nothing is sent, revoke the app in the service's settings),
+  `revocation_unreachable` or `revocation_refused`. The grant is deleted
+  whatever `remote` says. The registration is kept.
 
 Every call to an `auth` backend carries the calling profile's grant, and only
 that profile's. A profile with no grant gets an error naming the fix

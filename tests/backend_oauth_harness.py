@@ -41,6 +41,10 @@ class FakeServer:
     refresh_tokens: dict[str, int] = field(default_factory=dict)
     requests: list[httpx.Request] = field(default_factory=list)
     issued: int = 0
+    #: Advertise ``revocation_endpoint`` (RFC 7009), answer it with ``revoke_status``.
+    revocation: bool = False
+    revoke_status: int = 200
+    revoked: list[dict[str, str]] = field(default_factory=list)
     overrides: dict[tuple[str, str], httpx.Response] = field(default_factory=dict)
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -58,6 +62,7 @@ class FakeServer:
             ),
             ("auth.era.example", "/register"): self.register,
             ("auth.era.example", "/token"): self.token,
+            ("auth.era.example", "/revoke"): self.revoke,
         }
         answer = routes.get(key)
         return answer(request) if answer else httpx.Response(404)
@@ -81,8 +86,17 @@ class FakeServer:
             },
         )
 
+    def revoke(self, request: httpx.Request) -> httpx.Response:
+        form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+        self.revoked.append({**form, "authorization": request.headers.get("authorization", "")})
+        return httpx.Response(self.revoke_status, text="body-must-not-leak")
+
     def metadata(self) -> dict[str, Any]:
+        extra = (
+            {"revocation_endpoint": "https://auth.era.example/revoke"} if self.revocation else {}
+        )
         return {
+            **extra,
             "issuer": self.issuer,
             "authorization_endpoint": "https://auth.era.example/authorize",
             "token_endpoint": "https://auth.era.example/token",

@@ -10,6 +10,26 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- `backend_auth(action="revoke")` now tells the authorization server (#499).
+  When its metadata advertised an RFC 7009 `revocation_endpoint`, the
+  refresh token and then the access token are POSTed to it (5 seconds for both
+  requests together, through the egress guard, with the grant's own client authentication)
+  before the grant is deleted. The endpoint is pinned at sign-in like the
+  token endpoint. The result's `remote` is `revoked`,
+  `revocation_endpoint_not_pinned`, `revocation_unreachable` or
+  `revocation_refused`; the grant is deleted locally in every case. A grant
+  issued before this release has no pinned endpoint, so nothing is sent and
+  the app must be revoked in the service's own settings.
+
+### Changed
+
+- Backend OAuth grants, clients and flows carry an optional
+  `revocation_endpoint`. Old records still read. Rollback is one-way: older
+  code cannot read a record that has the field, treats the grant as absent,
+  and the user signs in again.
+
 ## [1.22.0] - 2026-10-20
 
 ### Added
