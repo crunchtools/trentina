@@ -113,13 +113,16 @@ def _register_push_ingresses(
     data_dir: Path,
     other_agents: frozenset[str] = frozenset(),
 ) -> None:
-    """The paths content is pushed in on rather than fetched: alerts and the
-    Matrix bridge. Both bind at startup."""
+    """The paths content is pushed in on rather than fetched: alerts, the
+    Matrix bridge and backend OAuth callbacks. All bind at startup."""
     from .gateway.alert_ingress import register_alert_routes
+    from .gateway.backend_oauth import register_backend_oauth_routes
     from .gateway.matrix_bridge import register_bridge_routes
 
     register_alert_routes(mcp_server, profiles)
     register_bridge_routes(mcp_server, profiles, data_dir, other_agents=other_agents)
+    # The return leg of a backend's OAuth flow (#479); mounted only with a key.
+    register_backend_oauth_routes(mcp_server)
 
 
 def _register_proxies(mcp_server: FastMCP, gateway_config: GatewayConfig) -> dict[str, Any]:
@@ -1175,9 +1178,9 @@ def _build_oauth_context(gateway_config: GatewayConfig) -> OAuthContext | None:
     # matching secret is read inside _build_proxy_provider, which is the only
     # thing that uses it.
     client_id = os.environ.get("TRENTINA_OAUTH_GOOGLE_CLIENT_ID", "").strip()
-    base_url = (
-        os.environ.get("TRENTINA_OAUTH_BASE_URL", "https://mcp.crunchtools.com").strip().rstrip("/")
-    )
+    from .gateway.backend_oauth import public_base_url
+
+    base_url = public_base_url()
     from .gateway.loader import read_secret_env
 
     # Once, at startup, and not recorded: the scrub removes it from os.environ
