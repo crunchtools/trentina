@@ -36,6 +36,7 @@ import base64
 import hashlib
 import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -50,7 +51,7 @@ from .loader import read_secret_env
 from .profile import BACKEND_NAME_RE, PROFILE_NAME_RE
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import AsyncIterator, Mapping
 
     from cryptography.fernet import Fernet
 
@@ -161,10 +162,25 @@ class BackendTokenStore:
         self._records = records
         self._fernet = fernet
         self._locks: dict[str, asyncio.Lock] = {}
+        self._holders: dict[str, asyncio.Task[Any] | None] = {}
 
-    def locked(self, profile: str, backend: str) -> asyncio.Lock:
-        """The lock serializing one slot's read-modify-write. Use ``async with``."""
-        return self._locks.setdefault(slot_key(profile, backend), asyncio.Lock())
+    @asynccontextmanager
+    async def locked(self, profile: str, backend: str) -> AsyncIterator[None]:
+        """Hold one slot for a read-modify-write: ``async with store.locked(p, b):``.
+
+        The holder is the task that entered, and only it may ``put_grant``:
+        ``Lock.locked()`` alone says the slot is held, not by whom.
+        """
+        slot = slot_key(profile, backend)
+        lock = self._locks.get(slot)
+        if lock is None:
+            lock = self._locks[slot] = asyncio.Lock()
+        async with lock:
+            self._holders[slot] = asyncio.current_task()
+            try:
+                yield
+            finally:
+                del self._holders[slot]
 
     # ---------------------------------------------------------------- grants
 
@@ -199,8 +215,11 @@ class BackendTokenStore:
         read, or 0 when there was none. Call under ``locked()``. Returns the
         grant as stored, carrying its new generation.
         """
-        if not self.locked(profile, name).locked():
-            raise RuntimeError("put_grant must be called under locked(profile, backend)")
+        slot = slot_key(profile, name)
+        if slot not in self._holders or self._holders[slot] is not asyncio.current_task():
+            raise RuntimeError(
+                "put_grant must be called by the task holding locked(profile, backend)"
+            )
         current = await self.get_grant(profile, name, backend)
         if (current.generation if current else 0) != expected_generation:
             raise GrantConflictError(slot_key(profile, name))
@@ -361,24 +380,23 @@ def open_backend_token_store(root: Path | None = None) -> BackendTokenStore | No
             "`openssl rand -base64 48`"
         )
     from cryptography.fernet import Fernet
-    from key_value.aio.stores.filetree import (
-        FileTreeStore,
-        FileTreeV1CollectionSanitizationStrategy,
-        FileTreeV1KeySanitizationStrategy,
-    )
+    from key_value.aio.stores import filetree
 
     base = root if root is not None else Path(get_config().db_path).parent / "backend-oauth"
     directory = base / hashlib.sha256(_derive(secret, b"directory")).hexdigest()[:12]
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     for path in (base, directory):
         os.chmod(path, 0o700)
-    records = FileTreeStore(
-        data_directory=directory,
-        key_sanitization_strategy=FileTreeV1KeySanitizationStrategy(directory),
-        collection_sanitization_strategy=FileTreeV1CollectionSanitizationStrategy(directory),
+    return BackendTokenStore(
+        filetree.FileTreeStore(
+            data_directory=directory,
+            key_sanitization_strategy=filetree.FileTreeV1KeySanitizationStrategy(directory),
+            collection_sanitization_strategy=(
+                filetree.FileTreeV1CollectionSanitizationStrategy(directory)
+            ),
+        ),
+        Fernet(base64.urlsafe_b64encode(_derive(secret, b"fernet"))),
     )
-    fernet = Fernet(base64.urlsafe_b64encode(_derive(secret, b"fernet")))
-    return BackendTokenStore(records, fernet)
 
 
 _store: BackendTokenStore | None = None

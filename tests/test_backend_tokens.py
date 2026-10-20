@@ -32,17 +32,14 @@ OTHER_KEY = "o" * 48
 ERA = Backend(url="https://context.era.app/mcp", auth=BackendAuth(type="oauth"))
 
 
-def _grant(**changes: object) -> BackendGrant:
-    fields: dict[str, object] = {
-        "access_token": SecretStr(CANARY),
-        "refresh_token": SecretStr(REFRESH),
-        "expires_at": datetime.now(UTC) + timedelta(hours=1),
-        "scopes": ("read",),
-        "issuer": "https://auth.era.app",
-        "obtained_at": datetime.now(UTC),
-    }
-    fields.update(changes)
-    return BackendGrant.model_validate(fields)
+GRANT = BackendGrant(
+    access_token=SecretStr(CANARY),
+    refresh_token=SecretStr(REFRESH),
+    expires_at=datetime.now(UTC) + timedelta(hours=1),
+    scopes=("read",),
+    issuer="https://auth.era.app",
+    obtained_at=datetime.now(UTC),
+)
 
 
 def _open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str = KEY) -> BackendTokenStore:
@@ -54,15 +51,11 @@ def _open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str = KEY) -> Ba
 
 async def _put(store: BackendTokenStore, profile: str = "josui", backend: Backend = ERA) -> None:
     async with store.locked(profile, "era"):
-        await store.put_grant(profile, "era", backend, _grant(), expected_generation=0)
-
-
-def _files(root: Path) -> list[Path]:
-    return [p for p in root.rglob("*") if p.is_file()]
+        await store.put_grant(profile, "era", backend, GRANT, expected_generation=0)
 
 
 def _grant_files(root: Path) -> list[Path]:
-    return [p for p in _files(root) if p.parent.name.startswith("S_backend_grants")]
+    return [p for p in root.rglob("*.json") if p.parent.name.startswith("S_backend_grants")]
 
 
 def _record_file(root: Path) -> Path:
@@ -147,7 +140,7 @@ class TestTheDiskIsNotTrusted:
             ERA,
             BackendClient(client_id="c", client_secret=SecretStr(CANARY), issuer="i"),
         )
-        for path in _files(tmp_path):
+        for path in (p for p in tmp_path.rglob("*") if p.is_file()):
             assert b"zqx7canary" not in path.read_bytes()
 
     async def test_a_planted_plaintext_record_is_refused(
@@ -208,16 +201,37 @@ class TestGenerations:
         await _put(store)
         async with store.locked("josui", "era"):
             with pytest.raises(GrantConflictError):
-                await store.put_grant("josui", "era", ERA, _grant(), expected_generation=0)
-            stored = await store.put_grant("josui", "era", ERA, _grant(), expected_generation=1)
+                await store.put_grant("josui", "era", ERA, GRANT, expected_generation=0)
+            stored = await store.put_grant("josui", "era", ERA, GRANT, expected_generation=1)
         assert stored.generation == 2
+
+    async def test_a_write_from_a_task_not_holding_the_lock_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = _open(tmp_path, monkeypatch)
+        held = asyncio.Event()
+        release = asyncio.Event()
+
+        async def holder() -> None:
+            async with store.locked("josui", "era"):
+                held.set()
+                await release.wait()
+
+        task = asyncio.create_task(holder())
+        await held.wait()
+        try:
+            with pytest.raises(RuntimeError, match="holding"):
+                await store.put_grant("josui", "era", ERA, GRANT, expected_generation=0)
+        finally:
+            release.set()
+            await task
 
     async def test_a_write_outside_the_lock_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         store = _open(tmp_path, monkeypatch)
-        with pytest.raises(RuntimeError, match="locked"):
-            await store.put_grant("josui", "era", ERA, _grant(), expected_generation=0)
+        with pytest.raises(RuntimeError, match="holding"):
+            await store.put_grant("josui", "era", ERA, GRANT, expected_generation=0)
 
     async def test_one_slot_refreshes_one_at_a_time(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -240,8 +254,7 @@ class TestGenerations:
 
 class TestTokensNeverPrint:
     def test_repr_str_and_dump_hold_no_token(self) -> None:
-        grant = _grant()
-        for text in (repr(grant), str(grant), grant.model_dump_json()):
+        for text in (repr(GRANT), str(GRANT), GRANT.model_dump_json()):
             assert "zqx7canary" not in text
 
     def test_a_validation_error_holds_no_token(self) -> None:

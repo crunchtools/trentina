@@ -16,7 +16,7 @@ import logging
 import re
 from fnmatch import fnmatchcase
 from typing import Annotated, Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse, urlsplit
 
 from pydantic import (
     BaseModel,
@@ -501,6 +501,8 @@ class Honeytoken(BaseModel):
 _CREDENTIAL_HEADERS = frozenset({"authorization", "proxy-authorization", "cookie"})
 _SCOPE_RE = re.compile(r"^[\x21\x23-\x5b\x5d-\x7e]+$")  # RFC 6749 3.3 scope-token
 _ENV_REF_IN_URL_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+#: A query parameter whose name says it carries a credential.
+_CREDENTIAL_PARAM_RE = re.compile(r"(?i)(token|key|secret|passw|auth|sig|session|cred)")
 
 
 class BackendAuth(BaseModel):
@@ -791,6 +793,12 @@ class Backend(BaseModel):
             raise ValueError(f"auth cannot be combined with the {', '.join(clashing)} header")
         if _ENV_REF_IN_URL_RE.search(self.url):
             raise ValueError("auth cannot be combined with a ${VAR} credential in the url")
+        parts = urlsplit(self.url)
+        if "@" in parts.netloc:
+            raise ValueError("auth cannot be combined with a user:password in the url")
+        named = [k for k, _ in parse_qsl(parts.query, keep_blank_values=True)]
+        if any(_CREDENTIAL_PARAM_RE.search(k) for k in named):
+            raise ValueError("auth cannot be combined with a credential query parameter in the url")
         return self
 
     @field_validator("url")

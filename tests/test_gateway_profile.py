@@ -813,6 +813,23 @@ class TestBackendAuth:
         with pytest.raises(ValidationError, match=r"\$\{VAR\}"):
             Backend(url="https://era.example/mcp?key=${ERA_KEY}", auth={"type": "oauth"})
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://user:pw@era.example/mcp",
+            "https://era.example/mcp?api_key=abc",
+            "https://era.example/mcp?access_token=abc",
+            "https://era.example/mcp?Signature=abc",
+        ],
+    )
+    def test_a_static_url_credential_beside_auth_is_refused(self, url: str) -> None:
+        with pytest.raises(ValidationError, match="cannot be combined"):
+            Backend(url=url, auth={"type": "oauth"})
+
+    def test_an_ordinary_query_beside_auth_is_fine(self) -> None:
+        backend = Backend(url="https://era.example/mcp?org=crunchtools", auth={"type": "oauth"})
+        assert backend.auth is not None
+
     def test_internal_and_decoy_backends_refuse_auth(self) -> None:
         with pytest.raises(ValidationError, match="internal"):
             Backend(url="internal://tools", auth={"type": "oauth"})
