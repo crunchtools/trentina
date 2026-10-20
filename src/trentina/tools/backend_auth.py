@@ -148,12 +148,14 @@ async def backend_auth_revoke(backend: str) -> dict[str, Any]:
     started = time.monotonic()
     remote: str | None = None
     try:
+        # Snapshot and delete under the lock, so no refresh can rotate the tokens
+        # we revoke; the network call runs after it is released.
         async with store.locked(profile.name, backend):
             cfg = profile.backends[backend]
             grant = await store.get_grant(profile.name, backend, cfg)
-            if grant is not None:
-                remote = await revoke_remote(store, profile, backend, cfg, grant)
             revoked = await store.delete_grant(profile.name, backend)
+        if grant is not None:
+            remote = await revoke_remote(store, profile, backend, cfg, grant)
     except Exception as exc:
         logger.warning("backend_auth revoke failed (%s)", exc_kind(exc))
         return {"backend": backend, "revoked": False, "error": type(exc).__name__}
