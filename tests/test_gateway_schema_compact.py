@@ -228,7 +228,7 @@ class TestRouter:
     async def _list(self, compact: bool) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         judged: list[dict[str, Any]] = []
 
-        async def fake_list(_name: str, _backend: Backend) -> list[dict[str, Any]]:
+        async def fake_list(_name: str, _backend: Backend, *_: Any) -> list[dict[str, Any]]:
             return [{"name": "search", "description": "d", "inputSchema": copy.deepcopy(GW_SCHEMA)}]
 
         async def fake_scan(

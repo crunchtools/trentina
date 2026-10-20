@@ -68,6 +68,8 @@ from .context import profile_context
 from .destination import MAX_DESTINATION_CHARS, DestinationKind
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from starlette.requests import Request
     from starlette.responses import Response
 
@@ -486,6 +488,17 @@ def _audit(
 #: Each slot's live flows, oldest first, as (state key, page key).
 _live_flows: dict[str, deque[tuple[str, str]]] = {}
 
+#: Called with a profile name after a login stores its grant. The router
+#: registers one that rebuilds that profile's tool list and tells its live
+#: sessions; registering it there, rather than importing the router here,
+#: keeps the dependency pointing one way.
+_on_grant_stored: list[Callable[[str], Awaitable[None]]] = []
+
+
+def on_grant_stored(callback: Callable[[str], Awaitable[None]]) -> None:
+    """Run ``callback(profile_name)`` after each completed login."""
+    _on_grant_stored.append(callback)
+
 
 def _require_store() -> BackendTokenStore:
     store = backend_token_store()
@@ -702,6 +715,11 @@ async def complete(state: str, code: str | None, iss: str | None, error: str | N
         _audit(flow.profile, flow.backend, "oauth_complete", started, exc.code, flow.issuer)
         raise
     _audit(flow.profile, flow.backend, "oauth_complete", started, issuer=flow.issuer)
+    for callback in _on_grant_stored:
+        try:
+            await callback(flow.profile)
+        except Exception as exc:
+            logger.warning("backend-oauth: after-login hook failed (%s)", exc_kind(exc))
 
 
 def _forget_flow(flow: BackendFlow) -> None:

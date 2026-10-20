@@ -881,3 +881,9 @@ check = "hidden_env_config"
 path = "src/trentina/gateway/backend_oauth.py"
 justification = "public_base_url reads TRENTINA_OAUTH_BASE_URL, documented in docs/configuration.md with its default; the read moved here from __init__.py so the inbound OAuth provider and the backend OAuth pages build their URLs from one place."
 classification = "by_design"
+
+[[exceptions]]
+check = "redundant_error_handling"
+path = "src/trentina/gateway/backend.py"
+justification = "list and call each re-raise BackendNeedsAuthError unchanged ahead of their `except Exception` handler. That handler records a circuit-breaker failure and rewraps as a generic BackendCallError; a profile with no grant has not reached the backend, so it must neither count against the shared circuit nor lose the error type that tells the agent to run backend_auth (#479)."
+classification = "by_design"

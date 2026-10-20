@@ -205,7 +205,7 @@ session. Off by default; see [Tool Discovery](tool-discovery.md).
 One gateway process serves every profile out of one config file, one database
 and one set of caches. `role` decides how much of that a profile reaches
 through the gateway's own admin tools — `cache_flush`, `reconnect_backend`,
-`quarantine_stats` and `reload_profiles`:
+`quarantine_stats`, `reload_profiles` and `backend_auth`:
 
 | | `role: agent` (default) | `role: operator` |
 |---|---|---|
@@ -213,6 +213,7 @@ through the gateway's own admin tools — `cache_flush`, `reconnect_backend`,
 | `cache_flush` | its own aggregate only; the same answer every time | every cache |
 | `reconnect_backend` | a backend in its own profile, with the tool count it would see | the name wherever it is configured, and who shares it |
 | `reload_profiles` | validates the whole file, applies its own section | applies the whole file and the gateway-wide settings |
+| `backend_auth` | its own OAuth backends; `start` and `revoke` need `auth.self_authorize` | its own OAuth backends, `self_authorize` or not |
 
 Omit `role` and the profile is an agent. There is at most one operator, and it
 belongs to the **Operator agent**: the agent that installs, configures and runs
@@ -594,8 +595,6 @@ allowed only after the host, and its value must be URL-safe
 
 ## Backend OAuth
 
-> The login flow is in place; the tools that start it and the router that
-> sends the grant land with the rest of #479.
 
 A backend that authenticates with MCP OAuth, and issues no API key, takes an
 `auth` block instead of a header. The gateway is the OAuth client, and every
@@ -650,6 +649,35 @@ How a login runs:
 
 `<base>` is `TRENTINA_OAUTH_BASE_URL`. The pages exist only when
 `TRENTINA_BACKEND_TOKEN_KEY_FILE` is set, and share a per-address rate limit.
+
+The agent drives it with one admin tool, `backend_auth`:
+
+- `backend_auth(action="start", backend="era")` returns the link to send a
+  human (at most 10 starts per profile per hour).
+- `backend_auth(action="status")` says which OAuth backends this profile is
+  signed in to, and until when. It never returns a token.
+- `backend_auth(action="revoke", backend="era")` forgets the grant here. The
+  backend's own service is not told, so revoke the app there as well to end
+  its tokens everywhere. The registration is kept.
+
+Every call to an `auth` backend carries the calling profile's grant, and only
+that profile's. A profile with no grant gets an error naming the fix
+(`backend_auth` with `start`) instead of a call, and never counts against the
+backend's circuit breaker. A grant the backend refuses (401) is refreshed once
+and the request sent again, but only a request the backend never ran: a call
+it accepted is never sent twice. If the refreshed grant is refused too, the
+profile is told to sign in again, and the gateway stops refreshing for a
+minute.
+
+A backend's tool list is cached per URL, so once any profile has listed an
+`auth` backend, every profile holding it is offered those tools, as that
+first profile was entitled to them, through its own allowlist. A profile
+with no grant sees the tools and is told to sign in when it calls one. After
+a sign-in the profile's tool list is rebuilt and its connected sessions are
+told.
+
+The operator's own backends need no `self_authorize`: on the operator
+profile the setting has no effect.
 
 ## Applying a Change
 

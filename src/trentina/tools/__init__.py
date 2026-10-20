@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .backend_auth import backend_auth_revoke, backend_auth_start, backend_auth_status
 from .cache import cache_flush
 from .content import block_content, flag_content, judge_content, redact_content
 from .dir import block_dir, flag_dir, list_dir, redact_dir
@@ -13,6 +14,9 @@ from .search import block_search, flag_search, redact_search, web_search
 from .stats import get_trentina_stats
 
 __all__ = [
+    "backend_auth_revoke",
+    "backend_auth_start",
+    "backend_auth_status",
     "block_content",
     "block_dir",
     "block_fetch",

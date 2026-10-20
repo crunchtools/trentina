@@ -96,6 +96,11 @@ class Outcome(str, Enum):
     GATEWAY_ERROR = "gateway_error"
     """Our own bug. The only outcome that should ever page anyone."""
 
+    NEEDS_AUTH = "needs_auth"
+    """An ``auth`` backend, and the calling profile holds no usable grant
+    (#479). Waiting on a human to sign in: neither a defense block nor a
+    failure, so it is counted in neither."""
+
     CANCELLED = "cancelled"
     """The call's task was cancelled before any path wrote a row (#439). The
     cause is not known: a client hang-up and a server shutdown look alike, so
@@ -223,6 +228,8 @@ def group_of(outcome: str) -> str:
         return "blocked"
     if parsed in TRIPPED_OUTCOMES:
         return "tripped"
-    if parsed is Outcome.CANCELLED:
+    if parsed in (Outcome.CANCELLED, Outcome.NEEDS_AUTH):
+        # Neither the defense working nor anything broken: a hang-up whose
+        # cause is unknown, or a human who has not signed in yet.
         return "unknown"
     return "failed"

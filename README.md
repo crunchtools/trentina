@@ -106,6 +106,7 @@ Then point Claude Code at it:
 | [Operator Profile](docs/operator.md) | The agent that installs and runs the gateway |
 | [Configuration](docs/configuration.md) | Every environment variable |
 | [Authentication](docs/authentication.md) | Static bearer, OAuth proxy with DCR or a provisioned client, delegated issuers |
+| [Backend OAuth](docs/profiles.md#backend-oauth) | Each profile signs in to OAuth-only backends with its own grant |
 | [Defense Pipeline](docs/defense-pipeline.md) | L1/L2/L3, modes, coverage and known gaps |
 | [Benchmark](docs/benchmark.md) | Detection rates per layer and per L3 provider |
 | [Corpora](docs/corpora.md) | Every attack and benign set the defense is measured on |

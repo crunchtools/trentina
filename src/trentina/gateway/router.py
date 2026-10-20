@@ -471,14 +471,16 @@ async def _single_flight_build(profile: Profile, generation: int) -> list[dict[s
         _profile_inflight.pop(profile.name, None)
 
 
-async def _offered_tools(backend_name: str, backend: Backend) -> list[dict[str, Any]]:
+async def _offered_tools(
+    backend_name: str, backend: Backend, profile: Profile
+) -> list[dict[str, Any]]:
     """A backend's tool list as it is offered, before any filter: ours, the
     profile's own declarations for a decoy, or the remote server's."""
     if backend.is_internal:
         return await list_internal_tools()
     if backend.is_decoy:
         return served_tools(backend)
-    return await list_backend_tools(backend_name, backend)
+    return await list_backend_tools(backend_name, backend, profile)
 
 
 async def _build_profile_tools(
@@ -512,7 +514,7 @@ async def _build_profile_tools(
         Also measures the list as offered, as allowed, and as shaped, for the
         surface report (``surface.py``).
         """
-        raw_tools = await _offered_tools(backend_name, backend)
+        raw_tools = await _offered_tools(backend_name, backend, profile)
         offered = await asyncio.to_thread(Stage.of, raw_tools)
         # An internal tool takes a mode only if it declares one: the admin
         # tools return gateway-authored data that no mode applies to. Every

@@ -67,7 +67,7 @@ def _profile(mode: str = "search", **discovery_config: Any) -> Profile:
     return p
 
 
-async def _list_tools(backend_name: str, _backend: Backend) -> list[dict[str, Any]]:
+async def _list_tools(backend_name: str, _backend: Backend, *_: Any) -> list[dict[str, Any]]:
     return [dict(t) for t in TOOLS[backend_name]]
 
 

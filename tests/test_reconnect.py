@@ -90,7 +90,7 @@ class TestReconnectBackend:
             breaker.record_failure(POSTIZ_URL)
         assert breaker.get_state(POSTIZ_URL) is State.OPEN
 
-        async def ok(_url: str, _headers: Any) -> ListToolsResult:
+        async def ok(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
             return _tools_result(["integrationList", "listPostsTool"])
 
         with patch("trentina.gateway.backend._do_list_tools", side_effect=ok):
@@ -117,7 +117,7 @@ class TestReconnectBackend:
         """A backend that still can't be reached reports reconnected False."""
         set_profiles({"agent2": _profile("agent2", {"postiz": Backend(url=POSTIZ_URL)})})
 
-        async def boom(_url: str, _headers: Any) -> Any:
+        async def boom(_url: str, _headers: Any, *_: Any) -> Any:
             raise ConnectionRefusedError("still down")
 
         with patch("trentina.gateway.backend._do_list_tools", side_effect=boom):
@@ -145,7 +145,7 @@ class TestReconnectBackend:
             }
         )
 
-        async def ok(_url: str, _headers: Any) -> ListToolsResult:
+        async def ok(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
             return _tools_result(["integrationList"])
 
         with patch("trentina.gateway.backend._do_list_tools", side_effect=ok):
@@ -163,7 +163,7 @@ class TestReconnectBackend:
         _profile_tools_cache["agent2"] = [{"name": "other__tool"}]
         _profile_backend_urls["agent2"] = {POSTIZ_URL}
 
-        async def ok(_url: str, _headers: Any) -> ListToolsResult:
+        async def ok(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
             return _tools_result(["integrationList"])
 
         with patch("trentina.gateway.backend._do_list_tools", side_effect=ok):
@@ -222,7 +222,7 @@ class TestAgentScope:
         )
         self._live({"agent3": agent3}, tmp_path)
 
-        async def ok(_url: str, _headers: Any) -> ListToolsResult:
+        async def ok(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
             return _tools_result(["integrationList", "deletePostTool"])
 
         with (

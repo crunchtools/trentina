@@ -122,7 +122,7 @@ async def _reconnect_alphas_backend() -> dict[str, Any]:
 
 
 async def _reconnect_own() -> dict[str, Any]:
-    async def ok(_url: str, _headers: Any) -> ListToolsResult:
+    async def ok(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
         return ListToolsResult(tools=[Tool(name="beta_tool", description="", input_schema={})])
 
     with patch("trentina.gateway.backend._do_list_tools", side_effect=ok):

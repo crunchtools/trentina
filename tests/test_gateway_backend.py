@@ -67,7 +67,7 @@ class TestListBackendToolsCircuit:
         for _ in range(3):
             breaker.record_failure(URL)
 
-        async def should_not_be_called(_url: str, _headers: Any) -> Any:
+        async def should_not_be_called(_url: str, _headers: Any, *_: Any) -> Any:
             raise AssertionError("transport called despite open circuit")
 
         with (
@@ -85,7 +85,7 @@ class TestListBackendToolsCircuit:
         breaker.record_failure(URL)
         assert breaker.get_state(URL) is State.CLOSED
 
-        async def ok_transport(_url: str, _headers: Any) -> ListToolsResult:
+        async def ok_transport(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
             return _tools_result()
 
         with patch(
@@ -101,7 +101,7 @@ class TestListBackendToolsCircuit:
     async def test_failure_records_to_circuit(self) -> None:
         """Transport failure increments the circuit failure counter."""
 
-        async def fail_transport(_url: str, _headers: Any) -> Any:
+        async def fail_transport(_url: str, _headers: Any, *_: Any) -> Any:
             raise ConnectionRefusedError("connection refused")
 
         with (
@@ -118,7 +118,7 @@ class TestListBackendToolsCircuit:
     async def test_three_failures_open_circuit(self) -> None:
         """Three consecutive transport failures open the circuit."""
 
-        async def fail_transport(_url: str, _headers: Any) -> Any:
+        async def fail_transport(_url: str, _headers: Any, *_: Any) -> Any:
             raise TimeoutError("timed out")
 
         with patch(
@@ -141,7 +141,7 @@ class TestListBackendToolsCircuit:
             captured_timeout.append(timeout)
             return await original_wait_for(coro, timeout=timeout)
 
-        async def ok_transport(_url: str, _headers: Any) -> ListToolsResult:
+        async def ok_transport(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
             return _tools_result()
 
         backend = _backend(timeout=30.0, list_timeout=7.5)
@@ -247,7 +247,7 @@ class TestBackendToolListCache:
     async def test_cache_hit_skips_transport(self) -> None:
         call_count = 0
 
-        async def counting_transport(_url: str, _headers: Any) -> ListToolsResult:
+        async def counting_transport(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
             nonlocal call_count
             call_count += 1
             return _tools_result()
@@ -264,7 +264,7 @@ class TestBackendToolListCache:
     async def test_cache_keyed_by_url(self) -> None:
         urls_called: list[str] = []
 
-        async def tracking_transport(url: str, _headers: Any) -> ListToolsResult:
+        async def tracking_transport(url: str, _headers: Any, *_: Any) -> ListToolsResult:
             urls_called.append(url)
             return _tools_result()
 
@@ -288,7 +288,7 @@ class TestBackendToolListCache:
         the whole point — a backend blip must not collapse the tool list.
         """
 
-        async def ok_transport(_url: str, _headers: Any) -> ListToolsResult:
+        async def ok_transport(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
             return _tools_result()
 
         with patch(
@@ -303,7 +303,7 @@ class TestBackendToolListCache:
             breaker.record_failure(URL)
         assert breaker.get_state(URL) is State.OPEN
 
-        async def should_not_be_called(_url: str, _headers: Any) -> Any:
+        async def should_not_be_called(_url: str, _headers: Any, *_: Any) -> Any:
             raise AssertionError("transport called despite warm cache")
 
         with patch(
@@ -318,7 +318,7 @@ class TestBackendToolListCache:
     async def test_call_failure_does_not_evict_list_cache(self) -> None:
         """A failed tool call must not evict the cached tool list."""
 
-        async def ok_list(_url: str, _headers: Any) -> ListToolsResult:
+        async def ok_list(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
             return _tools_result()
 
         with patch(
@@ -342,7 +342,7 @@ class TestBackendToolListCache:
 
         assert URL in _tool_list_cache
 
-        async def should_not_be_called(_url: str, _headers: Any) -> Any:
+        async def should_not_be_called(_url: str, _headers: Any, *_: Any) -> Any:
             raise AssertionError("transport re-fetched after call failure")
 
         with patch(
@@ -357,7 +357,7 @@ class TestBackendToolListCache:
         call_count = 0
         release = asyncio.Event()
 
-        async def slow_transport(_url: str, _headers: Any) -> ListToolsResult:
+        async def slow_transport(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
             nonlocal call_count
             call_count += 1
             await release.wait()
