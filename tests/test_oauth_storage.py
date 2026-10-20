@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -86,6 +87,15 @@ class TestStrictStore:
     def test_provider_without_a_store_is_refused(self) -> None:
         with pytest.raises(RuntimeError):
             harden_provider_storage(object(), persistent=True)
+
+    def test_ephemeral_provider_store_is_left_alone(self) -> None:
+        """No signing key: nothing on disk is read, so nothing is touched."""
+        sentinel = object()
+        provider = SimpleNamespace(_client_storage=sentinel)
+        harden_provider_storage(object(), persistent=False)
+        harden_provider_storage(provider, persistent=False)
+        assert provider._client_storage is sentinel
+        assert type(sentinel) is object
 
     def test_provider_store_is_hardened_in_place(self, home: Path) -> None:
         provider = GoogleProvider(
