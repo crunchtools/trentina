@@ -14,7 +14,6 @@ stay readable. ``tests/test_oauth_storage.py`` pins that parity.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import logging
 from typing import Any
@@ -64,9 +63,8 @@ def build_client_storage(signing_key: str) -> StrictFernetEncryptionWrapper:
         FileTreeV1KeySanitizationStrategy,
     )
 
-    encryption_key = base64.urlsafe_b64encode(
-        derive_jwt_key(high_entropy_material=signing_key, salt=_STORAGE_SALT)
-    )
+    # derive_jwt_key already returns a urlsafe-base64 Fernet key.
+    encryption_key = derive_jwt_key(high_entropy_material=signing_key, salt=_STORAGE_SALT)
     fingerprint = hashlib.sha256(encryption_key).hexdigest()[:12]
     cache_dir = settings.home / "oauth-proxy" / fingerprint
     cache_dir.mkdir(parents=True, exist_ok=True)
