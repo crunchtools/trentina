@@ -230,7 +230,11 @@ class TestBackendResponse:
 class TestAlertIngress:
     @staticmethod
     def _profile() -> Any:
-        return SimpleNamespace(name="alpha", defense=DefenseConfig())
+        return SimpleNamespace(
+            name="alpha",
+            defense=DefenseConfig(),
+            alert_ingress=SimpleNamespace(enforcement="flag"),
+        )
 
     async def _forward(self, body: dict[str, Any], score: ClassifierResult) -> dict[str, Any]:
         from trentina.gateway.alert_ingress import _defend_alert

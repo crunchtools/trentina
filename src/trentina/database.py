@@ -27,7 +27,25 @@ _db: sqlite3.Connection | None = None
 _db_path = ""  # set by get_db on every open
 _local = threading.local()
 
-SCHEMA = """
+# Where the audit hash chain starts (#472). Append-only: the sweep writes a
+# 'prune' row in the transaction that deletes a prefix of the chain, and
+# reset_gateway_calls a 'reset' row, so neither reads as tampering. Its own
+# statement as well as part of SCHEMA: _migrate reads the table, so it
+# creates it rather than depend on SCHEMA having run first.
+_CHECKPOINTS_TABLE = """
+CREATE TABLE IF NOT EXISTS audit_checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at REAL NOT NULL,
+    kind TEXT NOT NULL,
+    last_id INTEGER NOT NULL,
+    last_row_hash TEXT NOT NULL,
+    rows_pruned INTEGER NOT NULL
+)"""
+
+SCHEMA = (
+    _CHECKPOINTS_TABLE
+    + """;
+
 CREATE TABLE IF NOT EXISTS detections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_type TEXT NOT NULL,
@@ -75,18 +93,6 @@ CREATE TABLE IF NOT EXISTS gateway_calls (
     detections_digest TEXT,
     prev_hash TEXT,
     row_hash TEXT
-);
-
--- Where the audit hash chain starts (#472). Append-only: the sweep writes a
--- 'prune' row in the transaction that deletes a prefix of the chain, and
--- reset_gateway_calls a 'reset' row, so neither reads as tampering.
-CREATE TABLE IF NOT EXISTS audit_checkpoints (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at REAL NOT NULL,
-    kind TEXT NOT NULL,
-    last_id INTEGER NOT NULL,
-    last_row_hash TEXT NOT NULL,
-    rows_pruned INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_gateway_calls_timestamp ON gateway_calls(timestamp);
@@ -137,6 +143,7 @@ CREATE TABLE IF NOT EXISTS honeypot_captures (
 
 CREATE INDEX IF NOT EXISTS idx_honeypot_captures_at ON honeypot_captures(captured_at);
 """
+)
 
 
 def get_db(db_path: str | None = None) -> sqlite3.Connection:
@@ -264,6 +271,7 @@ def _migrate(db: sqlite3.Connection) -> None:
     )
     # Rows that predate the chain are not backfilled: one genesis checkpoint
     # stands before them and the chain starts after the newest.
+    db.execute(_CHECKPOINTS_TABLE)
     if db.execute("SELECT 1 FROM audit_checkpoints LIMIT 1").fetchone() is None:
         newest = db.execute("SELECT COALESCE(MAX(id), 0) AS last FROM gateway_calls").fetchone()
         _write_checkpoint(db, "genesis", int(newest["last"]), audit_chain.GENESIS, 0)

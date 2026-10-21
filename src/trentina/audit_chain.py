@@ -161,14 +161,9 @@ def newest_checkpoint(db: sqlite3.Connection) -> Any:
 
 _EXPIRED = "detections_expired"
 _GENESIS_SQL = "SELECT MAX(last_id) FROM audit_checkpoints WHERE kind = 'genesis'"
-# Built from CHAIN_FIELDS so the select list and the names verify() zips onto
-# it cannot drift apart. Every name is a module constant, never input.
-_ROWS_COLUMNS = (*CHAIN_FIELDS, "row_hash")
-_ROWS_SQL = (
-    "SELECT "  # noqa: S608 -- the column names are module constants
-    + ", ".join(_ROWS_COLUMNS)
-    + " FROM gateway_calls WHERE id > ? ORDER BY id"
-)
+# Every column, named by the cursor: row_hash() reads CHAIN_FIELDS out of the
+# row, so a select list kept in step with them by hand has nothing to drift.
+_ROWS_SQL = "SELECT * FROM gateway_calls WHERE id > ? ORDER BY id"
 
 
 def tail_hash(db: sqlite3.Connection) -> str:
@@ -209,8 +204,10 @@ def verify(
         "checkpoint": {"kind": kind, "last_id": last_id},
     }
     # Rows at or below the genesis checkpoint predate the chain and carry no hash.
-    for values in db.execute(_ROWS_SQL, (max(last_id, genesis_last),)):
-        row = dict(zip(_ROWS_COLUMNS, values, strict=True))
+    rows = db.execute(_ROWS_SQL, (max(last_id, genesis_last),))
+    names = [column[0] for column in rows.description]
+    for values in rows:
+        row = dict(zip(names, values, strict=True))
         report["checked"] += 1
         reason = _break_reason(db, row, expected, expired=row["timestamp"] < cutoff)
         if reason == _EXPIRED:
