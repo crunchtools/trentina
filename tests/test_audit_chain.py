@@ -60,8 +60,9 @@ def test_canonical_follows_rfc_8785() -> None:
     )
     assert audit_chain.canonical({"k": "é\n\u0001"}) == '{"k":"é\\n\\u0001"}'.encode()
     # Keys sort by UTF-16 code unit: U+FF5E (BMP) after U+1F600 (surrogates D83D).
-    expected = '{"\U0001f600":2,"～":1}'.encode()
-    assert audit_chain.canonical({"～": 1, "\U0001f600": 2}) == expected
+    tilde = "\N{FULLWIDTH TILDE}"
+    expected = ('{"\U0001f600":2,"' + tilde + '":1}').encode()
+    assert audit_chain.canonical({tilde: 1, "\U0001f600": 2}) == expected
 
 
 def test_untouched_chain_verifies(db: Any) -> None:
