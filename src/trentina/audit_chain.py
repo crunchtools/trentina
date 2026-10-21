@@ -165,7 +165,9 @@ _GENESIS_SQL = "SELECT MAX(last_id) FROM audit_checkpoints WHERE kind = 'genesis
 # it cannot drift apart. Every name is a module constant, never input.
 _ROWS_COLUMNS = (*CHAIN_FIELDS, "row_hash")
 _ROWS_SQL = (
-    "SELECT " + ", ".join(_ROWS_COLUMNS) + " FROM gateway_calls WHERE id > ? ORDER BY id"
+    "SELECT "  # noqa: S608 -- the column names are module constants
+    + ", ".join(_ROWS_COLUMNS)
+    + " FROM gateway_calls WHERE id > ? ORDER BY id"
 )
 
 
