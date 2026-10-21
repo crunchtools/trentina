@@ -83,6 +83,7 @@ def _cases(split: str, csv_bytes: bytes) -> list[Case]:
         rows = list(csv.DictReader(io.StringIO(csv_bytes.decode("utf-8"), newline="")))
     finally:
         csv.field_size_limit(previous)
+    source = f"{url(split)} (revision {REVISION[:12]})"
     cases = []
     for i, row in enumerate(rows):
         is_attack = _LABELS[row["type"]]
@@ -92,6 +93,7 @@ def _cases(split: str, csv_bytes: bytes) -> list[Case]:
                 category=CATEGORY_ATTACK if is_attack else CATEGORY_BENIGN,
                 payload=row["prompt"],
                 expect_injection=is_attack,
+                source=source,
             )
         )
     return cases

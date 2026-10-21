@@ -750,7 +750,13 @@ def meeting_notes_cases() -> list[Case]:
     from corpora.internal import Case
 
     return [
-        Case(case.id, CATEGORY_PREFIX + case.category, case.payload, expect_injection=False)
+        Case(
+            case.id,
+            CATEGORY_PREFIX + case.category,
+            case.payload,
+            expect_injection=False,
+            source=f"generated, corpora/benign_ops.py (seed {SEED})",
+        )
         for case in BENIGN
         if case.category.startswith("meeting_notes")
     ]

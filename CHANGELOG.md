@@ -10,6 +10,15 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+
+- Alert ingress under `alert_ingress.enforcement: block` now refuses a payload L2 or L3 could not judge (honouring `TRENTINA_REQUIRE_L2`/`TRENTINA_REQUIRE_L3`) instead of forwarding it (#471).
+
+### Added
+
+- `Case.source` is mandatory for every case a corpus loader returns, filled from the pinned URL and revision for fetched sets and from the module for hand-written ones; `tests/test_corpus_source.py` enforces it (#471).
+- `docs/corpora.md` holds the burn-once holdout rules; `docs/defense-pipeline.md` holds the per-surface default mode and what each mode does when L2 or L3 errors (#471).
+
 ## [1.23.0] - 2026-10-20
 
 ### Security

@@ -31,7 +31,7 @@ Prompt Guard 2 benchmark in issue #17).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 RISK_ORDER: dict[str, int] = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
@@ -76,6 +76,10 @@ class Case:
     is a statement about what we have measured rather than a preference.
     ``TestPreProcessorsDoNotSuppressAttacks`` is what reads this field.
     """
+    source: str = ""
+    """Where the text came from: a URL with its pinned revision, or the file
+    that holds hand-written cases. Mandatory for a case a loader returns;
+    ``tests/test_corpus_source.py`` fails an empty one."""
 
 
 _AUTHORITY_SOCIAL = [
@@ -980,23 +984,29 @@ _BENIGN_MULTILINGUAL = [
 ]
 
 
+SOURCE = "hand-written, corpora/internal.py (each case's notes names the research behind it)"
+"""The `source` of every case here; one value because one team wrote them all."""
+
 CORPUS: list[Case] = [
-    *_AUTHORITY_SOCIAL,
-    *_EXFIL_ACTION,
-    *_ROLE_REASSIGNMENT,
-    *_FAKE_CONFIG,
-    *_INDIRECT_SECOND_ORDER,
-    *_TOOL_INVOCATION,
-    *_CONDITIONAL_TRIGGER,
-    *_CONTEXT_CONFUSION,
-    *_DETECTOR_META,
-    *_OBFUSCATION_SEMANTIC,
-    *_MULTILINGUAL,
-    *_MEMORY_POISON,
-    *_STRUCTURAL,
-    *_BENIGN_NORMAL,
-    *_BENIGN_TRAPS,
-    *_BENIGN_MULTILINGUAL,
+    replace(case, source=SOURCE)
+    for case in (
+        *_AUTHORITY_SOCIAL,
+        *_EXFIL_ACTION,
+        *_ROLE_REASSIGNMENT,
+        *_FAKE_CONFIG,
+        *_INDIRECT_SECOND_ORDER,
+        *_TOOL_INVOCATION,
+        *_CONDITIONAL_TRIGGER,
+        *_CONTEXT_CONFUSION,
+        *_DETECTOR_META,
+        *_OBFUSCATION_SEMANTIC,
+        *_MULTILINGUAL,
+        *_MEMORY_POISON,
+        *_STRUCTURAL,
+        *_BENIGN_NORMAL,
+        *_BENIGN_TRAPS,
+        *_BENIGN_MULTILINGUAL,
+    )
 ]
 
 ATTACKS: list[Case] = [c for c in CORPUS if c.expect_injection]

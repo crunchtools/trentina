@@ -721,6 +721,30 @@ Ten rules hold on every path (#187):
 
 The gateway applies the same rule to proxied responses and tool descriptions under `defense.enforcement` (`flag` or `block`).
 
+## When a layer errors or times out
+
+A layer that cannot give a verdict leaves a **gap** (`modes.Gaps`, derived once by `modes.gaps_of`). L2 with no model, or a model that failed to load, is `l2_unavailable`. L3 with no provider, a provider error or timeout after its fallbacks, or an answer outside the response schema is `l3_unavailable`; a missing answer is never read as clean. What a gap costs depends on the mode, and the **default mode depends on the surface**:
+
+| Surface | Setting | Default |
+|---|---|---|
+| Gateway tool responses | `defense.enforcement` | **`flag`** |
+| Alert ingress | `alert_ingress.enforcement` | `flag` |
+| Matrix bridge inbound | bridge `enforcement` | `block` |
+| Standalone server | `TRENTINA_MODE` | `block` |
+
+The gateway is what most deployments run, so for them the default is `flag`: unjudged content is delivered, with a `_trentina_warning` naming the gap. Set `defense.enforcement: block` to withhold it.
+
+| Surface and mode | L2 or L3 unavailable (`TRENTINA_REQUIRE_*` = `true`, the default) | Same, with that layer's `TRENTINA_REQUIRE_*=false` |
+|---|---|---|
+| Gateway responses, standalone tools: `block` or `redact` | Refused: `not fully judged: L2 unavailable` or `L3 unavailable` | Delivered, with a warning; `redact` still runs its own L3 turns and refuses if they fail |
+| Gateway responses, standalone tools: `flag` | Delivered, gap named in the warning | Same |
+| Matrix bridge inbound: `block` | Refused, as above | Delivered |
+| Matrix bridge inbound: `flag` | Delivered | Delivered |
+| Alert ingress: `block` | Refused (403), the same `Gaps.blocking()` rule | Forwarded |
+| Alert ingress: `flag` | Forwarded, with the warning when flagged | Same |
+
+Two things hold in every row. A layer that ran but read only part of the payload (`l2_truncated`, `l3_truncated`), an over-cap payload and unread binary are never excused by `TRENTINA_REQUIRE_*`: `block` and `redact` refuse them. And `flag` is the only mode that delivers through a gap, so a mode added later fails closed until someone implements it (`ingress_defense.py`).
+
 ## Related
 
 - [Blocklist](blocklist.md) — cumulative detection memory across sessions

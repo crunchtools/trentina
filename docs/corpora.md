@@ -150,6 +150,23 @@ A served tool catalog and the queries an agent asks of it, for [tool discovery](
 - **How it is written.** Queries are worded by intent and mostly not in the tool's own words. Those marked held out were never used to tune the ranker.
 - **Read by.** `benchmarks/tool_search.py`, `tests/test_tool_search.py`.
 
+## Held-out Rules
+
+A held-out set measures a defense only while nobody has tuned against it. Vault's 2026-05-20 contamination postmortem is the cautionary tale: L1+L2 went from 45.9% to 90.3% after engineers read the held-out misses and patched against them. The number rose; the defense did not.
+
+1. **Nobody reads held-out misses while tuning.** Tune on the tuning split, report the held-out rate, and stop. A harness prints held-out counts, never held-out text or ids of misses.
+2. **A held-out set is burned once it has been read.** Reading a miss, for any reason, moves the set to burned: its numbers stay in the record with that note, and it no longer counts as held out. Its cases may join a tuning split.
+3. **Every case carries a `source`.** `Case.source` is mandatory: the file that holds hand-written cases, or the URL and pinned revision of a fetched set. `tests/test_corpus_source.py` fails a loader that returns a case without one.
+4. **Keep a queue of unopened held-out sets.** Write a new held-out set before the current one is burned, so there is one to move to.
+
+### Unopened held-out queue
+
+| Set | Status |
+|---|---|
+| Tool search, 32 queries marked held out | Unopened |
+
+No held-out attack set is queued yet. The next one is written, with `source` on every case, before any existing held-out split is read.
+
 ## What Is Not a Corpus
 
 - **The wild feed** (`benchmarks/wild_feed.py`, #357) collects what agents are sent on a public agent network. Its output is a run artifact and never a fixture.
