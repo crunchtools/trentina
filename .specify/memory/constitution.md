@@ -4,7 +4,7 @@
 > **Ratified:** 2026-09-22
 > **Amended:** 2026-10-14
 > **Status:** Active
-> **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.24.0
+> **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.26.0
 > **Profile:** Security Gateway
 
 This file holds what is specific to Trentina. The fleet rules and the
