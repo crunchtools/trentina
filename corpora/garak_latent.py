@@ -49,6 +49,7 @@ REPOSITORY: str = _DATA["source"]["repository"]
 TAG: str = _DATA["source"]["tag"]
 COMMIT: str = _DATA["source"]["commit"]
 LICENSE: str = _DATA["source"]["licence"]
+SOURCE = f"{REPOSITORY} {TAG} (commit {COMMIT[:12]}), anonymized"
 
 FAMILIES = ("report", "resume", "whois")
 CATEGORY_PREFIX = "garak_"
@@ -80,6 +81,7 @@ def _family_attacks(family: str) -> list[Case]:
                                 category=CATEGORY_PREFIX + family,
                                 payload=context.replace(_INJECTION, start + said + end),
                                 expect_injection=True,
+                                source=SOURCE,
                             )
                         )
     return cases
@@ -88,7 +90,7 @@ def _family_attacks(family: str) -> list[Case]:
 ATTACKS: tuple[Case, ...] = tuple(c for family in FAMILIES for c in _family_attacks(family))
 
 BENIGN: tuple[Case, ...] = tuple(
-    Case(id, CATEGORY_BENIGN, text, expect_injection=False)
+    Case(id, CATEGORY_BENIGN, text, expect_injection=False, source=SOURCE)
     for id, text in [
         *(
             (f"garak-benign-{family}-{i:02d}", context.replace(_INJECTION, "").strip())

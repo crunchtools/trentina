@@ -459,24 +459,50 @@ class TestAlertIngressEnforcement:
     ) -> None:
         """Enforcement applies to FLAGGED payloads. A stricter ingress must
         not become an outage for every page the monitoring system sends."""
-        profile = _make_profile("alpha", alert_token="tok")
+        profile = with_judge_key(_make_profile("alpha", alert_token="tok"))
         assert profile.alert_ingress is not None
         profile.alert_ingress.enforcement = "block"
         client, calls = self._flagged(monkeypatch, profile)
 
-        with patch(
-            "trentina.defense.classify_async",
-            new_callable=AsyncMock,
-        ) as mock_classify:
+        with (
+            patch("trentina.defense.classify_async", new_callable=AsyncMock) as mock_classify,
+            patch("trentina.defense.quarantine_detect", new_callable=AsyncMock) as mock_detect,
+        ):
             mock_classify.return_value = ClassifierResult(
                 label="BENIGN",
                 score=0.01,
                 latency_ms=5.0,
             )
+            mock_detect.return_value = {"injection_detected": False}
             resp = client.post("/alert", json={"host": "web1", "output": "disk ok"})
 
         assert resp.status_code == 200
         assert json.loads(calls["content"])["output"] == "disk ok"
+
+    def test_block_refuses_a_page_l3_could_not_judge(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Fail closed (#471): no L3 verdict is not a clean one under block."""
+        profile = with_judge_key(_make_profile("alpha", alert_token="tok"))
+        assert profile.alert_ingress is not None
+        profile.alert_ingress.enforcement = "block"
+        client, calls = self._flagged(monkeypatch, profile)
+
+        with (
+            patch("trentina.defense.classify_async", new_callable=AsyncMock) as mock_classify,
+            patch("trentina.defense.quarantine_detect", new_callable=AsyncMock) as mock_detect,
+        ):
+            mock_classify.return_value = ClassifierResult(
+                label="BENIGN",
+                score=0.01,
+                latency_ms=5.0,
+            )
+            mock_detect.return_value = {"injection_detected": False, "l3_unavailable": True}
+            resp = client.post("/alert", json={"host": "web1", "output": "disk ok"})
+
+        assert resp.status_code == 403
+        assert "request" not in calls
 
 
 class TestBodyCap:

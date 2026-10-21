@@ -58,6 +58,7 @@ from ..httpbody import (
 )
 from ..l1.pipeline import risk_level_for_count
 from ..logsafe import exc_kind, redact_source, safe_url
+from ..modes import gaps_of
 from ..reserved import WARNING_KEY, strip_reserved, with_stripped
 from .context import profile_context
 
@@ -387,7 +388,13 @@ async def _defend_alert(
     classification = final.classification
     l2_truncated = bool(classification is not None and classification.truncated)
 
-    flagged = risk_level != "low" or final.flagged or l2_truncated
+    # Under anything but flag, a layer that could not give a verdict is held
+    # to the same rule as every other path (modes.Gaps.blocking): unjudged
+    # is refused, not forwarded. flag delivers, so it is not flagged for it.
+    cfg = profile.alert_ingress
+    unjudged = (cfg is None or cfg.enforcement != "flag") and gaps_of(final).blocking()
+
+    flagged = risk_level != "low" or final.flagged or l2_truncated or unjudged
 
     # NOTE: this warning is still built by hand rather than via
     # warning.build_warning, because this path derives risk_level from
