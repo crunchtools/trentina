@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
+from . import audit_chain
 from .config import get_config, int_env
 from .outcomes import Outcome, group_of
 
@@ -70,7 +71,22 @@ CREATE TABLE IF NOT EXISTS gateway_calls (
     destination_kind TEXT,
     session TEXT,
     call_ref TEXT,
-    content_digest TEXT
+    content_digest TEXT,
+    detections_digest TEXT,
+    prev_hash TEXT,
+    row_hash TEXT
+);
+
+-- Where the audit hash chain starts (#472). Append-only: the sweep writes a
+-- 'prune' row in the transaction that deletes a prefix of the chain, and
+-- reset_gateway_calls a 'reset' row, so neither reads as tampering.
+CREATE TABLE IF NOT EXISTS audit_checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at REAL NOT NULL,
+    kind TEXT NOT NULL,
+    last_id INTEGER NOT NULL,
+    last_row_hash TEXT NOT NULL,
+    rows_pruned INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_gateway_calls_timestamp ON gateway_calls(timestamp);
@@ -210,6 +226,11 @@ _CALL_COLUMNS = (
     ("session", "TEXT"),
     ("call_ref", "TEXT"),
     ("content_digest", "TEXT"),
+    # The hash chain (#472): a digest of the call's detection rows, the
+    # previous row's hash, and this row's.
+    ("detections_digest", "TEXT"),
+    ("prev_hash", "TEXT"),
+    ("row_hash", "TEXT"),
 )
 
 
@@ -241,6 +262,11 @@ def _migrate(db: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_gateway_calls_sent_to "
         "ON gateway_calls(profile, destination) WHERE outcome = 'ok'"
     )
+    # Rows that predate the chain are not backfilled: one genesis checkpoint
+    # stands before them and the chain starts after the newest.
+    if db.execute("SELECT 1 FROM audit_checkpoints LIMIT 1").fetchone() is None:
+        newest = db.execute("SELECT COALESCE(MAX(id), 0) AS last FROM gateway_calls").fetchone()
+        _write_checkpoint(db, "genesis", int(newest["last"]), audit_chain.GENESIS, 0)
     db.commit()
 
     detection_columns = {row["name"] for row in db.execute("PRAGMA table_info(detections)")}
@@ -299,10 +325,74 @@ _SWEEP_CAPTURES = (
     "DELETE FROM honeypot_captures WHERE rowid IN "
     "(SELECT rowid FROM honeypot_captures WHERE captured_at <= ? LIMIT ?)"
 )
-_SWEEP_CALLS = (
-    "DELETE FROM gateway_calls WHERE rowid IN "
-    "(SELECT rowid FROM gateway_calls WHERE timestamp <= ? LIMIT ?)"
+
+
+_INSERT_CALL = (
+    "INSERT INTO gateway_calls (id, timestamp, profile, backend, tool, success, duration_ms, "
+    "error_message, outcome, bytes_arrived, bytes_delivered, normalized, destination, "
+    "destination_kind, session, call_ref, content_digest, detections_digest, prev_hash, "
+    "row_hash) VALUES (:id, :timestamp, :profile, :backend, :tool, :success, :duration_ms, "
+    ":error_message, :outcome, :bytes_arrived, :bytes_delivered, :normalized, :destination, "
+    ":destination_kind, :session, :call_ref, :content_digest, :detections_digest, "
+    ":prev_hash, :row_hash)"
 )
+
+
+def _write_checkpoint(
+    conn: sqlite3.Connection, kind: str, last_id: int, last_row_hash: str, rows_pruned: int
+) -> None:
+    """Append a chain checkpoint (#472). Does not commit: callers do it with their delete."""
+    conn.execute(
+        "INSERT INTO audit_checkpoints (created_at, kind, last_id, last_row_hash, rows_pruned) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (time.time(), kind, last_id, last_row_hash, rows_pruned),
+    )
+
+
+def _begin_immediate(conn: sqlite3.Connection) -> None:
+    """Take the write lock before reading the chain's tail, so no other process interleaves.
+
+    Any transaction already open on the connection is committed first: every
+    write here commits as it goes, so none is left open by design.
+    """
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+
+
+def _prune_calls(conn: sqlite3.Connection, cutoff: float) -> int:
+    """Delete up to ``SWEEP_BATCH`` audit rows older than *cutoff*, as a prefix of the chain (#472).
+
+    Selected by ``id``, stopping at the first row that is not yet old: a batch
+    picked by timestamp alone could leave a hole in the middle of the chain,
+    and a hole reads as a break. The ``prune`` checkpoint carrying the last
+    deleted row's hash is written in the same transaction as the delete.
+    """
+    _begin_immediate(conn)
+    try:
+        candidates = conn.execute(
+            "SELECT id, timestamp, row_hash FROM gateway_calls ORDER BY id LIMIT ?",
+            (SWEEP_BATCH,),
+        ).fetchall()
+        doomed = []
+        for candidate in candidates:
+            if candidate[1] > cutoff:
+                break
+            doomed.append(candidate)
+        if not doomed:
+            conn.commit()
+            return 0
+        last_id, _, last_hash = doomed[-1]
+        # A row from before the chain has no hash; the chain then continues
+        # from what the newest checkpoint already says.
+        carried = last_hash or str(audit_chain.newest_checkpoint(conn)[3])
+        conn.execute("DELETE FROM gateway_calls WHERE id <= ?", (last_id,))
+        _write_checkpoint(conn, "prune", last_id, carried, len(doomed))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    return len(doomed)
 
 
 def _delete_batch(conn: sqlite3.Connection, statement: str, cutoff: str | float) -> int:
@@ -351,9 +441,7 @@ def sweep_old_gateway_calls(db: sqlite3.Connection | None = None) -> int:
     conn = db or get_db()
     cutoff = time.time() - days * 86400
     # A capture is kept as long as the call row it is read beside, and no longer.
-    return max(
-        _delete_batch(conn, _SWEEP_CALLS, cutoff), _delete_batch(conn, _SWEEP_CAPTURES, cutoff)
-    )
+    return max(_prune_calls(conn, cutoff), _delete_batch(conn, _SWEEP_CAPTURES, cutoff))
 
 
 def _maybe_sweep(db: sqlite3.Connection) -> None:
@@ -593,33 +681,42 @@ def record_gateway_call(
     """
     db = get_db()
     _maybe_sweep(db)
-    success = outcome == Outcome.OK.value
-    db.execute(
-        "INSERT INTO gateway_calls "
-        "(timestamp, profile, backend, tool, success, duration_ms, error_message, "
-        "outcome, bytes_arrived, bytes_delivered, normalized, "
-        "destination, destination_kind, session, call_ref, content_digest) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            time.time(),
-            profile,
-            backend,
-            tool,
-            success,
-            duration_ms,
-            error_message,
-            outcome,
-            bytes_arrived,
-            bytes_delivered,
-            json.dumps(normalized) if normalized else None,
-            destination,
-            destination_kind,
-            session,
-            call_ref,
-            content_digest,
-        ),
-    )
-    db.commit()
+    success = int(outcome == Outcome.OK.value)
+    # The tail read and the insert share one write lock (#472): the singleton
+    # cannot fork the chain inside this process, but the CLI or a second
+    # process could. The id is chosen here, not by AUTOINCREMENT, because
+    # row_hash covers it and rows are never updated afterwards.
+    _begin_immediate(db)
+    try:
+        seq = db.execute("SELECT seq FROM sqlite_sequence WHERE name = 'gateway_calls'").fetchone()
+        top = db.execute("SELECT COALESCE(MAX(id), 0) FROM gateway_calls").fetchone()[0]
+        row: dict[str, Any] = {
+            "id": max(int(seq[0]) if seq else 0, int(top)) + 1,
+            "timestamp": time.time(),
+            "profile": profile,
+            "backend": backend,
+            "tool": tool,
+            "success": success,
+            "duration_ms": duration_ms,
+            "error_message": error_message,
+            "outcome": outcome,
+            "bytes_arrived": bytes_arrived,
+            "bytes_delivered": bytes_delivered,
+            "normalized": json.dumps(normalized) if normalized else None,
+            "destination": destination,
+            "destination_kind": destination_kind,
+            "session": session,
+            "call_ref": call_ref,
+            "content_digest": content_digest,
+            "detections_digest": audit_chain.detections_digest(db, call_ref),
+            "prev_hash": audit_chain.tail_hash(db),
+        }
+        row["row_hash"] = audit_chain.row_hash(row)
+        db.execute(_INSERT_CALL, row)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
 
 
 def reset_gateway_calls() -> int:
@@ -629,9 +726,21 @@ def reset_gateway_calls() -> int:
     capability any consumer profile should hold. Operators run it directly.
     """
     db = get_db()
-    before = db.execute("SELECT COUNT(*) AS cnt FROM gateway_calls").fetchone()["cnt"]
-    db.execute("DELETE FROM gateway_calls")
-    db.commit()
+    _begin_immediate(db)
+    try:
+        before = db.execute("SELECT COUNT(*) AS cnt FROM gateway_calls").fetchone()["cnt"]
+        top = db.execute("SELECT COALESCE(MAX(id), 0) FROM gateway_calls").fetchone()[0]
+        newest = audit_chain.newest_checkpoint(db)
+        # The wipe goes on the record (#472) as a checkpoint the chain
+        # continues from, so it does not read as tampering.
+        last_id = max(int(top), int(newest[2]) if newest is not None else 0)
+        last_hash = audit_chain.tail_hash(db)
+        db.execute("DELETE FROM gateway_calls")
+        _write_checkpoint(db, "reset", last_id, last_hash, int(before))
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
     return int(before)
 
 

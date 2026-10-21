@@ -51,6 +51,7 @@ class TestServerRegistration:
             "reload_profiles_tool",
             "backend_auth_tool",
             "tool_pins_tool",
+            "audit_verify_tool",
         }
         assert tool_names == families | admin | {"read_part_tool"}
 
