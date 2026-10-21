@@ -10,6 +10,10 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- `docs/owasp-mapping.md`: Trentina mapped to the OWASP MCP Top 10, the Agentic Top 10 (2026) and LLM01:2025, with ratings and the gap for each (#470).
+
 ### Fixed
 
 - Alert ingress under `alert_ingress.enforcement: block` now refuses a payload L2 or L3 could not judge (honouring `TRENTINA_REQUIRE_L2`/`TRENTINA_REQUIRE_L3`) instead of forwarding it (#471).

@@ -24,7 +24,8 @@ ashore: commerce keeps flowing, and nothing dangerous gets in.
    LLM with no tools. [Guarded execution](docs/guarded-execution.md) judges
    what goes out against a rule you write in English. What is and is not
    defended is in [Coverage](docs/defense-pipeline.md#coverage).
-   [Defense Pipeline](docs/defense-pipeline.md) · [Benchmark](docs/benchmark.md)
+   [Defense Pipeline](docs/defense-pipeline.md) · [Benchmark](docs/benchmark.md) ·
+   [OWASP mapping](docs/owasp-mapping.md)
 
 2. **Token savings.** Hidden tools, short names, compacted schemas, compressed
    descriptions and minified responses: **52% fewer response bytes** on
