@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import __version__
 from .modes import current_policy, parse_mode_arg
 from .tools import (
+    audit_verify,
     backend_auth_revoke,
     backend_auth_start,
     backend_auth_status,
@@ -285,6 +286,20 @@ async def cache_flush_tool(
             scope.
     """
     return await cache_flush(backend)
+
+
+@mcp.tool()
+async def audit_verify_tool() -> dict[str, Any]:
+    """Verify the audit log's hash chain and report the first break.
+
+    Operator only. Walks the gateway_calls rows from the newest checkpoint,
+    checking each row's hash and its link to the one before. A tampered,
+    removed or reordered row is reported by id. Detection rows past the
+    blocklist TTL are noted as expired, not as a break. Without an anchor
+    held outside the database this does not stop a writer who rebuilds the
+    whole chain.
+    """
+    return await audit_verify()
 
 
 @mcp.tool()

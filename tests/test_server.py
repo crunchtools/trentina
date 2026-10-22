@@ -16,8 +16,9 @@ class TestServerRegistration:
     """Test that all tools are registered correctly."""
 
     async def test_tool_count(self) -> None:
-        """12: one tool per family, six that deliver no content (``tool_pins``,
-        #469, is one tool with an action), and ``read_part`` (#340), which
+        """13: one tool per family, seven that deliver no content (``tool_pins``,
+        #469, is one tool with an action, and ``audit_verify``, #472, is
+        operator-only), and ``read_part`` (#340), which
         delivers the parts of a response another tool produced.
 
         The count is asserted because every tool definition sits in every
@@ -27,7 +28,7 @@ class TestServerRegistration:
         ``backend_auth`` (#479) is one tool with an action for the same reason.
         """
         tools = await mcp.list_tools()
-        assert len(tools) == 12, f"Expected 12 tools, got {len(tools)}"
+        assert len(tools) == 13, f"Expected 13 tools, got {len(tools)}"
 
     async def test_every_family_takes_a_mode(self) -> None:
         """The mode is an argument the policy checks, not a name the agent picks."""
@@ -51,6 +52,7 @@ class TestServerRegistration:
             "reload_profiles_tool",
             "backend_auth_tool",
             "tool_pins_tool",
+            "audit_verify_tool",
         }
         assert tool_names == families | admin | {"read_part_tool"}
 

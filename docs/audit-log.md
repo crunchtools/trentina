@@ -268,11 +268,33 @@ The audit table lives in the same SQLite database as the blocklist and compressi
 
 `quarantine_stats` reads these tables in a worker thread on a read-only connection of its own (#295). Its aggregates cost about 2.7 s per million rows, which on the event loop stalled every profile; under WAL the reader sees a consistent snapshot while audit writes continue.
 
-Operators can reset the audit history with `reset_gateway_calls()`. It is deliberately **not** exposed as an MCP tool: erasing the audit trail is not a capability any consumer profile should hold. Database path is configurable:
+Operators can reset the audit history with `reset_gateway_calls()`. It is deliberately **not** exposed as an MCP tool: erasing the audit trail is not a capability any consumer profile should hold. It writes a `reset` checkpoint (below), so the wipe is on the record. Database path is configurable:
 
 ```bash
 QUARANTINE_DB=/data/quarantine.db  # default on container
 ```
+
+## Hash chain (#472)
+
+Each `gateway_calls` row carries `prev_hash` (the previous row's `row_hash`) and `row_hash`, the SHA-256 of the RFC 8785 (JCS) form of the row's audited fields, `id` and `prev_hash` included. The canonicalizer is `audit_chain.canonical`, with the RFC's number and key-ordering rules, since `timestamp` is a REAL. Rows older than the chain are not backfilled.
+
+`audit_checkpoints` is append-only and says where the chain starts:
+
+| kind | written when | `last_row_hash` |
+|---|---|---|
+| `genesis` | the database first opens with the chain | `genesis` |
+| `prune` | the retention sweep deletes a batch, in the same transaction | the hash of the last row deleted |
+| `reset` | `reset_gateway_calls()` | the hash of the last row deleted |
+
+The sweep deletes a prefix of the chain, selected by `id` and stopping at the first row that is not yet old, so it never leaves a hole. `audit_verify` (operator only) and `trentina-audit-verify` (the configured database) start at the newest checkpoint and report the first break: `unchained`, `prev_hash_mismatch` (a deleted or reordered row), `row_hash_mismatch` (an edited row) or `detections_mismatch`.
+
+The tail read and the insert run under `BEGIN IMMEDIATE`, so a second process cannot fork the chain.
+
+**Detections.** They are written before the call row and expire on their own schedule (blocked rows at `TRENTINA_BLOCKLIST_TTL_DAYS`, flag rows never), so they are not chained. The call row holds `detections_digest`, the SHA-256 of the JCS form of its `call_ref`'s detection rows in `id` order, and `row_hash` covers it. The verifier recomputes it while those rows exist. A mismatch on a call older than the blocklist TTL is counted as `detections_expired`, not as a break. A detection with no `call_ref` (for example one from `decoy.py`) is outside the chain.
+
+**What it proves.** Inside the retained rows, an edit, a removal in the middle, or a reorder is detectable.
+
+**What it does not prove.** Nothing is anchored outside the database. Whoever holds the gateway's uid can rebuild a clean chain, forge a checkpoint, or drop the newest rows (nothing follows them to disagree). Detection rows past the TTL are not checked. Signed receipts and external anchoring are later phases.
 
 ## Related
 

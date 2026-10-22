@@ -75,8 +75,13 @@ class TestAlertIngressNowHonoursTheProfile:
 
     @staticmethod
     def _profile(defense: Any = None) -> Any:
-        # _defend_alert reads only .name and .defense.
-        return SimpleNamespace(name="alpha", defense=defense or DefenseConfig())
+        # _defend_alert reads .name, .defense and .alert_ingress.enforcement,
+        # here the shipped default, flag.
+        return SimpleNamespace(
+            name="alpha",
+            defense=defense or DefenseConfig(),
+            alert_ingress=SimpleNamespace(enforcement="flag"),
+        )
 
     async def test_flagged_payload_is_forwarded_not_blocked(self) -> None:
         """Still warns-and-forwards. Deliberate: dropping a real incident on a

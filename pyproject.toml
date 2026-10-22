@@ -105,6 +105,7 @@ dev = [
 
 [project.scripts]
 trentina = "trentina:main"
+trentina-audit-verify = "trentina.audit_chain:main"
 trentina-bridge = "trentina.bridge.main:main"
 trentina-rcs-bridge = "trentina.rcs_bridge.main:main"
 

@@ -23,6 +23,7 @@ under that name.
 
 ### Added
 
+- The audit log is hash-chained (#472): `gateway_calls` rows carry `prev_hash`, `row_hash` (SHA-256 of the RFC 8785 form of the row) and `detections_digest`; the retention sweep and `reset_gateway_calls` write `audit_checkpoints` rows so a pruned or wiped log still verifies. The operator `audit_verify` tool and `trentina-audit-verify` report the first break. See `docs/audit-log.md`.
 - `Case.source` is mandatory for every case a corpus loader returns, filled from the pinned URL and revision for fetched sets and from the module for hand-written ones; `tests/test_corpus_source.py` enforces it (#471).
 - `docs/corpora.md` holds the burn-once holdout rules; `docs/defense-pipeline.md` holds the per-surface default mode and what each mode does when L2 or L3 errors (#471).
 

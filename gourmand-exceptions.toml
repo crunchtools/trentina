@@ -894,3 +894,11 @@ check = "redundant_error_handling"
 path = "src/trentina/gateway/backend.py"
 justification = "list and call each re-raise BackendNeedsAuthError unchanged ahead of their `except Exception` handler. That handler records a circuit-breaker failure and rewraps as a generic BackendCallError; a profile with no grant has not reached the backend, so it must neither count against the shared circuit nor lose the error type that tells the agent to run backend_auth (#479)."
 classification = "by_design"
+
+# --- #472: audit hash chain ---
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/audit_chain.py"
+justification = "verify() is reported as identical to _collapse in preprocess/email.py. One walks the audit hash chain row by row, checking each row's prev_hash, row_hash and detections_digest link; the other collapses the quoted reply chain out of an email thread. They share a loop-accumulate-then-return shape over nine statements and nothing else -- no shared types, domain or caller. Structural collision, not duplication. Newer CI Gourmand flags it; the quay:latest container does not (version skew)."
+classification = "gourmand_bug"
