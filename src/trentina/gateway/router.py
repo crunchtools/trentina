@@ -50,7 +50,7 @@ from ..reserved import (
     strip_reserved,
     with_stripped,
 )
-from . import discovery, paging
+from . import discovery, paging, tool_pins
 from .args import Normalized, normalize_arguments
 from .backend import (
     cached_tool_read_only,
@@ -480,7 +480,10 @@ async def _offered_tools(
         return await list_internal_tools()
     if backend.is_decoy:
         return served_tools(backend)
-    return await list_backend_tools(backend_name, backend, profile)
+    # A new or changed tool is withheld from every profile, an explicit
+    # allowlist and "*" alike, until an operator approves it (#469).
+    tools = await list_backend_tools(backend_name, backend, profile)
+    return tool_pins.check_tools(backend.url, backend_name, tools)
 
 
 async def _build_profile_tools(

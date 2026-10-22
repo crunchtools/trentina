@@ -53,7 +53,9 @@ uv run trentina
   and the body; `egress.open_guarded` requires a `deadline` (#295).
 - `TRENTINA_PERIMETER_DB` — perimeter verdict store, a SEPARATE database from the
   blocklist (default: `perimeter.db` beside `QUARANTINE_DB`). See `perimeter_db.py`
-  for why it is its own file. Deleting it costs one slow restart and nothing else.
+  for why it is its own file. It also holds `tool_pins` (#469, `gateway/tool_pins.py`):
+  deleting it costs a slow restart AND every remote tool held for re-approval
+  (`tool_pins` operator tool) — dark, not silently trusted.
 - `QUARANTINE_TRUST_CONFIG` — Trust allowlist JSON path
 - `TRENTINA_READ_ROOTS` — `os.pathsep`-separated absolute directories that
   `read_tool` and `dir_tool` may reach (#261); a relative entry fails startup.

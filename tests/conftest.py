@@ -77,6 +77,15 @@ def _isolated_perimeter_store(tmp_path: pathlib.Path, monkeypatch: pytest.Monkey
 
 
 @pytest.fixture(autouse=True)
+def _tools_not_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests that are not about pinning (#469) see every tool served.
+    ``tests/test_tool_pins.py`` puts the real check back."""
+    from trentina.gateway import router
+
+    monkeypatch.setattr(router.tool_pins, "check_tools", lambda url, backend, tools: tools)
+
+
+@pytest.fixture(autouse=True)
 def _nothing_held() -> Iterator[None]:
     """No test inherits another's secrets (#341). ``logsafe`` holds every
     secret the loader reads for the life of the process, and a fake token
