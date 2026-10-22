@@ -113,6 +113,26 @@ class TestGatewayApp:
         body = resp.json()
         assert body["result"]["serverInfo"]["name"] == "trentina-gateway:alice"
 
+    def test_notification_returns_202_without_body(self, client: TestClient) -> None:
+        """The TS SDK opens its SSE stream only on a 202 here; a 200 left
+        Claude Code with no stream, so list_changed never reached it."""
+        resp = client.post(
+            "/alice/mcp",
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            headers={"Authorization": "Bearer alice-token"},
+        )
+        assert resp.status_code == 202
+        assert resp.content == b""
+
+    def test_unknown_notification_returns_202(self, client: TestClient) -> None:
+        resp = client.post(
+            "/alice/mcp",
+            json={"jsonrpc": "2.0", "method": "notifications/cancelled"},
+            headers={"Authorization": "Bearer alice-token"},
+        )
+        assert resp.status_code == 202
+        assert resp.content == b""
+
     def test_tools_call_invalid_backend_returns_jsonrpc_error(self, client: TestClient) -> None:
         resp = client.post(
             "/alice/mcp",

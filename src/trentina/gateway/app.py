@@ -738,6 +738,12 @@ async def _handle_post(
     elif session_id:
         headers[MCP_SESSION_ID_HEADER] = session_id
 
+    if "id" not in body:
+        # A notification gets 202 and no body (streamable HTTP). The TypeScript
+        # SDK opens the standalone SSE stream only on a 202 to
+        # notifications/initialized; a 200 left Claude Code with no stream, so
+        # reload_profiles reached none of its sessions.
+        return Response(status_code=202, headers=headers)
     return JSONResponse(response, headers=headers)
 
 
