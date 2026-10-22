@@ -13,6 +13,7 @@ under that name.
 ### Added
 
 - `docs/owasp-mapping.md`: Trentina mapped to the OWASP MCP Top 10, the Agentic Top 10 (2026) and LLM01:2025, with ratings and the gap for each (#470).
+- `dir_tool`'s shadow scan now selects files a tool runs by name — `package.json` install scripts, `.npmrc`, `.bashrc`/`.profile`/`.bash_profile`/`.env` and executable `.git/hooks/*` — and reads each for obfuscation (#76). Presence is a count (`shadows_autoexec_files`), informational only; obfuscation inside one is a suspicious detection (`shadows_autoexec_obfuscated`). Build-system and editor configs are deferred. `PERIMETER_VERSION` 19.
 
 ### Fixed
 

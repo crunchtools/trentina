@@ -100,6 +100,14 @@ async def list_dir(path: str, mode: Mode, prompt: str | None = None) -> dict[str
             "would import them instead of the real modules."
         )
 
+    obfuscated_autoexec = [f.filename for f in shadows.autoexec_found if f.is_obfuscated]
+    if obfuscated_autoexec:
+        # Names come from the fixed auto-execute registry, not from the directory.
+        briefing = (briefing + " " if briefing else "") + (
+            f"{len(obfuscated_autoexec)} file(s) a tool runs by name hold obfuscated code "
+            f"({', '.join(sorted(obfuscated_autoexec))})."
+        )
+
     shadow_fields = [
         {
             "file": f.filename,
