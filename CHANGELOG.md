@@ -17,6 +17,7 @@ under that name.
 
 ### Fixed
 
+- A JSON-RPC notification POSTed to `/gateway/<profile>/mcp` now gets `202 Accepted` with no body, as streamable HTTP requires, instead of `200` with a null-id result. The TypeScript SDK opens its standalone SSE stream only on that 202, so Claude Code never held one and `reload_profiles` reported `sessions_notified: 0` for its sessions; tool-list changes needed a manual `/mcp` reconnect.
 - Alert ingress under `alert_ingress.enforcement: block` now refuses a payload L2 or L3 could not judge (honouring `TRENTINA_REQUIRE_L2`/`TRENTINA_REQUIRE_L3`) instead of forwarding it (#471).
 
 ### Added
