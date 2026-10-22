@@ -6,15 +6,16 @@ import copy
 import pathlib
 import sqlite3
 import time
-from typing import Any
-
-import pytest
+from typing import TYPE_CHECKING, Any
 
 from trentina import perimeter_db
 from trentina.gateway import tool_pins
 
 # Imported at module load, before conftest's autouse fixture replaces it on the module.
 from trentina.gateway.tool_pins import check_tools, decide, pending
+
+if TYPE_CHECKING:
+    import pytest
 
 URL = "http://backend.invalid/mcp"
 
@@ -73,9 +74,9 @@ def test_an_existing_store_without_pins_is_an_upgrade_and_a_fresh_one_is_not(
     legacy.commit()
     legacy.close()
     perimeter_db._db = None
-    perimeter_db.get_perimeter_db(str(tmp_path / "legacy.db"))
+    opened = perimeter_db.get_perimeter_db(str(tmp_path / "legacy.db"))
     assert perimeter_db.pins_upgraded_at is not None
-    perimeter_db._db.close()  # type: ignore[union-attr]
+    opened.close()
     perimeter_db._db = None
     perimeter_db.get_perimeter_db(str(tmp_path / "fresh.db"))
     assert perimeter_db.pins_upgraded_at is None
