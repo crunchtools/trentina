@@ -59,6 +59,8 @@ FINDING_NAMES: dict[str, str] = {
     "addressed_ai_addressed_lines": "lines addressed to an AI reading the content",
     "shadows_files": "Python files shadowing the standard library",
     "shadows_obfuscated": "of those, files with obfuscated code",
+    "shadows_autoexec_files": "files a tool runs by name (install scripts, dotfiles, git hooks)",
+    "shadows_autoexec_obfuscated": "of those, files with obfuscated code",
     "unpacked_text_decoded": "encoded spans decoded to text for you to read",
     "unpacked_binary_labelled": "binary spans replaced by a label naming their type",
     "unpacked_binary_unread": "of those, images, PDFs or archives no layer could read",
@@ -157,6 +159,7 @@ class PipelineStats:
             + sum(asdict(self.addressed).values())
             + self.shadows.files
             + self.shadows.obfuscated
+            + self.shadows.autoexec_obfuscated
         )
 
     def risk_level(self) -> str:

@@ -16,6 +16,7 @@ still a shadow, since Python would import through it, but it is reported as
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -26,7 +27,7 @@ from itertools import islice
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +51,62 @@ _OBFUSCATION_RE = re.compile(
     r")"
 )
 
+_SHELL_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
+    (
+        "decode_exec",
+        "decoded text piped to a shell",
+        re.compile(
+            r"(?:base64\s+(?:-d|--decode)|xxd\s+-r|openssl\s+enc\s+-d)"
+            r"[^\n|]{0,200}\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b"
+        ),
+    ),
+    (
+        "eval_decode",
+        "eval of decoded text",
+        re.compile(r"\beval\b[^\n]{0,200}?(?:base64|xxd\s+-r|\brev\b|\\x[0-9a-fA-F]{2})"),
+    ),
+    ("hex_escapes", "run of hex escapes", re.compile(r"(?:\\x[0-9a-fA-F]{2}){4}")),
+    ("reverse_shell", "/dev/tcp or /dev/udp redirection", re.compile(r"/dev/(?:tcp|udp)/")),
+)
+_NODE_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
+    (
+        "code_execution",
+        "eval/Function constructor",
+        re.compile(r"\beval\s*\(|\bnew\s+Function\s*\("),
+    ),
+    (
+        "obfuscation",
+        "base64/char-code decoding",
+        re.compile(
+            r"\batob\s*\(|Buffer\.from\([^)\n]{0,200}base64|"
+            r"(?:fromCharCode[^\n]{0,200}){3}"
+        ),
+    ),
+)
+_IP_REGISTRY_RE = re.compile(r"^\s*(?:@[\w.-]+:)?registry\s*=\s*\w+://(?:\d{1,3}\.){3}\d{1,3}\b")
+_NPM_LIFECYCLE = ("preinstall", "install", "postinstall", "prepare")
+
+AUTOEXEC_FILES: dict[str, str] = {
+    "package.json": "node",
+    ".npmrc": "npmrc",
+    ".bashrc": "shell",
+    ".profile": "shell",
+    ".bash_profile": "shell",
+    ".env": "shell",
+}
+"""Files a tool loads and runs, or sources, by name alone (#76). The registry
+only SELECTS which files get the per-language scan: presence is a count, never
+a detection, since a ``package.json`` or ``.env`` is in nearly every repo."""
+GIT_HOOKS: frozenset[str] = frozenset(
+    {
+        "applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit",
+        "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-checkout",
+        "post-merge", "pre-push", "pre-receive", "update", "post-receive", "post-update",
+        "push-to-checkout", "pre-auto-gc", "post-rewrite", "fsmonitor-watchman",
+    }
+)  # fmt: skip
+_NOT_CONTENT = frozenset({"symlink", "linked", "size", "unscanned", "unreadable", "binary"})
+
 MAX_FILE_SIZE = 500_000
 MAX_SCAN_BYTES = 4_000_000
 """Bytes read across one directory's shadows. Past it a shadow is still
@@ -72,12 +129,18 @@ class ShadowStats:
 
     files: int = 0
     obfuscated: int = 0
+    autoexec_files: int = 0
+    """Auto-execute files found (#76). Informational: never suspicious by name."""
+    autoexec_obfuscated: int = 0
+    """Of those, files with obfuscation inside. Suspicious, but not critical alone."""
 
     @classmethod
     def from_result(cls, result: ShadowScanResult) -> ShadowStats:
         return cls(
             files=len(result.shadows_found),
             obfuscated=sum(1 for f in result.shadows_found if f.is_obfuscated),
+            autoexec_files=len(result.autoexec_found),
+            autoexec_obfuscated=sum(1 for f in result.autoexec_found if f.is_obfuscated),
         )
 
 
@@ -116,11 +179,26 @@ class ShadowFinding:
 
 
 @dataclass
+class AutoexecFinding:
+    """A file a tool runs by name (see ``AUTOEXEC_FILES``), with what was found in it."""
+
+    filename: str
+    kind: str
+    obfuscation_indicators: list[ObfuscationIndicator] = field(default_factory=list)
+
+    @property
+    def is_obfuscated(self) -> bool:
+        """True when the file holds at least one obfuscation indicator."""
+        return len(self.obfuscation_indicators) > 0
+
+
+@dataclass
 class ShadowScanResult:
-    """Result of scanning a directory for module shadows."""
+    """Result of scanning a directory for module shadows and auto-execute files."""
 
     directory: str
     shadows_found: list[ShadowFinding] = field(default_factory=list)
+    autoexec_found: list[AutoexecFinding] = field(default_factory=list)
     files_scanned: int = 0
     entries_read: int = 0
     """Directory entries looked at, so a caller that bounded the scan can tell
@@ -193,6 +271,53 @@ def _scan_for_obfuscation(content: str) -> list[ObfuscationIndicator]:
     return indicators
 
 
+def _scan_patterns(
+    text: str, patterns: tuple[tuple[str, str, re.Pattern[str]], ...]
+) -> list[ObfuscationIndicator]:
+    indicators: list[ObfuscationIndicator] = []
+    for i, line in enumerate(text.split("\n"), 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indicators.extend(
+            ObfuscationIndicator(category, description, i)
+            for category, description, pattern in patterns
+            if pattern.search(stripped)
+        )
+    return indicators
+
+
+def _scan_npmrc(content: str) -> list[ObfuscationIndicator]:
+    """Obfuscation in ``.npmrc``, or a registry redirected to a bare IP address."""
+    indicators = _scan_patterns(content, _SHELL_PATTERNS)
+    for i, line in enumerate(content.split("\n"), 1):
+        if _IP_REGISTRY_RE.match(line):
+            indicators.append(ObfuscationIndicator("registry_redirect", "registry is an IP", i))
+    return indicators
+
+
+def _scan_package_json(content: str) -> list[ObfuscationIndicator] | None:
+    """Obfuscation in install-time scripts, or None when it declares none."""
+    try:
+        manifest = json.loads(content)
+    except (ValueError, RecursionError):
+        return None
+    scripts = manifest.get("scripts") if isinstance(manifest, dict) else None
+    if not isinstance(scripts, dict):
+        return None
+    hooks = [scripts[k] for k in _NPM_LIFECYCLE if isinstance(scripts.get(k), str)]
+    if not hooks:
+        return None
+    return _scan_patterns("\n".join(hooks), _SHELL_PATTERNS + _NODE_PATTERNS)
+
+
+_SCANNERS: dict[str, Callable[[str], list[ObfuscationIndicator] | None]] = {
+    "shell": lambda content: _scan_patterns(content, _SHELL_PATTERNS),
+    "npmrc": _scan_npmrc,
+    "node": _scan_package_json,
+}
+
+
 def _not_read(st: os.stat_result, result: ShadowScanResult) -> ObfuscationIndicator | None:
     """Why the shadow ``st`` is reported without being read, or None to read it.
 
@@ -213,8 +338,14 @@ def _not_read(st: os.stat_result, result: ShadowScanResult) -> ObfuscationIndica
     return None
 
 
-def _read_shadow(fd: int, result: ShadowScanResult) -> list[ObfuscationIndicator]:
-    """Obfuscation indicators for the open file ``fd``, within the scan's budget."""
+def _read_shadow(
+    fd: int,
+    result: ShadowScanResult,
+    scan: Callable[[str], list[ObfuscationIndicator] | None] = _scan_for_obfuscation,
+) -> list[ObfuscationIndicator] | None:
+    """Obfuscation indicators for the open file ``fd``, within the scan's budget.
+
+    None when ``scan`` finds the file is not one it applies to."""
     skipped = _not_read(os.fstat(fd), result)
     if skipped is not None:
         return [skipped]
@@ -226,10 +357,15 @@ def _read_shadow(fd: int, result: ShadowScanResult) -> list[ObfuscationIndicator
         return [ObfuscationIndicator("size", "unusually large for a stdlib shadow")]
     if b"\x00" in raw:
         return [ObfuscationIndicator("binary", "shadow is not text")]
-    return _scan_for_obfuscation(raw.decode("utf-8", errors="replace"))
+    return scan(raw.decode("utf-8", errors="replace"))
 
 
-def _scan_at(dir_fd: int, name: str, result: ShadowScanResult) -> list[ObfuscationIndicator] | None:
+def _scan_at(
+    dir_fd: int,
+    name: str,
+    result: ShadowScanResult,
+    scan: Callable[[str], list[ObfuscationIndicator] | None] = _scan_for_obfuscation,
+) -> list[ObfuscationIndicator] | None:
     """Indicators for ``name`` in ``dir_fd``, or None when it is no importable file.
 
     Opened relative to the descriptor and never through a symlink. A
@@ -256,7 +392,7 @@ def _scan_at(dir_fd: int, name: str, result: ShadowScanResult) -> list[Obfuscati
     except OSError:
         return [ObfuscationIndicator("unreadable", "shadow file exists but cannot be read")]
     try:
-        return _read_shadow(fd, result)
+        return _read_shadow(fd, result, scan)
     except OSError:
         return [ObfuscationIndicator("unreadable", "shadow file exists but cannot be read")]
     finally:
@@ -318,6 +454,12 @@ def detect_module_shadows(directory: str, *, max_entries: int | None = None) -> 
 def _scan_entry(dir_fd: int, entry: os.DirEntry[str], result: ShadowScanResult) -> None:
     """Record ``entry`` in ``result`` if it shadows a stdlib module."""
     name = entry.name
+    if name in AUTOEXEC_FILES:
+        _scan_autoexec(dir_fd, name, AUTOEXEC_FILES[name], name, result)
+        return
+    if name == ".git":
+        _scan_git_hooks(dir_fd, result)
+        return
     if name.endswith(".py"):
         module_name = name[:-3]
         if module_name not in STDLIB_MODULES:
@@ -353,3 +495,43 @@ def _scan_package(dir_fd: int, name: str, result: ShadowScanResult) -> None:
         os.close(pkg_fd)
     if indicators is not None:
         _record(result, f"{name}/__init__.py", name, indicators)
+
+
+def _scan_autoexec(dir_fd: int, name: str, kind: str, label: str, result: ShadowScanResult) -> None:
+    """Count the auto-execute file ``name``; its indicators are obfuscation inside it.
+
+    A symlink, hard link, size or read-budget indicator says the file was not
+    read, which is no obfuscation, so it is dropped: presence alone is a count.
+    """
+    indicators = _scan_at(dir_fd, name, result, _SCANNERS[kind])
+    if indicators is None:
+        return
+    result.files_scanned += 1
+    found = [i for i in indicators if i.category not in _NOT_CONTENT]
+    result.autoexec_found.append(AutoexecFinding(label, kind, found))
+
+
+def _scan_git_hooks(dir_fd: int, result: ShadowScanResult) -> None:
+    """The hooks git runs from ``.git/hooks``, opened below ``dir_fd`` without a link."""
+    try:
+        git_fd = os.open(".git", _DIR_FLAGS, dir_fd=dir_fd)
+    except OSError:
+        return
+    try:
+        hooks_fd = os.open("hooks", _DIR_FLAGS, dir_fd=git_fd)
+    except OSError:
+        return
+    finally:
+        os.close(git_fd)
+    try:
+        with os.scandir(hooks_fd) as it:
+            names = sorted({e.name for e in it if e.name in GIT_HOOKS})
+        for hook in names:
+            # Git ignores a hook without an executable bit, so its text is inert.
+            if not os.stat(hook, dir_fd=hooks_fd, follow_symlinks=False).st_mode & 0o111:
+                continue
+            _scan_autoexec(hooks_fd, hook, "shell", f".git/hooks/{hook}", result)
+    except OSError:
+        return
+    finally:
+        os.close(hooks_fd)
