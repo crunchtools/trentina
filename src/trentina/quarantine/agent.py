@@ -1072,7 +1072,9 @@ async def _search_openrouter(query: str, num_results: int, api_key: str) -> dict
             resp.raise_for_status()
             raw = await _read_bounded(resp)
     except httpx.HTTPStatusError as exc:
-        raise QuarantineAgentError(f"HTTP {exc.response.status_code}") from exc
+        raise QuarantineAgentError(
+            f"HTTP {exc.response.status_code}", status_code=exc.response.status_code
+        ) from exc
     except httpx.TimeoutException as exc:
         raise QuarantineAgentError("Request timed out") from exc
     except httpx.RequestError as exc:
@@ -1169,7 +1171,9 @@ async def search_grounded(
             }
 
     except httpx.HTTPStatusError as exc:
-        raise QuarantineAgentError(f"HTTP {exc.response.status_code}") from exc
+        raise QuarantineAgentError(
+            f"HTTP {exc.response.status_code}", status_code=exc.response.status_code
+        ) from exc
     except httpx.TimeoutException as exc:
         raise QuarantineAgentError("Request timed out") from exc
     except httpx.RequestError as exc:

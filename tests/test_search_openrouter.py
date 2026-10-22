@@ -245,6 +245,21 @@ class TestRoute:
         ):
             await search_grounded("bootc")
 
+    async def test_an_http_error_carries_its_status(self) -> None:
+        # The status is what the gateway log shows; the message never is.
+        raised = httpx.HTTPStatusError(
+            "404", request=httpx.Request("POST", "https://x"), response=httpx.Response(404)
+        )
+        cls, _ = _http(raises=raised)
+        with (
+            patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="k")),
+            patch(f"{_AGENT}.get_current_profile", return_value=None),
+            patch(f"{_AGENT}.httpx.AsyncClient", cls),
+            pytest.raises(QuarantineAgentError) as caught,
+        ):
+            await search_grounded("bootc")
+        assert caught.value.status_code == 404
+
     async def test_an_empty_answer_is_an_error(self) -> None:
         cls, _ = _http({"choices": [{"message": {"content": None}}]})
         with (
@@ -283,7 +298,7 @@ class TestRoute:
             await search_grounded("bootc")
 
         url = http.post.call_args.args[0]
-        assert "/gemini-2.5-flash:generateContent" in url
+        assert "/gemini-3.5-flash-lite:generateContent" in url
 
     async def test_an_oversized_response_is_refused_before_parsing(self) -> None:
         cls, _ = _http(body=b"{" + b" " * 5_000_001)
