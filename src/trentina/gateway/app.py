@@ -62,6 +62,9 @@ SSE_RETRY_MS = 15000
 """Reconnect hint (ms) sent on stream open. Standard SSE clients honour
 ``retry:`` and back off at the protocol layer, bypassing app-level retry caps."""
 
+STATUS_ACCEPTED = 202
+"""Streamable HTTP's answer to a notification: accepted, no body."""
+
 
 @dataclass(frozen=True)
 class DelegatedAuth:
@@ -743,7 +746,7 @@ async def _handle_post(
         # SDK opens the standalone SSE stream only on a 202 to
         # notifications/initialized; a 200 left Claude Code with no stream, so
         # reload_profiles reached none of its sessions.
-        return Response(status_code=202, headers=headers)
+        return Response(status_code=STATUS_ACCEPTED, headers=headers)
     return JSONResponse(response, headers=headers)
 
 
