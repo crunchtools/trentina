@@ -14,3 +14,11 @@ CVE-2026-97687
 CVE-2026-97689
 GHSA-6v7p-g79w-8964
 CVE-2025-47273
+
+# certifi 2026.6.17 bundled in the Hummingbird python base (pip's vendored
+# copy, pip/_vendor), CRITICAL GHSA-6q48-6c7w-9gw2, fixed in certifi
+# 2026.10.19. Our OWN certifi is already 2026.10.19 (uv.lock, #515); this is
+# the base image's bundled copy, which uv cannot bump, and this distroless
+# service never runs pip so the vendored bundle is never loaded. Drop once the
+# base ships a fixed pip. Accepted by Josui (CTO) 2026-10-22, review 2026-11-22.
+GHSA-6q48-6c7w-9gw2
