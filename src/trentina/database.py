@@ -270,12 +270,23 @@ def _migrate(db: sqlite3.Connection) -> None:
         "ON gateway_calls(profile, destination) WHERE outcome = 'ok'"
     )
     # Rows that predate the chain are not backfilled: one genesis checkpoint
-    # stands before them and the chain starts after the newest.
+    # stands before them and the chain starts after the newest. The check and
+    # the insert run under one write lock (#472), so two processes opening a
+    # fresh database cannot both read "no checkpoint" and write a genesis: the
+    # second blocks until the first commits, then sees the row and skips. A
+    # bare check-then-insert here would let the second stamp a genesis whose
+    # last_id already covers a call the first wrote, and verify would then read
+    # that call as predating the chain.
     db.execute(_CHECKPOINTS_TABLE)
-    if db.execute("SELECT 1 FROM audit_checkpoints LIMIT 1").fetchone() is None:
-        newest = db.execute("SELECT COALESCE(MAX(id), 0) AS last FROM gateway_calls").fetchone()
-        _write_checkpoint(db, "genesis", int(newest["last"]), audit_chain.GENESIS, 0)
-    db.commit()
+    _begin_immediate(db)
+    try:
+        if db.execute("SELECT 1 FROM audit_checkpoints LIMIT 1").fetchone() is None:
+            newest = db.execute("SELECT COALESCE(MAX(id), 0) AS last FROM gateway_calls").fetchone()
+            _write_checkpoint(db, "genesis", int(newest["last"]), audit_chain.GENESIS, 0)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
 
     detection_columns = {row["name"] for row in db.execute("PRAGMA table_info(detections)")}
     # Gateway attribution columns (which profile, which backend and tool,

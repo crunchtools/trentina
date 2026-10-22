@@ -73,6 +73,25 @@ def test_untouched_chain_verifies(db: Any) -> None:
     assert result["checkpoint"]["kind"] == "genesis"
 
 
+def test_genesis_checkpoint_is_written_once(db: Any) -> None:
+    """Re-running the migration adds no second genesis and none that covers an
+    existing call (#472). The check and insert hold one write lock, so two
+    processes opening the same database cannot both write a genesis; a stale
+    one would make verify read an already-written call as predating the chain.
+    """
+    _calls(db, 3)
+    conn = db.get_db()
+    before = conn.execute("SELECT last_id FROM audit_checkpoints WHERE kind = 'genesis'").fetchall()
+    assert len(before) == 1
+    assert before[0]["last_id"] == 0  # genesis stands before every call
+    db._migrate(conn)  # a second opener re-running the same migration
+    after = conn.execute("SELECT last_id FROM audit_checkpoints WHERE kind = 'genesis'").fetchall()
+    assert len(after) == 1
+    assert after[0]["last_id"] == 0
+    # The calls are still inside the chain, not skipped as pre-genesis.
+    assert _verify(db)["checked"] == 3
+
+
 def test_tampered_row_is_caught(db: Any) -> None:
     _calls(db)
     db.get_db().execute("UPDATE gateway_calls SET outcome = 'ok', tool = 'x' WHERE id = 3")
