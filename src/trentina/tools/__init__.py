@@ -7,6 +7,7 @@ from .cache import cache_flush
 from .content import block_content, flag_content, judge_content, redact_content
 from .dir import block_dir, flag_dir, list_dir, redact_dir
 from .fetch import block_fetch, fetch_page, flag_fetch, redact_fetch
+from .pins import manage_tool_pins
 from .read import block_read, flag_read, read_file, redact_read
 from .reconnect import reconnect_backend
 from .reload import reload_profiles
@@ -32,6 +33,7 @@ __all__ = [
     "get_trentina_stats",
     "judge_content",
     "list_dir",
+    "manage_tool_pins",
     "read_file",
     "reconnect_backend",
     "redact_content",

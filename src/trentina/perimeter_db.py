@@ -17,8 +17,11 @@ next to the blocklist cannot be given any of that afterwards without
 finding every caller that assumed a single connection. That is the whole
 argument, and it is an argument about tomorrow.
 
-What is here is a cache and only a cache. Losing this file costs one slow
-restart and nothing else.
+The verdicts here are a cache. The ``tool_pins`` table (#469) is not: it holds
+which tool definitions an operator approved, keyed on the backend rather than a
+profile, and never expires. Losing this file costs a slow restart AND every
+tool held for re-approval until an operator releases it. That is the fail-safe
+direction: dark, not silently trusted.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -42,9 +46,21 @@ CREATE TABLE IF NOT EXISTS verdict_cache (
     perimeter_version TEXT NOT NULL,
     cached_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tool_pins (
+    backend_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    approved_hash TEXT,
+    approved_json TEXT,
+    pending_hash TEXT,
+    pending_json TEXT,
+    rejected INTEGER NOT NULL DEFAULT 0,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    PRIMARY KEY (backend_id, tool)
+);
 """
 
-PERIMETER_VERSION = "18"
+PERIMETER_VERSION = "19"
 """Bump whenever a change could alter what a scan CONCLUDES: a new detector, a
 retuned L3 prompt, a different L2 model or threshold set. Rows stamped with any
 other value are swept on load, so an older perimeter's verdict is unusable
@@ -72,6 +88,7 @@ petit (#419), so a journal response is judged as its samples and a summary.
 "15" (1.4.1): a structured listing gives its rows before its note, and the
 unpack stage reads a run of decimal digits as a number, not as hex (#431).
 "16" (1.5.0): the default judge is gemini-3.5-flash-lite (#397).
+"19": a remote backend's new or changed tool is held until approved (#469).
 
 The L2 model and its threshold are no longer bumped here: they are an
 operator setting since 0.55.0 (#350), so :func:`perimeter_stamp` carries them."""
@@ -103,9 +120,14 @@ def perimeter_stamp() -> str:
     )
 
 
+pins_upgraded_at: float | None = None
+"""``time.monotonic()`` when this process added ``tool_pins`` to an existing
+store, else None (#469). The baseline window runs from here."""
+
+
 def get_perimeter_db(db_path: str | None = None) -> sqlite3.Connection:
     """Get or create the perimeter store's connection."""
-    global _db
+    global _db, pins_upgraded_at
     if _db is None:
         config = get_config()
         path = db_path or config.perimeter_db_path
@@ -113,8 +135,77 @@ def get_perimeter_db(db_path: str | None = None) -> sqlite3.Connection:
         _db = sqlite3.connect(path)
         _db.row_factory = sqlite3.Row
         _db.execute("PRAGMA journal_mode=WAL")
+        # An existing store from before pins is an upgrade: its tools were
+        # already being served, so the first pass pins them as approved. A
+        # missing store is not, and holds everything.
+        had_pins = _db.execute("SELECT 1 FROM sqlite_master WHERE name = 'tool_pins'").fetchone()
+        had_verdicts = _db.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'verdict_cache'"
+        ).fetchone()
         _db.executescript(SCHEMA)
+        upgraded = had_pins is None and had_verdicts is not None
+        pins_upgraded_at = time.monotonic() if upgraded else None
     return _db
+
+
+def get_pin(backend_id: str, tool: str) -> sqlite3.Row | None:
+    row: sqlite3.Row | None = (
+        get_perimeter_db()
+        .execute(
+            "SELECT approved_hash, approved_json, pending_hash, pending_json "
+            "FROM tool_pins WHERE backend_id = ? AND tool = ?",
+            (backend_id, tool),
+        )
+        .fetchone()
+    )
+    return row
+
+
+def put_pin(
+    backend_id: str,
+    tool: str,
+    *,
+    approved: tuple[str, str] | None,
+    pending: tuple[str, str] | None,
+    rejected: bool,
+) -> None:
+    """Write one pin. ``approved`` and ``pending`` are (hash, canonical JSON)."""
+    now = datetime.now(UTC).isoformat()
+    db = get_perimeter_db()
+    db.execute(
+        "INSERT INTO tool_pins (backend_id, tool, approved_hash, approved_json, "
+        "pending_hash, pending_json, rejected, first_seen, last_seen) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT (backend_id, tool) DO UPDATE SET "
+        "approved_hash = excluded.approved_hash, approved_json = excluded.approved_json, "
+        "pending_hash = excluded.pending_hash, pending_json = excluded.pending_json, "
+        "rejected = excluded.rejected, last_seen = excluded.last_seen",
+        (
+            backend_id,
+            tool,
+            approved[0] if approved else None,
+            approved[1] if approved else None,
+            pending[0] if pending else None,
+            pending[1] if pending else None,
+            int(rejected),
+            now,
+            now,
+        ),
+    )
+    db.commit()
+
+
+def list_pending_pins(backend_id: str) -> list[sqlite3.Row]:
+    rows: list[sqlite3.Row] = (
+        get_perimeter_db()
+        .execute(
+            "SELECT tool, approved_json, pending_json, rejected FROM tool_pins "
+            "WHERE backend_id = ? AND pending_hash IS NOT NULL ORDER BY tool",
+            (backend_id,),
+        )
+        .fetchall()
+    )
+    return rows
 
 
 def get_all_verdicts(perimeter_version: str) -> dict[str, dict[str, Any] | None]:

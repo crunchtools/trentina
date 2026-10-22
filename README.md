@@ -115,6 +115,7 @@ Then point Claude Code at it:
 | [Content Tools](docs/quarantine-tools.md) | fetch, read, dir, content, search, with an egress guard and file confinement |
 | [Blocklist](docs/blocklist.md) | A refused source stays refused |
 | [Tool Filtering](docs/tool-filtering.md) | Allowlists, denylists, glob patterns |
+| [Tool Pinning](docs/tool-pinning.md) | A new or changed tool is held until approved |
 | [Tool Discovery](docs/tool-discovery.md) | Find/call or per-session loading for clients without tool search |
 | [Description Compression](docs/compression.md) | Description compression and schema compaction |
 | [Token Routing](docs/token-routing.md) | Response minifying (implemented); delegation (proposed) |

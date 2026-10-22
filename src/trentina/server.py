@@ -19,6 +19,7 @@ from .tools import (
     get_trentina_stats,
     judge_content,
     list_dir,
+    manage_tool_pins,
     read_file,
     reconnect_backend,
     reload_profiles,
@@ -302,6 +303,25 @@ async def reconnect_backend_tool(backend: str) -> dict[str, Any]:
         backend: Backend name to reconnect (e.g. "postiz", "slack", "jira").
     """
     return await reconnect_backend(backend)
+
+
+@mcp.tool()
+async def tool_pins_tool(
+    action: Literal["list", "approve", "reject"], backend: str, tool: str | None = None
+) -> dict[str, Any]:
+    """Release or keep withholding the tools a backend newly offered or changed.
+
+    A tool that is new, or whose definition (description, schema, annotations)
+    differs from the one approved, is held from every profile until an operator
+    approves it. Operator profile only.
+
+    Args:
+        action: ``list`` what is held (with the fields that changed and whether
+            a safety hint was loosened), ``approve`` one, or ``reject`` one.
+        backend: Backend name, wherever it is configured.
+        tool: The held tool's name, for approve and reject.
+    """
+    return await manage_tool_pins(action, backend, tool)
 
 
 @mcp.tool()
