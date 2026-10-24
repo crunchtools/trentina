@@ -60,9 +60,15 @@ def _rows(path: Path) -> list[sqlite3.Row]:
 
 
 class _FakeResp:
-    def __init__(self, status: int = 200, ct: str = "application/json", body: bytes = b'{"ok":1}'):
+    def __init__(
+        self,
+        status: int = 200,
+        ct: str = "application/json",
+        body: bytes = b'{"ok":1}',
+        headers: dict[str, str] | None = None,
+    ):
         self.status_code = status
-        self.headers = httpx.Headers({"content-type": ct})
+        self.headers = httpx.Headers({"content-type": ct, **(headers or {})})
         self._body = body
 
     async def aiter_raw(self) -> AsyncIterator[bytes]:
@@ -440,6 +446,25 @@ class TestBodyFidelity:
         assert resp.headers["x-trentina-warning"] == "binary_unread"
         assert len(h.net.sent) == 1
 
+    def test_a_binary_body_still_judges_the_readable_request(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The body may be unreadable, but method/path/query/headers are not:
+        the layer contract says the readable request is judged regardless. A
+        flagged readable request surfaces its finding, not just binary_unread."""
+        from trentina.defense import Layer
+
+        flagged = SimpleNamespace(flagged=True, flagged_by=Layer.L2, risk_level="high")
+        _stub_judge(monkeypatch, req=flagged)
+        h = _harness(monkeypatch, enforcement="flag")
+        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, content=b"\xff\xfe\x00k")
+        assert resp.status_code == 200
+        # Both signals ride the warning: the readable-request finding (proving it
+        # was judged despite the binary body) AND binary_unread (flag mode never
+        # hides that an unreadable body was delivered).
+        assert resp.headers["x-trentina-warning"] == "high,binary_unread"
+        assert len(h.net.sent) == 1
+
     def test_json_upstream_refuses_a_duplicate_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch, upstream=_upstream(body="json"))
@@ -472,6 +497,40 @@ class TestResponseTokenScrub:
         assert resp.status_code == 200
         assert b"forge-token" not in resp.content
         assert b"[REDACTED]" in resp.content
+
+    def test_a_fully_encoded_echo_of_the_token_is_also_cut(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A reflecting upstream can return the token fully \\u-escaped or fully
+        percent-encoded so the agent decodes it; the scrub cuts those mechanical
+        forms too (a deliberately partial/mixed encoding is a documented best-
+        effort residue, not a backtracking regex). (#511)"""
+        _stub_judge(monkeypatch)
+        h = _harness(monkeypatch, enforcement="flag")
+        token = "forge-token"
+        uesc = "".join(rf"\u{ord(c):04x}" for c in token)  # fully JSON \uXXXX
+        pct = "".join(f"%{ord(c):02x}" for c in token)  # fully percent-encoded
+        h.net.resp = _FakeResp(body=f'{{"a":"{uesc}","b":"{pct}"}}'.encode())
+        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        assert resp.status_code == 200
+        assert uesc.encode() not in resp.content
+        assert pct.encode() not in resp.content
+        assert b"[REDACTED]" in resp.content
+
+    def test_an_echoed_token_in_a_response_header_is_cut(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Headers are scrubbed through a separate application of the scrub, so
+        the encoded-token cut is asserted there too (#511)."""
+        _stub_judge(monkeypatch)
+        h = _harness(monkeypatch, enforcement="flag")
+        pct = "".join(f"%{ord(c):02x}" for c in "forge-token")  # fully encoded
+        h.net.resp = _FakeResp(body=b"{}", headers={"x-echo": f"Bearer {pct}"})
+        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        assert resp.status_code == 200
+        assert "forge-token" not in resp.headers.get("x-echo", "")
+        assert pct not in resp.headers.get("x-echo", "")
+        assert "[REDACTED]" in resp.headers.get("x-echo", "")
 
 
 class TestFlagAudit:

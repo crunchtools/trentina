@@ -423,19 +423,26 @@ async def _judge_request(
     and the flag-mode warning (``None`` under block, which refuses instead).
 
     A non-UTF-8 verbatim body is a binary request no layer can read as the
-    destination will: block refuses it, flag forwards it with a warning.
-    Otherwise the request crosses ``judge_outbound``; block refuses a credential,
-    flag or gap before anything is sent, and flag carries the finding to the row.
+    destination will: block refuses it. But the readable request — method, path,
+    query, forwarded headers — ALWAYS crosses ``judge_outbound``; a binary body
+    is left out of the judged document and identified by ``binary_unread``
+    instead (the layer contract's flag-mode allowance), never used to skip
+    judging the rest. Block refuses a credential, flag or gap before anything is
+    sent; flag carries the finding, and a binary body, to the row.
     """
     judged_body = _judged_body_text(body, upstream) if body is not None else None
-    if body is not None and judged_body is None:
-        if mode is Mode.BLOCK:
-            raise EgressRefusedError(HTTPStatus.FORBIDDEN, "binary_body")
-        op.flag_reason = "binary_body"
-        logger.warning("egress: binary request body (flag) profile=%s", op.profile.name)
-        return None, "binary_unread"
+    binary_body = body is not None and judged_body is None
+    if binary_body and mode is not Mode.FLAG:
+        # Only flag (the researcher grant) forwards a body no layer can read;
+        # block refuses it, as would redact — which egress rejects at load, so
+        # the mode here is block or flag, never redact.
+        raise EgressRefusedError(HTTPStatus.FORBIDDEN, "binary_body")
 
-    document = request_document(request.method, f"/{path}", request.url.query, fwd, judged_body)
+    # The binary body (if any) is dropped from the judged document — no layer can
+    # read it — but the readable request is judged regardless of the body.
+    document = request_document(
+        request.method, f"/{path}", request.url.query, fwd, None if binary_body else judged_body
+    )
     verdict = await judge_outbound(
         document,
         source=f"egress:{op.profile.name}:{name}",
@@ -449,9 +456,11 @@ async def _judge_request(
         reason = _request_reason(verdict.reason or REASON_UNJUDGED)
         logger.warning("egress: request blocked profile=%s reason=%s", op.profile.name, reason)
         raise EgressRefusedError(HTTPStatus.FORBIDDEN, reason)
+    # flag mode from here. A finding in the readable request leads the warning
+    # and the audit row (closed-set log, #262); a binary body rides as
+    # binary_unread when the readable request was otherwise clean.
+    warning = verdict.warning
     if verdict.warning is not None:
-        # flag mode: forwarded, but the finding is logged (closed-set, #262) and
-        # carried to the audit row so the researcher grant is not a blind spot.
         op.flag_reason = _request_reason(verdict.reason or REASON_UNJUDGED)
         logger.warning(
             "egress: request %s (flag) profile=%s upstream=%s",
@@ -459,7 +468,14 @@ async def _judge_request(
             op.profile.name,
             name,
         )
-    return document, verdict.warning
+    if binary_body:
+        op.flag_reason = op.flag_reason or "binary_body"
+        # Both signals ride the warning: the readable-request finding (if any)
+        # AND binary_unread, so flag mode never silently hides that a body no
+        # layer could read was delivered.
+        warning = f"{warning},binary_unread" if warning else "binary_unread"
+        logger.warning("egress: binary request body (flag) profile=%s", op.profile.name)
+    return document, warning
 
 
 async def _gatekeep(op: _Operation, name: str, method: str, document: str) -> None:
@@ -493,6 +509,30 @@ async def _gatekeep(op: _Operation, name: str, method: str, document: str) -> No
         # The caller sees only ``gatekeeper``; the audit keeps the judge's own
         # reason and facts (closed-enum, #262-safe), as the tool path does.
         raise EgressRefusedError(HTTPStatus.FORBIDDEN, "gatekeeper", detail=refusal.audit)
+
+
+def _scrub_secret(value: str, secret: str) -> str:
+    """Remove the injected credential from a response value the agent will read.
+
+    A linear ``str.replace`` over a fixed set of forms: the raw token and its
+    fully percent-encoded and JSON ``\\uXXXX``-escaped copies (both hex cases),
+    the forms a mechanical encoder produces. A deliberately PARTIAL or mixed
+    encoding by the (operator-named) upstream is a documented best-effort residue
+    — NOT chased with a per-character regex, which backtracks on a near-match,
+    and a response body is untrusted input, so that regex would be a DoS.
+    Best-effort defence in depth (#511): the real protection is that the agent
+    never holds the token and the upstream is operator-named; this is the belt.
+    """
+    forms = (
+        secret,
+        "".join(f"%{ord(c):02x}" for c in secret),
+        "".join(f"%{ord(c):02X}" for c in secret),
+        "".join(f"\\u{ord(c):04x}" for c in secret),
+        "".join(f"\\u{ord(c):04X}" for c in secret),
+    )
+    for form in forms:
+        value = value.replace(form, "[REDACTED]")
+    return value
 
 
 def _request_reason(code: str) -> str:
@@ -533,7 +573,7 @@ async def _send_and_judge(
     hdrs.pop(REASON_HEADER.lower(), None)
     hdrs.pop(REASON_HEADER, None)
     if secret:
-        hdrs = {k: v.replace(secret, "[REDACTED]") for k, v in hdrs.items()}
+        hdrs = {k: _scrub_secret(v, secret) for k, v in hdrs.items()}
 
     # The response headers are delivered to the agent, so they cross the layers
     # too (the layer contract: nothing delivered unread). They are judged with
@@ -544,11 +584,14 @@ async def _send_and_judge(
     body_is_text = bool(raw) and _is_text(ct) and b"\x00" not in raw[:8192]
     if body_is_text:
         text = raw.decode("utf-8", errors="replace")
-        if secret and secret in text:
-            # An echo endpoint returned our injected token (bare or prefixed):
-            # cut it before the agent or the judge sees it.
-            text = text.replace(secret, "[REDACTED]")
-            raw = text.encode()
+        if secret:
+            # An echo endpoint returned our injected token — verbatim or in a
+            # fully percent-/\\u-encoded copy the agent would decode: cut each
+            # before the agent or the judge sees it.
+            scrubbed = _scrub_secret(text, secret)
+            if scrubbed != text:
+                text = scrubbed
+                raw = text.encode()
         document = f"{header_doc}\n\n{text}" if header_doc else text
     else:
         document = header_doc  # judge the headers even when the body is binary
