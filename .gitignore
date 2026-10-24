@@ -53,3 +53,6 @@ corpora/data/
 
 # Sync-tool conflict copies (a stale snapshot of a file, never source)
 *.conflict[0-9]*
+
+reports/
+research_notes/

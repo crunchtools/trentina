@@ -81,18 +81,6 @@ class Tally:
     wrong_reason: list[str] = field(default_factory=list)
 
 
-def _document(case: EgressCase) -> str:
-    """The request as the route assembles it for judging.
-
-    Headers go through ``forward_request_headers`` first, exactly as the route
-    does (``egress_http._judge_request``): only the allowlist survives, and the
-    user-agent is overwritten — so a secret smuggled in a stripped header never
-    reaches the judged document here either, as it never does in production.
-    """
-    fwd = forward_request_headers(list(case.headers.items()), BENCH_UPSTREAM)
-    return request_document(case.method, case.path, case.query, fwd, case.body)
-
-
 def _rail_reason(case: EgressCase) -> str | None:
     """The route's real rail decision for a case, or None when it would pass.
 
@@ -120,8 +108,15 @@ def score_deterministic(case: EgressCase) -> tuple[bool, str | None]:
         if case.expect_block and reason != case.rail_reason:
             return (reason is not None), f"{case.id}: {reason} != {case.rail_reason}"
         return reason is not None, None
-    # request DLP (and the deterministic benign half): the credential detector.
-    return bool(detect_credentials(_document(case))), None
+    # request DLP (and the deterministic benign half): the credential detector,
+    # over the document the route assembles. Headers go through
+    # forward_request_headers first, exactly as egress_http._judge_request does
+    # — only the allowlist survives and the user-agent is overwritten — so a
+    # secret smuggled in a stripped header never reaches the judged document
+    # here either, as it never does in production.
+    fwd = forward_request_headers(list(case.headers.items()), BENCH_UPSTREAM)
+    document = request_document(case.method, case.path, case.query, fwd, case.body)
+    return bool(detect_credentials(document)), None
 
 
 async def score_response(case: EgressCase, votes: int) -> tuple[bool, bool]:
