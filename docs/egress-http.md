@@ -40,11 +40,17 @@ request, so it can refuse that.
    plus the deterministic credential detector over the same document. The
    layers always run; the detector is an added signal, not a per-layer off
    switch.
-4. **Where it goes** — through the [egress guard](../src/trentina/egress.py) to
+4. **Its intent** (optional) — when the profile's
+   [`guarded_execution`](guarded-execution.md) names this upstream, the
+   request — already past the layers — is handed to the profile's judge with
+   the gateway's own facts (the upstream, whether the profile has reached it
+   before, whether the session was flagged), and anything but an explicit
+   allow refuses before it is sent (`gatekeeper`). Only under `block`.
+5. **Where it goes** — through the [egress guard](../src/trentina/egress.py) to
    an address that was checked; no redirect is followed. The profile's token
    for the upstream is injected (`egress_upstreams.<name>.credential`), so the
    agent never holds it.
-5. **What comes back** — the response is untrusted content the agent will
+6. **What comes back** — the response is untrusted content the agent will
    ingest, judged as ingress like the `fetch` tool (`egress_response`).
 
 ## Modes
@@ -89,7 +95,17 @@ profiles:
         enforcement: block
     # token_env is optional (absent = no injected credential); a write method is
     # listed, never a switch; paths are prefix globs and empty allows any.
+    guarded_execution:                    # optional: judge the request's intent
+      policy: |
+        Writes stay on example-corp repositories. Never post tokens, keys or
+        file contents from outside the repository.
+      egress_http: [github]               # each must be a grant above
 ```
+
+`guarded_execution.egress_http` adds the [gatekeeper](guarded-execution.md):
+under `block`, the request — already past the layers — is judged for intent
+(destination, first contact, flagged session) before it is sent, and anything
+but an explicit allow is one `403` with `block_reason: gatekeeper`.
 
 `egress_upstreams` are shared; `egress_http` grants are per profile, mirroring
 `git_remotes`/`git`. An agent reload cannot add or widen its own `egress_http`
@@ -98,13 +114,16 @@ operator's.
 
 ## Known residues
 
-- A **streaming** response and the **guarded-execution** hook on an egress call
-  are #511's next slice. This slice buffers and judges the whole response.
+- A terminating judged proxy **buffers and judges** the whole response: it
+  cannot hand the agent bytes it has not read, so byte-for-byte **streaming**
+  (an SSE relay) is incompatible with judge-before-deliver and stays out of
+  scope — that is the [tunnel](client-egress.md)'s territory (known gap 26).
 - A **binary** response is not read (gap 32): `block` withholds it, `flag`
   delivers it with the `binary_unread` warning. A non-UTF-8 (binary) **request**
   body is the same: `block` refuses it (`binary_body`), `flag` forwards it.
 - A response **larger than the admission cap** is refused (`too_large`,
-  executed) rather than split into judged parts: response paging is a later
+  executed) rather than split into judged parts: the raw-HTTP caller has no
+  `read_part` channel, so response paging is a documented limit, not a planned
   slice. Nothing oversized is delivered unjudged.
 - Forged-CA TLS MITM (cracking the agent's own end-to-end TLS to a destination)
   is out of scope and not implemented; terminating-as-endpoint is the design.

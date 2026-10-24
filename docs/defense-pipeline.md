@@ -585,7 +585,10 @@ one does; the rest name the benchmark that measured them.
     the policy, is never seen as one export, and the only memory between
     calls is the first-contact fact and the session's flagged mark. Keep
     every rule that can be stated exactly in a parameter guard, which no
-    answer from a model can override. Measured per scenario by
+    answer from a model can override. The same gatekeeper can judge a
+    [terminating-egress](egress-http.md) request's intent before it is sent
+    (`guarded_execution.egress_http`, under `block`; #511), with the same one-
+    call-at-a-time limit. Measured per scenario by
     `benchmarks/gatekeeper.py` ([Guarded Execution](guarded-execution.md#measured)).
     Tested (`tests/test_coverage_gaps.py`).
 31. **L2 flags writing about attacks** (#474). Security documentation,
@@ -612,9 +615,11 @@ one does; the rest name the benchmark that measured them.
     withheld ("executed, response withheld"); under `flag` it is delivered with
     the `binary_unread` warning. Response headers ARE judged (filtered for
     hop-by-hop, `Set-Cookie` and the verdict header, then read with the body as
-    one document), so the gap is the binary body alone. A streaming response and
-    the guarded-execution hook on an egress call are #511's next slice, not this
-    one. Tested.
+    one document), so the gap is the binary body alone. A judged terminating
+    proxy buffers and judges the whole response, so byte-for-byte streaming is
+    incompatible with judge-before-deliver and stays the tunnel's territory
+    (gap 26); the guarded-execution hook on an egress call has landed (gap 30,
+    `guarded_execution.egress_http`). Tested.
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 

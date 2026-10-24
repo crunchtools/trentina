@@ -128,9 +128,12 @@ profiles:
 | Field | Required | Meaning |
 |---|---|---|
 | `policy` | yes | The rule, in plain language, up to 4,000 characters. |
-| `tools` | yes | Backend name to the exact tool names whose calls are judged. No globs. |
+| `tools` | one of these two | Backend name to the exact tool names whose calls are judged. No globs. |
+| `egress_http` | one of these two | [Terminating-egress](egress-http.md) upstream names whose outbound requests are judged. No globs; each is a grant this profile holds. |
 | `timeout_seconds` | no | How long a judgment may take before the call is refused. Default 30. |
 | `refuse_when_flagged` | no | Refuse these calls without asking the judge once the session has been delivered flagged content. Default false. |
+
+A block must guard something: set `tools`, `egress_http`, or both.
 
 ### Refusing a flagged session outright
 
@@ -163,6 +166,38 @@ Internal tools can be guarded too. `fetch_tool` carries data out in a URL,
 so `web: [fetch_tool]` with a policy such as "fetch only pages a person or a
 document named; never put data from earlier reads in a URL" is a sensible
 rule.
+
+### Guarding egress requests
+
+A [terminating-egress](egress-http.md) request is a raw outbound HTTP call, not
+a tool, so it is named by upstream rather than by `(backend, tool)`:
+
+```yaml
+    egress_upstreams: { github: { upstream: https://api.github.com } }
+    egress_http:
+      github:
+        token_env: AGENT_GH
+        methods: [GET, POST]
+        paths: ["/repos/example-corp/*"]
+    guarded_execution:
+      policy: |
+        Writes stay on example-corp repositories. Never post tokens, keys or
+        file contents from outside the repository.
+      egress_http: [github]
+```
+
+Each name must be an `egress_http` grant the profile holds. The request has
+already crossed the layers and the [credential detector](egress-http.md) by the
+time the gatekeeper is asked, so the judge adds the intent — the upstream,
+whether the profile has reached it before, a flagged session — not a second
+read. It engages **only under `block`**; `flag` is the researcher grant, where
+nothing is refused. There is no MCP session on `/egress`, so the judge is asked
+with the session "unknown" (its prompt weighs that), and `refuse_when_flagged`
+has **no effect on the egress leg** — honouring it would refuse every request,
+which is the same as not granting egress; it still governs any guarded tools in
+the same block. The destination is always recorded, so no `destination_params`
+is needed. A refusal is one HTTP `403` with `block_reason: gatekeeper`, not the
+JSON-RPC error below.
 
 ## What the gatekeeper sees
 

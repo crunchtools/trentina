@@ -18,7 +18,13 @@ from trentina.gateway.backend import BackendCall
 from trentina.gateway.context import current_call, current_session
 from trentina.gateway.destination import Destination, DestinationKind
 from trentina.gateway.loader import ProfileConfigError, load_profiles
-from trentina.gateway.profile import AuthConfig, Backend, GuardedExecutionConfig, Profile
+from trentina.gateway.profile import (
+    AuthConfig,
+    Backend,
+    EgressGrant,
+    GuardedExecutionConfig,
+    Profile,
+)
 from trentina.gateway.profile_lint import check_guarded_destinations
 from trentina.gateway.router import NAMESPACE_SEP, Assembled, _mark_session, route_jsonrpc
 from trentina.outcomes import BLOCKED_OUTCOMES, Outcome
@@ -283,6 +289,108 @@ class TestFailsClosed:
         assert refusal.reason == gatekeeper.GATEKEEPER_UNAVAILABLE
 
 
+_EGRESS_DEST = Destination("api.github.com#abc123", DestinationKind.EGRESS)
+_EGRESS_DOC = 'POST /repos/x\ncontent-type: application/json\n{"title": "bug"}'
+
+
+def _egress_profile(**guarded: Any) -> Profile:
+    """A profile whose guarded_execution guards the ``gh`` egress upstream (#511)."""
+    p = Profile(
+        name="agent1",
+        auth=AuthConfig(bearer_token_env="TEST"),
+        egress_http={"gh": EgressGrant(methods=["GET", "POST"], paths=["/repos/*"])},
+        guarded_execution=GuardedExecutionConfig(policy=POLICY, egress_http=["gh"], **guarded),
+    )
+    p.auth.bearer_token = SecretStr("x")
+    return p
+
+
+async def _judge_egress(profile: Profile, *, document: str = _EGRESS_DOC) -> Any:
+    cfg = profile.guarded_execution
+    assert cfg is not None
+    return await gatekeeper.judge_egress(
+        profile,
+        cfg,
+        backend="egress:gh",
+        method="POST",
+        destination=_EGRESS_DEST,
+        document=document,
+    )
+
+
+class TestEgress:
+    """#511: the guarded-execution hook on a terminating-egress request."""
+
+    async def test_an_explicit_allow_lets_the_request_go(self) -> None:
+        with _Judge() as judge:
+            assert await _judge_egress(_egress_profile()) is None
+        judge.generate.assert_awaited_once()
+        # The request already crossed the layers in judge_outbound; the
+        # gatekeeper on egress adds the facts and the judge, not a second pass.
+        judge.defend.assert_not_awaited()
+
+    async def test_the_judge_reads_the_policy_the_facts_and_the_request(self) -> None:
+        with _Judge() as judge:
+            await _judge_egress(_egress_profile())
+        content = judge.generate.await_args.args[0]
+        kwargs = judge.generate.await_args.kwargs
+        assert POLICY in kwargs["system_prompt"]
+        assert "api.github.com#abc123 (egress)" in kwargs["user_prompt"]
+        assert '"title": "bug"' in content
+        assert POLICY not in content
+
+    @pytest.mark.parametrize(
+        "reason", ["policy_violation", "unfamiliar_destination", "bulk_private_data"]
+    )
+    async def test_a_refusal_carries_the_judges_reason(self, reason: str) -> None:
+        with _Judge({"decision": "refuse", "reason": reason}):
+            refusal = await _judge_egress(_egress_profile())
+        assert refusal is not None
+        assert refusal.reason == reason
+
+    async def test_no_judge_fails_closed(self) -> None:
+        with _Judge(llm=False):
+            refusal = await _judge_egress(_egress_profile())
+        assert refusal is not None
+        assert refusal.reason == gatekeeper.GATEKEEPER_UNAVAILABLE
+
+    async def test_refuse_when_flagged_is_a_no_op_on_egress(self) -> None:
+        # There is no MCP session on /egress, so honouring refuse_when_flagged
+        # would refuse every request — the same as not granting egress. It is a
+        # no-op here (it still governs guarded tools): the judge is asked, with
+        # the session unknown, and an explicit allow lets the request go.
+        with _Judge() as judge:
+            judge.session_flagged = None
+            assert await _judge_egress(_egress_profile(refuse_when_flagged=True)) is None
+        judge.generate.assert_awaited_once()
+
+
+class TestGuardConfig:
+    """#511: a guarded_execution block may guard tools, egress upstreams, or both."""
+
+    def test_egress_only_is_valid(self) -> None:
+        cfg = GuardedExecutionConfig(policy=POLICY, egress_http=["gh"])
+        assert cfg.guards_egress("gh") is True
+        assert cfg.guards_egress("other") is False
+        assert cfg.tools == {}
+
+    def test_guarding_nothing_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="guards nothing"):
+            GuardedExecutionConfig(policy=POLICY)
+
+    def test_a_duplicate_upstream_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="lists an upstream twice"):
+            GuardedExecutionConfig(policy=POLICY, egress_http=["gh", "gh"])
+
+    def test_a_guarded_upstream_must_be_a_grant(self) -> None:
+        with pytest.raises(ValidationError, match="not an egress_http grant"):
+            Profile(
+                name="agent1",
+                auth=AuthConfig(bearer_token_env="TEST"),
+                guarded_execution=GuardedExecutionConfig(policy=POLICY, egress_http=["gh"]),
+            )
+
+
 class TestFacts:
     def test_first_contact_counts_only_completed_calls(self, env: Path) -> None:
         record_gateway_call(
@@ -543,7 +651,7 @@ class TestConfig:
             ({"policy": POLICY, "tools": {"mail": ["send_*"]}}, "not exact tool names"),
             ({"policy": POLICY, "tools": {"mail": []}}, "names no tool"),
             ({"policy": POLICY, "tools": {"mail": ["a", "a"]}}, "lists a tool twice"),
-            ({"policy": POLICY, "tools": {}}, "at least 1"),
+            ({"policy": POLICY, "tools": {}}, "guards nothing"),
             ({"policy": POLICY, "tools": {"mail": ["a"]}, "timeout_seconds": 1}, "greater than"),
             ({"policy": POLICY, "tools": {"mail": ["a"]}, "extra": 1}, "Extra inputs"),
         ],

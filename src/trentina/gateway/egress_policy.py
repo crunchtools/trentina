@@ -38,6 +38,7 @@ REASONS = frozenset(
         "credential_in_request",
         "flagged",
         "not_fully_judged",
+        "gatekeeper",  # the guarded-execution judge refused the request's intent (#511)
         "busy",  # the profile's in-flight slots are all taken
         "resolver_busy",
         "redirect",
@@ -75,7 +76,9 @@ USER_AGENT = "trentina-egress"
 class EgressRefusedError(Exception):
     """A request the route refuses, with a closed reason and an HTTP status."""
 
-    def __init__(self, status: HTTPStatus, reason: str, *, executed: bool = False) -> None:
+    def __init__(
+        self, status: HTTPStatus, reason: str, *, executed: bool = False, detail: str | None = None
+    ) -> None:
         if reason not in REASONS:
             raise ValueError(f"reason {reason!r} not in the closed set")
         self.status = status
@@ -83,6 +86,10 @@ class EgressRefusedError(Exception):
         #: True when the destination already answered (the response leg): the
         #: request was sent, so a refusal here is "executed, response withheld".
         self.executed = executed
+        #: A more specific, still log-safe audit string when the closed reason
+        #: is a bucket — the gatekeeper's own reason and facts, say. The CALLER
+        #: only ever sees ``reason``; ``detail`` is for the durable audit row.
+        self.detail = detail
         super().__init__(reason)
 
 

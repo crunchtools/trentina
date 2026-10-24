@@ -119,7 +119,12 @@ def _stub_judge(monkeypatch: pytest.MonkeyPatch, *, req: Any = None, resp: Any =
     monkeypatch.setattr(egress_http, "gaps_of", lambda _v: Gaps())
 
 
-def _profile(enforcement: Literal["block", "flag"] = "block", *, with_cred: bool = True) -> Profile:
+def _profile(
+    enforcement: Literal["block", "flag"] = "block",
+    *,
+    with_cred: bool = True,
+    guarded: bool = False,
+) -> Profile:
     grant = EgressGrant(
         token_env="AGENT_GH" if with_cred else None,
         methods=["GET", "POST"],
@@ -130,7 +135,19 @@ def _profile(enforcement: Literal["block", "flag"] = "block", *, with_cred: bool
         from pydantic import SecretStr
 
         grant.token = SecretStr("forge-token")
-    p = Profile(name="agent1", auth=AuthConfig(bearer_token_env="TOK"), egress_http={"gh": grant})
+    from trentina.gateway.profile import GuardedExecutionConfig
+
+    guard = (
+        GuardedExecutionConfig(policy="No bulk customer data leaves.", egress_http=["gh"])
+        if guarded
+        else None
+    )
+    p = Profile(
+        name="agent1",
+        auth=AuthConfig(bearer_token_env="TOK"),
+        egress_http={"gh": grant},
+        guarded_execution=guard,
+    )
     from pydantic import SecretStr
 
     p.auth.bearer_token = SecretStr("agent1-tok")
@@ -158,6 +175,7 @@ def _harness(
     enforcement: Literal["block", "flag"] = "block",
     with_cred: bool = True,
     upstream: EgressUpstream | None = None,
+    guarded: bool = False,
 ) -> _Harness:
     net = _Net()
     monkeypatch.setattr(egress_http, "open_pinned", net.open_pinned)
@@ -169,7 +187,7 @@ def _harness(
     up = upstream if upstream is not None else _upstream()
     active = SimpleNamespace(config=SimpleNamespace(egress_upstreams={"gh": up}))
     monkeypatch.setattr(egress_http, "get_active_config", lambda: active)
-    profiles = {"agent1": _profile(enforcement, with_cred=with_cred)}
+    profiles = {"agent1": _profile(enforcement, with_cred=with_cred, guarded=guarded)}
 
     async def endpoint(request: Request) -> Response:
         return await egress_http.serve(request, profiles)
@@ -517,3 +535,96 @@ class TestJsonUpstream:
         assert resp.status_code == 400
         assert resp.json()["block_reason"] == "not_json"
         assert h.net.sent == []
+
+
+class TestGatekeeper:
+    """#511: the guarded-execution hook, wired into the request path."""
+
+    @staticmethod
+    def _patch_judge(monkeypatch: pytest.MonkeyPatch, result: Any) -> list[dict[str, Any]]:
+        """Patch ``judge_egress`` to record its kwargs and return ``result()``."""
+        calls: list[dict[str, Any]] = []
+
+        async def _stub(*_a: Any, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            return result()
+
+        monkeypatch.setattr(egress_http, "judge_egress", _stub)
+        return calls
+
+    def test_a_refusal_blocks_before_sending(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        from trentina.gateway.gatekeeper import CallFacts, GateRefusal
+
+        _stub_judge(monkeypatch)
+        refusal = GateRefusal(
+            "bulk_private_data",
+            CallFacts("egress:gh", "POST", "d", "egress", True, None),
+        )
+        self._patch_judge(monkeypatch, lambda: refusal)
+        h = _harness(monkeypatch, guarded=True)
+        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, json={"a": 1})
+        assert resp.status_code == 403
+        body = resp.json()
+        assert body["block_reason"] == "gatekeeper"  # the caller sees only the bucket
+        assert "executed" not in body  # nothing was sent
+        assert h.net.sent == []
+        [row] = _rows(audit_db)
+        assert row["outcome"] == "denied_gatekeeper"
+        # the audit keeps the judge's own reason and facts, not just "gatekeeper"
+        assert "bulk_private_data" in row["error_message"]
+
+    def test_a_guarded_get_to_a_new_path_is_intent_judged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_judge(monkeypatch)
+        calls = self._patch_judge(monkeypatch, lambda: None)
+        h = _harness(monkeypatch, guarded=True)
+        resp = h.client.get("/egress/gh/repos/x?page=2", headers=_AUTH)
+        assert resp.status_code == 200
+        assert len(h.net.sent) == 1  # allowed, forwarded
+        assert len(calls) == 1  # a bodyless GET still has its intent judged
+
+    def test_the_judge_reads_a_revealed_redacted_copy_not_the_raw_body(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_judge(monkeypatch)
+        calls = self._patch_judge(monkeypatch, lambda: None)
+        h = _harness(monkeypatch, guarded=True)
+        # %41%42 is percent-encoded "AB": forwarded verbatim, but the judge must
+        # see it decoded (judge_input reveals before the external judge reads it).
+        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, content=b"%41%42")
+        assert resp.status_code == 200
+        assert "AB" in calls[0]["document"]  # revealed for the judge
+        [sent] = h.net.sent
+        assert sent.content == b"%41%42"  # forwarded byte-for-byte
+
+    def test_an_allow_forwards_the_request(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_judge(monkeypatch)
+        calls = self._patch_judge(monkeypatch, lambda: None)
+        h = _harness(monkeypatch, guarded=True)
+        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, json={"a": 1})
+        assert resp.status_code == 200
+        assert len(h.net.sent) == 1
+        assert len(calls) == 1  # the hook ran and let it through
+
+    def test_flag_mode_never_asks_the_gatekeeper(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_judge(monkeypatch)
+        calls = self._patch_judge(monkeypatch, lambda: None)
+        h = _harness(monkeypatch, enforcement="flag", guarded=True)
+        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, json={"a": 1})
+        assert resp.status_code == 200
+        assert calls == []  # flag is the researcher grant; no intent judgment
+        assert len(h.net.sent) == 1
+
+    def test_an_unguarded_upstream_never_asks_the_gatekeeper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_judge(monkeypatch)
+        calls = self._patch_judge(monkeypatch, lambda: None)
+        h = _harness(monkeypatch, guarded=False)
+        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, json={"a": 1})
+        assert resp.status_code == 200
+        assert calls == []
+        assert len(h.net.sent) == 1

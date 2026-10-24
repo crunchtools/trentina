@@ -19,6 +19,12 @@ What it decides, in order, each one deterministic:
   detector over the same document. Under ``block`` a credential, a flag or a
   blocking gap refuses before anything is sent — nothing executed. Under
   ``flag`` it is forwarded with the verdict on ``x-trentina-warning``.
+- **its intent** (optional, ``block`` only): when the profile's
+  ``guarded_execution`` names this upstream, the request — already past the
+  layers — is handed to the profile's judge, with the gateway's own facts (the
+  destination, whether the profile has reached it before, whether the session
+  was flagged), and anything but an explicit allow refuses before it is sent
+  (``gatekeeper``, ``gateway/gatekeeper.py``).
 - **where it goes**: through the egress guard, to an address that was checked;
   no redirect is followed.
 - **what comes back**: the response is untrusted content the agent will ingest,
@@ -26,9 +32,13 @@ What it decides, in order, each one deterministic:
   judged, delivered or refused. A refusal here is "executed, response withheld"
   (#425): the request was sent.
 
-One ``gateway_calls`` row per request. Streaming responses and the guarded-
-execution hook are #511's next slice; this slice buffers and judges the whole
-response.
+One ``gateway_calls`` row per request. A terminating judged proxy buffers and
+judges the whole response: it cannot hand the agent bytes it has not read, so
+byte-for-byte streaming (an SSE relay) is incompatible with judge-before-deliver
+and stays out of scope — that is the tunnel's territory (known gap 26). A
+response past the admission cap is refused ``too_large`` (executed) rather than
+split into judged parts; the raw-HTTP caller has no ``read_part`` channel, so
+response paging is a documented limit, not a planned slice.
 """
 
 from __future__ import annotations
@@ -56,7 +66,7 @@ from .auth import resolve_profile_by_token
 from .backend import response_byte_cap
 from .client_egress import RESOLVER_BUSY, checked_target
 from .context import profile_context
-from .destination import MAX_DESTINATION_CHARS, DestinationKind, fingerprint
+from .destination import MAX_DESTINATION_CHARS, Destination, DestinationKind, fingerprint
 from .egress_policy import (
     EgressRefusedError,
     build_url,
@@ -64,6 +74,7 @@ from .egress_policy import (
     request_document,
     response_headers,
 )
+from .gatekeeper import judge_egress
 from .ingress_defense import effective_mode
 from .loader import get_active_config
 from .outbound import (
@@ -71,6 +82,7 @@ from .outbound import (
     REASON_FLAGGED,
     REASON_UNJUDGED,
     body_text,
+    judge_input,
     judge_outbound,
 )
 from .proxy_utils import PLAIN_TEXT, normalize_proxy_path
@@ -120,6 +132,7 @@ _OUTCOME_OF: dict[str, Outcome] = {
     "credential_in_request": Outcome.BLOCKED_DEFENSE,
     "flagged": Outcome.BLOCKED_DEFENSE,
     "not_fully_judged": Outcome.BLOCKED_DEFENSE,
+    "gatekeeper": Outcome.DENIED_GATEKEEPER,
     "response_flagged": Outcome.BLOCKED_DEFENSE,
     "response_unjudged": Outcome.BLOCKED_DEFENSE,
     "response_binary": Outcome.BLOCKED_DEFENSE,
@@ -223,7 +236,13 @@ async def serve(request: Request, profiles: dict[str, Profile]) -> Response:
     try:
         return await _carry(request, op)
     except EgressRefusedError as refusal:
-        op.settle(_OUTCOME_OF.get(refusal.reason, Outcome.DENIED_GUARD), refusal.reason)
+        # The caller-facing deny marker carries the closed ``reason``; the audit
+        # row keeps the more specific ``detail`` when there is one (the
+        # gatekeeper's own reason and facts), for incident reconstruction.
+        op.settle(
+            _OUTCOME_OF.get(refusal.reason, Outcome.DENIED_GUARD),
+            refusal.detail or refusal.reason,
+        )
         logger.info("egress: refused profile=%s reason=%s", profile.name, refusal.reason)
         # The deny marker, to its own caller; no payload, no L3 prose (#511).
         body: dict[str, Any] = {
@@ -364,7 +383,14 @@ async def _carry(request: Request, op: _Operation) -> Response:
     fwd = forward_request_headers(list(request.headers.items()), upstream)
     mode = effective_mode(op.profile, Mode(grant.enforcement))
 
-    warning = await _judge_request(op, request, upstream, name, path, body, fwd, mode)
+    document, warning = await _judge_request(op, request, upstream, name, path, body, fwd, mode)
+
+    # The guarded-execution hook (#511): under block, a profile may ask its
+    # judge to decide the request's intent — destination, first contact, flagged
+    # session — before anything is sent. flag is the researcher grant; it never
+    # reaches here. The request has not been sent, so a refusal is a plain denial.
+    if document is not None and mode is Mode.BLOCK:
+        await _gatekeep(op, name, request.method, document)
 
     # Inject the profile's credential (never judged, never logged) and send. The
     # bare token value is carried for response scrubbing: an upstream may echo it
@@ -389,8 +415,12 @@ async def _judge_request(
     body: bytes | None,
     fwd: dict[str, str],
     mode: Mode,
-) -> str | None:
+) -> tuple[str | None, str | None]:
     """Judge the outbound request; raise to refuse under block, return a flag warning.
+
+    Returns ``(document, warning)``: the request document the layers read (for
+    the guarded-execution hook, ``None`` when there is no judgeable document)
+    and the flag-mode warning (``None`` under block, which refuses instead).
 
     A non-UTF-8 verbatim body is a binary request no layer can read as the
     destination will: block refuses it, flag forwards it with a warning.
@@ -403,7 +433,7 @@ async def _judge_request(
             raise EgressRefusedError(HTTPStatus.FORBIDDEN, "binary_body")
         op.flag_reason = "binary_body"
         logger.warning("egress: binary request body (flag) profile=%s", op.profile.name)
-        return "binary_unread"
+        return None, "binary_unread"
 
     document = request_document(request.method, f"/{path}", request.url.query, fwd, judged_body)
     verdict = await judge_outbound(
@@ -429,7 +459,40 @@ async def _judge_request(
             op.profile.name,
             name,
         )
-    return verdict.warning
+    return document, verdict.warning
+
+
+async def _gatekeep(op: _Operation, name: str, method: str, document: str) -> None:
+    """The guarded-execution hook on a terminating-egress request (#511).
+
+    Only the upstreams the profile's ``guarded_execution`` names are judged; a
+    request to any other upstream costs nothing here. The request already
+    passed the layers, so the judge decides its intent (``gatekeeper.py``), and
+    anything but an explicit allow raises ``gatekeeper`` — a plain denial,
+    nothing sent. The judge reads a credential-redacted, decoded copy, so no
+    secret and no raw escaping reaches it.
+    """
+    cfg = op.profile.guarded_execution
+    if cfg is None or not cfg.guards_egress(name) or op.destination is None:
+        return
+    refusal = await judge_egress(
+        op.profile,
+        cfg,
+        backend=f"{BACKEND_PREFIX}:{name}",
+        method=method,
+        destination=Destination(op.destination, DestinationKind.EGRESS),
+        document=judge_input(document),
+    )
+    if refusal is not None:
+        logger.warning(
+            "egress: gatekeeper refused profile=%s upstream=%s reason=%s",
+            op.profile.name,
+            name,
+            refusal.reason,
+        )
+        # The caller sees only ``gatekeeper``; the audit keeps the judge's own
+        # reason and facts (closed-enum, #262-safe), as the tool path does.
+        raise EgressRefusedError(HTTPStatus.FORBIDDEN, "gatekeeper", detail=refusal.audit)
 
 
 def _request_reason(code: str) -> str:

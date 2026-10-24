@@ -1464,11 +1464,21 @@ class GuardedExecutionConfig(BaseModel):
         ),
     )
     tools: dict[str, list[str]] = Field(
-        ...,
-        min_length=1,
+        default_factory=dict,
         description=(
             "Backend name to the exact tool names whose calls are judged. No "
             "globs: each name is one decision an operator made."
+        ),
+    )
+    egress_http: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Terminating-egress upstream names whose outbound requests are "
+            "judged before they are forwarded (#511). The request already "
+            "crossed the layers and the credential detector; this adds the "
+            "gateway's facts — the upstream, whether the profile has reached "
+            "it before — and the judge's verdict. No globs; each is an "
+            "``egress_http`` grant this profile holds. Only under ``block``."
         ),
     )
     refuse_when_flagged: bool = Field(
@@ -1511,9 +1521,33 @@ class GuardedExecutionConfig(BaseModel):
                 )
         return tools
 
+    @field_validator("egress_http")
+    @classmethod
+    def _egress_names_are_exact(cls, names: list[str]) -> list[str]:
+        if len(set(names)) != len(names):
+            raise ValueError("guarded_execution.egress_http lists an upstream twice")
+        bad = sum(1 for name in names if not DESTINATION_NAME_RE.fullmatch(name))
+        if bad:
+            raise ValueError(
+                f"guarded_execution.egress_http: {bad} entries are not exact "
+                "upstream names (no globs)"
+            )
+        return names
+
+    @model_validator(mode="after")
+    def _guards_something(self) -> GuardedExecutionConfig:
+        """A block that guards nothing is a configuration mistake, not a no-op."""
+        if not self.tools and not self.egress_http:
+            raise ValueError("guarded_execution guards nothing: set tools or egress_http")
+        return self
+
     def guards(self, backend: str, tool: str) -> bool:
         """Whether a call to ``tool`` on ``backend`` is judged."""
         return tool in self.tools.get(backend, ())
+
+    def guards_egress(self, upstream: str) -> bool:
+        """Whether a terminating-egress request to ``upstream`` is judged (#511)."""
+        return upstream in self.egress_http
 
 
 DISCOVERY_TOOLS = frozenset({"find_tools", "call_tool", "load_tools"})
@@ -2799,6 +2833,14 @@ class Profile(BaseModel):
                 raise ValueError(f"guarded_execution.tools.{name}: no such backend")
             if backend.is_decoy:
                 raise ValueError(f"guarded_execution.tools.{name}: a decoy backend is not judged")
+        for name in self.guarded_execution.egress_http:
+            # Guard only a destination this profile may actually reach: a name
+            # that is not a grant is a rule that never fires (#511).
+            if name not in self.egress_http:
+                raise ValueError(
+                    f"guarded_execution.egress_http.{name}: not an egress_http "
+                    "grant of this profile"
+                )
         return self
 
     @model_validator(mode="after")
