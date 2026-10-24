@@ -27,10 +27,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import httpx
 from pydantic import (
@@ -44,14 +45,26 @@ from pydantic import (
 )
 from starlette.responses import Response, StreamingResponse
 
+from ..credential_shapes import kinds as credential_kinds
+from ..credential_shapes import redact as credential_redact
 from ..database import record_gateway_call
 from ..logsafe import exc_kind, exc_where, redact_source
+from ..modes import Mode
 from ..outcomes import Outcome
 from .auth import resolve_profile_by_token
 from .context import profile_context
 from .destination import MAX_DESTINATION_CHARS, DestinationKind
 from .errors import ProfileConfigError
-from .llm_policy import API_BY_HOST, LlmApi, LlmRefusedError, Reason, admit, forward_headers
+from .ingress_defense import effective_mode
+from .llm_policy import (
+    API_BY_HOST,
+    Admitted,
+    LlmApi,
+    LlmRefusedError,
+    Reason,
+    admit,
+    forward_headers,
+)
 from .loader import read_secret_env
 from .proxy_utils import (
     PLAIN_TEXT,
@@ -64,7 +77,7 @@ if TYPE_CHECKING:
 
     from starlette.requests import Request
 
-    from .profile import Profile
+    from .profile import LlmKeyOverride, Profile
 
 logger = logging.getLogger(__name__)
 
@@ -293,21 +306,223 @@ def _audit(
         logger.warning("llm_proxy: audit row lost profile=%s err=%s", profile.name, exc_kind(exc))
 
 
-def _refusal_response(refusal: LlmRefusedError) -> Response:
-    """The refusal, to its own caller. ``detail`` is that caller's token."""
-    body = {
-        "error": {
-            "type": "trentina_refused",
-            "reason": refusal.reason.value,
-            "detail": refusal.detail,
-            "message": f"refused by Trentina: {refusal.reason.value}",
-        }
+def _deny_marker(
+    reason: str,
+    *,
+    detail: str = "",
+    flagged_by: str | None = None,
+    gaps: list[str] | None = None,
+    kinds: list[str] | None = None,
+    mode: str | None = None,
+) -> dict[str, Any]:
+    """The refusal body: gateway-authored fields only, no payload, no L3 prose.
+
+    Carries the egress-benchmark deny marker (``blocked``, ``block_reason``,
+    ``scanner``) at the top level so a runner that reads an opaque proxy
+    response still observes the verdict (#507). ``gaps`` names what the layers
+    could not finish (``modes.Gaps``); ``kinds`` names credential shapes found
+    — kept apart so a client does not read a key find as a layer outage.
+    ``alternatives`` is always empty: the mode is profile-fixed and ``redact``
+    is meaningless on an outbound call, so there is nothing to retry with.
+    """
+    error: dict[str, Any] = {
+        "type": "trentina_refused",
+        "reason": reason,
+        "message": f"refused by Trentina: {reason}",
     }
-    return Response(
-        content=json.dumps(body),
-        status_code=refusal.status,
-        media_type="application/json",
-    )
+    if detail:
+        error["detail"] = detail
+    if flagged_by is not None:
+        error["flagged_by"] = flagged_by
+    if gaps:
+        error["gaps"] = gaps
+    if kinds:
+        error["kinds"] = kinds
+    if mode is not None:
+        error["mode"] = mode
+        error["alternatives"] = []
+    return {"error": error, "blocked": True, "block_reason": reason, "scanner": "trentina"}
+
+
+#: flag mode forwards the request and rides the verdict back on this header,
+#: the one annotation an opaque HTTP response can carry (the Matrix path's
+#: ``_trentina_warning`` has no equivalent on a raw byte stream). Lowercase, as
+#: httpx normalizes header names, so an upstream's own ``x-trentina-warning``
+#: is the same key and can be dropped before ours is set (never two).
+WARNING_HEADER = "x-trentina-warning"
+
+#: Wall-clock an outbound request scan may take before it is treated as
+#: unjudged. A hung L3 must not stall the proxy for its own HTTP timeout.
+_JUDGE_DEADLINE = 60.0
+
+JSON = "application/json"
+
+
+#: A run of percent-escapes long enough to be an encoded secret or blob rather
+#: than one escaped character — masked out of the judge input (never delivery).
+_PERCENT_RUN = re.compile(r"(?:%[0-9A-Fa-f]{2}){8,}")
+
+
+def _judge_input(document: str) -> str:
+    """The copy L1/L2/L3 read — NOT what is forwarded upstream.
+
+    Credentials are cut (``credential_shapes.redact``) so a secret never reaches
+    the external judge, and a long run of percent-escapes (an encoded secret or
+    blob the detector reads decoded) is masked. Injection content is neither a
+    credential shape nor a percent run, so every layer still reads it. The
+    original admitted body is what forwards upstream (#511).
+    """
+    return _PERCENT_RUN.sub("[REDACTED]", credential_redact(document))
+
+
+def _body_text(body: bytes) -> str:
+    """The admitted body as text the LAYERS can read.
+
+    ``admit`` re-serialized the body with ``ensure_ascii=True``, so a non-Latin
+    prompt arrives as ``\\uXXXX`` escapes that L2 cannot read and L1 does not
+    count; parse and re-dump unescaped for judging. The bytes FORWARDED upstream
+    are the ASCII ones ``admit`` produced and are not touched here.
+    """
+    try:
+        return json.dumps(json.loads(body), ensure_ascii=False)
+    except (ValueError, TypeError):
+        return body.decode("utf-8", errors="replace")
+
+
+def _request_document(
+    method: str, path: str, admitted: Admitted, fwd_headers: dict[str, str]
+) -> str:
+    """The outbound request as one document for the layers and the detector (#511).
+
+    Method and path, the query, the headers that will actually be forwarded
+    (the caller's gateway token is dropped by ``forward_headers`` and the
+    provider key is not injected until after judging), and the body. This is
+    the request the agent is trying to send — what L1/L2/L3 read and what the
+    credential detector scans.
+    """
+    parts = [f"{method} {path}"]
+    if admitted.query:
+        parts.append(admitted.query)
+    parts.extend(f"{name}: {value}" for name, value in fwd_headers.items())
+    if admitted.body is not None:
+        parts.append(_body_text(admitted.body))
+    return "\n".join(parts)
+
+
+async def _judge_request(
+    document: str,
+    provider_name: str,
+    profile: Profile,
+    mode: Mode,
+    audit: Callable[[Outcome, Reason], None],
+) -> tuple[Response | None, str | None, Reason | None]:
+    """Judge an outbound request. Returns ``(refusal, warning, flag_reason)``.
+
+    L1/L2/L3 ALWAYS read the document as one piece — the credential detector is
+    an ADDITIONAL deterministic signal, never a replacement that skips a layer
+    (the layer contract forbids a per-layer off switch; the mode controls
+    delivery, not which layers run). The scan is under a deadline and an
+    exception boundary: a hung or failed scan is treated as unjudged, as the
+    Matrix path does. Under ``block`` a credential shape, a flag or a blocking
+    gap refuses before anything is sent — nothing executed, so there is no
+    "response withheld" to report. Under ``flag`` the request is forwarded and
+    the verdict rides back on ``X-Trentina-Warning``; ``flag_reason`` is carried
+    to the forward audit row so a flag-mode finding is recorded, not only shown
+    to the agent. Credential > flagged > unjudged when more than one holds.
+    """
+    from ..defense import Provenance, defend  # a seam test_llm_proxy monkeypatches
+    from ..modes import gaps_of
+
+    # Detect over the raw document and, only if that is clean, its percent-decoded
+    # form: a key sent as ``%41%4B...`` that a server would decode must not slip
+    # the block. The judge reads a redacted copy either way.
+    found = credential_kinds(document)
+    if not found:
+        decoded = unquote(document)
+        if decoded != document:
+            found = credential_kinds(decoded)
+    names = sorted(k.value for k in found)
+
+    flagged, unjudged, flagged_by, risk = False, True, None, "unknown"
+    gap_names = ["l3_unavailable"]  # the default while no verdict is reached
+    try:
+        with profile_context(profile):
+            async with asyncio.timeout(_JUDGE_DEADLINE):
+                verdict = await defend(
+                    _judge_input(document),
+                    source=f"llm:{profile.name}:{provider_name}",
+                    source_type="llm_request",
+                    defense=profile.defense,
+                    provenance=Provenance.MODEL_OUTPUT,
+                    stop_on_partial=mode is Mode.BLOCK,
+                    attribution={
+                        "direction": "request",
+                        "blocked": mode is Mode.BLOCK,
+                        "profile": profile.name,
+                        "backend": f"llm:{provider_name}",
+                    },
+                )
+        flagged = verdict.flagged
+        flagged_by = verdict.flagged_by.value if verdict.flagged_by else None
+        gaps = gaps_of(verdict)
+        unjudged = gaps.blocking()
+        gap_names = gaps.names()
+        risk = verdict.risk_level
+    except Exception as exc:  # TimeoutError too: no verdict was reached
+        logger.error(  # the message may carry the request (#262)
+            "llm_proxy: request scan failed profile=%s provider=%s: %s at %s",
+            profile.name,
+            provider_name,
+            exc_kind(exc),
+            exc_where(exc),
+        )
+
+    if mode is Mode.BLOCK and (found or flagged or unjudged):
+        reason = Reason.CREDENTIAL if found else Reason.FLAGGED if flagged else Reason.UNJUDGED
+        audit(Outcome.BLOCKED_DEFENSE, reason)
+        logger.warning(
+            "llm_proxy: request blocked profile=%s provider=%s reason=%s credential=%s",
+            profile.name,
+            provider_name,
+            reason.value,
+            ",".join(names) or "-",
+        )
+        body = _deny_marker(
+            reason.value,
+            flagged_by=flagged_by,
+            gaps=gap_names or None,
+            kinds=names or None,
+            mode=mode.value,
+        )
+        return (Response(content=json.dumps(body), status_code=403, media_type=JSON), None, None)
+
+    # flag (or clean): forward. A finding is logged (closed-set, #262-safe) and
+    # its reason carried to the forward audit row so flag mode is measurable.
+    if found:
+        logger.warning(
+            "llm_proxy: request credential (flag) profile=%s provider=%s credential=%s",
+            profile.name,
+            provider_name,
+            ",".join(names),
+        )
+        return (None, "credential", Reason.CREDENTIAL)
+    if flagged:
+        logger.warning(
+            "llm_proxy: request flagged (flag) profile=%s provider=%s risk=%s flagged_by=%s",
+            profile.name,
+            provider_name,
+            risk,
+            flagged_by,
+        )
+        return (None, risk, Reason.FLAGGED)
+    if unjudged:
+        logger.warning(
+            "llm_proxy: request unjudged (flag) profile=%s provider=%s",
+            profile.name,
+            provider_name,
+        )
+        return (None, "unjudged", Reason.UNJUDGED)
+    return (None, None, None)
 
 
 async def _read_body(request: Request) -> bytes:
@@ -351,6 +566,41 @@ def _caller_token(request: Request, api: LlmApi | None) -> str | None:
     return f"Bearer {api_key}" if api_key else None
 
 
+def _resolve_caller(
+    request: Request,
+    provider_name: str,
+    providers: dict[str, LlmProvider],
+    profiles: dict[str, Profile],
+    started: float,
+) -> tuple[LlmProvider, Profile, LlmKeyOverride] | Response:
+    """The provider, calling profile and that profile's key, or an error Response.
+
+    Three fail-closed guards, kept out of ``_proxy_llm`` so its return count
+    stays legible: an unknown provider (404), a token that resolves to no
+    profile (401), and a profile with no key for this provider (502, audited).
+    """
+    provider = providers.get(provider_name)
+    if provider is None:
+        return Response(
+            content="LLM provider not found or disabled", status_code=404, media_type=PLAIN_TEXT
+        )
+
+    profile = resolve_profile_by_token(_caller_token(request, provider.api), profiles)
+    if profile is None:
+        return Response(content="Unauthorized", status_code=401, media_type=PLAIN_TEXT)
+
+    override = profile.llm_keys.get(provider_name)
+    if override is None:
+        logger.info("llm_proxy: profile=%s has no key for provider=%s", profile.name, provider_name)
+        _audit(profile, provider_name, "-", Outcome.DENIED_ALLOWLIST, started)
+        return Response(
+            content="No API key configured for this provider",
+            status_code=502,
+            media_type=PLAIN_TEXT,
+        )
+    return provider, profile, override
+
+
 async def _proxy_llm(
     request: Request,
     providers: dict[str, LlmProvider],
@@ -368,35 +618,10 @@ async def _proxy_llm(
     provider_name = request.path_params.get("provider", "")
     raw_path = request.path_params.get("path", "")
 
-    provider = providers.get(provider_name)
-    if provider is None:
-        return Response(
-            content="LLM provider not found or disabled",
-            status_code=404,
-            media_type=PLAIN_TEXT,
-        )
-
-    profile = resolve_profile_by_token(_caller_token(request, provider.api), profiles)
-    if profile is None:
-        return Response(
-            content="Unauthorized",
-            status_code=401,
-            media_type=PLAIN_TEXT,
-        )
-
-    override = profile.llm_keys.get(provider_name)
-    if override is None:
-        logger.info(
-            "llm_proxy: profile=%s has no key for provider=%s",
-            profile.name,
-            provider_name,
-        )
-        _audit(profile, provider_name, "-", Outcome.DENIED_ALLOWLIST, started)
-        return Response(
-            content="No API key configured for this provider",
-            status_code=502,
-            media_type=PLAIN_TEXT,
-        )
+    resolved = _resolve_caller(request, provider_name, providers, profiles, started)
+    if isinstance(resolved, Response):
+        return resolved
+    provider, profile, override = resolved
 
     path = normalize_proxy_path(raw_path)
     if path is None:
@@ -435,7 +660,9 @@ async def _proxy_llm(
             refusal.reason.value,
         )
         _audit(profile, provider_name, "-", Outcome.DENIED_GUARD, started, refusal.reason)
-        return _refusal_response(refusal)
+        # The admission refusal, to its own caller; detail is that caller's token.
+        marker = _deny_marker(refusal.reason.value, detail=refusal.detail)
+        return Response(content=json.dumps(marker), status_code=refusal.status, media_type=JSON)
 
     logger.info(
         "llm_proxy: profile=%s provider=%s endpoint=%s path=%s",
@@ -450,11 +677,37 @@ async def _proxy_llm(
         upstream_url = f"{upstream_url}?{admitted.query}"
 
     fwd_headers = forward_headers(api, request.headers.items())
+
+    # #511: judge the request CONTENT, not only its shape. llm_policy.admit
+    # above allowlisted the endpoint, params and headers; this reads the body,
+    # query and forwarded headers as one document for L1/L2/L3 and the
+    # credential detector. The mode is the profile's per-provider enforcement
+    # (default flag), with the kill switch over it.
+    mode = effective_mode(profile, Mode(override.enforcement))
+    refusal_resp, warning, flag_reason = await _judge_request(
+        _request_document(request.method, path, admitted, fwd_headers),
+        provider_name,
+        profile,
+        mode,
+        lambda outcome, reason: _audit(
+            profile,
+            provider_name,
+            admitted.endpoint,
+            outcome,
+            started,
+            reason,
+            model=admitted.model,
+        ),
+    )
+    if refusal_resp is not None:
+        return refusal_resp
+
     if admitted.body is not None:
-        fwd_headers["content-type"] = "application/json"
+        fwd_headers["content-type"] = JSON
     key_value = override.api_key.get_secret_value()
     fwd_headers[provider.auth_header] = f"{provider.auth_prefix}{key_value}"
 
+    # flag_reason carries a flag-mode finding onto the forwarded call's audit row.
     return await _forward_upstream(
         request.method,
         upstream_url,
@@ -463,8 +716,15 @@ async def _proxy_llm(
         provider_name,
         profile,
         lambda outcome: _audit(
-            profile, provider_name, admitted.endpoint, outcome, started, model=admitted.model
+            profile,
+            provider_name,
+            admitted.endpoint,
+            outcome,
+            started,
+            flag_reason,
+            model=admitted.model,
         ),
+        warning,
     )
 
 
@@ -476,6 +736,7 @@ async def _forward_upstream(
     provider_name: str,
     profile: Profile,
     audit: Callable[[Outcome], None],
+    warning: str | None = None,
 ) -> Response:
     """Send the (already-admitted, key-injected) request to the provider."""
     client = _get_llm_client()
@@ -516,7 +777,7 @@ async def _forward_upstream(
         audit(Outcome.TOOL_ERROR)
     else:
         audit(Outcome.OK)
-    return _streaming_response(resp, provider_name, profile)
+    return _streaming_response(resp, provider_name, profile, warning)
 
 
 # Buffer completions up to this size for the post-hoc scan; a longer stream
@@ -528,6 +789,7 @@ def _streaming_response(
     resp: httpx.Response,
     provider_name: str,
     profile: Profile,
+    warning: str | None = None,
 ) -> StreamingResponse:
     """Stream the provider response through, then judge what streamed.
 
@@ -543,6 +805,12 @@ def _streaming_response(
     agent has no human waiting on time-to-first-token.
     """
     resp_headers = filter_response_headers(list(resp.headers.items()))
+    # Never let the upstream forge our verdict header, nor emit it twice: drop
+    # any it sent (httpx lowercases names, so this one key covers every casing)
+    # before setting ours. flag mode: the request was forwarded, verdict rides back.
+    resp_headers.pop(WARNING_HEADER, None)
+    if warning:
+        resp_headers[WARNING_HEADER] = warning
 
     collected: list[bytes] = []
     size_seen = 0

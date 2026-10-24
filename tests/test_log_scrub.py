@@ -437,6 +437,13 @@ _ATTACKS = [
     ("github-shape", "tok " + "gh" + "p_" + _TAIL, _TAIL),
     ("slack-shape", "tok " + "xo" + "xb-" + _TAIL, _TAIL),
     ("jwt-shape", "tok " + "ey" + "J" + _TAIL + "." + "ey" + "J" + _TAIL + "." + _TAIL, _TAIL),
+    ("aws-access-key", "key " + "AK" + "IA" + "IOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE"),
+    # The redactor consumes the body, not just the header: the key bytes go too.
+    (
+        "pem-private-key",
+        "-----BE" + "GIN RSA PRIVATE KEY-----\nMIIsecretbody\n-----EN" + "D RSA PRIVATE KEY-----",
+        "MIIsecretbody",
+    ),
 ]
 
 #: Lines this codebase and its neighbours really print. None may change.
@@ -453,6 +460,8 @@ _BENIGN = [
     "fetch: sha256:3fa9c1d2aaaa len=120 status=200",
     "eyJ is how a JWT starts; eyJhbGciOi alone is not one",
     "posture: GEMINI_API_KEY came from the environment; use the _FILE form",
+    "note: AKIAEXAMPLE is too short to be an access key id",
+    "doc: a PEM file opens with -----BEGIN PUBLIC KEY----- for the public half",
 ]
 
 
@@ -489,6 +498,9 @@ _HOSTILE = [
     "eyJaaaaaaaa.eyJaaaaaaaa.",
     "ya29.",
     "xoxb-",
+    "AKIA",
+    "-----BEGIN ",
+    "-----BEGIN A PRIVATE KEY-----",  # the PEM redactor's body loop
     "%2f",
     "%2",
 ]

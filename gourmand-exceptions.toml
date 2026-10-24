@@ -902,3 +902,12 @@ check = "copy_paste_detection"
 path = "src/trentina/audit_chain.py"
 justification = "verify() is reported as identical to _collapse in preprocess/email.py. One walks the audit hash chain row by row, checking each row's prev_hash, row_hash and detections_digest link; the other collapses the quoted reply chain out of an email thread. They share a loop-accumulate-then-return shape over nine statements and nothing else -- no shared types, domain or caller. Structural collision, not duplication. Newer CI Gourmand flags it; the quay:latest container does not (version skew)."
 classification = "gourmand_bug"
+
+# --- #511 credential-shape detector (egress DLP foundation) ---
+
+[[exceptions]]
+check = "primitive_obsession"
+path = "corpora/credential_shapes.py"
+justification = "The numbers are the data, as in corpora/benign_ops.py: this file generates invented outbound requests (#511), and the literals are credential-body lengths (an AWS id's 16 trailing chars, a 40-char key body, a 35-char AIza key, a 43-char JWT segment). Each is used once where the request string it fills is built; a named constant per length would be a dozen names for values the surrounding shape already explains."
+classification = "by_design"
+

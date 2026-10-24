@@ -258,6 +258,16 @@ class LlmKeyOverride(BaseModel):
             "api_key_env at load time. Never serialized."
         ),
     )
+    enforcement: EnforcementMode = Field(
+        default="flag",
+        description=(
+            "How outbound request CONTENT is judged on the way to this provider "
+            "(#511): 'flag' (default) annotates and forwards, 'block' refuses a "
+            "credential shape or a flagged body. The default is 'flag' while the "
+            "request false-positive rate is measured; it moves to 'block' at a "
+            "future major. 'redact' is meaningless on an outbound call and rejected."
+        ),
+    )
 
     @field_validator("api_key_env")
     @classmethod

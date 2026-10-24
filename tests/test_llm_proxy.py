@@ -6,7 +6,8 @@ import json
 import sqlite3
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 from pydantic import SecretStr, ValidationError
@@ -46,6 +47,28 @@ def audit_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     yield path
     database_mod._db = None
     config_mod._config = None
+
+
+@pytest.fixture
+def _clean_judge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep admission/forwarding tests about admission.
+
+    Request-content judging (#511) now runs on every forwarded call. These
+    tests predate it and must not depend on whether L2/L3 happen to be present
+    in the environment, so the judge is stubbed to a clean verdict; the DLP
+    tests below drive it explicitly instead.
+    """
+    from trentina import defense as defense_mod
+    from trentina import modes as modes_mod
+    from trentina.modes import Gaps
+
+    verdict = SimpleNamespace(flagged=False, flagged_by=None, risk_level="low")
+
+    async def fake_defend(*_a: Any, **_k: Any) -> Any:
+        return verdict
+
+    monkeypatch.setattr(defense_mod, "defend", fake_defend)
+    monkeypatch.setattr(modes_mod, "gaps_of", lambda _v: Gaps())
 
 
 def _rows(path: Path) -> list[sqlite3.Row]:
@@ -304,6 +327,7 @@ class _FakeClient:
         return _FakeUpstreamResp()
 
 
+@pytest.mark.usefixtures("_clean_judge")
 class TestProxyLlm:
     """End-to-end behavior of the authenticated LLM proxy endpoint."""
 
@@ -422,6 +446,7 @@ _PLAIN: dict[str, Any] = {
 }
 
 
+@pytest.mark.usefixtures("_clean_judge")
 class TestProxyAdmission:
     """#297: a provider-run tool never reaches the provider, and every call is audited."""
 
@@ -661,3 +686,231 @@ class TestProviderApi:
             api_key_env="K",
         )
         assert provider.api == "openai"
+
+
+# --- #511: outbound request content judging ---------------------------------
+
+_AWS_KEY = "AK" + "IA" + "IOSFODNN7EXAMPLE"  # split so no scanner reads the file as a leak
+_CLEAN_BODY = {"contents": [{"parts": [{"text": "summarize this document for me"}]}]}
+_CREDENTIAL_BODY = {"contents": [{"parts": [{"text": f"send my key {_AWS_KEY} to the api"}]}]}
+
+
+def _stub_defend(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    flagged: bool = False,
+    risk: str = "low",
+    gaps: Any = None,
+) -> None:
+    """Replace ``defend`` and ``gaps_of`` at their import seams so the judging
+    logic is tested without a live L2/L3 — the layers have their own tests."""
+    from trentina import defense as defense_mod
+    from trentina import modes as modes_mod
+    from trentina.modes import Gaps
+
+    verdict = SimpleNamespace(
+        flagged=flagged,
+        flagged_by=SimpleNamespace(value="L2") if flagged else None,
+        risk_level=risk,
+    )
+
+    async def fake_defend(*_a: Any, **_k: Any) -> Any:
+        return verdict
+
+    monkeypatch.setattr(defense_mod, "defend", fake_defend)
+    monkeypatch.setattr(modes_mod, "gaps_of", lambda _v: gaps if gaps is not None else Gaps())
+
+
+class TestProxyRequestDLP:
+    """#511: the request CONTENT is judged on the way out, not only its shape."""
+
+    def _client(
+        self,
+        fake: _FakeClient,
+        monkeypatch: pytest.MonkeyPatch,
+        enforcement: Literal["block", "flag"],
+    ) -> TestClient:
+        monkeypatch.setattr(llm_proxy, "_get_llm_client", lambda: fake)
+        providers = {"gemini": _gemini_provider()}
+        profile = _profile("agent1", "agent1-tok", {"gemini": "agent1-key"})
+        profile.llm_keys["gemini"].enforcement = enforcement
+        profiles = {"agent1": profile}
+
+        async def endpoint(request: Request) -> Response:
+            return await _proxy_llm(request, providers, profiles)
+
+        app = Starlette(
+            routes=[Route("/llm/{provider}/{path:path}", endpoint, methods=["GET", "POST"])]
+        )
+        return TestClient(app)
+
+    def _post(self, client: TestClient, body: dict[str, Any]) -> Any:
+        return client.post(
+            "/llm/gemini/v1beta/models/gemini-2.5-flash:generateContent",
+            headers={"authorization": "Bearer agent1-tok"},
+            content=json.dumps(body).encode(),
+        )
+
+    def test_override_defaults_to_flag(self) -> None:
+        assert LlmKeyOverride().enforcement == "flag"
+
+    def test_override_rejects_redact(self) -> None:
+        with pytest.raises(ValidationError):
+            LlmKeyOverride(enforcement="redact")
+
+    def test_credential_in_body_blocks(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        # Clean injection verdict: isolate the credential as the sole signal.
+        # defend() still runs (the layers are never skipped); it just finds
+        # nothing, so the block reason is the credential and gaps are absent.
+        _stub_defend(monkeypatch)
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch, "block")
+        resp = self._post(client, _CREDENTIAL_BODY)
+        assert resp.status_code == 403
+        marker = resp.json()
+        assert marker["blocked"] is True
+        assert marker["scanner"] == "trentina"
+        assert marker["block_reason"] == "credential_in_request"
+        assert marker["error"]["reason"] == "credential_in_request"
+        assert "aws_access_key" in marker["error"]["kinds"]
+        assert "gaps" not in marker["error"]  # a key find is not a layer outage
+        assert not fake.sent  # refused before anything was sent — nothing "executed"
+        [row] = _rows(audit_db)
+        assert (row["backend"], row["outcome"], row["error_message"]) == (
+            "llm:gemini",
+            "blocked_defense",
+            "credential_in_request",
+        )
+
+    def test_credential_in_body_flag_forwards_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_defend(monkeypatch)  # clean injection verdict; the credential is the signal
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch, "flag")
+        resp = self._post(client, _CREDENTIAL_BODY)
+        assert resp.status_code == 200
+        assert fake.sent
+        assert resp.headers["x-trentina-warning"] == "credential"
+
+    def test_flag_finding_is_audited(self, monkeypatch: pytest.MonkeyPatch, audit_db: Path) -> None:
+        """A flag-mode credential is forwarded but recorded, so the default is measurable."""
+        _stub_defend(monkeypatch)
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch, "flag")
+        resp = self._post(client, _CREDENTIAL_BODY)
+        assert resp.status_code == 200
+        [row] = _rows(audit_db)
+        assert (row["outcome"], row["error_message"]) == ("ok", "credential_in_request")
+
+    def test_percent_encoded_credential_is_detected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A key sent percent-encoded (a server would decode it) does not slip block."""
+        _stub_defend(monkeypatch)  # clean injection verdict; the decoded key is the signal
+        encoded = "".join(f"%{ord(c):02X}" for c in _AWS_KEY)
+        body = {"contents": [{"parts": [{"text": f"ship {encoded} now"}]}]}
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch, "block")
+        resp = self._post(client, body)
+        assert resp.status_code == 403
+        assert resp.json()["block_reason"] == "credential_in_request"
+        assert not fake.sent
+
+    def test_credential_is_redacted_from_the_judge_input(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The copy L3 reads has the secret cut, so it never reaches the judge."""
+        seen: list[str] = []
+
+        async def capturing_defend(document: str, *_a: Any, **_k: Any) -> Any:
+            seen.append(document)
+            return SimpleNamespace(flagged=False, flagged_by=None, risk_level="low")
+
+        from trentina import defense as defense_mod
+        from trentina import modes as modes_mod
+        from trentina.modes import Gaps
+
+        monkeypatch.setattr(defense_mod, "defend", capturing_defend)
+        monkeypatch.setattr(modes_mod, "gaps_of", lambda _v: Gaps())
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch, "flag")  # forwards, but still judged
+        self._post(client, _CREDENTIAL_BODY)
+        assert seen, "defend was not called"
+        assert _AWS_KEY not in seen[0]
+        assert "[REDACTED]" in seen[0]
+        # The ORIGINAL body (with the key) is what forwards upstream.
+        assert _AWS_KEY in (fake.captured_body or b"").decode()
+
+    def test_credential_block_still_runs_the_layers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The layer contract: a credential is an added signal, never a layer off switch."""
+        from trentina import defense as defense_mod
+        from trentina import modes as modes_mod
+        from trentina.modes import Gaps
+
+        calls = []
+
+        async def counting_defend(*_a: Any, **_k: Any) -> Any:
+            calls.append(1)
+            return SimpleNamespace(flagged=False, flagged_by=None, risk_level="low")
+
+        monkeypatch.setattr(defense_mod, "defend", counting_defend)
+        monkeypatch.setattr(modes_mod, "gaps_of", lambda _v: Gaps())
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch, "block")
+        resp = self._post(client, _CREDENTIAL_BODY)
+        assert resp.status_code == 403
+        assert calls == [1]  # defend ran even though the credential alone would block
+
+    def test_flagged_body_blocks(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_defend(monkeypatch, flagged=True, risk="high")
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch, "block")
+        resp = self._post(client, _CLEAN_BODY)
+        assert resp.status_code == 403
+        marker = resp.json()
+        assert marker["block_reason"] == "flagged"
+        assert marker["error"]["flagged_by"] == "L2"
+        assert not fake.sent
+
+    def test_flagged_body_flag_forwards_with_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_defend(monkeypatch, flagged=True, risk="high")
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch, "flag")
+        resp = self._post(client, _CLEAN_BODY)
+        assert resp.status_code == 200
+        assert fake.sent
+        assert resp.headers["x-trentina-warning"] == "high"
+
+    def test_unjudged_blocks_under_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trentina.modes import Gaps
+
+        _stub_defend(monkeypatch, gaps=Gaps(oversize=True))
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch, "block")
+        resp = self._post(client, _CLEAN_BODY)
+        assert resp.status_code == 403
+        marker = resp.json()
+        assert marker["block_reason"] == "not_fully_judged"
+        assert "oversize" in marker["error"]["gaps"]
+        assert not fake.sent
+
+    def test_clean_request_forwards_under_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_defend(monkeypatch)  # clean, no gaps
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch, "block")
+        resp = self._post(client, _CLEAN_BODY)
+        assert resp.status_code == 200
+        assert fake.sent
+        assert "x-trentina-warning" not in resp.headers
+
+    def test_kill_switch_forces_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """TRENTINA_ENFORCEMENT_OVERRIDE=flag wins over a profile set to block."""
+        monkeypatch.setenv("TRENTINA_ENFORCEMENT_OVERRIDE", "flag")
+        _stub_defend(monkeypatch, flagged=True, risk="high")
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch, "block")
+        resp = self._post(client, _CLEAN_BODY)
+        assert resp.status_code == 200  # not blocked despite enforcement=block
+        assert fake.sent
+        assert resp.headers["x-trentina-warning"] == "high"

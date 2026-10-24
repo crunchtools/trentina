@@ -45,6 +45,8 @@ from collections.abc import Callable, Mapping
 from typing import Any
 from urllib.parse import quote, urlsplit
 
+from . import credential_shapes as _cred
+
 #: HTTP methods written as they are; anything else is a caller's token.
 _METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"})
 
@@ -189,50 +191,12 @@ LOG_LEVELS = {
     "DEBUG": logging.DEBUG,
 }
 
-# Every pattern is a literal prefix followed by character classes that
-# exclude the delimiter after them, and none can start inside a run another
-# start already consumed, so each is linear in the input
-# (``tests/test_log_hygiene.py`` holds them to it). The repeats are unbounded
-# on purpose: a cap would print the tail of a long token.
-
-#: A credential in a URL's query string. Anchored on ``?``/``&`` so that this
-#: codebase's own ``key=override`` and ``token=<digest>`` lines stay readable.
-_QUERY_SECRET = re.compile(
-    r"([?&](?:api[_-]?key|key|access_token|refresh_token|id_token|token"
-    r"|client_secret|secret|password|passwd|sig|signature)=)"
-    r"(?!\[REDACTED)[^\s&#\"'<>]+",
-    re.IGNORECASE,
-)
-
-#: An ``Authorization`` value. Twenty characters keeps prose ("Bearer token")
-#: and the bare ``Bearer`` of a challenge out of it.
-_AUTH_VALUE = re.compile(r"\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{20,}", re.IGNORECASE)
-
-#: ``scheme://user:password@host``.
-_USERINFO = re.compile(r"(://)[^/\s:@]{1,256}:[^/\s@]{1,1024}@")
-
-#: Key shapes that identify themselves: OpenAI/Anthropic/OpenRouter (``sk-``),
-#: Google API keys and OAuth tokens, Matrix, GitHub, Slack, and a JWT.
-_KEY_SHAPE = re.compile(
-    r"(?<![A-Za-z0-9_-])(?:"
-    r"sk-[A-Za-z0-9_-]{20,}"
-    r"|AIza[0-9A-Za-z_-]{35,}"
-    r"|ya29\.[0-9A-Za-z._-]{20,}"
-    r"|syt_[A-Za-z0-9_]{20,}"
-    r"|gh[pousr]_[A-Za-z0-9]{36,}"
-    r"|github_pat_[A-Za-z0-9_]{22,}"
-    r"|xox[abprs]-[A-Za-z0-9-]{10,}"
-    r"|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
-    r")"
-)
-
-#: What every pattern above needs at least one of. A line with none of them
-#: (most lines) is checked once and left, which is what keeps the factory
-#: cheap on a logger that prints thousands of records.
-_ANY_SHAPE = re.compile(
-    r"[?&]|://|sk-|AIza|ya29\.|syt_|gh[pousr]_|github_pat_|xox[abprs]-|eyJ|[Bb][Ee][Aa][Rr][Ee][Rr]"
-    r"|[Bb][Aa][Ss][Ii][Cc]"
-)
+# The credential-shape patterns live in ``credential_shapes``, the one table
+# both this scrubber and the egress/``/llm`` request paths (#511) read. Each is
+# a literal prefix followed by character classes that exclude the delimiter
+# after them, so each is linear in the input (``tests/test_log_scrub.py`` holds
+# them to it). The repeats are unbounded on purpose: a cap would print the tail
+# of a long token.
 
 _held_lock = threading.Lock()
 #: The secrets as they were given, which is what makes one "already held".
@@ -329,12 +293,9 @@ def scrub(text: str) -> str:
         probe = _UPPER_ESCAPES(text) if "%" in text else text
         if any(form in probe for form in forms):
             text = _held_pattern(forms).sub(_name_of, text)
-    if _ANY_SHAPE.search(text) is None:
-        return text
-    text = _QUERY_SECRET.sub(rf"\1{REDACTED}", text)
-    text = _AUTH_VALUE.sub(rf"\1 {REDACTED}", text)
-    text = _USERINFO.sub(rf"\1{REDACTED}@", text)
-    return _KEY_SHAPE.sub(REDACTED, text)
+    # The shape pass is credential_shapes.redact, the one implementation the
+    # request paths also use; this adds only the held-secret substitution above.
+    return _cred.redact(text, REDACTED)
 
 
 #: How far into nested containers a value is scrubbed with its shape kept.
