@@ -20,6 +20,7 @@ A detection rate means nothing without the set it was measured on. Three things 
 | [L1 patterns](#l1-patterns) | `corpora/l1_patterns.py` | 48 attack and near-miss pairs | ours | AGPL-3.0-or-later | vendored |
 | [OWASP test list](#owasp-test-list) | `corpora/owasp.py` | 14 attacks | OWASP Cheat Sheet Series | CC-BY-SA-4.0 | vendored |
 | [Benign operations output](#benign-operations-output) | `corpora/benign_ops.py` | 296 benign | ours | AGPL-3.0-or-later | vendored |
+| [Credential shapes](#credential-shapes) | `corpora/credential_shapes.py` | 15 attacks, 12 benign | ours | AGPL-3.0-or-later | vendored |
 | [Detonation](#detonation) | `corpora/detonation.py` | 12 carriers, 36 attack and 10 benign inserts | ours | AGPL-3.0-or-later | vendored |
 | [Jailbreak classification](#jailbreak-classification) | `corpora/jailbreak.py` | 262 test, 1,044 train | `jackhhao/jailbreak-classification` | Apache-2.0 | fetched |
 | [InjecAgent](#injecagent) | `corpora/injecagent.py` | 32 attack inserts | `uiuc-kang-lab/InjecAgent` | MIT | fetched |
@@ -69,6 +70,15 @@ The fourteen test inputs from the OWASP [LLM Prompt Injection Prevention Cheat S
 - **Why it is here.** The internal corpus has fourteen benign cases, all prose written to look like an attack. Nothing in any gate looked like routine tool output until this did.
 - **Rules.** 207 cases are gated: the image build fails a model that refuses more than 2% of them. Four shapes the shipped model is known to flag (`KNOWN_GAPS`: three logs, and meeting notes that end in bare links) are measured on every build and never dropped; they are [known gaps](defense-pipeline.md#known-gaps) 19 and 28. Each case is read as the router reads a tool response (#431). One case in four is the tuning split, by hash of its id.
 - **Read by.** `benchmarks/l2_benign.py` (the image build's benign gate), `tests/test_benign_gate.py`, `tests/test_coverage_gaps.py`, `tests/test_l2_integration.py`.
+
+### Credential shapes
+
+Invented outbound requests the #511 credential detector is tuned against: fifteen carry a real credential shape (an AWS access-key id, a provider token, a PEM private-key header, a secret in a query string, URL userinfo) and twelve are benign near-misses (a UUID, a commit hash, a public-key header, a short opaque bearer, an ordinary query).
+
+- **Where it came from.** Generated from a fixed seed (511), so a case id names the same text on every run. Every key body is invented; none is a real credential.
+- **Why it is here.** `trentina.credential_shapes` is the request-direction reader of the one credential-shape table (`logsafe` reads the same table the other way, to redact a log line). It is the exfil signal the prompt-injection layers do not look for, measured on its own axis: recall on the attacks, false-positive rate on the benign.
+- **Rules.** `agent-egress-bench` (#507) is the held-out set and is never read here; a shape added because a bench case missed is a tuning result and is labelled one. `benchmarks/credential_shapes.py --max-fp 0.02` gates the false-positive rate.
+- **Read by.** `benchmarks/credential_shapes.py`, `tests/test_credential_shapes.py`.
 
 ### Detonation
 

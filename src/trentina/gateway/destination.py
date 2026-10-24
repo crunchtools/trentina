@@ -57,6 +57,7 @@ class DestinationKind(StrEnum):
     MODEL = "model"
     TUNNEL = "tunnel"
     GIT = "git"
+    EGRESS = "egress"
     OAUTH = "oauth"
 
 

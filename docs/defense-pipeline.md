@@ -45,9 +45,10 @@ Everything entering through the gateway is judged at its ingress — the firewal
 - **Matrix**: `/sync` and room `/messages` responses, buffered and judged whole (`matrix_sync`). E2EE rooms are ciphertext on the wire; with `preprocess.decrypt` configured the proxy terminates Megolm to build the L2 input and forwards the original ciphertext untouched, so the homeserver never sees plaintext and the agent still decrypts for itself. Decryption is read-only, additive and ephemeral — recovered plaintext exists only in the L2 input. Without it, encrypted rooms are outside what the gateway can read, and the coverage gap is counted and reported rather than assumed.
 - **LLM requests** through the proxy, judged on the way out after admission (`llm_request`): the body, query and forwarded headers as one document, plus a deterministic credential-shape detector the prompt-injection layers do not duplicate. Under `block` a credential shape, a flag or a blocking gap refuses before the request is sent; under `flag` it is forwarded with the verdict on `X-Trentina-Warning` (#511).
 - **LLM completions** through the proxy, judged post-stream (`llm_completion`).
+- **Egress HTTP requests** through the terminating egress route (#511), judged on the way out exactly as an LLM request is (`egress_request`): method, path, query, forwarded headers and body as one document, credential-redacted for the judge, plus the credential detector. **Egress responses** are judged as ingress like a fetched page (`egress_response`): under `block` a flagged, unjudged or binary (unreadable) response is withheld with "executed, response withheld"; under `flag` it is delivered with the verdict on `x-trentina-warning`.
 - **Alert webhooks** (`alert`), and the standalone web tools (`safe_*`, `quarantine_*`).
 
-**Two paths through the gateway do not cross the pipeline.** Bytes in a [client egress](client-egress.md) tunnel are TLS the gateway holds no key for (known gap 26). On the [git transport](git-transport.md) a pack is one the gateway could inflate and does not, and a ref listing is one it reads only to drop hidden and malformed names (known gap 29). On both, what the gateway decides is deterministic and recorded (the host; the repository and the branch), and what it carries is judged by no layer. They are exceptions to rule 1 of the [layer contract](#layer-contract), stated here so that rule is not read as covering them.
+**Two paths through the gateway still do not cross the pipeline.** Bytes in a [client egress](client-egress.md) tunnel are TLS the gateway holds no key for (known gap 26), and on the [git transport](git-transport.md) a pack is one the gateway could inflate and does not, and a ref listing is one it reads only to drop hidden and malformed names (known gap 29). On both, what the gateway decides is deterministic and recorded (the host; the repository and the branch), and what it carries is judged by no layer. They are exceptions to rule 1 of the [layer contract](#layer-contract), stated here so that rule is not read as covering them. The [terminating egress route](egress-http.md) and the [`/llm` proxy](llm-proxying.md) are not exceptions: a client that can be re-pointed at them has its request judged (`egress_request`/`llm_request`) and its response judged as ingress (`egress_response`/`llm_completion`, the latter post-stream), so the tunnel is the fallback for a client that cannot.
 
 **The mode is per call, the policy per profile.** `defense.modes` lists what the agent may choose through `trentina_mode`, which the gateway inserts into every tool; `defense.enforcement` is the default an omitted mode resolves to — `flag` (content delivered intact with a `_trentina_warning`) or `block` (flagged responses refused). See [Profiles](profiles.md#content-modes). `TRENTINA_ENFORCEMENT_OVERRIDE=flag` is the kill switch, and beats the call's own choice.
 
@@ -268,7 +269,10 @@ gaps below.
 | A Matrix image download, under `unjudged: withhold` (the default) | the image, with the risk level in a header if flagged | the text OCR reads in it | judged; refused if OCR could not read it (#371) |
 | Other Matrix media (`audio/*`, `video/*`, `application/octet-stream`, which is what an E2EE attachment is) under withhold | a refusal | nothing | refused: nothing reads it |
 | A Matrix room event the gateway could not decrypt, under withhold | the withheld notice in its place; the rest of the response as judged | nothing | withheld, and counted in the warning |
-| Bytes in a [client egress](client-egress.md) tunnel | as the destination sent them | nothing: they are TLS and the gateway holds no key | not judged; the tunnel decides the host and records the bytes (gap 26) |
+| Bytes in a [client egress](client-egress.md) tunnel (the CONNECT fallback, for a client that cannot be re-pointed) | as the destination sent them | nothing: they are TLS and the gateway holds no key | not judged; the tunnel decides the host and records the bytes (gap 26) |
+| An HTTP request through the [terminating egress route](egress-http.md) | the request line, query, forwarded headers and body as one document | L1/L2/L3 on a credential-redacted copy, plus the credential detector | judged (`egress_request`); `block` refuses before sending, `flag` forwards with the verdict |
+| The response to an egress request | the body, if text | L1/L2/L3 like a fetched page | judged (`egress_response`); refused with "executed, response withheld" under `block` |
+| A binary egress response | its content type | no layer reads it | the `binary_unread` gap: `block` withholds it, `flag` delivers it with the warning (gap 32) |
 | A pack carried by the [git transport](git-transport.md), in either direction: file contents, file names, commit messages | as the forge sent it; a push, as the agent sent it | nothing. The gateway reads the request line, a push's command list and ref listings, and decides on those | not judged; the route decides the repository and the branch and records the bytes (gap 29) |
 | A ref listing on the git transport: branch and tag names | each name that is one token of printable ASCII, at most 255 bytes, outside a hidden namespace | nothing. The gateway reads each line to drop the rest | not judged; names are bounded, not read for meaning (gap 29) |
 | A remote backend's tool that is new or whose definition (description, schema, annotations) changed | withheld from every profile until an operator approves it ([pinning](tool-pinning.md), #469) | the new definition, as any tool description | held, `*` allowlists and flag mode included |
@@ -492,7 +496,9 @@ one does; the rest name the benchmark that measured them.
     document and offers `redact`. Measured by `benchmarks/prompt_pack.py
     --briefing benign` and `benchmarks/detonation.py --mode judge
     --briefing`.
-26. **Nothing reads a client-egress tunnel** (#442). A profile with a
+26. **Nothing reads a client-egress tunnel** (#442), now the fallback for a
+    client that cannot be re-pointed at the [egress route](egress-http.md)
+    (#511). A profile with a
     `client_egress` block lets its agent's own client (a model API, a git
     forge) open TLS to the hosts it lists. The gateway decides the host,
     checks the address and the server name, and records the bytes each way;
@@ -599,6 +605,16 @@ one does; the rest name the benchmark that measured them.
     original three cases were not recorded in this change; the false-positive
     rate for the class is whatever `benchmarks/l2_benign.py` reports for
     these categories. Tested, in the image (`tests/test_l2_integration.py`).
+32. **A binary egress response is not read** (#511). The terminating egress
+    route judges a text response as ingress, but a response whose content type
+    is not text (an image, an archive, `application/octet-stream`) is one no
+    layer reads — the response-side `binary_unread` gap. Under `block` it is
+    withheld ("executed, response withheld"); under `flag` it is delivered with
+    the `binary_unread` warning. Response headers ARE judged (filtered for
+    hop-by-hop, `Set-Cookie` and the verdict header, then read with the body as
+    one document), so the gap is the binary body alone. A streaming response and
+    the guarded-execution hook on an egress call are #511's next slice, not this
+    one. Tested.
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 

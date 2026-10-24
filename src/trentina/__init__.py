@@ -133,6 +133,7 @@ def _register_proxies(mcp_server: FastMCP, gateway_config: GatewayConfig) -> dic
         The enabled LLM providers, which the active config and the startup
         scrub both need.
     """
+    from .gateway.egress_http import register_egress_routes
     from .gateway.git_transport import register_git_routes
     from .gateway.llm_proxy import load_llm_providers, register_llm_routes
     from .gateway.matrix_proxy import register_matrix_routes
@@ -146,6 +147,7 @@ def _register_proxies(mcp_server: FastMCP, gateway_config: GatewayConfig) -> dic
             upstream=gateway_config.matrix.get("upstream", "https://matrix-client.matrix.org"),
         )
     register_git_routes(mcp_server, gateway_config.git_remotes, gateway_config.profiles)
+    register_egress_routes(mcp_server, gateway_config.egress_upstreams, gateway_config.profiles)
     return llm_providers
 
 

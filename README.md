@@ -129,6 +129,7 @@ Then point Claude Code at it:
 | [Matrix Reverse Proxy](docs/network-isolation.md) | Matrix for agents on an isolated network |
 | [Client Egress](docs/client-egress.md) | A CONNECT tunnel to listed hosts for the agent's own client |
 | [Git Transport](docs/git-transport.md) | Clone, fetch and push to listed repositories and branches |
+| [HTTP(S) Egress](docs/egress-http.md) | An agent's outbound request judged and re-originated to a named destination |
 | [Deployment Hardening](docs/deployment-hardening.md) | Container flags, secrets, egress, the startup check |
 | [Cockpit Plugin](docs/cockpit-plugin.md) | Live defense pipeline dashboard |
 | [Internal: Gateway Design](docs/internal/gateway-design.md) | Original design document, for contributors |

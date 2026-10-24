@@ -27,11 +27,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import (
@@ -45,8 +44,6 @@ from pydantic import (
 )
 from starlette.responses import Response, StreamingResponse
 
-from ..credential_shapes import kinds as credential_kinds
-from ..credential_shapes import redact as credential_redact
 from ..database import record_gateway_call
 from ..logsafe import exc_kind, exc_where, redact_source
 from ..modes import Mode
@@ -66,6 +63,13 @@ from .llm_policy import (
     forward_headers,
 )
 from .loader import read_secret_env
+from .outbound import (
+    REASON_CREDENTIAL,
+    REASON_FLAGGED,
+    REASON_UNJUDGED,
+    body_text,
+    judge_outbound,
+)
 from .proxy_utils import (
     PLAIN_TEXT,
     filter_response_headers,
@@ -357,36 +361,12 @@ _JUDGE_DEADLINE = 60.0
 
 JSON = "application/json"
 
-
-#: A run of percent-escapes long enough to be an encoded secret or blob rather
-#: than one escaped character — masked out of the judge input (never delivery).
-_PERCENT_RUN = re.compile(r"(?:%[0-9A-Fa-f]{2}){8,}")
-
-
-def _judge_input(document: str) -> str:
-    """The copy L1/L2/L3 read — NOT what is forwarded upstream.
-
-    Credentials are cut (``credential_shapes.redact``) so a secret never reaches
-    the external judge, and a long run of percent-escapes (an encoded secret or
-    blob the detector reads decoded) is masked. Injection content is neither a
-    credential shape nor a percent run, so every layer still reads it. The
-    original admitted body is what forwards upstream (#511).
-    """
-    return _PERCENT_RUN.sub("[REDACTED]", credential_redact(document))
-
-
-def _body_text(body: bytes) -> str:
-    """The admitted body as text the LAYERS can read.
-
-    ``admit`` re-serialized the body with ``ensure_ascii=True``, so a non-Latin
-    prompt arrives as ``\\uXXXX`` escapes that L2 cannot read and L1 does not
-    count; parse and re-dump unescaped for judging. The bytes FORWARDED upstream
-    are the ASCII ones ``admit`` produced and are not touched here.
-    """
-    try:
-        return json.dumps(json.loads(body), ensure_ascii=False)
-    except (ValueError, TypeError):
-        return body.decode("utf-8", errors="replace")
+#: The outbound reason code -> this route's audit Reason.
+_REASON_OF = {
+    REASON_CREDENTIAL: Reason.CREDENTIAL,
+    REASON_FLAGGED: Reason.FLAGGED,
+    REASON_UNJUDGED: Reason.UNJUDGED,
+}
 
 
 def _request_document(
@@ -402,10 +382,10 @@ def _request_document(
     """
     parts = [f"{method} {path}"]
     if admitted.query:
-        parts.append(admitted.query)
+        parts.append(f"?{admitted.query}")  # the `?` the [?&]-anchored patterns need
     parts.extend(f"{name}: {value}" for name, value in fwd_headers.items())
     if admitted.body is not None:
-        parts.append(_body_text(admitted.body))
+        parts.append(body_text(admitted.body))
     return "\n".join(parts)
 
 
@@ -418,110 +398,53 @@ async def _judge_request(
 ) -> tuple[Response | None, str | None, Reason | None]:
     """Judge an outbound request. Returns ``(refusal, warning, flag_reason)``.
 
-    L1/L2/L3 ALWAYS read the document as one piece — the credential detector is
-    an ADDITIONAL deterministic signal, never a replacement that skips a layer
-    (the layer contract forbids a per-layer off switch; the mode controls
-    delivery, not which layers run). The scan is under a deadline and an
-    exception boundary: a hung or failed scan is treated as unjudged, as the
-    Matrix path does. Under ``block`` a credential shape, a flag or a blocking
-    gap refuses before anything is sent — nothing executed, so there is no
-    "response withheld" to report. Under ``flag`` the request is forwarded and
-    the verdict rides back on ``X-Trentina-Warning``; ``flag_reason`` is carried
-    to the forward audit row so a flag-mode finding is recorded, not only shown
-    to the agent. Credential > flagged > unjudged when more than one holds.
+    The shared ``judge_outbound`` always runs L1/L2/L3 over a credential-redacted
+    copy and scans for credential shapes (the layer contract: the detector adds
+    a signal, it is not a per-layer off switch). Under ``block`` a credential, a
+    flag or a blocking gap refuses before anything is sent — nothing executed.
+    Under ``flag`` the request forwards and the verdict rides back on
+    ``X-Trentina-Warning``; ``flag_reason`` is carried to the forward audit row
+    so a flag-mode finding is recorded, not only shown to the agent.
     """
-    from ..defense import Provenance, defend  # a seam test_llm_proxy monkeypatches
-    from ..modes import gaps_of
-
-    # Detect over the raw document and, only if that is clean, its percent-decoded
-    # form: a key sent as ``%41%4B...`` that a server would decode must not slip
-    # the block. The judge reads a redacted copy either way.
-    found = credential_kinds(document)
-    if not found:
-        decoded = unquote(document)
-        if decoded != document:
-            found = credential_kinds(decoded)
-    names = sorted(k.value for k in found)
-
-    flagged, unjudged, flagged_by, risk = False, True, None, "unknown"
-    gap_names = ["l3_unavailable"]  # the default while no verdict is reached
-    try:
-        with profile_context(profile):
-            async with asyncio.timeout(_JUDGE_DEADLINE):
-                verdict = await defend(
-                    _judge_input(document),
-                    source=f"llm:{profile.name}:{provider_name}",
-                    source_type="llm_request",
-                    defense=profile.defense,
-                    provenance=Provenance.MODEL_OUTPUT,
-                    stop_on_partial=mode is Mode.BLOCK,
-                    attribution={
-                        "direction": "request",
-                        "blocked": mode is Mode.BLOCK,
-                        "profile": profile.name,
-                        "backend": f"llm:{provider_name}",
-                    },
-                )
-        flagged = verdict.flagged
-        flagged_by = verdict.flagged_by.value if verdict.flagged_by else None
-        gaps = gaps_of(verdict)
-        unjudged = gaps.blocking()
-        gap_names = gaps.names()
-        risk = verdict.risk_level
-    except Exception as exc:  # TimeoutError too: no verdict was reached
-        logger.error(  # the message may carry the request (#262)
-            "llm_proxy: request scan failed profile=%s provider=%s: %s at %s",
-            profile.name,
-            provider_name,
-            exc_kind(exc),
-            exc_where(exc),
-        )
-
-    if mode is Mode.BLOCK and (found or flagged or unjudged):
-        reason = Reason.CREDENTIAL if found else Reason.FLAGGED if flagged else Reason.UNJUDGED
+    verdict = await judge_outbound(
+        document,
+        source=f"llm:{profile.name}:{provider_name}",
+        source_type="llm_request",
+        backend=f"llm:{provider_name}",
+        profile=profile,
+        mode=mode,
+        deadline=_JUDGE_DEADLINE,
+    )
+    # reason is non-None whenever blocks()/warning holds; the `or` only narrows
+    # the Optional for the type checker.
+    reason_code = verdict.reason or REASON_UNJUDGED
+    if mode is Mode.BLOCK and verdict.blocks():
+        reason = _REASON_OF[reason_code]
         audit(Outcome.BLOCKED_DEFENSE, reason)
         logger.warning(
-            "llm_proxy: request blocked profile=%s provider=%s reason=%s credential=%s",
+            "llm_proxy: request blocked profile=%s provider=%s reason=%s",
             profile.name,
             provider_name,
             reason.value,
-            ",".join(names) or "-",
         )
         body = _deny_marker(
             reason.value,
-            flagged_by=flagged_by,
-            gaps=gap_names or None,
-            kinds=names or None,
+            flagged_by=verdict.flagged_by,
+            gaps=verdict.gaps or None,
+            kinds=verdict.kinds or None,
             mode=mode.value,
         )
         return (Response(content=json.dumps(body), status_code=403, media_type=JSON), None, None)
 
-    # flag (or clean): forward. A finding is logged (closed-set, #262-safe) and
-    # its reason carried to the forward audit row so flag mode is measurable.
-    if found:
+    warning = verdict.warning
+    if warning is not None:
         logger.warning(
-            "llm_proxy: request credential (flag) profile=%s provider=%s credential=%s",
-            profile.name,
-            provider_name,
-            ",".join(names),
-        )
-        return (None, "credential", Reason.CREDENTIAL)
-    if flagged:
-        logger.warning(
-            "llm_proxy: request flagged (flag) profile=%s provider=%s risk=%s flagged_by=%s",
-            profile.name,
-            provider_name,
-            risk,
-            flagged_by,
-        )
-        return (None, risk, Reason.FLAGGED)
-    if unjudged:
-        logger.warning(
-            "llm_proxy: request unjudged (flag) profile=%s provider=%s",
+            "llm_proxy: request %s (flag) profile=%s provider=%s",
+            warning,
             profile.name,
             provider_name,
         )
-        return (None, "unjudged", Reason.UNJUDGED)
+        return (None, warning, _REASON_OF[reason_code])
     return (None, None, None)
 
 

@@ -43,6 +43,7 @@ CORPORA: tuple[Corpus, ...] = (
     Corpus("L1 patterns", "l1_patterns", OURS, "AGPL-3.0-or-later", VENDORED),
     Corpus("OWASP test list", "owasp", "OWASP Cheat Sheet Series", "CC-BY-SA-4.0", VENDORED),
     Corpus("Benign operations output", "benign_ops", OURS, "AGPL-3.0-or-later", VENDORED),
+    Corpus("Credential shapes", "credential_shapes", OURS, "AGPL-3.0-or-later", VENDORED),
     Corpus("Detonation", "detonation", OURS, "AGPL-3.0-or-later", VENDORED),
     Corpus(
         "Jailbreak classification",

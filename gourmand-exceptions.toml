@@ -911,3 +911,26 @@ path = "corpora/credential_shapes.py"
 justification = "The numbers are the data, as in corpora/benign_ops.py: this file generates invented outbound requests (#511), and the literals are credential-body lengths (an AWS id's 16 trailing chars, a 40-char key body, a 35-char AIza key, a 43-char JWT segment). Each is used once where the request string it fills is built; a named constant per length would be a dozen names for values the surrounding shape already explains."
 classification = "by_design"
 
+
+# --- #511 terminating egress route ---
+
+[[exceptions]]
+check = "redundant_error_handling"
+path = "src/trentina/gateway/egress_http.py"
+pattern = "finish"
+justification = "Writing the gateway_calls row is bookkeeping (like git_transport.finish and database.defend): a failed SQLite write must not fail the request it records, so it is logged by kind (#262) and swallowed. Re-raising would turn a lost audit row into a lost response."
+classification = "by_design"
+
+[[exceptions]]
+check = "redundant_error_handling"
+path = "src/trentina/gateway/outbound.py"
+pattern = "judge_outbound"
+justification = "The outbound scan is deadline- and exception-bounded like matrix_proxy's: a hung or failed judge is treated as unjudged (block refuses, flag warns) rather than crashing the request. The failure is logged by kind and frames (#262); re-raising would make a judge outage a 500 with no verdict."
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/egress_http.py"
+pattern = "_resolve_upstream"
+justification = "_resolve_upstream (resolve the upstream, grant and path, or refuse) is reported similar to quarantine/agent._parse_openrouter_search and unpack/scan._data_uri. All three are a short guard-then-return chain; they share that skeleton and nothing else. A structural collision, as with preprocess/petit.py."
+classification = "by_design"

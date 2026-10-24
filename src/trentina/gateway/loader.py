@@ -28,6 +28,7 @@ from .profile import (
     HONEYTOKEN_MIN_CHARS,
     MATRIX_CHANNEL,
     AlertIngressConfig,
+    EgressUpstream,
     GitRemote,
     MatrixIngressConfig,
     Profile,
@@ -47,6 +48,7 @@ class GatewayConfig:
     llm_providers: dict[str, Any] = field(default_factory=dict)
     matrix: dict[str, Any] = field(default_factory=dict)
     git_remotes: dict[str, GitRemote] = field(default_factory=dict)
+    egress_upstreams: dict[str, EgressUpstream] = field(default_factory=dict)
     session_ttl_seconds: float = 300.0
     max_sessions_per_profile: int = 10
 
@@ -118,8 +120,7 @@ def _build_profile(name: str, body: Any) -> Profile:
     _resolve_oauth_client_secret(name, profile)
     _resolve_oauth_audience(name, profile)
     _resolve_llm_key_secrets(name, profile)
-    for remote, grant in profile.git.items():
-        grant.token = _require_env(name, grant.token_env, f"git.{remote} token")
+    _resolve_grant_tokens(name, profile)
     _expand_backend_env_refs(name, profile)
     _check_drivers(name, profile)
     _check_destination_params(name, profile)
@@ -230,6 +231,19 @@ def _resolve_bridge_secrets(name: str, profile: Profile) -> None:
         bridge.ingress_token = _require_env(name, bridge.ingress_token_env, f"{what} ingress token")
         bridge.local.as_token = _require_env(name, bridge.local.as_token_env, f"{what} as_token")
         bridge.local.hs_token = _require_env(name, bridge.local.hs_token_env, f"{what} hs_token")
+
+
+def _resolve_grant_tokens(name: str, profile: Profile) -> None:
+    """Resolve the forge and egress tokens a profile's grants name.
+
+    A git grant always has a token (the forge needs one); an egress grant's is
+    optional — a destination that needs no injected credential declares none.
+    """
+    for remote, grant in profile.git.items():
+        grant.token = _require_env(name, grant.token_env, f"git.{remote} token")
+    for upstream, egress in profile.egress_http.items():
+        if egress.token_env is not None:
+            egress.token = _require_env(name, egress.token_env, f"egress_http.{upstream} token")
 
 
 def _resolve_bearer_token(name: str, profile: Profile) -> None:
@@ -694,6 +708,62 @@ def _load_git_remotes(section: Any, registry: dict[str, Profile]) -> dict[str, G
     return remotes
 
 
+def _load_egress_upstreams(section: Any, registry: dict[str, Profile]) -> dict[str, EgressUpstream]:
+    """Parse ``egress_upstreams`` and hold every profile's ``egress_http`` to it (#511).
+
+    Checked here, not where the route is registered, so a reload refuses the
+    same file a restart would: a grant for an upstream nobody configured would
+    be a token loaded for a destination that does not exist.
+
+    Raises:
+        ProfileConfigError: the section is not a mapping, a name or an entry
+            does not validate, or a profile names an upstream that is not here.
+    """
+    if section is None:
+        section = {}
+    if not isinstance(section, dict):
+        raise ProfileConfigError("egress_upstreams must be a mapping of name to upstream")
+    upstreams: dict[str, EgressUpstream] = {}
+    for name, body in section.items():
+        if not isinstance(name, str) or not GIT_REMOTE_NAME_RE.match(name):
+            raise ProfileConfigError("egress_upstreams: a name must match ^[a-z][a-z0-9-]*$")
+        if not isinstance(body, dict):
+            raise ProfileConfigError(f"egress_upstreams.{name}: must be a mapping")
+        try:
+            upstreams[name] = EgressUpstream(**body)
+        except ValidationError as exc:
+            reasons = "; ".join(
+                f"{'.'.join(map(str, e['loc'])) or 'entry'}: {e['msg']}" for e in exc.errors()
+            )
+            raise ProfileConfigError(f"egress_upstreams.{name}: {reasons}") from exc
+    for profile_name, profile in sorted(registry.items()):
+        _check_egress_grants(profile_name, profile, upstreams)
+    return upstreams
+
+
+def _check_egress_grants(
+    profile_name: str, profile: Profile, upstreams: dict[str, EgressUpstream]
+) -> None:
+    """A profile's ``egress_http`` grants must name a configured upstream, and a
+    credential and a token go together (#511)."""
+    for upstream_name, grant in profile.egress_http.items():
+        upstream = upstreams.get(upstream_name)
+        if upstream is None:
+            raise ProfileConfigError(
+                f"Profile {profile_name!r} egress_http names upstream {upstream_name!r}, "
+                "which is not an egress_upstreams entry"
+            )
+        # An upstream expecting a credential with a grant that names no token
+        # would send unauthenticated and hand back the upstream's 401; a grant
+        # naming a token for an upstream that injects none would hold a secret
+        # never sent. Both are operator mistakes, refused at load.
+        if (upstream.credential is not None) != (grant.token_env is not None):
+            raise ProfileConfigError(
+                f"Profile {profile_name!r} egress_http.{upstream_name}: a token_env and the "
+                "upstream's credential must both be set or both absent"
+            )
+
+
 def load_profiles(path: Path | str) -> GatewayConfig:
     """Load gateway configuration from YAML.
 
@@ -743,6 +813,7 @@ def load_profiles(path: Path | str) -> GatewayConfig:
     _check_matrix_networks(registry)
     _check_egress_networks(registry)
     git_remotes = _load_git_remotes(cfg_data.get("git_remotes"), registry)
+    egress_upstreams = _load_egress_upstreams(cfg_data.get("egress_upstreams"), registry)
 
     logger.info(
         "gateway: loaded %d profile(s): %s",
@@ -763,6 +834,7 @@ def load_profiles(path: Path | str) -> GatewayConfig:
         llm_providers=llm_section if isinstance(llm_section, dict) else {},
         matrix=matrix_section if isinstance(matrix_section, dict) else {},
         git_remotes=git_remotes,
+        egress_upstreams=egress_upstreams,
         session_ttl_seconds=float(gateway_section.get("session_ttl_seconds", 300.0)),
         max_sessions_per_profile=int(gateway_section.get("max_sessions_per_profile", 10)),
     )
@@ -802,6 +874,7 @@ class ActiveConfig:
     oauth_route_registered: bool
     egress_listener_configured: bool = False
     git_route_registered: bool = False
+    egress_route_registered: bool = False
 
 
 _active: ActiveConfig | None = None
@@ -831,6 +904,7 @@ def register_active_config(
             p.client_egress is not None for p in config.profiles.values()
         ),
         git_route_registered=bool(config.git_remotes),
+        egress_route_registered=bool(config.egress_upstreams),
     )
 
 
@@ -857,6 +931,7 @@ def replace_active_config(config: GatewayConfig) -> None:
         oauth_route_registered=_active.oauth_route_registered,
         egress_listener_configured=_active.egress_listener_configured,
         git_route_registered=_active.git_route_registered,
+        egress_route_registered=_active.egress_route_registered,
     )
 
 

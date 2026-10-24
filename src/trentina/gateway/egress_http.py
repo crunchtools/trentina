@@ -1,0 +1,634 @@
+"""Terminating HTTP(S) egress (#511): judge an agent's outbound request, then
+re-originate it to a named upstream, on the main port alongside ``/llm`` and
+``/git``.
+
+    /egress/{upstream}/{path}
+
+What it decides, in order, each one deterministic:
+
+- **who is calling**: the gateway bearer token, as on ``/llm`` and ``/git``.
+  None of the caller's own credentials go upstream; the profile's token for the
+  upstream is injected, so the agent never holds it.
+- **which upstream and path**: a configured ``egress_upstreams`` name the
+  profile was granted, and a path matched against the grant. The URL is built
+  from the operator's origin and that path — never from anything the caller
+  sent as a host. This is a reverse proxy to named destinations, not a
+  proxy-to-anywhere.
+- **what the request carries**: method, path, query, forwarded headers and body
+  cross ``defend()`` as one document (``judge_outbound``), with a credential
+  detector over the same document. Under ``block`` a credential, a flag or a
+  blocking gap refuses before anything is sent — nothing executed. Under
+  ``flag`` it is forwarded with the verdict on ``x-trentina-warning``.
+- **where it goes**: through the egress guard, to an address that was checked;
+  no redirect is followed.
+- **what comes back**: the response is untrusted content the agent will ingest,
+  so it is judged like the ``fetch`` tool (``egress_response``) — buffered,
+  judged, delivered or refused. A refusal here is "executed, response withheld"
+  (#425): the request was sent.
+
+One ``gateway_calls`` row per request. Streaming responses and the guarded-
+execution hook are #511's next slice; this slice buffers and judges the whole
+response.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+from dataclasses import dataclass, field
+from http import HTTPStatus
+from typing import TYPE_CHECKING, Any
+
+import httpx
+from starlette.requests import ClientDisconnect
+from starlette.responses import Response
+
+from .. import logsafe
+from ..database import record_gateway_call
+from ..defense import Provenance, defend
+from ..egress import open_pinned
+from ..errors import EgressRefusedError as GuardRefusedError
+from ..modes import Mode, gaps_of
+from ..outcomes import Outcome
+from .auth import resolve_profile_by_token
+from .backend import response_byte_cap
+from .client_egress import RESOLVER_BUSY, checked_target
+from .context import profile_context
+from .destination import MAX_DESTINATION_CHARS, DestinationKind, fingerprint
+from .egress_policy import (
+    EgressRefusedError,
+    build_url,
+    forward_request_headers,
+    request_document,
+    response_headers,
+)
+from .ingress_defense import effective_mode
+from .loader import get_active_config
+from .outbound import (
+    REASON_CREDENTIAL,
+    REASON_FLAGGED,
+    REASON_UNJUDGED,
+    body_text,
+    judge_outbound,
+)
+from .proxy_utils import PLAIN_TEXT, normalize_proxy_path
+
+if TYPE_CHECKING:
+    from contextlib import AbstractAsyncContextManager
+
+    from starlette.requests import Request
+
+    from .profile import EgressGrant, EgressUpstream, Profile
+
+logger = logging.getLogger(__name__)
+
+ROUTE = "/egress/{upstream}/{path:path}"
+METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+BACKEND_PREFIX = "egress"
+NO_OPERATION = "-"
+JSON = "application/json"
+WARNING_HEADER = "x-trentina-warning"
+REASON_HEADER = "X-Trentina-Reason"
+
+IDLE_TIMEOUT = 300.0
+JUDGE_DEADLINE = 60.0
+MAX_OPERATIONS_PER_PROFILE = 8
+
+_open: dict[str, int] = {}
+
+#: The audit outcome for each refusal reason — keyed on the reason, not on
+#: whether the request executed: a timeout is a backend error, not a defense
+#: block, however far the request got.
+_OUTCOME_OF: dict[str, Outcome] = {
+    "unauthorized": Outcome.DENIED_GUARD,
+    "unknown_upstream": Outcome.DENIED_ALLOWLIST,
+    "method_not_listed": Outcome.DENIED_ALLOWLIST,
+    "path_not_listed": Outcome.DENIED_ALLOWLIST,
+    "bad_path": Outcome.DENIED_GUARD,
+    "too_large": Outcome.DENIED_GUARD,
+    "malformed_body": Outcome.DENIED_GUARD,
+    "not_json": Outcome.DENIED_GUARD,
+    "binary_body": Outcome.BLOCKED_DEFENSE,
+    "busy": Outcome.DENIED_GUARD,
+    "resolver_busy": Outcome.DENIED_GUARD,
+    "redirect": Outcome.BACKEND_ERROR,
+    "upstream_failed": Outcome.BACKEND_ERROR,
+    "upstream_idle": Outcome.BACKEND_ERROR,
+    "upstream_status": Outcome.TOOL_ERROR,
+    "credential_in_request": Outcome.BLOCKED_DEFENSE,
+    "flagged": Outcome.BLOCKED_DEFENSE,
+    "not_fully_judged": Outcome.BLOCKED_DEFENSE,
+    "response_flagged": Outcome.BLOCKED_DEFENSE,
+    "response_unjudged": Outcome.BLOCKED_DEFENSE,
+    "response_binary": Outcome.BLOCKED_DEFENSE,
+}
+
+
+@dataclass
+class _Operation:
+    """One request, from the caller's token to its audit row."""
+
+    profile: Profile
+    name: str = NO_OPERATION
+    method: str = NO_OPERATION
+    started: float = field(default_factory=time.monotonic)
+    destination: str | None = None
+    sent: int = 0
+    received: int = 0
+    outcome: Outcome = Outcome.CANCELLED
+    reason: str | None = None
+    flag_reason: str | None = None  # a flag-mode finding on a forwarded request
+    holds_slot: bool = False
+    finished: bool = False
+
+    def settle(self, outcome: Outcome, reason: str | None = None) -> None:
+        self.outcome, self.reason = outcome, reason
+
+    def take_slot(self) -> None:
+        if _open.get(self.profile.name, 0) >= MAX_OPERATIONS_PER_PROFILE:
+            raise EgressRefusedError(HTTPStatus.SERVICE_UNAVAILABLE, "busy")
+        _open[self.profile.name] = _open.get(self.profile.name, 0) + 1
+        self.holds_slot = True
+
+    def finish(self) -> None:
+        """Give the slot back and write the audit row, once."""
+        if self.finished:
+            return
+        self.finished = True
+        if self.holds_slot:
+            _open[self.profile.name] -= 1
+            if not _open[self.profile.name]:
+                del _open[self.profile.name]
+        try:
+            record_gateway_call(
+                self.profile.name,
+                f"{BACKEND_PREFIX}:{self.name}",
+                self.method,
+                self.outcome.value,
+                int((time.monotonic() - self.started) * 1000),
+                self.reason,
+                bytes_arrived=self.received,
+                bytes_delivered=self.sent,
+                destination=self.destination,
+                destination_kind=DestinationKind.EGRESS.value if self.destination else None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "egress: audit row lost profile=%s err=%s",
+                self.profile.name,
+                logsafe.exc_kind(exc),
+            )
+
+
+def register_egress_routes(
+    mcp_server: Any, upstreams: dict[str, EgressUpstream], profiles: dict[str, Profile]
+) -> None:
+    """Wire ``/egress/{upstream}/{path}`` onto the FastMCP server, if any upstream exists.
+
+    With no ``egress_upstreams`` at startup there is no route. The upstreams and
+    every profile's ``egress_http`` are read from the active config per request,
+    so once the route exists an operator reload applies an edit in place.
+    """
+    if not upstreams:
+        return
+
+    async def egress_endpoint(request: Request) -> Response:
+        return await serve(request, profiles)
+
+    mcp_server.custom_route(ROUTE, methods=METHODS)(egress_endpoint)
+    logger.info("egress: registered /egress/{upstream}/{path}")
+
+
+async def serve(request: Request, profiles: dict[str, Profile]) -> Response:
+    """Answer one egress request: resolve the caller, then carry it or refuse it.
+
+    A token that matches no profile gets 401 and no audit row — a row belongs to
+    a profile, and writing one for an unknown caller would let anyone who can
+    reach the port fill the audit database.
+    """
+    # TRUST: an agent's outbound HTTP request, to a destination the operator named
+    #   untrusted: upstream name, path, query, headers and body, all agent-chosen
+    #   judged-by: EgressGrant (method/path), judge_outbound (L1/L2/L3 + credential
+    #     detector over the request), egress (resolved address), defend (response)
+    #   on-failure: fail-closed; refused with a closed reason and audited
+    #   owner: gateway/egress_http.py, gateway/egress_policy.py
+    #   evidence: T3 this module's docstring; T4 tests/test_egress_http.py
+    profile = resolve_profile_by_token(request.headers.get("authorization"), profiles)
+    if profile is None:
+        logger.warning("egress: refused a caller whose token matches no profile")
+        return Response(content="unauthorized\n", status_code=401, media_type=PLAIN_TEXT)
+    op = _Operation(profile, method=request.method)
+    try:
+        return await _carry(request, op)
+    except EgressRefusedError as refusal:
+        op.settle(_OUTCOME_OF.get(refusal.reason, Outcome.DENIED_GUARD), refusal.reason)
+        logger.info("egress: refused profile=%s reason=%s", profile.name, refusal.reason)
+        # The deny marker, to its own caller; no payload, no L3 prose (#511).
+        body: dict[str, Any] = {
+            "error": {"type": "trentina_refused", "reason": refusal.reason},
+            "blocked": True,
+            "block_reason": refusal.reason,
+            "scanner": "trentina",
+        }
+        if refusal.executed:
+            # The request was sent; say so rather than imply it was not (#425).
+            body["executed"] = True
+            body["error"]["message"] = "executed by the destination, response withheld"
+        return Response(
+            content=json.dumps(body),
+            status_code=refusal.status,
+            media_type=JSON,
+            headers={REASON_HEADER: refusal.reason},
+        )
+    except (ClientDisconnect, TimeoutError):
+        op.settle(Outcome.CANCELLED)
+        raise
+    except Exception as exc:
+        logger.error(
+            "egress: failed profile=%s err=%s at %s",
+            profile.name,
+            logsafe.exc_kind(exc),
+            logsafe.exc_where(exc),
+        )
+        op.settle(Outcome.GATEWAY_ERROR)
+        raise
+    finally:
+        op.finish()
+
+
+def _unsafe_path(path: str) -> bool:
+    """A decoded path that could re-split the URL or carry a control char."""
+    return any(c in path for c in "?#") or any(ord(c) < 0x20 or c == "\x7f" for c in path)
+
+
+def _resolve_upstream(
+    request: Request, profile: Profile
+) -> tuple[str, EgressUpstream, EgressGrant, str]:
+    """The upstream, its config, the profile's grant and the normalized path.
+
+    An unknown upstream and a profile with no grant for it are ONE refusal, so a
+    caller cannot tell a destination it may not reach from one that does not
+    exist.
+    """
+    name = request.path_params.get("upstream", "")
+    active = get_active_config()
+    upstream = active.config.egress_upstreams.get(name) if active is not None else None
+    grant = profile.egress_http.get(name)
+    if upstream is None or grant is None:
+        raise EgressRefusedError(HTTPStatus.FORBIDDEN, "unknown_upstream")
+    path = normalize_proxy_path(request.path_params.get("path", ""))
+    # normalize_proxy_path handles '.'/'..'/backslash, but the path is also the
+    # grant's rail: a decoded '?' or '#' (or a control char / CRLF) would let the
+    # matched path and the sent path diverge — the match sees one endpoint, the
+    # upstream another. Refuse them here; build_url percent-quotes the rest so
+    # what was matched is byte-for-byte what is sent.
+    if path is None or _unsafe_path(path):
+        raise EgressRefusedError(HTTPStatus.BAD_REQUEST, "bad_path")
+    denied = grant.allows(request.method, f"/{path}")
+    if denied is not None:
+        raise EgressRefusedError(HTTPStatus.FORBIDDEN, denied)
+    return name, upstream, grant, path
+
+
+async def _read_body(request: Request, upstream: EgressUpstream) -> bytes | None:
+    """The whole request body, bounded and (for a json upstream) validated.
+
+    Nothing streams until the body is read and judged. A compressed body is
+    refused — what is judged must be what the destination parses.
+    """
+    cap = response_byte_cap()
+    encoding = request.headers.get("content-encoding", "identity").strip().lower()
+    if encoding not in ("", "identity"):
+        raise EgressRefusedError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "malformed_body")
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > cap:
+        raise EgressRefusedError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "too_large")
+    buffer = bytearray()
+    async for chunk in request.stream():
+        buffer.extend(chunk)
+        if len(buffer) > cap:
+            raise EgressRefusedError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "too_large")
+    if not buffer:
+        return None
+    body = bytes(buffer)
+    if upstream.body == "json":
+        try:
+            # Reject duplicate keys rather than silently keep the last: a
+            # `{"k":"<secret>","k":"ok"}` body is a smuggling shape, and judging
+            # one value while sending another is exactly the hole #511 closes.
+            parsed = json.loads(body, object_pairs_hook=_reject_duplicate_keys)
+        except ValueError:
+            raise EgressRefusedError(HTTPStatus.BAD_REQUEST, "not_json") from None
+        # Re-serialize so the destination parses exactly the object that is judged.
+        body = json.dumps(parsed, separators=(",", ":")).encode()
+    return body
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    seen: set[str] = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise ValueError("duplicate key")
+        seen.add(key)
+    return dict(pairs)
+
+
+def _judged_body_text(body: bytes, upstream: EgressUpstream) -> str | None:
+    """The body as the layers read it, matching what is forwarded (#511 blocker).
+
+    A ``json`` upstream forwards the re-serialized object (already in ``body``),
+    judged unescaped for L2. A ``verbatim`` upstream forwards the raw bytes, so
+    they are judged raw — but only when they are valid UTF-8 text; a non-UTF-8
+    (UTF-16, binary) body cannot be read by any layer as what the destination
+    parses, so None is returned and the caller treats it as a binary body. What
+    is judged is what is sent — never a re-dump that drops a duplicate key.
+    """
+    if upstream.body == "json":
+        return body_text(body)
+    try:
+        return body.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+async def _carry(request: Request, op: _Operation) -> Response:
+    """Admit, judge, re-originate and judge the response for one request."""
+    name, upstream, grant, path = _resolve_upstream(request, op.profile)
+    op.name = name
+    op.take_slot()
+    op.destination = f"{upstream.host[: MAX_DESTINATION_CHARS - 17]}#{fingerprint(path)}"
+
+    body = await _read_body(request, upstream)
+    fwd = forward_request_headers(list(request.headers.items()), upstream)
+    mode = effective_mode(op.profile, Mode(grant.enforcement))
+
+    warning = await _judge_request(op, request, upstream, name, path, body, fwd, mode)
+
+    # Inject the profile's credential (never judged, never logged) and send. The
+    # bare token value is carried for response scrubbing: an upstream may echo it
+    # with or without the prefix, and the bare value covers both.
+    secret: str | None = None
+    if upstream.credential is not None and grant.token is not None:
+        secret = grant.token.get_secret_value()
+        logsafe.hold(secret, grant.token_env or name)
+        fwd[upstream.credential.header.lower()] = f"{upstream.credential.prefix}{secret}"
+    url = build_url(upstream, path, request.url.query)
+    return await _send_and_judge(
+        op, upstream, mode, request.method, url, fwd, body, warning, secret
+    )
+
+
+async def _judge_request(
+    op: _Operation,
+    request: Request,
+    upstream: EgressUpstream,
+    name: str,
+    path: str,
+    body: bytes | None,
+    fwd: dict[str, str],
+    mode: Mode,
+) -> str | None:
+    """Judge the outbound request; raise to refuse under block, return a flag warning.
+
+    A non-UTF-8 verbatim body is a binary request no layer can read as the
+    destination will: block refuses it, flag forwards it with a warning.
+    Otherwise the request crosses ``judge_outbound``; block refuses a credential,
+    flag or gap before anything is sent, and flag carries the finding to the row.
+    """
+    judged_body = _judged_body_text(body, upstream) if body is not None else None
+    if body is not None and judged_body is None:
+        if mode is Mode.BLOCK:
+            raise EgressRefusedError(HTTPStatus.FORBIDDEN, "binary_body")
+        op.flag_reason = "binary_body"
+        logger.warning("egress: binary request body (flag) profile=%s", op.profile.name)
+        return "binary_unread"
+
+    document = request_document(request.method, f"/{path}", request.url.query, fwd, judged_body)
+    verdict = await judge_outbound(
+        document,
+        source=f"egress:{op.profile.name}:{name}",
+        source_type="egress_request",
+        backend=f"egress:{name}",
+        profile=op.profile,
+        mode=mode,
+        deadline=JUDGE_DEADLINE,
+    )
+    if mode is Mode.BLOCK and verdict.blocks():
+        reason = _request_reason(verdict.reason or REASON_UNJUDGED)
+        logger.warning("egress: request blocked profile=%s reason=%s", op.profile.name, reason)
+        raise EgressRefusedError(HTTPStatus.FORBIDDEN, reason)
+    if verdict.warning is not None:
+        # flag mode: forwarded, but the finding is logged (closed-set, #262) and
+        # carried to the audit row so the researcher grant is not a blind spot.
+        op.flag_reason = _request_reason(verdict.reason or REASON_UNJUDGED)
+        logger.warning(
+            "egress: request %s (flag) profile=%s upstream=%s",
+            verdict.warning,
+            op.profile.name,
+            name,
+        )
+    return verdict.warning
+
+
+def _request_reason(code: str) -> str:
+    """Map an outbound reason code to this route's closed reason set."""
+    return {
+        REASON_CREDENTIAL: "credential_in_request",
+        REASON_FLAGGED: "flagged",
+        REASON_UNJUDGED: "not_fully_judged",
+    }[code]
+
+
+async def _send_and_judge(
+    op: _Operation,
+    upstream: EgressUpstream,
+    mode: Mode,
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    body: bytes | None,
+    warning: str | None,
+    secret: str | None,
+) -> Response:
+    """Send the request to a checked address and judge the response as ingress.
+
+    The response is untrusted content the agent will ingest, so it is judged
+    like the ``fetch`` tool. Under ``block`` a flagged, unjudged or unreadable
+    (binary) response is withheld — the request already executed (#425). Under
+    ``flag`` it is delivered with the verdict on ``x-trentina-warning``. The
+    injected credential is scrubbed from a text response so an echo endpoint
+    cannot hand the agent the token it never held.
+    """
+    raw, status, ct, hdrs = await _fetch(op, upstream, method, url, headers, body)
+    op.received = len(raw)
+    blocking = mode is Mode.BLOCK
+    # The verdict header is ours; never let an upstream forge or echo it. And
+    # an echo endpoint must not hand the agent the injected token in a header.
+    hdrs.pop(WARNING_HEADER, None)
+    hdrs.pop(REASON_HEADER.lower(), None)
+    hdrs.pop(REASON_HEADER, None)
+    if secret:
+        hdrs = {k: v.replace(secret, "[REDACTED]") for k, v in hdrs.items()}
+
+    # The response headers are delivered to the agent, so they cross the layers
+    # too (the layer contract: nothing delivered unread). They are judged with
+    # the body, as one document, the way the request's headers and body are.
+    header_doc = "\n".join(f"{name}: {value}" for name, value in hdrs.items())
+    # A NUL byte (or a non-text/absent content type) means the body is not text:
+    # it is the binary_unread gap, judged by no layer.
+    body_is_text = bool(raw) and _is_text(ct) and b"\x00" not in raw[:8192]
+    if body_is_text:
+        text = raw.decode("utf-8", errors="replace")
+        if secret and secret in text:
+            # An echo endpoint returned our injected token (bare or prefixed):
+            # cut it before the agent or the judge sees it.
+            text = text.replace(secret, "[REDACTED]")
+            raw = text.encode()
+        document = f"{header_doc}\n\n{text}" if header_doc else text
+    else:
+        document = header_doc  # judge the headers even when the body is binary
+
+    if document.strip():
+        fv = await _judge_response(op, upstream, document, blocking)
+        # A request-side finding (the exfil signal) is not overwritten by a
+        # response one; the response finding fills in when the request was clean.
+        warning = warning or fv
+    if raw and not body_is_text:
+        # A binary body no layer reads: the binary_unread gap (#367, gap 32).
+        if blocking:
+            raise EgressRefusedError(HTTPStatus.FORBIDDEN, "response_binary", executed=True)
+        warning = warning or "binary_unread"
+
+    op.settle(Outcome.OK if status < 400 else Outcome.TOOL_ERROR, op.flag_reason)
+    if warning:
+        hdrs[WARNING_HEADER] = warning
+    return Response(content=raw, status_code=status, media_type=ct or None, headers=hdrs)
+
+
+async def _judge_response(
+    op: _Operation, upstream: EgressUpstream, document: str, blocking: bool
+) -> str | None:
+    """Judge a response (its headers, and its body when text) as ingress.
+
+    Returns a flag-mode warning, or None. Deadline- and exception-bounded like
+    the request judge: a hung or failed scan is treated as unjudged (``block``
+    withholds, ``flag`` warns). Under ``block`` a flagged or unjudged response
+    raises — the request executed (#425).
+    """
+    try:
+        with profile_context(op.profile):
+            async with asyncio.timeout(JUDGE_DEADLINE):
+                rv = await defend(
+                    document,
+                    source=op.destination or upstream.host,
+                    source_type="egress_response",
+                    defense=op.profile.defense,
+                    provenance=Provenance.EXTERNAL,
+                    stop_on_partial=blocking,
+                    domain=upstream.host,
+                )
+        flagged, unjudged, risk = rv.flagged, gaps_of(rv).blocking(), rv.risk_level
+    except Exception as exc:  # TimeoutError too: no verdict was reached
+        logger.error(
+            "egress: response scan failed profile=%s: %s at %s",
+            op.profile.name,
+            logsafe.exc_kind(exc),
+            logsafe.exc_where(exc),
+        )
+        flagged, unjudged, risk = False, True, "unknown"
+    if not flagged and not unjudged:
+        return None
+    if blocking:
+        raise EgressRefusedError(
+            HTTPStatus.FORBIDDEN,
+            "response_flagged" if flagged else "response_unjudged",
+            executed=True,
+        )
+    return risk if flagged else "unjudged"
+
+
+async def _fetch(
+    op: _Operation,
+    upstream: EgressUpstream,
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    body: bytes | None,
+) -> tuple[bytes, int, str, dict[str, str]]:
+    """Send to a checked, pinned address and read the bounded response.
+
+    A connect-phase failure is ``upstream_failed`` with nothing executed; a
+    read/write timeout is ``upstream_idle`` executed (the request did go out).
+    """
+    cap = response_byte_cap()
+    try:
+        target = await checked_target(op.profile, upstream.host)
+        opener: AbstractAsyncContextManager[httpx.Response] = open_pinned(
+            method, url, target, idle=IDLE_TIMEOUT, headers=headers, content=body
+        )
+        async with opener as resp:
+            if body is not None:
+                op.sent = len(body)  # counted once the request is actually on the wire
+            raw = await _read_response(resp, cap)
+            return (
+                raw,
+                resp.status_code,
+                resp.headers.get("content-type", ""),
+                response_headers(list(resp.headers.items())),
+            )
+    except GuardRefusedError as exc:
+        raise _from_guard(exc) from None
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        logger.warning("egress: upstream unreachable err=%s", logsafe.exc_kind(exc))
+        raise EgressRefusedError(HTTPStatus.BAD_GATEWAY, "upstream_failed") from None
+    except httpx.TimeoutException:
+        raise EgressRefusedError(
+            HTTPStatus.GATEWAY_TIMEOUT, "upstream_idle", executed=True
+        ) from None
+    except httpx.HTTPError as exc:
+        logger.warning("egress: upstream failed err=%s", logsafe.exc_kind(exc))
+        raise EgressRefusedError(HTTPStatus.BAD_GATEWAY, "upstream_failed", executed=True) from None
+
+
+async def _read_response(resp: httpx.Response, cap: int) -> bytes:
+    """The response body, refused past ``cap`` (executed, response withheld)."""
+    buffer = bytearray()
+    async for chunk in resp.aiter_raw():
+        buffer.extend(chunk)
+        if len(buffer) > cap:
+            raise EgressRefusedError(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "too_large", executed=True
+            )
+    return bytes(buffer)
+
+
+def _is_text(content_type: str) -> bool:
+    """Whether a response body is judged as text. Fail closed: a missing or
+    unrecognized content type is NOT text — it is the binary_unread gap, so a
+    body a layer cannot positively read is withheld under block rather than
+    decoded with replacement characters and waved through."""
+    ct = content_type.partition(";")[0].strip().lower()
+    return (
+        ct.startswith("text/")
+        or ct.endswith(("+json", "+xml"))
+        or ct in ("application/json", "application/xml", "application/javascript")
+    )
+
+
+def _from_guard(exc: GuardRefusedError) -> EgressRefusedError:
+    """Map the egress guard's refusal to this route's reason and status.
+
+    A ``redirect`` or ``encoded`` refusal means the upstream already answered —
+    the request executed — so it is withheld, not denied. ``resolver_busy`` is
+    gateway load before the connection; nothing executed.
+    """
+    if exc.reason == RESOLVER_BUSY:
+        return EgressRefusedError(HTTPStatus.SERVICE_UNAVAILABLE, "resolver_busy")
+    if exc.reason == "redirect":
+        return EgressRefusedError(HTTPStatus.BAD_GATEWAY, "redirect", executed=True)
+    # "encoded" (the guard refuses a content-encoded response, since open_pinned
+    # sends Accept-Encoding: identity) and anything else are upstream faults the
+    # request already reached.
+    return EgressRefusedError(HTTPStatus.BAD_GATEWAY, "upstream_failed", executed=True)

@@ -235,6 +235,11 @@ def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
             "git_remotes added but /git was not registered at startup (the "
             "file had none) — restart to serve it"
         )
+    if not active.egress_route_registered and new_config.egress_upstreams:
+        notes.append(
+            "egress_upstreams added but /egress was not registered at startup "
+            "(the file had none) — restart to serve it"
+        )
     notes.extend(_unapplied_delegated(current, new_config))
     for name, profile in sorted(new_config.profiles.items()):
         notes.extend(_unapplied_proxy_oauth_for(current.profiles.get(name), profile, name))
@@ -399,14 +404,14 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
         if old != getattr(after.defense, field_name):
             setattr(after.defense, field_name, old)
             held.append(f"defense.{field_name}")
-    # Four blocks are perimeter end to end, so each is held whole: where
-    # the bridge's plaintext side lives and what a flagged message becomes;
-    # where the agent's own client may be tunnelled (#442); which
-    # repositories and branches it may push to, with which token (#453);
-    # which of its calls are judged before they leave, and by what rule
-    # (#456). llm_keys is not held and git is: a key buys model calls, while
-    # one more pattern is one more place a talked-round agent can write to.
-    for block in ("matrix_bridge", "client_egress", "git", "guarded_execution"):
+    # Five blocks are perimeter end to end, so each is held whole: the bridge's
+    # plaintext side (#162); where the agent's client may be tunnelled (#442);
+    # which repositories and branches it may push to (#453); which HTTP
+    # destinations, methods and paths it may reach (#511); and which calls are
+    # judged before they leave (#456). llm_keys is not held and git/egress_http
+    # are: a key buys model calls, while one more pattern is one more place a
+    # talked-round agent can send to.
+    for block in ("matrix_bridge", "client_egress", "git", "egress_http", "guarded_execution"):
         if getattr(after, block) != getattr(before, block):
             setattr(after, block, getattr(before, block))
             held.append(block)
