@@ -87,6 +87,11 @@ class Reason(StrEnum):
     ONLINE_MODEL = "online_model"
     MODEL_NOT_ALLOWED = "model_not_allowed"
     TOO_LARGE = "too_large"
+    # #511: the request content, judged after admission. A credential shape is
+    # deterministic; FLAGGED and UNJUDGED carry L1/L2/L3's verdict and gaps.
+    CREDENTIAL = "credential_in_request"
+    FLAGGED = "flagged"
+    UNJUDGED = "not_fully_judged"
 
 
 class LlmRefusedError(Exception):

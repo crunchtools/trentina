@@ -289,6 +289,7 @@ justification in `gourmand-exceptions.toml`.
 | HTTP port | 8019 |
 | Client egress port | 8021 (CONNECT only; bound when a profile has `client_egress`) |
 | Git transport | `/git/{remote}/{owner}/{repo}` on the HTTP port (smart HTTP only; registered when the file has `git_remotes`) |
+| Egress route | `/egress/{upstream}/{path}` on the HTTP port (terminating reverse proxy to named upstreams; registered when the file has `egress_upstreams`, #511) |
 | HTTP clients | httpx (application), httpx2 (MCP transport) |
 | Extra stack | beautifulsoup4, markdownify, SQLite; pypdf, rapidocr and opencv-python-headless (each run only in a child process, #369, #370) |
 

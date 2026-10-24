@@ -363,3 +363,22 @@ async def test_guarded_execution_forwards_what_its_judge_allows_one_call_at_a_ti
 
     page = Path(__file__).parents[1].joinpath("docs/defense-pipeline.md").read_text()
     assert "30. **Guarded execution is a model, and judges one call at a time**" in page
+
+
+def test_a_binary_egress_response_is_read_by_no_layer() -> None:
+    """Gap 32 (#511). The egress route judges a text response as ingress, but a
+    response whose content type is not text is read by no layer: ``_is_text`` is
+    the predicate, and it fails closed — a missing or unknown type is not text,
+    so a body a layer cannot positively read is the ``binary_unread`` gap
+    (withheld under ``block``, delivered with a warning under ``flag``). A route
+    that began reading binary bodies would change this."""
+    from trentina.gateway import egress_http
+
+    assert egress_http._is_text("text/html; charset=utf-8") is True
+    assert egress_http._is_text("application/json") is True
+    assert egress_http._is_text("application/octet-stream") is False
+    assert egress_http._is_text("image/png") is False
+    assert egress_http._is_text("") is False  # fail closed: unknown is not text
+
+    page = Path(__file__).parents[1].joinpath("docs/defense-pipeline.md").read_text()
+    assert "32. **A binary egress response is not read**" in page

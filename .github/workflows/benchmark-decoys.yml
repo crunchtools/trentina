@@ -15,7 +15,12 @@ name: Benchmark - decoy tools
 # the parts of a response delivered in parts (#448). `gatekeeper` is
 # benchmarks/gatekeeper.py for every shipped judge: guarded execution on the
 # calls in corpora/gatekeeper.py (#456), run inside the image this checkout
-# builds so the arguments step includes L2 (#462). `tune` is benchmarks/prompt_pack.py for one judge
+# builds so the arguments step includes L2 (#462). `egress-bench` is
+# benchmarks/egress_bench.py (#507): the terminating egress route scored on the
+# calls in corpora/egress_bench.py — credential DLP and SSRF rails
+# (deterministic), and response injection through the layers (judge-dependent),
+# run inside the image so the response axis is L1/L2/L3 as production runs it.
+# `tune` is benchmarks/prompt_pack.py for one judge
 # with a candidate pack handed in as an input (#397): the pack is data the
 # merged harness reads, so a pack can be tuned without unreviewed code ever
 # running beside the key. Started by hand, never by a push or a pull request: it
@@ -28,7 +33,7 @@ on:
       job:
         description: "Which spike to run"
         type: choice
-        options: [detonation, venn, decoys, briefing, packs, corpora, paging, gatekeeper, tune]
+        options: [detonation, venn, decoys, briefing, packs, corpora, paging, gatekeeper, egress-bench, tune]
         default: detonation
       external:
         description: "External corpus split (test is the held-out one)"
@@ -490,6 +495,63 @@ jobs:
         env:
           MODEL: ${{ matrix.model }}
         run: echo "name=gatekeeper-${MODEL//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload results
+        if: always() && hashFiles('results/*.json') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.slug.outputs.name }}
+          path: results/
+          retention-days: 30
+
+  egress-bench:
+    name: egress-bench ${{ matrix.model }}
+    if: github.ref == 'refs/heads/main' && inputs.job == 'egress-bench'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { model: google/gemini-3.5-flash-lite }
+    steps:
+      - uses: actions/checkout@v7
+
+      # The image this checkout builds, so the response axis is L1, L2 and L3
+      # with the pinned model, as production judges a fetched response (#462).
+      # Built without the key: no build step ever sees it. The DLP and SSRF
+      # axes are deterministic and run regardless of the judge.
+      - name: Build the image
+        run: docker build -f Containerfile -t trentina:bench .
+
+      # The benchmark and corpus mounted read-only; the image's own package is
+      # the code measured. Three votes on the response axis.
+      - name: Score the egress route
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          QUARANTINE_MODEL: ${{ matrix.model }}
+        run: |
+          set -o pipefail
+          mkdir -p results && chmod 777 results
+          docker run --rm \
+            --read-only --tmpfs /tmp --cap-drop=all \
+            --security-opt no-new-privileges \
+            --entrypoint python \
+            -v "$GITHUB_WORKSPACE/benchmarks:/bench/benchmarks:ro" \
+            -v "$GITHUB_WORKSPACE/corpora:/bench/corpora:ro" \
+            -v "$GITHUB_WORKSPACE/results:/results" \
+            -e OPENROUTER_API_KEY -e QUARANTINE_MODEL \
+            -e TRENTINA_MODEL_PROVIDER=openrouter \
+            -e QUARANTINE_DB=/tmp/bench.db \
+            trentina:bench \
+            /bench/benchmarks/egress_bench.py --votes 3 \
+              --json /results/egress-bench.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Artifact name
+        id: slug
+        env:
+          MODEL: ${{ matrix.model }}
+        run: echo "name=egress-bench-${MODEL//\//-}" >> "$GITHUB_OUTPUT"
 
       - name: Upload results
         if: always() && hashFiles('results/*.json') != ''

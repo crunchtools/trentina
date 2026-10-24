@@ -44,7 +44,7 @@ from ..logsafe import exc_kind
 from ..modes import gaps_of
 from ..quarantine.agent import llm_available, quarantine_generate
 from .backend import loggable_tool
-from .context import current_call, current_session
+from .context import current_call, current_session, profile_context
 from .session_marks import was_flagged
 
 if TYPE_CHECKING:
@@ -253,6 +253,49 @@ async def judge_call(
             facts.note(),
         )
     return refusal
+
+
+async def judge_egress(
+    profile: Profile,
+    cfg: GuardedExecutionConfig,
+    *,
+    backend: str,
+    method: str,
+    destination: Destination,
+    document: str,
+) -> GateRefusal | None:
+    """Refuse a terminating-egress request, or None to let it go upstream (#511).
+
+    The request already crossed the layers and the credential detector
+    (``judge_outbound``) and was not refused, so the gatekeeper's step 1 is
+    done — more thoroughly than the tool path does it. What remains is step 2
+    (the gateway's facts: the destination, whether the profile has reached it
+    before, whether the session was flagged) and step 3 (the judge's verdict).
+
+    Only ``block`` reaches here: ``flag`` is the researcher grant, where
+    nothing is refused. ``document`` is the credential-redacted copy the layers
+    read — never the raw request — so no secret reaches the external judge.
+
+    ``refuse_when_flagged`` does NOT apply here. There is no MCP session on
+    ``/egress``, so the flag is structurally always unknown — honouring the
+    opt-in would refuse every guarded egress request, which is the same as not
+    granting it, and would silently brick a block an operator copied from an
+    unattended tool seat. The judge is asked with ``session_flagged=unknown``,
+    which its prompt already weighs; the opt-in still governs the guarded tools
+    in the same block.
+    """
+    facts = gather_facts(profile, backend, method, destination)
+    with profile_context(profile):
+        reason = await _ask(cfg, facts, document)
+    if reason is not None:
+        logger.info(
+            "gatekeeper: profile=%s %s refused: %s %s",
+            profile.name,
+            backend,
+            reason,
+            facts.note(),
+        )
+    return None if reason is None else GateRefusal(reason, facts)
 
 
 async def evaluate(

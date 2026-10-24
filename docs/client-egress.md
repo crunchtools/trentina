@@ -18,9 +18,13 @@ decides which ones the agent may reach, and records every connection.
 are TLS between the agent's client and the destination, and the gateway holds
 no key. No layer judges them. This is
 [known gap 26](defense-pipeline.md#known-gaps). Client egress bounds *where* an
-agent's client can talk and records *how much*; it does not decide *what*.
+agent's client can talk and records *how much*; it does not decide *what*. Since
+#511 the tunnel is the **fallback** for a client that cannot be re-pointed: a
+client that can speak to a base URL should use the [egress route](egress-http.md)
+or [`/llm`](llm-proxying.md), which read the request and the response.
 
-For `git`, prefer the [git transport](git-transport.md). A tunnel to a
+For `git`, prefer the [git transport](git-transport.md), and for HTTP a
+re-pointable client, the [egress route](egress-http.md). A tunnel to a
 forge's host reaches every repository on it with a credential the agent
 holds; the git route decides the repository and the branch and keeps the
 token in the gateway.

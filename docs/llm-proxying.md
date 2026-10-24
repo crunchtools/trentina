@@ -62,14 +62,51 @@ The body is parsed with duplicate keys refused, and the provider receives it
 **re-serialized**: it parses exactly the object that was judged. The body is
 capped at 32 MiB and a compressed body is refused. A refusal is HTTP 403 (400
 for a malformed body, 413 over the cap) with
-`{"error": {"type": "trentina_refused", "reason": ..., "detail": ...}}`;
-`detail` names the caller's own offending key and goes nowhere else.
+`{"error": {"type": "trentina_refused", "reason": ..., "detail": ...},
+"blocked": true, "block_reason": ..., "scanner": "trentina"}`; `detail` names
+the caller's own offending key and goes nowhere else, and the top-level
+`blocked`/`block_reason`/`scanner` fields let an egress benchmark read the
+verdict from an otherwise opaque response.
 
 Every call from an authenticated profile, admitted or refused, writes a
 `gateway_calls` row ([audit log](audit-log.md#llm-proxy-calls)).
 
-Message text is not judged on the way out: a model with no server-side tool
-cannot dereference a URL in a prompt. The completion streams back unchanged and is judged after the last frame, which records a flag but cannot withhold what already streamed (see `_streaming_response`).
+**The request content is judged on the way out (#511), not only its shape.**
+After admission, the body, query and forwarded headers cross `defend()` as one
+document (`source_type=llm_request`), and a deterministic credential detector
+(`trentina.credential_shapes`) reads the same document for key material the
+prompt-injection layers do not look for — an AWS key, a provider token, a PEM
+block, a secret in a query string. The mode is the profile's per-provider
+`llm_keys.<provider>.enforcement`: `block` refuses a credential shape, a flag
+or a blocking gap before anything is sent (nothing "executed"); `flag` (the
+default while the request false-positive rate is measured, moving to `block` at
+a future major) forwards and returns the verdict on the `X-Trentina-Warning`
+header. `redact` is meaningless on an outbound call and rejected.
+
+Three consequences worth stating plainly:
+
+- **The outbound prompt now reaches L3, with credentials cut.** `defend()` sends
+  the request document to the configured judge (Gemini by default), so a profile
+  proxying, say, Anthropic has each prompt read by the L3 provider as well. The
+  copy the judge reads is credential-redacted (`credential_shapes.redact`, plus
+  long percent-escape runs masked), so a detected secret never leaves in the
+  judge input — injection content, which is what L3 is for, is untouched. The
+  original body is still what forwards to the provider. This is a new data flow;
+  if even the redacted prompt should not leave, the profile's `defense` must name
+  no L3 provider (every verdict then reports `l3_unavailable`, which `block`
+  refuses on and `flag` forwards with a warning).
+- **`block` has a token ceiling.** A request larger than
+  `Config.admission_tokens` (`min(QUARANTINE_CONTEXT_TOKENS, CLASSIFIER_MAX_TOKENS)`,
+  at most 32768) is `oversize` → `not_fully_judged` and refused under `block`.
+  Fail-closed is deliberate, but a long agentic conversation will hit it; raise
+  the cap or run that provider in `flag` if that is not wanted.
+- **The warning header carries flags and findings, not gaps.** Its value is a
+  credential marker, an L-layer risk level, or `unjudged`; the specific gap
+  names (`oversize`, `l3_unavailable`, …) are in a `block` refusal body only.
+
+The completion streams back unchanged and is judged after the last frame
+(`source_type=llm_completion`), which records a flag but cannot withhold what
+already streamed (see `_streaming_response`).
 
 ### What This Buys You
 

@@ -258,6 +258,16 @@ class LlmKeyOverride(BaseModel):
             "api_key_env at load time. Never serialized."
         ),
     )
+    enforcement: EnforcementMode = Field(
+        default="flag",
+        description=(
+            "How outbound request CONTENT is judged on the way to this provider "
+            "(#511): 'flag' (default) annotates and forwards, 'block' refuses a "
+            "credential shape or a flagged body. The default is 'flag' while the "
+            "request false-positive rate is measured; it moves to 'block' at a "
+            "future major. 'redact' is meaningless on an outbound call and rejected."
+        ),
+    )
 
     @field_validator("api_key_env")
     @classmethod
@@ -1454,11 +1464,21 @@ class GuardedExecutionConfig(BaseModel):
         ),
     )
     tools: dict[str, list[str]] = Field(
-        ...,
-        min_length=1,
+        default_factory=dict,
         description=(
             "Backend name to the exact tool names whose calls are judged. No "
             "globs: each name is one decision an operator made."
+        ),
+    )
+    egress_http: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Terminating-egress upstream names whose outbound requests are "
+            "judged before they are forwarded (#511). The request already "
+            "crossed the layers and the credential detector; this adds the "
+            "gateway's facts — the upstream, whether the profile has reached "
+            "it before — and the judge's verdict. No globs; each is an "
+            "``egress_http`` grant this profile holds. Only under ``block``."
         ),
     )
     refuse_when_flagged: bool = Field(
@@ -1501,9 +1521,33 @@ class GuardedExecutionConfig(BaseModel):
                 )
         return tools
 
+    @field_validator("egress_http")
+    @classmethod
+    def _egress_names_are_exact(cls, names: list[str]) -> list[str]:
+        if len(set(names)) != len(names):
+            raise ValueError("guarded_execution.egress_http lists an upstream twice")
+        bad = sum(1 for name in names if not DESTINATION_NAME_RE.fullmatch(name))
+        if bad:
+            raise ValueError(
+                f"guarded_execution.egress_http: {bad} entries are not exact "
+                "upstream names (no globs)"
+            )
+        return names
+
+    @model_validator(mode="after")
+    def _guards_something(self) -> GuardedExecutionConfig:
+        """A block that guards nothing is a configuration mistake, not a no-op."""
+        if not self.tools and not self.egress_http:
+            raise ValueError("guarded_execution guards nothing: set tools or egress_http")
+        return self
+
     def guards(self, backend: str, tool: str) -> bool:
         """Whether a call to ``tool`` on ``backend`` is judged."""
         return tool in self.tools.get(backend, ())
+
+    def guards_egress(self, upstream: str) -> bool:
+        """Whether a terminating-egress request to ``upstream`` is judged (#511)."""
+        return upstream in self.egress_http
 
 
 DISCOVERY_TOOLS = frozenset({"find_tools", "call_tool", "load_tools"})
@@ -1788,6 +1832,182 @@ class GitGrant(BaseModel):
     def may_move(self, ref: str) -> bool:
         """True when a push may create or move ``ref``: a listed branch."""
         return any(fnmatchcase(ref, pattern) for pattern in self.push_refs)
+
+
+#: A request path a grant may list: printable ASCII, a leading '/', '*' for a
+#: run within a segment is written by the operator; no spaces, no '..'.
+_EGRESS_PATH_RE = re.compile(r"/[\x21-\x7e]*")
+#: A request header a caller may have forwarded, by name.
+_HTTP_HEADER_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
+
+
+class EgressCredential(BaseModel):
+    """How a profile's token for an upstream is injected (#511).
+
+    The agent never holds the credential: the gateway reads it from the
+    profile's ``token_env`` and sends it in this header, exactly as the git
+    transport injects a Basic header and ``/llm`` injects the provider key. A
+    caller's own ``Authorization`` for the destination is dropped, never
+    forwarded.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    header: str = Field(default="Authorization", description="Header the token is sent in")
+    prefix: str = Field(default="Bearer ", description="Text before the token value")
+
+    @field_validator("header")
+    @classmethod
+    def _header_is_a_name(cls, value: str) -> str:
+        if not _HTTP_HEADER_NAME_RE.fullmatch(value):
+            raise ValueError("credential.header must be a valid HTTP header name")
+        return value
+
+
+class EgressUpstream(BaseModel):
+    """One HTTP(S) destination the terminating egress route may reach (#511):
+    ``egress_upstreams.<name>``.
+
+    The upstream is an https origin and nothing more. A request's URL is built
+    from it and a path the gateway validated, so nothing a caller sends is ever
+    part of the host — this is a reverse proxy to NAMED destinations, never a
+    proxy-to-anywhere, which would leave the egress guard as the only thing
+    between it and SSRF.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    upstream: str = Field(..., description="The destination's origin: https://<dns name>, port 443")
+    body: Literal["verbatim", "json"] = Field(
+        default="verbatim",
+        description=(
+            "How a request body is forwarded. 'verbatim' sends the caller's bytes "
+            "unchanged and judges those same bytes; 'json' re-serializes the parsed "
+            "object so the destination parses exactly the object that was judged "
+            "(the /llm guarantee), refusing a body that is not JSON or repeats a key."
+        ),
+    )
+    headers_allow: list[str] = Field(
+        default_factory=list,
+        max_length=_MAX_GIT_PATTERNS,
+        description="Extra request header names forwarded beyond the base allowlist",
+    )
+    credential: EgressCredential | None = Field(
+        default=None,
+        description="How a profile's token is injected; absent means none is sent",
+    )
+
+    @field_validator("upstream")
+    @classmethod
+    def _upstream_is_an_https_origin(cls, value: str) -> str:
+        parts = urlparse(value)
+        if (
+            parts.scheme != "https"
+            or not is_dns_name(parts.netloc)
+            or parts.path not in ("", "/")
+            or parts.params
+            or parts.query
+            or parts.fragment
+        ):
+            raise ValueError(
+                "upstream must be https://<lower-case dns name>, with no port, "
+                "userinfo, path or query"
+            )
+        return f"https://{parts.netloc}"
+
+    @field_validator("headers_allow")
+    @classmethod
+    def _header_names_are_valid(cls, values: list[str]) -> list[str]:
+        lowered = [v.lower() for v in values]
+        for v in lowered:
+            if not _HTTP_HEADER_NAME_RE.fullmatch(v):
+                raise ValueError(f"headers_allow: {v!r} is not a valid HTTP header name")
+        if len(set(lowered)) != len(lowered):
+            raise ValueError("headers_allow lists a header twice")
+        return lowered
+
+    @property
+    def host(self) -> str:
+        """The upstream's DNS name: what the egress guard checks and pins."""
+        return self.upstream.removeprefix("https://")
+
+
+class EgressGrant(BaseModel):
+    """What one profile may do on one egress upstream (#511): ``egress_http.<name>``.
+
+    The mode is profile-fixed — there is no ``trentina_mode`` argument on a raw
+    HTTP request, and ``redact`` is meaningless on an outbound call — so
+    ``enforcement`` is ``block`` (refuse a flag, a credential shape or a
+    blocking gap) or ``flag`` (forward with the verdict attached, the
+    researcher grant). ``redact`` is rejected at load.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    token_env: str | None = Field(
+        default=None, description="Env var naming this profile's token for the upstream"
+    )
+    token: SecretStr | None = Field(
+        default=None, exclude=True, description="Resolved token (load-time only)"
+    )
+    methods: list[str] = Field(
+        default_factory=lambda: ["GET", "HEAD"],
+        description="HTTP methods the profile may use; a write method is listed, never a switch",
+    )
+    paths: list[str] = Field(
+        default_factory=list,
+        max_length=_MAX_GIT_PATTERNS,
+        description="Path-prefix globs the request path must match; empty allows any path",
+    )
+    enforcement: EnforcementMode = Field(
+        default="block",
+        description=(
+            "block refuses a flagged, credential-bearing or unjudged request; "
+            "flag forwards it with the verdict attached"
+        ),
+    )
+
+    @field_validator("token_env")
+    @classmethod
+    def _env_name_is_uppercase_identifier(cls, value: str | None) -> str | None:
+        if value is not None and not ENV_NAME_RE.match(value):
+            raise ValueError(f"token_env {value!r} must be an UPPERCASE env-var identifier")
+        return value
+
+    @field_validator("methods")
+    @classmethod
+    def _methods_are_known(cls, values: list[str]) -> list[str]:
+        allowed = {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"}
+        upper = [v.upper() for v in values]
+        if not upper:
+            raise ValueError("a grant must list at least one method")
+        for v in upper:
+            if v not in allowed:
+                raise ValueError(f"methods: {v!r} is not one of {sorted(allowed)}")
+        if len(set(upper)) != len(upper):
+            raise ValueError("methods lists one twice")
+        return upper
+
+    @field_validator("paths")
+    @classmethod
+    def _paths_are_prefixes(cls, values: list[str]) -> list[str]:
+        for v in values:
+            if not _EGRESS_PATH_RE.fullmatch(v) or ".." in v:
+                raise ValueError(f"paths: {v!r} must be a '/'-rooted printable-ASCII pattern")
+        if len(set(values)) != len(values):
+            raise ValueError("paths lists one twice")
+        return values
+
+    def allows(self, method: str, path: str) -> str | None:
+        """Why ``method path`` is refused, or None when allowed.
+
+        Returns ``method_not_listed`` or ``path_not_listed``.
+        """
+        if method.upper() not in self.methods:
+            return "method_not_listed"
+        if self.paths and not any(fnmatchcase(path, pattern) for pattern in self.paths):
+            return "path_not_listed"
+        return None
 
 
 def _valid_server_name(value: str) -> bool:
@@ -2440,6 +2660,13 @@ class Profile(BaseModel):
             "transport, keyed by a git_remotes name (optional, #453)"
         ),
     )
+    egress_http: dict[str, EgressGrant] = Field(
+        default_factory=dict,
+        description=(
+            "HTTP(S) destinations the profile may reach through the terminating "
+            "egress route, keyed by an egress_upstreams name (optional, #511)"
+        ),
+    )
     guarded_execution: GuardedExecutionConfig | None = Field(
         default=None,
         description=(
@@ -2518,6 +2745,7 @@ class Profile(BaseModel):
             "client_egress": self.client_egress is not None,
             "bridges": bool(self.bridges),
             "git": bool(self.git),
+            "egress_http": bool(self.egress_http),
             "guarded_execution": self.guarded_execution is not None,
             # Gateway tools it does not name, and categories that could
             # say which backends are decoys (#473).
@@ -2605,6 +2833,14 @@ class Profile(BaseModel):
                 raise ValueError(f"guarded_execution.tools.{name}: no such backend")
             if backend.is_decoy:
                 raise ValueError(f"guarded_execution.tools.{name}: a decoy backend is not judged")
+        for name in self.guarded_execution.egress_http:
+            # Guard only a destination this profile may actually reach: a name
+            # that is not a grant is a rule that never fires (#511).
+            if name not in self.egress_http:
+                raise ValueError(
+                    f"guarded_execution.egress_http.{name}: not an egress_http "
+                    "grant of this profile"
+                )
         return self
 
     @model_validator(mode="after")

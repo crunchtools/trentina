@@ -180,6 +180,12 @@ max-complexity = 10
 # S311: garak's leetspeak swaps letters on a coin toss (#423); seeding the toss
 # with the text makes one text one encoding on every run.
 "corpora/garak_encodings.py" = ["S311"]
+# S311: the #511 request corpus generates its key bodies from a fixed seed, the
+# same text every run; nothing in it is a secret.
+"corpora/credential_shapes.py" = ["S311"]
+# S105: CredentialKind's values are kind NAMES ("github_token", "query_secret"),
+# not credentials; S105 reads the "token"/"secret" in them as a hardcoded one.
+"src/trentina/credential_shapes.py" = ["S105"]
 "src/trentina/dbus_interface.py" = ["UP037", "C901", "TRY300"]
 # S603: PDFs are parsed in a child process so a hostile file can be killed
 # at a deadline (#369). argv is this interpreter and a constant module name;
@@ -213,7 +219,9 @@ max-complexity = 10
 "benchmarks/detonation.py" = ["E402"]
 "benchmarks/wild_feed.py" = ["E402"]
 "benchmarks/l2_lone_flag.py" = ["E402"]
+"benchmarks/credential_shapes.py" = ["E402"]
 "benchmarks/paging_l3.py" = ["E402"]
+"benchmarks/egress_bench.py" = ["E402", "S106"]
 # S311: a seeded generator makes the blob samples reproducible; nothing here is a secret.
 "benchmarks/l2_blob_length.py" = ["E402", "S311"]
 
