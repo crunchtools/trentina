@@ -112,6 +112,28 @@ but an explicit allow is one `403` with `block_reason: gatekeeper`.
 (held, reported `operator_only`, #511): which destinations it may reach is the
 operator's.
 
+## Measured
+
+`benchmarks/egress_bench.py` scores the route on the calls in
+`corpora/egress_bench.py` (#507), across the axes the agent-egress-bench
+cares about:
+
+- **DLP** — a credential in the query, body or a forwarded header (raw or
+  percent-encoded) through the deterministic credential detector;
+- **SSRF** — an unknown upstream, a path outside the grant, an unlisted
+  method, a decoded separator, through the route's real rails;
+- **response injection** — a poisoned response through the layers as ingress;
+- a **false-positive** suite of real-shaped requests and responses.
+
+The DLP and SSRF axes are deterministic, so `tests/test_egress_bench.py` runs
+them in ordinary CI as a regression gate (every credential caught, every rail
+firing, every benign request clean). The response axis needs a judge and runs
+on the `egress-bench` job of the benchmark workflow, inside the built image so
+it is L1/L2/L3 as production judges a fetched page; with no judge its cases are
+reported unanswered, never scored. Comparability to the external PipeLab /
+Pipelock benchmark is a later, hand-dispatched surface — no stock adapter
+reaches a reverse proxy, so that one needs its own harness.
+
 ## Known residues
 
 - A terminating judged proxy **buffers and judges** the whole response: it

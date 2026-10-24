@@ -221,6 +221,7 @@ max-complexity = 10
 "benchmarks/l2_lone_flag.py" = ["E402"]
 "benchmarks/credential_shapes.py" = ["E402"]
 "benchmarks/paging_l3.py" = ["E402"]
+"benchmarks/egress_bench.py" = ["E402", "S106"]
 # S311: a seeded generator makes the blob samples reproducible; nothing here is a secret.
 "benchmarks/l2_blob_length.py" = ["E402", "S311"]
 

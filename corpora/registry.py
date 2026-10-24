@@ -79,6 +79,7 @@ CORPORA: tuple[Corpus, ...] = (
     ),
     Corpus("Guarded calls", "gatekeeper", OURS, "AGPL-3.0-or-later", VENDORED),
     Corpus("Tool search", "tool_search", OURS, "AGPL-3.0-or-later", VENDORED),
+    Corpus("Agent egress", "egress_bench", OURS, "AGPL-3.0-or-later", VENDORED),
 )
 
 SUPPORT: frozenset[str] = frozenset({"fetch", "registry"})

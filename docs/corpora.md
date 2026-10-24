@@ -29,6 +29,7 @@ A detection rate means nothing without the set it was measured on. Three things 
 | [Disclosed attacks](#disclosed-attacks) | `corpora/disclosed.py` | 5 attacks | published disclosures, rewritten | AGPL-3.0-or-later | vendored |
 | [Guarded calls](#guarded-calls) | `corpora/gatekeeper.py` | 12 calls to refuse, 24 routine | written for this repository | AGPL-3.0-or-later | vendored |
 | [Tool search](#tool-search) | `corpora/tool_search.py` | 149 tools, 81 queries (32 held out) | written for this repository | AGPL-3.0-or-later | vendored |
+| [Agent egress](#agent-egress) | `corpora/egress_bench.py` | 20 attacks, 7 benign | written for this repository | AGPL-3.0-or-later | vendored |
 
 `corpora/registry.py` holds the same list as data, and `tests/test_corpora_registry.py` fails when a module there has no record or a record has no section here.
 
@@ -159,6 +160,16 @@ A served tool catalog and the queries an agent asks of it, for [tool discovery](
 - **Where it came from.** Hand-written in the shape of an operations-and-office profile: twenty backends, short names as `gateway/names.py` issues them, descriptions in the first-sentence style backends write. No description is copied from a real server.
 - **How it is written.** Queries are worded by intent and mostly not in the tool's own words. Those marked held out were never used to tune the ranker.
 - **Read by.** `benchmarks/tool_search.py`, `tests/test_tool_search.py`.
+
+### Agent egress
+
+An agent's own outbound HTTP, for the [terminating egress route](egress-http.md) (#507, #511). Each case is one decision the route makes — does the request go out, does the response come in — across the axes #507 scores: a credential in the URL, body or a forwarded header (DLP); an attempt to reach a destination the grant does not name (SSRF); a prompt injection in the response; and a false-positive suite of real-shaped requests and responses that must not trip.
+
+- **Where it came from.** Hand-written against the route's own decisions. The DLP and SSRF cases exercise the credential detector and the reverse-proxy rails directly; the response cases reuse the injection shapes the other corpora measure, delivered as a response.
+- **How it is written.** Credentials are fake but shaped — the canonical `AKIA…EXAMPLE` id, `sk-`/`AIza` shapes, a `Bearer` value, a PEM header — so nothing here is a live key, and one is percent-encoded to exercise `reveal()`. Names are the fictional roster.
+- **What it measures.** Per category: attacks caught (DLP by the detector, SSRF by the rails, both deterministic; response injection by the layers, judge-dependent) and benign cases left clean, on a separate axis split into a deterministic half and a judged half.
+- **What it does not measure.** Comparability to an external benchmark: that is the PipeLab/Pipelock surface, a later hand-dispatched job. True streaming, which a judged terminating proxy cannot do.
+- **Read by.** `benchmarks/egress_bench.py`, `tests/test_egress_bench.py`.
 
 ## Held-out Rules
 
