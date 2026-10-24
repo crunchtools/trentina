@@ -77,6 +77,24 @@ def _isolated_perimeter_store(tmp_path: pathlib.Path, monkeypatch: pytest.Monkey
 
 
 @pytest.fixture(autouse=True)
+def _isolated_fastmcp_home(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never let a test write the developer's real FastMCP data dir.
+
+    ``OAuthProxy`` builds its DCR client store as a ``FileTreeStore`` under
+    ``settings.home / oauth-proxy / <key fingerprint>``, keyed only on the
+    upstream secret. Without this, every provider test (and every pytest
+    process on the box) shares ONE on-disk store at
+    ~/.local/share/fastmcp/oauth-proxy, so two runs that overlap race on the
+    same client record — a confidential registration read back as the public
+    one a concurrent run wrote. Isolating ``home`` per test also stops the
+    suite littering that dir with hour-TTL records on every run.
+    """
+    import fastmcp
+
+    monkeypatch.setattr(fastmcp.settings, "home", tmp_path / "fastmcp")
+
+
+@pytest.fixture(autouse=True)
 def _tools_not_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests that are not about pinning (#469) see every tool served.
     ``tests/test_tool_pins.py`` puts the real check back."""
