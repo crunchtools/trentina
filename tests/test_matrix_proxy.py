@@ -1351,3 +1351,35 @@ class TestMatrixAudit:
         assert resp.status_code == 200
         row = _row(rows)
         assert (row["outcome"], row["reason"]) == ("ok", "scan_failed,flagged")
+
+
+class TestKeyBackupSender:
+    """The key-backup provider's injected sender rides the pinned pool (#532)."""
+
+    async def test_forwards_profile_method_url_headers_and_idle(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``_keybackup_send`` must hand ``matrix_pinned_send`` the bound profile,
+        the verbatim method/URL/headers, and the key-backup idle budget — the
+        wiring the token-bearing calls depend on for the pin."""
+        from trentina.gateway import matrix_proxy
+
+        captured: dict[str, Any] = {}
+
+        async def _capture(
+            profile: object, method: str, url: str, *, idle: float, headers: dict[str, str]
+        ) -> object:
+            captured.update(profile=profile, method=method, url=url, idle=idle, headers=headers)
+            return MagicMock()
+
+        monkeypatch.setattr(matrix_proxy, "matrix_pinned_send", _capture)
+        profile = _matrix_profile()
+        send = matrix_proxy._keybackup_send(profile)
+        hdrs = {"Authorization": "Bearer tok"}
+        await send("GET", "https://hs.example.org/_matrix/client/v3/room_keys/version", hdrs)
+
+        assert captured["profile"] is profile
+        assert captured["method"] == "GET"
+        assert captured["url"] == "https://hs.example.org/_matrix/client/v3/room_keys/version"
+        assert captured["headers"] == hdrs
+        assert captured["idle"] == matrix_proxy._KEYBACKUP_IDLE
