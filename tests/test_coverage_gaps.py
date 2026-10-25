@@ -305,7 +305,10 @@ async def test_a_pack_and_a_ref_name_cross_the_git_transport_unjudged() -> None:
     it was sent. And it reads a ref listing only to drop hidden and
     malformed names: an instruction spelled as a branch name is listed. A
     route that began judging either would change what this relays."""
-    op = git_transport._Operation(Profile(name="agent1", auth=AuthConfig(bearer_token_env="TOK")))
+    op = git_transport.Operation(
+        Profile(name="agent1", auth=AuthConfig(bearer_token_env="TOK")),
+        backend=git_transport.BACKEND,
+    )
     pack = b"PACK" + _ATTACK.encode()
 
     class _Answer:

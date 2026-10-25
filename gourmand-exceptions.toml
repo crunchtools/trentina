@@ -704,6 +704,13 @@ justification = "The audit row must never fail the tools/call it records, and a 
 classification = "by_design"
 
 [[exceptions]]
+check = "redundant_error_handling"
+path = "src/trentina/gateway/relay.py"
+pattern = "finish"
+justification = "The one gateway_calls row must never fail the perimeter request it records, and a write can raise more than sqlite3.Error (thread-affinity ProgrammingError, OSError on a full disk). Logging the profile and the exception class is the handling; a silently lost audit row was itself a finding on #281. This is the shared Operation.finish that replaced the identical per-route _Operation.finish handlers in egress_http and git_transport (#511 convergence), already accepted here for router._audit and llm_proxy._audit."
+classification = "by_design"
+
+[[exceptions]]
 check = "single_use_helpers"
 path = "src/trentina/gateway/profile_lint.py"
 pattern = "_admits"

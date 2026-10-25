@@ -42,11 +42,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 import zlib
 from base64 import b64encode
-from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
@@ -55,7 +53,6 @@ from starlette.requests import ClientDisconnect
 from starlette.responses import Response, StreamingResponse
 
 from .. import logsafe
-from ..database import record_gateway_call
 from ..egress import open_pinned
 from ..errors import EgressRefusedError
 from ..outcomes import Outcome
@@ -82,6 +79,7 @@ from .git_wire import (
 )
 from .loader import get_active_config
 from .proxy_utils import PLAIN_TEXT
+from .relay import MAX_OPERATIONS_PER_PROFILE, Operation, Slots
 from .upstream import RESOLVER_BUSY, checked_target
 
 if TYPE_CHECKING:
@@ -112,8 +110,6 @@ METHODS = [
 and writes the row. Only ``GET`` and ``POST`` are ever carried; the rest are
 what a "dumb" HTTP push would send."""
 BACKEND = "git"
-NO_OPERATION = "-"
-"""The audit row's tool for a request refused before it named a service."""
 
 USER_AGENT = "git/trentina"
 REASON_HEADER = "X-Trentina-Reason"
@@ -123,10 +119,6 @@ IDLE_TIMEOUT = 300.0
 on a whole clone or push: a large repository over a slow link is served for
 as long as bytes keep moving. A forge that is still counting objects sends
 keep-alives well inside this."""
-
-MAX_OPERATIONS_PER_PROFILE = 8
-"""Requests one profile may have in flight. A clone with submodules runs a
-few at once; each holds a connection upstream."""
 
 MAX_COMMAND_BYTES = 65536
 """Longest push command list read, in bytes. It is held in memory until
@@ -145,88 +137,7 @@ _GZIP_WINDOW = 31
 _OK = 200
 _PASSED_STATUSES = frozenset({HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND})
 
-_open: dict[str, int] = {}
-
-
-@dataclass
-class _Operation:
-    """One request, from the caller's token to its audit row.
-
-    ``sent`` is what went upstream from the agent and ``received`` what came
-    back for it. The outcome starts as ``cancelled`` and stays that unless
-    something decides otherwise: an operation nobody finished is one whose
-    task was cancelled or whose client went away.
-    """
-
-    profile: Profile
-    started: float = field(default_factory=time.monotonic)
-    backend: str = BACKEND
-    tool: str = NO_OPERATION
-    destination: str | None = None
-    sent: int = 0
-    received: int = 0
-    outcome: Outcome = Outcome.CANCELLED
-    reason: str | None = None
-    holds_slot: bool = False
-    finished: bool = False
-    upstream: AsyncExitStack = field(default_factory=AsyncExitStack)
-
-    def settle(self, outcome: Outcome, reason: str | None = None) -> None:
-        self.outcome, self.reason = outcome, reason
-
-    def take_slot(self) -> None:
-        """Take one of the profile's operations in flight; ``finish`` gives it back.
-
-        Raises:
-            GitRefusedError: ``busy`` (503) when the profile holds them all.
-        """
-        name = self.profile.name
-        if _open.get(name, 0) >= MAX_OPERATIONS_PER_PROFILE:
-            raise GitRefusedError(HTTPStatus.SERVICE_UNAVAILABLE, "busy")
-        _open[name] = _open.get(name, 0) + 1
-        self.holds_slot = True
-
-    async def finish(self) -> None:
-        """Close upstream, give the slot back and write the audit row. Once.
-
-        The destination is ``owner/name``, validated and lower-cased, then
-        for a push the refs it named. Those are the caller's text, so they
-        are stored there and go nowhere else (#266). ``bytes_arrived`` is
-        what came back from the forge and ``bytes_delivered`` what the agent
-        sent to it, as for a tunnel. Like ``router._audit``, a lost row never
-        fails what it records.
-        """
-        if self.finished:
-            return
-        self.finished = True
-        try:
-            await self.upstream.aclose()
-        finally:
-            if self.holds_slot:
-                # A profile with nothing in flight has no entry: names come
-                # and go with reloads, and this map should not keep them.
-                _open[self.profile.name] -= 1
-                if not _open[self.profile.name]:
-                    del _open[self.profile.name]
-            try:
-                record_gateway_call(
-                    self.profile.name,
-                    self.backend,
-                    self.tool,
-                    self.outcome.value,
-                    int((time.monotonic() - self.started) * 1000),
-                    self.reason,
-                    bytes_arrived=self.received,
-                    bytes_delivered=self.sent,
-                    destination=self.destination,
-                    destination_kind=DestinationKind.GIT.value if self.destination else None,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "git transport: audit row lost profile=%s err=%s",
-                    self.profile.name,
-                    logsafe.exc_kind(exc),
-                )
+_SLOTS = Slots(MAX_OPERATIONS_PER_PROFILE)
 
 
 @dataclass(frozen=True)
@@ -291,7 +202,7 @@ async def serve(request: Request, profiles: dict[str, Profile]) -> Response:
     if profile is None:
         logger.warning("git transport: refused a caller whose token matches no profile")
         return Response(content="unauthorized\n", status_code=401, media_type=PLAIN_TEXT)
-    op = _Operation(profile)
+    op = Operation(profile, backend=BACKEND, destination_kind=DestinationKind.GIT)
     try:
         return await _carry(request, op)
     except GitRefusedError as refusal:
@@ -344,7 +255,7 @@ def _service(request: Request, endpoint: str) -> str:
     return service
 
 
-def _admit(request: Request, op: _Operation) -> _Admitted:
+def _admit(request: Request, op: Operation) -> _Admitted:
     """Decide everything a request's line and headers can decide.
 
     In order: the remote and this profile's grant on it; the path; the
@@ -497,7 +408,7 @@ async def _command_list(pieces: AsyncIterator[bytes]) -> tuple[list[Command], by
     raise GitRefusedError(HTTPStatus.BAD_REQUEST, "malformed")
 
 
-async def _counted(op: _Operation, head: bytes, rest: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+async def _counted(op: Operation, head: bytes, rest: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
     """A push's body for upstream: what was read to decide it, then the rest
     as it arrives, counted. Nothing here looks at the pack."""
     op.sent += len(head)
@@ -507,7 +418,7 @@ async def _counted(op: _Operation, head: bytes, rest: AsyncIterator[bytes]) -> A
         yield piece
 
 
-async def _push(request: Request, op: _Operation, grant: GitGrant) -> bytes | AsyncIterator[bytes]:
+async def _push(request: Request, op: Operation, grant: GitGrant) -> bytes | AsyncIterator[bytes]:
     """Decide a push by its command list, before any of it is forwarded.
 
     A push with no command is git's probe before a large one: a lone flush,
@@ -537,7 +448,7 @@ async def _push(request: Request, op: _Operation, grant: GitGrant) -> bytes | As
 
 
 async def _send(
-    op: _Operation,
+    op: Operation,
     admitted: _Admitted,
     method: str,
     headers: dict[str, str],
@@ -585,7 +496,7 @@ async def _send(
 
 
 async def _relay(
-    op: _Operation, resp: httpx.Response, listing: RefFilter | None
+    op: Operation, resp: httpx.Response, listing: RefFilter | None
 ) -> AsyncIterator[bytes]:
     """The forge's answer for the client, counted as it passes.
 
@@ -623,7 +534,7 @@ class _Relayed(StreamingResponse):
     ``send`` is held to the idle timeout.
     """
 
-    def __init__(self, body: AsyncIterator[bytes], op: _Operation, media_type: str) -> None:
+    def __init__(self, body: AsyncIterator[bytes], op: Operation, media_type: str) -> None:
         super().__init__(body, media_type=media_type, headers={"Cache-Control": "no-cache"})
         self._op = op
 
@@ -644,7 +555,7 @@ class _Relayed(StreamingResponse):
             await self._op.finish()
 
 
-async def _carry(request: Request, op: _Operation) -> Response:
+async def _carry(request: Request, op: Operation) -> Response:
     """Admit one request, send it upstream and hand back its streamed answer.
 
     Everything the request line and headers can decide is decided before a
@@ -666,7 +577,8 @@ async def _carry(request: Request, op: _Operation) -> Response:
     #   evidence: T3 this module's docstring; T4 _send builds the URL and this
     #     function every header; T3 known gap 29: a pack is not judged
     admitted = _admit(request, op)
-    op.take_slot()
+    if not op.take_slot(_SLOTS):
+        raise GitRefusedError(HTTPStatus.SERVICE_UNAVAILABLE, "busy")
 
     kind = "advertisement" if admitted.lists_refs else "result"
     answer_type = f"application/x-{admitted.service}-{kind}"

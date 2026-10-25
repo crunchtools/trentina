@@ -68,9 +68,9 @@ def audit_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 def no_slot_is_left_held() -> Iterator[None]:
     """Whatever a test did, every operation it started gave its slot back."""
     upstream._checked.clear()
-    git_transport._open.clear()
+    git_transport._SLOTS._open.clear()
     yield
-    assert not any(git_transport._open.values()), git_transport._open
+    assert not any(git_transport._SLOTS._open.values()), git_transport._SLOTS._open
     upstream._checked.clear()
 
 
@@ -755,7 +755,9 @@ class TestWhatAPushMayMove:
                 taken.append(index)
                 yield piece
 
-        op = git_transport._Operation(harness.profile(), destination="acme/widgets")
+        op = git_transport.Operation(
+            harness.profile(), backend=git_transport.BACKEND, destination="acme/widgets"
+        )
         request = SimpleNamespace(stream=pieces)
         with pytest.raises(GitRefusedError) as caught:
             await git_transport._push(request, op, harness.profile().git[harness.REMOTE])
@@ -1026,7 +1028,7 @@ class TestBounds:
         held = [asyncio.create_task(stack.client.get(stack.url + REFS)) for _ in range(cap)]
         for _ in range(cap):
             await asyncio.wait_for(arrived.acquire(), 5)
-        assert git_transport._open == {"agent1": cap}
+        assert git_transport._SLOTS._open == {"agent1": cap}
 
         over = await stack.client.get(stack.url + REFS)
         assert (over.status_code, over.headers["x-trentina-reason"]) == (503, "busy")
@@ -1039,13 +1041,13 @@ class TestBounds:
         assert again.status_code == 200, "the slots came back"
 
     async def test_a_refusal_before_the_cap_takes_no_slot(self, stack: _Stack) -> None:
-        git_transport._open["agent1"] = git_transport.MAX_OPERATIONS_PER_PROFILE
+        git_transport._SLOTS._open["agent1"] = git_transport.MAX_OPERATIONS_PER_PROFILE
         try:
             url = f"{stack.url}/other/thing/info/refs?service=git-upload-pack"
             response = await stack.client.get(url)
             assert response.headers["x-trentina-reason"] == "repo_not_listed"
         finally:
-            git_transport._open.clear()
+            git_transport._SLOTS._open.clear()
 
     async def test_a_client_that_goes_quiet_mid_body_is_refused(
         self, stack: _Stack, audit_db: Path, monkeypatch: pytest.MonkeyPatch
@@ -1087,14 +1089,16 @@ class TestBounds:
         writer.write(head.encode() + f"{len(piece):x}\r\n".encode() + piece + b"\r\n")
         await writer.drain()
         for _ in range(200):
-            if git_transport._open.get("agent1"):
+            if git_transport._SLOTS._open.get("agent1"):
                 break
             await asyncio.sleep(0.01)
-        assert git_transport._open == {"agent1": 1}, "the push is in flight, reading its body"
+        assert git_transport._SLOTS._open == {"agent1": 1}, (
+            "the push is in flight, reading its body"
+        )
         writer.close()
         (row,) = await _settled(audit_db)
         assert (row["tool"], row["outcome"], row["error_message"]) == ("push", "cancelled", None)
-        assert git_transport._open == {}, "the slot came back, and no entry is kept"
+        assert git_transport._SLOTS._open == {}, "the slot came back, and no entry is kept"
         assert stack.forge.requests == []
 
     async def test_a_forge_that_never_answers_is_given_up_on(
@@ -1169,8 +1173,13 @@ class TestBounds:
         """The answer's every ``send`` is held to the idle timeout, and the
         operation is finished once however the response ends."""
         monkeypatch.setattr(git_transport, "IDLE_TIMEOUT", 0.1)
-        op = git_transport._Operation(harness.profile(), tool="fetch", destination="acme/widgets")
-        op.take_slot()
+        op = git_transport.Operation(
+            harness.profile(),
+            backend=git_transport.BACKEND,
+            tool="fetch",
+            destination="acme/widgets",
+        )
+        op.take_slot(git_transport._SLOTS)
 
         async def pack() -> AsyncIterator[bytes]:
             yield b"PACK"
