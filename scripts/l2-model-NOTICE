@@ -1,0 +1,19 @@
+prompt-injection-guard-small-ct
+
+A fine-tune of Horizon-Labs/prompt-injection-guard-small (Apache-2.0),
+revision 3215a27edd62c5ba0bd786c57a9d243b2158e70e, by crunchtools/trentina
+(scripts/train_l2_model.py). Modified: further trained on the data below.
+
+Training data (training.json beside this file names each file's revision
+and SHA-256):
+
+- rgeada/tool-response-injections, Apache-2.0
+- 3nesdeniz/agentic-prompt-injection-5k, CC-BY-4.0, by 3nesdeniz
+- neuralchemy/Prompt-injection-dataset, Apache-2.0
+- S-Labs/prompt-injection-dataset, MIT
+- hendzh/PromptShield, Apache-2.0
+- microsoft/llmail-inject-challenge (emails_for_fp_tests.json), MIT,
+  Copyright (c) Microsoft Corporation
+
+Rows were wrapped in invented tool-reply envelopes (corpora/envelopes.py)
+before training. Licensed Apache-2.0, as the base model.

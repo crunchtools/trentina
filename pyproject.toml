@@ -169,7 +169,7 @@ max-complexity = 10
 # own modules and sys.executable -- there is no untrusted input to check, and
 # the alternative (never starting a real server) is what let a production
 # breakage through a green CI run in the first place.
-"tests/*" = ["S101", "S105", "S106", "S108", "S603", "PLC0415", "PLR2004", "ARG002", "ARG005", "RUF003", "PT018", "TC003"]
+"tests/*" = ["S101", "S105", "S106", "S108", "S311", "S603", "PLC0415", "PLR2004", "ARG002", "ARG005", "RUF003", "PT018", "TC003"]
 # RUF001: the Chinese and Japanese cases (#353) use fullwidth punctuation,
 # which is what that text is written with; ASCII would make them less real.
 "corpora/internal.py" = ["RUF001"]
@@ -211,6 +211,15 @@ max-complexity = 10
 # S106: `bearer_token_env` names an environment variable; it holds no token.
 "benchmarks/l2_benign.py" = ["E402", "S106"]
 "benchmarks/l1_briefing.py" = ["E402"]
+# E402 and S106 as l2_benign above; S311: envelope texts are drawn from a fixed seed.
+"benchmarks/l2_envelopes.py" = ["E402", "S106", "S311"]
+# S311: every invented value around an envelope's text comes from the caller's
+# fixed-seed Random, so a case is the same text on every run; nothing is a secret.
+"corpora/envelopes.py" = ["S311"]
+# S106: `bearer_token_env` names an environment variable; it holds no token.
+"corpora/gateway_read.py" = ["S106"]
+# E402: the script puts the repo root on sys.path before importing corpora.
+"scripts/l2_train_data.py" = ["E402", "S311"]
 "benchmarks/redact_input.py" = ["E402"]
 "benchmarks/l1_false_positives.py" = ["E402"]
 "benchmarks/unpack_archives.py" = ["E402"]

@@ -1,0 +1,118 @@
+name: L2 - fine-tune
+
+# Fine-tune the shipped L2 model (Horizon) on benign and attack text in real
+# tool-reply envelopes, then hold the result to every L2 gate (#17, gaps 24,
+# 28, 31). The shipped model refuses benign tool replies because it never saw
+# one: scripts/l2_train_data.py builds the missing half from pinned public
+# sets, wrapping attacks in the same envelopes so the label follows the text.
+#
+# The model is an artifact of this run, not a release: nothing here pushes
+# an image or a model. Shipping one is a Containerfile change that pins its
+# digest, made after the gates below and a screen on production shapes.
+#
+# No secrets: the job reads public datasets and the public base model.
+
+on:
+  workflow_dispatch:
+    inputs:
+      per_envelope:
+        description: "Benign rows, and attack rows, per envelope"
+        type: number
+        default: 150
+      replay:
+        description: "Plain benign rows, and plain attack rows"
+        type: number
+        default: 1000
+      epochs:
+        description: "Training epochs"
+        type: string
+        default: "1"
+  push:
+    branches: ["feature/l2-*"]
+    paths:
+      - "corpora/envelopes.py"
+      - "scripts/l2_train_data.py"
+      - "scripts/train_l2_model.py"
+      - "scripts/export_l2_model.py"
+      - ".github/workflows/l2-train.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      PER_ENVELOPE: ${{ inputs.per_envelope || 150 }}
+      REPLAY: ${{ inputs.replay || 1000 }}
+      EPOCHS: ${{ inputs.epochs || '1' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: |
+          uv python install 3.14
+          uv sync --all-extras --locked
+          # The data builder reads parquet and the hub; neither is a gateway dependency.
+          uv pip install pandas pyarrow huggingface_hub
+
+      - name: Build the training set
+        run: |
+          for size in "$PER_ENVELOPE" "$REPLAY"; do
+            # Ten and up: one row in ten of each is validation.
+            [[ "$size" =~ ^[1-9][0-9]+$ ]] || { echo "sizes must be whole numbers from 10" >&2; exit 1; }
+          done
+          uv run --no-sync python scripts/l2_train_data.py --out build/l2-train --per-envelope "$PER_ENVELOPE" --replay "$REPLAY"
+
+      - name: Build the model-builder stage
+        run: docker build --target model-builder -t l2-builder -f Containerfile .
+
+      - name: Fine-tune
+        run: |
+          # EPOCHS is a dispatch input: checked as a number, and handed to the
+          # container as an environment variable, never spliced into a command.
+          [[ "$EPOCHS" =~ ^[0-9]*[.]?[0-9]+$ && ! "$EPOCHS" =~ ^[0.]+$ ]] \
+            || { echo "epochs must be a number above zero" >&2; exit 1; }
+          docker run --rm -e EPOCHS -v "$PWD:/w" -w /w l2-builder sh -c \
+            'pip install --no-cache-dir "accelerate<2" &&
+             python scripts/train_l2_model.py --data build/l2-train --out build/l2-model --epochs "$EPOCHS"'
+
+      - name: Export
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w l2-builder python scripts/export_l2_model.py \
+            --src build/l2-model --repo "crunchtools/trentina:l2-train" --revision "$GITHUB_SHA" \
+            --out build/l2-export --id prompt-injection-guard-small-ct --license Apache-2.0 \
+            --threshold 0.7 --window-tokens 512 --malicious-labels INJECTION
+          sudo chown -R "$(id -u)" build
+          cp build/l2-model/training.json build/l2-export/
+          cp scripts/l2-model-NOTICE build/l2-export/NOTICE
+
+      - name: Gates
+        env:
+          CLASSIFIER_MODEL_PATH: build/l2-export
+        run: |
+          set -o pipefail
+          status=0
+          for gate in l2_benign l2_envelopes l2_obfuscation; do
+            echo "## $gate" | tee -a "$GITHUB_STEP_SUMMARY"
+            uv run --no-sync python "benchmarks/$gate.py" | tee -a "$GITHUB_STEP_SUMMARY" || status=1
+          done
+          exit $status
+
+      # For screening on production shapes, which never leave the host they
+      # came from, before a Containerfile change pins a model. A derivative of
+      # Apache-2.0 and CC-BY-4.0 work, so it carries NOTICE and training.json
+      # (every source, revision and hash); kept a week, not published.
+      - name: Upload the model
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: l2-model
+          path: build/l2-export
+          retention-days: 7

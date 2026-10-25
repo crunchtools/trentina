@@ -14,6 +14,10 @@ reads to know which outputs are malicious, at what threshold, and in what
 window the model is scanned (#438); see ``resolve_model`` there. Name the
 malicious outputs by label when the model's ``config.json`` labels them, by
 index when it does not.
+
+``--src DIR`` exports a checkpoint already on disk (``train_l2_model.py``'s
+output) instead of downloading ``--repo``; ``--repo`` and ``--revision`` then
+name where it came from, the training run and its commit, for the manifest.
 """
 
 from __future__ import annotations
@@ -51,6 +55,9 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--repo", required=True)
     p.add_argument("--revision", required=True, help="A commit SHA, never a branch.")
+    p.add_argument(
+        "--src", type=Path, help="Export this local checkpoint instead of downloading --repo."
+    )
     p.add_argument("--out", required=True)
     p.add_argument("--id", required=True)
     p.add_argument("--license", default="")
@@ -77,12 +84,20 @@ def main() -> int:
     ):
         p.error("--revision must be a full 40-character commit SHA")
 
-    from huggingface_hub import snapshot_download  # builder-stage dependency
+    with tempfile.TemporaryDirectory() as download_dir:
+        if args.src:
+            src = str(args.src)
+        else:
+            from huggingface_hub import snapshot_download  # builder-stage dependency
 
-    with tempfile.TemporaryDirectory() as src:
-        snapshot_download(args.repo, revision=args.revision, local_dir=src, allow_patterns=FILES)
+            src = download_dir
+            snapshot_download(
+                args.repo, revision=args.revision, local_dir=src, allow_patterns=FILES
+            )
         if not (Path(src) / "model.safetensors").is_file():
-            print(f"{args.repo}@{args.revision} has no model.safetensors", file=sys.stderr)
+            print(
+                f"{args.src or args.repo}@{args.revision} has no model.safetensors", file=sys.stderr
+            )
             return 1
         if args.head == "cls-linear":
             _export_cls_linear(Path(src), Path(args.out))

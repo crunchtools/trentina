@@ -928,3 +928,18 @@ path = "src/trentina/gateway/egress_http.py"
 pattern = "_resolve_upstream"
 justification = "_resolve_upstream (resolve the upstream, grant and path, or refuse) is reported similar to quarantine/agent._parse_openrouter_search and unpack/scan._data_uri. All three are a short guard-then-return chain; they share that skeleton and nothing else. A structural collision, as with preprocess/petit.py."
 classification = "by_design"
+
+
+# --- #17 L2 envelopes ---
+
+[[exceptions]]
+check = "primitive_obsession"
+path = "corpora/envelopes.py"
+justification = "The numbers are the data, as in corpora/benign_ops.py: this file invents the values around a text in each backend's reply (#17), and the literals are ID ranges, month and day bounds, listing sizes and timestamp ranges, each used once where the field it fills is written. A named constant per range would be forty names for values the field name beside it already explains."
+classification = "by_design"
+
+[[exceptions]]
+check = "hardcoded_years"
+path = "corpora/envelopes.py"
+justification = "The dates are inside invented reply fields (#17): created_at, published, a URL's year. A fixed range keeps one seed one text on every run, which the envelope gate and the training set depend on."
+classification = "by_design"
