@@ -373,10 +373,10 @@ class TestProxyLlm:
         forwarding either way, so accepting it costs nothing."""
         providers, profiles = self._fixtures()
         client = self._client(providers, profiles)
-        # A valid gateway token in x-api-key authenticates off the Anthropic shape
-        # (gets past auth; the downstream policy decides the rest).
+        # A valid gateway token in x-api-key authenticates off the Anthropic shape:
+        # it gets past auth and is then refused by endpoint policy (403), NOT 401.
         ok = client.post("/llm/gemini/v1/x", headers={"x-api-key": "agent1-tok"})
-        assert ok.status_code != 401
+        assert ok.status_code == 403
         # A value that is not a token still does not authenticate.
         bad = client.post("/llm/gemini/v1/x", headers={"x-api-key": "not-a-token"})
         assert bad.status_code == 401

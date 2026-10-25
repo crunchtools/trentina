@@ -537,8 +537,8 @@ async def _proxy_llm(
     """Admit one LLM request and forward it to the upstream provider.
 
     Authenticates against the caller's gateway token (``Authorization:
-    Bearer``, or ``x-api-key`` on the Anthropic shape), resolves the
-    calling profile, admits the request through ``llm_policy`` and injects
+    Bearer``, or ``x-api-key`` on any shape when ``Authorization`` is absent),
+    resolves the calling profile, admits the request through ``llm_policy`` and injects
     that profile's provider key. Only allowlisted caller headers reach the
     provider; the caller's token is never one of them.
     """
