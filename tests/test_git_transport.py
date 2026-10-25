@@ -68,6 +68,9 @@ def audit_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 def no_slot_is_left_held() -> Iterator[None]:
     """Whatever a test did, every operation it started gave its slot back."""
     upstream._checked.clear()
+    # The pinned pool caches a client per origin across tests; each test points
+    # PinnedTransport at its own forge, so start from an empty pool (#511, Phase 2).
+    upstream._pool.clear()
     git_transport._SLOTS._open.clear()
     yield
     assert not any(git_transport._SLOTS._open.values()), git_transport._SLOTS._open
@@ -116,7 +119,9 @@ async def _stack(monkeypatch: pytest.MonkeyPatch, forge: Any) -> AsyncIterator[_
     monkeypatch.setattr(egress, "_lookup", lambda _host, _port: [PUBLIC_ADDRESS])
     async with harness.serving(forge.app()) as forge_port:
         transport = harness.ToForge(forge_port)
-        monkeypatch.setattr(egress, "PinnedTransport", lambda _backend: transport)
+        # The pool builds its client from upstream.PinnedTransport, so patch it
+        # there; the pooled sender passes keepalive/max_connections kwargs.
+        monkeypatch.setattr(upstream, "PinnedTransport", lambda _backend, **_kw: transport)
         async with harness.serving(harness.gateway_app(profiles)) as port:
             url = f"http://127.0.0.1:{port}/git/{harness.REMOTE}"
             async with httpx.AsyncClient(headers=BEARER, timeout=10) as client:
@@ -924,7 +929,7 @@ class TestWhereItGoes:
                 dialled.append((host, port))
                 raise httpcore.ConnectError("the test does not leave the host")
 
-        monkeypatch.setattr(egress, "PinnedTransport", real_transport)
+        monkeypatch.setattr(upstream, "PinnedTransport", real_transport)
         monkeypatch.setattr(egress, "_socket_backend", _Refusing)
         response = await stack.client.get(stack.url + REFS)
         assert response.status_code == 502

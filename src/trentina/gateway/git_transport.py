@@ -53,7 +53,6 @@ from starlette.requests import ClientDisconnect
 from starlette.responses import Response
 
 from .. import logsafe
-from ..egress import open_pinned
 from ..errors import EgressRefusedError
 from ..outcomes import Outcome
 from .auth import resolve_profile_by_token
@@ -80,7 +79,7 @@ from .git_wire import (
 from .loader import get_active_config
 from .proxy_utils import PLAIN_TEXT
 from .relay import MAX_OPERATIONS_PER_PROFILE, Operation, Relayed, Slots
-from .upstream import RESOLVER_BUSY, checked_target
+from .upstream import RESOLVER_BUSY, pinned_send
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -473,9 +472,10 @@ async def _send(
     if admitted.lists_refs:
         url = f"{url}?service={admitted.service}"
     try:
-        target = await checked_target(op.profile, admitted.remote.host)
         return await op.upstream.enter_async_context(
-            open_pinned(method, url, target, idle=IDLE_TIMEOUT, headers=headers, content=content)
+            pinned_send(
+                op.profile, method, url, idle=IDLE_TIMEOUT, headers=headers, content=content
+            )
         )
     except EgressRefusedError as exc:
         if exc.reason == RESOLVER_BUSY:

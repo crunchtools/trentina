@@ -1,9 +1,10 @@
 """The terminating egress route (#511): resolve, judge, re-originate, judge back.
 
-The network and the judge are the seams. ``checked_target``/``open_pinned`` are
-replaced by a fake that records what would be sent and returns a scripted
-response; ``defend``/``gaps_of`` are stubbed so the route's decisions are
-tested without a live L2/L3.
+The network and the judge are the seams. ``pinned_send`` (which owns the
+checked-target lookup and the pooled pinned client) is replaced by a fake that
+records what would be sent and returns a scripted response; ``defend``/
+``gaps_of`` are stubbed so the route's decisions are tested without a live
+L2/L3.
 """
 
 from __future__ import annotations
@@ -84,11 +85,11 @@ class _Net:
         self.raises: Exception | None = None
 
     @asynccontextmanager
-    async def open_pinned(
+    async def pinned_send(
         self,
+        profile: Any,
         method: str,
         url: str,
-        target: Any,
         *,
         idle: float,
         headers: dict[str, str],
@@ -184,12 +185,9 @@ def _harness(
     guarded: bool = False,
 ) -> _Harness:
     net = _Net()
-    monkeypatch.setattr(egress_http, "open_pinned", net.open_pinned)
-
-    async def _target(_profile: Any, _host: str) -> Any:
-        return object()
-
-    monkeypatch.setattr(egress_http, "checked_target", _target)
+    # pinned_send now owns the checked_target lookup internally, so the one seam
+    # is the pooled sender (#511, Phase 2).
+    monkeypatch.setattr(egress_http, "pinned_send", net.pinned_send)
     up = upstream if upstream is not None else _upstream()
     active = SimpleNamespace(config=SimpleNamespace(egress_upstreams={"gh": up}))
     monkeypatch.setattr(egress_http, "get_active_config", lambda: active)
@@ -420,11 +418,8 @@ class TestUpstreamErrors:
 
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch)
-
-        async def _refuse(_profile: Any, _host: str) -> Any:
-            raise GuardRefusedError("non_global_address")
-
-        monkeypatch.setattr(egress_http, "checked_target", _refuse)
+        # pinned_send surfaces the guard's refusal (it owns checked_target now).
+        h.net.raises = GuardRefusedError("non_global_address")
         resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 403
         body = resp.json()
