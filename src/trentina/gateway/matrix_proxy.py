@@ -60,6 +60,7 @@ from starlette.responses import Response, StreamingResponse
 
 from ..channels import Channel
 from ..defense import defend, defend_selection
+from ..errors import EgressRefusedError
 from ..logsafe import exc_kind, exc_where, redact_source, safe_url
 from ..matrix.keybackup import KeyBackupProvider
 from ..modes import gaps_of
@@ -82,6 +83,7 @@ from .proxy_utils import (
 )
 from .relay import Operation
 from .selection import describe, run_l1
+from .upstream import RESOLVER_BUSY, matrix_pinned_send
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
@@ -104,6 +106,11 @@ _SYNC_TIMEOUT = httpx.Timeout(
     write=10.0,
     pool=5.0,
 )
+
+#: Idle (read/write) budget for the pinned pool — a ``/sync`` long-poll holds the
+#: read open this long. Matches ``_SYNC_TIMEOUT``'s read; matrix.org is a
+#: Matrix-only pooled origin, so it does not bleed onto the other proxies.
+_MATRIX_IDLE = 120.0
 
 MATRIX_HTTP_METHODS = [
     "GET",
@@ -410,45 +417,64 @@ async def _route(
         upstream_url = f"{upstream_url}?{request.url.query}"
 
     fwd_headers = forward_request_headers(list(request.headers.items()))
-
     has_body = request.method in ("POST", "PUT", "PATCH")
-    client = _get_matrix_client()
 
     try:
-        resp = await client.send(
-            client.build_request(
-                request.method,
-                upstream_url,
-                headers=fwd_headers,
-                content=request.stream() if has_body else None,
-            ),
-            stream=True,
+        # The pinned pool (#511): the homeserver origin is re-checked and the
+        # connection pinned before the send (Matrix crosses the egress guard now,
+        # like the other proxies), and reused. Matrix takes none of the
+        # terminating-proxy contract — no forced identity, no redirect/encoded
+        # refusal — so a 3xx is forwarded for the agent's client and a gzipped
+        # /sync is decoded by _buffer as before. The response is returned OPEN;
+        # _buffer / _streamed own its close.
+        resp = await matrix_pinned_send(
+            profile,
+            request.method,
+            upstream_url,
+            idle=_MATRIX_IDLE,
+            headers=fwd_headers,
+            content=request.stream() if has_body else None,
+        )
+    except EgressRefusedError as exc:
+        # The egress guard refused the homeserver origin (not global, not 443, or
+        # the resolver was busy). resolver_busy is gateway load (503), not a
+        # verdict on the name; everything else is the address rail (403).
+        if exc.reason == RESOLVER_BUSY:
+            op.settle(Outcome.DENIED_GUARD, exc.reason)
+            status = 503
+        else:
+            op.settle(Outcome.BLOCKED_DEFENSE, exc.reason)
+            status = 403
+        logger.warning("matrix_proxy: upstream refused reason=%s", exc.reason)
+        return Response(
+            content="Matrix upstream refused", status_code=status, media_type=PLAIN_TEXT
         )
     except httpx.TimeoutException:
         op.settle(Outcome.BACKEND_ERROR, "upstream_timeout")
-        return Response(
-            content="Matrix upstream timeout",
-            status_code=504,
-            media_type=PLAIN_TEXT,
-        )
+        return Response(content="Matrix upstream timeout", status_code=504, media_type=PLAIN_TEXT)
     except httpx.ConnectError as exc:
         logger.warning("matrix_proxy: connect error: %s", exc_kind(exc))
         op.settle(Outcome.BACKEND_ERROR, "upstream_unreachable")
         return Response(
-            content="Matrix upstream unreachable",
-            status_code=502,
-            media_type=PLAIN_TEXT,
+            content="Matrix upstream unreachable", status_code=502, media_type=PLAIN_TEXT
         )
 
-    resp_headers = filter_response_headers(list(resp.headers.items()))
-    ct = resp.headers.get("content-type", "application/json")
-
-    scanner = _SCANNERS.get(_judgement(request.method, path, resp.status_code, ct) or "")
-    if scanner is not None:
-        return await scanner(resp, resp_headers, ct, profile, path, op)
-    # Exempt pass-through (acks, /versions, E2EE key traffic): nothing is judged
-    # and nothing is settled, so no row is written.
-    return _streamed(resp, resp_headers, ct)
+    # matrix_pinned_send returns a POOLED, pinned response held OPEN; until
+    # _buffer / _streamed take over its close, an exception in this span would
+    # leak a pinned connection to KEEPALIVE_EXPIRY, so close it here. The outer
+    # _proxy_matrix settles the row (GATEWAY_ERROR / upstream_failed).
+    try:
+        resp_headers = filter_response_headers(list(resp.headers.items()))
+        ct = resp.headers.get("content-type", "application/json")
+        scanner = _SCANNERS.get(_judgement(request.method, path, resp.status_code, ct) or "")
+        if scanner is not None:
+            return await scanner(resp, resp_headers, ct, profile, path, op)
+        # Exempt pass-through (acks, /versions, E2EE key traffic): nothing is
+        # judged and nothing is settled, so no row is written.
+        return _streamed(resp, resp_headers, ct)
+    except Exception:
+        await resp.aclose()
+        raise
 
 
 def _streamed(resp: httpx.Response, headers: dict[str, str], content_type: str) -> Response:
