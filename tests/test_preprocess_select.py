@@ -18,12 +18,12 @@ from corpora.internal import CORPUS
 from trentina.channels import Channel
 from trentina.gateway.profile import MatrixPreProcessConfig
 from trentina.gateway.selection import describe, read_everything, run_l1
-from trentina.preprocess import (
+from trentina.transforms import (
     SelectionContext,
     SelectProcessor,
     SkipReason,
 )
-from trentina.preprocess.shapes import classify_skip, looks_random, wordy
+from trentina.transforms.shapes import classify_skip, looks_random, wordy
 
 _CYRILLIC_INJECTION = "".join(
     chr(c)

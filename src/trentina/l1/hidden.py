@@ -1,6 +1,6 @@
 """Hidden-markup fingerprints — the tier-2 backstop, format-agnostic.
 
-Conversion to Markdown (``preprocess/html.py``) is tier 1 and removes this
+Conversion to Markdown (``transforms/html.py``) is tier 1 and removes this
 attack class rather than detecting it: Markdown has no ``style`` attribute, no
 ``display:none``, no foreground/background pair. Once a payload has been
 converted, hidden content is not expressible — the category is absent, not
@@ -25,7 +25,7 @@ are exactly what L2 should still read — what this stage adds is the
 structural signal that those words were not meant to be seen, which is the
 part no amount of reading the text can recover.
 
-The predicate table lives here and ``preprocess/html.py`` imports it, so the
+The predicate table lives here and ``transforms/html.py`` imports it, so the
 converter that STRIPS an element and the stage that COUNTS one decide by one
 rule. Two hand-maintained copies of a detection table is the bug ``jsonwalk``
 was written to end (#167).

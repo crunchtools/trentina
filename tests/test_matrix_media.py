@@ -20,8 +20,8 @@ from trentina.gateway.matrix_proxy import (
     _withhold_undecrypted,
 )
 from trentina.modes import Gaps
-from trentina.preprocess.view import UndecryptableEvent
 from trentina.reserved import WARNING_KEY
+from trentina.transforms.view import UndecryptableEvent
 from trentina.unpack import scan
 from trentina.unpack.ocr import ImageText
 

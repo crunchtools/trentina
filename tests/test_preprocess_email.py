@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import pytest
 
-from trentina.preprocess import (
+from trentina.transforms import (
     Cost,
     EmailProcessor,
-    PreProcessContext,
-    PreProcessResult,
+    TransformContext,
+    TransformResult,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -39,8 +39,8 @@ def _thread(depth: int = 6, body_lines: int = 12) -> str:
     return "\n".join(lines)
 
 
-async def _run(payload: str) -> PreProcessResult:
-    return await EmailProcessor().run(payload, PreProcessContext())
+async def _run(payload: str) -> TransformResult:
+    return await EmailProcessor().run(payload, TransformContext())
 
 
 class TestEmailReduction:
@@ -179,4 +179,4 @@ class TestProperties:
             + [f"{'> ' * 40}nested line {i}" for i in range(40)]
         )
         result = await _run(payload)
-        assert isinstance(result, PreProcessResult)
+        assert isinstance(result, TransformResult)

@@ -36,12 +36,12 @@ from trentina.gateway.context import get_current_profile, profile_context
 from trentina.gateway.profile import AuthConfig, Profile
 from trentina.httpbody import EncodedBodyError, TooLargeError, request_capped
 from trentina.l1.pipeline import run_l1
-from trentina.preprocess import PreProcessContext, Selection
-from trentina.preprocess.pdf import PdfProcessor
-from trentina.preprocess.select import SelectProcessor
-from trentina.preprocess.structured import StructuredProcessor
-from trentina.preprocess.view import SelectionContext
 from trentina.quarantine import agent as agent_mod
+from trentina.transforms import Selection, TransformContext
+from trentina.transforms.pdf import PdfProcessor
+from trentina.transforms.select import SelectProcessor
+from trentina.transforms.structured import StructuredProcessor
+from trentina.transforms.view import SelectionContext
 from trentina.unpack import child
 from trentina.unpack import pdf as pdf_reader
 from trentina.unpack.scan import unpack
@@ -63,11 +63,11 @@ async def _output_checked(token: str) -> None:
 
 
 async def _reduced(token: str) -> None:
-    await PdfProcessor().run(token, PreProcessContext("test"))
+    await PdfProcessor().run(token, TransformContext("test"))
 
 
 async def _reduced_in_json(token: str) -> None:
-    await StructuredProcessor().run(json.dumps({"file": token}), PreProcessContext("test"))
+    await StructuredProcessor().run(json.dumps({"file": token}), TransformContext("test"))
 
 
 async def _arrived_as_a_block(token: str) -> None:

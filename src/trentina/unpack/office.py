@@ -12,7 +12,7 @@ Two readers need two different answers, so both are kept:
   direction, so elements are matched by local name whatever their
   namespace prefix, and a part this module cannot parse is left for the
   caller to read as raw XML.
-* **The delivery**, when stage 1 reduces the file (``preprocess/structured``),
+* **The delivery**, when stage 1 reduces the file (``transforms/structured``),
   is the visible text of the content parts, as Markdown: the body, sheets
   or slides, then notes, comments, charts and diagrams. Hidden text is
   dropped there and counted, as HTML conversion drops hidden elements.
@@ -525,7 +525,7 @@ ZIP_BASE64_PREFIX = "UEsDB"
 def reduce_base64(token: str, max_chars: int) -> tuple[str, str, int] | None:
     """A base64 office file as ``(kind, Markdown, hidden lines dropped)``.
 
-    For stage 1 (``preprocess/structured``). None declines, and the token is
+    For stage 1 (``transforms/structured``). None declines, and the token is
     then delivered as it arrived for the unpack stage to read: not canonical
     base64, not an office file, over a limit, a part that could not be read,
     or nothing visible to deliver.

@@ -65,14 +65,14 @@ from ..logsafe import exc_kind, exc_where, redact_source, safe_url
 from ..matrix.keybackup import KeyBackupProvider
 from ..modes import gaps_of
 from ..outcomes import Outcome
-from ..preprocess import SelectionContext
 from ..quarantine.prompts import RISK_LEVELS
 from ..reserved import WARNING_KEY, strip_reserved, with_stripped
+from ..transforms import SelectionContext
 from ..unpack.ocr import MAX_IMAGE_BYTES
 from ..warning import build_warning
 from .context import profile_context
 from .destination import MAX_DESTINATION_CHARS, DestinationKind
-from .drivers import build_preprocessors
+from .drivers import build_transforms
 from .matrix_relation import withheld_relation
 from .profile import profile_for_address
 from .proxy_utils import (
@@ -576,8 +576,8 @@ async def _extractor_for(profile: Profile) -> Any:
     key = f"{profile.name}:{','.join(cfg.processors)}:{cfg.skip_sample_bytes}"
     cached = _EXTRACTORS.get(key)
     if cached is None:
-        # The channel takes at most one, enforced in build_preprocessors.
-        cached = build_preprocessors(
+        # The channel takes at most one, enforced in build_transforms.
+        cached = build_transforms(
             cfg,
             channel=Channel.MATRIX,
             profile_name=profile.name,

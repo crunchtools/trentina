@@ -17,7 +17,7 @@ import pytest
 
 from trentina.matrix.keybackup import KeyBackupProvider
 from trentina.matrix.megolm import megolm_available
-from trentina.preprocess import (
+from trentina.transforms import (
     MatrixProcessor,
     SelectionContext,
     SelectProcessor,

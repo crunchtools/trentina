@@ -1,6 +1,6 @@
-"""Composition — run pre-processors independently or remixed, outside the wall.
+"""Composition — run transforms independently or remixed, outside the wall.
 
-The owner's framing: pre-processors are LEGO. Run a log through petit, then
+The owner's framing: transforms are LEGO. Run a log through petit, then
 summarize the result; or run both and keep whichever came out smaller; or
 run FREE ones always and spend LLM money only when the payload is still over
 budget. New processors join the registry and every strategy can use them.
@@ -28,7 +28,7 @@ from typing import Literal
 
 from ..defense import Provenance
 from ..logsafe import exc_kind, exc_where
-from .base import Cost, PreProcessContext, PreProcessor, PreProcessResult
+from .base import Cost, Transform, TransformContext, TransformResult
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +36,11 @@ Strategy = Literal["none", "chain", "best_of", "auto"]
 
 
 @dataclass(frozen=True)
-class PreProcessOutcome:
+class TransformOutcome:
     """The transformed artifact and all the perimeter should know about it."""
 
     content: str
-    results: list[PreProcessResult] = field(default_factory=list)
+    results: list[TransformResult] = field(default_factory=list)
     bytes_in: int = 0
     bytes_out: int = 0
 
@@ -107,20 +107,20 @@ class PreProcessOutcome:
         )
 
 
-async def run_preprocessors(
+async def run_transforms(
     content: str,
     *,
-    processors: list[PreProcessor],
+    processors: list[Transform],
     strategy: Strategy = "chain",
-    ctx: PreProcessContext | None = None,
-) -> PreProcessOutcome:
+    ctx: TransformContext | None = None,
+) -> TransformOutcome:
     """Transform ``content`` per ``strategy``. Never raises on hostile input —
     a processor that fails is logged, skipped, and recorded as not applied."""
-    ctx = ctx or PreProcessContext()
+    ctx = ctx or TransformContext()
     bytes_in = len(content.encode("utf-8"))
 
     if strategy == "none" or not processors:
-        return PreProcessOutcome(content=content, bytes_in=bytes_in, bytes_out=bytes_in)
+        return TransformOutcome(content=content, bytes_in=bytes_in, bytes_out=bytes_in)
 
     if strategy == "chain":
         results = await _chain(content, processors, ctx)
@@ -132,7 +132,7 @@ async def run_preprocessors(
         raise ValueError(f"unknown preprocess strategy: {strategy}")
 
     final = results[-1].content if results else content
-    return PreProcessOutcome(
+    return TransformOutcome(
         content=final,
         results=results,
         bytes_in=bytes_in,
@@ -140,9 +140,7 @@ async def run_preprocessors(
     )
 
 
-async def _run_one(
-    processor: PreProcessor, payload: str, ctx: PreProcessContext
-) -> PreProcessResult:
+async def _run_one(processor: Transform, payload: str, ctx: TransformContext) -> TransformResult:
     try:
         return await processor.run(payload, ctx)
     except Exception as exc:
@@ -153,7 +151,7 @@ async def _run_one(
             exc_where(exc),
         )
         size = len(payload.encode("utf-8"))
-        return PreProcessResult(
+        return TransformResult(
             name=processor.name,
             cost=processor.cost,
             content=payload,
@@ -165,10 +163,10 @@ async def _run_one(
 
 
 async def _chain(
-    content: str, processors: list[PreProcessor], ctx: PreProcessContext
-) -> list[PreProcessResult]:
+    content: str, processors: list[Transform], ctx: TransformContext
+) -> list[TransformResult]:
     """Feed each processor the previous one's output."""
-    results: list[PreProcessResult] = []
+    results: list[TransformResult] = []
     current = content
     for processor in processors:
         result = await _run_one(processor, current, ctx)
@@ -178,8 +176,8 @@ async def _chain(
 
 
 async def _best_of(
-    content: str, processors: list[PreProcessor], ctx: PreProcessContext
-) -> list[PreProcessResult]:
+    content: str, processors: list[Transform], ctx: TransformContext
+) -> list[TransformResult]:
     """Run every processor on the SAME input; keep the smallest artifact.
 
     Results list still records every attempt (the sidecar shows what was
@@ -196,8 +194,8 @@ async def _best_of(
 
 
 async def _auto(
-    content: str, processors: list[PreProcessor], ctx: PreProcessContext
-) -> list[PreProcessResult]:
+    content: str, processors: list[Transform], ctx: TransformContext
+) -> list[TransformResult]:
     """FREE processors always; METERED only while still over budget.
 
     With no target_bytes, METERED processors are never invoked — spending

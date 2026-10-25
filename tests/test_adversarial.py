@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 
 from trentina.l1.pipeline import PipelineResult, run_l1
-from trentina.preprocess.html import to_markdown
+from trentina.transforms.html import to_markdown
 
 
 def _converted(html: str) -> PipelineResult:

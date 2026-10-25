@@ -1,6 +1,6 @@
 """The unpack stage: what the layers read, built from what will be delivered (#365).
 
-The pre-processors, which run first, decide what the agent receives. This
+The transforms, which run first, decide what the agent receives. This
 stage decides what L1, L2 and L3 read: the same text with every packed part
 unpacked. Base64 and hex that decode to text are decoded, binary is labelled
 by its signature, and later archives, PDFs and images are extracted. It

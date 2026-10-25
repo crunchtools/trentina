@@ -36,7 +36,7 @@ import pytest
 from corpora.internal import CORPUS
 from trentina.defense import defend_json, defend_selection
 from trentina.gateway.selection import read_everything
-from trentina.preprocess import SelectionContext
+from trentina.transforms import SelectionContext
 
 if TYPE_CHECKING:
     from trentina.l1.pipeline import PipelineStats

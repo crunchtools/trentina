@@ -17,7 +17,7 @@ import pytest
 from pydantic import ValidationError
 
 from trentina.channels import Channel, Kind
-from trentina.gateway.drivers import CHANNEL_KIND, build_preprocessors
+from trentina.gateway.drivers import CHANNEL_KIND, build_transforms
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.loader import load_profiles, matrix_other_agents
 from trentina.gateway.profile import (
@@ -215,14 +215,12 @@ class TestChannel:
         assert CHANNEL_KIND[Channel.MATRIX_BRIDGE] is Kind.TEXT
 
     def test_empty_chain_builds(self) -> None:
-        assert build_preprocessors(ProcessorChainConfig(), channel=Channel.MATRIX_BRIDGE) == []
+        assert build_transforms(ProcessorChainConfig(), channel=Channel.MATRIX_BRIDGE) == []
 
     @pytest.mark.parametrize("name", ["detect", "matrix"])
     def test_no_processor_is_locked_to_it_yet(self, name: Any) -> None:
         with pytest.raises(ProfileConfigError, match="not valid on the matrix_bridge channel"):
-            build_preprocessors(
-                ProcessorChainConfig(processors=[name]), channel=Channel.MATRIX_BRIDGE
-            )
+            build_transforms(ProcessorChainConfig(processors=[name]), channel=Channel.MATRIX_BRIDGE)
 
 
 def _write(tmp_path: Path, bridge_yaml: str, prefix: str = "") -> Path:

@@ -25,7 +25,7 @@ agent must decrypt for itself, so the proxy cannot deliver what it read — see
 homeserver never sees plaintext and E2EE is kept. Issue #162 proposes a
 bridge that terminates E2EE and delivers the plaintext. If that lands, this
 stops being a document processor at all: it would read exactly what it
-delivers, which is the ordinary pre-processor contract, and the L2 input
+delivers, which is the ordinary transform contract, and the L2 input
 would simply be its output.
 
 Two habits worth naming, because both are easy to get wrong:

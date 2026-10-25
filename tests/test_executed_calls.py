@@ -184,7 +184,7 @@ class TestOtherWithheldResponses:
             is_error=False,
             structured_content=None,
         )
-        with patch("trentina.preprocess.html.HtmlProcessor.run", side_effect=RuntimeError("x")):
+        with patch("trentina.transforms.html.HtmlProcessor.run", side_effect=RuntimeError("x")):
             resp, _, audit = await _call(SEND, profile=profile, answer=page)
         result = resp["result"]
         assert result["isError"] is False

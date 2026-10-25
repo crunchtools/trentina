@@ -225,7 +225,7 @@ classification = "by_design"
 
 [[exceptions]]
 check = "hardcoded_years"
-path = "src/trentina/preprocess/petit.py"
+path = "src/trentina/transforms/petit.py"
 justification = "2026-09-13 documents the actual date of an adversarial security review that identified this known limitation."
 classification = "by_design"
 
@@ -421,7 +421,7 @@ classification = "by_design"
 [[exceptions]]
 check = "copy_paste_detection"
 path = "src/trentina/l1/hidden.py"
-justification = "style_has_same_color is reported as identical to _safe_endpoint in tools/reconnect.py, and normalize_color as identical to _validate_file in tools/read.py. These pairs share a guard-then-return statement shape and nothing else -- one detects hidden text, the others validate an endpoint and a file path. Structural collision, not duplication. (Was l1/html.py until #172 split conversion out to preprocess/html.py.)"
+justification = "style_has_same_color is reported as identical to _safe_endpoint in tools/reconnect.py, and normalize_color as identical to _validate_file in tools/read.py. These pairs share a guard-then-return statement shape and nothing else -- one detects hidden text, the others validate an endpoint and a file path. Structural collision, not duplication. (Was l1/html.py until #172 split conversion out to transforms/html.py.)"
 classification = "gourmand_bug"
 
 [[exceptions]]
@@ -511,17 +511,17 @@ path = "src/trentina/__init__.py"
 justification = "_build_oauth_context is reported as 100% similar to get_provider in quarantine/providers/__init__.py on nine statements. Both are factories -- resolve inputs, validate them, fail closed on a missing one, construct a provider, log, return -- but they share only that shape: different env vars, a GoogleProvider vs an LLM Provider, a ProfileConfigError vs a QuarantineAgentError, no shared control flow. Same over-match on the factory guard-then-construct shape as the loader.py _require_env exception above."
 classification = "gourmand_bug"
 
-# --- document pre-processors: structural similarity, not copied code ---
+# --- document transforms: structural similarity, not copied code ---
 # All three are short, generic shapes that any two independent
 # implementations converge on. The old justification here argued that
-# scanview/ had to stay a sibling of preprocess/ and so must be free to
+# scanview/ had to stay a sibling of transforms/ and so must be free to
 # diverge; #167 removed that premise -- there is one role now. The exceptions
 # survive it because none of them rested on the split: each is a coincidence
 # of shape between functions that share no domain, types or caller.
 
 [[exceptions]]
 check = "copy_paste_detection"
-path = "src/trentina/preprocess/select.py"
+path = "src/trentina/transforms/select.py"
 pattern = "SelectProcessor.select"
 justification = "Flagged as similar to gateway/app.py:gateway_app. The shared shape is an accumulate-into-locals-then-construct loop, which is structural coincidence -- the two functions share no domain, no types and no caller."
 classification = "gourmand_bug"
@@ -529,15 +529,15 @@ classification = "gourmand_bug"
 [[exceptions]]
 check = "copy_paste_detection"
 path = "src/trentina/gateway/drivers.py"
-pattern = "build_preprocessors"
+pattern = "build_transforms"
 justification = "Flagged as similar to gateway/scope.py:resolve_backend. Both are three statements of registry-lookup-then-raise, which is what every lookup-or-fail-closed function looks like. Sharing a helper would put the security-relevant channel check behind an indirection."
 classification = "gourmand_bug"
 
 [[exceptions]]
 check = "copy_paste_detection"
-path = "src/trentina/preprocess/view.py"
+path = "src/trentina/transforms/view.py"
 pattern = "ScanView.coverage"
-justification = "Flagged as similar to preprocess/base.py:PreProcessResult.ratio. Both are a guarded division, and they stay separate because they answer different questions about the same artifact: ratio measures how much a payload SHRANK, coverage measures how much of it was READ. A processor can shrink a payload without reading less of it, and can read less without shrinking anything."
+justification = "Flagged as similar to transforms/base.py:TransformResult.ratio. Both are a guarded division, and they stay separate because they answer different questions about the same artifact: ratio measures how much a payload SHRANK, coverage measures how much of it was READ. A processor can shrink a payload without reading less of it, and can read less without shrinking anything."
 classification = "by_design"
 
 # --- Matrix E2EE termination ---
@@ -577,7 +577,7 @@ pattern = "handle"
 justification = "Same: an httpx.MockTransport handler routing by request path."
 classification = "gourmand_bug"
 
-# --- document pre-processors are built from the gateway, not from preprocess/ ---
+# --- document transforms are built from the gateway, not from transforms/ ---
 # dead_structs does not appear to trace construction across a package
 # boundary. All three are constructed in production code and the sites are
 # named below so a reader can check rather than take this on trust. They were
@@ -586,21 +586,21 @@ classification = "gourmand_bug"
 
 [[exceptions]]
 check = "dead_structs"
-path = "src/trentina/preprocess/select.py"
+path = "src/trentina/transforms/select.py"
 pattern = "SelectProcessor"
-justification = "Constructed in gateway/drivers.py::_make_select and again inside _make_matrix, both reached from build_preprocessors, which loader._check_drivers calls for every profile at startup. Not test-only."
+justification = "Constructed in gateway/drivers.py::_make_select and again inside _make_matrix, both reached from build_transforms, which loader._check_drivers calls for every profile at startup. Not test-only."
 classification = "gourmand_bug"
 
 [[exceptions]]
 check = "dead_structs"
-path = "src/trentina/preprocess/matrix.py"
+path = "src/trentina/transforms/matrix.py"
 pattern = "MatrixProcessor"
-justification = "Constructed in gateway/drivers.py::_make_matrix, reached from build_preprocessors via matrix_proxy._extractor_for on every Matrix sync. Not test-only."
+justification = "Constructed in gateway/drivers.py::_make_matrix, reached from build_transforms via matrix_proxy._extractor_for on every Matrix sync. Not test-only."
 classification = "gourmand_bug"
 
 [[exceptions]]
 check = "dead_structs"
-path = "src/trentina/preprocess/view.py"
+path = "src/trentina/transforms/view.py"
 pattern = "ScanViewContext"
 justification = "Constructed in gateway/matrix_proxy.py::_scan_and_forward, once per proxied Matrix response, and passed to the processor's extract(). Not test-only."
 classification = "gourmand_bug"
@@ -798,7 +798,7 @@ classification = "by_design"
 
 [[exceptions]]
 check = "copy_paste_detection"
-path = "src/trentina/preprocess/petit.py"
+path = "src/trentina/transforms/petit.py"
 justification = "PetitProcessor.reduce (the body of run until #419, made synchronous so structured can call it) is reported as identical to reduce_base64 in unpack/office.py and open_archive in unpack/archive.py. One groups log lines, the others decode a base64 office file and open an archive. They share a run of guard-then-return statements around one try, nothing else. Structural collision, not duplication."
 classification = "gourmand_bug"
 
@@ -901,7 +901,7 @@ classification = "by_design"
 [[exceptions]]
 check = "copy_paste_detection"
 path = "src/trentina/audit_chain.py"
-justification = "verify() is reported as identical to _collapse in preprocess/email.py. One walks the audit hash chain row by row, checking each row's prev_hash, row_hash and detections_digest link; the other collapses the quoted reply chain out of an email thread. They share a loop-accumulate-then-return shape over nine statements and nothing else -- no shared types, domain or caller. Structural collision, not duplication. Newer CI Gourmand flags it; the quay:latest container does not (version skew)."
+justification = "verify() is reported as identical to _collapse in transforms/email.py. One walks the audit hash chain row by row, checking each row's prev_hash, row_hash and detections_digest link; the other collapses the quoted reply chain out of an email thread. They share a loop-accumulate-then-return shape over nine statements and nothing else -- no shared types, domain or caller. Structural collision, not duplication. Newer CI Gourmand flags it; the quay:latest container does not (version skew)."
 classification = "gourmand_bug"
 
 # --- #511 credential-shape detector (egress DLP foundation) ---
@@ -926,7 +926,7 @@ classification = "by_design"
 check = "copy_paste_detection"
 path = "src/trentina/gateway/egress_http.py"
 pattern = "_resolve_upstream"
-justification = "_resolve_upstream (resolve the upstream, grant and path, or refuse) is reported similar to quarantine/agent._parse_openrouter_search and unpack/scan._data_uri. All three are a short guard-then-return chain; they share that skeleton and nothing else. A structural collision, as with preprocess/petit.py."
+justification = "_resolve_upstream (resolve the upstream, grant and path, or refuse) is reported similar to quarantine/agent._parse_openrouter_search and unpack/scan._data_uri. All three are a short guard-then-return chain; they share that skeleton and nothing else. A structural collision, as with transforms/petit.py."
 classification = "by_design"
 
 [[exceptions]]

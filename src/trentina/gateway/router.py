@@ -36,11 +36,10 @@ from mcp_types.version import (
 from .. import __version__
 from ..database import is_blocked, record_gateway_call
 from ..defense import Provenance
-from ..errors import ModeNotPermittedError, PreProcessNotPermittedError
+from ..errors import ModeNotPermittedError, TransformNotPermittedError
 from ..logsafe import exc_kind, redact_source
 from ..modes import BLOCKLIST_REASON, Mode, parse_mode_arg, refusal_body
 from ..outcomes import Outcome, classify_exception, refusal_of
-from ..preprocess.policy import PREPROCESS_PARAM
 from ..quarantine.limiter import Priority, l3_priority
 from ..reserved import (
     REFUSAL_KEY,
@@ -50,6 +49,7 @@ from ..reserved import (
     strip_reserved,
     with_stripped,
 )
+from ..transforms.policy import PREPROCESS_PARAM
 from . import discovery, paging, tool_pins
 from .args import Normalized, normalize_arguments
 from .backend import (
@@ -110,7 +110,7 @@ from .transform import transform_response
 
 if TYPE_CHECKING:
     from ..modes import ModePolicy
-    from ..preprocess.policy import PreProcessPolicy
+    from ..transforms.policy import PreProcessPolicy
     from .profile import Backend, Profile
     from .transform import TransformOutcome
 
@@ -712,7 +712,7 @@ def _decoy_call(
 
     A decoy backend serves the tools it declares and no other, so a name it
     does not declare is as unknown as one on no backend at all. A declared
-    one refuses a mode or a pre-processor request that a real tool would
+    one refuses a mode or a transform request that a real tool would
     refuse, in the same words, and is a trip either way: asking for a mode
     that does not exist must not be a way to map the tripwires.
     """
@@ -723,7 +723,7 @@ def _decoy_call(
     try:
         resolve_call(profile, backend, tool_name, arguments)
         resolve_preprocess(profile, backend, tool_name, arguments)
-    except (ModeNotPermittedError, PreProcessNotPermittedError) as exc:
+    except (ModeNotPermittedError, TransformNotPermittedError) as exc:
         _audit(profile.name, backend_name, tool_name, Outcome.DECOY_TRIPPED, 0, str(exc))
         record_trip(profile.name, backend_name, tool_name, "decoy tool")
         return _err(req_id, JSONRPC_INVALID_PARAMS, str(exc))
@@ -898,7 +898,7 @@ async def _tools_call(profile: Profile, req_id: Any, params: dict[str, Any]) -> 
     try:
         policy, mode, prompt, forwarded = resolve_call(profile, backend, tool_name, arguments)
         preprocess, requested, minify = resolve_preprocess(profile, backend, tool_name, arguments)
-    except (ModeNotPermittedError, PreProcessNotPermittedError) as exc:
+    except (ModeNotPermittedError, TransformNotPermittedError) as exc:
         _audit(
             profile.name,
             backend_name,
@@ -1334,7 +1334,7 @@ async def _dispatch(
 
     # The internal tools judge their own ingress, so they get the RESOLVED
     # mode; the bound policy is what their refusals offer as alternatives.
-    # The pre-processor request goes through as asked: its default depends on
+    # The transform request goes through as asked: its default depends on
     # what arrives, so the tool resolves it under the bound policy.
     # A profile that can read part 2 may be handed a part 1 (#446).
     reader = _part_reader(profile)
@@ -1370,7 +1370,7 @@ def _l3_context(backend: Backend, reduced: TransformOutcome) -> str | None:
     sidecar = reduced.sidecar
     if sidecar:
         notes.append(
-            f"This artifact was transformed by trentina pre-processors "
+            f"This artifact was transformed by trentina transforms "
             f"({sidecar['bytes_in']} -> {sidecar['bytes_out']} "
             f"bytes); where it shrank, it is a sample of a larger payload."
         )
@@ -1570,7 +1570,7 @@ async def _assemble_call_result(
     # The backend has answered, so a tool that may write has written (#425).
     acted = _may_have_acted(backend, tool_name)
 
-    # Transform BEFORE the perimeter, never after. preprocess/base.py
+    # Transform BEFORE the perimeter, never after. transforms/base.py
     # invariant 2: the caller scans the transformed artifact and delivers that
     # artifact, so what a processor dropped is never judged and never
     # delivered. Transforming after the scan would hand the agent bytes the

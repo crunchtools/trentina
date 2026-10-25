@@ -175,8 +175,8 @@ class PromptParamGoneError(ModeNotPermittedError):
         self.mode = "redact"
 
 
-class PreProcessNotPermittedError(TrentinaError):
-    """The call named a pre-processor the caller's policy does not offer (#183)."""
+class TransformNotPermittedError(TrentinaError):
+    """The call named a transform the caller's policy does not offer (#183)."""
 
     def __init__(self, offered: list[str]) -> None:
         super().__init__(
@@ -185,14 +185,14 @@ class PreProcessNotPermittedError(TrentinaError):
         )
 
 
-class PreProcessFailedError(TrentinaError):
-    """A pre-processor the call depends on did not run, so nothing is delivered.
+class TransformFailedError(TrentinaError):
+    """A transform the call depends on did not run, so nothing is delivered.
 
     Names the processor and how it failed, never the payload.
     """
 
     def __init__(self, name: str, reason: str) -> None:
-        super().__init__(f"Pre-processor {name!r} could not run ({reason}); content withheld")
+        super().__init__(f"Transform {name!r} could not run ({reason}); content withheld")
         self.processor = name
 
 

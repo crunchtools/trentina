@@ -641,7 +641,7 @@ class ProfileBridge:
         #     which a bridge that left or withheld the room already achieves
         #   owner: core.ProfileBridge._inbound_left
         #   evidence: T3 core module docstring (the bridge is untrusted; it can
-        #     withhold, never write); T3 preprocess/base.py invariant 1
+        #     withhold, never write); T3 transforms/base.py invariant 1
         room = await self.mapping.room_by_remote(remote_room)
         if room is None:
             return "skipped"
@@ -661,7 +661,7 @@ class ProfileBridge:
         takes away an event the agent already had judged in front of it; it
         cannot put anything there. A compromised bridge that forged one could
         equally have withheld the original, so honouring it grants nothing
-        the bridge did not already hold (``preprocess/base.py`` invariant 1:
+        the bridge did not already hold (``transforms/base.py`` invariant 1:
         subtract, never absolve).
         """
         redacts = event.get("redacts") or (event.get("content") or {}).get("redacts")

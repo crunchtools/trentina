@@ -509,7 +509,7 @@ def _hold_floor(
 
 
 def _hold_preprocess_floor(before: Profile, after: Profile) -> list[str]:
-    """An agent may not lower its own pre-processor floor (#183).
+    """An agent may not lower its own transform floor (#183).
 
     ``required`` is what the agent's ``trentina_preprocess`` cannot remove;
     a reload that could remove it would be the same argument by another road.

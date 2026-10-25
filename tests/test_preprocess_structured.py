@@ -20,11 +20,11 @@ from pathlib import Path
 
 import pytest
 
-from trentina.preprocess import (
+from trentina.transforms import (
     Cost,
-    PreProcessContext,
-    PreProcessResult,
     StructuredProcessor,
+    TransformContext,
+    TransformResult,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -55,8 +55,8 @@ def _issues(n: int, *, summary: str = "Nightly build failed") -> str:
     )
 
 
-async def _run(payload: str, target_bytes: int | None = None) -> PreProcessResult:
-    return await StructuredProcessor().run(payload, PreProcessContext(target_bytes=target_bytes))
+async def _run(payload: str, target_bytes: int | None = None) -> TransformResult:
+    return await StructuredProcessor().run(payload, TransformContext(target_bytes=target_bytes))
 
 
 class TestStructuredReduction:
@@ -220,7 +220,7 @@ class TestIdentifierListing:
     async def test_integers_past_the_depth_cutoff_keep_records_apart(self) -> None:
         """Past _MAX_DEPTH integers are left as integers, so records that
         differ only down there are not grouped and nothing is lost."""
-        from trentina.preprocess.structured import _MAX_DEPTH
+        from trentina.transforms.structured import _MAX_DEPTH
 
         def deep(n: int) -> dict:
             node: dict = {"leaf": n}
@@ -357,7 +357,7 @@ class TestHostileInput:
     async def test_deeply_nested_json_does_not_blow_the_stack(self) -> None:
         payload = "[" * 2000 + "]" * 2000
         result = await _run(payload)
-        assert isinstance(result, PreProcessResult)
+        assert isinstance(result, TransformResult)
 
     async def test_oversized_payload_declines_without_parsing(self) -> None:
         payload = "[" + ",".join(['{"a":1}'] * 800_000) + "]"
@@ -419,9 +419,9 @@ class TestLogInAString:
         """One rule for a log, wherever it was found: the samples as written
         and petit's own summary. Inside a document the summary loses its
         bracketed tag and nothing else (#411)."""
-        from trentina.preprocess import PetitProcessor
+        from trentina.transforms import PetitProcessor
 
-        as_block = await PetitProcessor().run(_journal(), PreProcessContext())
+        as_block = await PetitProcessor().run(_journal(), TransformContext())
         result = await _run(json.dumps({"logs": _journal()}))
         assert as_block.applied and "[petit] " in as_block.content
         delivered = json.loads(result.content)["logs"]
@@ -471,10 +471,10 @@ class TestLogInAString:
         """petit names no log format for a source file, and on its raw
         fallback it would group the blank lines and the closing brackets. A
         JSON string is where a tool puts the file an agent asked for."""
-        from trentina.preprocess import PetitProcessor
+        from trentina.transforms import PetitProcessor
 
         source = Path(__file__).read_text()
-        as_block = await PetitProcessor().run(source, PreProcessContext())
+        as_block = await PetitProcessor().run(source, TransformContext())
         assert as_block.applied, "the fallback does reduce it, which is the point"
         result = await _run(json.dumps({"path": "tests/x.py", "content": source}))
         assert result.details.get("logs_reduced", 0) == 0
@@ -505,9 +505,9 @@ class TestLogInAString:
     ) -> None:
         """Minifying fails open, per value: the log is delivered whole and
         counted as failed; the array beside it is still collapsed."""
-        from trentina.preprocess import structured
+        from trentina.transforms import structured
 
-        def boom(_payload: str, **_kw: object) -> PreProcessResult:
+        def boom(_payload: str, **_kw: object) -> TransformResult:
             raise RuntimeError("petit exploded")
 
         monkeypatch.setattr(structured._PETIT, "reduce", boom)
@@ -530,10 +530,10 @@ class TestLogInAString:
     ) -> None:
         """petit's own error comes back as a decline, not an exception, and
         only a class name is kept of it: a message could carry the value."""
-        from trentina.preprocess import structured
+        from trentina.transforms import structured
 
-        def errored(payload: str, **_kw: object) -> PreProcessResult:
-            return PreProcessResult.declined(
+        def errored(payload: str, **_kw: object) -> TransformResult:
+            return TransformResult.declined(
                 "petit", Cost.FREE, payload, reason="petit_error", details={"error": reported}
             )
 
@@ -559,10 +559,10 @@ class TestLogInAString:
     ) -> None:
         """Degraded is a format petit named and then gave up parsing by; the
         raw fallback with nothing named is a document."""
-        from trentina.preprocess import structured
+        from trentina.transforms import structured
 
-        def answer(payload: str, **_kw: object) -> PreProcessResult:
-            return PreProcessResult(
+        def answer(payload: str, **_kw: object) -> TransformResult:
+            return TransformResult(
                 name="petit",
                 cost=Cost.FREE,
                 content="three samples",
@@ -590,7 +590,7 @@ class TestLogInAString:
 
     async def test_a_reduced_log_past_the_budget_is_still_clipped(self) -> None:
         """Reduced first, then the prose cap, on what is left."""
-        from trentina.preprocess.structured import _MAX_STRING_CHARS
+        from trentina.transforms.structured import _MAX_STRING_CHARS
 
         unique = "\n".join(
             f"Oct 08 02:00:00 host01 app[1]: {'w' * 40}{chr(97 + i % 26)}{chr(97 + i // 26)}"
@@ -610,7 +610,7 @@ class TestAnAttackInALog:
     async def test_a_unique_hostile_line_among_a_hundred_survives_verbatim(self) -> None:
         """Words are never normalized, so the line is its own group and its
         own sample: it reaches the perimeter scan."""
-        from trentina.preprocess import PetitProcessor
+        from trentina.transforms import PetitProcessor
 
         needle = f"Oct 08 02:50:50 host01 sshd[2050]: {_NEEDLE}"
         text = _journal(at=50, needle=needle)
@@ -618,7 +618,7 @@ class TestAnAttackInALog:
         delivered = json.loads(result.content)["logs"]
         assert result.details["logs_reduced"] == 1
         assert needle in delivered.split("\n")
-        as_block = await PetitProcessor().run(text, PreProcessContext())
+        as_block = await PetitProcessor().run(text, TransformContext())
         assert delivered == as_block.content.replace("[petit] ", ""), (
             "the lines a text block keeps, no more and no fewer"
         )

@@ -304,9 +304,9 @@ The tool is only visible to profiles that have `delegation.modes.code_write.enab
 
 > **Corrected 2026-09-17.** An earlier revision of this section said the defense pipeline does **not** run on delegated responses, on the grounds that the input is local files and scanning would negate the savings. **The implementation deliberately reversed that, and the implementation is correct.** Do not build from the old stance — it reintroduces a defense bypass.
 
-Pre-processing runs **outside** the perimeter and never replaces it. The three invariants live in `preprocess/base.py`; the second is the one that governs here:
+Pre-processing runs **outside** the perimeter and never replaces it. The three invariants live in `transforms/base.py`; the second is the one that governs here:
 
-> A pre-processor never bypasses `defend()`. Everything it emits is scanned. Whether the *delivered* bytes are its output or the untouched original is the CALL SITE's decision, not the driver's.
+> A transform never bypasses `defend()`. Everything it emits is scanned. Whether the *delivered* bytes are its output or the untouched original is the CALL SITE's decision, not the driver's.
 
 So the order is always **transform → scan → deliver**, enforced at the call site in `gateway/router.py::_assemble_call_result` and pinned by a test. Two properties follow:
 
@@ -328,9 +328,9 @@ What binds the second row is accounting, not a different contract: every decline
 
 ##### Subtract, never absolve
 
-Invariant 1 is directional, and it is easy to misread as "pre-processors must not touch security at all." They already do: `petit` deletes lines, `structured` drops array elements, `email` drops quoted chains. Dropping content **is** a filtering operation, and it is always permitted, because a byte that is deleted reaches no one.
+Invariant 1 is directional, and it is easy to misread as "transforms must not touch security at all." They already do: `petit` deletes lines, `structured` drops array elements, `email` drops quoted chains. Dropping content **is** a filtering operation, and it is always permitted, because a byte that is deleted reaches no one.
 
-What is forbidden is the other direction. A pre-processor never marks content clean, never shortens or skips `defend()`, and never lets its output be trusted more than its input. It may subtract; it may not absolve.
+What is forbidden is the other direction. A transform never marks content clean, never shortens or skips `defend()`, and never lets its output be trusted more than its input. It may subtract; it may not absolve.
 
 One consequence is worth knowing before you build on it. A per-record **filtering** processor — one that drops the records a policy names and delivers the rest — is permitted by that invariant and is a better fit than a whole-response guard wherever partial results beat no results. It is not safe on this framework yet: composition fails **open** by design (`compose.py` swallows a processor's exception and passes the original through), so a filter that raised would deliver exactly what it exists to remove. Fail-closed handling has to come first.
 
@@ -385,7 +385,7 @@ Below the `min_bytes` floor (default 4096) nothing runs at all, and each FREE pr
 
 Why the original reasoning was wrong: the risk is not the *input*, it is the *worker*. A model reading hostile text can be talked into emitting a payload, and what it emits is short, fluent, and free of instruction-override syntax — precisely the shape L2 is documented to miss. Gating L3 on an L2 score would let a poisoned summary through every time.
 
-Hence the provenance rule in `preprocess/compose.py`:
+Hence the provenance rule in `transforms/compose.py`:
 
 | processor | cost | provenance of output | L3 |
 |---|---|---|---|

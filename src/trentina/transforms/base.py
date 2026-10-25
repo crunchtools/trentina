@@ -1,20 +1,21 @@
-"""Pre-processor contract — payload TRANSFORMATION outside the perimeter.
+"""Transform contract — payload TRANSFORMATION outside the perimeter.
 
 Trentina has two mandates: defend the primary model, and save it tokens.
 They are served by two mechanisms in two places, deliberately:
 
-* Pre-processors (this package) TRANSFORM payloads. They run outside the
+* Transforms (this package) TRANSFORM payloads. They run outside the
   perimeter, their output is exactly as untrusted as their input, and
   everything they emit crosses the defense pipeline on its way in.
 * The guards make verdicts. Parameter guards, response guards, and the
   three-layer scanner (``defense.py``). Guards decide; nothing else does.
   They never transform what is delivered.
 
-Two roles, and everything in a request path is one of them. There is no
-third.
+One driver role — the transform. The guards are fixed trust machinery, not a
+pluggable driver role, and everything in a request path is one or the other.
+There is no third.
 
 Two INPUT SHAPES, not two roles. Most processors here are ``str -> str``
-(``PreProcessor``, below). ``select`` and ``matrix`` take parsed JSON and
+(``Transform``, below). ``select`` and ``matrix`` take parsed JSON and
 return the strings worth reading out of it (``DocumentProcessor`` in
 ``view.py``), because ``m.room.encrypted`` is a structure rather than a
 substring. They were a separate package with a separate contract until #167.
@@ -28,12 +29,12 @@ and filtering are all in scope.
 
 Three invariants, none negotiable:
 
-1. A pre-processor may SUBTRACT, never ABSOLVE. Dropping, collapsing,
+1. A transform may SUBTRACT, never ABSOLVE. Dropping, collapsing,
    normalizing and restructuring are all permitted — deleting content is
    always safe, because a byte that is deleted reaches no one. What is
    forbidden is the other direction: never mark content clean, never shorten
    or skip ``defend()``, and never let output be trusted more than input.
-2. A pre-processor never bypasses ``defend()``. Everything it emits is
+2. A transform never bypasses ``defend()``. Everything it emits is
    scanned. What a processor DROPPED never reaches the agent at all, which is
    what makes fingerprint-collision games pointless — colliding your payload
    into a collapsed group deletes it, and a line that is never delivered
@@ -60,18 +61,18 @@ Three invariants, none negotiable:
    #359 retired L2's read of that copy.
 
    A previous revision of this file (#163) ruled the opposite — that a
-   pre-processor may never open a gap between what is scanned and what is
+   transform may never open a gap between what is scanned and what is
    delivered — and used that to split this package in two. The rule did not
    survive contact with L1, and the split it justified is undone. It is
    recorded here because the reasoning was plausible and someone will
    reconstruct it.
 
-3. Every pre-processor accounts for itself, and FAILS OPEN. The sidecar (bytes in/out, ratio,
+3. Every transform accounts for itself, and FAILS OPEN. The sidecar (bytes in/out, ratio,
    what was collapsed) reaches L3's briefing, because "this artifact is the
    3% that survived transformation" is context a judge should have. Routing
    it to the audit log as token-mandate evidence is intended and not yet
    built — ``router.py`` reads the sidecar only for the briefing, and
-   ``PreProcessOutcome.sidecar()`` has no caller in ``src/``.
+   ``TransformOutcome.sidecar()`` has no caller in ``src/``.
 
 COMPOSITION IS STILL SIZE-DRIVEN, even though this contract is not. A
 transformation that does not shrink runs under ``chain`` and keeps its output,
@@ -94,7 +95,7 @@ document processor that raises causes its caller to read EVERYTHING
 (``gateway/selection.py``). Both are the same rule: on failure, do the thing
 that hides nothing. No failure mode may result in "read nothing, looked clean".
 
-Pre-processors parse hostile bytes. Regexes here must be linear-time and
+Transforms parse hostile bytes. Regexes here must be linear-time and
 fingerprinting must cap the bytes it reads per line — an attacker choosing
 the input must not be able to buy quadratic work.
 """
@@ -124,7 +125,7 @@ class Cost(str, Enum):
 
 
 @dataclass(frozen=True)
-class PreProcessContext:
+class TransformContext:
     """What the processor may know about the job. Not a policy channel."""
 
     source: str = ""
@@ -139,7 +140,7 @@ class PreProcessContext:
 
 
 @dataclass(frozen=True)
-class PreProcessResult:
+class TransformResult:
     """One processor's accounting — the sidecar, per invariant 3.
 
     ``applied`` is False when the processor looked and declined (content not
@@ -183,7 +184,7 @@ class PreProcessResult:
         *,
         reason: str,
         details: dict[str, int | float | str] | None = None,
-    ) -> PreProcessResult:
+    ) -> TransformResult:
         """The no-op variant: the processor looked and passed the payload
         through unchanged. `reason` records why (too small, not log-shaped,
         worker error); downstream composition treats it as a skip."""
@@ -203,8 +204,8 @@ class PreProcessResult:
 
 
 @runtime_checkable
-class PreProcessor(Protocol):
-    """The shape of a pre-processor. Implementations are stateless."""
+class Transform(Protocol):
+    """The shape of a transform. Implementations are stateless."""
 
     name: str
     cost: Cost
@@ -214,7 +215,7 @@ class PreProcessor(Protocol):
     # pointed at another declines forever and looks like it is working.
     channels: frozenset[Channel]
 
-    async def run(self, payload: str, ctx: PreProcessContext) -> PreProcessResult:
+    async def run(self, payload: str, ctx: TransformContext) -> TransformResult:
         """Transform the payload. Must return the input unchanged
         (applied=False) rather than raise on content it cannot improve."""
         ...

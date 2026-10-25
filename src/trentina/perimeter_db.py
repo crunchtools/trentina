@@ -80,10 +80,10 @@ office files are read inside, and their hidden text counted (#368).
 "12" (1.1.1): the Matrix bridge leaves a relation's event IDs out of what the
 layers read; they are replaced from the mapping table or dropped, never
 delivered as written.
-"13" (1.3.0): the structured pre-processor's markers lose their bracketed
+"13" (1.3.0): the structured transform's markers lose their bracketed
 tag, which L2 read as an injected note (#411), so a listing it reduced is
 judged as different text.
-"14" (1.4.0): the structured pre-processor hands a log held in a JSON string to
+"14" (1.4.0): the structured transform hands a log held in a JSON string to
 petit (#419), so a journal response is judged as its samples and a summary.
 "15" (1.4.1): a structured listing gives its rows before its note, and the
 unpack stage reads a run of decimal digits as a number, not as hex (#431).

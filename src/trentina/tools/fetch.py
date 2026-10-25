@@ -256,7 +256,7 @@ async def fetch_page(
     in the warning.
 
     ``preprocess`` is the agent's ``trentina_preprocess``. Omitted or true,
-    the page is minified by format (``preprocess/detect.py``): a page its
+    the page is minified by format (``transforms/detect.py``): a page its
     server calls HTML is converted to Markdown, which eliminates hidden
     content rather than counting it. ``false`` delivers it as sent, and
     ``l1/hidden.py`` counts whatever markup is delivered.

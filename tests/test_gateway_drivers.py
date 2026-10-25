@@ -40,8 +40,8 @@ import pytest
 from trentina.channels import Channel, Kind
 from trentina.gateway.drivers import (
     CHANNEL_KIND,
-    PREPROCESSORS,
-    build_preprocessors,
+    TRANSFORMS,
+    build_transforms,
 )
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.loader import load_profiles
@@ -51,21 +51,21 @@ from trentina.gateway.profile import (
     PreProcessConfig,
     ProcessorName,
 )
-from trentina.preprocess import Cost
+from trentina.transforms import Cost
 
 
 class TestRegistryAndConfigAgree:
     def test_every_registered_processor_is_configurable(self) -> None:
-        assert set(PREPROCESSORS) == set(get_args(ProcessorName))
+        assert set(TRANSFORMS) == set(get_args(ProcessorName))
 
     def test_every_default_processor_is_registered(self) -> None:
-        assert set(_DEFAULT_PROCESSORS) <= set(PREPROCESSORS)
-        assert set(PreProcessConfig().processors) <= set(PREPROCESSORS)
+        assert set(_DEFAULT_PROCESSORS) <= set(TRANSFORMS)
+        assert set(PreProcessConfig().processors) <= set(TRANSFORMS)
 
     def test_defaults_are_all_free_text(self) -> None:
         """A METERED default would spend LLM money for every profile that
         merely switched transformation on; a DOCUMENT default would not run."""
-        built = build_preprocessors(PreProcessConfig(), channel=Channel.TOOL)
+        built = build_transforms(PreProcessConfig(), channel=Channel.TOOL)
         assert all(p.cost is Cost.FREE for p in built)
         assert all(p.kind is Kind.TEXT for p in built)
 
@@ -78,7 +78,7 @@ class TestRegistryAndConfigAgree:
 
     def test_every_driver_is_reachable_on_some_channel(self) -> None:
         """A driver whose kind matches no channel is configurable and dead."""
-        for name in PREPROCESSORS:
+        for name in TRANSFORMS:
             reachable = [ch for ch in Channel if _buildable(name, ch)]
             assert reachable, f"{name} cannot run on any channel"
 
@@ -90,7 +90,7 @@ def _buildable(name: str, channel: Channel) -> bool:
         else PreProcessConfig(processors=[cast("Any", name)])
     )
     try:
-        build_preprocessors(cfg, channel=channel)
+        build_transforms(cfg, channel=channel)
     except ProfileConfigError:
         return False
     return True
@@ -99,14 +99,14 @@ def _buildable(name: str, channel: Channel) -> bool:
 class TestChannelAndKindLocks:
     def test_text_processors_resolve_in_configured_order(self) -> None:
         cfg = PreProcessConfig(processors=["petit", "email"])
-        built = build_preprocessors(cfg, channel=Channel.TOOL)
+        built = build_transforms(cfg, channel=Channel.TOOL)
         assert [p.name for p in built] == ["petit", "email"]
 
     def test_document_processor_refused_on_a_text_channel(self) -> None:
         """`select` reads parsed JSON; the tool channel hands it a string."""
         cfg = PreProcessConfig(processors=["select"])
         with pytest.raises(ProfileConfigError, match="not valid on the tool"):
-            build_preprocessors(cfg, channel=Channel.TOOL, profile_name="p")
+            build_transforms(cfg, channel=Channel.TOOL, profile_name="p")
 
     def test_the_kind_lock_catches_what_the_channel_lock_misses(self) -> None:
         """Belt and braces, and the braces are the point.
@@ -126,36 +126,36 @@ class TestChannelAndKindLocks:
             async def run(self, payload: str, ctx: Any) -> Any:
                 raise AssertionError("never called")
 
-        original = PREPROCESSORS["petit"]
-        PREPROCESSORS["petit"] = lambda _cfg, _keys: cast("Any", _WrongKind())
+        original = TRANSFORMS["petit"]
+        TRANSFORMS["petit"] = lambda _cfg, _keys: cast("Any", _WrongKind())
         try:
             cfg = PreProcessConfig(processors=["petit"])
             with pytest.raises(ProfileConfigError, match="consumes document"):
-                build_preprocessors(cfg, channel=Channel.TOOL, profile_name="p")
+                build_transforms(cfg, channel=Channel.TOOL, profile_name="p")
         finally:
-            PREPROCESSORS["petit"] = original
+            TRANSFORMS["petit"] = original
 
     def test_text_processor_refused_on_the_matrix_channel(self) -> None:
         cfg = MatrixPreProcessConfig(processors=["petit"])
         with pytest.raises(ProfileConfigError, match="not valid on the matrix"):
-            build_preprocessors(cfg, channel=Channel.MATRIX, profile_name="p")
+            build_transforms(cfg, channel=Channel.MATRIX, profile_name="p")
 
     def test_matrix_channel_takes_at_most_one(self) -> None:
         """Chaining is defined for str -> str. A document processor returns
         selected strings, which the next one cannot consume."""
         cfg = MatrixPreProcessConfig(processors=["select", "matrix"])
         with pytest.raises(ProfileConfigError, match="at most one"):
-            build_preprocessors(cfg, channel=Channel.MATRIX, profile_name="p")
+            build_transforms(cfg, channel=Channel.MATRIX, profile_name="p")
 
     def test_empty_chain_is_the_no_op(self) -> None:
         """No `full` processor: reading everything is what naming nothing means."""
-        assert build_preprocessors(MatrixPreProcessConfig(), channel=Channel.MATRIX) == []
-        assert build_preprocessors(PreProcessConfig(processors=[]), channel=Channel.TOOL) == []
+        assert build_transforms(MatrixPreProcessConfig(), channel=Channel.MATRIX) == []
+        assert build_transforms(PreProcessConfig(processors=[]), channel=Channel.TOOL) == []
 
     def test_unknown_name_fails_closed(self) -> None:
         cfg = PreProcessConfig.model_construct(processors=["nope"])
-        with pytest.raises(ProfileConfigError, match="unknown pre-processor"):
-            build_preprocessors(cfg, channel=Channel.TOOL, profile_name="p")
+        with pytest.raises(ProfileConfigError, match="unknown transform"):
+            build_transforms(cfg, channel=Channel.TOOL, profile_name="p")
 
 
 class TestTheLockFiresAtStartup:
@@ -181,7 +181,7 @@ class TestTheLockFiresAtStartup:
             async def run(self, payload: str, ctx: Any) -> Any:
                 raise AssertionError("never called")
 
-        monkeypatch.setitem(PREPROCESSORS, "petit", lambda _cfg, _keys: cast("Any", _MatrixOnly()))
+        monkeypatch.setitem(TRANSFORMS, "petit", lambda _cfg, _keys: cast("Any", _MatrixOnly()))
         cfg = tmp_path / "profiles.yaml"
         cfg.write_text(
             """

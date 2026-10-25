@@ -1,6 +1,6 @@
 """Detect — look at the payload, then run the minifiers that fit it (0.38.0).
 
-The default pre-processor. Before 0.38.0 a profile listed a chain and every
+The default transform. Before 0.38.0 a profile listed a chain and every
 processor in it tried every payload, each declining what was not its shape.
 That works for the reducers, whose declines are cheap and exact. It does not
 work for ``html``: its gate is "is there any markup at all", and on text that
@@ -13,7 +13,7 @@ chain has to be told when to run.
 So detection happens once, here, and it is strict in the direction that
 deletes nothing:
 
-* **HTML** only when the server SAID so (``PreProcessContext.content_type``)
+* **HTML** only when the server SAID so (``TransformContext.content_type``)
   or the text is unmistakably a document: a leading doctype or ``<html>``, or
   at least ``_MIN_TAGS`` real tags, one of them structural, and NOT ONE tag
   name that HTML does not define. ``<alice``, ``<String``, ``<ref`` are
@@ -45,7 +45,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from ..channels import Channel, Kind
-from .base import Cost, PreProcessContext, PreProcessor, PreProcessResult
+from .base import Cost, Transform, TransformContext, TransformResult
 from .email import EmailProcessor
 from .html import HtmlProcessor
 from .pdf import PDF_BASE64_PREFIX, PdfProcessor, is_pdf_type
@@ -165,7 +165,7 @@ def detect(text: str, content_type: str | None = None) -> Format:
     return Format.TEXT
 
 
-_CHAINS: dict[Format, tuple[PreProcessor, ...]] = {
+_CHAINS: dict[Format, tuple[Transform, ...]] = {
     Format.HTML: (HtmlProcessor(), PetitProcessor()),
     Format.JSON: (StructuredProcessor(),),
     Format.PDF: (PdfProcessor(),),
@@ -173,9 +173,9 @@ _CHAINS: dict[Format, tuple[PreProcessor, ...]] = {
 }
 
 
-async def _run_chain(fmt: Format, payload: str, ctx: PreProcessContext) -> list[PreProcessResult]:
+async def _run_chain(fmt: Format, payload: str, ctx: TransformContext) -> list[TransformResult]:
     """The format's processors, each fed the last applied output. Every result is kept."""
-    results: list[PreProcessResult] = []
+    results: list[TransformResult] = []
     current = payload
     for processor in _CHAINS[fmt]:
         result = await processor.run(current, ctx)
@@ -193,7 +193,7 @@ class DetectProcessor:
     channels = frozenset({Channel.TOOL})
     kind = Kind.TEXT
 
-    async def run(self, payload: str, ctx: PreProcessContext) -> PreProcessResult:
+    async def run(self, payload: str, ctx: TransformContext) -> TransformResult:
         fmt = detect(payload, ctx.content_type)
         results = await _run_chain(fmt, payload, ctx)
         if fmt is Format.JSON and results[0].details.get("declined") == "not_json":
@@ -201,7 +201,7 @@ class DetectProcessor:
             results = await _run_chain(fmt, payload, ctx)
         broken = next((r for r in results if r.details.get("declined") in FAILED_DECLINES), None)
         if broken is not None:
-            return PreProcessResult.declined(
+            return TransformResult.declined(
                 self.name,
                 self.cost,
                 payload,
@@ -210,7 +210,7 @@ class DetectProcessor:
             )
         applied = [r for r in results if r.applied]
         if not applied:
-            return PreProcessResult.declined(
+            return TransformResult.declined(
                 self.name,
                 self.cost,
                 payload,
@@ -223,7 +223,7 @@ class DetectProcessor:
             details.update(result.details)
         details["format"] = fmt.value
         details["chain"] = ",".join(r.name for r in applied)
-        return PreProcessResult(
+        return TransformResult(
             name=self.name,
             cost=self.cost,
             content=current,
@@ -245,7 +245,7 @@ _HIDING_DETAILS = (
 _CONVERTED_DETAILS = ("office_converted", "pdf_converted")
 
 
-def _converted(result: PreProcessResult) -> bool:
+def _converted(result: TransformResult) -> bool:
     """Whether a result deleted markup or converted an office file or a PDF
     (#368, #369), directly or inside ``detect``."""
     if not result.applied:
@@ -255,7 +255,7 @@ def _converted(result: PreProcessResult) -> bool:
     return result.name == "html" or "html" in str(result.details.get("chain", "")).split(",")
 
 
-def hiding_removed(results: Sequence[PreProcessResult]) -> int | None:
+def hiding_removed(results: Sequence[TransformResult]) -> int | None:
     """Elements hidden from a human reader that conversion deleted.
 
     None when nothing was converted, which is different from zero: the
@@ -267,7 +267,7 @@ def hiding_removed(results: Sequence[PreProcessResult]) -> int | None:
     return sum(int(r.details.get(k, 0)) for r in converted for k in _HIDING_DETAILS)
 
 
-def document_hidden(results: Sequence[PreProcessResult]) -> int:
+def document_hidden(results: Sequence[TransformResult]) -> int:
     """Hidden text that converting an office file or a PDF dropped (#368, #369).
 
     ``detect_hidden_markup`` cannot recount these from the original, which is
