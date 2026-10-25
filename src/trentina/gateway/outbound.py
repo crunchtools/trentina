@@ -28,10 +28,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
+from ..core import Posture
 from ..credential_shapes import kinds as credential_kinds
 from ..credential_shapes import redact as credential_redact
 from ..logsafe import exc_kind, exc_where
-from ..modes import Mode
+from ..modes import Mode, ModePolicy
 from .context import profile_context
 
 if TYPE_CHECKING:
@@ -171,6 +172,11 @@ async def judge_outbound(
     kinds = detect_credentials(document)
     flagged, unjudged, flagged_by, risk = False, True, None, "unknown"
     gaps = ["l3_unavailable"]
+    # The one definition of the partial-scan and blocklist rules (Posture),
+    # so this path fails closed for any future mode exactly as the tools do.
+    # Was `mode is Mode.BLOCK` here -- fail-open for a later non-BLOCK mode,
+    # masked only because redact is not an enforcement mode on this path.
+    posture = Posture(mode=mode, policy=ModePolicy((mode,), mode))
     try:
         with profile_context(profile):
             async with asyncio.timeout(deadline):
@@ -180,10 +186,10 @@ async def judge_outbound(
                     source_type=source_type,
                     defense=profile.defense,
                     provenance=Provenance.MODEL_OUTPUT,
-                    stop_on_partial=mode is Mode.BLOCK,
+                    stop_on_partial=posture.stop_on_partial,
                     attribution={
                         "direction": "request",
-                        "blocked": mode is Mode.BLOCK,
+                        "blocked": posture.records_block(),
                         "profile": profile.name,
                         "backend": backend,
                     },

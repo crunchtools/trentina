@@ -58,7 +58,7 @@ from ..httpbody import (
 )
 from ..l1.pipeline import risk_level_for_count
 from ..logsafe import exc_kind, redact_source, safe_url
-from ..modes import gaps_of
+from ..modes import Mode, gaps_of
 from ..reserved import WARNING_KEY, strip_reserved, with_stripped
 from .context import profile_context
 
@@ -392,7 +392,10 @@ async def _defend_alert(
     # to the same rule as every other path (modes.Gaps.blocking): unjudged
     # is refused, not forwarded. flag delivers, so it is not flagged for it.
     cfg = profile.alert_ingress
-    unjudged = (cfg is None or cfg.enforcement != "flag") and gaps_of(final).blocking()
+    # Through Mode, not a raw string: a canonical-case spelling ModePolicy would
+    # accept ("FLAG") must read as flag here too. No cfg means enforce.
+    enforcing = cfg is None or Mode(cfg.enforcement) is not Mode.FLAG
+    unjudged = enforcing and gaps_of(final).blocking()
 
     flagged = risk_level != "low" or final.flagged or l2_truncated or unjudged
 
