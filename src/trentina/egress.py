@@ -108,6 +108,12 @@ class ResolvedTarget:
     Every answer, in the resolver's order: each one was checked, and trying
     the next when one will not connect is what a client dialling the name
     would do (an IPv6 answer on a host with no IPv6 route, say).
+
+    A sealed trust type. Within this repository ``check_url`` is its only
+    constructor, fenced by ``tests/test_seal.py``, so in-tree code cannot pin a
+    connection to an address the guard did not clear — do not build one
+    elsewhere. That binds our own code, not an out-of-tree caller; the runtime
+    seal that stops those is Phase 6.
     """
 
     host: str
