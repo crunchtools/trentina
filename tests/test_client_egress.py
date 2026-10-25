@@ -345,7 +345,7 @@ class TestRefusedBeforeConnecting:
         upstream: _Upstream,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setattr(client_egress, "MAX_TUNNELS_PER_PROFILE", 1)
+        monkeypatch.setattr(client_egress._slots, "_limit", 1)
         first, _reader, held = await _connect()
         assert first.startswith(b"HTTP/1.1 200")
         second, _reader2, writer = await _connect()
@@ -654,7 +654,7 @@ class TestABurstIsOneLookup:
         try:
             # More tunnels than the profile has resolver slots, all waiting.
             for _ in range(200):
-                if client_egress._open.get("agent1", 0) == len(burst):
+                if client_egress._slots._open.get("agent1", 0) == len(burst):
                     break
                 await asyncio.sleep(0.01)
         finally:
