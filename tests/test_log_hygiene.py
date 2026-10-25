@@ -438,6 +438,7 @@ class TestProxies:
         config_mod._config = None
         database._db = None
         upstream._checked.clear()
+        upstream._pool.clear()
         profiles = {"agent1": harness.profile(fetch=("acme/*",), push=("acme/*",))}
         active = SimpleNamespace(config=SimpleNamespace(git_remotes=harness.remotes()))
         monkeypatch.setattr(git_transport, "get_active_config", lambda: active)
@@ -449,7 +450,7 @@ class TestProxies:
         try:
             async with harness.serving(forge.app()) as forge_port:
                 transport = harness.ToForge(forge_port)
-                monkeypatch.setattr(egress, "PinnedTransport", lambda _backend: transport)
+                monkeypatch.setattr(upstream, "PinnedTransport", lambda _backend, **_kw: transport)
                 async with (
                     harness.serving(harness.gateway_app(profiles)) as port,
                     httpx.AsyncClient(headers=bearer) as client,

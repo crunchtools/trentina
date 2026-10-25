@@ -164,6 +164,9 @@ def _client_for(
     entry = _pool.get(key)
     if entry is None:
         backend = PinnedBackend()
+        # Operator origin, pinned to a checked address via pin-before-send over
+        # PinnedBackend/checked_target, no redirects — so the agent-URL guard does not apply.
+        # nosemgrep: trentina-httpx-client-outside-egress -- operator origin, pinned, no redirects
         client = httpx.AsyncClient(
             transport=PinnedTransport(
                 backend,
