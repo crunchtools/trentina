@@ -54,18 +54,13 @@ from dataclasses import field as dataclass_field
 from typing import TYPE_CHECKING, Any
 
 from ..config import get_config
+from ..core import Decision, Posture, dispose, refusal_from_warning, refusal_of
+from ..core.dispose import Disposition as Disposed
 from ..defense import Provenance, defend
 from ..l1.hidden import HiddenStats
 from ..l1.pipeline import run_l1
 from ..logsafe import exc_kind, exc_where, redact_source
-from ..modes import (
-    Gaps,
-    Mode,
-    ModePolicy,
-    gaps_of,
-    refusal_body,
-    refusal_reason,
-)
+from ..modes import Gaps, Mode, ModePolicy
 from ..quarantine.agent import quarantine_redact
 from ..quarantine.packs import GENERIC_ID, pack_for
 from ..unpack.child import run_unpacking
@@ -400,22 +395,25 @@ async def _read_response(
 
 
 def _binary_only(
-    unscannable: dict[str, int], unread: set[str], mode: Mode, policy: ModePolicy
+    unscannable: dict[str, int], unread: set[str], posture: Posture
 ) -> IngressDecision:
     """A response with no text at all: only image blocks or blobs, or nothing.
 
-    No layer has anything to read, so the verdict is the gap alone: block and
-    redact refuse what an agent could open, flag delivers it with the warning.
+    No layer has anything to read, so there is no verdict to dispose of — the
+    gap alone decides. block and redact refuse what an agent could open, flag
+    delivers it with the warning (the pre-gate binary-unread gap, #367).
     """
     counts = {k: v for k, v in unscannable.items() if v}
     if not unread:
         return IngressDecision(warning={"unscannable": counts} if counts else None)
     warning = _unread_warning({"unscannable": counts}, unread)
-    if mode is Mode.FLAG:
+    if posture.mode is Mode.FLAG:
         return IngressDecision(warning=warning)
     warning["blocked"] = True
     return IngressDecision(
-        warning=warning, blocked=True, refusal=_refusal_from_warning(warning, mode, policy)
+        warning=warning,
+        blocked=True,
+        refusal=refusal_from_warning(warning, posture.mode, posture.policy),
     )
 
 
@@ -484,9 +482,10 @@ async def scan_tool_response(
     joined = lead_in + joined if lead_in and joined.strip() else joined
     mode = effective_mode(profile, mode)
     policy = policy or ModePolicy((mode,), mode)
+    posture = Posture(mode=mode, policy=policy, prompt=prompt or DEFAULT_REDACT_PROMPT)
 
     if not joined.strip():
-        return _binary_only(unscannable, unread, mode, policy)
+        return _binary_only(unscannable, unread, posture)
 
     # The briefing is in the key: the same bytes from a backend whose operator
     # briefed L3 differently may be judged differently (#204). So is the
@@ -512,7 +511,7 @@ async def scan_tool_response(
         return IngressDecision(
             warning=cached,
             blocked=blocked,
-            refusal=_refusal_from_warning(cached, mode, policy) if blocked else None,
+            refusal=refusal_from_warning(cached, mode, policy) if blocked else None,
         )
 
     pipeline = None
@@ -531,13 +530,13 @@ async def scan_tool_response(
         provenance=provenance,
         domain=domain,
         l3_context=l3_context,
-        stop_on_partial=mode is not Mode.FLAG,
+        stop_on_partial=posture.stop_on_partial,
         attribution={
             "profile": profile.name,
             "backend": backend_name,
             "tool": tool_name,
             "direction": "response",
-            "blocked": mode is Mode.BLOCK and blocklists,
+            "blocked": posture.records_block(blocklists=blocklists),
             "call_ref": current_call.get() or None,
         },
     )
@@ -545,39 +544,32 @@ async def scan_tool_response(
     if unread:
         warning = _unread_warning(warning, unread)
 
-    # Under block, "we could not finish judging this" is treated exactly
-    # like "this is hostile" — the adversarial review's H1/H3: padding a
-    # response past the classifier's token cap made L2 scan only the benign
-    # head, and an L3 outage answered "clean". The rule is modes.Gaps, the
-    # same one the tools use. A missing ONNX model now refuses too, unless
-    # TRENTINA_REQUIRE_L2=false: one rule, and an escape hatch for a bad
-    # image rather than a silent exemption.
-    layer_gaps = gaps_of(verdict)
-    unjudgeable = layer_gaps.blocking() or bool(unread)
+    # The disposition is decided once, in core.dispose: a flagged or
+    # incompletely-judged response is refused unless the mode is flag. "Could
+    # not finish judging" is treated exactly like "this is hostile" (the
+    # padding attack — L2 scans a benign head, an L3 outage answers "clean"),
+    # because both are gaps that block. Binary blocks no layer could read
+    # (#367) are tracked beside the verdict, so they fold in as extra_unread.
+    disposition = dispose(verdict, posture, extra_unread=bool(unread))
 
     if mode is Mode.REDACT:
-        return await _redact_response(verdict, warning, unjudgeable, prompt, policy, key)
+        return await _redact_response(verdict, warning, disposition, posture, key)
 
-    blocked = False
-    # `is not FLAG` rather than `is BLOCK`, deliberately. `flag` is the only
-    # mode that DELIVERS flagged content, so making it the sole exception
-    # means any mode added later fails closed until someone implements it.
-    if (verdict.flagged or unjudgeable) and mode is not Mode.FLAG:
-        blocked = True
+    blocked = disposition.decision is Decision.REFUSE
+    if blocked:
         if warning is None:
             # build_warning() only returns None when nothing was flagged and
-            # nothing was unjudgeable -- entering this branch means one of
-            # those was true, so warning cannot be None here. If it is, the
-            # invariant broke and failing loudly beats silently skipping the
-            # block under python -O.
+            # nothing was unjudgeable -- a REFUSE means one was true, so the
+            # invariant broke. Failing loudly beats silently skipping the block
+            # under python -O.
             raise RuntimeError(
                 "ingress_defense: warning is None while blocking -- invariant violated"
             )
-        if unjudgeable and not verdict.flagged:
+        if disposition.flagged_by is None:
             logger.warning(
                 "gateway: refusing incompletely-judged response for profile=%s (%s)",
                 profile.name,
-                layer_gaps,
+                disposition.gaps,
             )
         warning = {**warning, "blocked": True}
 
@@ -597,55 +589,47 @@ async def scan_tool_response(
     return IngressDecision(
         warning=warning,
         blocked=blocked,
-        refusal=_refusal_from_warning(warning, mode, policy) if blocked else None,
+        refusal=refusal_of(disposition, posture) if blocked else None,
     )
-
-
-def _refusal_from_warning(
-    warning: dict[str, Any] | None, mode: Mode, policy: ModePolicy
-) -> dict[str, Any]:
-    """The refusal body, rebuilt from a (possibly cached) warning."""
-    warning = warning or {}
-    flagged_by = warning.get("flagged_by") or None
-    gaps = Gaps.of_warning(warning)
-    reason = refusal_reason(flagged_by, gaps) or "refused by the defense pipeline"
-    return refusal_body(reason, mode, flagged_by=flagged_by, gaps=gaps, policy=policy)
 
 
 async def _redact_response(
     verdict: Any,
     warning: dict[str, Any] | None,
-    unjudgeable: bool,
-    prompt: str | None,
-    policy: ModePolicy,
+    disposition: Disposed,
+    posture: Posture,
     key: str,
 ) -> IngressDecision:
     """redact on a proxied response: refuse on gaps, else extract and verify.
 
     A flag does not refuse redact — that is what redact is for — but a layer
-    that could not finish does, exactly as in ``tools/judged.py``.
+    that could not finish does, exactly as in ``tools/judged.py``. The core
+    already decided which: a REFUSE disposition means a blocking gap.
     """
-    if unjudgeable:
+    if disposition.decision is Decision.REFUSE:
         blocked_warning = {**(warning or {}), "blocked": True}
         _cache_put(key, blocked_warning)
         return IngressDecision(
             warning=blocked_warning,
             blocked=True,
-            refusal=_refusal_from_warning(blocked_warning, Mode.REDACT, policy),
+            refusal=refusal_of(disposition, posture),
         )
     result = await quarantine_redact(
         verdict.read,
-        prompt or DEFAULT_REDACT_PROMPT,
+        disposition.prompt or DEFAULT_REDACT_PROMPT,
         detection=verdict.l3_assessment,
     )
     if result.refused_by is not None:
-        reason = f"redact refused: {result.refused_by}"
-        refusal = refusal_body(reason, Mode.REDACT, policy=policy)
-        refusal["alternatives"] = []
+        # redact's own turn objecting: nothing is suggested (no flag, no gap).
+        refuse = Disposed(
+            Decision.REFUSE,
+            reason=f"redact refused: {result.refused_by}",
+            offer_alternatives=False,
+        )
         return IngressDecision(
             warning={**(warning or {}), "blocked": True, "clean_refused_by": result.refused_by},
             blocked=True,
-            refusal=refusal,
+            refusal=refusal_of(refuse, posture),
         )
     return IngressDecision(
         warning=warning,
@@ -778,6 +762,8 @@ async def _judge_description(
     profile that joined it shares the verdict and is not recorded twice.
     """
     perimeter_counts["judged"] += 1
+    mode = effective_mode(profile)
+    posture = Posture(mode=mode, policy=ModePolicy((mode,), mode))
     # A shared description is the gateway's own work, judged as the service
     # identity (#138); the thresholds stay the requester's.
     with service_context(operator):
@@ -793,7 +779,7 @@ async def _judge_description(
                 "backend": backend_name,
                 "tool": str(tool.get("name", "?")),
                 "direction": "tool_list",
-                "blocked": effective_mode(profile) is Mode.BLOCK,
+                "blocked": posture.records_block(),
             },
         )
     warning = build_warning(verdict)
