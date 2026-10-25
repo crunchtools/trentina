@@ -160,6 +160,10 @@ async def trentina_lifespan() -> AsyncIterator[dict[str, Any]]:
         yield {}
     finally:
         await client_egress.stop()
+        # Close the pinned connection pool's long-lived clients (#511, Phase 2).
+        from .upstream import close_pool
+
+        await close_pool()
         if started_here and _task is not None:
             _task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

@@ -55,7 +55,6 @@ from starlette.responses import Response
 
 from .. import logsafe
 from ..defense import Provenance, defend
-from ..egress import open_pinned
 from ..errors import EgressRefusedError as GuardRefusedError
 from ..modes import Mode, gaps_of
 from ..outcomes import Outcome
@@ -83,11 +82,9 @@ from .outbound import (
 )
 from .proxy_utils import PLAIN_TEXT, normalize_proxy_path
 from .relay import MAX_OPERATIONS_PER_PROFILE, NO_OPERATION, Operation, Slots
-from .upstream import RESOLVER_BUSY, checked_target
+from .upstream import RESOLVER_BUSY, pinned_send
 
 if TYPE_CHECKING:
-    from contextlib import AbstractAsyncContextManager
-
     from starlette.requests import Request
 
     from .profile import EgressGrant, EgressUpstream, Profile
@@ -511,7 +508,7 @@ async def _send_and_judge(
     injected credential is scrubbed from a text response so an echo endpoint
     cannot hand the agent the token it never held.
     """
-    raw, status, ct, hdrs = await _fetch(op, upstream, method, url, headers, body)
+    raw, status, ct, hdrs = await _fetch(op, method, url, headers, body)
     op.received = len(raw)
     blocking = mode is Mode.BLOCK
     # The verdict header is ours; never let an upstream forge or echo it. And
@@ -604,7 +601,6 @@ async def _judge_response(
 
 async def _fetch(
     op: Operation,
-    upstream: EgressUpstream,
     method: str,
     url: str,
     headers: dict[str, str],
@@ -617,11 +613,9 @@ async def _fetch(
     """
     cap = response_byte_cap()
     try:
-        target = await checked_target(op.profile, upstream.host)
-        opener: AbstractAsyncContextManager[httpx.Response] = open_pinned(
-            method, url, target, idle=IDLE_TIMEOUT, headers=headers, content=body
-        )
-        async with opener as resp:
+        async with pinned_send(
+            op.profile, method, url, idle=IDLE_TIMEOUT, headers=headers, content=body
+        ) as resp:
             if body is not None:
                 op.sent = len(body)  # counted once the request is actually on the wire
             raw = await _read_response(resp, cap)

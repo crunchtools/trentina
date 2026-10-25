@@ -325,10 +325,29 @@ class PinnedTransport(httpx.AsyncHTTPTransport):
     with an ``httpx.MockTransport``.
     """
 
-    def __init__(self, backend: PinnedBackend) -> None:
+    def __init__(
+        self,
+        backend: PinnedBackend,
+        *,
+        max_connections: int | None = None,
+        keepalive_expiry: float | None = None,
+    ) -> None:
         ssl_context = shared_ssl_context()
         super().__init__(verify=ssl_context, trust_env=False)
-        self._pool = httpcore.AsyncConnectionPool(ssl_context=ssl_context, network_backend=backend)
+        # A per-call transport (open_pinned/open_guarded) leaves these unset and
+        # keeps httpcore's defaults; the pooled sender in gateway/upstream.py
+        # passes explicit limits so a long-lived client's keepalive and
+        # connection budget are its own, per origin (#511). Passed only when
+        # given: httpcore reads max_connections=None as UNLIMITED, not its
+        # default of 10, so forwarding None would quietly uncap the per-call pool.
+        limits: dict[str, Any] = {}
+        if max_connections is not None:
+            limits["max_connections"] = max_connections
+        if keepalive_expiry is not None:
+            limits["keepalive_expiry"] = keepalive_expiry
+        self._pool = httpcore.AsyncConnectionPool(
+            ssl_context=ssl_context, network_backend=backend, **limits
+        )
 
 
 @asynccontextmanager
@@ -478,12 +497,24 @@ async def open_pinned(
         request = client.build_request(method, url, headers=sent, content=content)
         resp = await client.send(request, stream=True)
         try:
-            if resp.status_code in _REDIRECTS:
-                log.warning("egress: refused a redirect on a pinned request")
-                raise EgressRefusedError("redirect")
-            if is_encoded(resp):
-                log.warning("egress: refused a content-encoded response")
-                raise EgressRefusedError("encoded")
+            raise_on_bad_pinned_response(resp)
             yield resp
         finally:
             await resp.aclose()
+
+
+def raise_on_bad_pinned_response(resp: httpx.Response) -> None:
+    """Refuse a pinned response that redirects or arrived content-encoded.
+
+    A redirect followed on a pinned request would carry the caller's injected
+    credential to a host nobody checked; an encoded body defeats the size cap
+    (httpx decompresses before any caller can count). The ONE check shared by
+    ``open_pinned`` and the pooled sender in ``gateway/upstream.py`` (#511), so
+    neither path can forget it.
+    """
+    if resp.status_code in _REDIRECTS:
+        log.warning("egress: refused a redirect on a pinned request")
+        raise EgressRefusedError("redirect")
+    if is_encoded(resp):
+        log.warning("egress: refused a content-encoded response")
+        raise EgressRefusedError("encoded")
