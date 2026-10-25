@@ -51,14 +51,6 @@ def switch_value(requested: Any) -> Any:
     return requested
 
 
-#: Declines that mean a processor did not do its job, rather than that the
-#: payload was not its shape. A REQUIRED processor that reports one refuses
-#: the call. ``too_large`` is here because padding a payload past the parse
-#: cap must not be a way around a converter the operator pinned.
-FAILED_DECLINES = frozenset(
-    {"error", "petit_error", "worker_error", "no_api_key", "empty_summary", "too_large"}
-)
-
 #: What the internal tools minify with, whatever the profile's processors
 #: say: those are tuned for proxied output, and a profile that lists only
 #: petit must not silently cost fetch its HTML conversion.

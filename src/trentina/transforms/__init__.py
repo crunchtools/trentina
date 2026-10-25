@@ -13,8 +13,17 @@ separate framework until #167, on a ruling that did not hold.
 """
 
 from ..channels import Channel
-from .base import Cost, Transform, TransformContext, TransformResult
-from .compose import Strategy, TransformOutcome, run_transforms
+from .base import (
+    Applied,
+    Cost,
+    Declined,
+    Failed,
+    Transform,
+    TransformContext,
+    TransformRecord,
+    TransformResult,
+)
+from .compose import Strategy, TransformOutcome, first_failure, run_transforms
 from .detect import DetectProcessor
 from .email import EmailProcessor
 from .html import HtmlProcessor
@@ -33,11 +42,14 @@ from .view import (
 
 __all__ = [
     "DEFAULT_SKIP_SAMPLE_BYTES",
+    "Applied",
     "Channel",
     "Cost",
+    "Declined",
     "DetectProcessor",
     "DocumentProcessor",
     "EmailProcessor",
+    "Failed",
     "HtmlProcessor",
     "MatrixProcessor",
     "PetitProcessor",
@@ -51,7 +63,9 @@ __all__ = [
     "Transform",
     "TransformContext",
     "TransformOutcome",
+    "TransformRecord",
     "TransformResult",
     "UndecryptableEvent",
+    "first_failure",
     "run_transforms",
 ]

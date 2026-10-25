@@ -216,42 +216,40 @@ class TestDeclineLogLine:
 
     def test_not_smaller_decline_shows_the_ratio_it_reached(self) -> None:
         from trentina.gateway.transform import _describe_decline
-        from trentina.transforms import Cost, TransformResult
+        from trentina.transforms import Cost, Declined, TransformRecord
 
-        result = TransformResult.declined(
+        record = TransformRecord.of(
             "structured",
             Cost.FREE,
             "x" * 100,
-            reason="not_smaller",
-            details={"would_be_bytes": 104, "would_be_ratio": 1.04},
+            Declined("not_smaller", {"would_be_bytes": 104, "would_be_ratio": 1.04}),
         )
-        line = _describe_decline(result)
+        line = _describe_decline(record)
         assert "structured:not_smaller" in line, "still greppable"
         assert "would_be=104%" in line
 
     def test_shape_decline_shows_lines_and_bytes(self) -> None:
         from trentina.gateway.transform import _describe_decline
-        from trentina.transforms import Cost, TransformResult
+        from trentina.transforms import Cost, Declined, TransformRecord
 
-        result = TransformResult.declined(
+        record = TransformRecord.of(
             "petit",
             Cost.FREE,
             "x",
-            reason="not_line_structured",
-            details={"lines_in": 1, "bytes_in": 1_645_600},
+            Declined("not_line_structured", {"lines_in": 1, "bytes_in": 1_645_600}),
         )
-        line = _describe_decline(result)
+        line = _describe_decline(record)
         assert "petit:not_line_structured" in line
         assert "lines=1" in line and "bytes=1645600" in line
 
     def test_bare_decline_stays_terse(self) -> None:
         from trentina.gateway.transform import _describe_decline
-        from trentina.transforms import Cost, TransformResult
+        from trentina.transforms import Cost, Declined, TransformRecord
 
-        result = TransformResult.declined(
+        record = TransformRecord.of(
             "email",
             Cost.FREE,
             "x",
-            reason="not_email",
+            Declined("not_email"),
         )
-        assert _describe_decline(result) == "email:not_email"
+        assert _describe_decline(record) == "email:not_email"

@@ -42,9 +42,15 @@ from ..channels import Channel
 from ..defense import Provenance
 from ..l1.hidden import HiddenStats, detect_hidden_markup
 from ..logsafe import exc_kind, exc_where, redact_source
-from ..transforms import Strategy, Transform, TransformContext, run_transforms
+from ..transforms import (
+    Strategy,
+    Transform,
+    TransformContext,
+    TransformRecord,
+    first_failure,
+    run_transforms,
+)
 from ..transforms.detect import document_hidden, hiding_briefing, hiding_removed
-from ..transforms.policy import FAILED_DECLINES
 from .backend import loggable_tool
 from .drivers import build_transforms
 from .errors import ProfileConfigError
@@ -127,7 +133,7 @@ def _text_blocks(content_blocks: list[Any] | None) -> list[tuple[int, str]]:
     return out
 
 
-def _describe_decline(outcome: Any) -> str:
+def _describe_decline(record: TransformRecord) -> str:
     """One processor's decline, with the evidence it already measured.
 
     A bare reason is the same word for very different outcomes, so print
@@ -136,7 +142,7 @@ def _describe_decline(outcome: Any) -> str:
     Shape stays `name:reason(...)` so existing greps for a reason string
     keep matching.
     """
-    detail = outcome.details
+    detail = record.details
     parts: list[str] = []
     if "would_be_ratio" in detail:
         parts.append(f"would_be={detail['would_be_ratio']:.0%}")
@@ -145,7 +151,7 @@ def _describe_decline(outcome: Any) -> str:
         if "bytes_in" in detail:
             parts.append(f"bytes={detail['bytes_in']}")
     suffix = f"({','.join(parts)})" if parts else ""
-    return f"{outcome.name}:{detail.get('declined', '?')}{suffix}"
+    return f"{record.name}:{record.reason or '?'}{suffix}"
 
 
 def _processors_for(
@@ -183,7 +189,7 @@ def _processors_for(
 @dataclass
 class _Block:
     content: str
-    results: list[Any]
+    results: list[TransformRecord]
     metered: bool = False
     failed: str | None = None
 
@@ -199,14 +205,9 @@ async def _transform_block(
     block = _Block(text, [])
     if floor:
         stage = await run_transforms(text, processors=floor, strategy="chain", ctx=ctx)
-        broken = next(
-            (r for r in stage.results if r.details.get("declined") in FAILED_DECLINES), None
-        )
+        broken = first_failure(stage.results)
         if broken is not None:
-            block.failed = (
-                f"required transform {broken.name!r} could not run "
-                f"({broken.details.get('declined')})"
-            )
+            block.failed = f"required transform {broken.name!r} could not run ({broken.reason})"
             return block
         block.results.extend(stage.results)
         block.metered = stage.metered_used
@@ -312,7 +313,7 @@ async def _transform_blocks(
 ) -> TransformOutcome:
     """Each text block through both stages, then the accounting and the hiding."""
     new_blocks = list(content_blocks or [])
-    results: list[Any] = []
+    results: list[TransformRecord] = []
     metered = False
     sizes = [0, 0]
     for (idx, text), length in targets:
@@ -352,13 +353,13 @@ def _account(
     source: str,
     content_blocks: list[Any] | None,
     new_blocks: list[Any],
-    results: list[Any],
+    results: list[TransformRecord],
     metered: bool,
     bytes_in: int,
     bytes_out: int,
 ) -> TransformOutcome:
     """Log what every processor did, and build the outcome and its sidecar."""
-    applied = any(getattr(r, "applied", False) for r in results)
+    applied = any(r.applied for r in results)
 
     # Every candidate is logged, applied or not, at WARNING: the gateway runs
     # at TRENTINA_LOG_LEVEL=WARNING so INFO goes nowhere, and this is the same
@@ -394,17 +395,7 @@ def _account(
         "bytes_out": bytes_out,
         "ratio": round(bytes_out / bytes_in, 4) if bytes_in else 1.0,
         "metered": metered,
-        "processors": [
-            {
-                "name": r.name,
-                "cost": r.cost.value,
-                "applied": r.applied,
-                "bytes_in": r.bytes_in,
-                "bytes_out": r.bytes_out,
-                **r.details,
-            }
-            for r in results
-        ],
+        "processors": [r.row() for r in results],
     }
 
     return TransformOutcome(

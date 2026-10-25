@@ -28,9 +28,16 @@ from ..defense import Provenance
 from ..errors import TransformFailedError
 from ..l1.hidden import detect_hidden_markup
 from ..l1.pipeline import PipelineResult, run_l1
-from ..transforms import Cost, TransformContext, TransformResult, run_transforms
+from ..transforms import (
+    Applied,
+    Cost,
+    Failed,
+    TransformContext,
+    TransformRecord,
+    run_transforms,
+)
 from ..transforms.detect import document_hidden, hiding_briefing, hiding_removed
-from ..transforms.policy import FAILED_DECLINES, current_preprocess_policy
+from ..transforms.policy import current_preprocess_policy
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -59,21 +66,28 @@ def _l1_with_original_hiding(converted: str, original: str, office: int) -> Pipe
     return pipeline
 
 
-async def _floor(processors: Sequence[Any], content: str, ctx: TransformContext) -> list[Any]:
-    """The required processors, each fed the previous output. Raises instead of passing through."""
-    results: list[TransformResult] = []
+async def _floor(
+    processors: Sequence[Any], content: str, ctx: TransformContext
+) -> tuple[list[TransformRecord], str]:
+    """The required processors, each fed the previous applied output.
+
+    Raises instead of passing through: a floor transform that raises or returns
+    ``Failed`` refuses the call, because delivering the original in place of a
+    pinned converter would be a silent substitution. Returns the records and
+    the threaded content."""
+    records: list[TransformRecord] = []
     current = content
     for processor in processors:
         try:
             result = await processor.run(current, ctx)
         except Exception as exc:
             raise TransformFailedError(processor.name, type(exc).__name__) from exc
-        declined = str(result.details.get("declined", ""))
-        if declined in FAILED_DECLINES:
-            raise TransformFailedError(processor.name, declined)
-        results.append(result)
-        current = result.content
-    return results
+        if isinstance(result, Failed):
+            raise TransformFailedError(processor.name, result.reason)
+        records.append(TransformRecord.of(processor.name, processor.cost, current, result))
+        if isinstance(result, Applied):
+            current = result.content
+    return records, current
 
 
 async def prepare(
@@ -102,8 +116,8 @@ async def prepare(
     Raises:
         TransformNotPermittedError: the switch is not a bool, None, or the
             deprecated list form.
-        TransformFailedError: a REQUIRED processor raised, or declined in a
-            way that means it did not do its job (``FAILED_DECLINES``).
+        TransformFailedError: a REQUIRED processor raised or returned
+            ``Failed`` — it tried and could not finish its job.
     """
     from ..gateway.drivers import build_transforms
     from ..gateway.profile import ProcessorChainConfig
@@ -117,18 +131,18 @@ async def prepare(
     ctx = TransformContext(
         source=source, target_bytes=policy.target_bytes, content_type=content_type
     )
-    results = await _floor(processors[:floor], content, ctx)
+    results, current = await _floor(processors[:floor], content, ctx)
     if processors[floor:]:
-        current = results[-1].content if results else content
         outcome = await run_transforms(
             current, processors=processors[floor:], strategy="chain", ctx=ctx
         )
         results.extend(outcome.results)
+        current = outcome.content
     applied = [r for r in results if r.applied]
     if not applied:
         return Prepared(content)
 
-    final = applied[-1].content
+    final = current
     prepared = Prepared(
         final,
         extras={

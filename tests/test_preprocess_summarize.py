@@ -17,6 +17,9 @@ import pytest
 from trentina.defense import Provenance
 from trentina.errors import QuarantineAgentError
 from trentina.transforms import (
+    Applied,
+    Declined,
+    Failed,
     SummarizeProcessor,
     TransformContext,
     run_transforms,
@@ -50,7 +53,7 @@ class TestSummarizeProcessor:
             result = await SummarizeProcessor().run(
                 BIG_PAYLOAD, TransformContext(source="jira:SEC-1")
             )
-        assert result.applied
+        assert isinstance(result, Applied)
         assert result.content == "200 repetitions of one operational line."
         assert result.details["input_tokens"] == 4000
         # The worker was told where the content came from.
@@ -59,8 +62,8 @@ class TestSummarizeProcessor:
     async def test_small_payload_declines_without_spending(self) -> None:
         with _patch_worker() as worker:
             result = await SummarizeProcessor().run("tiny", TransformContext())
-        assert not result.applied
-        assert result.details["declined"] == "too_small"
+        assert isinstance(result, Declined)
+        assert result.reason == "too_small"
         worker.assert_not_called()
 
     async def test_no_api_key_declines(self) -> None:
@@ -70,8 +73,8 @@ class TestSummarizeProcessor:
         ):
             cfg.return_value = False
             result = await SummarizeProcessor().run(BIG_PAYLOAD, TransformContext())
-        assert not result.applied
-        assert result.details["declined"] == "no_api_key"
+        assert isinstance(result, Failed)
+        assert result.reason == "no_api_key"
         worker.assert_not_called()
 
     async def test_worker_failure_keeps_the_original(self) -> None:
@@ -84,9 +87,8 @@ class TestSummarizeProcessor:
         ):
             cfg.return_value = True
             result = await SummarizeProcessor().run(BIG_PAYLOAD, TransformContext())
-        assert not result.applied
-        assert result.content == BIG_PAYLOAD
-        assert result.details["declined"] == "worker_error"
+        assert isinstance(result, Failed)
+        assert result.reason == "worker_error"
 
     async def test_non_reducing_summary_declines(self) -> None:
         with (
@@ -95,9 +97,8 @@ class TestSummarizeProcessor:
         ):
             cfg.return_value = True
             result = await SummarizeProcessor().run(BIG_PAYLOAD, TransformContext())
-        assert not result.applied
-        assert result.content == BIG_PAYLOAD
-        assert result.details["declined"] == "no_reduction"
+        assert isinstance(result, Declined)
+        assert result.reason == "no_reduction"
 
     async def test_empty_summary_declines(self) -> None:
         with (
@@ -106,8 +107,8 @@ class TestSummarizeProcessor:
         ):
             cfg.return_value = True
             result = await SummarizeProcessor().run(BIG_PAYLOAD, TransformContext())
-        assert not result.applied
-        assert result.details["declined"] == "empty_summary"
+        assert isinstance(result, Failed)
+        assert result.reason == "empty_summary"
 
     async def test_summary_arrives_as_model_output(self) -> None:
         """The laundering defense, end to end at the composition level."""
