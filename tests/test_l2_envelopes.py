@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 import re
@@ -9,7 +10,9 @@ from pathlib import Path
 
 import pytest
 
+from corpora.benign_ops import BENIGN, in_tuning
 from corpora.envelopes import MAKERS, slug
+from scripts.l2_train_data import ANCHOR_REPEATS, anchors
 
 TEXT = "Weekly security roundup\nA patch for the login flow shipped on Tuesday."
 
@@ -60,3 +63,11 @@ def test_training_starts_from_the_shipped_revision() -> None:
     )
     assert pinned and trained
     assert pinned.group(1) == trained.group(1)
+
+
+def test_training_anchors_hold_no_held_out_case() -> None:
+    """The anchor is benign_ops's tuning split; a held-out case in training voids the gate."""
+    rows = asyncio.run(anchors())
+    tuning = [c for c in BENIGN if in_tuning(c.id)]
+    assert len(rows) == len(tuning) * ANCHOR_REPEATS
+    assert all(r["label"] == 0 for r in rows)

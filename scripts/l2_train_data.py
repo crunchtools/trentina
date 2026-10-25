@@ -10,9 +10,14 @@ keeps what it already reads well.
 
 Sources are pinned third-party sets the model card already lists, all
 permissive, and none of the sets Trentina measures on: the deepset and
-jackhhao splits, the internal corpus, ``benign_ops`` and every planted set
-stay out, so the gates still mean what they meant. Each row is rendered the
-way the gateway renders a tool reply (``corpora.gateway_read.as_read``).
+jackhhao splits, the internal corpus, ``benign_ops``'s held-out split and
+every planted set stay out, so the gates still mean what they meant.
+``benign_ops``'s tuning split (one case in four, the split a threshold is
+chosen on) goes in as an anchor: logs, unit status and source code are shapes
+no public set has, and without them the model drifts off what the shipped one
+reads well there (run 40202667628: 4 to 41 of 221 benign_ops cases flagged).
+Each row is rendered the way the gateway renders a tool reply
+(``corpora.gateway_read.as_read``).
 
     uv run python scripts/l2_train_data.py --out build/l2-train
 
@@ -36,6 +41,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from corpora.benign_ops import BENIGN, in_tuning
 from corpora.envelopes import MAKERS
 from corpora.gateway_read import as_read
 
@@ -52,6 +58,9 @@ MAX_CHARS = 4000
 
 PER_ENVELOPE = 150
 REPLAY = 1000
+ANCHOR_REPEATS = 8
+"""Times each ``benign_ops`` tuning case appears in training: about 85 cases,
+so the anchor weighs about as much as one envelope's benign rows times five."""
 
 SOURCES: tuple[dict[str, Any], ...] = (
     {
@@ -208,6 +217,16 @@ async def build(
     return rows
 
 
+async def anchors() -> list[dict[str, Any]]:
+    """``benign_ops``'s tuning split, ``ANCHOR_REPEATS`` times; never its held-out cases."""
+    rows = []
+    for case in BENIGN:
+        if in_tuning(case.id):
+            row = {"text": await as_read(case.payload, case.category), "label": 0, "shape": "ops"}
+            rows += [row] * ANCHOR_REPEATS
+    return rows
+
+
 def _in_val(text: str) -> bool:
     return int(hashlib.sha256(text.encode()).hexdigest(), 16) % VAL_ONE_IN == 0
 
@@ -239,6 +258,8 @@ def main() -> int:
         for name, held in (("train", False), ("val", True))
     }
     train = asyncio.run(build(*split["train"], args.per_envelope, args.replay))
+    train += asyncio.run(anchors())
+    random.Random(SEED).shuffle(train)
     val = asyncio.run(
         build(*split["val"], args.per_envelope // VAL_ONE_IN, args.replay // VAL_ONE_IN)
     )

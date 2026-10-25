@@ -1148,7 +1148,40 @@ benign text at most 0.026 as prose flags 8 of 20 times as a GitHub issue.
 pinned permissive sources, none of them a set measured here, wraps benign
 and attack text alike in every envelope so the label follows the text,
 replays plain rows, fine-tunes Horizon and holds the result to the benign,
-envelope and obfuscation gates. Results follow when the first run is read.
+envelope and obfuscation gates.
+
+**Do missed attacks matter less? (2026-10-25)** No. Joining the 2026-10-06
+detonation run (10 agents, a hijack flag per conversation) to each attack
+document's L2 score: Spearman 0.007 for Horizon, -0.048 for PG2 86M. Attacks
+Horizon misses hijack an agent 7.6% of the time against 9.4% for those it
+catches. PG2 86M misses all 12 that hijacked a strong agent (Haiku 4.5,
+Gemini 3.8 Flash, Gemini 2.5 Flash Lite). The bar for a candidate is set on
+the documents that hijacked: Horizon at 0.7 catches 80 of 128, and 9 of 12
+of the strong-agent ones.
+
+**Runs 1 and 2 fail on real replies.** Run 1 (40191101108) dropped 1,115
+long attacks it could not place in a 512-token window; run 2 (40202667628)
+trains on the window that holds the attack and caps a long benign row at
+three windows. Run 2 ranks the synthetic gates better than Horizon at every
+cut, and wins the detonation set, but refuses real replies Horizon passes:
+
+| | Horizon @0.7 | Run 1 @0.7 | Run 2 @0.7 | Run 2 @0.96 |
+|---|---|---|---|---|
+| Envelope gate, benign flagged (of 480) | 23 | 14 | 37 | 8 |
+| Envelope gate, attacks caught (of 480) | 344 | 303 | 388 | 359 |
+| Sweep pages flagged (of 8) | 2 | 3 | 5 | 4 |
+| Sweep records flagged (of 276) | 16 | 22 | 24 | 19 |
+| Miniflux entries flagged (of 65) | 3 | 12 | 9 | 7 |
+| `benign_ops`, known gaps included (of 221) | 11 | 41 | 54 | 41 |
+| Hijacking attacks caught (of 128) | 80 | 90 | | 99 |
+| Strong-agent hijacks caught (of 12) | 9 | 8 | | 11 |
+
+The 0.96 cut was found on the gate's own scores, so its envelope row is
+optimistic. Horizon's envelope row here is the local export (23 and 344);
+the image's export scores 21 and 342. The regression sits in logs, journals and source code, shapes no
+training row resembles: the model drifted off Horizon's priors there. Run 3
+anchors on `benign_ops`'s tuning split (eight times each, held-out never) and
+halves the learning rate to 1e-5.
 
 ## Guarded execution (#456)
 

@@ -87,7 +87,13 @@ def main() -> int:
     p.add_argument("--data", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--epochs", type=float, default=1.0)
-    p.add_argument("--lr", type=float, default=2e-5)
+    p.add_argument(
+        "--lr",
+        type=float,
+        default=1e-5,
+        help="Low, to move what the base learned about envelopes and keep the rest "
+        "(2e-5 in run 40202667628 drifted on shapes it never trained on).",
+    )
     p.add_argument("--batch", type=int, default=8)
     p.add_argument("--max-length", type=int, default=512)
     p.add_argument("--threads", type=int, default=0, help="torch threads; 0 keeps the default.")
