@@ -151,7 +151,7 @@ def _describe_decline(record: TransformRecord) -> str:
         if "bytes_in" in detail:
             parts.append(f"bytes={detail['bytes_in']}")
     suffix = f"({','.join(parts)})" if parts else ""
-    return f"{record.name}:{record.declined or '?'}{suffix}"
+    return f"{record.name}:{record.reason or '?'}{suffix}"
 
 
 def _processors_for(
@@ -207,7 +207,7 @@ async def _transform_block(
         stage = await run_transforms(text, processors=floor, strategy="chain", ctx=ctx)
         broken = first_failure(stage.results)
         if broken is not None:
-            block.failed = f"required transform {broken.name!r} could not run ({broken.declined})"
+            block.failed = f"required transform {broken.name!r} could not run ({broken.reason})"
             return block
         block.results.extend(stage.results)
         block.metered = stage.metered_used

@@ -48,7 +48,7 @@ from trentina.outcomes import Outcome, classify_exception
 from trentina.tools.fetch import fetch_page, flag_fetch
 from trentina.tools.read import read_file
 from trentina.tools.reload import _hold_preprocess_floor
-from trentina.transforms import Applied, Failed, TransformResult
+from trentina.transforms import Applied, Declined, Failed, TransformResult
 from trentina.transforms.policy import PREPROCESS_PARAM, PreProcessPolicy
 
 from .mode_harness import layers
@@ -481,6 +481,21 @@ class TestInternalTools:
             with pytest.raises(TransformFailedError, match="too_large"):
                 await flag_fetch("https://example.com")
         assert fakes.classify.await_count == 0
+
+    async def test_a_floor_that_declines_is_a_no_op_not_a_refusal(self, env: Path) -> None:
+        """A required transform that DECLINES (the payload was not its shape) is
+        a safe no-op, never a refusal: the fetch delivers the original and
+        scans it unchanged. Only a Failed floor raises TransformFailedError."""
+        policy = PreProcessPolicy(["html"], ["html"])
+        with (
+            profile_context(_profile(), None, policy),
+            layers(env) as fakes,
+            patch(HTML_RUN, AsyncMock(return_value=Declined("not_markup"))),
+        ):
+            fakes.fetch_url.return_value = (PAGE, "text/html", ())
+            result = await flag_fetch("https://example.com")
+        assert result["content"] == PAGE
+        assert fakes.classify.call_args_list[0].args[0] == PAGE
 
     async def test_a_model_rewrite_is_judged_as_model_output(self, env: Path) -> None:
         """A METERED processor's output draws unconditional L3 (defense.Provenance)."""

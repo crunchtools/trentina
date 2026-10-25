@@ -379,7 +379,7 @@ class TestComposition:
             processors=[_Exploder(), PetitProcessor()],
             strategy="chain",
         )
-        assert outcome.results[0].declined == "error"
+        assert outcome.results[0].reason == "error"
         assert outcome.results[1].applied, "the chain continued past the failure"
 
     async def test_sidecar_accounts_for_the_run(self) -> None:

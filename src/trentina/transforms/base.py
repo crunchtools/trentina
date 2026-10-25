@@ -243,10 +243,13 @@ class TransformRecord:
         return self.result.details
 
     @property
-    def declined(self) -> str | None:
-        """The decline/fail reason, or None when the transform applied. Named
-        ``declined`` because that is the key it serializes to in the sidecar,
-        the shape operators and tests already grep for."""
+    def reason(self) -> str | None:
+        """The decline OR fail reason, or None when the transform applied.
+
+        Named for what it is — a non-applied outcome's reason, which may be a
+        shape decline or a failure; the caller keeps the two apart by the
+        result's type, not by this string. It serializes to the ``declined``
+        key in the sidecar row (``row()``), the shape operators grep for."""
         return None if isinstance(self.result, Applied) else self.result.reason
 
     @property
@@ -278,8 +281,8 @@ class TransformRecord:
             "bytes_out": self.bytes_out,
             **self.details,
         }
-        if self.declined is not None:
-            row["declined"] = self.declined
+        if self.reason is not None:
+            row["declined"] = self.reason
         return row
 
 
