@@ -33,9 +33,9 @@ page is exactly the repetition petit collapses.
 The chain's results are merged into ONE result named ``detect``. ``format``
 says which path ran and ``chain`` which processors applied, so a reader of
 the sidecar can tell "detected JSON, nothing to collapse" from "detected
-text". A processor that broke (``policy.FAILED_DECLINES``) makes the whole
-result decline with its reason, so a profile that pins ``detect`` as
-``required`` refuses rather than delivers half a transformation.
+text". A processor that FAILED (``base.Failed``) makes the whole result
+``Failed`` with its reason, so a profile that pins ``detect`` as ``required``
+refuses rather than delivers half a transformation.
 """
 
 from __future__ import annotations
@@ -45,12 +45,20 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from ..channels import Channel, Kind
-from .base import Cost, Transform, TransformContext, TransformResult
+from .base import (
+    Applied,
+    Cost,
+    Declined,
+    Failed,
+    Transform,
+    TransformContext,
+    TransformRecord,
+    TransformResult,
+)
 from .email import EmailProcessor
 from .html import HtmlProcessor
 from .pdf import PDF_BASE64_PREFIX, PdfProcessor, is_pdf_type
 from .petit import PetitProcessor
-from .policy import FAILED_DECLINES
 from .structured import StructuredProcessor
 
 if TYPE_CHECKING:
@@ -173,16 +181,17 @@ _CHAINS: dict[Format, tuple[Transform, ...]] = {
 }
 
 
-async def _run_chain(fmt: Format, payload: str, ctx: TransformContext) -> list[TransformResult]:
-    """The format's processors, each fed the last applied output. Every result is kept."""
-    results: list[TransformResult] = []
+async def _run_chain(fmt: Format, payload: str, ctx: TransformContext) -> list[TransformRecord]:
+    """The format's processors, each fed the last applied output. Every result
+    is kept, paired with the processor that produced it."""
+    records: list[TransformRecord] = []
     current = payload
     for processor in _CHAINS[fmt]:
         result = await processor.run(current, ctx)
-        results.append(result)
-        if result.applied:
+        records.append(TransformRecord.of(processor.name, processor.cost, current, result))
+        if isinstance(result, Applied):
             current = result.content
-    return results
+    return records
 
 
 class DetectProcessor:
@@ -195,43 +204,30 @@ class DetectProcessor:
 
     async def run(self, payload: str, ctx: TransformContext) -> TransformResult:
         fmt = detect(payload, ctx.content_type)
-        results = await _run_chain(fmt, payload, ctx)
-        if fmt is Format.JSON and results[0].details.get("declined") == "not_json":
+        records = await _run_chain(fmt, payload, ctx)
+        first = records[0].result
+        if fmt is Format.JSON and isinstance(first, Declined) and first.reason == "not_json":
             fmt = Format.TEXT
-            results = await _run_chain(fmt, payload, ctx)
-        broken = next((r for r in results if r.details.get("declined") in FAILED_DECLINES), None)
-        if broken is not None:
-            return TransformResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason=str(broken.details["declined"]),
-                details={"format": fmt.value, "failed": broken.name},
-            )
-        applied = [r for r in results if r.applied]
-        if not applied:
-            return TransformResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="nothing_to_minify",
-                details={"format": fmt.value},
-            )
-        current = applied[-1].content
+            records = await _run_chain(fmt, payload, ctx)
+        for record in records:
+            # A sub-processor that FAILED makes the whole detection fail with
+            # its reason, so a profile that pins ``detect`` as required refuses
+            # rather than delivering half a transformation.
+            if isinstance(record.result, Failed):
+                return Failed(record.result.reason, {"format": fmt.value, "failed": record.name})
+        content: str | None = None
         details: dict[str, int | float | str] = {}
-        for result in applied:
-            details.update(result.details)
+        chain: list[str] = []
+        for record in records:
+            if isinstance(record.result, Applied):
+                content = record.result.content
+                details.update(record.result.details)
+                chain.append(record.name)
+        if content is None:
+            return Declined("nothing_to_minify", {"format": fmt.value})
         details["format"] = fmt.value
-        details["chain"] = ",".join(r.name for r in applied)
-        return TransformResult(
-            name=self.name,
-            cost=self.cost,
-            content=current,
-            applied=True,
-            bytes_in=len(payload.encode("utf-8")),
-            bytes_out=len(current.encode("utf-8")),
-            details=details,
-        )
+        details["chain"] = ",".join(chain)
+        return Applied(content, details)
 
 
 _HIDING_DETAILS = (
@@ -245,7 +241,7 @@ _HIDING_DETAILS = (
 _CONVERTED_DETAILS = ("office_converted", "pdf_converted")
 
 
-def _converted(result: TransformResult) -> bool:
+def _converted(result: TransformRecord) -> bool:
     """Whether a result deleted markup or converted an office file or a PDF
     (#368, #369), directly or inside ``detect``."""
     if not result.applied:
@@ -255,7 +251,7 @@ def _converted(result: TransformResult) -> bool:
     return result.name == "html" or "html" in str(result.details.get("chain", "")).split(",")
 
 
-def hiding_removed(results: Sequence[TransformResult]) -> int | None:
+def hiding_removed(results: Sequence[TransformRecord]) -> int | None:
     """Elements hidden from a human reader that conversion deleted.
 
     None when nothing was converted, which is different from zero: the
@@ -267,7 +263,7 @@ def hiding_removed(results: Sequence[TransformResult]) -> int | None:
     return sum(int(r.details.get(k, 0)) for r in converted for k in _HIDING_DETAILS)
 
 
-def document_hidden(results: Sequence[TransformResult]) -> int:
+def document_hidden(results: Sequence[TransformRecord]) -> int:
     """Hidden text that converting an office file or a PDF dropped (#368, #369).
 
     ``detect_hidden_markup`` cannot recount these from the original, which is

@@ -84,7 +84,7 @@ from typing import TYPE_CHECKING
 from petit import PetitError, analyze_text
 
 from ..channels import Channel, Kind
-from .base import Cost, TransformContext, TransformResult
+from .base import Applied, Cost, Declined, Failed, TransformContext, TransformResult
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -180,13 +180,7 @@ class PetitProcessor:
         lines = payload.split("\n")
 
         if len(lines) < _MIN_LINES and bytes_in < _MIN_BYTES:
-            return TransformResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="too_small",
-                details={"lines_in": len(lines), "bytes_in": bytes_in},
-            )
+            return Declined("too_small", {"lines_in": len(lines), "bytes_in": bytes_in})
 
         try:
             analysis = analyze_text(
@@ -196,27 +190,19 @@ class PetitProcessor:
                 max_record_chars=_FINGERPRINT_MAX_CHARS,
             )
         except PetitError as exc:
-            # The library raises rather than exits, and a reducer that
-            # cannot reduce must still hand back the payload.
-            return TransformResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="petit_error",
-                details={"error": type(exc).__name__},
-            )
+            # The library raises rather than exits. A reducer cannot absolve,
+            # so this is a Failure: a required petit refuses, and ``structured``
+            # (which calls ``reduce`` directly) counts it and heals.
+            return Failed("petit_error", {"error": type(exc).__name__})
 
         if analysis.records_in < _MIN_RECORDS:
             # Named for the condition, not for the size. A 1.6 MB payload that
             # frames into three records lands here, and calling that "too
             # small" sent an earlier analysis of the production sidecar
             # looking for short responses that were not there.
-            return TransformResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="not_enough_records",
-                details={
+            return Declined(
+                "not_enough_records",
+                {
                     "records_in": analysis.records_in,
                     "lines_in": analysis.lines_in,
                     "bytes_in": bytes_in,
@@ -226,12 +212,9 @@ class PetitProcessor:
 
         collapsed = [g for g in analysis.groups if g.count > _SAMPLES_PER_GROUP]
         if not collapsed:
-            return TransformResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="nothing_repetitive",
-                details={
+            return Declined(
+                "nothing_repetitive",
+                {
                     "records_in": analysis.records_in,
                     "petit_driver": analysis.driver,
                     "petit_framer": analysis.framer,
@@ -259,25 +242,17 @@ class PetitProcessor:
             # a hair" and "saved nothing at all" are the same word — and the
             # first means the floor is costing real savings while the second
             # means the data simply does not compress.
-            return TransformResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="not_smaller",
-                details={
+            return Declined(
+                "not_smaller",
+                {
                     "would_be_bytes": bytes_out,
                     "would_be_ratio": round(bytes_out / bytes_in, 4),
                 },
             )
 
-        return TransformResult(
-            name=self.name,
-            cost=self.cost,
-            content=reduced,
-            applied=True,
-            bytes_in=bytes_in,
-            bytes_out=bytes_out,
-            details={
+        return Applied(
+            reduced,
+            {
                 "lines_in": analysis.lines_in,
                 "lines_out": len(out_lines),
                 "records_in": analysis.records_in,

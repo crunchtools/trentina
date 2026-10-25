@@ -39,7 +39,7 @@ from ..errors import QuarantineAgentError
 from ..logsafe import exc_kind
 from ..quarantine.agent import llm_available, quarantine_generate
 from ..quarantine.limiter import limited_generate
-from .base import Cost, TransformContext, TransformResult
+from .base import Applied, Cost, Declined, Failed, TransformContext, TransformResult
 
 if TYPE_CHECKING:
     from ..quarantine.providers.base import Provider
@@ -90,9 +90,11 @@ class SummarizeProcessor:
         bytes_in = len(payload.encode("utf-8"))
 
         if bytes_in < _MIN_BYTES:
-            return TransformResult.declined(self.name, self.cost, payload, reason="too_small")
+            return Declined("too_small")
         if not llm_available():
-            return TransformResult.declined(self.name, self.cost, payload, reason="no_api_key")
+            # No worker to run: a required summarize cannot be satisfied, so a
+            # floor refuses rather than silently delivering the oversized text.
+            return Failed("no_api_key")
 
         try:
             parsed = await quarantine_generate(
@@ -107,11 +109,11 @@ class SummarizeProcessor:
             # Includes canary leaks: a compromised worker's output is simply
             # never used, and the original payload continues to the perimeter.
             logger.warning("summarize: worker call failed (%s); declining", exc_kind(exc))
-            return TransformResult.declined(self.name, self.cost, payload, reason="worker_error")
+            return Failed("worker_error")
 
         summary = str(parsed.get("summary", "")).strip()
         if not summary:
-            return TransformResult.declined(self.name, self.cost, payload, reason="empty_summary")
+            return Failed("empty_summary")
 
         bytes_out = len(summary.encode("utf-8"))
         usage = parsed.get("usage") or {}
@@ -121,23 +123,9 @@ class SummarizeProcessor:
         }
 
         if bytes_out / bytes_in > _MAX_RATIO:
-            return TransformResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="no_reduction",
-                details=details,
-            )
+            return Declined("no_reduction", details)
 
-        return TransformResult(
-            name=self.name,
-            cost=self.cost,
-            content=summary,
-            applied=True,
-            bytes_in=bytes_in,
-            bytes_out=bytes_out,
-            details=details,
-        )
+        return Applied(summary, details)
 
 
 DESCRIPTIONS_MAX_OUTPUT_TOKENS = 4096

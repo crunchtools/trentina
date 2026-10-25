@@ -13,11 +13,11 @@ that shrank; ``auto`` escalates to METERED only while over ``target_bytes``.
 unconditionally. This gap is known and deliberate — widening selection wants a
 second non-reducing processor to design against.
 
-Whatever the strategy, the caller receives ONE artifact plus its accounting,
-scans that artifact through ``defend()``, and delivers that artifact. The
-composition layer itself never touches the defense pipeline — the perimeter
-is the caller's job, and keeping this module import-free of the detectors is
-what the architecture contract test checks.
+Whatever the strategy, the caller receives ONE artifact plus its accounting
+(a ``TransformRecord`` per step), scans that artifact through ``defend()``,
+and delivers that artifact. The composition layer itself never touches the
+defense pipeline — the perimeter is the caller's job, and keeping this module
+import-free of the detectors is what the architecture contract test checks.
 """
 
 from __future__ import annotations
@@ -28,7 +28,14 @@ from typing import Literal
 
 from ..defense import Provenance
 from ..logsafe import exc_kind, exc_where
-from .base import Cost, Transform, TransformContext, TransformResult
+from .base import (
+    Applied,
+    Cost,
+    Failed,
+    Transform,
+    TransformContext,
+    TransformRecord,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +47,7 @@ class TransformOutcome:
     """The transformed artifact and all the perimeter should know about it."""
 
     content: str
-    results: list[TransformResult] = field(default_factory=list)
+    results: list[TransformRecord] = field(default_factory=list)
     bytes_in: int = 0
     bytes_out: int = 0
 
@@ -71,17 +78,7 @@ class TransformOutcome:
             "bytes_in": self.bytes_in,
             "bytes_out": self.bytes_out,
             "ratio": round(self.bytes_out / self.bytes_in, 4) if self.bytes_in else 1.0,
-            "processors": [
-                {
-                    "name": r.name,
-                    "cost": r.cost.value,
-                    "applied": r.applied,
-                    "bytes_in": r.bytes_in,
-                    "bytes_out": r.bytes_out,
-                    **r.details,
-                }
-                for r in self.results
-            ],
+            "processors": [r.row() for r in self.results],
         }
 
     def describe_for_l3(self) -> str | None:
@@ -115,7 +112,8 @@ async def run_transforms(
     ctx: TransformContext | None = None,
 ) -> TransformOutcome:
     """Transform ``content`` per ``strategy``. Never raises on hostile input —
-    a processor that fails is logged, skipped, and recorded as not applied."""
+    a processor that fails is logged and recorded as ``Failed``, and the
+    payload is carried through unchanged (a floor call site refuses on it)."""
     ctx = ctx or TransformContext()
     bytes_in = len(content.encode("utf-8"))
 
@@ -123,26 +121,37 @@ async def run_transforms(
         return TransformOutcome(content=content, bytes_in=bytes_in, bytes_out=bytes_in)
 
     if strategy == "chain":
-        results = await _chain(content, processors, ctx)
+        records = await _chain(content, processors, ctx)
     elif strategy == "best_of":
-        results = await _best_of(content, processors, ctx)
+        records = await _best_of(content, processors, ctx)
     elif strategy == "auto":
-        results = await _auto(content, processors, ctx)
+        records = await _auto(content, processors, ctx)
     else:  # pragma: no cover - Literal keeps this unreachable from typed code
         raise ValueError(f"unknown preprocess strategy: {strategy}")
 
-    final = results[-1].content if results else content
+    final = _final(content, records)
     return TransformOutcome(
         content=final,
-        results=results,
+        results=records,
         bytes_in=bytes_in,
         bytes_out=len(final.encode("utf-8")),
     )
 
 
-async def _run_one(processor: Transform, payload: str, ctx: TransformContext) -> TransformResult:
+def _final(original: str, records: list[TransformRecord]) -> str:
+    """The artifact the composition produced: the last ``Applied`` content, or
+    the original when nothing applied. ``best_of`` moves its winner last, so
+    this is the winner there too."""
+    final = original
+    for rec in records:
+        if isinstance(rec.result, Applied):
+            final = rec.result.content
+    return final
+
+
+async def _run_one(processor: Transform, payload: str, ctx: TransformContext) -> TransformRecord:
     try:
-        return await processor.run(payload, ctx)
+        result = await processor.run(payload, ctx)
     except Exception as exc:
         logger.error(  # the message may carry the payload (#262)
             "preprocess: %s failed; passing payload through: %s at %s",
@@ -150,52 +159,54 @@ async def _run_one(processor: Transform, payload: str, ctx: TransformContext) ->
             exc_kind(exc),
             exc_where(exc),
         )
-        size = len(payload.encode("utf-8"))
-        return TransformResult(
-            name=processor.name,
-            cost=processor.cost,
-            content=payload,
-            applied=False,
-            bytes_in=size,
-            bytes_out=size,
-            details={"declined": "error"},
-        )
+        result = Failed("error")
+    return TransformRecord.of(processor.name, processor.cost, payload, result)
+
+
+def first_failure(records: list[TransformRecord]) -> TransformRecord | None:
+    """The first step that FAILED (tried and could not finish), or None.
+
+    A floor call site refuses on this; a decline is never here. The one
+    definition both floor sites share, replacing three membership tests
+    against the old ``FAILED_DECLINES`` set.
+    """
+    return next((r for r in records if isinstance(r.result, Failed)), None)
 
 
 async def _chain(
     content: str, processors: list[Transform], ctx: TransformContext
-) -> list[TransformResult]:
-    """Feed each processor the previous one's output."""
-    results: list[TransformResult] = []
+) -> list[TransformRecord]:
+    """Feed each processor the previous one's applied output."""
+    records: list[TransformRecord] = []
     current = content
     for processor in processors:
-        result = await _run_one(processor, current, ctx)
-        results.append(result)
-        current = result.content
-    return results
+        record = await _run_one(processor, current, ctx)
+        records.append(record)
+        if isinstance(record.result, Applied):
+            current = record.result.content
+    return records
 
 
 async def _best_of(
     content: str, processors: list[Transform], ctx: TransformContext
-) -> list[TransformResult]:
+) -> list[TransformRecord]:
     """Run every processor on the SAME input; keep the smallest artifact.
 
-    Results list still records every attempt (the sidecar shows what was
-    tried), but only the winner's content is last — and the winner is the
-    smallest applied result, or the original when nobody improved on it.
+    Records still show every attempt (the sidecar shows what was tried), but
+    the winner — the smallest applied result, or nothing when none improved —
+    is moved last, because ``_final`` reads the last applied content.
     """
     attempts = [await _run_one(p, content, ctx) for p in processors]
     applied = [r for r in attempts if r.applied]
     if not applied:
         return attempts
     winner = min(applied, key=lambda r: r.bytes_out)
-    # Reorder so the winner is last: outcome content is always results[-1].
     return [r for r in attempts if r is not winner] + [winner]
 
 
 async def _auto(
     content: str, processors: list[Transform], ctx: TransformContext
-) -> list[TransformResult]:
+) -> list[TransformRecord]:
     """FREE processors always; METERED only while still over budget.
 
     With no target_bytes, METERED processors are never invoked — spending
@@ -204,16 +215,17 @@ async def _auto(
     free = [p for p in processors if p.cost is Cost.FREE]
     metered = [p for p in processors if p.cost is Cost.METERED]
 
-    results = await _chain(content, free, ctx)
-    current = results[-1].content if results else content
+    records = await _chain(content, free, ctx)
+    current = _final(content, records)
 
     if ctx.target_bytes is None:
-        return results
+        return records
 
     for processor in metered:
         if len(current.encode("utf-8")) <= ctx.target_bytes:
             break
-        result = await _run_one(processor, current, ctx)
-        results.append(result)
-        current = result.content
-    return results
+        record = await _run_one(processor, current, ctx)
+        records.append(record)
+        if isinstance(record.result, Applied):
+            current = record.result.content
+    return records

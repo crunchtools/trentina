@@ -30,7 +30,7 @@ import binascii
 from ..channels import Channel, Kind
 from ..unpack.child import run_unpacking
 from ..unpack.pdf import PdfReading, read_pdf
-from .base import Cost, TransformContext, TransformResult
+from .base import Applied, Cost, Declined, TransformContext, TransformResult
 
 PDF_BASE64_PREFIX = "JVBERi0"
 """How canonical base64 of ``%PDF-`` always starts."""
@@ -92,17 +92,11 @@ class PdfProcessor:
         # Driven by the payload's shape, like html.py: it reads no job context.
         token = payload.strip()
         if not token.startswith(PDF_BASE64_PREFIX):
-            return TransformResult.declined(self.name, self.cost, payload, reason="not_pdf")
+            return Declined("not_pdf")
         reduced = await run_unpacking(reduce_base64, token)
         if reduced is None:
-            return TransformResult.declined(self.name, self.cost, payload, reason="unreadable_pdf")
+            # Declined, not Failed: a PDF the worker cannot read goes on as it
+            # arrived for the unpack stage to count as unread, as it always has.
+            return Declined("unreadable_pdf")
         markdown, hidden = reduced
-        return TransformResult(
-            name=self.name,
-            cost=self.cost,
-            content=markdown,
-            applied=True,
-            bytes_in=len(payload.encode("utf-8")),
-            bytes_out=len(markdown.encode("utf-8")),
-            details={"pdf_converted": 1, "pdf_hidden": hidden},
-        )
+        return Applied(markdown, {"pdf_converted": 1, "pdf_hidden": hidden})

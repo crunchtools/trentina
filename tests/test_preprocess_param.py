@@ -48,7 +48,7 @@ from trentina.outcomes import Outcome, classify_exception
 from trentina.tools.fetch import fetch_page, flag_fetch
 from trentina.tools.read import read_file
 from trentina.tools.reload import _hold_preprocess_floor
-from trentina.transforms import Cost, TransformResult
+from trentina.transforms import Applied, Failed, TransformResult
 from trentina.transforms.policy import PREPROCESS_PARAM, PreProcessPolicy
 
 from .mode_harness import layers
@@ -350,7 +350,7 @@ class TestProxiedCall:
 
     @pytest.mark.usefixtures("read_only_tools")
     async def test_a_floor_that_declines_as_broken_delivers_nothing(self) -> None:
-        broken = TransformResult.declined("html", Cost.FREE, PAGE, reason="worker_error")
+        broken = Failed("worker_error")
         profile = _profile(PreProcessConfig(processors=["html"], required=["html"]))
         with patch(HTML_RUN, AsyncMock(return_value=broken)):
             resp, _, scan, _ = await self._call(profile, {"id": "1"})
@@ -359,7 +359,7 @@ class TestProxiedCall:
         scan.assert_not_awaited()
 
     async def test_a_required_detect_whose_converter_breaks_delivers_nothing(self) -> None:
-        broken = TransformResult.declined("html", Cost.FREE, PAGE, reason="worker_error")
+        broken = Failed("worker_error")
         profile = _profile(PreProcessConfig(processors=["detect"], required=["detect"]))
         with patch(HTML_RUN, AsyncMock(return_value=broken)):
             resp, _, scan, _ = await self._call(profile, {"id": "1", PREPROCESS_PARAM: False})
@@ -367,14 +367,7 @@ class TestProxiedCall:
         scan.assert_not_awaited()
 
     async def test_a_metered_floor_is_judged_as_model_output(self) -> None:
-        summary = TransformResult(
-            name="summarize",
-            cost=Cost.METERED,
-            content="A page about release notes.",
-            applied=True,
-            bytes_in=len(PAGE),
-            bytes_out=27,
-        )
+        summary = Applied("A page about release notes.")
         profile = _profile(PreProcessConfig(processors=["summarize"], required=["summarize"]))
         with patch(SUMMARIZE_RUN, AsyncMock(return_value=summary)):
             _, _, scan, _ = await self._call(profile, {"id": "1"})
@@ -491,14 +484,7 @@ class TestInternalTools:
 
     async def test_a_model_rewrite_is_judged_as_model_output(self, env: Path) -> None:
         """A METERED processor's output draws unconditional L3 (defense.Provenance)."""
-        summary = TransformResult(
-            name="summarize",
-            cost=Cost.METERED,
-            content="A page about release notes.",
-            applied=True,
-            bytes_in=len(PAGE),
-            bytes_out=27,
-        )
+        summary = Applied("A page about release notes.")
         judge = AsyncMock(return_value={"content": "ok"})
         policy = PreProcessPolicy(["summarize"])
         with (
@@ -516,11 +502,7 @@ class TestInternalTools:
         "broken",
         [
             {"side_effect": RuntimeError("boom")},
-            {
-                "return_value": TransformResult.declined(
-                    "html", Cost.FREE, PAGE, reason="worker_error"
-                )
-            },
+            {"return_value": Failed("worker_error")},
         ],
     )
     async def test_a_minifier_that_breaks_delivers_the_original(
@@ -539,7 +521,7 @@ class TestInternalTools:
 
         async def petit(_self: Any, payload: str, _ctx: Any) -> TransformResult:
             seen.append(payload)
-            return TransformResult("petit", Cost.FREE, "grouped", True, len(payload), 7)
+            return Applied("grouped")
 
         with (
             layers(env) as fakes,
