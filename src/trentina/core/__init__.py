@@ -21,7 +21,7 @@ from .dispose import (
     Posture,
     dispose,
 )
-from .render import refusal_of
+from .render import refusal_from_warning, refusal_of
 
 __all__ = [
     "DEFAULT_REDACT_PROMPT",
@@ -29,5 +29,6 @@ __all__ = [
     "Disposition",
     "Posture",
     "dispose",
+    "refusal_from_warning",
     "refusal_of",
 ]

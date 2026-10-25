@@ -13,9 +13,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..modes import refusal_body
+from ..modes import Gaps, refusal_body, refusal_reason
 
 if TYPE_CHECKING:
+    from ..modes import Mode, ModePolicy
     from .dispose import Disposition, Posture
 
 
@@ -49,3 +50,19 @@ def refusal_of(disposition: Disposition, posture: Posture) -> dict[str, Any]:
     if not disposition.offer_alternatives:
         body["alternatives"] = []
     return body
+
+
+def refusal_from_warning(
+    warning: dict[str, Any] | None, mode: Mode, policy: ModePolicy
+) -> dict[str, Any]:
+    """Rebuild a refusal body from a (possibly cached) ``_trentina_warning``.
+
+    The gateway caches warnings, not verdicts (``Gaps.of_warning``), so a block
+    served from the cache renders its refusal from the warning's own flag and
+    gap fields rather than re-judging.
+    """
+    warning = warning or {}
+    flagged_by = warning.get("flagged_by") or None
+    gaps = Gaps.of_warning(warning)
+    reason = refusal_reason(flagged_by, gaps) or "refused by the defense pipeline"
+    return refusal_body(reason, mode, flagged_by=flagged_by, gaps=gaps, policy=policy)
