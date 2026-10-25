@@ -44,6 +44,7 @@ from pydantic import (
 from starlette.requests import ClientDisconnect
 from starlette.responses import Response
 
+from ..errors import EgressRefusedError
 from ..logsafe import exc_kind, exc_where, redact_source
 from ..modes import Mode
 from ..outcomes import Outcome
@@ -75,6 +76,7 @@ from .proxy_utils import (
     normalize_proxy_path,
 )
 from .relay import Operation, Relayed, Slots, upstream_outcome
+from .upstream import pinned_send
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -85,12 +87,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_LLM_TIMEOUT = httpx.Timeout(
-    connect=10.0,
-    read=300.0,
-    write=10.0,
-    pool=5.0,
-)
+#: Seconds any one read or write to the provider may take (SSE between tokens,
+#: or a non-streaming body). Passed to the pinned pool as its idle timeout.
+_LLM_IDLE = 300.0
 
 LLM_HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"]
 
@@ -105,24 +104,6 @@ MAX_LLM_REQUEST_BYTES = 32 * 1024 * 1024
 # fan-out.
 MAX_LLM_OPERATIONS_PER_PROFILE = 64
 _SLOTS = Slots(MAX_LLM_OPERATIONS_PER_PROFILE)
-
-_llm_client: httpx.AsyncClient | None = None
-
-
-def _get_llm_client() -> httpx.AsyncClient:
-    global _llm_client
-    if _llm_client is None:
-        # nosemgrep: trentina-httpx-client-outside-egress -- operator host, no redirects
-        _llm_client = httpx.AsyncClient(timeout=_LLM_TIMEOUT)
-    return _llm_client
-
-
-async def close_llm_client() -> None:
-    """Close the LLM proxy httpx client. Called on application shutdown."""
-    global _llm_client
-    if _llm_client is not None:
-        await _llm_client.aclose()
-        _llm_client = None
 
 
 class LlmProvider(BaseModel):
@@ -689,18 +670,33 @@ async def _forward_upstream(
     carries the bytes actually relayed, is written once at the end (not when the
     headers arrived), and an interrupted stream keeps the default ``CANCELLED``.
     """
-    client = _get_llm_client()
-
     try:
-        resp = await client.send(
-            client.build_request(
+        # The pinned pool (#511): the provider origin is re-checked and the
+        # connection pinned to it before the send, and the connection is reused
+        # across this profile's calls (the hot path). Entered on op.upstream so
+        # the response — and the pooled client's response-close — live until the
+        # Operation finishes, however the stream ends. max_connections matches
+        # the slot cap so a subagent fan-out is not starved on the pool.
+        resp = await op.upstream.enter_async_context(
+            pinned_send(
+                profile,
                 method,
                 upstream_url,
+                idle=_LLM_IDLE,
                 headers=fwd_headers,
                 content=body,
-            ),
-            stream=True,
+                max_connections=MAX_LLM_OPERATIONS_PER_PROFILE,
+            )
         )
+    except EgressRefusedError as exc:
+        # The guard refused the origin (not global, not 443, resolver busy), or
+        # the provider redirected / sent an encoded body on the pinned connection.
+        logger.warning(
+            "llm_proxy: upstream refused provider=%s reason=%s", provider_name, exc.reason
+        )
+        op.settle(Outcome.BACKEND_ERROR, op.flag_reason)
+        await op.finish()
+        return Response(content="LLM upstream refused", status_code=502, media_type=PLAIN_TEXT)
     except httpx.TimeoutException:
         op.settle(Outcome.BACKEND_ERROR, op.flag_reason)
         await op.finish()
@@ -718,11 +714,10 @@ async def _forward_upstream(
         await op.finish()
         return Response(content="LLM upstream error", status_code=502, media_type=PLAIN_TEXT)
 
-    # The request is on the wire; its body is what went upstream. Register the
-    # response's close on the Operation so finish() closes it exactly once, even
-    # if the stream is never drained; the outcome is settled by the stream.
+    # The request is on the wire; its body is what went upstream. The response's
+    # close is already registered (via pinned_send on op.upstream); the outcome
+    # is settled by the stream.
     op.sent = len(body) if body else 0
-    op.upstream.push_async_callback(resp.aclose)
     return _streaming_response(op, resp, provider_name, profile, warning)
 
 
