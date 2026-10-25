@@ -1207,6 +1207,16 @@ attacks (Horizon 80) and 9 of 12 strong-agent ones (9).
 - Horizon's optimiser settings (betas 0.9/0.98, eps 1e-6, cosine, clip 1.0),
   the lowest-loss checkpoint of four kept, and the token embeddings frozen.
 
+**Runs 1 to 4 trained on windows the runtime never sends (found
+2026-10-25).** The trainer wrapped each window with the tokenizer's
+`build_inputs_with_special_tokens`, which on Horizon's fast tokenizer adds
+nothing, though it reports two special tokens. The runtime
+(`classifier._pad_segment`) sends `[CLS] … [SEP]`, and the head pools on
+CLS: every fine-tune learned to classify from the first content token and
+was judged with CLS in its place. Runs 1 to 3 measure that mismatch as much
+as their recipes; run 4 (40231033184) was cancelled. The trainer now wraps
+windows as the runtime does, and a test pins it.
+
 A blend that passes the gates is chosen on production shapes by
 constraint, not by best number: no shape may flag more often than under
 Horizon. The envelope gate is built from the same makers as the training

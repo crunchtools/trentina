@@ -75,7 +75,11 @@ def windows(
     stride = content - GUARD_TOKENS
 
     def example(ids: list[int], label: int, distill: bool) -> dict:
-        full = tok.build_inputs_with_special_tokens(ids)
+        # The runtime's wrapping (classifier._pad_segment). Not
+        # build_inputs_with_special_tokens: on Horizon's fast tokenizer it
+        # adds nothing, and runs 1 to 4 trained the head on the first content
+        # token where the runtime puts CLS.
+        full = [tok.cls_token_id, *ids, tok.sep_token_id]
         return {
             "input_ids": full,
             "attention_mask": [1] * len(full),
@@ -119,6 +123,8 @@ def teach(model: Any, collate: Any, examples: list[dict], injection: int) -> int
     todo = sorted((e for e in examples if e["distill"]), key=lambda e: len(e["input_ids"]))
     seen: dict[tuple[int, ...], float] = {}
     fresh = list({tuple(e["input_ids"]): e for e in todo}.values())
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
     model.eval()
     with torch.no_grad():
         for i in range(0, len(fresh), TEACHER_BATCH):
@@ -126,6 +132,7 @@ def teach(model: Any, collate: Any, examples: list[dict], injection: int) -> int
             batch = collate(
                 [{"input_ids": e["input_ids"], "attention_mask": e["attention_mask"]} for e in part]
             )
+            batch = {k: v.to(device) for k, v in batch.items()}
             probs = torch.softmax(model(**batch).logits.float(), -1)[:, injection]
             seen.update(zip((tuple(e["input_ids"]) for e in part), probs.tolist(), strict=True))
     model.train()
@@ -161,7 +168,7 @@ def write_blends(
             json.dumps({**record, "blend": blend}, indent=2, default=str)
         )
 
-    tuned = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    tuned = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
     save(out, 1.0)
     base = AutoModelForSequenceClassification.from_pretrained(
         BASE, revision=BASE_REVISION

@@ -13,6 +13,7 @@ import pytest
 from corpora.benign_ops import BENIGN, in_tuning
 from corpora.envelopes import MAKERS, slug
 from scripts.l2_train_data import ANCHOR_REPEATS, anchors, build, plant
+from scripts.train_l2_model import windows
 
 TEXT = "Weekly security roundup\nA patch for the login flow shipped on Tuesday."
 
@@ -101,3 +102,27 @@ def test_build_pairs_every_benign_row() -> None:
         assert [r["label"] for r in mine].count(0) == 2
         assert [r["label"] for r in mine].count(1) == 3  # two twins, one attack alone
         assert not any(r["distill"] for r in mine)
+
+
+class _WordTokenizer:
+    """One token per word: ids from 10, CLS 2 and SEP 1 as Horizon's tokenizer has them."""
+
+    cls_token_id, sep_token_id = 2, 1
+
+    def __call__(self, text: str, **_: object) -> dict[str, list]:
+        spans = [(m.start(), m.end()) for m in re.finditer(r"\S+", text)]
+        return {"input_ids": [10 + i for i in range(len(spans))], "offset_mapping": spans}
+
+
+def test_training_windows_are_wrapped_as_the_runtime_wraps_them(tmp_path: Path) -> None:
+    """CLS first and SEP last, as classifier._pad_segment builds every window."""
+    rows = [
+        {"text": "one two three", "label": 0},
+        {"text": " ".join(["w"] * 30), "label": 1, "at": 0},
+    ]
+    path = tmp_path / "rows.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    out = windows(_WordTokenizer(), path, 8, (0, 1), {"t": 0}, "t")
+    assert out
+    assert all(e["input_ids"][0] == 2 and e["input_ids"][-1] == 1 for e in out)
+    assert out[0]["input_ids"] == [2, 10, 11, 12, 1]
