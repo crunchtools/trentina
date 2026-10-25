@@ -24,6 +24,7 @@ from trentina import config as config_mod
 from trentina import database as database_mod
 from trentina import egress
 from trentina.gateway import client_egress
+from trentina.gateway import upstream as upstream_mod
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.loader import ActiveConfig, GatewayConfig, _check_egress_networks
 from trentina.gateway.profile import (
@@ -678,8 +679,8 @@ class TestABurstIsOneLookup:
         assert asked == [ALLOWED]
 
         key = ("agent1", ALLOWED)
-        _until, target = client_egress._checked[key]
-        client_egress._checked[key] = (time.monotonic() - 1, target)
+        _until, target = upstream_mod._checked[key]
+        upstream_mod._checked[key] = (time.monotonic() - 1, target)
         response, _reader, writer = await _connect()
         assert response.startswith(b"HTTP/1.1 200")
         assert asked == [ALLOWED, ALLOWED]
@@ -695,7 +696,7 @@ class TestABurstIsOneLookup:
         refused, _reader, writer = await _connect()
         assert refused.startswith(b"HTTP/1.1 403")
         writer.close()
-        assert client_egress._checked == {}
+        assert upstream_mod._checked == {}
 
         self._counting(monkeypatch, [PUBLIC_ADDRESS])
         response, _reader, writer = await _connect()
@@ -707,7 +708,7 @@ class TestABurstIsOneLookup:
     ) -> None:
         _response, _reader, writer = await _connect()
         writer.close()
-        assert list(client_egress._checked) == [("agent1", ALLOWED)]
+        assert list(upstream_mod._checked) == [("agent1", ALLOWED)]
 
     async def test_no_free_resolver_slot_is_busy_and_not_a_defense_block(
         self,
@@ -740,17 +741,17 @@ class TestABurstIsOneLookup:
         writer.close()
         key = ("agent1", ALLOWED)
         other = ("agent2", ALLOWED)
-        _until, target = client_egress._checked[key]
-        client_egress._checked[key] = (time.monotonic() - 1, target)
-        client_egress._checked[other] = (time.monotonic() - 1, target)
+        _until, target = upstream_mod._checked[key]
+        upstream_mod._checked[key] = (time.monotonic() - 1, target)
+        upstream_mod._checked[other] = (time.monotonic() - 1, target)
 
         self._counting(monkeypatch, ["10.0.0.5"])
         refused, _reader, writer = await _connect()
         assert refused.startswith(b"HTTP/1.1 403")
         writer.close()
-        assert key not in client_egress._checked
+        assert key not in upstream_mod._checked
         # Another profile's entry is its own: neither read nor removed here.
-        assert other in client_egress._checked
+        assert other in upstream_mod._checked
 
     async def test_a_cancelled_check_keeps_nothing_and_is_asked_again(
         self, monkeypatch: pytest.MonkeyPatch
@@ -764,23 +765,23 @@ class TestABurstIsOneLookup:
             await release.wait()
             return egress.ResolvedTarget(ALLOWED, 443, (PUBLIC_ADDRESS,))
 
-        monkeypatch.setattr(client_egress, "check_url", check)
+        monkeypatch.setattr(upstream_mod, "check_url", check)
         profile = _profile()
         key = (profile.name, ALLOWED)
-        waiting = asyncio.create_task(client_egress.checked_target(profile, ALLOWED))
+        waiting = asyncio.create_task(upstream_mod.checked_target(profile, ALLOWED))
         while not calls:  # until the shared check itself is running
             await asyncio.sleep(0)
-        client_egress._checking[key].cancel()
+        upstream_mod._checking[key].cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiting
-        assert key not in client_egress._checked
-        assert key not in client_egress._checking
+        assert key not in upstream_mod._checked
+        assert key not in upstream_mod._checking
 
         release.set()
-        target = await client_egress.checked_target(profile, ALLOWED)
+        target = await upstream_mod.checked_target(profile, ALLOWED)
         assert target.addresses == (PUBLIC_ADDRESS,)
         assert calls == 2
-        assert client_egress._checked.pop(key)[1] is target
+        assert upstream_mod._checked.pop(key)[1] is target
 
     async def test_a_client_that_hangs_up_does_not_cancel_the_check_for_the_others(
         self, monkeypatch: pytest.MonkeyPatch
@@ -791,12 +792,12 @@ class TestABurstIsOneLookup:
             await release.wait()
             return egress.ResolvedTarget(ALLOWED, 443, (PUBLIC_ADDRESS,))
 
-        monkeypatch.setattr(client_egress, "check_url", check)
+        monkeypatch.setattr(upstream_mod, "check_url", check)
         profile = _profile()
-        gone = asyncio.create_task(client_egress.checked_target(profile, ALLOWED))
-        stays = asyncio.create_task(client_egress.checked_target(profile, ALLOWED))
+        gone = asyncio.create_task(upstream_mod.checked_target(profile, ALLOWED))
+        stays = asyncio.create_task(upstream_mod.checked_target(profile, ALLOWED))
         await asyncio.sleep(0)
         gone.cancel()
         release.set()
         assert (await stays).addresses == (PUBLIC_ADDRESS,)
-        client_egress._checked.clear()
+        upstream_mod._checked.clear()

@@ -64,7 +64,6 @@ from ..modes import Mode, gaps_of
 from ..outcomes import Outcome
 from .auth import resolve_profile_by_token
 from .backend import response_byte_cap
-from .client_egress import RESOLVER_BUSY, checked_target
 from .context import profile_context
 from .destination import MAX_DESTINATION_CHARS, Destination, DestinationKind, fingerprint
 from .egress_policy import (
@@ -86,6 +85,7 @@ from .outbound import (
     judge_outbound,
 )
 from .proxy_utils import PLAIN_TEXT, normalize_proxy_path
+from .upstream import RESOLVER_BUSY, checked_target
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager

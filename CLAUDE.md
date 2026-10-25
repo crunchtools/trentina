@@ -611,14 +611,20 @@ replaced.
   outbound `httpx.AsyncClient` an agent-chosen URL without it. DNS lookups
   are capped per profile (4) and gateway-wide (64), never queued (#291):
   past either, `resolver_busy` (#449).
+- `gateway/upstream.py` — the ONE operator-named-origin network leg (#511
+  convergence): `checked_target` (one checked lookup per burst, shared for
+  `CHECKED_TTL`) + the resolver cache + `RESOLVER_BUSY`, moved here out of
+  `client_egress.py` so `/egress`, `/git` and the tunnel import it from a shared
+  module instead of up from the tunnel. Operator-named hosts only; `fetch`'s
+  agent-chosen URLs stay on `egress.open_guarded`, never cached or pooled.
 - `gateway/client_egress.py` — the CONNECT listener (#442) on `--egress-port`
   (8021), bound only when a profile has `client_egress`, started and stopped
   by `warmup.trentina_lifespan`. The peer address picks the profile (no
   credential, as #330); the name must be in `hosts`, port 443, and pass
   `egress.check_url`; the tunnel connects to a checked address
-  (`open_upstream` is the test seam). `checked_target` is one lookup per burst
-  (#449): tunnels to a name share the check in flight and its answer for
-  `CHECKED_TTL`; `resolver_busy` is 503 `denied_guard`, not a defense block. After `200` the first TLS record must
+  (`open_upstream` is the test seam). `upstream.checked_target` is one lookup
+  per burst (#449): tunnels to a name share the check in flight and its answer
+  for `CHECKED_TTL`; `resolver_busy` is 503 `denied_guard`, not a defense block. After `200` the first TLS record must
   be a ClientHello whose SNI is the CONNECT host, or the tunnel closes before
   a byte is forwarded (a handshake check only: it does not stop a different
   `Host` inside the TLS). One `gateway_calls` row per tunnel (`egress` /
@@ -633,7 +639,7 @@ replaced.
   request, and `RefFilter` for ref listings. `git_transport.py` is the
   route: caller by bearer (`resolve_profile_by_token`), every header and the
   URL built from validated parts, the profile's token injected as Basic,
-  upstream through `egress.open_pinned` on `client_egress.checked_target`'s
+  upstream through `egress.open_pinned` on `upstream.checked_target`'s
   address. A push's commands are read to their flush before a byte is
   forwarded (`_command_list`), each ref held to `push_refs`, tags and
   deletes refused. A fetch request is read whole (8 MiB, inflated) and sent

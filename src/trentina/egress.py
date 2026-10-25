@@ -42,6 +42,7 @@ from .config import get_config
 from .errors import EgressRefusedError
 
 if TYPE_CHECKING:
+    import ssl
     from collections.abc import AsyncIterator, Iterable
 
 log = logging.getLogger(__name__)
@@ -286,6 +287,35 @@ class PinnedBackend(httpcore.AsyncNetworkBackend):
         await self._inner.sleep(seconds)
 
 
+_ssl_context: ssl.SSLContext | None = None
+
+
+def shared_ssl_context() -> ssl.SSLContext:
+    """One CA-verified TLS context for every pinned connection.
+
+    ``httpx.create_ssl_context()`` loads the system CA bundle, which is slow and
+    blocks the event loop. It was built once per ``PinnedTransport`` — i.e. per
+    ``/egress`` and ``/git`` request — and is now built once and reused.
+    ``warmup.trentina_lifespan`` calls this on a worker thread at startup, so the
+    CA load lands there and not on the event loop during the first request.
+    Sharing one context is how httpx's own
+    ``AsyncClient`` runs its pool, so httpcore is built for it: the one write it
+    makes to the context is ``set_alpn_protocols`` on every connect, and with
+    every ``PinnedTransport`` at ``http2=False`` that write is always
+    ``["http/1.1"]`` — idempotent, and synchronous on the one loop thread, so no
+    race. SNI and hostname verification stay per-connection (``server_hostname``),
+    and no session is ever set, so nothing leaks between pinned connections to
+    different hosts. (A future ``http2=True`` pinned transport would flip ALPN
+    for every pinned connection built afterwards — revisit then.) The CA bundle
+    is now frozen at first use for the process lifetime, as a certifi bump
+    already needs a container restart.
+    """
+    global _ssl_context
+    if _ssl_context is None:
+        _ssl_context = httpx.create_ssl_context()
+    return _ssl_context
+
+
 class PinnedTransport(httpx.AsyncHTTPTransport):
     """httpx's transport over a connection pool that dials through ``PinnedBackend``.
 
@@ -296,7 +326,7 @@ class PinnedTransport(httpx.AsyncHTTPTransport):
     """
 
     def __init__(self, backend: PinnedBackend) -> None:
-        ssl_context = httpx.create_ssl_context()
+        ssl_context = shared_ssl_context()
         super().__init__(verify=ssl_context, trust_env=False)
         self._pool = httpcore.AsyncConnectionPool(ssl_context=ssl_context, network_backend=backend)
 
