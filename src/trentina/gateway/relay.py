@@ -18,21 +18,33 @@ shared.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from starlette.responses import StreamingResponse
+
 from ..database import record_gateway_call
 from ..logsafe import exc_kind
 from ..outcomes import Outcome
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from starlette.types import Message, Receive, Scope, Send
+
     from .destination import DestinationKind
     from .profile import Profile
 
 logger = logging.getLogger(__name__)
+
+#: Seconds any one ``send`` to the client may take before the response is given
+#: up on. A client holding a streamed answer sees data well inside this; one
+#: that stops reading does not hold a slot forever.
+IDLE_TIMEOUT = 300.0
 
 #: The ``backend``/``tool`` stand-in on a row for a request refused before the
 #: route knew what it was (an unknown upstream, a token that matched no profile).
@@ -156,3 +168,49 @@ class Operation:
                     self.profile.name,
                     exc_kind(exc),
                 )
+
+
+class Relayed(StreamingResponse):
+    """A streamed response whose Operation is finished exactly once, however the
+    response ends — drained, the client gone, or a ``send`` backpressured.
+
+    A body generator's ``finally`` is not enough: it does not run when the
+    response never starts, and a client that stops reading holds ``send`` open
+    for as long as it likes (under a slot cap, that is a per-profile liveness
+    budget, not merely a leaked socket). So the finish is HERE, around the whole
+    response, and every ``send`` is held to an idle timeout. Register the
+    upstream's close on ``op.upstream`` so ``finish`` closes it.
+
+    The body should settle the outcome only once it has drained fully; an
+    interrupted stream then keeps the Operation's default ``CANCELLED``.
+    """
+
+    def __init__(
+        self,
+        body: AsyncIterator[bytes],
+        op: Operation,
+        *,
+        media_type: str,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+        idle: float = IDLE_TIMEOUT,
+    ) -> None:
+        super().__init__(body, status_code=status_code, media_type=media_type, headers=headers)
+        self._op = op
+        self._idle = idle
+
+    async def stream_response(self, send: Send) -> None:
+        async def bounded(message: Message) -> None:
+            try:
+                await asyncio.wait_for(send(message), self._idle)
+            except TimeoutError:
+                self._op.settle(Outcome.DENIED_GUARD, "idle")
+                raise
+
+        await super().stream_response(bounded)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._op.finish()

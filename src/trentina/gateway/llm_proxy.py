@@ -41,7 +41,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from starlette.responses import Response, StreamingResponse
+from starlette.requests import ClientDisconnect
+from starlette.responses import Response
 
 from ..logsafe import exc_kind, exc_where, redact_source
 from ..modes import Mode
@@ -73,14 +74,14 @@ from .proxy_utils import (
     filter_response_headers,
     normalize_proxy_path,
 )
-from .relay import Operation, Slots
+from .relay import Operation, Relayed, Slots
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from starlette.requests import Request
 
-    from .profile import Profile
+    from .profile import LlmKeyOverride, Profile
 
 logger = logging.getLogger(__name__)
 
@@ -102,8 +103,8 @@ MAX_LLM_REQUEST_BYTES = 32 * 1024 * 1024
 # its agent, and a fan-out of parallel subagents holds a streaming completion
 # each for the length of a turn. The cap only stops a runaway, never normal
 # fan-out.
-LLM_MAX_OPERATIONS_PER_PROFILE = 64
-_SLOTS = Slots(LLM_MAX_OPERATIONS_PER_PROFILE)
+MAX_LLM_OPERATIONS_PER_PROFILE = 64
+_SLOTS = Slots(MAX_LLM_OPERATIONS_PER_PROFILE)
 
 _llm_client: httpx.AsyncClient | None = None
 
@@ -542,6 +543,72 @@ async def _admit_or_refuse(
     return path, admitted
 
 
+async def _forward_admitted(
+    op: Operation,
+    request: Request,
+    provider: LlmProvider,
+    api: LlmApi,
+    override: LlmKeyOverride,
+    provider_name: str,
+    path: str,
+    admitted: Admitted,
+) -> Response:
+    """Take a slot, judge the request content, inject the key and forward.
+
+    The request is already admitted (shape-checked). This takes the profile's
+    slot (after admission, so a refused request costs none), judges the body +
+    query + forwarded headers as one document (#511), injects the profile's
+    provider key, and forwards. A busy profile is 503; a block is 403; both
+    finish the Operation. Success returns the streamed answer.
+    """
+    op.tool = admitted.endpoint
+    op.destination = admitted.model[:MAX_DESTINATION_CHARS] if admitted.model else None
+    if not op.take_slot(_SLOTS):
+        op.settle(Outcome.DENIED_GUARD, "busy")
+        await op.finish()
+        return Response(content=json.dumps(_deny_marker("busy")), status_code=503, media_type=JSON)
+
+    logger.info(
+        "llm_proxy: profile=%s provider=%s endpoint=%s path=%s",
+        op.profile.name,
+        provider_name,
+        admitted.endpoint,
+        redact_source(path),
+    )
+
+    upstream_url = f"{provider.upstream}/{path}"
+    if admitted.query:
+        upstream_url = f"{upstream_url}?{admitted.query}"
+    fwd_headers = forward_headers(api, request.headers.items())
+
+    mode = effective_mode(op.profile, Mode(override.enforcement))
+    refusal_resp, warning = await _judge_request(
+        op,
+        _request_document(request.method, path, admitted, fwd_headers),
+        provider_name,
+        op.profile,
+        mode,
+    )
+    if refusal_resp is not None:  # op already settled BLOCKED_DEFENSE
+        await op.finish()
+        return refusal_resp
+
+    if admitted.body is not None:
+        fwd_headers["content-type"] = JSON
+    key_value = override.api_key.get_secret_value()
+    fwd_headers[provider.auth_header] = f"{provider.auth_prefix}{key_value}"
+    return await _forward_upstream(
+        op,
+        request.method,
+        upstream_url,
+        fwd_headers,
+        admitted.body,
+        provider_name,
+        op.profile,
+        warning,
+    )
+
+
 async def _proxy_llm(
     request: Request,
     providers: dict[str, LlmProvider],
@@ -585,64 +652,16 @@ async def _proxy_llm(
             return admitted_or_refusal
         path, admitted = admitted_or_refusal
 
-        op.tool = admitted.endpoint
-        op.destination = admitted.model[:MAX_DESTINATION_CHARS] if admitted.model else None
-        if not op.take_slot(_SLOTS):
-            op.settle(Outcome.DENIED_GUARD, "busy")
-            await op.finish()
-            return Response(
-                content=json.dumps(_deny_marker("busy")), status_code=503, media_type=JSON
-            )
-
-        logger.info(
-            "llm_proxy: profile=%s provider=%s endpoint=%s path=%s",
-            profile.name,
-            provider_name,
-            admitted.endpoint,
-            redact_source(path),
+        return await _forward_admitted(
+            op, request, provider, api, override, provider_name, path, admitted
         )
-
-        upstream_url = f"{provider.upstream}/{path}"
-        if admitted.query:
-            upstream_url = f"{upstream_url}?{admitted.query}"
-
-        fwd_headers = forward_headers(api, request.headers.items())
-
-        # #511: judge the request CONTENT, not only its shape. llm_policy.admit
-        # above allowlisted the endpoint, params and headers; this reads the body,
-        # query and forwarded headers as one document for L1/L2/L3 and the
-        # credential detector. The mode is the profile's per-provider enforcement
-        # (default flag), with the kill switch over it.
-        mode = effective_mode(profile, Mode(override.enforcement))
-        refusal_resp, warning = await _judge_request(
-            op,
-            _request_document(request.method, path, admitted, fwd_headers),
-            provider_name,
-            profile,
-            mode,
-        )
-        if refusal_resp is not None:  # op already settled BLOCKED_DEFENSE
-            await op.finish()
-            return refusal_resp
-
-        if admitted.body is not None:
-            fwd_headers["content-type"] = JSON
-        key_value = override.api_key.get_secret_value()
-        fwd_headers[provider.auth_header] = f"{provider.auth_prefix}{key_value}"
-
-        # On success this returns a StreamingResponse that finishes op when the
-        # stream ends; on a forward error it finishes op and returns a plain
-        # Response. Either way the row is written exactly once.
-        return await _forward_upstream(
-            op,
-            request.method,
-            upstream_url,
-            fwd_headers,
-            admitted.body,
-            provider_name,
-            profile,
-            warning,
-        )
+    except (ClientDisconnect, asyncio.CancelledError):
+        # The caller went away during setup (reading the body, admitting), before
+        # the response streams: keep the default CANCELLED and record it once. On
+        # the success path this is unreachable — the StreamingResponse has been
+        # returned and relay.Relayed owns the finish.
+        await op.finish()
+        raise
     except Exception:
         # An unexpected error before the response streams: record it, once.
         op.settle(Outcome.GATEWAY_ERROR)
@@ -662,11 +681,13 @@ async def _forward_upstream(
 ) -> Response:
     """Send the (already-admitted, key-injected) request to the provider.
 
-    On a send failure the Operation is settled ``BACKEND_ERROR`` and finished
-    here (a plain Response goes back). On success the Operation is settled by
-    status and handed to ``_streaming_response``, which finishes it when the
-    stream ends — so the row carries the bytes actually relayed and is written
-    once, at the end, not when the headers arrived.
+    On a send failure the Operation is settled ``BACKEND_ERROR`` (carrying any
+    flag-mode finding) and finished here; a plain Response goes back. On success
+    the response's close is registered on the Operation and it is handed to
+    ``_streaming_response``, which settles the outcome once the body has drained
+    and lets ``relay.Relayed`` finish it around the whole response — so the row
+    carries the bytes actually relayed, is written once at the end (not when the
+    headers arrived), and an interrupted stream keeps the default ``CANCELLED``.
     """
     client = _get_llm_client()
 
@@ -681,30 +702,27 @@ async def _forward_upstream(
             stream=True,
         )
     except httpx.TimeoutException:
-        op.settle(Outcome.BACKEND_ERROR)
+        op.settle(Outcome.BACKEND_ERROR, op.flag_reason)
         await op.finish()
         return Response(content="LLM upstream timeout", status_code=504, media_type=PLAIN_TEXT)
     except httpx.ConnectError as exc:
         logger.warning("llm_proxy: connect error provider=%s: %s", provider_name, exc_kind(exc))
-        op.settle(Outcome.BACKEND_ERROR)
+        op.settle(Outcome.BACKEND_ERROR, op.flag_reason)
         await op.finish()
         return Response(content="LLM upstream unreachable", status_code=502, media_type=PLAIN_TEXT)
     except httpx.HTTPError as exc:
         # Any other upstream failure (read error, protocol error, a stream that
         # broke before headers): still one audit row, never an unlogged 500.
         logger.warning("llm_proxy: upstream error provider=%s: %s", provider_name, exc_kind(exc))
-        op.settle(Outcome.BACKEND_ERROR)
+        op.settle(Outcome.BACKEND_ERROR, op.flag_reason)
         await op.finish()
         return Response(content="LLM upstream error", status_code=502, media_type=PLAIN_TEXT)
 
-    # The request is on the wire; its body is what went upstream.
+    # The request is on the wire; its body is what went upstream. Register the
+    # response's close on the Operation so finish() closes it exactly once, even
+    # if the stream is never drained; the outcome is settled by the stream.
     op.sent = len(body) if body else 0
-    if resp.status_code >= 500:
-        op.settle(Outcome.BACKEND_ERROR, op.flag_reason)
-    elif resp.status_code >= 400:
-        op.settle(Outcome.TOOL_ERROR, op.flag_reason)
-    else:
-        op.settle(Outcome.OK, op.flag_reason)
+    op.upstream.push_async_callback(resp.aclose)
     return _streaming_response(op, resp, provider_name, profile, warning)
 
 
@@ -719,7 +737,7 @@ def _streaming_response(
     provider_name: str,
     profile: Profile,
     warning: str | None = None,
-) -> StreamingResponse:
+) -> Relayed:
     """Stream the provider response through, then judge what streamed.
 
     Per-frame scanning is theater: a 512-token-window classifier over
@@ -741,12 +759,12 @@ def _streaming_response(
     if warning:
         resp_headers[WARNING_HEADER] = warning
 
+    status = resp.status_code
     collected: list[bytes] = []
     size_seen = 0
 
     async def stream_body() -> AsyncIterator[bytes]:
         nonlocal size_seen
-        completed = False
         try:
             async for chunk in resp.aiter_bytes():
                 op.received += len(chunk)
@@ -754,31 +772,33 @@ def _streaming_response(
                     collected.append(chunk)
                 size_seen += len(chunk)
                 yield chunk
-            completed = True
+        except (asyncio.CancelledError, GeneratorExit):
+            # The agent went away mid-stream: keep the default CANCELLED; the row
+            # still carries what was relayed. finish() runs in relay.Relayed.
+            raise
+        except Exception:
+            # The upstream body broke after the headers — a backend fault, not a
+            # cancellation. relay.Relayed still finishes the row.
+            op.settle(Outcome.BACKEND_ERROR, "upstream_failed")
+            raise
+        else:
+            # Drained fully: the outcome is the upstream's status, with any
+            # flag-mode finding carried onto the row.
+            if status >= 500:
+                op.settle(Outcome.BACKEND_ERROR, op.flag_reason)
+            elif status >= 400:
+                op.settle(Outcome.TOOL_ERROR, op.flag_reason)
+            else:
+                op.settle(Outcome.OK, op.flag_reason)
         finally:
-            await resp.aclose()
-            # A stream that did not run to the end — the agent disconnected, or
-            # the body broke after the headers — is not a clean delivery: settle
-            # CANCELLED (only over a success; a 4xx/5xx keeps its error outcome).
-            # The row carries the bytes actually relayed and is written at the
-            # stream's END, not when the headers arrived.
-            if not completed and op.outcome is Outcome.OK:
-                op.settle(Outcome.CANCELLED, op.reason)
-            await op.finish()
-            _schedule_completion_scan(
-                b"".join(collected),
-                size_seen,
-                provider_name,
-                profile,
-            )
+            # Best-effort: assemble and judge what streamed. The row and the slot
+            # are finished by relay.Relayed, around the whole response, so they
+            # are not lost if this generator's finally never runs (a client that
+            # stopped reading, a response that never started).
+            _schedule_completion_scan(b"".join(collected), size_seen, provider_name, profile)
 
     ct = resp.headers.get("content-type", "application/json")
-    return StreamingResponse(
-        stream_body(),
-        status_code=resp.status_code,
-        headers=resp_headers,
-        media_type=ct,
-    )
+    return Relayed(stream_body(), op, media_type=ct, status_code=status, headers=resp_headers)
 
 
 def _schedule_completion_scan(

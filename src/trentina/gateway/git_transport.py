@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 from starlette.requests import ClientDisconnect
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import Response
 
 from .. import logsafe
 from ..egress import open_pinned
@@ -79,14 +79,13 @@ from .git_wire import (
 )
 from .loader import get_active_config
 from .proxy_utils import PLAIN_TEXT
-from .relay import MAX_OPERATIONS_PER_PROFILE, Operation, Slots
+from .relay import MAX_OPERATIONS_PER_PROFILE, Operation, Relayed, Slots
 from .upstream import RESOLVER_BUSY, checked_target
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from starlette.requests import Request
-    from starlette.types import Message, Receive, Scope, Send
 
     from .profile import GitGrant, GitRemote, Profile
 
@@ -525,36 +524,6 @@ async def _relay(
         op.settle(Outcome.BACKEND_ERROR, "upstream_failed")
 
 
-class _Relayed(StreamingResponse):
-    """A streamed answer whose operation is finished exactly once.
-
-    A body generator's ``finally`` does not run when the response is never
-    started, and a client that stops reading holds ``send`` open for as long
-    as it likes. So the finish is here, around the whole response, and every
-    ``send`` is held to the idle timeout.
-    """
-
-    def __init__(self, body: AsyncIterator[bytes], op: Operation, media_type: str) -> None:
-        super().__init__(body, media_type=media_type, headers={"Cache-Control": "no-cache"})
-        self._op = op
-
-    async def stream_response(self, send: Send) -> None:
-        async def bounded(message: Message) -> None:
-            try:
-                await asyncio.wait_for(send(message), IDLE_TIMEOUT)
-            except TimeoutError:
-                self._op.settle(Outcome.DENIED_GUARD, "idle")
-                raise
-
-        await super().stream_response(bounded)
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        try:
-            await super().__call__(scope, receive, send)
-        finally:
-            await self._op.finish()
-
-
 async def _carry(request: Request, op: Operation) -> Response:
     """Admit one request, send it upstream and hand back its streamed answer.
 
@@ -617,4 +586,10 @@ async def _carry(request: Request, op: Operation) -> Response:
         )
     if resp.headers.get("content-type", "").partition(";")[0].strip().lower() != answer_type:
         raise GitRefusedError(HTTPStatus.BAD_GATEWAY, "upstream_content", Outcome.BACKEND_ERROR)
-    return _Relayed(_relay(op, resp, listing), op, answer_type)
+    return Relayed(
+        _relay(op, resp, listing),
+        op,
+        media_type=answer_type,
+        headers={"Cache-Control": "no-cache"},
+        idle=IDLE_TIMEOUT,
+    )

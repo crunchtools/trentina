@@ -580,6 +580,23 @@ class TestProxyAdmission:
         assert row["backend"] == "llm:anthropic"
         assert row["outcome"] == "backend_error"
 
+    def test_a_full_profile_is_busy(self, monkeypatch: pytest.MonkeyPatch, audit_db: Path) -> None:
+        """When the profile holds all its /llm slots, a new request is 503 busy,
+        nothing is forwarded, and the refusal is recorded. The slot gate is after
+        admission, so a refused (unadmitted) request never consumes one."""
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch)
+        llm_proxy._SLOTS._open["agent1"] = llm_proxy.MAX_LLM_OPERATIONS_PER_PROFILE
+        try:
+            resp = self._post(client, _PLAIN)
+        finally:
+            llm_proxy._SLOTS._open.clear()
+        assert resp.status_code == 503
+        assert resp.json()["block_reason"] == "busy"
+        assert not fake.sent  # refused at the slot gate, before the forward
+        [row] = _rows(audit_db)
+        assert (row["outcome"], row["error_message"]) == ("denied_guard", "busy")
+
     def test_headers_are_allowlisted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = _FakeClient()
         client = self._client(fake, monkeypatch)
@@ -1004,10 +1021,13 @@ async def test_post_hoc_completion_scan_timeout_is_logged_not_raised(
     assert any("completion scan timed out" in r.getMessage() for r in caplog.records)
 
 
-async def test_an_interrupted_stream_settles_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A stream that breaks after the headers (agent gone, or upstream body
-    failed) is settled CANCELLED, not left as the OK the status gave — and the
-    row still carries the bytes relayed so far."""
+async def test_an_upstream_mid_stream_break_is_backend_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An upstream body that breaks AFTER the headers is a backend fault, not a
+    clean OK and not a client cancellation — the row still carries the bytes
+    relayed so far. (A client-side cancellation keeps the default CANCELLED; see
+    the relay tests, where relay.Relayed owns finish().)"""
     import httpx
 
     from trentina.gateway import relay
@@ -1030,7 +1050,6 @@ async def test_an_interrupted_stream_settles_cancelled(monkeypatch: pytest.Monke
             return None
 
     op = llm_proxy.Operation(SimpleNamespace(name="agent1"), backend="llm:anthropic")
-    op.settle(Outcome.OK)  # the 200 the status gave
     streamed = llm_proxy._streaming_response(
         op, _Broken(), "anthropic", SimpleNamespace(name="agent1")
     )
@@ -1045,5 +1064,5 @@ async def test_an_interrupted_stream_settles_cancelled(monkeypatch: pytest.Monke
         await _drain()
 
     assert chunks == [b"partial"]  # what was relayed before the break
-    assert op.outcome is Outcome.CANCELLED
+    assert (op.outcome, op.reason) == (Outcome.BACKEND_ERROR, "upstream_failed")
     assert op.received == len(b"partial")
