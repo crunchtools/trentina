@@ -164,6 +164,20 @@ def load_sources(cache: Path) -> tuple[list[str], list[str], list[dict[str, str]
     return list(benign), list(attack), provenance
 
 
+_SAFE_RUN = re.compile(r"[A-Za-z0-9 ,.:;!?()'-]{24,}")
+"""A stretch of an attack that any envelope's escaping leaves as written."""
+
+
+def attack_at(attack: str, rendered: str) -> int:
+    """Where ``attack`` begins in ``rendered``, by its first stretch that survives
+    JSON escaping; -1 when none can be found (the row is then dropped in training)."""
+    for run in _SAFE_RUN.finditer(attack):
+        at = rendered.find(run.group(0))
+        if at >= 0:
+            return max(0, at - run.start())
+    return -1
+
+
 async def build(
     benign: list[str], attack: list[str], per_envelope: int, replay: int
 ) -> list[dict[str, Any]]:
@@ -178,13 +192,16 @@ async def build(
             rows.append({"text": await as_read(make(rng, text), shape), "label": 0, "shape": shape})
         for _ in range(per_envelope):
             text = rng.choice(attack)
-            rows.append({"text": await as_read(make(rng, text), shape), "label": 1, "shape": shape})
+            rendered = await as_read(make(rng, text), shape)
+            rows.append(
+                {"text": rendered, "label": 1, "shape": shape, "at": attack_at(text, rendered)}
+            )
     rows += [
         {"text": t, "label": 0, "shape": "plain"}
         for t in rng.sample(benign, min(replay, len(benign)))
     ]
     rows += [
-        {"text": t, "label": 1, "shape": "plain"}
+        {"text": t, "label": 1, "shape": "plain", "at": 0}
         for t in rng.sample(attack, min(replay, len(attack)))
     ]
     rng.shuffle(rows)

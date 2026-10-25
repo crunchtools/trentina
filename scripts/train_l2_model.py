@@ -19,6 +19,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 BASE = "Horizon-Labs/prompt-injection-guard-small"
 BASE_REVISION = "3215a27edd62c5ba0bd786c57a9d243b2158e70e"
@@ -29,6 +30,56 @@ SEED = 20261025
 LOG_EVERY_STEPS = 50
 GUARD_TOKENS = 64
 """Tokens neighbouring windows share: the runtime's default (``classifier.py``)."""
+BENIGN_WINDOWS = 3
+"""Windows one long benign row gives at most (its first, middle and last), so
+a few long envelopes do not outnumber every attack (run 40191101108: 7,344
+windows from 6,160 rows, 1,115 attacks dropped)."""
+
+
+def windows(
+    tok: Any,
+    path: Path,
+    content: int,
+    labels: tuple[int, int],
+    dropped: dict[str, int],
+    split: str,
+) -> list[dict]:
+    """``path``'s rows as the runtime scans them: windows of ``content`` tokens.
+
+    A benign row is benign in every window, so a long one gives up to
+    ``BENIGN_WINDOWS`` of them. An attack is an attack only in a window that
+    holds it: a long one gives the window that starts ``GUARD_TOKENS`` before
+    where the data builder found it (``at``), and is dropped and counted in
+    ``dropped[split]`` when it was not found, never mislabelled.
+    """
+    safe, injection = labels
+    stride = content - GUARD_TOKENS
+
+    def example(ids: list[int], label: int) -> dict:
+        full = tok.build_inputs_with_special_tokens(ids)
+        return {"input_ids": full, "attention_mask": [1] * len(full), "labels": label}
+
+    out = []
+    for line in path.read_text().splitlines():
+        row = json.loads(line)
+        enc = tok(row["text"], add_special_tokens=False, return_offsets_mapping=True)
+        ids = enc["input_ids"]
+        if len(ids) <= content:
+            out.append(example(ids, injection if row["label"] else safe))
+        elif not row["label"]:
+            starts = list(range(0, len(ids), stride))
+            picks = sorted({starts[0], starts[len(starts) // 2], starts[-1]})
+            out += [example(ids[i : i + content], safe) for i in picks[:BENIGN_WINDOWS]]
+        elif row.get("at", -1) < 0:
+            dropped[split] += 1
+        else:
+            first = next(
+                (k for k, (_, end) in enumerate(enc["offset_mapping"]) if end > row["at"]),
+                len(ids),
+            )
+            begin = max(0, min(first - GUARD_TOKENS, len(ids) - content))
+            out.append(example(ids[begin : begin + content], injection))
+    return out
 
 
 def main() -> int:
@@ -59,34 +110,11 @@ def main() -> int:
     safe, injection = labels["SAFE"], labels["INJECTION"]
 
     content = args.max_length - tok.num_special_tokens_to_add()
-    stride = content - GUARD_TOKENS
     dropped = {"train": 0, "val": 0}
-
-    def example(ids: list[int], label: int) -> dict:
-        full = tok.build_inputs_with_special_tokens(ids)
-        return {"input_ids": full, "attention_mask": [1] * len(full), "labels": label}
-
-    def encode(split: str) -> list[dict]:
-        """Rows as the runtime scans them: windows of ``content`` tokens.
-
-        A benign row is benign in every window, so a long one becomes all of its
-        windows, as ``classify()`` reads it. An attack is an attack only in the
-        windows that hold it, which a row does not mark, so an attack longer
-        than one window is dropped and counted rather than mislabelled.
-        """
-        out = []
-        for line in (args.data / f"{split}.jsonl").read_text().splitlines():
-            row = json.loads(line)
-            ids = tok(row["text"], add_special_tokens=False)["input_ids"]
-            if len(ids) <= content:
-                out.append(example(ids, injection if row["label"] else safe))
-            elif row["label"]:
-                dropped[split] += 1
-            else:
-                out += [example(ids[i : i + content], safe) for i in range(0, len(ids), stride)]
-        return out
-
-    train, val = encode("train"), encode("val")
+    train, val = (
+        windows(tok, args.data / f"{split}.jsonl", content, (safe, injection), dropped, split)
+        for split in ("train", "val")
+    )
 
     def metrics(pred: tuple) -> dict:
         logits, gold = pred
