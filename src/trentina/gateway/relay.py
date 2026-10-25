@@ -151,7 +151,8 @@ class Operation:
                 )
             except Exception as exc:
                 logger.warning(
-                    "perimeter: audit row lost profile=%s err=%s",
+                    "perimeter: audit row lost backend=%s profile=%s err=%s",
+                    self.backend,
                     self.profile.name,
                     exc_kind(exc),
                 )
