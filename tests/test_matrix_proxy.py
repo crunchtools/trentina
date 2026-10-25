@@ -1258,3 +1258,100 @@ class TestMatrixAudit:
         assert resp.status_code == 500
         row = _row(rows)
         assert (row["outcome"], row["reason"]) == ("backend_error", "upstream_failed")
+
+    def test_annotate_unreadable_media_is_an_ok_finding_row(
+        self, monkeypatch: pytest.MonkeyPatch, rows: list[Any]
+    ) -> None:
+        upstream = _FakeUpstream(b"\x00\x01binary", content_type="application/octet-stream")
+        resp = self._client(monkeypatch, upstream, unjudged="annotate").get(
+            "/matrix/_matrix/media/v3/download/server/abc"
+        )
+        assert resp.status_code == 200
+        row = _row(rows)
+        assert (row["outcome"], row["reason"]) == ("ok", "media_unreadable")
+
+    def test_withheld_unreadable_media_is_a_blocked_defense_row(
+        self, monkeypatch: pytest.MonkeyPatch, rows: list[Any]
+    ) -> None:
+        upstream = _FakeUpstream(b"\x00\x01binary", content_type="application/octet-stream")
+        resp = self._client(monkeypatch, upstream).get(
+            "/matrix/_matrix/media/v3/download/server/abc"
+        )
+        assert resp.status_code == 502
+        row = _row(rows)
+        assert (row["outcome"], row["reason"]) == ("blocked_defense", "media_withheld")
+
+    def test_oversize_media_image_is_a_blocked_defense_row(
+        self, monkeypatch: pytest.MonkeyPatch, rows: list[Any]
+    ) -> None:
+        from trentina.gateway import matrix_proxy
+
+        monkeypatch.setattr(matrix_proxy, "MAX_IMAGE_BYTES", 4)
+        upstream = _FakeUpstream(b"\x89PNG\r\n\x1a\n0123", content_type="image/png")
+        resp = self._client(monkeypatch, upstream).get(
+            "/matrix/_matrix/media/v3/download/server/abc.png"
+        )
+        assert resp.status_code == 502
+        row = _row(rows)
+        assert (row["outcome"], row["reason"]) == ("blocked_defense", "media_too_large")
+
+    def test_an_unexpected_exception_is_a_gateway_error_row(
+        self, monkeypatch: pytest.MonkeyPatch, rows: list[Any]
+    ) -> None:
+        """A non-httpx exception while routing/scanning records a gateway_error
+        row (the catch-all), distinct from an upstream httpx error."""
+        import httpx
+        from starlette.testclient import TestClient
+
+        from trentina.gateway import matrix_proxy
+
+        class _Boom:
+            def build_request(self, *_a: object, **_k: object) -> object:
+                return MagicMock()
+
+            async def send(self, *_a: object, **_k: object) -> object:
+                resp = MagicMock(spec=httpx.Response)
+                resp.status_code = 200
+                resp.headers = {"content-type": "application/json"}
+
+                async def aiter_bytes() -> AsyncIterator[bytes]:
+                    raise RuntimeError("boom")
+                    yield b""  # unreachable; makes this an async generator
+
+                async def aclose() -> None:
+                    return None
+
+                resp.aiter_bytes = aiter_bytes
+                resp.aclose = aclose
+                return resp
+
+        monkeypatch.setattr(matrix_proxy, "_get_matrix_client", _Boom)
+        app = _matrix_app({"agent1": _matrix_profile()})
+        client = TestClient(app, client=AGENT_PEER, raise_server_exceptions=False)
+        resp = client.get("/matrix/_matrix/client/v3/sync")
+        assert resp.status_code == 500
+        row = _row(rows)
+        assert (row["outcome"], row["reason"]) == ("gateway_error", "proxy_error")
+
+    def test_text_fallback_flag_is_carried_into_the_row(
+        self, monkeypatch: pytest.MonkeyPatch, rows: list[Any]
+    ) -> None:
+        """When the structured scan fails on parseable JSON and the text-mode
+        fallback flags it, the row records scan_failed,flagged under annotate."""
+        from trentina.gateway import matrix_proxy
+
+        async def _boom_scan(*_a: object, **_k: object) -> object:
+            raise RuntimeError("scan blew up")
+
+        async def _flagged(*_a: object, **_k: object) -> bool:
+            return True
+
+        monkeypatch.setattr(matrix_proxy, "defend_selection", _boom_scan)
+        monkeypatch.setattr(matrix_proxy, "_text_fallback_scan", _flagged)
+        upstream = _FakeUpstream(json.dumps({"rooms": {}, "next_batch": "s1"}).encode())
+        resp = self._client(monkeypatch, upstream, unjudged="annotate").get(
+            "/matrix/_matrix/client/v3/sync"
+        )
+        assert resp.status_code == 200
+        row = _row(rows)
+        assert (row["outcome"], row["reason"]) == ("ok", "scan_failed,flagged")

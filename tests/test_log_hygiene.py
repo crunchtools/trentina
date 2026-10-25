@@ -397,13 +397,16 @@ class TestProxies:
         from .test_matrix_proxy import _matrix_profile
 
         resp = httpx.Response(200, content=f"{{not json {CANARY}".encode())
+        profile = _matrix_profile()
+        op = matrix_proxy.Operation(profile, backend=matrix_proxy.BACKEND, tool="GET")
         with patch.object(matrix_proxy, "defend", side_effect=RuntimeError(f"said {CANARY}")):
             await matrix_proxy._scan_and_forward(
                 resp,
                 {"content-type": "application/json"},
                 "application/json",
-                _matrix_profile(),
+                profile,
                 f"_matrix/client/v3/rooms/!{CANARY}:x/messages",
+                op,
             )
         assert any("structured scan failed" in r.getMessage() for r in captured.records)
         assert any("fallback scan failed" in r.getMessage() for r in captured.records)
