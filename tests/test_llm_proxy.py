@@ -580,6 +580,27 @@ class TestProxyAdmission:
         assert row["backend"] == "llm:anthropic"
         assert row["outcome"] == "backend_error"
 
+    def test_a_client_disconnect_during_setup_is_cancelled(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        """A caller that drops while the request is being read/admitted finishes
+        the Operation once as CANCELLED and the disconnect propagates — no slot
+        is leaked (none was taken yet) and no spurious ok/500 row is written."""
+        from starlette.requests import ClientDisconnect
+
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch)
+
+        async def _drops(_request: Any) -> bytes:
+            raise ClientDisconnect
+
+        monkeypatch.setattr(llm_proxy, "_read_body", _drops)
+        with pytest.raises(ClientDisconnect):
+            self._post(client, _PLAIN)
+        assert not fake.sent  # nothing forwarded
+        [row] = _rows(audit_db)
+        assert row["outcome"] == "cancelled"
+
     def test_a_full_profile_is_busy(self, monkeypatch: pytest.MonkeyPatch, audit_db: Path) -> None:
         """When the profile holds all its /llm slots, a new request is 503 busy,
         nothing is forwarded, and the refusal is recorded. The slot gate is after

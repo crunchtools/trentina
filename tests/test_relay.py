@@ -93,13 +93,15 @@ def test_take_slot_false_holds_nothing() -> None:
     assert not second.holds_slot  # a refused take leaves the op holding nothing
 
 
-async def test_relayed_finishes_the_op_once_around_the_whole_response(
+async def test_relayed_finishes_in_call_when_the_client_disconnects_mid_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """relay.Relayed finishes the Operation in __call__, around the whole
-    response — not in the body generator's finally, which does not run when a
-    client stops reading. The slot comes back and exactly one row is written,
-    driven on uvicorn's real ASGI spec (2.3, the disconnect-listener path)."""
+    """A client that disconnects MID-STREAM must still finish the Operation —
+    promptly, in __call__, not whenever the body generator is garbage-collected.
+    The body here never completes on its own (it blocks after the first chunk),
+    so the only thing that can finish the op is __call__'s finally. On the old
+    body-generator-finally design op would be unfinished here (closed at GC), so
+    this asserting op.finished right after __call__ returns is the real guard."""
     rows: list[Any] = []
     monkeypatch.setattr(relay, "record_gateway_call", lambda *a, **k: rows.append(a))
     slots = Slots(1)
@@ -107,23 +109,24 @@ async def test_relayed_finishes_the_op_once_around_the_whole_response(
     assert op.take_slot(slots)
     op.settle(relay.Outcome.OK)
 
+    first_chunk_sent = asyncio.Event()
+
     async def body() -> AsyncIterator[bytes]:
         yield b"a"
-        yield b"b"
+        first_chunk_sent.set()
+        await asyncio.Event().wait()  # never set: the body cannot finish itself
+        yield b"unreached"
 
-    sent: list[str] = []
-
-    async def send(message: dict[str, Any]) -> None:
-        sent.append(message["type"])
+    async def send(_message: dict[str, Any]) -> None:
+        return None
 
     async def receive() -> dict[str, Any]:
-        await asyncio.Event().wait()  # never disconnects; cancelled when the body ends
+        await first_chunk_sent.wait()  # one chunk relayed, then the client is gone
         return {"type": "http.disconnect"}
 
     relayed = Relayed(body(), op, media_type="text/plain")
     await relayed({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send)
 
-    assert op.finished
-    assert len(rows) == 1  # exactly one audit row, from __call__
-    assert slots.take("agent1"), "the slot came back"
-    assert "http.response.start" in sent and "http.response.body" in sent
+    assert op.finished  # finished in __call__, though the body never drained
+    assert len(rows) == 1  # exactly one audit row
+    assert slots.take("agent1"), "the slot came back after the disconnect"
