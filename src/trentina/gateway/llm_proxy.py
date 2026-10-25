@@ -74,7 +74,7 @@ from .proxy_utils import (
     filter_response_headers,
     normalize_proxy_path,
 )
-from .relay import Operation, Relayed, Slots
+from .relay import Operation, Relayed, Slots, upstream_outcome
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -782,14 +782,9 @@ def _streaming_response(
             op.settle(Outcome.BACKEND_ERROR, "upstream_failed")
             raise
         else:
-            # Drained fully: the outcome is the upstream's status, with any
-            # flag-mode finding carried onto the row.
-            if status >= 500:
-                op.settle(Outcome.BACKEND_ERROR, op.flag_reason)
-            elif status >= 400:
-                op.settle(Outcome.TOOL_ERROR, op.flag_reason)
-            else:
-                op.settle(Outcome.OK, op.flag_reason)
+            # Drained fully: the outcome is the upstream's status (the ONE
+            # mapping, shared with /egress), with any flag-mode finding on the row.
+            op.settle(upstream_outcome(status), op.flag_reason)
         finally:
             # Best-effort: assemble and judge what streamed. The row and the slot
             # are finished by relay.Relayed, around the whole response, so they

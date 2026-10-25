@@ -58,6 +58,22 @@ NO_OPERATION = "-"
 MAX_OPERATIONS_PER_PROFILE = 8
 
 
+def upstream_outcome(status: int) -> Outcome:
+    """The audit outcome for an upstream HTTP status the route delivered (#511).
+
+    A 5xx is the backend failing (``BACKEND_ERROR``); a 4xx is the backend
+    rejecting the agent's request (``TOOL_ERROR``); anything else is ``OK``. The
+    ONE mapping for ``/egress`` and ``/llm``, so a 5xx reads the same on every
+    row. (``/git`` keeps its own: its outcome turns on the git protocol content,
+    not the HTTP status, so a shared status map would be the wrong rule there.)
+    """
+    if status >= 500:
+        return Outcome.BACKEND_ERROR
+    if status >= 400:
+        return Outcome.TOOL_ERROR
+    return Outcome.OK
+
+
 class Slots:
     """One route's per-profile in-flight counter. Each route owns one instance,
     so one route's load never counts against another's cap."""

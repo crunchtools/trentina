@@ -81,7 +81,7 @@ from .outbound import (
     judge_outbound,
 )
 from .proxy_utils import PLAIN_TEXT, normalize_proxy_path
-from .relay import MAX_OPERATIONS_PER_PROFILE, NO_OPERATION, Operation, Slots
+from .relay import MAX_OPERATIONS_PER_PROFILE, NO_OPERATION, Operation, Slots, upstream_outcome
 from .upstream import RESOLVER_BUSY, pinned_send
 
 if TYPE_CHECKING:
@@ -551,7 +551,7 @@ async def _send_and_judge(
             raise EgressRefusedError(HTTPStatus.FORBIDDEN, "response_binary", executed=True)
         warning = warning or "binary_unread"
 
-    op.settle(Outcome.OK if status < 400 else Outcome.TOOL_ERROR, op.flag_reason)
+    op.settle(upstream_outcome(status), op.flag_reason)
     if warning:
         hdrs[WARNING_HEADER] = warning
     return Response(content=raw, status_code=status, media_type=ct or None, headers=hdrs)

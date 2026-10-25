@@ -276,6 +276,26 @@ class TestRequestJudging:
             "egress",
         )
 
+    @pytest.mark.parametrize(
+        ("status", "outcome"),
+        [(502, "backend_error"), (503, "backend_error"), (404, "tool_error"), (200, "ok")],
+    )
+    def test_the_upstream_status_decides_the_outcome(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path, status: int, outcome: str
+    ) -> None:
+        """The ONE upstream_outcome mapping (#511): a delivered 5xx is the
+        backend failing (backend_error), a 4xx is the backend rejecting the
+        request (tool_error), 2xx is ok. The response reaches the agent either
+        way — the request executed. (Egress used to record any >=400 as
+        tool_error; now a 5xx reads the same as it does on /llm.)"""
+        _stub_judge(monkeypatch)
+        h = _harness(monkeypatch)
+        h.net.resp = _FakeResp(status=status)
+        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        assert resp.status_code == status
+        [row] = _rows(audit_db)
+        assert row["outcome"] == outcome
+
     def test_credential_in_body_blocks_before_sending(
         self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
     ) -> None:
