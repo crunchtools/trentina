@@ -8,13 +8,15 @@ tested here, once, not only through each route.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from trentina.gateway import relay
-from trentina.gateway.relay import Operation, Slots
+from trentina.gateway.relay import Operation, Relayed, Slots
 
 
 def _op(**kw: Any) -> Operation:
@@ -89,3 +91,76 @@ def test_take_slot_false_holds_nothing() -> None:
     second = _op()
     assert not second.take_slot(slots)  # full
     assert not second.holds_slot  # a refused take leaves the op holding nothing
+
+
+async def test_relayed_finishes_once_on_a_fully_drained_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The normal path: a body that drains to completion emits its start and
+    body, finishes the Operation exactly once, and returns the slot."""
+    rows: list[Any] = []
+    monkeypatch.setattr(relay, "record_gateway_call", lambda *a, **k: rows.append(a))
+    slots = Slots(1)
+    op = _op()
+    assert op.take_slot(slots)
+    op.settle(relay.Outcome.OK)
+
+    async def body() -> AsyncIterator[bytes]:
+        yield b"a"
+        yield b"b"
+
+    sent: list[str] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message["type"])
+
+    async def receive() -> dict[str, Any]:
+        await asyncio.Event().wait()  # no disconnect; cancelled once the body ends
+        return {"type": "http.disconnect"}
+
+    relayed = Relayed(body(), op, media_type="text/plain")
+    await relayed({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send)
+
+    assert op.finished
+    assert len(rows) == 1
+    assert slots.take("agent1"), "the slot came back"
+    assert "http.response.start" in sent and "http.response.body" in sent
+
+
+async def test_relayed_finishes_in_call_when_the_client_disconnects_mid_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client that disconnects MID-STREAM must still finish the Operation —
+    promptly, in __call__, not whenever the body generator is garbage-collected.
+    The body here never completes on its own (it blocks after the first chunk),
+    so the only thing that can finish the op is __call__'s finally. On the old
+    body-generator-finally design op would be unfinished here (closed at GC), so
+    this asserting op.finished right after __call__ returns is the real guard."""
+    rows: list[Any] = []
+    monkeypatch.setattr(relay, "record_gateway_call", lambda *a, **k: rows.append(a))
+    slots = Slots(1)
+    op = _op()
+    assert op.take_slot(slots)
+    op.settle(relay.Outcome.OK)
+
+    first_chunk_sent = asyncio.Event()
+
+    async def body() -> AsyncIterator[bytes]:
+        yield b"a"
+        first_chunk_sent.set()
+        await asyncio.Event().wait()  # never set: the body cannot finish itself
+        yield b"unreached"
+
+    async def send(_message: dict[str, Any]) -> None:
+        return None
+
+    async def receive() -> dict[str, Any]:
+        await first_chunk_sent.wait()  # one chunk relayed, then the client is gone
+        return {"type": "http.disconnect"}
+
+    relayed = Relayed(body(), op, media_type="text/plain")
+    await relayed({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send)
+
+    assert op.finished  # finished in __call__, though the body never drained
+    assert len(rows) == 1  # exactly one audit row
+    assert slots.take("agent1"), "the slot came back after the disconnect"

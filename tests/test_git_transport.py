@@ -1167,12 +1167,9 @@ class TestBounds:
         assert (row["outcome"], row["error_message"]) == ("backend_error", "upstream_failed")
         assert row["bytes_arrived"] == len(b"PACK-and-then-gone")
 
-    async def test_a_client_that_stops_reading_is_given_up_on(
-        self, audit_db: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_a_client_that_stops_reading_is_given_up_on(self, audit_db: Path) -> None:
         """The answer's every ``send`` is held to the idle timeout, and the
         operation is finished once however the response ends."""
-        monkeypatch.setattr(git_transport, "IDLE_TIMEOUT", 0.1)
         op = git_transport.Operation(
             harness.profile(),
             backend=git_transport.BACKEND,
@@ -1188,7 +1185,9 @@ class TestBounds:
             if message["type"] == "http.response.body":
                 await asyncio.Event().wait()
 
-        answer = git_transport._Relayed(pack(), op, "application/x-git-upload-pack-result")
+        answer = git_transport.Relayed(
+            pack(), op, media_type="application/x-git-upload-pack-result", idle=0.1
+        )
         scope = {"type": "http", "asgi": {"spec_version": "2.4"}}
         with pytest.raises(ClientDisconnect):
             await answer(scope, never_drains, never_drains)
