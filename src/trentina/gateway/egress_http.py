@@ -125,6 +125,7 @@ _OUTCOME_OF: dict[str, Outcome] = {
     "binary_body": Outcome.BLOCKED_DEFENSE,
     "busy": Outcome.DENIED_GUARD,
     "resolver_busy": Outcome.DENIED_GUARD,
+    "denied_guard": Outcome.BLOCKED_DEFENSE,
     "redirect": Outcome.BACKEND_ERROR,
     "upstream_failed": Outcome.BACKEND_ERROR,
     "upstream_idle": Outcome.BACKEND_ERROR,
@@ -726,15 +727,27 @@ def _is_text(content_type: str) -> bool:
 def _from_guard(exc: GuardRefusedError) -> EgressRefusedError:
     """Map the egress guard's refusal to this route's reason and status.
 
-    A ``redirect`` or ``encoded`` refusal means the upstream already answered —
-    the request executed — so it is withheld, not denied. ``resolver_busy`` is
-    gateway load before the connection; nothing executed.
+    Three buckets, by whether the request reached the upstream:
+    - ``resolver_busy`` is gateway load before the connection (503); nothing
+      executed.
+    - ``redirect`` (a 3xx) and ``encoded`` (a content-encoded body, refused
+      because ``open_pinned`` sends ``Accept-Encoding: identity``) mean the
+      upstream already ANSWERED — the request executed, so the response is
+      withheld (502), not denied.
+    - Everything else is the address rail firing BEFORE a byte leaves — a
+      non-global address, an unresolvable host, a bad scheme/port: a defense
+      block (403), nothing executed. The specific guard reason rides in
+      ``detail`` for the audit; the caller sees only the ``denied_guard``
+      bucket. This matches how ``/git`` and the CONNECT tunnel label the same
+      refusals (Outcome.BLOCKED_DEFENSE), and stops the old mislabel that told
+      the agent a never-sent request had "executed by the destination".
     """
     if exc.reason == RESOLVER_BUSY:
         return EgressRefusedError(HTTPStatus.SERVICE_UNAVAILABLE, "resolver_busy")
     if exc.reason == "redirect":
         return EgressRefusedError(HTTPStatus.BAD_GATEWAY, "redirect", executed=True)
-    # "encoded" (the guard refuses a content-encoded response, since open_pinned
-    # sends Accept-Encoding: identity) and anything else are upstream faults the
-    # request already reached.
-    return EgressRefusedError(HTTPStatus.BAD_GATEWAY, "upstream_failed", executed=True)
+    if exc.reason in ("encoded", "too_many_redirects", "downgrade"):
+        return EgressRefusedError(HTTPStatus.BAD_GATEWAY, "upstream_failed", executed=True)
+    return EgressRefusedError(
+        HTTPStatus.FORBIDDEN, "denied_guard", executed=False, detail=exc.reason
+    )

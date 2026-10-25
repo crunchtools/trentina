@@ -49,7 +49,11 @@ request, so it can refuse that.
 5. **Where it goes** — through the [egress guard](../src/trentina/egress.py) to
    an address that was checked; no redirect is followed. The profile's token
    for the upstream is injected (`egress_upstreams.<name>.credential`), so the
-   agent never holds it.
+   agent never holds it. If the guard refuses the address (a non-global
+   address, a DNS rebind, an unresolvable host), the request is a `403`
+   `denied_guard` with **nothing executed** — the request never left; the
+   specific guard reason is kept in the audit row, not shown to the caller.
+   This matches how `/git` and the CONNECT tunnel label the same refusal.
 6. **What comes back** — the response is untrusted content the agent will
    ingest, judged as ingress like the `fetch` tool (`egress_response`).
 

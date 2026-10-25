@@ -474,16 +474,18 @@ async def _read_body(request: Request) -> bytes:
     return bytes(body)
 
 
-def _caller_token(request: Request, api: LlmApi | None) -> str | None:
+def _caller_token(request: Request) -> str | None:
     """The caller's gateway token, as an ``Authorization`` value.
 
-    Anthropic SDKs send their key as ``x-api-key`` to any base URL they do
-    not know to want Bearer, so on the Anthropic shape that header carries
-    the gateway token when ``Authorization`` is absent. It is never
-    forwarded: ``forward_headers`` drops it and the profile's key replaces it.
+    ``Authorization`` if present; otherwise ``x-api-key`` (Anthropic SDKs send
+    their key there to a base URL they do not know wants Bearer). Read WITHOUT
+    the provider's API shape, so authentication can precede the provider lookup
+    and an unknown-provider 404 is never an unauthenticated name oracle. The
+    caller's own value is never forwarded: ``forward_headers`` drops both and
+    the profile's key replaces them.
     """
     authorization = request.headers.get("authorization")
-    if authorization is not None or api is not LlmApi.ANTHROPIC:
+    if authorization is not None:
         return authorization
     api_key = request.headers.get("x-api-key")
     return f"Bearer {api_key}" if api_key else None
@@ -499,18 +501,21 @@ def _resolve_caller(
     """The provider, calling profile and that profile's key, or an error Response.
 
     Three fail-closed guards, kept out of ``_proxy_llm`` so its return count
-    stays legible: an unknown provider (404), a token that resolves to no
-    profile (401), and a profile with no key for this provider (502, audited).
+    stays legible. Authentication comes FIRST: a token that resolves to no
+    profile is 401 before the provider name is looked up, so an unauthenticated
+    caller cannot learn which providers exist by probing for 404s. Then an
+    unknown provider (404) and a profile with no key for it (502, audited) —
+    both already behind a valid token.
     """
+    profile = resolve_profile_by_token(_caller_token(request), profiles)
+    if profile is None:
+        return Response(content="Unauthorized", status_code=401, media_type=PLAIN_TEXT)
+
     provider = providers.get(provider_name)
     if provider is None:
         return Response(
             content="LLM provider not found or disabled", status_code=404, media_type=PLAIN_TEXT
         )
-
-    profile = resolve_profile_by_token(_caller_token(request, provider.api), profiles)
-    if profile is None:
-        return Response(content="Unauthorized", status_code=401, media_type=PLAIN_TEXT)
 
     override = profile.llm_keys.get(provider_name)
     if override is None:
@@ -532,8 +537,8 @@ async def _proxy_llm(
     """Admit one LLM request and forward it to the upstream provider.
 
     Authenticates against the caller's gateway token (``Authorization:
-    Bearer``, or ``x-api-key`` on the Anthropic shape), resolves the
-    calling profile, admits the request through ``llm_policy`` and injects
+    Bearer``, or ``x-api-key`` on any shape when ``Authorization`` is absent),
+    resolves the calling profile, admits the request through ``llm_policy`` and injects
     that profile's provider key. Only allowlisted caller headers reach the
     provider; the caller's token is never one of them.
     """
@@ -693,6 +698,20 @@ async def _forward_upstream(
             status_code=502,
             media_type=PLAIN_TEXT,
         )
+    except httpx.HTTPError as exc:
+        # Any other upstream failure (read error, protocol error, a stream that
+        # broke before headers): still one audit row, never an unlogged 500.
+        logger.warning(
+            "llm_proxy: upstream error provider=%s: %s",
+            provider_name,
+            exc_kind(exc),
+        )
+        audit(Outcome.BACKEND_ERROR)
+        return Response(
+            content="LLM upstream error",
+            status_code=502,
+            media_type=PLAIN_TEXT,
+        )
 
     if resp.status_code >= 500:
         audit(Outcome.BACKEND_ERROR)
@@ -786,15 +805,18 @@ def _schedule_completion_scan(
 
             text = body.decode("utf-8", errors="replace")
             # Bound here, not at the handler: this runs after the stream ends,
-            # outside the request's context (RT #1505).
+            # outside the request's context (RT #1505). A hung L3 must not leave
+            # an unbounded task running per completion, so the scan is deadlined
+            # like the request-side judge.
             with profile_context(profile):
-                verdict = await defend(
-                    text,
-                    source=f"llm:{profile.name}:{provider_name}",
-                    source_type="llm_completion",
-                    defense=profile.defense,
-                    provenance=Provenance.MODEL_OUTPUT,
-                )
+                async with asyncio.timeout(_JUDGE_DEADLINE):
+                    verdict = await defend(
+                        text,
+                        source=f"llm:{profile.name}:{provider_name}",
+                        source_type="llm_completion",
+                        defense=profile.defense,
+                        provenance=Provenance.MODEL_OUTPUT,
+                    )
             if verdict.flagged:
                 logger.warning(
                     "llm_proxy: completion flagged profile=%s provider=%s "
@@ -804,6 +826,15 @@ def _schedule_completion_scan(
                     verdict.risk_level,
                     verdict.flagged_by.value if verdict.flagged_by else None,
                 )
+        except TimeoutError:
+            # The scan outran JUDGE_DEADLINE. This is a background task (the
+            # response already streamed), so the timeout cannot affect the
+            # caller — it is recorded and dropped, like any other scan failure.
+            logger.warning(
+                "llm_proxy: post-hoc completion scan timed out profile=%s provider=%s",
+                profile.name,
+                provider_name,
+            )
         except Exception as exc:
             logger.error(  # the message may carry the completion (#262)
                 "llm_proxy: post-hoc completion scan failed: %s at %s",
