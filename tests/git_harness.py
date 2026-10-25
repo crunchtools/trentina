@@ -307,7 +307,7 @@ async def git(home: Path, port: int, *args: str, cwd: Path | None = None) -> tup
     Returns:
         Its exit status and everything it printed.
     """
-    base = f"http://127.0.0.1:{port}/git/"
+    base = f"http://127.0.0.1:{port}/proxy/git/"
     env = {
         **git_env(home),
         "GIT_CONFIG_COUNT": "1",

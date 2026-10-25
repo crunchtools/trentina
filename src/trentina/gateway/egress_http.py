@@ -1,12 +1,12 @@
 """Terminating HTTP(S) egress (#511): judge an agent's outbound request, then
-re-originate it to a named upstream, on the main port alongside ``/llm`` and
-``/git``.
+re-originate it to a named upstream, on the main port alongside ``/proxy/llm`` and
+``/proxy/git``.
 
-    /egress/{upstream}/{path}
+    /proxy/http/{upstream}/{path}
 
 What it decides, in order, each one deterministic:
 
-- **who is calling**: the gateway bearer token, as on ``/llm`` and ``/git``.
+- **who is calling**: the gateway bearer token, as on ``/proxy/llm`` and ``/proxy/git``.
   None of the caller's own credentials go upstream; the profile's token for the
   upstream is injected, so the agent never holds it.
 - **which upstream and path**: a configured ``egress_upstreams`` name the
@@ -91,9 +91,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-ROUTE = "/egress/{upstream}/{path:path}"
+ROUTE = "/proxy/http/{upstream}/{path:path}"
 METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
-BACKEND_PREFIX = "egress"
+BACKEND_PREFIX = "http"
 JSON = "application/json"
 WARNING_HEADER = "x-trentina-warning"
 REASON_HEADER = "X-Trentina-Reason"
@@ -136,7 +136,7 @@ _OUTCOME_OF: dict[str, Outcome] = {
 def register_egress_routes(
     mcp_server: Any, upstreams: dict[str, EgressUpstream], profiles: dict[str, Profile]
 ) -> None:
-    """Wire ``/egress/{upstream}/{path}`` onto the FastMCP server, if any upstream exists.
+    """Wire ``/proxy/http/{upstream}/{path}`` onto the FastMCP server, if any upstream exists.
 
     With no ``egress_upstreams`` at startup there is no route. The upstreams and
     every profile's ``egress_http`` are read from the active config per request,
@@ -149,7 +149,7 @@ def register_egress_routes(
         return await serve(request, profiles)
 
     mcp_server.custom_route(ROUTE, methods=METHODS)(egress_endpoint)
-    logger.info("egress: registered /egress/{upstream}/{path}")
+    logger.info("egress: registered /proxy/http/{upstream}/{path}")
 
 
 async def serve(request: Request, profiles: dict[str, Profile]) -> Response:
@@ -389,9 +389,9 @@ async def _judge_request(
     )
     verdict = await judge_outbound(
         document,
-        source=f"egress:{op.profile.name}:{name}",
+        source=f"{BACKEND_PREFIX}:{op.profile.name}:{name}",
         source_type="egress_request",
-        backend=f"egress:{name}",
+        backend=f"{BACKEND_PREFIX}:{name}",
         profile=op.profile,
         mode=mode,
         deadline=JUDGE_DEADLINE,
@@ -678,7 +678,7 @@ def _from_guard(exc: GuardRefusedError) -> EgressRefusedError:
       non-global address, an unresolvable host, a bad scheme/port: a defense
       block (403), nothing executed. The specific guard reason rides in
       ``detail`` for the audit; the caller sees only the ``denied_guard``
-      bucket. This matches how ``/git`` and the CONNECT tunnel label the same
+      bucket. This matches how ``/proxy/git`` and the CONNECT tunnel label the same
       refusals (Outcome.BLOCKED_DEFENSE), and stops the old mislabel that told
       the agent a never-sent request had "executed by the destination".
     """

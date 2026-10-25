@@ -366,7 +366,7 @@ async def _proxy_matrix(
     settle into a logged row — the exact flood this avoids. A forwarded-with-
     finding response settles ``(OK, <finding>)``, so the outcome column tells a
     delivered finding (``ok``) from a withhold/refusal (a block outcome), the
-    way ``/egress`` records a flag. Nothing is registered on ``op.upstream``
+    way ``/proxy/http`` records a flag. Nothing is registered on ``op.upstream``
     (the httpx response is closed by ``_buffer``/``_streamed`` as before), so a
     skipped finish leaks nothing: no slot is taken and no close is pending.
     """

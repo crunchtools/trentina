@@ -21,7 +21,7 @@ no key. No layer judges them. This is
 agent's client can talk and records *how much*; it does not decide *what*. Since
 #511 the tunnel is the **fallback** for a client that cannot be re-pointed: a
 client that can speak to a base URL should use the [egress route](egress-http.md)
-or [`/llm`](llm-proxying.md), which read the request and the response.
+or [`/proxy/llm`](llm-proxying.md), which read the request and the response.
 
 For `git`, prefer the [git transport](git-transport.md), and for HTTP a
 re-pointable client, the [egress route](egress-http.md). A tunnel to a

@@ -41,7 +41,7 @@ def test_upstream_outcome_maps_status_classes(status: int, expected: Outcome) ->
 
 def _op(**kw: Any) -> Operation:
     """An Operation for a fake profile; only ``profile.name`` is read."""
-    return Operation(SimpleNamespace(name="agent1"), backend="egress:gh", **kw)
+    return Operation(SimpleNamespace(name="agent1"), backend="http:gh", **kw)
 
 
 async def test_finish_writes_one_row_however_many_times_it_is_called(

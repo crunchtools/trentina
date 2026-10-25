@@ -270,7 +270,7 @@ For Read-like tools, the delegation module:
 
 #### Worker Calls via LLM Proxy
 
-Delegation uses the existing LLM proxy infrastructure. The worker call goes through `/llm/{provider}/` with the profile's credentials — no new API key management needed. The worker model is configured per-profile, same as `llm_keys`.
+Delegation uses the existing LLM proxy infrastructure. The worker call goes through `/proxy/llm/{provider}/` with the profile's credentials — no new API key management needed. The worker model is configured per-profile, same as `llm_keys`.
 
 #### Response Metadata
 

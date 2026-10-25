@@ -1,6 +1,6 @@
 """The operator-named-origin spine (#511 convergence).
 
-Shared today by ``/egress``, ``/git`` and the CONNECT tunnel (``/llm`` and the
+Shared today by ``/proxy/http``, ``/proxy/git`` and the CONNECT tunnel (``/proxy/llm`` and the
 Matrix proxy join when they move onto the pinned client, a later phase). These
 paths differ from ``fetch`` in *who chose the destination*: ``fetch`` hands
 ``egress.open_guarded`` an agent-chosen URL,
@@ -71,7 +71,7 @@ _checked: dict[tuple[str, str], tuple[float, ResolvedTarget]] = {}
 
 def forget_checked() -> None:
     """Drop every cached check. Called when the tunnel listener stops; this now
-    also clears ``/egress`` and ``/git``'s cache for the same profiles, which
+    also clears ``/proxy/http`` and ``/proxy/git``'s cache for the same profiles, which
     costs at most one re-lookup on the next call."""
     _checked.clear()
 
@@ -161,7 +161,7 @@ def _client_for(
     connection budget; callers to one origin are one route, so both are
     consistent, and the first caller's values stand for the client. The budget
     must be at least the route's in-flight slot cap, or a fan-out that the cap
-    admits would starve on the pool (``/llm`` admits 64, far past the default).
+    admits would starve on the pool (``/proxy/llm`` admits 64, far past the default).
     """
     key = (profile.name, host, port)
     entry = _pool.get(key)
@@ -228,7 +228,7 @@ async def pinned_send(
     max_connections: int = MAX_POOL_CONNECTIONS,
 ) -> AsyncIterator[httpx.Response]:
     """Send one request to an operator origin over a reused, pinned connection,
-    with the terminating-proxy contract (``/egress``, ``/git``, ``/llm``).
+    with the terminating-proxy contract (``/proxy/http``, ``/proxy/git``, ``/proxy/llm``).
 
     Same contract as ``egress.open_pinned``: ``Accept-Encoding: identity`` is
     forced, no redirect is followed (a 3xx is ``redirect``), an encoded body is

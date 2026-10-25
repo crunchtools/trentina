@@ -247,9 +247,10 @@ new pattern goes into that file's attack, benign and linearity tables.
 
 - A second listener, `--egress-port` (8021): HTTP `CONNECT` only, for a
   profile's `client_egress` (#442). Not a route on the app below.
-- `GET|POST /git/{remote}/{owner}/{repo}[.git]/{info/refs,git-upload-pack,git-receive-pack}` —
+- `GET|POST /proxy/git/{remote}/{owner}/{repo}[.git]/{info/refs,git-upload-pack,git-receive-pack}` —
   the git transport (#453), registered only when the file has `git_remotes`.
-  Bearer token picks the profile, as on `/llm`.
+  Bearer token picks the profile, as on `/proxy/llm`. (Renamed from `/git` in
+  2.0.0 with `/proxy/http` and `/proxy/llm`, #511; the old paths now 404.)
 - `GET /health` — unauthenticated liveness probe returning `{status, classifier, profiles}`.
   A timeout here means the asyncio event loop is blocked, not merely that a
   backend is slow.
@@ -731,7 +732,7 @@ replaced.
     failing required one, for the router to refuse (#335: the call without it
     can do more than was asked). Never evaluates
     `pattern` (a backend's regex is a ReDoS here).
-  - `llm_policy.py` — what `/llm/<provider>/` admits (#297), per API shape
+  - `llm_policy.py` — what `/proxy/llm/<provider>/` admits (#297), per API shape
     (`anthropic`, `openai`, `openrouter`, `gemini`; a provider's `api`,
     inferred for the four known hosts, required otherwise). Allowlists
     endpoint, query, headers and body keys; refuses provider-run tools,

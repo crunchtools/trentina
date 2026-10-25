@@ -455,7 +455,7 @@ class TestProxies:
                     harness.serving(harness.gateway_app(profiles)) as port,
                     httpx.AsyncClient(headers=bearer) as client,
                 ):
-                    url = f"http://127.0.0.1:{port}/git/{harness.REMOTE}"
+                    url = f"http://127.0.0.1:{port}/proxy/git/{harness.REMOTE}"
                     statuses = [
                         (await client.get(url + refs)).status_code,
                         (

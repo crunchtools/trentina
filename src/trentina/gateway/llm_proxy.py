@@ -1,6 +1,6 @@
 """Config-driven LLM API reverse proxy.
 
-Forwards requests from ``/llm/{provider}/{path}`` to the configured upstream
+Forwards requests from ``/proxy/llm/{provider}/{path}`` to the configured upstream
 LLM provider, injecting the real API key.  Agents on the internal network
 never hold provider credentials — Trentina is the choke point.
 
@@ -241,7 +241,7 @@ def register_llm_routes(
     providers: dict[str, LlmProvider],
     profiles: dict[str, Profile],
 ) -> None:
-    """Wire ``/llm/{provider}/{path:path}`` onto the FastMCP server.
+    """Wire ``/proxy/llm/{provider}/{path:path}`` onto the FastMCP server.
 
     The endpoint authenticates each request against the caller's gateway
     token (via ``profiles``) and injects that profile's provider key.
@@ -259,12 +259,12 @@ def register_llm_routes(
         return await _proxy_llm(request, providers, profiles)
 
     mcp_server.custom_route(
-        "/llm/{provider}/{path:path}",
+        "/proxy/llm/{provider}/{path:path}",
         methods=LLM_HTTP_METHODS,
     )(llm_proxy_endpoint)
 
     logger.info(
-        "llm_proxy: registered /llm/{provider}/{path} for %d provider(s)",
+        "llm_proxy: registered /proxy/llm/{provider}/{path} for %d provider(s)",
         len(providers),
     )
 

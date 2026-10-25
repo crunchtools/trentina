@@ -110,10 +110,10 @@ All Matrix Client-Server API operations (`/sync`, `/rooms`, `/send`, etc.) are f
 For complete network isolation, combine with the [LLM key proxy](llm-proxying.md) and run the agent container with `--network=none` plus a sidecar that only reaches Trentina:
 
 1. **MCP tools** → `http://trentina:8019/gateway/<profile>/mcp`
-2. **LLM calls** → `http://trentina:8019/llm/<provider>/<path>`
+2. **LLM calls** → `http://trentina:8019/proxy/llm/<provider>/<path>`
 3. **Matrix** → `http://trentina:8019/matrix/_matrix/<path>`, from the agent's own network
 4. **The agent's own HTTPS client** → `HTTPS_PROXY=http://trentina:8021`, tunnelled to the hosts its profile lists ([client egress](client-egress.md))
-5. **git** → `http://trentina:8019/git/<remote>/<owner>/<repo>`, to the repositories and branches its profile lists, with a forge token the agent does not hold ([git transport](git-transport.md)). Prefer it to a tunnel to the forge: a tunnel reaches every repository there.
+5. **git** → `http://trentina:8019/proxy/git/<remote>/<owner>/<repo>`, to the repositories and branches its profile lists, with a forge token the agent does not hold ([git transport](git-transport.md)). Prefer it to a tunnel to the forge: a tunnel reaches every repository there.
 
 The agent has no other network access of its own. Every request it makes goes through Trentina and is audited (a tunnel as a host and a byte count, since its contents are TLS no layer reads; a git request as a repository, the refs of a push and a byte count, since no layer reads a pack), but a request is not the only way out: a model provider can fetch, search and connect to MCP servers on the caller's behalf (Anthropic's `web_fetch`, `web_search` and `mcp_servers`, OpenRouter's `web` plugin and `:online` models, Gemini's Google Search grounding and `url_context`). Until #297 the LLM proxy forwarded those untouched, so an agent on `--network=none` could still reach any host through its provider. The proxy now admits only completions with caller-run function tools and inline content, and refuses the rest ([what the proxy admits](llm-proxying.md#what-the-proxy-admits)).
 
