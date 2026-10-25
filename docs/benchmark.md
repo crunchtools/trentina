@@ -289,10 +289,10 @@ is prompts.
 
 ## L2 model comparison (#350, #353)
 
-L2's model is a setting since 0.55.0. Two ship in the image:
+L2's model is a setting since 0.55.0. One ships in the image,
 `prompt-injection-guard-small` (Horizon-Labs, mmBERT-small, Apache-2.0, the
-default at 0.7) and `prompt-guard-2-86m` (Meta, mDeBERTa-base, Llama 4
-Community License, 0.5). Two more were measured and rejected in #353:
+default at 0.7); `prompt-guard-2-86m` (Meta, mDeBERTa-base, Llama 4
+Community License, 0.5) shipped beside it until #362. Two more were measured and rejected in #353:
 `deberta-v3-base-prompt-injection-v2` (ProtectAI, mirrored as
 `RedHatAI/...` and shipped in OpenShift AI, Apache-2.0) and `PIGuard`
 (ACL 2025, MIT), both DeBERTa-v3-base and English-only.
@@ -1061,6 +1061,94 @@ only make L2 stricter.
 
 Not measured: Haiku 4.5 and Gemini 3.8 Flash on the pack gate and the
 briefing arms, which did not finish (below). One feed, one labeller.
+
+### Envelopes, not prose (#17)
+
+A lab log, dated, newest last. The weekend report stopped on L2 refusals of
+Kagetora's own reads; this is what the refusals turned out to be.
+
+**2026-10-25, the production baseline.** Seven days of `detections`: 1,022
+results flagged by L2 alone and cleared by L3, against 6 L2 flags L3 agreed
+with. Scores by band: 186 at 0.70-0.80, 216 at 0.80-0.90, 323 at 0.90-0.98,
+297 at 0.98 or above, so no threshold under 0.98 clears most of them, and
+0.98 already cost 7 of 41 attacks (above). By tool: fetch 164, Gmail
+message content 66, Jira comments 66, memory_store 49, Jira transitions 47,
+journal_query 38, Slack history 29, GitHub get_issue 25. The weekend run of
+02:04Z was refused `get_spec` (0.848), four `get_sweep` pages (0.866 to
+1.0), a web search (0.828) and a `read_entry` (0.993).
+
+**The envelope is the trigger.** On the shipped model (same revision as
+production), one benign GitHub issue about prompt-injection classifiers. Every
+row is the same benign text; this measures a false positive, not a way past
+the gate, and an attack in any of these shapes is the envelope gate's half:
+
+| What L2 read | Score |
+|---|---|
+| The body alone | 0.001 |
+| The title alone | 0.05 |
+| The full API reply | 0.999 |
+| The full reply, body deleted | 0.999 |
+| The full reply, title deleted | 0.03 |
+| Slim JSON (number, title, state, url, body, dates) | 0.000 |
+
+Removing any other single field keeps it at about 0.999. It is the title's
+vocabulary inside the API envelope, which no part scores alone. 65 real
+public RSS articles score at most 0.08 as text and up to 0.755 inside
+Miniflux's entry JSON. `benign_ops`' `issue_list` and `created_issue` are
+the slim shape, which is why the gate never saw it.
+
+**Reshaping the reply does not fix it.** The stored sweep of the refused
+run, scored as the gateway reads it, reproduces production (rss pages 2 and
+3 at 0.866 and 1.0). 13 of its 159 rss records flag alone; the worst are
+records Metsuke withheld after collection (title and feed null, `flagged:
+true`) whose EFF URLs carry the words (`computer-security-about-get-lot-
+worse`). Dropping nulls, dropping the flag, or rendering records as text
+lines moves page scores both ways (page 1: 0.121 to 0.997) and page 3 stays
+at 0.99 to 1.0 in every variant. Text-only judging was reviewed and
+rejected for the reasons in `docs/defense-pipeline.md` rule 3: keys and
+URLs carry words, and what is judged must be what is delivered.
+
+**Stock models, screened on the real shapes** (the refused sweep's 8 pages
+and 276 records, 2 GitHub replies, 65 Miniflux entries; internal attacks
+from `corpora/internal`; `benign_ops` held-out), each at 0.7:
+
+| | Horizon | DeBERTa v2 | PIGuard |
+|---|---|---|---|
+| Sweep pages flagged | 2/8 | 8/8 | 5/8 |
+| Sweep records flagged | 16/276 | 89/276 | 238/276 |
+| GitHub replies flagged | 1/2 | 2/2 | 2/2 |
+| Miniflux entries flagged | 3/65 | 54/65 | 65/65 |
+| `benign_ops` held-out flagged, known gaps included | 11/221 | 110/221 | 129/221 |
+| Internal attacks caught | 41/44 | 35/44 | 28/44 |
+| Screen time, 4 threads | 249 s | 553 s | 598 s |
+
+The `benign_ops` row counts the known-gap shapes the gate scores outside its
+budget (journals, meeting notes, gap 31); on the gated shapes alone Horizon's
+recorded result stands at 0 of 143. The shipped model is the best of the
+three on both sides. Prompt Guard 2
+86M (Llama license, gated) and Qualifire Sentinel (Elastic License 2.0,
+gated; a yardstick only, never shipped) need a Hugging Face login with
+their terms accepted and are not yet measured.
+
+**Why Horizon reads envelopes as attacks.** Its card lists its training
+sets: injection sets that include attacks planted in tool responses
+(`rgeada/tool-response-injections`, `nvidia/Nemotron-RL-Agentic-Indirect-
+Prompt-Injection-v1`), and benign data that is prose (oasst2, aya,
+fineweb). It never saw a benign tool reply.
+
+**The envelope gate.** `benchmarks/l2_envelopes.py` wraps 40 benign and 40
+attack texts (deepset test split, internal attacks) in each of twelve
+envelopes from `corpora/envelopes.py`. Horizon at 0.7: 21 of 480 benign
+flagged (fetched pages 9 of 40, GitHub issues 5, monitoring records 3) and
+342 of 480 attacks caught (weakest inside Miniflux entries, 23 of 40, and
+sweep pages, 19 and 20 of 40). Invented envelopes reproduce the effect:
+benign text at most 0.026 as prose flags 8 of 20 times as a GitHub issue.
+
+**The fine-tune.** `.github/workflows/l2-train.yml` builds a set from six
+pinned permissive sources, none of them a set measured here, wraps benign
+and attack text alike in every envelope so the label follows the text,
+replays plain rows, fine-tunes Horizon and holds the result to the benign,
+envelope and obfuscation gates. Results follow when the first run is read.
 
 ## Guarded execution (#456)
 
