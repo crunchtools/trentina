@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import sqlite3
@@ -304,29 +305,41 @@ class _FakeUpstreamResp:
 
 
 class _FakeClient:
-    """Captures the request built by the proxy so tests can assert headers."""
+    """A ``pinned_send`` stand-in: captures the proxy's call so tests can assert
+    the forwarded headers/url/body, and yields a canned response — or raises on
+    enter, to exercise the upstream-failure arms. Patched over
+    ``llm_proxy.pinned_send``."""
 
-    def __init__(self) -> None:
+    def __init__(self, raises: Exception | None = None) -> None:
         self.captured_headers: dict[str, str] = {}
         self.captured_url: str = ""
-        self.captured_body: bytes | None = None
+        self.captured_body: Any = None
         self.sent = False
+        self._raises = raises
+        self.resp = _FakeUpstreamResp()
 
-    def build_request(
+    def __call__(
         self,
+        profile: Any,
         method: str,
         url: str,
-        headers: dict[str, str] | None = None,
+        *,
+        idle: float,
+        headers: dict[str, str],
         content: Any = None,
+        max_connections: int = 0,
     ) -> Any:
         self.captured_url = url
-        self.captured_headers = headers or {}
+        self.captured_headers = dict(headers)
         self.captured_body = content
-        return object()
+        return self._enter()
 
-    async def send(self, request: Any, stream: bool = False) -> _FakeUpstreamResp:
+    @contextlib.asynccontextmanager
+    async def _enter(self) -> AsyncIterator[_FakeUpstreamResp]:
         self.sent = True
-        return _FakeUpstreamResp()
+        if self._raises is not None:
+            raise self._raises
+        yield self.resp
 
 
 @pytest.mark.usefixtures("_clean_judge")
@@ -416,7 +429,7 @@ class TestProxyLlm:
     ) -> None:
         providers, profiles = self._fixtures()
         fake = _FakeClient()
-        monkeypatch.setattr(llm_proxy, "_get_llm_client", lambda: fake)
+        monkeypatch.setattr(llm_proxy, "pinned_send", fake)
         client = self._client(providers, profiles)
 
         resp = client.post(
@@ -431,7 +444,7 @@ class TestProxyLlm:
     def test_success_selects_correct_profile_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         providers, profiles = self._fixtures()
         fake = _FakeClient()
-        monkeypatch.setattr(llm_proxy, "_get_llm_client", lambda: fake)
+        monkeypatch.setattr(llm_proxy, "pinned_send", fake)
         client = self._client(providers, profiles)
 
         client.post(
@@ -474,7 +487,7 @@ class TestProxyAdmission:
     """#297: a provider-run tool never reaches the provider, and every call is audited."""
 
     def _client(self, fake: _FakeClient, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-        monkeypatch.setattr(llm_proxy, "_get_llm_client", lambda: fake)
+        monkeypatch.setattr(llm_proxy, "pinned_send", fake)
         providers = {"anthropic": _anthropic_provider()}
         profiles = {"agent1": _profile("agent1", "agent1-tok", {"anthropic": "agent1-key"})}
 
@@ -566,12 +579,7 @@ class TestProxyAdmission:
         row — never an uncaught 500 that writes no gateway_calls row."""
         import httpx
 
-        class _RaisingClient(_FakeClient):
-            async def send(self, request: Any, stream: bool = False) -> Any:
-                self.sent = True
-                raise httpx.ReadError("boom")
-
-        fake = _RaisingClient()
+        fake = _FakeClient(raises=httpx.ReadError("boom"))
         client = self._client(fake, monkeypatch)
         resp = self._post(client, _PLAIN)
         assert resp.status_code == 502
@@ -579,6 +587,21 @@ class TestProxyAdmission:
         assert row["profile"] == "agent1"
         assert row["backend"] == "llm:anthropic"
         assert row["outcome"] == "backend_error"
+
+    def test_a_guard_refusal_on_the_provider_origin_is_a_backend_error(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        """The pinned pool crosses the egress guard now (#511): a provider origin
+        that is refused (not global, not 443, resolver busy) or a redirect/encoded
+        response is a 502 with a backend_error row, not an uncaught 500."""
+        from trentina.errors import EgressRefusedError
+
+        fake = _FakeClient(raises=EgressRefusedError("non_global_address"))
+        client = self._client(fake, monkeypatch)
+        resp = self._post(client, _PLAIN)
+        assert resp.status_code == 502
+        [row] = _rows(audit_db)
+        assert (row["backend"], row["outcome"]) == ("llm:anthropic", "backend_error")
 
     def test_a_client_disconnect_during_setup_is_cancelled(
         self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
@@ -829,7 +852,7 @@ class TestProxyRequestDLP:
         monkeypatch: pytest.MonkeyPatch,
         enforcement: Literal["block", "flag"],
     ) -> TestClient:
-        monkeypatch.setattr(llm_proxy, "_get_llm_client", lambda: fake)
+        monkeypatch.setattr(llm_proxy, "pinned_send", fake)
         providers = {"gemini": _gemini_provider()}
         profile = _profile("agent1", "agent1-tok", {"gemini": "agent1-key"})
         profile.llm_keys["gemini"].enforcement = enforcement

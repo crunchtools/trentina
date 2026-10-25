@@ -150,15 +150,18 @@ def _no_cookie_jar() -> http.cookiejar.CookieJar:
 
 
 def _client_for(
-    profile: Profile, host: str, port: int, idle: float
+    profile: Profile, host: str, port: int, idle: float, max_connections: int
 ) -> tuple[httpx.AsyncClient, PinnedBackend]:
     """The pooled pinned client for one operator origin, built once.
 
     The client carries NO auth or cookie defaults: the caller's injected
     credential rides on the per-request headers, never on the client, so a
     long-lived client cannot leak one request's credential onto the next.
-    ``idle`` sets the read/write timeout; callers to one origin are one route,
-    so it is consistent, and the first caller's value stands for the client.
+    ``idle`` sets the read/write timeout and ``max_connections`` the per-origin
+    connection budget; callers to one origin are one route, so both are
+    consistent, and the first caller's values stand for the client. The budget
+    must be at least the route's in-flight slot cap, or a fan-out that the cap
+    admits would starve on the pool (``/llm`` admits 64, far past the default).
     """
     key = (profile.name, host, port)
     entry = _pool.get(key)
@@ -170,7 +173,7 @@ def _client_for(
         client = httpx.AsyncClient(
             transport=PinnedTransport(
                 backend,
-                max_connections=MAX_POOL_CONNECTIONS,
+                max_connections=max_connections,
                 keepalive_expiry=KEEPALIVE_EXPIRY,
             ),
             timeout=httpx.Timeout(idle, connect=CONNECT_TIMEOUT),
@@ -191,6 +194,7 @@ async def pinned_send(
     idle: float,
     headers: dict[str, str],
     content: bytes | AsyncIterator[bytes] | None = None,
+    max_connections: int = MAX_POOL_CONNECTIONS,
 ) -> AsyncIterator[httpx.Response]:
     """Send one request to an operator origin over a reused, pinned connection.
 
@@ -212,7 +216,7 @@ async def pinned_send(
     """
     host = urlsplit(url).hostname or ""
     port = urlsplit(url).port or CLIENT_EGRESS_PORT
-    client, backend = _client_for(profile, host, port, idle)
+    client, backend = _client_for(profile, host, port, idle, max_connections)
     backend.pin(await checked_target(profile, host))
     sent = {k: v for k, v in headers.items() if k.lower() != "accept-encoding"}
     sent["Accept-Encoding"] = IDENTITY
@@ -229,13 +233,27 @@ async def pinned_send(
 
 
 async def close_pool() -> None:
-    """Close every pooled client. Called ONLY at shutdown, where tearing down an
-    in-flight request's connection is expected. A reload does NOT call this: it
-    would cut a request mid-read on a route still serving, and a repointed
-    origin's old client simply goes idle (keepalive expires it; it is never
-    keyed again). The per-origin reload diff lands with the /llm slice, where a
-    pooled interactive stream makes the cleanup worth the care."""
+    """Close every pooled client. Called at shutdown, where tearing down an
+    in-flight request's connection is expected."""
     clients = [client for client, _backend in _pool.values()]
     _pool.clear()
     for client in clients:
+        await client.aclose()
+
+
+async def close_profile(name: str) -> None:
+    """Close the pooled clients for ONE profile's origins (the reload diff).
+
+    A reload closes only the clients of a profile whose config CHANGED or was
+    REMOVED, so its warm clients do not outlive the config that named them; an
+    UNCHANGED profile keeps its warm clients — and any /llm stream in flight —
+    which is the whole point of pooling the hot path. A reconfigured profile's
+    own in-flight request is cut, which is acceptable: it was that profile's own
+    reconfiguration, not an unrelated edit. Rebuilt lazily per origin on the
+    next request.
+    """
+    keyed = [(key, client) for key, (client, _backend) in _pool.items() if key[0] == name]
+    for key, _client in keyed:
+        del _pool[key]
+    for _key, client in keyed:
         await client.aclose()

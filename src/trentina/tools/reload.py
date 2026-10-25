@@ -67,6 +67,7 @@ from ..gateway.router import invalidate_profile_cache
 from ..gateway.scope import CallerScope, require_caller
 from ..gateway.service import find_operator, judge_of, log_service_identity
 from ..gateway.sessions import session_registry
+from ..gateway.upstream import close_profile
 from ..logsafe import exc_kind, exc_where
 
 if TYPE_CHECKING:
@@ -753,6 +754,13 @@ async def reload_profiles() -> dict[str, Any]:
     invalidated = [name for name in stale if invalidate_profile_cache(name)]
     if _compression_surface(before) != _compression_surface(after):
         retrigger_compression()
+
+    # The pinned-connection pool (#511, Phase 2): close the warm clients of a
+    # profile whose config changed or was dropped, so they do not outlive the
+    # config that named them. An unchanged profile keeps its clients — and any
+    # /llm stream in flight — which is the point of pooling the hot path.
+    for name in {*changed, *removed}:
+        await close_profile(name)
 
     dropped_sessions = sum(
         session_registry.delete_session(session.session_id)

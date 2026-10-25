@@ -55,12 +55,12 @@ def _stub_check(monkeypatch: pytest.MonkeyPatch, pinned: list[str]) -> None:
 def test_a_client_is_cached_per_origin(monkeypatch: pytest.MonkeyPatch) -> None:
     _mock_transport(monkeypatch, lambda _r: httpx.Response(200))
     p = _profile()
-    c1, _ = upstream._client_for(p, "api.example.com", 443, 10.0)
-    c2, _ = upstream._client_for(p, "api.example.com", 443, 10.0)
+    c1, _ = upstream._client_for(p, "api.example.com", 443, 10.0, 16)
+    c2, _ = upstream._client_for(p, "api.example.com", 443, 10.0, 16)
     assert c1 is c2, "the same origin reuses one pooled client"
-    c3, _ = upstream._client_for(p, "other.example.com", 443, 10.0)
+    c3, _ = upstream._client_for(p, "other.example.com", 443, 10.0, 16)
     assert c3 is not c1, "a different host gets its own client"
-    c4, _ = upstream._client_for(_profile("agent2"), "api.example.com", 443, 10.0)
+    c4, _ = upstream._client_for(_profile("agent2"), "api.example.com", 443, 10.0, 16)
     assert c4 is not c1, "a different profile gets its own client"
 
 
@@ -140,8 +140,22 @@ async def test_an_upstream_cookie_is_not_replayed(monkeypatch: pytest.MonkeyPatc
 
 async def test_close_pool_disposes_every_client(monkeypatch: pytest.MonkeyPatch) -> None:
     _mock_transport(monkeypatch, lambda _r: httpx.Response(200))
-    upstream._client_for(_profile(), "a.example.com", 443, 10.0)
-    upstream._client_for(_profile(), "b.example.com", 443, 10.0)
+    upstream._client_for(_profile(), "a.example.com", 443, 10.0, 16)
+    upstream._client_for(_profile(), "b.example.com", 443, 10.0, 16)
     assert len(upstream._pool) == 2
     await upstream.close_pool()
     assert upstream._pool == {}
+
+
+async def test_close_profile_closes_only_that_profiles_clients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reload diff: a changed/removed profile's warm clients are closed; an
+    unchanged profile keeps its own (and any /llm stream in flight)."""
+    _mock_transport(monkeypatch, lambda _r: httpx.Response(200))
+    upstream._client_for(_profile("agent1"), "a.example.com", 443, 10.0, 16)
+    upstream._client_for(_profile("agent1"), "b.example.com", 443, 10.0, 16)
+    upstream._client_for(_profile("agent2"), "a.example.com", 443, 10.0, 16)
+    assert len(upstream._pool) == 3
+    await upstream.close_profile("agent1")
+    assert set(upstream._pool) == {("agent2", "a.example.com", 443)}
