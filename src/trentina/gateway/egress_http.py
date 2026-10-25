@@ -46,8 +46,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
-from dataclasses import dataclass, field
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
@@ -56,7 +54,6 @@ from starlette.requests import ClientDisconnect
 from starlette.responses import Response
 
 from .. import logsafe
-from ..database import record_gateway_call
 from ..defense import Provenance, defend
 from ..egress import open_pinned
 from ..errors import EgressRefusedError as GuardRefusedError
@@ -85,6 +82,7 @@ from .outbound import (
     judge_outbound,
 )
 from .proxy_utils import PLAIN_TEXT, normalize_proxy_path
+from .relay import MAX_OPERATIONS_PER_PROFILE, NO_OPERATION, Operation, Slots
 from .upstream import RESOLVER_BUSY, checked_target
 
 if TYPE_CHECKING:
@@ -99,16 +97,14 @@ logger = logging.getLogger(__name__)
 ROUTE = "/egress/{upstream}/{path:path}"
 METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 BACKEND_PREFIX = "egress"
-NO_OPERATION = "-"
 JSON = "application/json"
 WARNING_HEADER = "x-trentina-warning"
 REASON_HEADER = "X-Trentina-Reason"
 
 IDLE_TIMEOUT = 300.0
 JUDGE_DEADLINE = 60.0
-MAX_OPERATIONS_PER_PROFILE = 8
 
-_open: dict[str, int] = {}
+_SLOTS = Slots(MAX_OPERATIONS_PER_PROFILE)
 
 #: The audit outcome for each refusal reason — keyed on the reason, not on
 #: whether the request executed: a timeout is a backend error, not a defense
@@ -138,62 +134,6 @@ _OUTCOME_OF: dict[str, Outcome] = {
     "response_unjudged": Outcome.BLOCKED_DEFENSE,
     "response_binary": Outcome.BLOCKED_DEFENSE,
 }
-
-
-@dataclass
-class _Operation:
-    """One request, from the caller's token to its audit row."""
-
-    profile: Profile
-    name: str = NO_OPERATION
-    method: str = NO_OPERATION
-    started: float = field(default_factory=time.monotonic)
-    destination: str | None = None
-    sent: int = 0
-    received: int = 0
-    outcome: Outcome = Outcome.CANCELLED
-    reason: str | None = None
-    flag_reason: str | None = None  # a flag-mode finding on a forwarded request
-    holds_slot: bool = False
-    finished: bool = False
-
-    def settle(self, outcome: Outcome, reason: str | None = None) -> None:
-        self.outcome, self.reason = outcome, reason
-
-    def take_slot(self) -> None:
-        if _open.get(self.profile.name, 0) >= MAX_OPERATIONS_PER_PROFILE:
-            raise EgressRefusedError(HTTPStatus.SERVICE_UNAVAILABLE, "busy")
-        _open[self.profile.name] = _open.get(self.profile.name, 0) + 1
-        self.holds_slot = True
-
-    def finish(self) -> None:
-        """Give the slot back and write the audit row, once."""
-        if self.finished:
-            return
-        self.finished = True
-        if self.holds_slot:
-            _open[self.profile.name] -= 1
-            if not _open[self.profile.name]:
-                del _open[self.profile.name]
-        try:
-            record_gateway_call(
-                self.profile.name,
-                f"{BACKEND_PREFIX}:{self.name}",
-                self.method,
-                self.outcome.value,
-                int((time.monotonic() - self.started) * 1000),
-                self.reason,
-                bytes_arrived=self.received,
-                bytes_delivered=self.sent,
-                destination=self.destination,
-                destination_kind=DestinationKind.EGRESS.value if self.destination else None,
-            )
-        except Exception as exc:
-            logger.warning(
-                "egress: audit row lost profile=%s err=%s",
-                self.profile.name,
-                logsafe.exc_kind(exc),
-            )
 
 
 def register_egress_routes(
@@ -233,7 +173,12 @@ async def serve(request: Request, profiles: dict[str, Profile]) -> Response:
     if profile is None:
         logger.warning("egress: refused a caller whose token matches no profile")
         return Response(content="unauthorized\n", status_code=401, media_type=PLAIN_TEXT)
-    op = _Operation(profile, method=request.method)
+    op = Operation(
+        profile,
+        backend=f"{BACKEND_PREFIX}:{NO_OPERATION}",
+        tool=request.method,
+        destination_kind=DestinationKind.EGRESS,
+    )
     try:
         return await _carry(request, op)
     except EgressRefusedError as refusal:
@@ -275,7 +220,7 @@ async def serve(request: Request, profiles: dict[str, Profile]) -> Response:
         op.settle(Outcome.GATEWAY_ERROR)
         raise
     finally:
-        op.finish()
+        await op.finish()
 
 
 def _unsafe_path(path: str) -> bool:
@@ -373,11 +318,12 @@ def _judged_body_text(body: bytes, upstream: EgressUpstream) -> str | None:
         return None
 
 
-async def _carry(request: Request, op: _Operation) -> Response:
+async def _carry(request: Request, op: Operation) -> Response:
     """Admit, judge, re-originate and judge the response for one request."""
     name, upstream, grant, path = _resolve_upstream(request, op.profile)
-    op.name = name
-    op.take_slot()
+    op.backend = f"{BACKEND_PREFIX}:{name}"
+    if not op.take_slot(_SLOTS):
+        raise EgressRefusedError(HTTPStatus.SERVICE_UNAVAILABLE, "busy")
     op.destination = f"{upstream.host[: MAX_DESTINATION_CHARS - 17]}#{fingerprint(path)}"
 
     body = await _read_body(request, upstream)
@@ -408,7 +354,7 @@ async def _carry(request: Request, op: _Operation) -> Response:
 
 
 async def _judge_request(
-    op: _Operation,
+    op: Operation,
     request: Request,
     upstream: EgressUpstream,
     name: str,
@@ -479,7 +425,7 @@ async def _judge_request(
     return document, warning
 
 
-async def _gatekeep(op: _Operation, name: str, method: str, document: str) -> None:
+async def _gatekeep(op: Operation, name: str, method: str, document: str) -> None:
     """The guarded-execution hook on a terminating-egress request (#511).
 
     Only the upstreams the profile's ``guarded_execution`` names are judged; a
@@ -546,7 +492,7 @@ def _request_reason(code: str) -> str:
 
 
 async def _send_and_judge(
-    op: _Operation,
+    op: Operation,
     upstream: EgressUpstream,
     mode: Mode,
     method: str,
@@ -615,7 +561,7 @@ async def _send_and_judge(
 
 
 async def _judge_response(
-    op: _Operation, upstream: EgressUpstream, document: str, blocking: bool
+    op: Operation, upstream: EgressUpstream, document: str, blocking: bool
 ) -> str | None:
     """Judge a response (its headers, and its body when text) as ingress.
 
@@ -657,7 +603,7 @@ async def _judge_response(
 
 
 async def _fetch(
-    op: _Operation,
+    op: Operation,
     upstream: EgressUpstream,
     method: str,
     url: str,

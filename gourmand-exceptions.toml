@@ -704,6 +704,13 @@ justification = "The audit row must never fail the tools/call it records, and a 
 classification = "by_design"
 
 [[exceptions]]
+check = "redundant_error_handling"
+path = "src/trentina/gateway/relay.py"
+pattern = "finish"
+justification = "The one gateway_calls row must never fail the perimeter request it records, and a write can raise more than sqlite3.Error (thread-affinity ProgrammingError, OSError on a full disk). Logging the profile and the exception class is the handling; a silently lost audit row was itself a finding on #281. This is the shared Operation.finish that replaced the identical per-route _Operation.finish handlers in egress_http and git_transport (#511 convergence), already accepted here for router._audit and llm_proxy._audit."
+classification = "by_design"
+
+[[exceptions]]
 check = "single_use_helpers"
 path = "src/trentina/gateway/profile_lint.py"
 pattern = "_admits"
@@ -799,12 +806,6 @@ classification = "gourmand_bug"
 check = "redundant_error_handling"
 path = "src/trentina/gateway/client_egress.py"
 justification = "_audit writes the gateway_calls row for a tunnel that has already been served or refused. A database error there is logged by kind and dropped, exactly as router._audit and llm_proxy._audit do: raising would turn a lost audit row into a failed connection for a client that did nothing wrong, and the tunnel is already closed. The loss is visible in the journal."
-classification = "by_design"
-
-[[exceptions]]
-check = "redundant_error_handling"
-path = "src/trentina/gateway/git_transport.py"
-justification = "_Operation.finish writes the gateway_calls row for a git request that has already been carried or refused. A database error there is logged by kind and dropped, exactly as router._audit, llm_proxy._audit and client_egress._audit do: raising from the response's finally would turn a lost audit row into a broken clone for a client that did nothing wrong, after the bytes have gone. The loss is visible in the journal."
 classification = "by_design"
 
 [[exceptions]]
@@ -913,13 +914,6 @@ classification = "by_design"
 
 
 # --- #511 terminating egress route ---
-
-[[exceptions]]
-check = "redundant_error_handling"
-path = "src/trentina/gateway/egress_http.py"
-pattern = "finish"
-justification = "Writing the gateway_calls row is bookkeeping (like git_transport.finish and database.defend): a failed SQLite write must not fail the request it records, so it is logged by kind (#262) and swallowed. Re-raising would turn a lost audit row into a lost response."
-classification = "by_design"
 
 [[exceptions]]
 check = "redundant_error_handling"
