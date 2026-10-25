@@ -295,7 +295,10 @@ def shared_ssl_context() -> ssl.SSLContext:
 
     ``httpx.create_ssl_context()`` loads the system CA bundle, which is slow and
     blocks the event loop. It was built once per ``PinnedTransport`` — i.e. per
-    ``/egress`` and ``/git`` request. Sharing one context is how httpx's own
+    ``/egress`` and ``/git`` request — and is now built once and reused.
+    ``warmup.trentina_lifespan`` calls this on a worker thread at startup, so the
+    CA load lands there and not on the event loop during the first request.
+    Sharing one context is how httpx's own
     ``AsyncClient`` runs its pool, so httpcore is built for it: the one write it
     makes to the context is ``set_alpn_protocols`` on every connect, and with
     every ``PinnedTransport`` at ``http2=False`` that write is always

@@ -144,6 +144,13 @@ async def trentina_lifespan() -> AsyncIterator[dict[str, Any]]:
     if get_active_config() is not None and _task is None:
         _task = asyncio.create_task(warm_all(), name="trentina-warmup")
         started_here = True
+    # Warm the pinned-connection TLS context on a worker thread, so the system
+    # CA bundle is loaded here at startup and never on the event loop during the
+    # first /egress, /git or fetch request (egress.shared_ssl_context, #511).
+    from ..egress import shared_ssl_context
+
+    await asyncio.to_thread(shared_ssl_context)
+
     # The client-egress listener (#442), on the loop that serves. A no-op
     # unless startup configured one.
     from . import client_egress
