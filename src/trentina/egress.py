@@ -42,6 +42,7 @@ from .config import get_config
 from .errors import EgressRefusedError
 
 if TYPE_CHECKING:
+    import ssl
     from collections.abc import AsyncIterator, Iterable
 
 log = logging.getLogger(__name__)
@@ -286,6 +287,23 @@ class PinnedBackend(httpcore.AsyncNetworkBackend):
         await self._inner.sleep(seconds)
 
 
+_ssl_context: ssl.SSLContext | None = None
+
+
+def shared_ssl_context() -> ssl.SSLContext:
+    """One CA-verified TLS context for every pinned connection.
+
+    ``httpx.create_ssl_context()`` loads the system CA bundle, which is slow and
+    blocks the event loop. It was built once per ``PinnedTransport`` — i.e. per
+    ``/egress`` and ``/git`` request. A verified context is read-only in use and
+    safe to share across connections, so it is built once and reused.
+    """
+    global _ssl_context
+    if _ssl_context is None:
+        _ssl_context = httpx.create_ssl_context()
+    return _ssl_context
+
+
 class PinnedTransport(httpx.AsyncHTTPTransport):
     """httpx's transport over a connection pool that dials through ``PinnedBackend``.
 
@@ -296,7 +314,7 @@ class PinnedTransport(httpx.AsyncHTTPTransport):
     """
 
     def __init__(self, backend: PinnedBackend) -> None:
-        ssl_context = httpx.create_ssl_context()
+        ssl_context = shared_ssl_context()
         super().__init__(verify=ssl_context, trust_env=False)
         self._pool = httpcore.AsyncConnectionPool(ssl_context=ssl_context, network_backend=backend)
 

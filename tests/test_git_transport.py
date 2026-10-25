@@ -26,7 +26,7 @@ from trentina import config as config_mod
 from trentina import database as database_mod
 from trentina import egress
 from trentina.errors import EGRESS_REASONS
-from trentina.gateway import client_egress, git_transport
+from trentina.gateway import git_transport, upstream
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.git_wire import REASONS, GitRefusedError
 from trentina.gateway.loader import ActiveConfig, GatewayConfig, load_profiles
@@ -67,11 +67,11 @@ def audit_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 @pytest.fixture(autouse=True)
 def no_slot_is_left_held() -> Iterator[None]:
     """Whatever a test did, every operation it started gave its slot back."""
-    client_egress._checked.clear()
+    upstream._checked.clear()
     git_transport._open.clear()
     yield
     assert not any(git_transport._open.values()), git_transport._open
-    client_egress._checked.clear()
+    upstream._checked.clear()
 
 
 def _rows(path: Path) -> list[sqlite3.Row]:
@@ -937,7 +937,7 @@ class TestWhereItGoes:
         async def busy(_url: str) -> None:
             raise egress.EgressRefusedError("resolver_busy")
 
-        monkeypatch.setattr(client_egress, "check_url", busy)
+        monkeypatch.setattr(upstream, "check_url", busy)
         row = await _refused(
             audit_db, await stack.client.get(stack.url + REFS), 503, "resolver_busy"
         )

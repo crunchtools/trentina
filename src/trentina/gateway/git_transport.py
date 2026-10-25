@@ -60,7 +60,6 @@ from ..egress import open_pinned
 from ..errors import EgressRefusedError
 from ..outcomes import Outcome
 from .auth import resolve_profile_by_token
-from .client_egress import RESOLVER_BUSY, checked_target
 from .destination import MAX_DESTINATION_CHARS, DestinationKind
 from .git_wire import (
     FLUSH,
@@ -83,6 +82,7 @@ from .git_wire import (
 )
 from .loader import get_active_config
 from .proxy_utils import PLAIN_TEXT
+from .upstream import RESOLVER_BUSY, checked_target
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
