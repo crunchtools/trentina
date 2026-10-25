@@ -185,6 +185,37 @@ def _client_for(
     return entry
 
 
+async def _send_pinned(
+    profile: Profile,
+    method: str,
+    url: str,
+    *,
+    idle: float,
+    headers: dict[str, str],
+    content: bytes | AsyncIterator[bytes] | None,
+    max_connections: int,
+) -> httpx.Response:
+    """The ONE pin-before-send core (#511): re-check the origin through
+    ``checked_target`` (one lookup per burst, cached ``CHECKED_TTL``) and pin the
+    backend to it immediately before the send, so a reused keepalive connection
+    is to an address that was checked and a new connection dials a
+    currently-checked one. ``PinnedBackend.connect_tcp`` stays fail-closed on a
+    missing pin, so an unchecked host is never dialed.
+
+    Returns the OPEN streaming response. Both ``pinned_send`` (terminating
+    proxies) and ``matrix_pinned_send`` go through here — nothing else may call a
+    pooled client's ``send`` — and each owns its own delivery contract and the
+    response's close.
+    """
+    host = urlsplit(url).hostname or ""
+    port = urlsplit(url).port or CLIENT_EGRESS_PORT
+    client, backend = _client_for(profile, host, port, idle, max_connections)
+    backend.pin(await checked_target(profile, host))
+    return await client.send(
+        client.build_request(method, url, headers=headers, content=content), stream=True
+    )
+
+
 @asynccontextmanager
 async def pinned_send(
     profile: Profile,
@@ -196,32 +227,30 @@ async def pinned_send(
     content: bytes | AsyncIterator[bytes] | None = None,
     max_connections: int = MAX_POOL_CONNECTIONS,
 ) -> AsyncIterator[httpx.Response]:
-    """Send one request to an operator origin over a reused, pinned connection.
+    """Send one request to an operator origin over a reused, pinned connection,
+    with the terminating-proxy contract (``/egress``, ``/git``, ``/llm``).
 
-    The ONE pin-before-send choke-point (#511): the origin is re-checked through
-    ``checked_target`` (one lookup per burst, cached ``CHECKED_TTL``) and the
-    backend pinned to it immediately before the send, so a reused keepalive
-    connection is to an address that was checked and a new connection dials a
-    currently-checked one. Nothing else may call the pooled client's ``send``.
-
-    Same contract as ``egress.open_pinned`` otherwise: ``Accept-Encoding:
-    identity`` is forced, no redirect is followed (a 3xx is ``redirect``), an
-    encoded body is refused, the response streams, and it is closed — but the
-    CLIENT is not — when the context exits.
+    Same contract as ``egress.open_pinned``: ``Accept-Encoding: identity`` is
+    forced, no redirect is followed (a 3xx is ``redirect``), an encoded body is
+    refused, the response streams, and it is closed — but the CLIENT is not —
+    when the context exits. (The Matrix proxy takes none of that contract; it
+    uses ``matrix_pinned_send`` and owns teardown.)
 
     Raises:
         EgressRefusedError: the guard refused the origin (``resolver_busy`` or a
             closed address-rail reason), a 3xx was returned, or the body arrived
             content-encoded.
     """
-    host = urlsplit(url).hostname or ""
-    port = urlsplit(url).port or CLIENT_EGRESS_PORT
-    client, backend = _client_for(profile, host, port, idle, max_connections)
-    backend.pin(await checked_target(profile, host))
     sent = {k: v for k, v in headers.items() if k.lower() != "accept-encoding"}
     sent["Accept-Encoding"] = IDENTITY
-    resp = await client.send(
-        client.build_request(method, url, headers=sent, content=content), stream=True
+    resp = await _send_pinned(
+        profile,
+        method,
+        url,
+        idle=idle,
+        headers=sent,
+        content=content,
+        max_connections=max_connections,
     )
     try:
         raise_on_bad_pinned_response(resp)
@@ -230,6 +259,40 @@ async def pinned_send(
         # The client is pooled, so only the response is closed. Its cookie jar
         # never stores (``_no_cookie_jar``), so there is nothing to clear.
         await resp.aclose()
+
+
+async def matrix_pinned_send(
+    profile: Profile,
+    method: str,
+    url: str,
+    *,
+    idle: float,
+    headers: dict[str, str],
+    content: bytes | AsyncIterator[bytes] | None = None,
+    max_connections: int = MAX_POOL_CONNECTIONS,
+) -> httpx.Response:
+    """Pin + send for the Matrix proxy, which owns teardown and does NOT take the
+    terminating-proxy contract.
+
+    The Matrix proxy injects no credential, so a redirect carries nothing to
+    protect (it forwards a 3xx for the agent's own client to follow); it serves
+    gzipped responses from a CDN-fronted homeserver (``/sync``, member lists) and
+    is already bomb-safe via ``_buffer``'s decoded 32 MB cap — so forcing
+    identity or refusing an encoded/redirect response would be a pure regression.
+    This returns the OPEN streaming response; the CALLER must close it
+    (``_buffer`` on the judged path, ``_streamed``'s finally on the exempt one)
+    and must settle+row on any exception before it does, or a pooled pinned
+    connection leaks to ``KEEPALIVE_EXPIRY``.
+    """
+    return await _send_pinned(
+        profile,
+        method,
+        url,
+        idle=idle,
+        headers=headers,
+        content=content,
+        max_connections=max_connections,
+    )
 
 
 async def close_pool() -> None:
