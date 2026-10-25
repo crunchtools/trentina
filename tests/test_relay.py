@@ -93,6 +93,40 @@ def test_take_slot_false_holds_nothing() -> None:
     assert not second.holds_slot  # a refused take leaves the op holding nothing
 
 
+async def test_relayed_finishes_once_on_a_fully_drained_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The normal path: a body that drains to completion emits its start and
+    body, finishes the Operation exactly once, and returns the slot."""
+    rows: list[Any] = []
+    monkeypatch.setattr(relay, "record_gateway_call", lambda *a, **k: rows.append(a))
+    slots = Slots(1)
+    op = _op()
+    assert op.take_slot(slots)
+    op.settle(relay.Outcome.OK)
+
+    async def body() -> AsyncIterator[bytes]:
+        yield b"a"
+        yield b"b"
+
+    sent: list[str] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message["type"])
+
+    async def receive() -> dict[str, Any]:
+        await asyncio.Event().wait()  # no disconnect; cancelled once the body ends
+        return {"type": "http.disconnect"}
+
+    relayed = Relayed(body(), op, media_type="text/plain")
+    await relayed({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send)
+
+    assert op.finished
+    assert len(rows) == 1
+    assert slots.take("agent1"), "the slot came back"
+    assert "http.response.start" in sent and "http.response.body" in sent
+
+
 async def test_relayed_finishes_in_call_when_the_client_disconnects_mid_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
