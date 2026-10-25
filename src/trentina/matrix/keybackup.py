@@ -34,7 +34,7 @@ import logging
 import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from ..logsafe import exc_kind, redact_source
 from .megolm import (
@@ -47,7 +47,17 @@ from .megolm import (
 from .recovery_key import decode_recovery_key
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     import httpx
+
+    #: A single GET to the homeserver: ``(method, url, headers) -> open response``.
+    #: The caller (``_get``) owns the response's close. The transport is injected
+    #: so this module stays gateway-agnostic while the gateway hands it a
+    #: pin-before-send sender (#532): the homeserver origin is re-checked and the
+    #: connection pinned before each dial, so the access token in ``headers`` can
+    #: never be shipped to an address a DNS answer moved under the name.
+    Send = Callable[[str, str, dict[str, str]], Awaitable[httpx.Response]]
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +85,7 @@ class KeyBackupProvider:
         homeserver: str,
         access_token: str,
         recovery_key: str,
-        client: httpx.AsyncClient,
+        send: Send,
         max_sessions: int = 4096,
         ttl_seconds: float = 3600.0,
         concurrency: int = 4,
@@ -83,7 +93,7 @@ class KeyBackupProvider:
     ) -> None:
         self._base = homeserver.rstrip("/")
         self._headers = {"Authorization": f"Bearer {access_token}"}
-        self._client = client
+        self._send = send
         self._max_sessions = max_sessions
         self._ttl = ttl_seconds
         self._cooldown = refetch_cooldown_seconds
@@ -231,11 +241,17 @@ class KeyBackupProvider:
 
     async def _get(self, path: str, params: dict[str, str] | None = None) -> Any:
         async with self._semaphore:
-            response = await self._client.get(
-                f"{self._base}{path}", headers=self._headers, params=params
-            )
-            response.raise_for_status()
-            return response.json()
+            url = f"{self._base}{path}"
+            if params:
+                url = f"{url}?{urlencode(params)}"
+            response = await self._send("GET", url, self._headers)
+            try:
+                # The pinned sender streams (stream=True), so read before json().
+                await response.aread()
+                response.raise_for_status()
+                return response.json()
+            finally:
+                await response.aclose()
 
     def stats(self) -> dict[str, int]:
         return dict(self._stats)

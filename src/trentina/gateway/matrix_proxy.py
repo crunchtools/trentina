@@ -100,17 +100,15 @@ BACKEND = "matrix"
 
 _DEFAULT_UPSTREAM = "https://matrix-client.matrix.org"
 
-_SYNC_TIMEOUT = httpx.Timeout(
-    connect=10.0,
-    read=120.0,
-    write=10.0,
-    pool=5.0,
-)
-
 #: Idle (read/write) budget for the pinned pool — a ``/sync`` long-poll holds the
-#: read open this long. Matches ``_SYNC_TIMEOUT``'s read; matrix.org is a
-#: Matrix-only pooled origin, so it does not bleed onto the other proxies.
+#: read open this long. matrix.org is a Matrix-only pooled origin, so it does not
+#: bleed onto the other proxies.
 _MATRIX_IDLE = 120.0
+
+#: Idle budget for a key-backup GET (#532). These are small JSON reads
+#: (``/room_keys/version``, a room's keys), not a long-poll, so they need
+#: nothing like ``_MATRIX_IDLE``.
+_KEYBACKUP_IDLE = 30.0
 
 MATRIX_HTTP_METHODS = [
     "GET",
@@ -226,23 +224,22 @@ every other field of the event is walked like any other."""
 
 _MAX_WALK_DEPTH = 64
 
-_matrix_client: httpx.AsyncClient | None = None
 
+def _keybackup_send(profile: Profile) -> Any:
+    """A pin-before-send GET for one profile's key-backup provider (#532).
 
-def _get_matrix_client() -> httpx.AsyncClient:
-    global _matrix_client
-    if _matrix_client is None:
-        # nosemgrep: trentina-httpx-client-outside-egress -- operator host, no redirects
-        _matrix_client = httpx.AsyncClient(timeout=_SYNC_TIMEOUT)
-    return _matrix_client
+    The provider's homeserver calls carry the Matrix access token, so they ride
+    the SAME pinned pool as the ``/sync`` forward instead of a bare client: the
+    origin is re-checked and pinned before each dial (``matrix_pinned_send`` →
+    ``checked_target``), closing the DNS-rebinding window an unpinned client left
+    open. The pool is torn down by ``upstream.close_pool`` at shutdown, so there
+    is no separate client to leak. The provider owns the response's close.
+    """
 
+    async def send(method: str, url: str, headers: dict[str, str]) -> httpx.Response:
+        return await matrix_pinned_send(profile, method, url, idle=_KEYBACKUP_IDLE, headers=headers)
 
-async def close_matrix_client() -> None:
-    """Close the Matrix proxy httpx client. Called on application shutdown."""
-    global _matrix_client
-    if _matrix_client is not None:
-        await _matrix_client.aclose()
-        _matrix_client = None
+    return send
 
 
 def _caller_address(request: Request) -> str | None:
@@ -537,7 +534,7 @@ async def _provider_for(profile: Profile) -> Any:
                 homeserver=cfg.homeserver,
                 access_token=cfg.access_token.get_secret_value(),
                 recovery_key=cfg.recovery_key.get_secret_value(),
-                client=_get_matrix_client(),
+                send=_keybackup_send(profile),
                 max_sessions=cfg.max_sessions,
                 ttl_seconds=cfg.session_ttl_seconds,
                 concurrency=cfg.concurrency,
