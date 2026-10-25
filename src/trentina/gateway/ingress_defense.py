@@ -762,6 +762,8 @@ async def _judge_description(
     profile that joined it shares the verdict and is not recorded twice.
     """
     perimeter_counts["judged"] += 1
+    mode = effective_mode(profile)
+    posture = Posture(mode=mode, policy=ModePolicy((mode,), mode))
     # A shared description is the gateway's own work, judged as the service
     # identity (#138); the thresholds stay the requester's.
     with service_context(operator):
@@ -777,7 +779,7 @@ async def _judge_description(
                 "backend": backend_name,
                 "tool": str(tool.get("name", "?")),
                 "direction": "tool_list",
-                "blocked": effective_mode(profile) is Mode.BLOCK,
+                "blocked": posture.records_block(),
             },
         )
     warning = build_warning(verdict)
