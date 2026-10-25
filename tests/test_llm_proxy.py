@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import sqlite3
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -956,3 +958,30 @@ class TestProxyRequestDLP:
         assert resp.status_code == 200  # not blocked despite enforcement=block
         assert fake.sent
         assert resp.headers["x-trentina-warning"] == "high"
+
+
+async def test_post_hoc_completion_scan_timeout_is_logged_not_raised(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The post-hoc completion scan is a fire-and-forget background task. If the
+    judge outruns JUDGE_DEADLINE the timeout is caught, logged and dropped — it
+    never propagates (the response has already streamed, so the caller is
+    untouched) and never leaves an unbounded task running."""
+    from trentina import defense as defense_mod
+
+    monkeypatch.setattr(llm_proxy, "_JUDGE_DEADLINE", 0.01)
+
+    async def hanging_defend(*_a: Any, **_k: Any) -> Any:
+        await asyncio.sleep(1)  # outlasts the 0.01s deadline; must be cancelled
+        raise AssertionError("defend should have been cancelled by the deadline")
+
+    monkeypatch.setattr(defense_mod, "defend", hanging_defend)
+    profile = _profile("agent1", "agent1-tok", {"gemini": "agent1-key"})
+
+    with caplog.at_level(logging.WARNING, logger="trentina.gateway.llm_proxy"):
+        llm_proxy._schedule_completion_scan(b'{"completion": "x"}', 19, "gemini", profile)
+        pending = set(llm_proxy._scan_tasks)
+        assert pending, "a scan task should have been scheduled"
+        await asyncio.gather(*pending)  # resolves cleanly despite the hang + cancel
+
+    assert any("completion scan timed out" in r.getMessage() for r in caplog.records)
