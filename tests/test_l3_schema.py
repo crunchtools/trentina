@@ -303,7 +303,7 @@ class TestMatrixAnnotate:
             "next_batch": "s1",
         }
         monkeypatch.setattr(
-            matrix_proxy, "_get_matrix_client", lambda: _FakeUpstream(json.dumps(sync).encode())
+            matrix_proxy, "matrix_pinned_send", _FakeUpstream(json.dumps(sync).encode())
         )
         monkeypatch.setattr("trentina.defense._l3_provider_configured", lambda _d: True)
         monkeypatch.setattr(f"{AGENT}.get_current_profile", lambda: None)
