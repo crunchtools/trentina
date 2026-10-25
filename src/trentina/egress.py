@@ -295,8 +295,17 @@ def shared_ssl_context() -> ssl.SSLContext:
 
     ``httpx.create_ssl_context()`` loads the system CA bundle, which is slow and
     blocks the event loop. It was built once per ``PinnedTransport`` — i.e. per
-    ``/egress`` and ``/git`` request. A verified context is read-only in use and
-    safe to share across connections, so it is built once and reused.
+    ``/egress`` and ``/git`` request. Sharing one context is how httpx's own
+    ``AsyncClient`` runs its pool, so httpcore is built for it: the one write it
+    makes to the context is ``set_alpn_protocols`` on every connect, and with
+    every ``PinnedTransport`` at ``http2=False`` that write is always
+    ``["http/1.1"]`` — idempotent, and synchronous on the one loop thread, so no
+    race. SNI and hostname verification stay per-connection (``server_hostname``),
+    and no session is ever set, so nothing leaks between pinned connections to
+    different hosts. (A future ``http2=True`` pinned transport would flip ALPN
+    for every pinned connection built afterwards — revisit then.) The CA bundle
+    is now frozen at first use for the process lifetime, as a certifi bump
+    already needs a container restart.
     """
     global _ssl_context
     if _ssl_context is None:

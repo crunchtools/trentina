@@ -426,7 +426,7 @@ class TestProxies:
         caller chose, through a carried fetch, a carried push and five
         refusals. The repository is in the upstream URL httpx would log."""
         from trentina import database, egress
-        from trentina.gateway import client_egress, git_transport
+        from trentina.gateway import git_transport, upstream
 
         from . import git_harness as harness
         from .egress_harness import PUBLIC_ADDRESS
@@ -434,7 +434,7 @@ class TestProxies:
         monkeypatch.setenv("QUARANTINE_DB", str(tmp_path / "trentina.db"))
         config_mod._config = None
         database._db = None
-        client_egress._checked.clear()
+        upstream._checked.clear()
         profiles = {"agent1": harness.profile(fetch=("acme/*",), push=("acme/*",))}
         active = SimpleNamespace(config=SimpleNamespace(git_remotes=harness.remotes()))
         monkeypatch.setattr(git_transport, "get_active_config", lambda: active)
@@ -491,7 +491,7 @@ class TestProxies:
         finally:
             database._db = None
             config_mod._config = None
-            client_egress._checked.clear()
+            upstream._checked.clear()
         assert statuses == [200, 200, 400, 400, 404, 400, 403, 403]
         assert len(forge.requests) == 2
         assert any("git transport: refused" in r.getMessage() for r in captured.records)

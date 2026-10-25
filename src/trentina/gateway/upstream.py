@@ -1,8 +1,9 @@
 """The operator-named-origin spine (#511 convergence).
 
-Shared by the terminating reverse proxies (``/egress``, ``/git``, ``/llm``) and
-the CONNECT tunnel. These five differ from ``fetch`` in *who chose the
-destination*: ``fetch`` hands ``egress.open_guarded`` an agent-chosen URL,
+Shared today by ``/egress``, ``/git`` and the CONNECT tunnel (``/llm`` and the
+Matrix proxy join when they move onto the pinned client, a later phase). These
+paths differ from ``fetch`` in *who chose the destination*: ``fetch`` hands
+``egress.open_guarded`` an agent-chosen URL,
 checked per hop, redirects followed, a per-call client, never pooled. Here the
 agent supplies only a *path*; the *host* is one the operator named. So the
 address is checked ONCE per burst, the connection is pinned to it, no redirect
@@ -55,7 +56,9 @@ _checked: dict[tuple[str, str], tuple[float, ResolvedTarget]] = {}
 
 
 def forget_checked() -> None:
-    """Drop every cached check. Called when the tunnel listener stops."""
+    """Drop every cached check. Called when the tunnel listener stops; this now
+    also clears ``/egress`` and ``/git``'s cache for the same profiles, which
+    costs at most one re-lookup on the next call."""
     _checked.clear()
 
 
