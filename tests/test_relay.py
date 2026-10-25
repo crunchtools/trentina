@@ -8,13 +8,15 @@ tested here, once, not only through each route.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from trentina.gateway import relay
-from trentina.gateway.relay import Operation, Slots
+from trentina.gateway.relay import Operation, Relayed, Slots
 
 
 def _op(**kw: Any) -> Operation:
@@ -89,3 +91,39 @@ def test_take_slot_false_holds_nothing() -> None:
     second = _op()
     assert not second.take_slot(slots)  # full
     assert not second.holds_slot  # a refused take leaves the op holding nothing
+
+
+async def test_relayed_finishes_the_op_once_around_the_whole_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """relay.Relayed finishes the Operation in __call__, around the whole
+    response — not in the body generator's finally, which does not run when a
+    client stops reading. The slot comes back and exactly one row is written,
+    driven on uvicorn's real ASGI spec (2.3, the disconnect-listener path)."""
+    rows: list[Any] = []
+    monkeypatch.setattr(relay, "record_gateway_call", lambda *a, **k: rows.append(a))
+    slots = Slots(1)
+    op = _op()
+    assert op.take_slot(slots)
+    op.settle(relay.Outcome.OK)
+
+    async def body() -> AsyncIterator[bytes]:
+        yield b"a"
+        yield b"b"
+
+    sent: list[str] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message["type"])
+
+    async def receive() -> dict[str, Any]:
+        await asyncio.Event().wait()  # never disconnects; cancelled when the body ends
+        return {"type": "http.disconnect"}
+
+    relayed = Relayed(body(), op, media_type="text/plain")
+    await relayed({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send)
+
+    assert op.finished
+    assert len(rows) == 1  # exactly one audit row, from __call__
+    assert slots.take("agent1"), "the slot came back"
+    assert "http.response.start" in sent and "http.response.body" in sent
