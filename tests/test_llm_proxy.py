@@ -82,7 +82,7 @@ def _rows(path: Path) -> list[sqlite3.Row]:
     try:
         return conn.execute(
             "SELECT profile, backend, tool, outcome, error_message, destination, "
-            "destination_kind FROM gateway_calls ORDER BY id"
+            "destination_kind, bytes_arrived, bytes_delivered FROM gateway_calls ORDER BY id"
         ).fetchall()
     finally:
         conn.close()
@@ -542,6 +542,23 @@ class TestProxyAdmission:
         assert row["error_message"] is None
         assert (row["destination"], row["destination_kind"]) == ("claude-sonnet-4-5", "model")
 
+    def test_the_completion_row_carries_the_relayed_bytes(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        """The row is written at the stream's END with the bytes relayed — the
+        request body as bytes_delivered, the response as bytes_arrived — not at
+        header arrival with no counts."""
+        fake = _FakeClient()  # _FakeUpstreamResp streams b'{"ok": true}'
+        client = self._client(fake, monkeypatch)
+        resp = self._post(client, _PLAIN)
+        assert resp.status_code == 200
+        [row] = _rows(audit_db)
+        assert row["outcome"] == "ok"
+        assert row["bytes_arrived"] == len(b'{"ok": true}')  # the streamed response
+        # the re-serialized request body admit() forwarded (not byte-equal to the
+        # original, which admit() re-dumps), so just: a request body was sent
+        assert row["bytes_delivered"] > 0
+
     def test_upstream_read_error_is_audited_not_an_unlogged_500(
         self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
     ) -> None:
@@ -985,3 +1002,48 @@ async def test_post_hoc_completion_scan_timeout_is_logged_not_raised(
         await asyncio.gather(*pending)  # resolves cleanly despite the hang + cancel
 
     assert any("completion scan timed out" in r.getMessage() for r in caplog.records)
+
+
+async def test_an_interrupted_stream_settles_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stream that breaks after the headers (agent gone, or upstream body
+    failed) is settled CANCELLED, not left as the OK the status gave — and the
+    row still carries the bytes relayed so far."""
+    import httpx
+
+    from trentina.gateway import relay
+    from trentina.outcomes import Outcome
+
+    monkeypatch.setattr(relay, "record_gateway_call", lambda *a, **k: None)
+    monkeypatch.setattr(llm_proxy, "_schedule_completion_scan", lambda *a, **k: None)
+
+    class _Broken:
+        status_code = 200
+
+        def __init__(self) -> None:
+            self.headers = {"content-type": "application/json"}
+
+        async def aiter_bytes(self) -> AsyncIterator[bytes]:
+            yield b"partial"
+            raise httpx.RemoteProtocolError("peer closed mid-stream")
+
+        async def aclose(self) -> None:
+            return None
+
+    op = llm_proxy.Operation(SimpleNamespace(name="agent1"), backend="llm:anthropic")
+    op.settle(Outcome.OK)  # the 200 the status gave
+    streamed = llm_proxy._streaming_response(
+        op, _Broken(), "anthropic", SimpleNamespace(name="agent1")
+    )
+
+    chunks: list[bytes] = []
+
+    async def _drain() -> None:
+        async for chunk in streamed.body_iterator:
+            chunks.append(chunk)
+
+    with pytest.raises(httpx.RemoteProtocolError):
+        await _drain()
+
+    assert chunks == [b"partial"]  # what was relayed before the break
+    assert op.outcome is Outcome.CANCELLED
+    assert op.received == len(b"partial")

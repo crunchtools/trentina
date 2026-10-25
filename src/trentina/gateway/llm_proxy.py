@@ -27,7 +27,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -44,7 +43,6 @@ from pydantic import (
 )
 from starlette.responses import Response, StreamingResponse
 
-from ..database import record_gateway_call
 from ..logsafe import exc_kind, exc_where, redact_source
 from ..modes import Mode
 from ..outcomes import Outcome
@@ -75,13 +73,14 @@ from .proxy_utils import (
     filter_response_headers,
     normalize_proxy_path,
 )
+from .relay import Operation, Slots
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator
 
     from starlette.requests import Request
 
-    from .profile import LlmKeyOverride, Profile
+    from .profile import Profile
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +96,14 @@ LLM_HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"]
 # A request body is read whole to be judged. Anthropic's own request limit is
 # 32 MB; nothing an admitted endpoint takes needs more.
 MAX_LLM_REQUEST_BYTES = 32 * 1024 * 1024
+
+# In-flight model requests one profile may hold. Set high, like the tunnel's
+# cap and unlike the 8 of /egress and /git: one profile serves every session of
+# its agent, and a fan-out of parallel subagents holds a streaming completion
+# each for the length of a turn. The cap only stops a runaway, never normal
+# fan-out.
+LLM_MAX_OPERATIONS_PER_PROFILE = 64
+_SLOTS = Slots(LLM_MAX_OPERATIONS_PER_PROFILE)
 
 _llm_client: httpx.AsyncClient | None = None
 
@@ -280,36 +287,6 @@ def register_llm_routes(
     )
 
 
-def _audit(
-    profile: Profile,
-    provider_name: str,
-    endpoint: str,
-    outcome: Outcome,
-    started: float,
-    reason: Reason | None = None,
-    model: str | None = None,
-) -> None:
-    """One ``gateway_calls`` row per proxied call, admitted or refused.
-
-    ``endpoint`` and ``reason`` are closed sets. ``model`` is the caller's
-    text, so it is stored as a destination and goes nowhere else (#266).
-    Like ``router._audit``, a lost row never fails the call it records.
-    """
-    try:
-        record_gateway_call(
-            profile.name,
-            f"llm:{provider_name}",
-            endpoint,
-            outcome.value,
-            int((time.monotonic() - started) * 1000),
-            reason.value if reason else None,
-            destination=model[:MAX_DESTINATION_CHARS] if model else None,
-            destination_kind=DestinationKind.MODEL.value if model else None,
-        )
-    except Exception as exc:
-        logger.warning("llm_proxy: audit row lost profile=%s err=%s", profile.name, exc_kind(exc))
-
-
 def _deny_marker(
     reason: str,
     *,
@@ -390,21 +367,22 @@ def _request_document(
 
 
 async def _judge_request(
+    op: Operation,
     document: str,
     provider_name: str,
     profile: Profile,
     mode: Mode,
-    audit: Callable[[Outcome, Reason], None],
-) -> tuple[Response | None, str | None, Reason | None]:
-    """Judge an outbound request. Returns ``(refusal, warning, flag_reason)``.
+) -> tuple[Response | None, str | None]:
+    """Judge an outbound request. Returns ``(refusal, warning)``.
 
     The shared ``judge_outbound`` always runs L1/L2/L3 over a credential-redacted
     copy and scans for credential shapes (the layer contract: the detector adds
     a signal, it is not a per-layer off switch). Under ``block`` a credential, a
-    flag or a blocking gap refuses before anything is sent — nothing executed.
-    Under ``flag`` the request forwards and the verdict rides back on
-    ``X-Trentina-Warning``; ``flag_reason`` is carried to the forward audit row
-    so a flag-mode finding is recorded, not only shown to the agent.
+    flag or a blocking gap refuses before anything is sent — the Operation is
+    settled ``BLOCKED_DEFENSE`` and nothing executed. Under ``flag`` the request
+    forwards, the verdict rides back on ``X-Trentina-Warning``, and
+    ``op.flag_reason`` carries the finding onto the forwarded call's audit row so
+    a flag-mode finding is recorded, not only shown to the agent.
     """
     verdict = await judge_outbound(
         document,
@@ -420,7 +398,7 @@ async def _judge_request(
     reason_code = verdict.reason or REASON_UNJUDGED
     if mode is Mode.BLOCK and verdict.blocks():
         reason = _REASON_OF[reason_code]
-        audit(Outcome.BLOCKED_DEFENSE, reason)
+        op.settle(Outcome.BLOCKED_DEFENSE, reason.value)
         logger.warning(
             "llm_proxy: request blocked profile=%s provider=%s reason=%s",
             profile.name,
@@ -434,18 +412,19 @@ async def _judge_request(
             kinds=verdict.kinds or None,
             mode=mode.value,
         )
-        return (Response(content=json.dumps(body), status_code=403, media_type=JSON), None, None)
+        return (Response(content=json.dumps(body), status_code=403, media_type=JSON), None)
 
     warning = verdict.warning
     if warning is not None:
+        op.flag_reason = _REASON_OF[reason_code].value
         logger.warning(
             "llm_proxy: request %s (flag) profile=%s provider=%s",
             warning,
             profile.name,
             provider_name,
         )
-        return (None, warning, _REASON_OF[reason_code])
-    return (None, None, None)
+        return (None, warning)
+    return (None, None)
 
 
 async def _read_body(request: Request) -> bytes:
@@ -496,16 +475,14 @@ def _resolve_caller(
     provider_name: str,
     providers: dict[str, LlmProvider],
     profiles: dict[str, Profile],
-    started: float,
-) -> tuple[LlmProvider, Profile, LlmKeyOverride] | Response:
-    """The provider, calling profile and that profile's key, or an error Response.
+) -> tuple[LlmProvider, Profile] | Response:
+    """The provider and the calling profile, or an error Response.
 
-    Three fail-closed guards, kept out of ``_proxy_llm`` so its return count
-    stays legible. Authentication comes FIRST: a token that resolves to no
-    profile is 401 before the provider name is looked up, so an unauthenticated
-    caller cannot learn which providers exist by probing for 404s. Then an
-    unknown provider (404) and a profile with no key for it (502, audited) —
-    both already behind a valid token.
+    Authentication comes FIRST: a token that resolves to no profile is 401
+    before the provider name is looked up, so an unauthenticated caller cannot
+    learn which providers exist by probing for 404s. The profile's key for this
+    provider is checked by ``_proxy_llm``, which holds the Operation that
+    records a no-key refusal.
     """
     profile = resolve_profile_by_token(_caller_token(request), profiles)
     if profile is None:
@@ -516,17 +493,53 @@ def _resolve_caller(
         return Response(
             content="LLM provider not found or disabled", status_code=404, media_type=PLAIN_TEXT
         )
+    return provider, profile
 
-    override = profile.llm_keys.get(provider_name)
-    if override is None:
-        logger.info("llm_proxy: profile=%s has no key for provider=%s", profile.name, provider_name)
-        _audit(profile, provider_name, "-", Outcome.DENIED_ALLOWLIST, started)
-        return Response(
-            content="No API key configured for this provider",
-            status_code=502,
-            media_type=PLAIN_TEXT,
+
+async def _admit_or_refuse(
+    op: Operation,
+    request: Request,
+    api: LlmApi,
+    provider: LlmProvider,
+    provider_name: str,
+) -> tuple[str, Admitted] | Response:
+    """Normalize the path and admit the request, or finish ``op`` and return the refusal.
+
+    Returns ``(path, admitted)`` on success. On a path traversal (400) or an
+    admission refusal, it settles and finishes ``op`` and returns the deny
+    Response, so the caller only forwards it.
+
+    TRUST: an agent's request to a provider that can fetch and run tools
+      untrusted: method, path, query, headers and body, all agent-chosen
+      judged-by: llm_policy.admit (allowlists per API shape) and forward_headers
+      on-failure: fail-closed; anything not on a list is refused and audited
+      owner: gateway/llm_policy.py
+      evidence: T3 llm_policy module docstring; T4 the body sent is the one
+        admit() re-serialized, so the provider parses what was judged
+    """
+    path = normalize_proxy_path(request.path_params.get("path", ""))
+    if path is None:
+        op.settle(Outcome.DENIED_GUARD, Reason.ENDPOINT.value)
+        await op.finish()
+        return Response(content="Path traversal rejected", status_code=400, media_type=PLAIN_TEXT)
+    try:
+        body = await _read_body(request)
+        admitted = admit(
+            api, request.method, path, request.url.query, body, provider.allowed_models
         )
-    return provider, profile, override
+    except LlmRefusedError as refusal:
+        logger.info(
+            "llm_proxy: refused profile=%s provider=%s reason=%s",
+            op.profile.name,
+            provider_name,
+            refusal.reason.value,
+        )
+        op.settle(Outcome.DENIED_GUARD, refusal.reason.value)
+        await op.finish()
+        # The admission refusal, to its own caller; detail is that caller's token.
+        marker = _deny_marker(refusal.reason.value, detail=refusal.detail)
+        return Response(content=json.dumps(marker), status_code=refusal.status, media_type=JSON)
+    return path, admitted
 
 
 async def _proxy_llm(
@@ -542,131 +555,119 @@ async def _proxy_llm(
     that profile's provider key. Only allowlisted caller headers reach the
     provider; the caller's token is never one of them.
     """
-    started = time.monotonic()
     provider_name = request.path_params.get("provider", "")
-    raw_path = request.path_params.get("path", "")
 
-    resolved = _resolve_caller(request, provider_name, providers, profiles, started)
+    resolved = _resolve_caller(request, provider_name, providers, profiles)
     if isinstance(resolved, Response):
         return resolved
-    provider, profile, override = resolved
-
-    path = normalize_proxy_path(raw_path)
-    if path is None:
-        _audit(profile, provider_name, "-", Outcome.DENIED_GUARD, started, Reason.ENDPOINT)
-        return Response(
-            content="Path traversal rejected",
-            status_code=400,
-            media_type=PLAIN_TEXT,
-        )
-
-    # TRUST: an agent's request to a provider that can fetch and run tools
-    #   untrusted: method, path, query, headers and body, all agent-chosen
-    #   judged-by: llm_policy.admit (allowlists per API shape) and forward_headers
-    #   on-failure: fail-closed; anything not on a list is refused and audited
-    #   owner: gateway/llm_policy.py
-    #   evidence: T3 llm_policy module docstring; T4 the body sent is the one
-    #     admit() re-serialized, so the provider parses what was judged
+    provider, profile = resolved
     api = provider.api
     if api is None:  # api_must_be_known sets it; a provider without one has no policy
         raise ProfileConfigError(f"llm_providers.{provider_name}: no api shape")
+
+    op = Operation(profile, backend=f"llm:{provider_name}", destination_kind=DestinationKind.MODEL)
     try:
-        body = await _read_body(request)
-        admitted = admit(
-            api,
-            request.method,
-            path,
-            request.url.query,
-            body,
-            provider.allowed_models,
-        )
-    except LlmRefusedError as refusal:
+        override = profile.llm_keys.get(provider_name)
+        if override is None:
+            logger.info(
+                "llm_proxy: profile=%s has no key for provider=%s", profile.name, provider_name
+            )
+            op.settle(Outcome.DENIED_ALLOWLIST)
+            await op.finish()
+            return Response(
+                content="No API key configured for this provider",
+                status_code=502,
+                media_type=PLAIN_TEXT,
+            )
+
+        admitted_or_refusal = await _admit_or_refuse(op, request, api, provider, provider_name)
+        if isinstance(admitted_or_refusal, Response):
+            return admitted_or_refusal
+        path, admitted = admitted_or_refusal
+
+        op.tool = admitted.endpoint
+        op.destination = admitted.model[:MAX_DESTINATION_CHARS] if admitted.model else None
+        if not op.take_slot(_SLOTS):
+            op.settle(Outcome.DENIED_GUARD, "busy")
+            await op.finish()
+            return Response(
+                content=json.dumps(_deny_marker("busy")), status_code=503, media_type=JSON
+            )
+
         logger.info(
-            "llm_proxy: refused profile=%s provider=%s reason=%s",
+            "llm_proxy: profile=%s provider=%s endpoint=%s path=%s",
             profile.name,
             provider_name,
-            refusal.reason.value,
+            admitted.endpoint,
+            redact_source(path),
         )
-        _audit(profile, provider_name, "-", Outcome.DENIED_GUARD, started, refusal.reason)
-        # The admission refusal, to its own caller; detail is that caller's token.
-        marker = _deny_marker(refusal.reason.value, detail=refusal.detail)
-        return Response(content=json.dumps(marker), status_code=refusal.status, media_type=JSON)
 
-    logger.info(
-        "llm_proxy: profile=%s provider=%s endpoint=%s path=%s",
-        profile.name,
-        provider_name,
-        admitted.endpoint,
-        redact_source(path),
-    )
+        upstream_url = f"{provider.upstream}/{path}"
+        if admitted.query:
+            upstream_url = f"{upstream_url}?{admitted.query}"
 
-    upstream_url = f"{provider.upstream}/{path}"
-    if admitted.query:
-        upstream_url = f"{upstream_url}?{admitted.query}"
+        fwd_headers = forward_headers(api, request.headers.items())
 
-    fwd_headers = forward_headers(api, request.headers.items())
-
-    # #511: judge the request CONTENT, not only its shape. llm_policy.admit
-    # above allowlisted the endpoint, params and headers; this reads the body,
-    # query and forwarded headers as one document for L1/L2/L3 and the
-    # credential detector. The mode is the profile's per-provider enforcement
-    # (default flag), with the kill switch over it.
-    mode = effective_mode(profile, Mode(override.enforcement))
-    refusal_resp, warning, flag_reason = await _judge_request(
-        _request_document(request.method, path, admitted, fwd_headers),
-        provider_name,
-        profile,
-        mode,
-        lambda outcome, reason: _audit(
-            profile,
+        # #511: judge the request CONTENT, not only its shape. llm_policy.admit
+        # above allowlisted the endpoint, params and headers; this reads the body,
+        # query and forwarded headers as one document for L1/L2/L3 and the
+        # credential detector. The mode is the profile's per-provider enforcement
+        # (default flag), with the kill switch over it.
+        mode = effective_mode(profile, Mode(override.enforcement))
+        refusal_resp, warning = await _judge_request(
+            op,
+            _request_document(request.method, path, admitted, fwd_headers),
             provider_name,
-            admitted.endpoint,
-            outcome,
-            started,
-            reason,
-            model=admitted.model,
-        ),
-    )
-    if refusal_resp is not None:
-        return refusal_resp
-
-    if admitted.body is not None:
-        fwd_headers["content-type"] = JSON
-    key_value = override.api_key.get_secret_value()
-    fwd_headers[provider.auth_header] = f"{provider.auth_prefix}{key_value}"
-
-    # flag_reason carries a flag-mode finding onto the forwarded call's audit row.
-    return await _forward_upstream(
-        request.method,
-        upstream_url,
-        fwd_headers,
-        admitted.body,
-        provider_name,
-        profile,
-        lambda outcome: _audit(
             profile,
+            mode,
+        )
+        if refusal_resp is not None:  # op already settled BLOCKED_DEFENSE
+            await op.finish()
+            return refusal_resp
+
+        if admitted.body is not None:
+            fwd_headers["content-type"] = JSON
+        key_value = override.api_key.get_secret_value()
+        fwd_headers[provider.auth_header] = f"{provider.auth_prefix}{key_value}"
+
+        # On success this returns a StreamingResponse that finishes op when the
+        # stream ends; on a forward error it finishes op and returns a plain
+        # Response. Either way the row is written exactly once.
+        return await _forward_upstream(
+            op,
+            request.method,
+            upstream_url,
+            fwd_headers,
+            admitted.body,
             provider_name,
-            admitted.endpoint,
-            outcome,
-            started,
-            flag_reason,
-            model=admitted.model,
-        ),
-        warning,
-    )
+            profile,
+            warning,
+        )
+    except Exception:
+        # An unexpected error before the response streams: record it, once.
+        op.settle(Outcome.GATEWAY_ERROR)
+        await op.finish()
+        raise
 
 
 async def _forward_upstream(
+    op: Operation,
     method: str,
     upstream_url: str,
     fwd_headers: dict[str, str],
     body: bytes | None,
     provider_name: str,
     profile: Profile,
-    audit: Callable[[Outcome], None],
     warning: str | None = None,
 ) -> Response:
-    """Send the (already-admitted, key-injected) request to the provider."""
+    """Send the (already-admitted, key-injected) request to the provider.
+
+    On a send failure the Operation is settled ``BACKEND_ERROR`` and finished
+    here (a plain Response goes back). On success the Operation is settled by
+    status and handed to ``_streaming_response``, which finishes it when the
+    stream ends — so the row carries the bytes actually relayed and is written
+    once, at the end, not when the headers arrived.
+    """
     client = _get_llm_client()
 
     try:
@@ -680,46 +681,31 @@ async def _forward_upstream(
             stream=True,
         )
     except httpx.TimeoutException:
-        audit(Outcome.BACKEND_ERROR)
-        return Response(
-            content="LLM upstream timeout",
-            status_code=504,
-            media_type=PLAIN_TEXT,
-        )
+        op.settle(Outcome.BACKEND_ERROR)
+        await op.finish()
+        return Response(content="LLM upstream timeout", status_code=504, media_type=PLAIN_TEXT)
     except httpx.ConnectError as exc:
-        logger.warning(
-            "llm_proxy: connect error provider=%s: %s",
-            provider_name,
-            exc_kind(exc),
-        )
-        audit(Outcome.BACKEND_ERROR)
-        return Response(
-            content="LLM upstream unreachable",
-            status_code=502,
-            media_type=PLAIN_TEXT,
-        )
+        logger.warning("llm_proxy: connect error provider=%s: %s", provider_name, exc_kind(exc))
+        op.settle(Outcome.BACKEND_ERROR)
+        await op.finish()
+        return Response(content="LLM upstream unreachable", status_code=502, media_type=PLAIN_TEXT)
     except httpx.HTTPError as exc:
         # Any other upstream failure (read error, protocol error, a stream that
         # broke before headers): still one audit row, never an unlogged 500.
-        logger.warning(
-            "llm_proxy: upstream error provider=%s: %s",
-            provider_name,
-            exc_kind(exc),
-        )
-        audit(Outcome.BACKEND_ERROR)
-        return Response(
-            content="LLM upstream error",
-            status_code=502,
-            media_type=PLAIN_TEXT,
-        )
+        logger.warning("llm_proxy: upstream error provider=%s: %s", provider_name, exc_kind(exc))
+        op.settle(Outcome.BACKEND_ERROR)
+        await op.finish()
+        return Response(content="LLM upstream error", status_code=502, media_type=PLAIN_TEXT)
 
+    # The request is on the wire; its body is what went upstream.
+    op.sent = len(body) if body else 0
     if resp.status_code >= 500:
-        audit(Outcome.BACKEND_ERROR)
+        op.settle(Outcome.BACKEND_ERROR, op.flag_reason)
     elif resp.status_code >= 400:
-        audit(Outcome.TOOL_ERROR)
+        op.settle(Outcome.TOOL_ERROR, op.flag_reason)
     else:
-        audit(Outcome.OK)
-    return _streaming_response(resp, provider_name, profile, warning)
+        op.settle(Outcome.OK, op.flag_reason)
+    return _streaming_response(op, resp, provider_name, profile, warning)
 
 
 # Buffer completions up to this size for the post-hoc scan; a longer stream
@@ -728,6 +714,7 @@ _MAX_COMPLETION_SCAN_BYTES = 16 * 1024 * 1024
 
 
 def _streaming_response(
+    op: Operation,
     resp: httpx.Response,
     provider_name: str,
     profile: Profile,
@@ -759,14 +746,25 @@ def _streaming_response(
 
     async def stream_body() -> AsyncIterator[bytes]:
         nonlocal size_seen
+        completed = False
         try:
             async for chunk in resp.aiter_bytes():
+                op.received += len(chunk)
                 if size_seen <= _MAX_COMPLETION_SCAN_BYTES:
                     collected.append(chunk)
                 size_seen += len(chunk)
                 yield chunk
+            completed = True
         finally:
             await resp.aclose()
+            # A stream that did not run to the end — the agent disconnected, or
+            # the body broke after the headers — is not a clean delivery: settle
+            # CANCELLED (only over a success; a 4xx/5xx keeps its error outcome).
+            # The row carries the bytes actually relayed and is written at the
+            # stream's END, not when the headers arrived.
+            if not completed and op.outcome is Outcome.OK:
+                op.settle(Outcome.CANCELLED, op.reason)
+            await op.finish()
             _schedule_completion_scan(
                 b"".join(collected),
                 size_seen,
