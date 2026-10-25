@@ -101,6 +101,30 @@ rules:
       - pattern: httpx.AsyncClient(...)
       - pattern: httpx.Client(...)
 
+  - id: trentina-dial-outside-egress
+    message: >-
+      A raw network dial outside the egress guard. A socket opened to an
+      address that did not pass egress.check_url can reach a loopback or
+      link-local target an agent, a fetched page or a backend named — SSRF
+      (obligation O6; #260, #532). Dial only an already-checked address: the
+      CONNECT tunnel (client_egress.py) dials upstream.checked_target's
+      answers, and every other outbound goes through egress.open_guarded or
+      egress.open_pinned. If this dial is provably to a checked address,
+      suppress inline and say so.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      obligation: O6 EGRESS
+    paths:
+      exclude:
+        - "**/trentina/egress.py"
+        - "**/trentina/gateway/client_egress.py"
+    pattern-either:
+      - pattern: asyncio.open_connection(...)
+      - pattern: socket.create_connection(...)
+      - pattern: socket.socket(...)
+      - pattern: $LOOP.create_connection(...)
+
   - id: trentina-log-exception-text
     message: >-
       This log call prints an exception's message, which may carry a URL,
