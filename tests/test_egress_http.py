@@ -409,6 +409,31 @@ class TestUpstreamErrors:
         assert resp.json()["block_reason"] == "upstream_failed"
         assert "executed" not in resp.json()  # nothing left the gateway
 
+    def test_a_non_global_address_is_a_defense_block_not_executed(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        """The address rail firing (SSRF, DNS rebind to a private address) is a
+        403 defense block with nothing executed — not a 502 'executed by the
+        destination' for a request that never left. The caller sees only the
+        ``denied_guard`` bucket; the audit keeps the specific guard reason."""
+        from trentina.errors import EgressRefusedError as GuardRefusedError
+
+        _stub_judge(monkeypatch)
+        h = _harness(monkeypatch)
+
+        async def _refuse(_profile: Any, _host: str) -> Any:
+            raise GuardRefusedError("non_global_address")
+
+        monkeypatch.setattr(egress_http, "checked_target", _refuse)
+        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        assert resp.status_code == 403
+        body = resp.json()
+        assert body["block_reason"] == "denied_guard"
+        assert "executed" not in body  # the address rail fired before a byte left
+        [row] = _rows(audit_db)
+        assert row["outcome"] == "blocked_defense"
+        assert row["error_message"] == "non_global_address"  # the audit keeps the specific reason
+
 
 class TestBodyFidelity:
     def test_verbatim_duplicate_key_is_judged_as_sent(

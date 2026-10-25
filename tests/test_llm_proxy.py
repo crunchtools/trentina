@@ -363,12 +363,33 @@ class TestProxyLlm:
         resp = client.post("/llm/nonesuch/v1/x", headers={"authorization": "Bearer agent1-tok"})
         assert resp.status_code == 404
 
-    def test_x_api_key_is_not_a_token_off_anthropic(self) -> None:
-        """Only the Anthropic shape reads the gateway token from x-api-key."""
+    def test_x_api_key_carries_token_on_any_shape(self) -> None:
+        """x-api-key carries the gateway token on EVERY provider shape, not only
+        Anthropic. Reading it without the provider's api shape is what lets
+        authentication precede the provider lookup, so an unknown-provider 404 is
+        never an unauthenticated name oracle. The header is stripped before
+        forwarding either way, so accepting it costs nothing."""
         providers, profiles = self._fixtures()
         client = self._client(providers, profiles)
-        resp = client.post("/llm/gemini/v1/x", headers={"x-api-key": "agent1-tok"})
-        assert resp.status_code == 401
+        # A valid gateway token in x-api-key authenticates off the Anthropic shape
+        # (gets past auth; the downstream policy decides the rest).
+        ok = client.post("/llm/gemini/v1/x", headers={"x-api-key": "agent1-tok"})
+        assert ok.status_code != 401
+        # A value that is not a token still does not authenticate.
+        bad = client.post("/llm/gemini/v1/x", headers={"x-api-key": "not-a-token"})
+        assert bad.status_code == 401
+
+    def test_unknown_provider_without_token_is_401_not_a_name_oracle(self) -> None:
+        """An UNAUTHENTICATED probe is 401 whether or not the provider exists, so
+        404-vs-401 cannot enumerate configured provider names. (An authenticated
+        caller still gets a 404 for an unknown provider — see
+        ``test_unknown_provider_404``.)"""
+        providers, profiles = self._fixtures()
+        client = self._client(providers, profiles)
+        unknown = client.post("/llm/nonesuch/v1/x")  # no token, provider absent
+        exists = client.post("/llm/gemini/v1/x")  # no token, provider present
+        assert unknown.status_code == 401
+        assert exists.status_code == 401
 
     def test_missing_token_401(self) -> None:
         providers, profiles = self._fixtures()
@@ -518,6 +539,27 @@ class TestProxyAdmission:
         assert row["outcome"] == "ok"
         assert row["error_message"] is None
         assert (row["destination"], row["destination_kind"]) == ("claude-sonnet-4-5", "model")
+
+    def test_upstream_read_error_is_audited_not_an_unlogged_500(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        """A non-timeout, non-connect httpx error on send is a 502 WITH an audit
+        row — never an uncaught 500 that writes no gateway_calls row."""
+        import httpx
+
+        class _RaisingClient(_FakeClient):
+            async def send(self, request: Any, stream: bool = False) -> Any:
+                self.sent = True
+                raise httpx.ReadError("boom")
+
+        fake = _RaisingClient()
+        client = self._client(fake, monkeypatch)
+        resp = self._post(client, _PLAIN)
+        assert resp.status_code == 502
+        [row] = _rows(audit_db)
+        assert row["profile"] == "agent1"
+        assert row["backend"] == "llm:anthropic"
+        assert row["outcome"] == "backend_error"
 
     def test_headers_are_allowlisted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = _FakeClient()
