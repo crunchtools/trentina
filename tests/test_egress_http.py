@@ -197,7 +197,7 @@ def _harness(
         return await egress_http.serve(request, profiles)
 
     app = Starlette(
-        routes=[Route("/egress/{upstream}/{path:path}", endpoint, methods=egress_http.METHODS)]
+        routes=[Route("/proxy/http/{upstream}/{path:path}", endpoint, methods=egress_http.METHODS)]
     )
     return _Harness(client=TestClient(app), net=net, profiles=profiles)
 
@@ -211,7 +211,7 @@ class TestWhoIsCalling:
     ) -> None:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch)
-        resp = h.client.get("/egress/gh/repos/x", headers={"authorization": "Bearer nope"})
+        resp = h.client.get("/proxy/http/gh/repos/x", headers={"authorization": "Bearer nope"})
         assert resp.status_code == 401
         assert h.net.sent == []
         assert _rows(audit_db) == []
@@ -221,7 +221,7 @@ class TestWhoIsCalling:
     ) -> None:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch)
-        resp = h.client.get("/egress/nope/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/nope/repos/x", headers=_AUTH)
         assert resp.status_code == 403
         assert resp.json()["block_reason"] == "unknown_upstream"
         assert h.net.sent == []
@@ -231,7 +231,7 @@ class TestRails:
     def test_method_not_listed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch)
-        resp = h.client.request("DELETE", "/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.request("DELETE", "/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 403
         assert resp.json()["block_reason"] == "method_not_listed"
         assert h.net.sent == []
@@ -239,7 +239,7 @@ class TestRails:
     def test_path_not_listed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch)
-        resp = h.client.get("/egress/gh/users/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/users/x", headers=_AUTH)
         assert resp.status_code == 403
         assert resp.json()["block_reason"] == "path_not_listed"
         assert h.net.sent == []
@@ -248,7 +248,9 @@ class TestRails:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch)
         resp = h.client.post(
-            "/egress/gh/repos/x", headers={**_AUTH, "content-encoding": "gzip"}, content=b"\x1f\x8b"
+            "/proxy/http/gh/repos/x",
+            headers={**_AUTH, "content-encoding": "gzip"},
+            content=b"\x1f\x8b",
         )
         assert resp.status_code == 415
         assert resp.json()["block_reason"] == "malformed_body"
@@ -261,7 +263,7 @@ class TestRequestJudging:
     ) -> None:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch)
-        resp = h.client.get("/egress/gh/repos/x", headers={**_AUTH, "x-secret": "no"})
+        resp = h.client.get("/proxy/http/gh/repos/x", headers={**_AUTH, "x-secret": "no"})
         assert resp.status_code == 200
         assert resp.content == b'{"ok":1}'
         [sent] = h.net.sent
@@ -271,7 +273,7 @@ class TestRequestJudging:
         assert "x-secret" not in sent.headers
         [row] = _rows(audit_db)
         assert (row["backend"], row["outcome"], row["destination_kind"]) == (
-            "egress:gh",
+            "http:gh",
             "ok",
             "egress",
         )
@@ -291,7 +293,7 @@ class TestRequestJudging:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch)
         h.net.resp = _FakeResp(status=status)
-        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == status
         [row] = _rows(audit_db)
         assert row["outcome"] == outcome
@@ -302,7 +304,7 @@ class TestRequestJudging:
         _stub_judge(monkeypatch)  # injection clean; the AWS key is the signal
         h = _harness(monkeypatch)
         resp = h.client.post(
-            "/egress/gh/repos/x",
+            "/proxy/http/gh/repos/x",
             headers=_AUTH,
             content=json.dumps({"k": f"ship {_AWS_KEY}"}).encode(),
         )
@@ -319,7 +321,7 @@ class TestRequestJudging:
         flagged = SimpleNamespace(flagged=True, flagged_by=Layer.L2, risk_level="high")
         _stub_judge(monkeypatch, req=flagged)
         h = _harness(monkeypatch)
-        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 403
         assert resp.json()["block_reason"] == "flagged"
         assert h.net.sent == []
@@ -332,7 +334,7 @@ class TestRequestJudging:
         flagged = SimpleNamespace(flagged=True, flagged_by=Layer.L2, risk_level="high")
         _stub_judge(monkeypatch, req=flagged)
         h = _harness(monkeypatch, enforcement="flag")
-        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 200
         assert resp.headers["x-trentina-warning"] == "high"
         assert len(h.net.sent) == 1
@@ -347,7 +349,7 @@ class TestResponseJudging:
         flagged = SimpleNamespace(flagged=True, flagged_by=Layer.L2, risk_level="high")
         _stub_judge(monkeypatch, resp=flagged)
         h = _harness(monkeypatch)
-        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 403
         marker = resp.json()
         assert marker["block_reason"] == "response_flagged"
@@ -362,7 +364,7 @@ class TestResponseJudging:
         flagged = SimpleNamespace(flagged=True, flagged_by=Layer.L2, risk_level="high")
         _stub_judge(monkeypatch, resp=flagged)
         h = _harness(monkeypatch, enforcement="flag")
-        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 200
         assert resp.headers["x-trentina-warning"] == "high"
 
@@ -370,7 +372,7 @@ class TestResponseJudging:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch)
         h.net.resp = _FakeResp(ct="application/octet-stream", body=b"\x00\x01\x02")
-        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 403
         assert resp.json()["block_reason"] == "response_binary"
 
@@ -384,7 +386,7 @@ class TestResponseJudging:
         # Make only the RESPONSE judge report a blocking gap.
         monkeypatch.setattr(egress_http, "gaps_of", lambda _v: Gaps(oversize=True))
         h = _harness(monkeypatch)
-        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 403
         marker = resp.json()
         assert marker["block_reason"] == "response_unjudged"
@@ -397,7 +399,7 @@ class TestResponseJudging:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch, enforcement="flag")
         h.net.resp = _FakeResp(ct="application/octet-stream", body=b"\x00\x01\x02")
-        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 200
         assert resp.content == b"\x00\x01\x02"
         assert resp.headers["x-trentina-warning"] == "binary_unread"
@@ -410,7 +412,7 @@ class TestUpstreamErrors:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch)
         h.net.raises = GuardRefusedError("redirect")
-        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 502
         marker = resp.json()
         assert marker["block_reason"] == "redirect"
@@ -422,7 +424,7 @@ class TestUpstreamErrors:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch)
         h.net.raises = httpx.ConnectError("refused")
-        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 502
         assert resp.json()["block_reason"] == "upstream_failed"
         assert "executed" not in resp.json()  # nothing left the gateway
@@ -440,7 +442,7 @@ class TestUpstreamErrors:
         h = _harness(monkeypatch)
         # pinned_send surfaces the guard's refusal (it owns checked_target now).
         h.net.raises = GuardRefusedError("non_global_address")
-        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 403
         body = resp.json()
         assert body["block_reason"] == "denied_guard"
@@ -457,7 +459,7 @@ class TestUpstreamErrors:
         h = _harness(monkeypatch)
         egress_http._SLOTS._open["agent1"] = egress_http.MAX_OPERATIONS_PER_PROFILE
         try:
-            resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+            resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         finally:
             egress_http._SLOTS._open.clear()
         assert resp.status_code == 503
@@ -474,7 +476,7 @@ class TestBodyFidelity:
         _stub_judge(monkeypatch)  # injection clean; the key is the signal
         h = _harness(monkeypatch)  # default upstream is verbatim
         body = b'{"k":"' + _AWS_KEY.encode() + b'","k":"ok"}'
-        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, content=body)
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, content=body)
         assert resp.status_code == 403
         assert resp.json()["block_reason"] == "credential_in_request"
         assert h.net.sent == []
@@ -486,7 +488,7 @@ class TestBodyFidelity:
         destination parses, so block refuses it (nothing sent)."""
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch)
-        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, content=b"\xff\xfe\x00k\x00v")
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, content=b"\xff\xfe\x00k\x00v")
         assert resp.status_code == 403
         assert resp.json()["block_reason"] == "binary_body"
         assert h.net.sent == []
@@ -496,7 +498,7 @@ class TestBodyFidelity:
     ) -> None:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch, enforcement="flag")
-        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, content=b"\xff\xfe\x00k")
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, content=b"\xff\xfe\x00k")
         assert resp.status_code == 200
         assert resp.headers["x-trentina-warning"] == "binary_unread"
         assert len(h.net.sent) == 1
@@ -512,7 +514,7 @@ class TestBodyFidelity:
         flagged = SimpleNamespace(flagged=True, flagged_by=Layer.L2, risk_level="high")
         _stub_judge(monkeypatch, req=flagged)
         h = _harness(monkeypatch, enforcement="flag")
-        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, content=b"\xff\xfe\x00k")
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, content=b"\xff\xfe\x00k")
         assert resp.status_code == 200
         # Both signals ride the warning: the readable-request finding (proving it
         # was judged despite the binary body) AND binary_unread (flag mode never
@@ -523,7 +525,7 @@ class TestBodyFidelity:
     def test_json_upstream_refuses_a_duplicate_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch, upstream=_upstream(body="json"))
-        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, content=b'{"k":"a","k":"b"}')
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, content=b'{"k":"a","k":"b"}')
         assert resp.status_code == 400
         assert resp.json()["block_reason"] == "not_json"
         assert h.net.sent == []
@@ -534,7 +536,7 @@ class TestPathRail:
         """Blocker: a decoded '?' must not let the matched path and sent path diverge."""
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch)
-        resp = h.client.get("/egress/gh/repos/x%3Ffoo", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x%3Ffoo", headers=_AUTH)
         assert resp.status_code == 400
         assert resp.json()["block_reason"] == "bad_path"
         assert h.net.sent == []
@@ -548,7 +550,7 @@ class TestResponseTokenScrub:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch, enforcement="flag")
         h.net.resp = _FakeResp(body=b'{"you_sent":"Bearer forge-token"}')
-        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 200
         assert b"forge-token" not in resp.content
         assert b"[REDACTED]" in resp.content
@@ -566,7 +568,7 @@ class TestResponseTokenScrub:
         uesc = "".join(rf"\u{ord(c):04x}" for c in token)  # fully JSON \uXXXX
         pct = "".join(f"%{ord(c):02x}" for c in token)  # fully percent-encoded
         h.net.resp = _FakeResp(body=f'{{"a":"{uesc}","b":"{pct}"}}'.encode())
-        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 200
         assert uesc.encode() not in resp.content
         assert pct.encode() not in resp.content
@@ -581,7 +583,7 @@ class TestResponseTokenScrub:
         h = _harness(monkeypatch, enforcement="flag")
         pct = "".join(f"%{ord(c):02x}" for c in "forge-token")  # fully encoded
         h.net.resp = _FakeResp(body=b"{}", headers={"x-echo": f"Bearer {pct}"})
-        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 200
         assert "forge-token" not in resp.headers.get("x-echo", "")
         assert pct not in resp.headers.get("x-echo", "")
@@ -598,7 +600,7 @@ class TestFlagAudit:
         flagged = SimpleNamespace(flagged=True, flagged_by=Layer.L2, risk_level="high")
         _stub_judge(monkeypatch, req=flagged)
         h = _harness(monkeypatch, enforcement="flag")
-        resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 200
         [row] = _rows(audit_db)
         assert (row["outcome"], row["error_message"]) == ("ok", "flagged")
@@ -645,7 +647,7 @@ class TestJsonUpstream:
     ) -> None:
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch, upstream=_upstream(body="json"))
-        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, content=b"not json")
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, content=b"not json")
         assert resp.status_code == 400
         assert resp.json()["block_reason"] == "not_json"
         assert h.net.sent == []
@@ -674,11 +676,11 @@ class TestGatekeeper:
         _stub_judge(monkeypatch)
         refusal = GateRefusal(
             "bulk_private_data",
-            CallFacts("egress:gh", "POST", "d", "egress", True, None),
+            CallFacts("http:gh", "POST", "d", "egress", True, None),
         )
         self._patch_judge(monkeypatch, lambda: refusal)
         h = _harness(monkeypatch, guarded=True)
-        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, json={"a": 1})
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, json={"a": 1})
         assert resp.status_code == 403
         body = resp.json()
         assert body["block_reason"] == "gatekeeper"  # the caller sees only the bucket
@@ -695,7 +697,7 @@ class TestGatekeeper:
         _stub_judge(monkeypatch)
         calls = self._patch_judge(monkeypatch, lambda: None)
         h = _harness(monkeypatch, guarded=True)
-        resp = h.client.get("/egress/gh/repos/x?page=2", headers=_AUTH)
+        resp = h.client.get("/proxy/http/gh/repos/x?page=2", headers=_AUTH)
         assert resp.status_code == 200
         assert len(h.net.sent) == 1  # allowed, forwarded
         assert len(calls) == 1  # a bodyless GET still has its intent judged
@@ -708,7 +710,7 @@ class TestGatekeeper:
         h = _harness(monkeypatch, guarded=True)
         # %41%42 is percent-encoded "AB": forwarded verbatim, but the judge must
         # see it decoded (judge_input reveals before the external judge reads it).
-        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, content=b"%41%42")
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, content=b"%41%42")
         assert resp.status_code == 200
         assert "AB" in calls[0]["document"]  # revealed for the judge
         [sent] = h.net.sent
@@ -718,7 +720,7 @@ class TestGatekeeper:
         _stub_judge(monkeypatch)
         calls = self._patch_judge(monkeypatch, lambda: None)
         h = _harness(monkeypatch, guarded=True)
-        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, json={"a": 1})
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, json={"a": 1})
         assert resp.status_code == 200
         assert len(h.net.sent) == 1
         assert len(calls) == 1  # the hook ran and let it through
@@ -727,7 +729,7 @@ class TestGatekeeper:
         _stub_judge(monkeypatch)
         calls = self._patch_judge(monkeypatch, lambda: None)
         h = _harness(monkeypatch, enforcement="flag", guarded=True)
-        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, json={"a": 1})
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, json={"a": 1})
         assert resp.status_code == 200
         assert calls == []  # flag is the researcher grant; no intent judgment
         assert len(h.net.sent) == 1
@@ -738,7 +740,7 @@ class TestGatekeeper:
         _stub_judge(monkeypatch)
         calls = self._patch_judge(monkeypatch, lambda: None)
         h = _harness(monkeypatch, guarded=False)
-        resp = h.client.post("/egress/gh/repos/x", headers=_AUTH, json={"a": 1})
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, json={"a": 1})
         assert resp.status_code == 200
         assert calls == []
         assert len(h.net.sent) == 1

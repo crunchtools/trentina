@@ -1,12 +1,12 @@
 """The ONE perimeter-call lifecycle (#511 convergence).
 
-Every terminating reverse proxy — ``/egress``, ``/git``, ``/llm`` and the Matrix
+Every terminating reverse proxy — ``/proxy/http``, ``/proxy/git``, ``/proxy/llm`` and the Matrix
 proxy — does the same bookkeeping around one request: take one of the profile's
 in-flight slots, run, settle an outcome and reason, then ONCE at the end give
 the slot back, close any held upstream, and write exactly one ``gateway_calls``
 row. This was copied into each route (two near-identical ``_Operation`` dataclasses
 in ``egress_http`` and ``git_transport``; ``llm_proxy`` and the CONNECT tunnel
-keep ad-hoc variants still). Those two are collapsed here first; ``/llm``, the
+keep ad-hoc variants still). Those two are collapsed here first; ``/proxy/llm``, the
 Matrix proxy and the tunnel's counters move onto this in later convergence
 slices.
 
@@ -54,7 +54,7 @@ NO_OPERATION = "-"
 #: route. Each route makes its own ``Slots`` with its own cap — never one global
 #: number, so one route cannot starve another (the channel #291 closed for
 #: resolver slots). The tunnel keeps its own, higher, cap; a fan-out route like
-#: ``/llm`` will set its own when it moves onto this.
+#: ``/proxy/llm`` will set its own when it moves onto this.
 MAX_OPERATIONS_PER_PROFILE = 8
 
 
@@ -63,8 +63,8 @@ def upstream_outcome(status: int) -> Outcome:
 
     A 5xx is the backend failing (``BACKEND_ERROR``); a 4xx is the backend
     rejecting the agent's request (``TOOL_ERROR``); anything else is ``OK``. The
-    ONE mapping for ``/egress`` and ``/llm``, so a 5xx reads the same on every
-    row. (``/git`` keeps its own: its outcome turns on the git protocol content,
+    ONE mapping for ``/proxy/http`` and ``/proxy/llm``, so a 5xx reads the same on every
+    row. (``/proxy/git`` keeps its own: its outcome turns on the git protocol content,
     not the HTTP status, so a shared status map would be the wrong rule there.)
     """
     if status >= 500:
@@ -112,10 +112,10 @@ class Operation:
     """
 
     profile: Profile
-    #: The audit ``backend`` column, e.g. ``egress:<name>`` or ``git:<remote>``.
+    #: The audit ``backend`` column, e.g. ``http:<name>`` or ``git:<remote>``.
     #: Set by the route; a default marks a refusal before the route knew it.
     backend: str
-    #: The audit ``tool`` column (the method for ``/egress``, fetch/push for git).
+    #: The audit ``tool`` column (the method for ``/proxy/http``, fetch/push for git).
     tool: str = NO_OPERATION
     destination: str | None = None
     destination_kind: DestinationKind | None = None

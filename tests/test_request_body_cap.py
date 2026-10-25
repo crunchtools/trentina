@@ -140,7 +140,7 @@ class TestMiddleware:
 
     @pytest.mark.parametrize(
         ("path", "method"),
-        [("/llm/v1/messages", "POST"), ("/gateway/a/mcp", "GET"), ("/matrix/x", "PUT")],
+        [("/proxy/llm/v1/messages", "POST"), ("/gateway/a/mcp", "GET"), ("/matrix/x", "PUT")],
     )
     async def test_other_routes_and_bodyless_methods_pass_untouched(
         self, path: str, method: str
@@ -222,7 +222,7 @@ class TestMiddleware:
         assert applies("/mcp")
         assert not applies("/gateway//mcp")
         assert not applies("/gateway/alice/other")
-        assert not applies("/llm/v1/messages")
+        assert not applies("/proxy/llm/v1/messages")
         assert not applies("/register")
 
 

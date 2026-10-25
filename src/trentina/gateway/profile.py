@@ -1846,7 +1846,7 @@ class EgressCredential(BaseModel):
 
     The agent never holds the credential: the gateway reads it from the
     profile's ``token_env`` and sends it in this header, exactly as the git
-    transport injects a Basic header and ``/llm`` injects the provider key. A
+    transport injects a Basic header and ``/proxy/llm`` injects the provider key. A
     caller's own ``Authorization`` for the destination is dropped, never
     forwarded.
     """

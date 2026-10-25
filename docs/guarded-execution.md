@@ -191,7 +191,7 @@ already crossed the layers and the [credential detector](egress-http.md) by the
 time the gatekeeper is asked, so the judge adds the intent — the upstream,
 whether the profile has reached it before, a flagged session — not a second
 read. It engages **only under `block`**; `flag` is the researcher grant, where
-nothing is refused. There is no MCP session on `/egress`, so the judge is asked
+nothing is refused. There is no MCP session on `/proxy/http`, so the judge is asked
 with the session "unknown" (its prompt weighs that), and `refuse_when_flagged`
 has **no effect on the egress leg** — honouring it would refuse every request,
 which is the same as not granting egress; it still governs any guarded tools in

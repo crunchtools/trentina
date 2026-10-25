@@ -192,7 +192,7 @@ LOG_LEVELS = {
 }
 
 # The credential-shape patterns live in ``credential_shapes``, the one table
-# both this scrubber and the egress/``/llm`` request paths (#511) read. Each is
+# both this scrubber and the egress/``/proxy/llm`` request paths (#511) read. Each is
 # a literal prefix followed by character classes that exclude the delimiter
 # after them, so each is linear in the input (``tests/test_log_scrub.py`` holds
 # them to it). The repeats are unbounded on purpose: a cap would print the tail

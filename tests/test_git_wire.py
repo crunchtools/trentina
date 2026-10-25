@@ -28,7 +28,7 @@ HIDDEN = (b"refs/pull/",)
 
 def _refusal(path: str, raw: bytes | None = None) -> tuple[int, str]:
     with pytest.raises(GitRefusedError) as caught:
-        parse_repo_path(path, raw if raw is not None else f"/git/forge/{path}".encode())
+        parse_repo_path(path, raw if raw is not None else f"/proxy/git/forge/{path}".encode())
     assert caught.value.outcome is Outcome.DENIED_GUARD
     return caught.value.status, caught.value.reason
 
@@ -36,7 +36,7 @@ def _refusal(path: str, raw: bytes | None = None) -> tuple[int, str]:
 class TestRepoPath:
     @pytest.mark.parametrize("endpoint", ["info/refs", "git-upload-pack", "git-receive-pack"])
     def test_the_three_endpoints_parse(self, endpoint: str) -> None:
-        parsed = parse_repo_path(f"acme/widgets.git/{endpoint}", b"/git/forge/x")
+        parsed = parse_repo_path(f"acme/widgets.git/{endpoint}", b"/proxy/git/forge/x")
         assert (parsed.owner, parsed.repo, parsed.endpoint) == ("acme", "widgets", endpoint)
         assert parsed.slug == "acme/widgets"
 
@@ -102,10 +102,10 @@ class TestRepoPath:
     @pytest.mark.parametrize(
         "raw",
         [
-            b"/git/forge/acme%2Fwidgets/x/info/refs",
-            b"/git/forge/acme/%2e%2e/info/refs",
-            b"/git/forge/acme/widgets/info%2Frefs",
-            b"/git/forge/acme/widgets%00/info/refs",
+            b"/proxy/git/forge/acme%2Fwidgets/x/info/refs",
+            b"/proxy/git/forge/acme/%2e%2e/info/refs",
+            b"/proxy/git/forge/acme/widgets/info%2Frefs",
+            b"/proxy/git/forge/acme/widgets%00/info/refs",
         ],
     )
     def test_an_encoded_path_is_refused_whatever_it_decodes_to(self, raw: bytes) -> None:

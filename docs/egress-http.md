@@ -1,9 +1,9 @@
 # Terminating HTTP(S) egress
 
 The egress route (#511) carries an agent's own outbound HTTP(S) request on the
-main port, alongside [`/llm`](llm-proxying.md) and [`/git`](git-transport.md):
+main port, alongside [`/proxy/llm`](llm-proxying.md) and [`/proxy/git`](git-transport.md):
 
-    /egress/{upstream}/{path}
+    /proxy/http/{upstream}/{path}
 
 It is a **terminating** inspecting proxy, not a wiretap. The agent speaks HTTPS
 to Trentina; Trentina reads the plaintext only inside the trust boundary, where
@@ -24,7 +24,7 @@ request, so it can refuse that.
 
 ## What it decides, in order
 
-1. **Who is calling** — the gateway bearer token, as on `/llm` and `/git`
+1. **Who is calling** — the gateway bearer token, as on `/proxy/llm` and `/proxy/git`
    (`resolve_profile_by_token`), never the peer address. An unknown token is
    `401` with no audit row. The caller's own `Authorization`/`Cookie` are
    dropped and never forwarded.
@@ -53,7 +53,7 @@ request, so it can refuse that.
    address, a DNS rebind, an unresolvable host), the request is a `403`
    `denied_guard` with **nothing executed** — the request never left; the
    specific guard reason is kept in the audit row, not shown to the caller.
-   This matches how `/git` and the CONNECT tunnel label the same refusal.
+   This matches how `/proxy/git` and the CONNECT tunnel label the same refusal.
 6. **What comes back** — the response is untrusted content the agent will
    ingest, judged as ingress like the `fetch` tool (`egress_response`).
 

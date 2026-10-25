@@ -91,15 +91,15 @@ still holds if a pattern here is wrong.
 ### Pointing git at it
 
 The route is on the main port. The caller is identified by its gateway
-bearer token, as on [`/llm`](llm-proxying.md), so the profile needs a static
+bearer token, as on [`/proxy/llm`](llm-proxying.md), so the profile needs a static
 token (`auth.bearer_token_env`) and git has to send it:
 
 ```bash
 export GIT_CONFIG_COUNT=1
-export GIT_CONFIG_KEY_0=http.http://trentina:8019/git/.extraHeader
+export GIT_CONFIG_KEY_0=http.http://trentina:8019/proxy/git/.extraHeader
 export GIT_CONFIG_VALUE_0="Authorization: Bearer $TRENTINA_PROFILE_AGENT1_TOKEN"
 
-git config --global url.http://trentina:8019/git/github/.insteadOf https://github.com/
+git config --global url.http://trentina:8019/proxy/git/github/.insteadOf https://github.com/
 git clone https://github.com/acme/widgets
 ```
 

@@ -860,7 +860,7 @@ class ActiveConfig:
     and only when some profile asked for it. OAuth is in this set
     because the provider and its authorization-server routes bind at startup —
     turning ``oauth.enabled`` on for a profile in the YAML and reloading cannot
-    conjure a provider that boot did not build. The ``/git`` route (#453) is
+    conjure a provider that boot did not build. The ``/proxy/git`` route (#453) is
     registered only when the file had a ``git_remotes`` section at startup;
     once it is, the remotes and every profile's ``git`` block are read per
     request and so do reload.

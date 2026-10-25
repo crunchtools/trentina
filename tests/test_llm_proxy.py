@@ -355,7 +355,7 @@ class TestProxyLlm:
         app = Starlette(
             routes=[
                 Route(
-                    "/llm/{provider}/{path:path}",
+                    "/proxy/llm/{provider}/{path:path}",
                     endpoint,
                     methods=["GET", "POST"],
                 )
@@ -375,7 +375,9 @@ class TestProxyLlm:
     def test_unknown_provider_404(self) -> None:
         providers, profiles = self._fixtures()
         client = self._client(providers, profiles)
-        resp = client.post("/llm/nonesuch/v1/x", headers={"authorization": "Bearer agent1-tok"})
+        resp = client.post(
+            "/proxy/llm/nonesuch/v1/x", headers={"authorization": "Bearer agent1-tok"}
+        )
         assert resp.status_code == 404
 
     def test_x_api_key_carries_token_on_any_shape(self) -> None:
@@ -388,10 +390,10 @@ class TestProxyLlm:
         client = self._client(providers, profiles)
         # A valid gateway token in x-api-key authenticates off the Anthropic shape:
         # it gets past auth and is then refused by endpoint policy (403), NOT 401.
-        ok = client.post("/llm/gemini/v1/x", headers={"x-api-key": "agent1-tok"})
+        ok = client.post("/proxy/llm/gemini/v1/x", headers={"x-api-key": "agent1-tok"})
         assert ok.status_code == 403
         # A value that is not a token still does not authenticate.
-        bad = client.post("/llm/gemini/v1/x", headers={"x-api-key": "not-a-token"})
+        bad = client.post("/proxy/llm/gemini/v1/x", headers={"x-api-key": "not-a-token"})
         assert bad.status_code == 401
 
     def test_unknown_provider_without_token_is_401_not_a_name_oracle(self) -> None:
@@ -401,27 +403,27 @@ class TestProxyLlm:
         ``test_unknown_provider_404``.)"""
         providers, profiles = self._fixtures()
         client = self._client(providers, profiles)
-        unknown = client.post("/llm/nonesuch/v1/x")  # no token, provider absent
-        exists = client.post("/llm/gemini/v1/x")  # no token, provider present
+        unknown = client.post("/proxy/llm/nonesuch/v1/x")  # no token, provider absent
+        exists = client.post("/proxy/llm/gemini/v1/x")  # no token, provider present
         assert unknown.status_code == 401
         assert exists.status_code == 401
 
     def test_missing_token_401(self) -> None:
         providers, profiles = self._fixtures()
         client = self._client(providers, profiles)
-        resp = client.post("/llm/gemini/v1/x")
+        resp = client.post("/proxy/llm/gemini/v1/x")
         assert resp.status_code == 401
 
     def test_unknown_token_401(self) -> None:
         providers, profiles = self._fixtures()
         client = self._client(providers, profiles)
-        resp = client.post("/llm/gemini/v1/x", headers={"authorization": "Bearer nope"})
+        resp = client.post("/proxy/llm/gemini/v1/x", headers={"authorization": "Bearer nope"})
         assert resp.status_code == 401
 
     def test_profile_without_key_502(self) -> None:
         providers, profiles = self._fixtures()
         client = self._client(providers, profiles)
-        resp = client.post("/llm/gemini/v1/x", headers={"authorization": "Bearer agent2-tok"})
+        resp = client.post("/proxy/llm/gemini/v1/x", headers={"authorization": "Bearer agent2-tok"})
         assert resp.status_code == 502
 
     def test_success_injects_profile_key_and_strips_auth(
@@ -433,7 +435,7 @@ class TestProxyLlm:
         client = self._client(providers, profiles)
 
         resp = client.post(
-            "/llm/gemini/v1beta/models/gemini-2.5-flash:generateContent",
+            "/proxy/llm/gemini/v1beta/models/gemini-2.5-flash:generateContent",
             headers={"authorization": "Bearer agent1-tok"},
             content=b'{"contents": []}',
         )
@@ -448,7 +450,7 @@ class TestProxyLlm:
         client = self._client(providers, profiles)
 
         client.post(
-            "/llm/gemini/v1beta/models/gemini-2.5-flash:generateContent",
+            "/proxy/llm/gemini/v1beta/models/gemini-2.5-flash:generateContent",
             headers={"authorization": "Bearer agent3-tok"},
             content=b"{}",
         )
@@ -458,7 +460,7 @@ class TestProxyLlm:
         providers, profiles = self._fixtures()
         client = self._client(providers, profiles)
         resp = client.post(
-            "/llm/gemini/v1/..%2fadmin",
+            "/proxy/llm/gemini/v1/..%2fadmin",
             headers={"authorization": "Bearer agent1-tok"},
         )
         assert resp.status_code == 400
@@ -495,13 +497,13 @@ class TestProxyAdmission:
             return await _proxy_llm(request, providers, profiles)
 
         app = Starlette(
-            routes=[Route("/llm/{provider}/{path:path}", endpoint, methods=["GET", "POST"])]
+            routes=[Route("/proxy/llm/{provider}/{path:path}", endpoint, methods=["GET", "POST"])]
         )
         return TestClient(app)
 
     def _post(self, client: TestClient, body: dict[str, Any], **headers: str) -> Any:
         return client.post(
-            "/llm/anthropic/v1/messages",
+            "/proxy/llm/anthropic/v1/messages",
             headers={"authorization": "Bearer agent1-tok", **headers},
             content=json.dumps(body).encode(),
         )
@@ -664,7 +666,7 @@ class TestProxyAdmission:
 
     def _post_x_api_key(self, client: TestClient, **headers: str) -> Any:
         return client.post(
-            "/llm/anthropic/v1/messages",
+            "/proxy/llm/anthropic/v1/messages",
             headers=headers,
             content=json.dumps(_PLAIN).encode(),
         )
@@ -704,7 +706,7 @@ class TestProxyAdmission:
             b'"tools":[{"type":"web_search_20250305","name":"web_search"}],"tools":[]}'
         )
         resp = client.post(
-            "/llm/anthropic/v1/messages",
+            "/proxy/llm/anthropic/v1/messages",
             headers={"authorization": "Bearer agent1-tok"},
             content=raw,
         )
@@ -716,7 +718,7 @@ class TestProxyAdmission:
         fake = _FakeClient()
         client = self._client(fake, monkeypatch)
         resp = client.post(
-            "/llm/anthropic/v1/files",
+            "/proxy/llm/anthropic/v1/files",
             headers={"authorization": "Bearer agent1-tok"},
             content=b"{}",
         )
@@ -751,9 +753,11 @@ class TestProxyAdmission:
         async def endpoint(request: Request) -> Response:
             return await _proxy_llm(request, providers, profiles)
 
-        app = Starlette(routes=[Route("/llm/{provider}/{path:path}", endpoint, methods=["POST"])])
+        app = Starlette(
+            routes=[Route("/proxy/llm/{provider}/{path:path}", endpoint, methods=["POST"])]
+        )
         resp = TestClient(app).post(
-            "/llm/anthropic/v1/messages", headers={"authorization": "Bearer agent2-tok"}
+            "/proxy/llm/anthropic/v1/messages", headers={"authorization": "Bearer agent2-tok"}
         )
         assert resp.status_code == 502
         [row] = _rows(audit_db)
@@ -862,13 +866,13 @@ class TestProxyRequestDLP:
             return await _proxy_llm(request, providers, profiles)
 
         app = Starlette(
-            routes=[Route("/llm/{provider}/{path:path}", endpoint, methods=["GET", "POST"])]
+            routes=[Route("/proxy/llm/{provider}/{path:path}", endpoint, methods=["GET", "POST"])]
         )
         return TestClient(app)
 
     def _post(self, client: TestClient, body: dict[str, Any]) -> Any:
         return client.post(
-            "/llm/gemini/v1beta/models/gemini-2.5-flash:generateContent",
+            "/proxy/llm/gemini/v1beta/models/gemini-2.5-flash:generateContent",
             headers={"authorization": "Bearer agent1-tok"},
             content=json.dumps(body).encode(),
         )

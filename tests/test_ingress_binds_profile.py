@@ -1,7 +1,7 @@
 """Every gateway ingress judges on the calling profile's own provider (RT #1505).
 
 Only internal tool dispatch used to bind the profile, so proxied tool
-responses, Matrix syncs, alerts and /llm/ completions ran L3 unbound, on the
+responses, Matrix syncs, alerts and /proxy/llm/ completions ran L3 unbound, on the
 global provider and its key, whatever the profile's ``defense.provider`` said.
 Each test sends one payload through one ingress and records which provider L3
 was actually called with.

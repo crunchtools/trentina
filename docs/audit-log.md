@@ -133,7 +133,7 @@ the legacy boolean can never disagree with the taxonomy.
 
 ### LLM proxy calls
 
-Every `/llm/{provider}/...` request from an authenticated profile writes a
+Every `/proxy/llm/{provider}/...` request from an authenticated profile writes a
 row too (#297): `backend` is `llm:<provider>`, `tool` is the admitted
 endpoint (`messages`, `chat/completions`, `generateContent`, ...) or `-` when
 the request was refused before one was matched, and `destination` is the

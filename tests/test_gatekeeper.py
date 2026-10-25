@@ -311,7 +311,7 @@ async def _judge_egress(profile: Profile, *, document: str = _EGRESS_DOC) -> Any
     return await gatekeeper.judge_egress(
         profile,
         cfg,
-        backend="egress:gh",
+        backend="http:gh",
         method="POST",
         destination=_EGRESS_DEST,
         document=document,
