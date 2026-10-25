@@ -4,9 +4,11 @@ Every terminating reverse proxy — ``/egress``, ``/git``, ``/llm`` and the Matr
 proxy — does the same bookkeeping around one request: take one of the profile's
 in-flight slots, run, settle an outcome and reason, then ONCE at the end give
 the slot back, close any held upstream, and write exactly one ``gateway_calls``
-row. This was copied into each route (two near-identical ``_Operation``
-dataclasses in ``egress_http`` and ``git_transport``, plus ad-hoc variants in
-``llm_proxy`` and the tunnel). Here it is once.
+row. This was copied into each route (two near-identical ``_Operation`` dataclasses
+in ``egress_http`` and ``git_transport``; ``llm_proxy`` and the CONNECT tunnel
+keep ad-hoc variants still). Those two are collapsed here first; ``/llm``, the
+Matrix proxy and the tunnel's counters move onto this in later convergence
+slices.
 
 What a route does BETWEEN ``take_slot`` and ``finish`` — how it admits, judges,
 injects a credential and delivers — stays in the route. That is where the
@@ -36,10 +38,11 @@ logger = logging.getLogger(__name__)
 #: route knew what it was (an unknown upstream, a token that matched no profile).
 NO_OPERATION = "-"
 
-#: In-flight requests one profile may hold on a single terminating route. A
-#: route that must allow a subagent fan-out (``/llm``) sets its own higher cap;
-#: the tunnel has its own. Never one global number — a shared limit would let
-#: one route starve another (the channel #291 closed for resolver slots).
+#: Default in-flight requests one profile may hold on a single terminating
+#: route. Each route makes its own ``Slots`` with its own cap — never one global
+#: number, so one route cannot starve another (the channel #291 closed for
+#: resolver slots). The tunnel keeps its own, higher, cap; a fan-out route like
+#: ``/llm`` will set its own when it moves onto this.
 MAX_OPERATIONS_PER_PROFILE = 8
 
 
@@ -99,7 +102,7 @@ class Operation:
     holds_slot: bool = False
     finished: bool = False
     upstream: AsyncExitStack = field(default_factory=AsyncExitStack)
-    _slots: Slots | None = None
+    _slots: Slots | None = field(default=None, init=False, repr=False)
 
     def settle(self, outcome: Outcome, reason: str | None = None) -> None:
         self.outcome, self.reason = outcome, reason

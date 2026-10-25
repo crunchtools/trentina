@@ -434,6 +434,21 @@ class TestUpstreamErrors:
         assert row["outcome"] == "blocked_defense"
         assert row["error_message"] == "non_global_address"  # the audit keeps the specific reason
 
+    def test_a_full_profile_is_busy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When the profile holds all its egress slots, a new request is 503
+        busy with nothing sent — the route raises its own busy refusal when
+        relay's Slots.take returns False."""
+        _stub_judge(monkeypatch)
+        h = _harness(monkeypatch)
+        egress_http._SLOTS._open["agent1"] = egress_http.MAX_OPERATIONS_PER_PROFILE
+        try:
+            resp = h.client.get("/egress/gh/repos/x", headers=_AUTH)
+        finally:
+            egress_http._SLOTS._open.clear()
+        assert resp.status_code == 503
+        assert resp.json()["block_reason"] == "busy"
+        assert not h.net.sent  # nothing left the gateway
+
 
 class TestBodyFidelity:
     def test_verbatim_duplicate_key_is_judged_as_sent(

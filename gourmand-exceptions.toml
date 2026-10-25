@@ -809,12 +809,6 @@ justification = "_audit writes the gateway_calls row for a tunnel that has alrea
 classification = "by_design"
 
 [[exceptions]]
-check = "redundant_error_handling"
-path = "src/trentina/gateway/git_transport.py"
-justification = "_Operation.finish writes the gateway_calls row for a git request that has already been carried or refused. A database error there is logged by kind and dropped, exactly as router._audit, llm_proxy._audit and client_egress._audit do: raising from the response's finally would turn a lost audit row into a broken clone for a client that did nothing wrong, after the bytes have gone. The loss is visible in the journal."
-classification = "by_design"
-
-[[exceptions]]
 check = "copy_paste_detection"
 path = "src/trentina/gateway/git_transport.py"
 justification = "_admit is reported as identical to _parse_openrouter_search in quarantine/agent.py. One admits a git request by its remote, path, service, protocol and repository lists; the other reads search results out of an OpenRouter response. They share a run of look-up-then-raise-if-missing statements, nothing else. Structural collision, not duplication."
@@ -920,13 +914,6 @@ classification = "by_design"
 
 
 # --- #511 terminating egress route ---
-
-[[exceptions]]
-check = "redundant_error_handling"
-path = "src/trentina/gateway/egress_http.py"
-pattern = "finish"
-justification = "Writing the gateway_calls row is bookkeeping (like git_transport.finish and database.defend): a failed SQLite write must not fail the request it records, so it is logged by kind (#262) and swallowed. Re-raising would turn a lost audit row into a lost response."
-classification = "by_design"
 
 [[exceptions]]
 check = "redundant_error_handling"
