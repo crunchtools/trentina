@@ -21,7 +21,8 @@ Each row is rendered the way the gateway renders a tool reply
 
     uv run python scripts/l2_train_data.py --out build/l2-train
 
-Writes ``train.jsonl`` and ``val.jsonl`` (``{"text", "label", "shape"}``) and
+Writes ``train.jsonl`` and ``val.jsonl`` (``{"text", "label", "shape", "distill"}``,
+and ``at`` on an attack) and
 ``sources.json`` naming every pinned file it read.
 """
 
@@ -56,7 +57,9 @@ MAX_CHARS = 4000
 """Longer source texts are dropped: past this a text alone outgrows the
 512-token window the model trains on."""
 
-PER_ENVELOPE = 150
+PER_ENVELOPE = 120
+"""Benign rows per envelope; each has an attack twin, and half as many attacks
+arrive alone, so an envelope holds 300 rows as it did before the twins."""
 REPLAY = 1000
 ANCHOR_REPEATS = 8
 """Times each ``benign_ops`` tuning case appears in training: about 85 cases,
@@ -187,30 +190,55 @@ def attack_at(attack: str, rendered: str) -> int:
     return -1
 
 
+def plant(rng: random.Random, text: str, attack: str) -> str:
+    """``text`` with ``attack`` inserted at one of its line or sentence breaks."""
+    breaks = [0, len(text)] + [m.end() for m in re.finditer(r"[.!?]\s+|\n", text)]
+    at = rng.choice(breaks)
+    return f"{text[:at].rstrip()}\n{attack}\n{text[at:].lstrip()}".strip()
+
+
+async def _enveloped(
+    shape: str, make: Any, seed: int, text: str, attack: str | None
+) -> dict[str, Any]:
+    """One row: ``text`` (an attack, or planted with ``attack``) in ``shape``'s envelope."""
+    rendered = await as_read(make(random.Random(seed), text), shape)
+    if attack is None:
+        return {"text": rendered, "label": 0, "shape": shape, "distill": False}
+    at = attack_at(attack, rendered)
+    return {"text": rendered, "label": 1, "shape": shape, "at": at, "distill": False}
+
+
 async def build(
     benign: list[str], attack: list[str], per_envelope: int, replay: int
 ) -> list[dict[str, Any]]:
-    """Rows: every envelope around benign and attack text, plus plain replay."""
+    """Rows: every envelope around benign text and its attack twin, attacks
+    alone, and plain replay.
+
+    The twin is the benign row's envelope, built from the same seed, with an
+    attack planted in its text: the pair differs only in what is said, so
+    neither the wrapper nor where a text came from can carry the label
+    (counterfactual pairs, Kaushik et al. 2020). Enveloped rows train on
+    their labels; plain rows (``distill``) also train toward the base model's
+    own score, so it keeps what it already reads well.
+    """
     rng = random.Random(SEED)
     security = [t for t in benign if SECURITY_WORDS.search(t)]
     rows: list[dict[str, Any]] = []
     for shape, make in MAKERS.items():
         for i in range(per_envelope):
             pool = security if security and i % 2 == 0 else benign
-            text = rng.choice(pool)
-            rows.append({"text": await as_read(make(rng, text), shape), "label": 0, "shape": shape})
-        for _ in range(per_envelope):
+            text, planted, seed = rng.choice(pool), rng.choice(attack), rng.getrandbits(64)
+            rows.append(await _enveloped(shape, make, seed, text, None))
+            rows.append(await _enveloped(shape, make, seed, plant(rng, text, planted), planted))
+        for _ in range(per_envelope // 2):
             text = rng.choice(attack)
-            rendered = await as_read(make(rng, text), shape)
-            rows.append(
-                {"text": rendered, "label": 1, "shape": shape, "at": attack_at(text, rendered)}
-            )
+            rows.append(await _enveloped(shape, make, rng.getrandbits(64), text, text))
     rows += [
-        {"text": t, "label": 0, "shape": "plain"}
+        {"text": t, "label": 0, "shape": "plain", "distill": True}
         for t in rng.sample(benign, min(replay, len(benign)))
     ]
     rows += [
-        {"text": t, "label": 1, "shape": "plain", "at": 0}
+        {"text": t, "label": 1, "shape": "plain", "at": 0, "distill": True}
         for t in rng.sample(attack, min(replay, len(attack)))
     ]
     rng.shuffle(rows)
@@ -222,7 +250,8 @@ async def anchors() -> list[dict[str, Any]]:
     rows = []
     for case in BENIGN:
         if in_tuning(case.id):
-            row = {"text": await as_read(case.payload, case.category), "label": 0, "shape": "ops"}
+            text = await as_read(case.payload, case.category)
+            row = {"text": text, "label": 0, "shape": "ops", "distill": True}
             rows += [row] * ANCHOR_REPEATS
     return rows
 

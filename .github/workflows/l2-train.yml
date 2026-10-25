@@ -16,9 +16,9 @@ on:
   workflow_dispatch:
     inputs:
       per_envelope:
-        description: "Benign rows, and attack rows, per envelope"
+        description: "Benign rows per envelope (each with an attack twin)"
         type: number
-        default: 150
+        default: 120
       replay:
         description: "Plain benign rows, and plain attack rows"
         type: number
@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 340
     env:
-      PER_ENVELOPE: ${{ inputs.per_envelope || 150 }}
+      PER_ENVELOPE: ${{ inputs.per_envelope || 120 }}
       REPLAY: ${{ inputs.replay || 1000 }}
       EPOCHS: ${{ inputs.epochs || '1' }}
     steps:
@@ -83,27 +83,42 @@ jobs:
             'pip install --no-cache-dir "accelerate<2" &&
              python scripts/train_l2_model.py --data build/l2-train --out build/l2-model --epochs "$EPOCHS"'
 
+      # The full fine-tune (blend 1) and each blend back toward Horizon that
+      # train_l2_model.py wrote (blend-<a>), exported side by side.
       - name: Export
         run: |
-          docker run --rm -v "$PWD:/w" -w /w l2-builder python scripts/export_l2_model.py \
-            --src build/l2-model --repo "crunchtools/trentina:l2-train" --revision "$GITHUB_SHA" \
-            --out build/l2-export --id prompt-injection-guard-small-ct --license Apache-2.0 \
-            --threshold 0.7 --window-tokens 512 --malicious-labels INJECTION
           sudo chown -R "$(id -u)" build
-          cp build/l2-model/training.json build/l2-export/
-          cp scripts/l2-model-NOTICE build/l2-export/NOTICE
+          for src in build/l2-model build/l2-model/blend-*; do
+            name=$(basename "$src"); [[ "$name" == l2-model ]] && name=blend-1
+            docker run --rm -v "$PWD:/w" -w /w l2-builder python scripts/export_l2_model.py \
+              --src "$src" --repo "crunchtools/trentina:l2-train" --revision "$GITHUB_SHA" \
+              --out "build/l2-export/$name" --id prompt-injection-guard-small-ct --license Apache-2.0 \
+              --threshold 0.7 --window-tokens 512 --malicious-labels INJECTION
+            sudo chown -R "$(id -u)" build
+            cp "$src/training.json" "build/l2-export/$name/"
+            cp scripts/l2-model-NOTICE "build/l2-export/$name/NOTICE"
+          done
 
+      # Every blend meets every gate; the run passes when one blend passes all.
+      # Which one ships is chosen after the screen on production shapes, from
+      # those that pass: no shape may flag more often than under Horizon.
       - name: Gates
-        env:
-          CLASSIFIER_MODEL_PATH: build/l2-export
         run: |
           set -o pipefail
-          status=0
-          for gate in l2_benign l2_envelopes l2_obfuscation; do
-            echo "## $gate" | tee -a "$GITHUB_STEP_SUMMARY"
-            uv run --no-sync python "benchmarks/$gate.py" | tee -a "$GITHUB_STEP_SUMMARY" || status=1
+          passed=0
+          for model in build/l2-export/blend-*; do
+            status=0
+            echo "# $(basename "$model")" | tee -a "$GITHUB_STEP_SUMMARY"
+            for gate in l2_benign l2_envelopes l2_obfuscation; do
+              echo "## $gate" | tee -a "$GITHUB_STEP_SUMMARY"
+              CLASSIFIER_MODEL_PATH="$model" uv run --no-sync python "benchmarks/$gate.py" \
+                | tee -a "$GITHUB_STEP_SUMMARY" || status=1
+            done
+            echo "$(basename "$model"): $([[ $status == 0 ]] && echo pass || echo FAIL)" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            [[ $status == 0 ]] && passed=1
           done
-          exit $status
+          [[ $passed == 1 ]]
 
       # For screening on production shapes, which never leave the host they
       # came from, before a Containerfile change pins a model. A derivative of

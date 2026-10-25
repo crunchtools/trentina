@@ -1183,6 +1183,35 @@ training row resembles: the model drifted off Horizon's priors there. Run 3
 anchors on `benign_ops`'s tuning split (eight times each, held-out never) and
 halves the learning rate to 1e-5.
 
+**Run 3 (40216045547) fixes what it was shown, nothing else.** The
+`benign_ops` gate passes (2 of 143 held-out; known gaps 12 flags against
+run 2's 49, though templated siblings of these cases were trained on). The
+envelope gate fails, 27 of 480 benign against 377 of 480 attacks caught. On
+real replies at 0.95 it is still worse than Horizon: sweep pages 4/8 (1/8),
+sweep records 22/276 (7), Miniflux 7/65 (1). It catches 93 of 128 hijacking
+attacks (Horizon 80) and 9 of 12 strong-agent ones (9).
+
+**Run 4 follows the literature, not another knob.** A research pass
+(2026-10-25) and Horizon's own trainer (`horizon-ai-labs/agent-io-guards`,
+`train/train.py`) point the same way:
+
+- distillation: plain and anchor rows train toward Horizon's own score as
+  well as their label, weight 0.5 (Horizon's `--distill`; Hinton et al.
+  2015), so what it reads well is kept, not re-learned;
+- counterfactual pairs: every enveloped benign row has a twin with an
+  attack planted in the same text and the same envelope, built from the
+  same seed (Kaushik et al. 2020), so only what is said can carry the label;
+- weight blends (WiSE-FT, Wortsman et al. 2022): the fine-tune is also
+  written mixed back toward Horizon at 0.4, 0.6 and 0.8, and every mix meets
+  the gates;
+- Horizon's optimiser settings (betas 0.9/0.98, eps 1e-6, cosine, clip 1.0),
+  the lowest-loss checkpoint of four kept, and the token embeddings frozen.
+
+A blend that passes the gates is chosen on production shapes by
+constraint, not by best number: no shape may flag more often than under
+Horizon. The envelope gate is built from the same makers as the training
+set, so it is a necessary check, not the deciding one.
+
 ## Guarded execution (#456)
 
 The gatekeeper on the 36 calls of `corpora/gatekeeper.py`: six scenarios,

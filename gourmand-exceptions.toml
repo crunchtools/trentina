@@ -419,6 +419,12 @@ justification = "The word DEPRECATED appears inside a sample STRING that exercis
 classification = "by_design"
 
 [[exceptions]]
+check = "dead_code_markers"
+path = "scripts/train_l2_model.py"
+justification = "The word is inside transformers' TrainingArguments parameter remove_unused_columns, set to False so the distillation target reaches the loss (#17). It names a library option, not removed code."
+classification = "gourmand_bug"
+
+[[exceptions]]
 check = "copy_paste_detection"
 path = "src/trentina/l1/hidden.py"
 justification = "style_has_same_color is reported as identical to _safe_endpoint in tools/reconnect.py, and normalize_color as identical to _validate_file in tools/read.py. These pairs share a guard-then-return statement shape and nothing else -- one detects hidden text, the others validate an endpoint and a file path. Structural collision, not duplication. (Was l1/html.py until #172 split conversion out to preprocess/html.py.)"
