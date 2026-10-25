@@ -5,7 +5,7 @@ grammar in ``select.py``, the decryption posture in ``matrix.py``.
 
 This file was the contract of a second driver framework
 that #163 called "guard machinery" and #167 undid. The ruling it rested on —
-that a pre-processor may never open a gap between what is scanned and what is
+that a transform may never open a gap between what is scanned and what is
 delivered — does not survive contact with L1, which has always built a scan
 copy that deliberately differs from the delivered bytes. Scan-differs-from-
 deliver is the heart of L1, not a violation of it.
@@ -121,9 +121,9 @@ class Selection:
 
 @runtime_checkable
 class DocumentProcessor(Protocol):
-    """A pre-processor whose input is a parsed document, not a string.
+    """A transform whose input is a parsed document, not a string.
 
-    The other shape of pre-processor. ``PreProcessor`` in ``base.py`` takes
+    The other shape of transform. ``Transform`` in ``base.py`` takes
     ``str`` and returns ``str``; this one takes parsed JSON and returns the
     strings worth reading out of it, because ``m.room.encrypted`` is a
     structure rather than a substring and there is nothing useful to do with

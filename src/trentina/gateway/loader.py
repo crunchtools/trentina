@@ -20,7 +20,7 @@ from pydantic import SecretStr, ValidationError
 
 from .. import logsafe
 from ..channels import Channel
-from .drivers import build_preprocessors
+from .drivers import build_transforms
 from .errors import ProfileConfigError
 from .filter import filter_tools
 from .profile import (
@@ -173,7 +173,7 @@ def _check_guarded_tools(name: str, profile: Profile) -> None:
 def _check_drivers(name: str, profile: Profile) -> None:
     """Resolve every driver the profile names, and discard the result.
 
-    Building them here is the whole point: ``build_preprocessors`` is the only
+    Building them here is the whole point: ``build_transforms`` is the only
     place the channel and kind locks live, and a lock that fires on the first
     request that happens to use the driver is not a lock, it is a latent
     outage. This makes them fail at startup, which is where
@@ -182,9 +182,9 @@ def _check_drivers(name: str, profile: Profile) -> None:
     Every channel is checked, because each names processors and each can name
     the wrong one.
     """
-    build_preprocessors(profile.preprocess, channel=Channel.TOOL, profile_name=name)
+    build_transforms(profile.preprocess, channel=Channel.TOOL, profile_name=name)
     for backend_name, backend in profile.backends.items():
-        build_preprocessors(
+        build_transforms(
             backend.preprocess_tool_descriptions,
             channel=Channel.TOOL_DESCRIPTION,
             profile_name=f"{name}:{backend_name}",
@@ -199,18 +199,18 @@ def _check_drivers(name: str, profile: Profile) -> None:
                 # A tool override that narrows processors below the profile's
                 # required floor. Refused here, not on the first call.
                 raise ProfileConfigError(f"Profile {label!r}: {exc}") from exc
-            build_preprocessors(cfg, channel=Channel.TOOL, profile_name=label)
+            build_transforms(cfg, channel=Channel.TOOL, profile_name=label)
     if profile.matrix_ingress is not None:
         # Built without its key provider: that needs the network and belongs
         # on the request path. What is checked here is the name, the channel
         # and the kind, none of which depend on the keys.
-        build_preprocessors(
+        build_transforms(
             profile.matrix_ingress.preprocess,
             channel=Channel.MATRIX,
             profile_name=name,
         )
     for bridge in profile.channel_bridges().values():
-        build_preprocessors(
+        build_transforms(
             bridge.preprocess,
             channel=Channel.MATRIX_BRIDGE,
             profile_name=name,

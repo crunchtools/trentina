@@ -567,13 +567,13 @@ class TestPreprocessToolDescriptions:
 
     @pytest.mark.asyncio
     async def test_summarize_descriptions_parses_well_formed_entries(self) -> None:
-        from trentina.preprocess.summarize import summarize_descriptions
+        from trentina.transforms.summarize import summarize_descriptions
 
         reply = ProviderResult(
             text=json.dumps({"compressed": [{"id": "a", "text": "A."}, {"id": "b"}, "junk"]})
         )
         with patch(
-            "trentina.preprocess.summarize.limited_generate",
+            "trentina.transforms.summarize.limited_generate",
             AsyncMock(return_value=reply),
         ) as generate:
             out = await summarize_descriptions(

@@ -694,7 +694,7 @@ every profile, L3 called 313 of 401 L2 detections clean (#411).
 (`corpora/benign_ops.py`) is 296 invented cases of the shapes that were
 refused, generated from a fixed seed; no line of it comes from a production
 host. Each case is read exactly as the gateway reads a tool response:
-through the default pre-processors (`transform_response`), the text block
+through the default transforms (`transform_response`), the text block
 and then every string of the structured content, unpacked. One case in four
 is the tuning split; the held-out split is what is reported, gated and
 recorded. A model passes when, at its own threshold, it flags at most 2% of
@@ -712,7 +712,7 @@ threshold it was taken at: a gateway started with another
 ### What it found (2026-10-10, Horizon small at 0.7, the 1.2.0 image's model)
 
 **The gateway's own minifier was most of it.** The `structured`
-pre-processor collapses a long array and leaves a marker in its place. The
+transform collapses a long array and leaves a marker in its place. The
 marker began with a bracketed tag, `[structured] 9 more element(s) with
 this shape omitted`. A bracketed note in the middle of data is what an
 injected system note looks like, and L2 read it as one: one metrics
@@ -770,7 +770,7 @@ scored on every build and recorded beside the result, outside the budget
 The first is close to what #409 measured, which was the bare ID with no object around it (0.79). The second is
 length: such a response is about 15,000 tokens of key fingerprints,
 container IDs and audit records, read in over thirty windows of which the
-worst decides, and no pre-processor reduces a log inside a JSON string. The same
+worst decides, and no transform reduces a log inside a JSON string. The same
 lines as plain text go through petit and score 0.04 to 0.18. (That was a
 hundred lines of one kind; #419, below, reduces the string and measures the
 mixed journals.)
@@ -836,7 +836,7 @@ instructions for its human reader), on the judge that gap is about.
 
 2026-10-11, Horizon small at 0.7, the same model. `structured` now hands a
 string value of twenty lines and 1 KB or more to petit, and keeps the result
-when petit names a log format for it (`preprocess/structured.py`). The
+when petit names a log format for it (`transforms/structured.py`). The
 question was whether that closes known gap 19. It does not.
 
 | at 0.7, both splits | before (529cfbb) | after |
@@ -866,7 +866,7 @@ tag is left off inside a document. A plain-text block still gets it.
 **Not reduced on petit's fallback, measured.** With no log format named,
 petit groups any repeated line. On this repository's own files as string
 values that is the blank lines and the closing brackets:
-`preprocess/structured.py` (as of 529cfbb) loses 98 of 529 lines for 0.3% of its bytes,
+`transforms/structured.py` (as of 529cfbb) loses 98 of 529 lines for 0.3% of its bytes,
 `CHANGELOG.md` 691 of 3,488 for 2%. A JSON string is where a tool puts the
 file or page an agent asked for, so such a value is left as it arrived.
 
@@ -903,7 +903,7 @@ and threshold (0.7) are unchanged. What that took, same model:
 | with the `structured` listing reworded and numbers left as numbers | 3 | 146 |
 | the shapes gated now (`journal_query` and `syslog_search` out, `event_id_reply` in) | **0** | 136 |
 
-**`system_df` was the pre-processor's wording.** As it arrived the reply
+**`system_df` was the transform's wording.** As it arrived the reply
 scores 0.01. `structured` lists the volumes after the first as one marker,
 and the marker put its note first: `8 more element(s) with this shape;
 /Links /VolumeName: 1 cab8…, 0 bb8a…`. Wordings were scored on the tuning
@@ -998,7 +998,7 @@ attacks a judge cleared, how many L2 flagged, and of the benign documents,
 how many only L2 refused. `benchmarks/l2_lone_flag.py` takes that count from
 results other benchmarks already wrote. It scores L2 on the same texts and
 calls no judge, so it costs nothing and can be run again on a stored result.
-L2 reads each text unpacked, as `defend()` hands it over; the pre-processors
+L2 reads each text unpacked, as `defend()` hands it over; the transforms
 are not run first, which for these plain-text cases changes nothing.
 
 ```bash

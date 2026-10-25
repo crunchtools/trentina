@@ -7,8 +7,8 @@ import asyncio
 import pytest
 
 from trentina.channels import Channel, Kind
-from trentina.preprocess.base import Cost, PreProcessContext
-from trentina.preprocess.html import HtmlProcessor, to_markdown
+from trentina.transforms.base import Cost, TransformContext
+from trentina.transforms.html import HtmlProcessor, to_markdown
 
 
 class TestConversion:
@@ -193,7 +193,7 @@ class TestConversion:
 
 
 async def _run(payload: str):
-    return await HtmlProcessor().run(payload, PreProcessContext())
+    return await HtmlProcessor().run(payload, TransformContext())
 
 
 class TestClassElimination:

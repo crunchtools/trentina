@@ -16,7 +16,7 @@ Agents don't need verbose descriptions to use tools correctly. Tool names, param
 
 ### Compression Pipeline
 
-Compression is the `summarize` pre-processor on the tool-description channel
+Compression is the `summarize` transform on the tool-description channel
 (#176): the same act as summarizing a tool response, on a different ingress.
 
 1. **Lazy trigger**: on the first `tools/list`, Trentina walks the backends

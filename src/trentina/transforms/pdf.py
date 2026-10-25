@@ -30,7 +30,7 @@ import binascii
 from ..channels import Channel, Kind
 from ..unpack.child import run_unpacking
 from ..unpack.pdf import PdfReading, read_pdf
-from .base import Cost, PreProcessContext, PreProcessResult
+from .base import Cost, TransformContext, TransformResult
 
 PDF_BASE64_PREFIX = "JVBERi0"
 """How canonical base64 of ``%PDF-`` always starts."""
@@ -88,16 +88,16 @@ class PdfProcessor:
     channels = frozenset({Channel.TOOL})
     kind = Kind.TEXT
 
-    async def run(self, payload: str, _ctx: PreProcessContext) -> PreProcessResult:
+    async def run(self, payload: str, _ctx: TransformContext) -> TransformResult:
         # Driven by the payload's shape, like html.py: it reads no job context.
         token = payload.strip()
         if not token.startswith(PDF_BASE64_PREFIX):
-            return PreProcessResult.declined(self.name, self.cost, payload, reason="not_pdf")
+            return TransformResult.declined(self.name, self.cost, payload, reason="not_pdf")
         reduced = await run_unpacking(reduce_base64, token)
         if reduced is None:
-            return PreProcessResult.declined(self.name, self.cost, payload, reason="unreadable_pdf")
+            return TransformResult.declined(self.name, self.cost, payload, reason="unreadable_pdf")
         markdown, hidden = reduced
-        return PreProcessResult(
+        return TransformResult(
             name=self.name,
             cost=self.cost,
             content=markdown,

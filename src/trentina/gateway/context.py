@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from ..modes import ModePolicy
-    from ..preprocess.policy import PreProcessPolicy
+    from ..transforms.policy import PreProcessPolicy
     from .profile import Profile
 
 _current_profile: ContextVar[Profile | None] = ContextVar("current_profile", default=None)
@@ -72,7 +72,7 @@ def profile_context(
     previous value on exit is what keeps a profile from leaking into a
     reused async task, including when the tool call raises. ``policy`` is
     the call's mode policy (#193): what a web tool's refusal offers.
-    ``preprocess`` is the tool's pre-processor policy (#183), which the tool
+    ``preprocess`` is the tool's transform policy (#183), which the tool
     resolves against its own default. ``parts`` is the offer to deliver
     the response in parts (#446); without it the tool answers whole.
     """
@@ -95,7 +95,7 @@ def get_current_policy() -> ModePolicy | None:
 
 
 def get_current_preprocess_policy() -> PreProcessPolicy | None:
-    """The pre-processor policy the gateway bound for this call, or None standalone."""
+    """The transform policy the gateway bound for this call, or None standalone."""
     return _current_preprocess.get()
 
 

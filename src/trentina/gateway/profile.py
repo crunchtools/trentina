@@ -149,8 +149,8 @@ def _normalize_enforcement(block: Any, *, key: str) -> Any:
 # empty processor list rather than to a name.
 _EXTRACTOR_RENAMES: dict[str, str] = {"generic": "select"}
 
-# Registered pre-processors. Adding one means adding it here, to
-# gateway.drivers.PREPROCESSORS, and nowhere else. Declared twice on purpose:
+# Registered transforms. Adding one means adding it here, to
+# gateway.drivers.TRANSFORMS, and nowhere else. Declared twice on purpose:
 # this Literal is what makes pydantic reject an unknown name at YAML load,
 # and the parity test in tests/test_gateway_drivers.py keeps the two in step.
 ProcessorName = Literal[
@@ -172,7 +172,7 @@ ProcessorName = Literal[
 # that fit it: html then petit for a page, structured for JSON, email then
 # petit for anything else. Until 0.38.0 the default was all four in a row,
 # and `html` ran first on everything, which is how a mail header lost its
-# addresses (preprocess/detect.py). summarize is never a default: METERED,
+# addresses (transforms/detect.py). summarize is never a default: METERED,
 # and its output draws unconditional L3.
 _DEFAULT_PROCESSORS: list[ProcessorName] = ["detect"]
 
@@ -347,8 +347,8 @@ class ProcessorChainConfig(BaseModel):
 class PreProcessConfig(ProcessorChainConfig):
     """Transformation applied to tool responses before the perimeter scan.
 
-    Transformation is not defense (see ``preprocess/base.py``, invariant 1: a
-    pre-processor may subtract, never absolve). What this configures is how
+    Transformation is not defense (see ``transforms/base.py``, invariant 1: a
+    transform may subtract, never absolve). What this configures is how
     hard to try to improve a payload; what comes out is exactly as untrusted
     as what went in, and the caller scans the transformed artifact before
     delivering it.
@@ -692,7 +692,7 @@ class Backend(BaseModel):
     preprocess_tool_descriptions: ProcessorChainConfig = Field(
         default_factory=ProcessorChainConfig,
         description=(
-            "Pre-processors for this backend's tool and parameter descriptions "
+            "Transforms for this backend's tool and parameter descriptions "
             "(#176). {processors: [summarize]} compresses them with the "
             "operator's model in the background, cached; until a description "
             "is compressed it is served as the backend wrote it. Replaced "

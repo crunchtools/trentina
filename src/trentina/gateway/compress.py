@@ -1,9 +1,9 @@
 """Tool and parameter description compression for the gateway.
 
-The call site of the ``summarize`` pre-processor on
+The call site of the ``summarize`` transform on
 ``Channel.TOOL_DESCRIPTION`` (#176): which descriptions to compress, the
 cache, retries, and applying the results. The model call itself is
-``preprocess.summarize.summarize_descriptions``. A backend opts in with
+``transforms.summarize.summarize_descriptions``. A backend opts in with
 ``preprocess_tool_descriptions: {processors: [summarize]}``.
 
 Triggered lazily on the first tools/list request; results are cached in
@@ -36,10 +36,10 @@ from typing import TYPE_CHECKING, Any, Literal
 from ..database import get_all_compressions, save_compression
 from ..errors import QuarantineAgentError
 from ..logsafe import exc_kind
-from ..preprocess.summarize import summarize_descriptions
 from ..quarantine.agent import resolve_profile_llm
 from ..quarantine.limiter import THROTTLE_STATUS
 from ..quarantine.providers import get_provider
+from ..transforms.summarize import summarize_descriptions
 from .service import service_profile
 
 if TYPE_CHECKING:

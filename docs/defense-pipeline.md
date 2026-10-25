@@ -4,7 +4,7 @@
 
 Trentina runs untrusted content through three independent detection layers before it reaches your agent. Each layer catches attack categories the others miss. No single layer — structural, classifier, or LLM — covers everything.
 
-## Two roles: guards decide, pre-processors transform
+## Two roles: guards decide, transforms transform
 
 Everything Trentina wires into a request path is one of exactly two things. If you are adding a driver and it seems to be neither, it is one of them and you have not decided which yet.
 
@@ -16,23 +16,23 @@ Everything Trentina wires into a request path is one of exactly two things. If y
 | **Response guards** | the backend's *result*, after the call returns and before anything is transformed, scanned or relayed | `gateway/guards.py`, [response-guards.md](response-guards.md) |
 | **The scanner** | content, through L1 → L2 → L3 below | `defense.py` — and `defend()` is the only entry point, enforced by `tests/test_defense_contract.py` |
 
-A guard also decides **what it reads**. On a payload too large or too opaque to scan whole, a pre-processor selects which strings reach L1/L2/L3 and accounts for every byte it declined — coverage, a skip histogram by reason, and `low_scan_coverage` below the floor. The guard still makes the call; it is simply told what it is looking at.
+A guard also decides **what it reads**. On a payload too large or too opaque to scan whole, a transform selects which strings reach L1/L2/L3 and accounts for every byte it declined — coverage, a skip histogram by reason, and `low_scan_coverage` below the floor. The guard still makes the call; it is simply told what it is looking at.
 
-**Pre-processors are everything before that.** They run outside the perimeter, their output is exactly as untrusted as their input, and everything they emit crosses the guards on the way in. They may decode, decrypt, reduce, summarize, normalize, split and reshape — the contract is transformation generally, not reduction (`preprocess/base.py`, and [token-routing.md](token-routing.md) for how they are configured).
+**Transforms are everything before that.** They run outside the perimeter, their output is exactly as untrusted as their input, and everything they emit crosses the guards on the way in. They may decode, decrypt, reduce, summarize, normalize, split and reshape — the contract is transformation generally, not reduction (`transforms/base.py`, and [token-routing.md](token-routing.md) for how they are configured).
 
 ### Where the line falls
 
 One rule separates the roles:
 
-> **A pre-processor never bypasses `defend()`.** Everything it emits is scanned. Whether the *delivered* bytes are its output or the untouched original is the **call site's** decision, not the driver's.
+> **A transform never bypasses `defend()`.** Everything it emits is scanned. Whether the *delivered* bytes are its output or the untouched original is the **call site's** decision, not the driver's.
 
 `gateway/transform.py` delivers what the chain returned. `gateway/matrix_proxy.py` forwards the upstream ciphertext, because the agent must decrypt for itself. Where the two differ, the call site accounts for the gap.
 
 **Scanning something different from what you deliver is not an anomaly — it is how L1 works.** L1 normalizes a copy for L2 to read and delivers the original untouched, because a Nagios alert or a CVE ticket discusses attacks in the words attacks use.
 
-An earlier revision of this page ruled the opposite: that a pre-processor may never open a gap between what is scanned and what is delivered, and used that to make scan-view extraction a separate kind of driver. The rule does not survive contact with L1, and the split it justified is gone. It is recorded here because the reasoning was plausible and someone will reconstruct it.
+An earlier revision of this page ruled the opposite: that a transform may never open a gap between what is scanned and what is delivered, and used that to make scan-view extraction a separate kind of driver. The rule does not survive contact with L1, and the split it justified is gone. It is recorded here because the reasoning was plausible and someone will reconstruct it.
 
-Failure modes point in whichever direction hides nothing. A text pre-processor that fails delivers and scans **its own input** — the original, or the floor's output when a required processor ran first; one that selects what to read fails to reading **everything**. Same rule, different thing owned. The exception is a processor the call depends on: a profile's `required` floor, and anything an internal tool was asked to run, fail **closed** — the call is refused rather than handed something other than what was asked for.
+Failure modes point in whichever direction hides nothing. A text transform that fails delivers and scans **its own input** — the original, or the floor's output when a required processor ran first; one that selects what to read fails to reading **everything**. Same rule, different thing owned. The exception is a processor the call depends on: a profile's `required` floor, and anything an internal tool was asked to run, fail **closed** — the call is refused rather than handed something other than what was asked for.
 
 Output is minified by default and the agent asks for exact text per call with `trentina_preprocess: false`, above the profile's floor ([Profiles](profiles.md#minifying-and-exact-text)). The choice changes what is delivered, and so what is judged, never whether it is judged. When conversion deleted markup that hid text from a human reader, L1 counts the hiding on the original and L3 is told, on proxied responses as on the internal tools (#229).
 
@@ -58,7 +58,7 @@ The PUSH paths set it themselves, because no agent is waiting to be asked: `aler
 
 Which responses are judged (#296): every 200, deny by default. `/members`, `/state`, profiles and the room directory return names and topics any user chose, and were forwarded unread while the proxy judged seven listed paths. The exempt set (`matrix_proxy._ACKS`, matched on the whole path and the method) is the acknowledgement of a write, the auth flows, one-time and backup keys, plus every DELETE and OPTIONS. A media download forwards unjudged only as `image/*`, `audio/*`, `video/*` or `application/octet-stream`: no layer reads pixels, and an E2EE attachment is ciphertext. Any other non-JSON body is judged as text; flagged or unjudged, it carries `X-Trentina-Warning: <risk level>`, and unjudged under `withhold` it is refused. Under `withhold` the proxy judges with `stop_on_partial`, so an over-cap response costs a token count rather than a full L2 scan.
 
-**The perimeter never edits what it judged.** L1 detects; it does not censor. What the agent receives is byte-identical to what entered the perimeter, or (under `block`) nothing plus the warning. The one rewrite is Matrix's, and it applies only to what was NOT judged: an unjudged response keeps the tokens its client needs and loses its language, because refusing a `/sync` would break the client's loop. Transformation belongs to the pre-processors, which run OUTSIDE the perimeter, BEFORE it, and whose output is what enters it and what is delivered. What the layers read is built from that output by the unpack stage (see the [Layer contract](#layer-contract)), and never replaces it: since 0.38.0 they minify by default (HTML to Markdown, JSON compacted, repeats collapsed to a count), and the response says what ran. That is a token saving, not a security edit, and the agent declines it with `trentina_preprocess: false`, subject to any processor the profile `required`.
+**The perimeter never edits what it judged.** L1 detects; it does not censor. What the agent receives is byte-identical to what entered the perimeter, or (under `block`) nothing plus the warning. The one rewrite is Matrix's, and it applies only to what was NOT judged: an unjudged response keeps the tokens its client needs and loses its language, because refusing a `/sync` would break the client's loop. Transformation belongs to the transforms, which run OUTSIDE the perimeter, BEFORE it, and whose output is what enters it and what is delivered. What the layers read is built from that output by the unpack stage (see the [Layer contract](#layer-contract)), and never replaces it: since 0.38.0 they minify by default (HTML to Markdown, JSON compacted, repeats collapsed to a count), and the response says what ran. That is a token saving, not a security edit, and the agent declines it with `trentina_preprocess: false`, subject to any processor the profile `required`.
 
 ## Why This Matters
 
@@ -70,7 +70,7 @@ The defense-in-depth approach means an attack has to evade three fundamentally d
 
 Four rules shape every layer, and any change to a layer is held to them. `tests/test_layer_contract.py` enforces the first two.
 
-1. **Nothing is delivered that the layers did not read, in its original or decoded form, or, for binary, by its identified type. Each layer reads it exactly once.** Pre-processing is two stages, always in this order (#365). Stage 1, the pre-processors, shrinks what will be delivered. Stage 2, the unpack stage (`unpack/scan.py`), builds what the layers read from that delivery: strict base64 and hex that decode to text are decoded in place, archives, office files and PDFs are opened and read inside (#368, #369), images are read by OCR (#370), and other binary is labelled by its signature, `(image/png, 1.1 KB, not read)`. The delivery itself is never changed. L1 and L2 run in parallel on the unpacked text, and L3 reads it after both. Redact's checks on turn 2's output follow the same rule: L1 and L2 read the delivered strings once, unpacked, as the one document turn 3 then reads (#379). Binary an agent could open and no layer can read yet (an image, a PDF, an archive this stage does not open) is the `binary_unread` gap: block and redact refuse it, and offer `flag`. One stated exception to "exactly once" (#340): a response delivered in parts is a delivery per part, and each part is read once behind the last 64 tokens of the part before it. Those 64 tokens are read with both parts and delivered with the first. It is the guard band L2's windows already keep inside a single read, carried across the one boundary a single read no longer spans; it is not a second pass over a delivery.
+1. **Nothing is delivered that the layers did not read, in its original or decoded form, or, for binary, by its identified type. Each layer reads it exactly once.** Pre-processing is two stages, always in this order (#365). Stage 1, the transforms, shrinks what will be delivered. Stage 2, the unpack stage (`unpack/scan.py`), builds what the layers read from that delivery: strict base64 and hex that decode to text are decoded in place, archives, office files and PDFs are opened and read inside (#368, #369), images are read by OCR (#370), and other binary is labelled by its signature, `(image/png, 1.1 KB, not read)`. The delivery itself is never changed. L1 and L2 run in parallel on the unpacked text, and L3 reads it after both. Redact's checks on turn 2's output follow the same rule: L1 and L2 read the delivered strings once, unpacked, as the one document turn 3 then reads (#379). Binary an agent could open and no layer can read yet (an image, a PDF, an archive this stage does not open) is the `binary_unread` gap: block and redact refuse it, and offer `flag`. One stated exception to "exactly once" (#340): a response delivered in parts is a delivery per part, and each part is read once behind the last 64 tokens of the part before it. Those 64 tokens are read with both parts and delivered with the first. It is the guard band L2's windows already keep inside a single read, carried across the one boundary a single read no longer spans; it is not a second pass over a delivery.
 2. **Layers share findings, never inputs.** L1's counts by type and L2's label and score reach L3's briefing as structure: fixed names and numbers, never payload text. No layer reads text that another layer produced.
 3. **A layer's weakness is fixed inside that layer or at model selection.** The fix is a better model, a new L1 stage, or a gate at model selection. Two gates hold L2, from opposite sides: the obfuscation gate rejects a model a trick can blind (`benchmarks/l2_obfuscation.py`, #362), and the benign gate rejects one that refuses what the gateway delivers (`benchmarks/l2_benign.py`, #411). The image build runs both at one threshold, and the gateway checks their records at startup. The pipeline never gets an extra pass, a second input, or a reshaped copy to compensate.
 4. **Read time is linear in payload size, one pass per layer.** The admission cap (`CLASSIFIER_MAX_TOKENS`) is sized on that: 32K tokens is about 23 s of L2 on production CPU, well inside the 60 s MCP client timeout. A text response over 16K tokens, proxied or an internal tool's, is not judged in one call at all: it is cut into parts of about 12K and each part is judged, whole, when it is asked for ([Responses delivered in parts](#responses-delivered-in-parts)). A part is read behind the last 64 tokens of the part before it, the margin L2's own windows keep between themselves, so those tokens are read with both parts and delivered once.
@@ -114,7 +114,7 @@ None of them fires on the corpus's 44 attacks, 14 benign cases or 48 near-miss l
 
 **L1 is format-agnostic.** It scans what it is handed and makes no judgement about a payload's type. Until 0.28.0 a `looks_like_html` sniffer chose between an HTML pipeline and a text one on a leading `<!DOCTYPE` or `<html>`; an HTML *fragment* — the shape most tool output carries — matched neither, so identical bytes were defended two different ways depending on their first few characters. The fork is gone. Markup is handled in two tiers instead:
 
-- **Tier 1, conversion (`preprocess/html.py`).** Converting to Markdown does not detect hidden content, it removes the vocabulary that expresses it: Markdown has no `style` attribute, no `display:none`, no foreground/background pair. After conversion the attack class is absent rather than mitigated. The converter declines on anything it cannot parse, so it sits in the default chain and no-ops on everything that is not markup.
+- **Tier 1, conversion (`transforms/html.py`).** Converting to Markdown does not detect hidden content, it removes the vocabulary that expresses it: Markdown has no `style` attribute, no `display:none`, no foreground/background pair. After conversion the attack class is absent rather than mitigated. The converter declines on anything it cannot parse, so it sits in the default chain and no-ops on everything that is not markup.
 - **Tier 2, fingerprints (`l1/hidden.py`).** Conversion cannot be guaranteed to have run — the agent may ask for raw bytes, the converter may decline, or the text may merely embed markup. So an ordinary L1 stage counts hiding fingerprints (`display:none`, off-screen positioning, same-colour text, KaTeX `\color{white}`) on every payload and feeds the risk score.
 
 #### Where these patterns come from
@@ -141,7 +141,7 @@ The image ships that one model. Meta's `prompt-guard-2-86m` shipped beside it fr
 
 **The obfuscation gate is enforced.** The image build classifies every corpus attack plain and under six transforms with the shipped model and writes the result into its `trentina-model.json` (`benchmarks/l2_obfuscation.py --record`); a model that fails stops the build. At startup the gateway reads the record: a model with a failing record, or none, is logged as `l2_obfuscation_gate_failed` or `l2_obfuscation_gate_unrecorded`, and under `TRENTINA_REQUIRE_HARDENED` the gateway refuses to start. The gate's state is part of the verdict stamp. garak's sixteen further encodings are measured against the model and gate nothing (`benchmarks/l2_encodings.py`, #423): the model reads quoted-printable and MIME, which barely change the text, and none of the others; base16 and hex are decoded before it is asked, and the rest are known gaps 21 to 23. To run your own model, export it and record the gate against it before you point `CLASSIFIER_MODEL_PATH` at it.
 
-**So is the benign gate (#411).** The same build then runs the model, at the threshold it ships with, over 296 invented benign cases of the shapes production refused (unit properties, journals, disk-usage and container listings, metrics rows, replies that carry an identifier, agent-forum replies, machine-written meeting notes, writing about attacks), 207 of them gated, each read as the gateway reads a tool response: through the default pre-processors, the text block and then every string of the structured content, unpacked. A model that flags more than 2% of the held-out cases stops the build (`benchmarks/l2_benign.py --record`). The record carries the threshold it was taken at, so a gateway started with another `CLASSIFIER_THRESHOLD` reports `l2_benign_gate_unrecorded` until the gate is run at that one. Numbers, and the shapes the shipped model still flags (known gaps 19, 28 and 31), are in [benchmark.md](benchmark.md#l2-benign-gate-411-404).
+**So is the benign gate (#411).** The same build then runs the model, at the threshold it ships with, over 296 invented benign cases of the shapes production refused (unit properties, journals, disk-usage and container listings, metrics rows, replies that carry an identifier, agent-forum replies, machine-written meeting notes, writing about attacks), 207 of them gated, each read as the gateway reads a tool response: through the default transforms, the text block and then every string of the structured content, unpacked. A model that flags more than 2% of the held-out cases stops the build (`benchmarks/l2_benign.py --record`). The record carries the threshold it was taken at, so a gateway started with another `CLASSIFIER_THRESHOLD` reports `l2_benign_gate_unrecorded` until the gate is run at that one. Numbers, and the shapes the shipped model still flags (known gaps 19, 28 and 31), are in [benchmark.md](benchmark.md#l2-benign-gate-411-404).
 
 Measured on our corpora (`docs/benchmark.md`, #350), the default catches 36 of 39 internal attacks to Prompt Guard 2's 8, and 21 of 39 when they are planted inside long benign documents to Prompt Guard 2's 4, flagging 3 of 150 benign documents to Prompt Guard 2's 0, at 2.4x the throughput on CPU. Two English-only DeBERTa models, ProtectAI's v2 and PIGuard, were measured and rejected (#353): they flag 29 and 67 of the 150. Prompt Guard 2 is the better detector of DAN-style direct jailbreaks (624 vs 520 of 666 on the jackhhao set, 1 and 3 false positives of 640).
 
@@ -182,7 +182,7 @@ smallest.
   `read` or `content` is about to judge (#446, 1.9.0), that counts over
   `whole_tokens` (16K L2 tokens: four thirds of `TRENTINA_PART_TOKENS`, never
   over the admission cap). Up to that it is delivered as it always was.
-- **How it is cut.** Once, after the pre-processors, on L2 token boundaries,
+- **How it is cut.** Once, after the transforms, on L2 token boundaries,
   into `ceil(total / 12K)` near-equal parts. A cut moves back up to a tenth
   of a part to land on a blank line, a line break or a space. The parts end
   to end are the response's text with nothing added, removed or repeated.
@@ -422,7 +422,7 @@ one does; the rest name the benchmark that measured them.
     long form to petit, and that did not close this: a journal of mixed
     units keeps about two lines in three. Removing any one kind of token
     from what the model reads clears some logs and flags others, so there is
-    nothing for a pre-processor to do; it is fixed at model selection.
+    nothing for a transform to do; it is fixed at model selection.
     `block` refuses such a reply and offers `redact`; asking for fewer
     lines, or a narrower unit or pattern, often avoids it. Scored on every
     image build, outside the gate's budget
@@ -542,7 +542,7 @@ one does; the rest name the benchmark that measured them.
     the two together: the same links after ordinary prose flag 2 documents
     in 11, and a Markdown link around the URL mostly does not flag. Like gap
     19 it is an identifier the model reads as encoded text, and there is
-    nothing for a pre-processor to remove that the agent does not need; it
+    nothing for a transform to remove that the agent does not need; it
     is fixed at model selection. `block` refuses such a document and offers
     `redact`, which returned a verified extraction on production. The flag
     is L2's alone: every supported judge clears all 36 invented notes, so
@@ -715,7 +715,7 @@ turn that layer's absence into a warning instead of a refusal; no setting excuse
 ## Pipeline Flow
 
 ```
-Stage 0  pre-processors (outside the perimeter; subtract, never absolve)
+Stage 0  transforms (outside the perimeter; subtract, never absolve)
 Stage 1  L1  ∥  L2          both read the payload as it arrived, once
 Stage 2  L3 detect          waits for both; briefed with both
 Stage 3  the mode decides delivery

@@ -50,7 +50,7 @@ from markdownify import markdownify
 
 from ..channels import Channel, Kind
 from ..l1.hidden import ClassRules, class_declarations, class_style, classify_style
-from .base import Cost, PreProcessContext, PreProcessResult
+from .base import Cost, TransformContext, TransformResult
 
 # Past this, do not even parse. Matches structured.py: the converter refuses
 # to be the expensive step.
@@ -202,12 +202,12 @@ class HtmlProcessor:
     channels = frozenset({Channel.TOOL})
     kind = Kind.TEXT
 
-    async def run(self, payload: str, _ctx: PreProcessContext) -> PreProcessResult:
+    async def run(self, payload: str, _ctx: TransformContext) -> TransformResult:
         # Conversion is driven by the payload's shape; it reads no job context.
         bytes_in = len(payload.encode("utf-8"))
 
         if bytes_in > _MAX_PARSE_BYTES:
-            return PreProcessResult.declined(
+            return TransformResult.declined(
                 self.name,
                 self.cost,
                 payload,
@@ -216,7 +216,7 @@ class HtmlProcessor:
 
         # Cheap gate before spending a parse: markup contains a tag open.
         if "<" not in payload:
-            return PreProcessResult.declined(
+            return TransformResult.declined(
                 self.name,
                 self.cost,
                 payload,
@@ -225,14 +225,14 @@ class HtmlProcessor:
 
         text, stats, reason = await asyncio.to_thread(_convert, payload)
         if text is None:
-            return PreProcessResult.declined(
+            return TransformResult.declined(
                 self.name,
                 self.cost,
                 payload,
                 reason=reason,
             )
 
-        return PreProcessResult(
+        return TransformResult(
             name=self.name,
             cost=self.cost,
             content=text,

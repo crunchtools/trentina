@@ -291,7 +291,7 @@ class TestRiskWiring:
     def test_converted_markdown_has_nothing_left_to_find(self) -> None:
         """Tier 1 and tier 2 compose: once the converter has run, the stage
         finds nothing, because the vocabulary is gone rather than missed."""
-        from trentina.preprocess.html import to_markdown
+        from trentina.transforms.html import to_markdown
 
         markdown, _ = to_markdown('<p>Visible.</p><div style="display:none">payload</div>')
         stats = run_l1(markdown).stats

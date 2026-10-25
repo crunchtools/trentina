@@ -33,16 +33,16 @@ from corpora.internal import (
     Case,
 )
 from trentina.l1.pipeline import run_l1
-from trentina.preprocess import (
-    EmailProcessor,
-    PetitProcessor,
-    PreProcessContext,
-    StructuredProcessor,
-    run_preprocessors,
-)
 from trentina.quarantine.classifier import (
     classify,
     is_classifier_available,
+)
+from trentina.transforms import (
+    EmailProcessor,
+    PetitProcessor,
+    StructuredProcessor,
+    TransformContext,
+    run_transforms,
 )
 
 _has_classifier = is_classifier_available()
@@ -239,11 +239,11 @@ class TestPreProcessorsDoNotSuppressAttacks:
         # The order the shipped default uses (_DEFAULT_PROCESSORS), not an
         # arbitrary one: petit first would turn a JSON array into loose text
         # and the structured reducer would then decline on its own input.
-        outcome = await run_preprocessors(
+        outcome = await run_transforms(
             document,
             processors=[StructuredProcessor(), EmailProcessor(), PetitProcessor()],
             strategy="chain",
-            ctx=PreProcessContext(source="test", target_bytes=20_000),
+            ctx=TransformContext(source="test", target_bytes=20_000),
         )
 
         assert any(f in outcome.content for f in forms), (

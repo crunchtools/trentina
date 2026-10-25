@@ -107,7 +107,7 @@ from petit.Filter import Filter
 from ..channels import Channel, Kind
 from ..unpack.child import run_unpacking
 from ..unpack.office import reduce_base64
-from .base import Cost, PreProcessContext, PreProcessResult
+from .base import Cost, TransformContext, TransformResult
 from .pdf import reduce_base64 as reduce_pdf
 from .petit import _MIN_BYTES as _MIN_LOG_CHARS
 from .petit import _MIN_LINES as _MIN_LOG_LINES
@@ -547,11 +547,11 @@ class StructuredProcessor:
     channels = frozenset({Channel.TOOL})
     kind = Kind.TEXT
 
-    async def run(self, payload: str, ctx: PreProcessContext) -> PreProcessResult:
+    async def run(self, payload: str, ctx: TransformContext) -> TransformResult:
         bytes_in = len(payload.encode("utf-8"))
 
         if bytes_in > _MAX_PARSE_BYTES:
-            return PreProcessResult.declined(
+            return TransformResult.declined(
                 self.name,
                 self.cost,
                 payload,
@@ -562,7 +562,7 @@ class StructuredProcessor:
         # start with a bracket.
         stripped = payload.lstrip()
         if not stripped or stripped[0] not in "[{":
-            return PreProcessResult.declined(
+            return TransformResult.declined(
                 self.name,
                 self.cost,
                 payload,
@@ -575,7 +575,7 @@ class StructuredProcessor:
             partial(_parse_and_reduce, payload, truncate=over_budget)
         )
         if text is None:
-            return PreProcessResult.declined(
+            return TransformResult.declined(
                 self.name,
                 self.cost,
                 payload,
@@ -586,7 +586,7 @@ class StructuredProcessor:
         if bytes_in > 0 and bytes_out >= bytes_in:
             # See petit.py: the ratio is measured, so report it rather than
             # collapse every near-miss and every no-hoper into one word.
-            return PreProcessResult.declined(
+            return TransformResult.declined(
                 self.name,
                 self.cost,
                 payload,
@@ -599,7 +599,7 @@ class StructuredProcessor:
                 },
             )
 
-        return PreProcessResult(
+        return TransformResult(
             name=self.name,
             cost=self.cost,
             content=text,

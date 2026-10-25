@@ -73,7 +73,7 @@ No payload text and no L3 prose appear in a refusal.
 
 ### A withheld response is not a failed call
 
-A proxied response is judged after the backend has answered, so by then a tool that writes has written. A refusal reads as a failed call, and an agent repeats a failed call: on 2026-10-10 a blocked one-line confirmation of a sent mail sent the mail a second time (#425). So when the response of a remote backend's tool that is not annotated `readOnlyHint` is withheld (by the defense pipeline, a [response guard](response-guards.md), the response byte cap or a required pre-processor that failed), the agent gets a result, not a refusal that looks like an error:
+A proxied response is judged after the backend has answered, so by then a tool that writes has written. A refusal reads as a failed call, and an agent repeats a failed call: on 2026-10-10 a blocked one-line confirmation of a sent mail sent the mail a second time (#425). So when the response of a remote backend's tool that is not annotated `readOnlyHint` is withheld (by the defense pipeline, a [response guard](response-guards.md), the response byte cap or a required transform that failed), the agent gets a result, not a refusal that looks like an error:
 
 ```json
 {
@@ -184,7 +184,7 @@ A confinement refusal is delivered like the egress guard's (#278): `confinement 
 
 **search** — a provider failure raises `Q-Agent error: search provider unavailable` and is audited `backend_error`; none of the provider's or httpx's text reaches the caller (#292). An L0 answer that leaked its canary is refused with reason `L0 canary leaked`, `flagged_by: l0`, no alternatives.
 
-**fetch** and **content** minify what they judge and deliver (0.38.0): the `detect` pre-processor picks the minifier by format. A page whose server says `text/html` or `application/xhtml+xml` (or `content` with that `content_type`) is converted to Markdown, so every mode judges and delivers the page a human would read, not its markup; hidden elements, `<script>`, `<style>`, `<template>` and comments are gone. JSON is compacted and its repeated elements collapsed; logs and mail threads are collapsed by petit and the email processor. Undeclared text is converted only when it is unmistakably HTML, so `<alice@example.com>` and `Vec<String>` survive. The response carries a `preprocess` section saying what ran and what it removed; L1's hiding counts come from the original page, and L3 is told when the page hid text. A minifier that breaks costs tokens, not content: the original is judged and delivered.
+**fetch** and **content** minify what they judge and deliver (0.38.0): the `detect` transform picks the minifier by format. A page whose server says `text/html` or `application/xhtml+xml` (or `content` with that `content_type`) is converted to Markdown, so every mode judges and delivers the page a human would read, not its markup; hidden elements, `<script>`, `<style>`, `<template>` and comments are gone. JSON is compacted and its repeated elements collapsed; logs and mail threads are collapsed by petit and the email processor. Undeclared text is converted only when it is unmistakably HTML, so `<alice@example.com>` and `Vec<String>` survive. The response carries a `preprocess` section saying what ran and what it removed; L1's hiding counts come from the original page, and L3 is told when the page hid text. A minifier that breaks costs tokens, not content: the original is judged and delivered.
 
 **read** returns the file exactly as it is on disk, because an agent that reads a file usually means to edit it.
 

@@ -25,12 +25,12 @@ from typing import TYPE_CHECKING, Any
 
 from ..channels import Channel
 from ..defense import Provenance
-from ..errors import PreProcessFailedError
+from ..errors import TransformFailedError
 from ..l1.hidden import detect_hidden_markup
 from ..l1.pipeline import PipelineResult, run_l1
-from ..preprocess import Cost, PreProcessContext, PreProcessResult, run_preprocessors
-from ..preprocess.detect import document_hidden, hiding_briefing, hiding_removed
-from ..preprocess.policy import FAILED_DECLINES, current_preprocess_policy
+from ..transforms import Cost, TransformContext, TransformResult, run_transforms
+from ..transforms.detect import document_hidden, hiding_briefing, hiding_removed
+from ..transforms.policy import FAILED_DECLINES, current_preprocess_policy
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -59,18 +59,18 @@ def _l1_with_original_hiding(converted: str, original: str, office: int) -> Pipe
     return pipeline
 
 
-async def _floor(processors: Sequence[Any], content: str, ctx: PreProcessContext) -> list[Any]:
+async def _floor(processors: Sequence[Any], content: str, ctx: TransformContext) -> list[Any]:
     """The required processors, each fed the previous output. Raises instead of passing through."""
-    results: list[PreProcessResult] = []
+    results: list[TransformResult] = []
     current = content
     for processor in processors:
         try:
             result = await processor.run(current, ctx)
         except Exception as exc:
-            raise PreProcessFailedError(processor.name, type(exc).__name__) from exc
+            raise TransformFailedError(processor.name, type(exc).__name__) from exc
         declined = str(result.details.get("declined", ""))
         if declined in FAILED_DECLINES:
-            raise PreProcessFailedError(processor.name, declined)
+            raise TransformFailedError(processor.name, declined)
         results.append(result)
         current = result.content
     return results
@@ -100,27 +100,27 @@ async def prepare(
         when markup was converted, and the provenance.
 
     Raises:
-        PreProcessNotPermittedError: the switch is not a bool, None, or the
+        TransformNotPermittedError: the switch is not a bool, None, or the
             deprecated list form.
-        PreProcessFailedError: a REQUIRED processor raised, or declined in a
+        TransformFailedError: a REQUIRED processor raised, or declined in a
             way that means it did not do its job (``FAILED_DECLINES``).
     """
-    from ..gateway.drivers import build_preprocessors
+    from ..gateway.drivers import build_transforms
     from ..gateway.profile import ProcessorChainConfig
 
     policy = current_preprocess_policy(tool)
     names = policy.resolve(requested)
-    processors = build_preprocessors(
+    processors = build_transforms(
         ProcessorChainConfig.model_validate({"processors": list(names)}), channel=Channel.TOOL
     )
     floor = len(policy.required)
-    ctx = PreProcessContext(
+    ctx = TransformContext(
         source=source, target_bytes=policy.target_bytes, content_type=content_type
     )
     results = await _floor(processors[:floor], content, ctx)
     if processors[floor:]:
         current = results[-1].content if results else content
-        outcome = await run_preprocessors(
+        outcome = await run_transforms(
             current, processors=processors[floor:], strategy="chain", ctx=ctx
         )
         results.extend(outcome.results)

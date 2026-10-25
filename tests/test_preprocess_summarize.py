@@ -16,15 +16,15 @@ import pytest
 
 from trentina.defense import Provenance
 from trentina.errors import QuarantineAgentError
-from trentina.preprocess import (
-    PreProcessContext,
+from trentina.transforms import (
     SummarizeProcessor,
-    run_preprocessors,
+    TransformContext,
+    run_transforms,
 )
 
 pytestmark = pytest.mark.asyncio
 
-_S = "trentina.preprocess.summarize"
+_S = "trentina.transforms.summarize"
 
 BIG_PAYLOAD = (
     "An operational log line that resists petit because every sentence differs in words. " * 200
@@ -48,7 +48,7 @@ class TestSummarizeProcessor:
         ):
             cfg.return_value = True
             result = await SummarizeProcessor().run(
-                BIG_PAYLOAD, PreProcessContext(source="jira:SEC-1")
+                BIG_PAYLOAD, TransformContext(source="jira:SEC-1")
             )
         assert result.applied
         assert result.content == "200 repetitions of one operational line."
@@ -58,7 +58,7 @@ class TestSummarizeProcessor:
 
     async def test_small_payload_declines_without_spending(self) -> None:
         with _patch_worker() as worker:
-            result = await SummarizeProcessor().run("tiny", PreProcessContext())
+            result = await SummarizeProcessor().run("tiny", TransformContext())
         assert not result.applied
         assert result.details["declined"] == "too_small"
         worker.assert_not_called()
@@ -69,7 +69,7 @@ class TestSummarizeProcessor:
             patch(f"{_S}.llm_available") as cfg,
         ):
             cfg.return_value = False
-            result = await SummarizeProcessor().run(BIG_PAYLOAD, PreProcessContext())
+            result = await SummarizeProcessor().run(BIG_PAYLOAD, TransformContext())
         assert not result.applied
         assert result.details["declined"] == "no_api_key"
         worker.assert_not_called()
@@ -83,7 +83,7 @@ class TestSummarizeProcessor:
             patch(f"{_S}.llm_available") as cfg,
         ):
             cfg.return_value = True
-            result = await SummarizeProcessor().run(BIG_PAYLOAD, PreProcessContext())
+            result = await SummarizeProcessor().run(BIG_PAYLOAD, TransformContext())
         assert not result.applied
         assert result.content == BIG_PAYLOAD
         assert result.details["declined"] == "worker_error"
@@ -94,7 +94,7 @@ class TestSummarizeProcessor:
             patch(f"{_S}.llm_available") as cfg,
         ):
             cfg.return_value = True
-            result = await SummarizeProcessor().run(BIG_PAYLOAD, PreProcessContext())
+            result = await SummarizeProcessor().run(BIG_PAYLOAD, TransformContext())
         assert not result.applied
         assert result.content == BIG_PAYLOAD
         assert result.details["declined"] == "no_reduction"
@@ -105,7 +105,7 @@ class TestSummarizeProcessor:
             patch(f"{_S}.llm_available") as cfg,
         ):
             cfg.return_value = True
-            result = await SummarizeProcessor().run(BIG_PAYLOAD, PreProcessContext())
+            result = await SummarizeProcessor().run(BIG_PAYLOAD, TransformContext())
         assert not result.applied
         assert result.details["declined"] == "empty_summary"
 
@@ -116,7 +116,7 @@ class TestSummarizeProcessor:
             patch(f"{_S}.llm_available") as cfg,
         ):
             cfg.return_value = True
-            outcome = await run_preprocessors(
+            outcome = await run_transforms(
                 BIG_PAYLOAD,
                 processors=[SummarizeProcessor()],
                 strategy="chain",

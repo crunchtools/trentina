@@ -84,7 +84,7 @@ from typing import TYPE_CHECKING
 from petit import PetitError, analyze_text
 
 from ..channels import Channel, Kind
-from .base import Cost, PreProcessContext, PreProcessResult
+from .base import Cost, TransformContext, TransformResult
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -160,12 +160,12 @@ class PetitProcessor:
     channels = frozenset({Channel.TOOL})
     kind = Kind.TEXT
 
-    async def run(self, payload: str, _ctx: PreProcessContext) -> PreProcessResult:
+    async def run(self, payload: str, _ctx: TransformContext) -> TransformResult:
         # petit reduces by structure alone; it reads no job context. The
         # library is synchronous, so the whole reduction runs on a worker.
         return await asyncio.to_thread(self.reduce, payload)
 
-    def reduce(self, payload: str, *, tag: str = "[petit] ") -> PreProcessResult:
+    def reduce(self, payload: str, *, tag: str = "[petit] ") -> TransformResult:
         """The reduction itself, synchronous. ``run`` puts it on a worker
         thread; ``structured`` calls it from the worker it is already on, for
         a log held in a JSON string (#419), so a log is reduced by one rule
@@ -180,7 +180,7 @@ class PetitProcessor:
         lines = payload.split("\n")
 
         if len(lines) < _MIN_LINES and bytes_in < _MIN_BYTES:
-            return PreProcessResult.declined(
+            return TransformResult.declined(
                 self.name,
                 self.cost,
                 payload,
@@ -198,7 +198,7 @@ class PetitProcessor:
         except PetitError as exc:
             # The library raises rather than exits, and a reducer that
             # cannot reduce must still hand back the payload.
-            return PreProcessResult.declined(
+            return TransformResult.declined(
                 self.name,
                 self.cost,
                 payload,
@@ -211,7 +211,7 @@ class PetitProcessor:
             # frames into three records lands here, and calling that "too
             # small" sent an earlier analysis of the production sidecar
             # looking for short responses that were not there.
-            return PreProcessResult.declined(
+            return TransformResult.declined(
                 self.name,
                 self.cost,
                 payload,
@@ -226,7 +226,7 @@ class PetitProcessor:
 
         collapsed = [g for g in analysis.groups if g.count > _SAMPLES_PER_GROUP]
         if not collapsed:
-            return PreProcessResult.declined(
+            return TransformResult.declined(
                 self.name,
                 self.cost,
                 payload,
@@ -259,7 +259,7 @@ class PetitProcessor:
             # a hair" and "saved nothing at all" are the same word — and the
             # first means the floor is costing real savings while the second
             # means the data simply does not compress.
-            return PreProcessResult.declined(
+            return TransformResult.declined(
                 self.name,
                 self.cost,
                 payload,
@@ -270,7 +270,7 @@ class PetitProcessor:
                 },
             )
 
-        return PreProcessResult(
+        return TransformResult(
             name=self.name,
             cost=self.cost,
             content=reduced,

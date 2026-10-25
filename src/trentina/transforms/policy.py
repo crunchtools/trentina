@@ -35,7 +35,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from ..errors import PreProcessNotPermittedError
+from ..errors import TransformNotPermittedError
 
 logger = logging.getLogger(__name__)
 
@@ -104,20 +104,20 @@ class PreProcessPolicy:
         declared schema sends an undeclared value as a string (#244).
 
         Raises:
-            PreProcessNotPermittedError: anything but a bool, its spelling, or None.
+            TransformNotPermittedError: anything but a bool, its spelling, or None.
         """
         requested = switch_value(requested)
         if requested is None:
             return self.default
         if isinstance(requested, bool):
             return requested
-        raise PreProcessNotPermittedError(["true", "false"])
+        raise TransformNotPermittedError(["true", "false"])
 
     def resolve(self, requested: Any) -> tuple[str, ...]:
         """The processors this call runs, in order: required, then the chain.
 
         Raises:
-            PreProcessNotPermittedError: see ``minifies``.
+            TransformNotPermittedError: see ``minifies``.
         """
         return self.required + (self.chain if self.minifies(requested) else ())
 

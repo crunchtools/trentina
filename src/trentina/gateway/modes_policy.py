@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 from ..config import get_config
 from ..errors import PromptParamGoneError
 from ..modes import Mode, ModePolicy, parse_mode_arg
-from ..preprocess.policy import (
+from ..transforms.policy import (
     INTERNAL_CHAIN,
     INTERNAL_DEFAULTS,
     PREPROCESS_PARAM,
@@ -236,7 +236,7 @@ def resolve_call(
 def resolve_preprocess(
     profile: Profile, backend: Backend, tool_name: str, arguments: dict[str, Any]
 ) -> tuple[PreProcessPolicy, Any, bool | None]:
-    """The call's pre-processor policy, the agent's switch, and what it resolves to.
+    """The call's transform policy, the agent's switch, and what it resolves to.
 
     Checked here, before dispatch, so a malformed switch is audited as a guard
     denial and never reaches a backend. The resolution is None when the agent
@@ -244,7 +244,7 @@ def resolve_preprocess(
     ``min_bytes``, which an explicit ``true`` does not.
 
     Raises:
-        PreProcessNotPermittedError: the switch is not a bool, None, or the
+        TransformNotPermittedError: the switch is not a bool, None, or the
             deprecated list form.
     """
     policy = preprocess_policy_for(profile, backend, tool_name)

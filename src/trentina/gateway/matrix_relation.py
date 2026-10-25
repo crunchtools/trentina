@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ..preprocess.shapes import wordy
+from ..transforms.shapes import wordy
 
 _REL_TYPES = frozenset({"m.thread", "m.reference", "m.replace"})
 

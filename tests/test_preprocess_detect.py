@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from trentina.preprocess import Cost, PreProcessContext, PreProcessResult
-from trentina.preprocess.detect import (
+from trentina.transforms import Cost, TransformContext, TransformResult
+from trentina.transforms.detect import (
     DetectProcessor,
     Format,
     detect,
@@ -32,8 +32,8 @@ SYSLOG = "\n".join(
 )
 
 
-async def _run(payload: str, content_type: str | None = None) -> PreProcessResult:
-    return await DetectProcessor().run(payload, PreProcessContext(content_type=content_type))
+async def _run(payload: str, content_type: str | None = None) -> TransformResult:
+    return await DetectProcessor().run(payload, TransformContext(content_type=content_type))
 
 
 @pytest.mark.parametrize(
@@ -108,9 +108,9 @@ class TestChains:
         assert result.details["format"] == "text"
 
     async def test_a_broken_inner_processor_declines_the_whole_result(self) -> None:
-        broken = PreProcessResult.declined("html", Cost.FREE, PAGE, reason="worker_error")
+        broken = TransformResult.declined("html", Cost.FREE, PAGE, reason="worker_error")
         with patch(
-            "trentina.preprocess.html.HtmlProcessor.run",
+            "trentina.transforms.html.HtmlProcessor.run",
             AsyncMock(return_value=broken),
         ):
             result = await _run(PAGE, "text/html")
@@ -120,10 +120,10 @@ class TestChains:
 
 
 def test_hiding_is_counted_only_when_markup_was_converted() -> None:
-    converted = PreProcessResult(
+    converted = TransformResult(
         "detect", Cost.FREE, "x", True, 10, 1, {"chain": "html,petit", "hidden_elements": 2}
     )
-    reduced = PreProcessResult("detect", Cost.FREE, "x", True, 10, 1, {"chain": "petit"})
+    reduced = TransformResult("detect", Cost.FREE, "x", True, 10, 1, {"chain": "petit"})
     assert hiding_removed([converted]) == 2
     assert hiding_removed([reduced]) is None
     assert hiding_briefing(0) is None

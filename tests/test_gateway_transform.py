@@ -161,7 +161,7 @@ class TestReduction:
         async def boom(*_a: object, **_kw: object) -> object:
             raise RuntimeError("processor exploded")
 
-        monkeypatch.setattr(transform_mod, "run_preprocessors", boom)
+        monkeypatch.setattr(transform_mod, "run_transforms", boom)
         out = await _run(_profile(PreProcessConfig(enabled=True)))
         assert out.applied is False
         assert out.content_blocks == _blocks(LOGGY)
@@ -216,9 +216,9 @@ class TestDeclineLogLine:
 
     def test_not_smaller_decline_shows_the_ratio_it_reached(self) -> None:
         from trentina.gateway.transform import _describe_decline
-        from trentina.preprocess import Cost, PreProcessResult
+        from trentina.transforms import Cost, TransformResult
 
-        result = PreProcessResult.declined(
+        result = TransformResult.declined(
             "structured",
             Cost.FREE,
             "x" * 100,
@@ -231,9 +231,9 @@ class TestDeclineLogLine:
 
     def test_shape_decline_shows_lines_and_bytes(self) -> None:
         from trentina.gateway.transform import _describe_decline
-        from trentina.preprocess import Cost, PreProcessResult
+        from trentina.transforms import Cost, TransformResult
 
-        result = PreProcessResult.declined(
+        result = TransformResult.declined(
             "petit",
             Cost.FREE,
             "x",
@@ -246,9 +246,9 @@ class TestDeclineLogLine:
 
     def test_bare_decline_stays_terse(self) -> None:
         from trentina.gateway.transform import _describe_decline
-        from trentina.preprocess import Cost, PreProcessResult
+        from trentina.transforms import Cost, TransformResult
 
-        result = PreProcessResult.declined(
+        result = TransformResult.declined(
             "email",
             Cost.FREE,
             "x",

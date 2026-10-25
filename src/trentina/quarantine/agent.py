@@ -768,7 +768,7 @@ async def quarantine_generate(
     """Isolated LLM generation under full Q-Agent discipline, for non-defense
     consumers.
 
-    Pre-processors (the summarizer above all) need model output over hostile
+    Transforms (the summarizer above all) need model output over hostile
     text without becoming a second, softer LLM path. This is the one door:
     the request is built with no tools and no functionDeclarations
     (structurally — the builder has no parameter for them), a per-request
