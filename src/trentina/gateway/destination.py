@@ -21,6 +21,10 @@ Three kinds, each stored beside the call in ``gateway_calls``:
 - ``git``: for the git transport (#453), ``owner/name`` as the gateway
   validated and lower-cased it, then for a push a space and each ref it
   named. The remote is the row's backend, ``git:<remote>``.
+- ``matrix``: for the Matrix proxy (#511), the normalized Client-Server API
+  path the agent called, bounded. The row's backend is ``matrix``, and a row
+  is written only when the operation was refused, errored, or carried a
+  security finding — never for a clean response or an idle ``/sync`` poll.
 
 The value is caller-chosen, so it lives in the audit database only, which no
 tool reads raw. It never goes to the log (#262), and ``quarantine_stats``
@@ -58,6 +62,7 @@ class DestinationKind(StrEnum):
     TUNNEL = "tunnel"
     GIT = "git"
     EGRESS = "egress"
+    MATRIX = "matrix"
     OAUTH = "oauth"
 
 

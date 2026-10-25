@@ -928,3 +928,10 @@ path = "src/trentina/gateway/egress_http.py"
 pattern = "_resolve_upstream"
 justification = "_resolve_upstream (resolve the upstream, grant and path, or refuse) is reported similar to quarantine/agent._parse_openrouter_search and unpack/scan._data_uri. All three are a short guard-then-return chain; they share that skeleton and nothing else. A structural collision, as with preprocess/petit.py."
 classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/matrix_proxy.py"
+pattern = "_forward_judged"
+justification = "_forward_judged (deliver a fully-judged Matrix response and settle its audit row) is reported 100% similar to gateway/tool_pins._pin_one and unpack/scan._data_uri. All three are a short compute-then-branch-then-return body; they share that skeleton and nothing else — one pins a tool, one decodes a data URI, this one forwards a judged sync. A structural collision, as with egress_http._resolve_upstream above."
+classification = "by_design"

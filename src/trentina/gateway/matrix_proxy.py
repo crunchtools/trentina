@@ -63,12 +63,14 @@ from ..defense import defend, defend_selection
 from ..logsafe import exc_kind, exc_where, redact_source, safe_url
 from ..matrix.keybackup import KeyBackupProvider
 from ..modes import gaps_of
+from ..outcomes import Outcome
 from ..preprocess import SelectionContext
 from ..quarantine.prompts import RISK_LEVELS
 from ..reserved import WARNING_KEY, strip_reserved, with_stripped
 from ..unpack.ocr import MAX_IMAGE_BYTES
 from ..warning import build_warning
 from .context import profile_context
+from .destination import MAX_DESTINATION_CHARS, DestinationKind
 from .drivers import build_preprocessors
 from .matrix_relation import withheld_relation
 from .profile import profile_for_address
@@ -78,6 +80,7 @@ from .proxy_utils import (
     forward_request_headers,
     normalize_proxy_path,
 )
+from .relay import Operation
 from .selection import describe, run_l1
 
 if TYPE_CHECKING:
@@ -88,6 +91,10 @@ if TYPE_CHECKING:
     from .profile import Profile
 
 logger = logging.getLogger(__name__)
+
+#: The audit ``backend`` column for a Matrix proxy row (one per relayed
+#: operation, never per idle ``/sync`` long-poll — see ``_proxy_matrix``).
+BACKEND = "matrix"
 
 _DEFAULT_UPSTREAM = "https://matrix-client.matrix.org"
 
@@ -336,15 +343,67 @@ async def _proxy_matrix(
     upstream: str,
     profile: Profile,
 ) -> Response:
-    """Forward one Matrix Client-Server API request."""
+    """Forward one Matrix Client-Server API request, and audit it on the ONE
+    lifecycle (``relay.Operation``, #511).
+
+    A ``gateway_calls`` row is written ONLY when the operation was refused, hit
+    an upstream error, or carried a security finding — a flagged response, a
+    blocking gap that withheld events, a withheld or too-large body. A clean
+    response and the exempt pass-through (acks, ``/versions``, E2EE key traffic,
+    media under annotate) write NO row, because ``/sync`` is a continuous
+    long-poll and a row per poll would flood the audit database.
+
+    The row is GATED on a ``reason`` being set, never on the outcome:
+    ``Operation`` defaults its outcome to ``CANCELLED`` but its reason to
+    ``None``, so gating on the outcome would turn any clean path that forgot to
+    settle into a logged row — the exact flood this avoids. A forwarded-with-
+    finding response settles ``(OK, <finding>)``, so the outcome column tells a
+    delivered finding (``ok``) from a withhold/refusal (a block outcome), the
+    way ``/egress`` records a flag. Nothing is registered on ``op.upstream``
+    (the httpx response is closed by ``_buffer``/``_streamed`` as before), so a
+    skipped finish leaks nothing: no slot is taken and no close is pending.
+    """
+    op = Operation(
+        profile, backend=BACKEND, tool=request.method, destination_kind=DestinationKind.MATRIX
+    )
+    try:
+        return await _route(request, upstream, profile, op)
+    except httpx.HTTPError:
+        # A homeserver that drops mid-body (``_buffer`` reads outside the scan's
+        # own try) must still be audited — the Phase 0 /llm bug, not reborn here.
+        if op.reason is None:
+            op.settle(Outcome.BACKEND_ERROR, "upstream_failed")
+        raise
+    except Exception:
+        if op.reason is None:
+            op.settle(Outcome.GATEWAY_ERROR, "proxy_error")
+        raise
+    finally:
+        # The one place a Matrix row is (or is not) written. See the docstring:
+        # a clean or idle operation leaves reason None and is never audited.
+        if op.reason is not None:
+            await op.finish()
+
+
+async def _route(
+    request: Request,
+    upstream: str,
+    profile: Profile,
+    op: Operation,
+) -> Response:
+    """Forward one request; settle ``op`` on each refusal, error or finding."""
     raw_path = request.path_params.get("path", "")
     path = normalize_proxy_path(raw_path)
     if path is None:
+        op.settle(Outcome.DENIED_GUARD, "path_traversal")
         return Response(
             content="Path traversal rejected",
             status_code=400,
             media_type=PLAIN_TEXT,
         )
+    # The caller's path is the destination: stored in the audit row, never the
+    # query (older clients carry state there), never logged (#266).
+    op.destination = path[:MAX_DESTINATION_CHARS]
 
     upstream_url = f"{upstream}/{path}"
     if request.url.query:
@@ -366,6 +425,7 @@ async def _proxy_matrix(
             stream=True,
         )
     except httpx.TimeoutException:
+        op.settle(Outcome.BACKEND_ERROR, "upstream_timeout")
         return Response(
             content="Matrix upstream timeout",
             status_code=504,
@@ -373,6 +433,7 @@ async def _proxy_matrix(
         )
     except httpx.ConnectError as exc:
         logger.warning("matrix_proxy: connect error: %s", exc_kind(exc))
+        op.settle(Outcome.BACKEND_ERROR, "upstream_unreachable")
         return Response(
             content="Matrix upstream unreachable",
             status_code=502,
@@ -384,7 +445,9 @@ async def _proxy_matrix(
 
     scanner = _SCANNERS.get(_judgement(request.method, path, resp.status_code, ct) or "")
     if scanner is not None:
-        return await scanner(resp, resp_headers, ct, profile, path)
+        return await scanner(resp, resp_headers, ct, profile, path, op)
+    # Exempt pass-through (acks, /versions, E2EE key traffic): nothing is judged
+    # and nothing is settled, so no row is written.
     return _streamed(resp, resp_headers, ct)
 
 
@@ -544,6 +607,7 @@ async def _scan_and_forward(
     content_type: str,
     profile: Profile,
     path: str,
+    op: Operation,
 ) -> Response:
     """Buffer a message-bearing response, judge it, forward it.
 
@@ -553,13 +617,20 @@ async def _scan_and_forward(
     forwarded annotated. Unparseable JSON is scanned as text, then refused
     under withhold (there is no event to withhold, and no client can parse
     it either) or forwarded under annotate.
+
+    ``op`` is settled for the audit row: ``flag_reason`` on a forward that
+    carried a finding (flagged, or an annotate-mode unjudged forward), a
+    non-OK outcome with a reason on a withhold/refusal; a clean forward
+    settles nothing, so no row is written.
     """
     headers = {k: v for k, v in resp_headers.items() if k.lower() != "content-length"}
 
     buffered = await _buffer(resp, path)
     if isinstance(buffered, Response):
+        op.settle(Outcome.BLOCKED_DEFENSE, "response_too_large")
         return buffered
     body = buffered
+    op.received = op.sent = len(body)
 
     ingress = profile.matrix_ingress
     cfg = ingress.preprocess if ingress is not None else None
@@ -628,13 +699,14 @@ async def _scan_and_forward(
             redact_source(path),
             profile.name,
         )
+        withhold = _settle_unscanned(op, profile, "scan_timeout")
         return _respond(
             payload,
             body,
             headers,
             content_type,
             with_stripped({"risk_level": "unknown", "scan_timeout": True}, stripped),
-            withhold=_withholds(profile),
+            withhold=withhold,
         )
     except Exception as exc:
         # A parse failure here is attacker-reachable (any room member can
@@ -650,19 +722,64 @@ async def _scan_and_forward(
             exc_kind(exc),
             exc_where(exc),
         )
-        await _text_fallback_scan(body, profile, path)
+        flagged = await _text_fallback_scan(body, profile, path)
         restripped = await _restrip(payload)
         if restripped is None:
+            op.settle(Outcome.BLOCKED_DEFENSE, "scan_failed")
             return _refused()
+        withhold = _settle_unscanned(op, profile, "scan_failed", flagged=flagged)
         return _respond(
             restripped,
             body,
             headers,
             content_type,
             with_stripped({"risk_level": "unknown", "scan_failed": True}, stripped),
-            withhold=_withholds(profile),
+            withhold=withhold,
         )
 
+    return _forward_judged(
+        op, payload, body, view, verdict, headers, content_type, stripped, cfg, path
+    )
+
+
+def _settle_unscanned(
+    op: Operation, profile: Profile, reason: str, *, flagged: bool = False
+) -> bool:
+    """Settle the audit row for a response FORWARDED without a full scan, and
+    return whether its events are to be withheld.
+
+    Under withhold the response is a defense block carrying ``reason``; under
+    annotate it forwards, so it settles ``(OK, reason)`` (``,flagged`` when the
+    text-mode fallback flagged it) — the finding is on the row either way, with
+    the outcome telling the two apart.
+    """
+    withhold = _withholds(profile)
+    if withhold:
+        op.settle(Outcome.BLOCKED_DEFENSE, reason)
+    else:
+        op.settle(Outcome.OK, f"{reason},flagged" if flagged else reason)
+    return withhold
+
+
+def _forward_judged(
+    op: Operation,
+    payload: Any,
+    body: bytes,
+    view: Any,
+    verdict: Any,
+    headers: dict[str, str],
+    content_type: str,
+    stripped: int,
+    cfg: Any,
+    path: str,
+) -> Response:
+    """Deliver a fully-judged JSON response and settle its audit row.
+
+    A clean forward settles nothing, so no row is written. A flagged or
+    undecrypted-withheld forward settles ``(OK, <finding>)`` so the row records
+    it; a blocking gap under withhold is a defense block that rewrites events.
+    """
+    profile = op.profile
     extras = describe(view, cfg) if (view is not None and cfg is not None) else {}
     warning = with_stripped(build_warning(verdict, extras=extras), stripped)
     gaps = gaps_of(verdict)
@@ -687,18 +804,19 @@ async def _scan_and_forward(
             ",".join(gaps.names()),
         )
 
+    unread = 0
     if _withholds(profile):
         unread = _withhold_undecrypted(payload, view)
         if unread:
             warning = {**(warning or {}), "undecrypted_withheld": unread}
-    return _respond(
-        payload,
-        body,
-        headers,
-        content_type,
-        warning,
-        withhold=gaps.blocking() and _withholds(profile),
-    )
+    withhold = gaps.blocking() and _withholds(profile)
+    if withhold:
+        op.settle(Outcome.BLOCKED_DEFENSE, "events_withheld")
+    elif verdict.flagged:
+        op.settle(Outcome.OK, verdict.risk_level or "flagged")
+    elif unread:
+        op.settle(Outcome.OK, "undecrypted_withheld")
+    return _respond(payload, body, headers, content_type, warning, withhold=withhold)
 
 
 def _refused() -> Response:
@@ -731,6 +849,7 @@ async def _media(
     content_type: str,
     profile: Profile,
     path: str,
+    op: Operation,
 ) -> Response:
     """A binary media download: read if it is an image, never forwarded unread
     under withhold (#371).
@@ -740,15 +859,17 @@ async def _media(
     other unjudged body. Audio, video and ``application/octet-stream`` (an
     E2EE attachment is ciphertext under that type) have no reader, so they
     are refused under withhold. Under annotate every one of them forwards
-    with the warning header, as the gap it is.
+    with the warning header, as the gap it is — a finding on the row.
     """
     if not _withholds(profile):
+        op.settle(Outcome.OK, "media_unreadable")
         return _streamed(resp, {**resp_headers, WARNING_HEADER: "unknown"}, content_type)
     if content_type.strip().lower().startswith("image/"):
         return await _scan_text_and_forward(
-            resp, resp_headers, content_type, profile, path, image=True
+            resp, resp_headers, content_type, profile, path, op, image=True
         )
     await resp.aclose()
+    op.settle(Outcome.BLOCKED_DEFENSE, "media_withheld")
     logger.warning(
         "matrix_proxy: withheld a media download no layer can read, %s for profile=%s",
         redact_source(path),
@@ -763,6 +884,7 @@ async def _scan_text_and_forward(
     content_type: str,
     profile: Profile,
     path: str,
+    op: Operation,
     *,
     image: bool = False,
 ) -> Response:
@@ -772,13 +894,18 @@ async def _scan_text_and_forward(
     level. Flagged forwards, as a flagged JSON body does; unjudged forwards
     only under annotate. An ``image`` is judged as its base64, which the
     unpack stage reads by OCR; one too large to read is unjudged.
+
+    ``op`` is settled for the audit row as in ``_scan_and_forward``.
     """
     headers = {k: v for k, v in resp_headers.items() if k.lower() != "content-length"}
     buffered = await _buffer(resp, path)
     if isinstance(buffered, Response):
+        op.settle(Outcome.BLOCKED_DEFENSE, "response_too_large")
         return buffered
     if image and len(buffered) > MAX_IMAGE_BYTES:
+        op.settle(Outcome.BLOCKED_DEFENSE, "media_too_large")
         return _refused()
+    op.received = op.sent = len(buffered)
     ingress = profile.matrix_ingress
     deadline = (
         ingress.preprocess.deadline_seconds
@@ -809,6 +936,7 @@ async def _scan_text_and_forward(
             exc_where(exc),
         )
     if unjudged and _withholds(profile):
+        op.settle(Outcome.BLOCKED_DEFENSE, "response_withheld")
         return _refused()
     if flagged or unjudged:
         logger.warning(
@@ -819,6 +947,7 @@ async def _scan_text_and_forward(
             risk,
         )
         headers[WARNING_HEADER] = risk
+        op.settle(Outcome.OK, risk if flagged else "unjudged")
     return Response(content=buffered, status_code=200, headers=headers, media_type=content_type)
 
 
@@ -1017,12 +1146,13 @@ def _respond(
     return Response(content=body, status_code=200, headers=headers, media_type=content_type)
 
 
-async def _text_fallback_scan(body: bytes, profile: Profile, path: str) -> None:
+async def _text_fallback_scan(body: bytes, profile: Profile, path: str) -> bool:
     """Judge unparseable response bytes as plain text; record any flag.
 
     The annotation channel is gone (no JSON to attach a key to), so the flag
     lives in the detections table and the log — degraded, but never the
-    silent clean the recursive-parse fail-open used to produce.
+    silent clean the recursive-parse fail-open used to produce. Returns whether
+    the text was flagged, so the caller can carry it onto the audit row.
     """
     try:
         verdict = await defend(
@@ -1031,15 +1161,6 @@ async def _text_fallback_scan(body: bytes, profile: Profile, path: str) -> None:
             source_type="matrix_sync",
             defense=profile.defense,
         )
-        if verdict.flagged:
-            logger.error(
-                "matrix_proxy: UNPARSEABLE response FLAGGED for profile=%s "
-                "path=%s risk=%s — forwarded (no annotation channel); "
-                "investigate the sender",
-                profile.name,
-                redact_source(path),
-                verdict.risk_level,
-            )
     except Exception as exc:
         logger.error(  # the message may carry the payload (#262)
             "matrix_proxy: text-mode fallback scan failed for %s: %s at %s",
@@ -1047,3 +1168,14 @@ async def _text_fallback_scan(body: bytes, profile: Profile, path: str) -> None:
             exc_kind(exc),
             exc_where(exc),
         )
+        return False
+    if verdict.flagged:
+        logger.error(
+            "matrix_proxy: UNPARSEABLE response FLAGGED for profile=%s "
+            "path=%s risk=%s — forwarded (no annotation channel); "
+            "investigate the sender",
+            profile.name,
+            redact_source(path),
+            verdict.risk_level,
+        )
+    return verdict.flagged
