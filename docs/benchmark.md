@@ -1246,6 +1246,38 @@ plugin-drift warning. The production screen has now steered three rounds,
 so it is no longer an unseen test: acceptance needs a fresh sweep, read
 once.
 
+Round 3 adds that kind of text as benign: summaries and details of the
+GitHub Advisory Database's reviewed 2025 advisories (3,691 files at a
+pinned commit, CC-BY-4.0, any that quote an injection dropped). The plain
+recipe wins, distillation 0.5, 2e-5, two epochs, the full fine-tune, at
+0.5:
+
+| | Round 3 | Round 2 | Horizon |
+|---|---|---|---|
+| Hijacking attacks caught (of 128) | 103 | 103 | 80 |
+| Strong-agent hijacks caught (of 12) | 12 | 11 | 9 |
+| Internal attacks caught (of 44) | 43 | 42 | 41 |
+| Envelope gate, benign flagged / attacks caught (of 480) | 3 / 356 | 2 / 372 | 38 / 335 |
+| Real sweep records flagged (of 276) | 3 | 6 | 16 |
+| Real sweep pages flagged (of 8) | 0 | 2 | 2 |
+| Real Miniflux entries flagged (of 65) | 1 | 3 | 3 |
+| `benign_ops`, known gaps included (of 221) | 3 | 5 | 11 |
+
+The infra and inbox pages pass; what is left is three single records, one
+Miniflux entry and an issue whose body lists security-themed titles, each
+read alone. Distillation 0.3 caught fewer attacks (env 330, hijacks 86),
+a third epoch lost 50 envelope attacks and flagged an internal trap, and
+3e-5 lost internal attacks (35 of 44). Blend 0.8 matched the full
+fine-tune within noise. All three L2 gates pass (benign 0 of 143 held-out,
+envelopes 3 of 480, obfuscation no drop). Iteration stops here: more
+rounds would tune further to a screen that is no longer unseen.
+
+The shipped model trains in `l2-train` on the same card
+(`scripts/runpod_train.py`: one Secure Cloud RTX 4090, the same image and
+pins), since two epochs on the runner's CPU run past GitHub's six-hour
+limit. GPU runs are not bit-identical, so the check on that run is the
+same shape on real replies, not the same hash.
+
 A blend that passes the gates is chosen on production shapes by
 constraint, not by best number: no shape may flag more often than under
 Horizon. The envelope gate is built from the same makers as the training

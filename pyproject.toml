@@ -222,6 +222,10 @@ max-complexity = 10
 # S603: git fetches the advisory database at its pinned commit; every argument
 # is a constant, the cache path or that commit, none of it from a row.
 "scripts/l2_train_data.py" = ["E402", "S311", "S603"]
+# S603: ssh-keygen, ssh and tar drive the training pod; every argument is a
+# constant, the runner's temp path, or the host and port RunPod's API returned.
+# S310: urlopen only ever gets API, a constant https URL, plus a pod id.
+"scripts/runpod_train.py" = ["S310", "S603"]
 "benchmarks/redact_input.py" = ["E402"]
 "benchmarks/l1_false_positives.py" = ["E402"]
 "benchmarks/unpack_archives.py" = ["E402"]

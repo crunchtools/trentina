@@ -184,13 +184,13 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--data", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--epochs", type=float, default=1.0)
+    p.add_argument("--epochs", type=float, default=2.0)
     p.add_argument(
         "--lr",
         type=float,
-        default=1e-5,
-        help="Low, to move what the base learned about envelopes and keep the rest "
-        "(2e-5 in run 40202667628 drifted on shapes it never trained on).",
+        default=2e-5,
+        help="GPU round 3 (docs/benchmark.md): with distill 0.5 and the advisory "
+        "text, 2e-5 for 2 epochs beat 1e-5, 3e-5 and a third epoch on real replies.",
     )
     p.add_argument("--batch", type=int, default=8)
     p.add_argument("--max-length", type=int, default=512)
@@ -214,6 +214,7 @@ def main() -> int:
         p.error("blends must lie strictly between 0 and 1, and distill in [0, 1)")
 
     import torch
+    import transformers
     from transformers import (
         AutoModelForSequenceClassification,
         AutoTokenizer,
@@ -312,6 +313,11 @@ def main() -> int:
         "teacher_scored": taught,
         "long_attacks_dropped": dropped,
         "validation": result,
+        "trained_on": {
+            "device": torch.cuda.get_device_name() if torch.cuda.is_available() else "cpu",
+            "torch": torch.__version__,
+            "transformers": transformers.__version__,
+        },
     }
 
     write_blends(model, tok, args.out, record, blends)

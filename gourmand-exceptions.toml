@@ -955,3 +955,9 @@ check = "hardcoded_years"
 path = "corpora/envelopes.py"
 justification = "The dates are inside invented reply fields (#17): created_at, published, a URL's year. A fixed range keeps one seed one text on every run, which the envelope gate and the training set depend on."
 classification = "by_design"
+
+[[exceptions]]
+check = "absolute_paths"
+path = "scripts/runpod_train.py"
+justification = "Paths on the training pod, not on this machine: RunPod's workspace directory, the ssh directory where the pod's sshd reads the host key the runner pins, and the pinned image's own entrypoint and start script, which the boot command hands over to (#17)."
+classification = "by_design"

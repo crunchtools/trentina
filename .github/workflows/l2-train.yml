@@ -10,7 +10,12 @@ name: L2 - fine-tune
 # an image or a model. Shipping one is a Containerfile change that pins its
 # digest, made after the gates below and a screen on production shapes.
 #
-# No secrets: the job reads public datasets and the public base model.
+# Training runs on one RunPod Secure Cloud RTX 4090 (scripts/runpod_train.py),
+# the card the recipe was found on; the runner builds the data, exports and
+# gates. RUNPOD_API_KEY lives in the `runpod` environment, which releases it
+# only to this job, dispatched by hand on main or feature/l2-* (deployment
+# branch policy): no push, pull request or fork run ever sees it. The pod
+# gets only public datasets and the public base model.
 
 on:
   workflow_dispatch:
@@ -26,15 +31,7 @@ on:
       epochs:
         description: "Training epochs"
         type: string
-        default: "1"
-  push:
-    branches: ["feature/l2-*"]
-    paths:
-      - "corpora/envelopes.py"
-      - "scripts/l2_train_data.py"
-      - "scripts/train_l2_model.py"
-      - "scripts/export_l2_model.py"
-      - ".github/workflows/l2-train.yml"
+        default: "2"
 
 permissions:
   contents: read
@@ -42,11 +39,12 @@ permissions:
 jobs:
   train:
     runs-on: ubuntu-latest
-    timeout-minutes: 340
+    timeout-minutes: 90
+    environment: runpod
     env:
       PER_ENVELOPE: ${{ inputs.per_envelope || 120 }}
       REPLAY: ${{ inputs.replay || 1000 }}
-      EPOCHS: ${{ inputs.epochs || '1' }}
+      EPOCHS: ${{ inputs.epochs || '2' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -73,15 +71,24 @@ jobs:
       - name: Build the model-builder stage
         run: docker build --target model-builder -t l2-builder -f Containerfile .
 
-      - name: Fine-tune
+      - name: Start the GPU pod
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: python3 scripts/runpod_train.py create
+
+      - name: Fine-tune on the pod
         run: |
-          # EPOCHS is a dispatch input: checked as a number, and handed to the
-          # container as an environment variable, never spliced into a command.
+          # EPOCHS is a dispatch input: checked as a number here, and parsed as
+          # a float by runpod_train.py before it reaches the pod.
           [[ "$EPOCHS" =~ ^[0-9]*[.]?[0-9]+$ && ! "$EPOCHS" =~ ^[0.]+$ ]] \
             || { echo "epochs must be a number above zero" >&2; exit 1; }
-          docker run --rm -e EPOCHS -v "$PWD:/w" -w /w l2-builder sh -c \
-            'pip install --no-cache-dir "accelerate<2" &&
-             python scripts/train_l2_model.py --data build/l2-train --out build/l2-model --epochs "$EPOCHS"'
+          python3 scripts/runpod_train.py run --host "$POD_HOST" --port "$POD_PORT" --epochs "$EPOCHS"
+
+      - name: Terminate the pod
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: python3 scripts/runpod_train.py terminate --pod "${POD_ID:-}"
 
       # The full fine-tune (blend 1) and each blend back toward Horizon that
       # train_l2_model.py wrote (blend-<a>), exported side by side.
@@ -93,7 +100,7 @@ jobs:
             docker run --rm -v "$PWD:/w" -w /w l2-builder python scripts/export_l2_model.py \
               --src "$src" --repo "crunchtools/trentina:l2-train" --revision "$GITHUB_SHA" \
               --out "build/l2-export/$name" --id prompt-injection-guard-small-ct --license Apache-2.0 \
-              --threshold 0.7 --window-tokens 512 --malicious-labels INJECTION
+              --threshold 0.5 --window-tokens 512 --malicious-labels INJECTION
             sudo chown -R "$(id -u)" build
             cp "$src/training.json" "build/l2-export/$name/"
             cp scripts/l2-model-NOTICE "build/l2-export/$name/NOTICE"
