@@ -47,11 +47,11 @@ from urllib.parse import quote, urlencode, urlsplit
 import httpx
 from pydantic import BaseModel, SecretStr, ValidationError
 
-from .. import egress
 from ..database import record_gateway_call
 from ..errors import EgressRefusedError
 from ..logsafe import exc_kind, redact_source
 from ..outcomes import Outcome
+from ..reach import egress
 from .backend_tokens import (
     AuthMethod,
     BackendClient,

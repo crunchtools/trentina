@@ -18,12 +18,12 @@ import pytest
 
 from tests.egress_harness import PUBLIC_ADDRESS, route
 from trentina import config as config_mod
-from trentina import egress
 from trentina.client import fetch_url
 from trentina.errors import BlockedSourceError, EgressRefusedError
 from trentina.gateway.errors import BackendCallError
 from trentina.modes import Mode
 from trentina.outcomes import Outcome, classify_exception
+from trentina.reach import egress
 
 OK_RESPONSE = [
     b"HTTP/1.1 200 OK\r\n",

@@ -46,7 +46,7 @@ request, so it can refuse that.
    the gateway's own facts (the upstream, whether the profile has reached it
    before, whether the session was flagged), and anything but an explicit
    allow refuses before it is sent (`gatekeeper`). Only under `block`.
-5. **Where it goes** — through the [egress guard](../src/trentina/egress.py) to
+5. **Where it goes** — through the [egress guard](../src/trentina/reach/egress.py) to
    an address that was checked; no redirect is followed. The profile's token
    for the upstream is injected (`egress_upstreams.<name>.credential`), so the
    agent never holds it. If the guard refuses the address (a non-global

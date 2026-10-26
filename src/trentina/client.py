@@ -10,8 +10,8 @@ from typing import NamedTuple
 import httpx
 
 from .config import int_env
-from .egress import open_guarded
 from .errors import FetchError, UnsupportedContentTypeError
+from .reach.egress import open_guarded
 
 log = logging.getLogger(__name__)
 

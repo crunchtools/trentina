@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import pytest
 
-from trentina.egress import ResolvedTarget
 from trentina.gateway import upstream
+from trentina.reach.egress import ResolvedTarget
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

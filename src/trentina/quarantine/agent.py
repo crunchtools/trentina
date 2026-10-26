@@ -24,7 +24,6 @@ import httpx
 
 from ..client import MAX_RESPONSE_SIZE
 from ..config import DEFAULT_SEARCH_MODEL, get_config
-from ..egress import open_guarded
 from ..errors import (
     EgressRefusedError,
     MalformedResponseError,
@@ -34,6 +33,7 @@ from ..errors import (
 )
 from ..l1.pipeline import run_l1
 from ..logsafe import exc_kind
+from ..reach.egress import open_guarded
 from ..unpack.child import run_unpacking
 from ..unpack.scan import unpack
 from .limiter import THROTTLE_STATUS, limited_generate, throttle_budget

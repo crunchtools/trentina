@@ -96,7 +96,7 @@ rules:
       obligation: O6 EGRESS
     paths:
       exclude:
-        - "**/trentina/egress.py"
+        - "**/trentina/reach/egress.py"
     pattern-either:
       - pattern: httpx.AsyncClient(...)
       - pattern: httpx.Client(...)
@@ -117,7 +117,7 @@ rules:
       obligation: O6 EGRESS
     paths:
       exclude:
-        - "**/trentina/egress.py"
+        - "**/trentina/reach/egress.py"
         - "**/trentina/gateway/client_egress.py"
     pattern-either:
       - pattern: asyncio.open_connection(...)

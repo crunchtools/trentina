@@ -37,7 +37,7 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "trentina"
 # construct freely; only ``src`` runs inside the perimeter.
 SEALED: dict[str, tuple[str, str]] = {
     # A ResolvedTarget is proof an address passed egress.check_url.
-    "ResolvedTarget": ("egress.py", "check_url"),
+    "ResolvedTarget": ("reach/egress.py", "check_url"),
 }
 
 

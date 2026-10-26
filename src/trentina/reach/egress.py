@@ -38,8 +38,8 @@ from typing import TYPE_CHECKING, Any
 import httpcore
 import httpx
 
-from .config import get_config
-from .errors import EgressRefusedError
+from ..config import get_config
+from ..errors import EgressRefusedError
 
 if TYPE_CHECKING:
     import ssl
@@ -79,7 +79,7 @@ _profile_slots_lock = threading.Lock()
 def _slots_for_caller() -> threading.BoundedSemaphore:
     """The calling profile's own lookup slots; standalone shares one set."""
     # Imported here: the gateway package imports this module on its way in.
-    from .gateway.context import get_current_profile
+    from ..gateway.context import get_current_profile
 
     profile = get_current_profile()
     name = profile.name if profile is not None else None

@@ -74,7 +74,7 @@ uv run trentina
   (`confine.refused`), audited `blocked_defense` like egress's (#278).
 - `TRENTINA_FETCH_ALLOW_PRIVATE` — default false. Lifts the egress guard's
   address rule so fetch can reach non-global addresses; scheme, port and
-  redirect rules still hold. Warns at startup. See `egress.py` (#260).
+  redirect rules still hold. Warns at startup. See `reach/egress.py` (#260).
 - `TRENTINA_REQUIRE_HARDENED` — default false. On a network transport,
   `posture.py` reads `/proc/self` at startup and WARNs each containment gap
   (no-new-privileges, capabilities, seccomp, writable rootfs or import path,
@@ -604,7 +604,7 @@ replaced.
   matches neither: `classifier.py` is L2 (a pluggable local ONNX classifier) and
   `agent.py` is L3 (Gemini REST via httpx, NO SDK, NO tools). CLAUDE.md called
   this "Layer 2: Q-Agent" until 0.29.0, which was simply wrong.
-- `egress.py` — the ONE egress guard (#260) for every gateway-side fetch
+- `reach/egress.py` — the ONE egress guard (#260) for every gateway-side fetch
   (`client.fetch_url`, grounding redirects). Refuses on the RESOLVED address,
   pins the connection to it (`PinnedBackend` under httpx's pool; TLS still
   verifies the hostname), and follows redirects by hand, checking each hop.

@@ -22,7 +22,6 @@ from pydantic import ValidationError
 
 from trentina import config as config_mod
 from trentina import database as database_mod
-from trentina import egress
 from trentina.gateway import client_egress
 from trentina.gateway import upstream as upstream_mod
 from trentina.gateway.errors import ProfileConfigError
@@ -35,6 +34,7 @@ from trentina.gateway.profile import (
     is_dns_name,
     profile_for_address,
 )
+from trentina.reach import egress
 from trentina.tools.reload import _hold_perimeter_fields, _unapplied
 
 from .egress_harness import PUBLIC_ADDRESS

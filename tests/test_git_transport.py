@@ -24,7 +24,6 @@ from starlette.responses import Response, StreamingResponse
 
 from trentina import config as config_mod
 from trentina import database as database_mod
-from trentina import egress
 from trentina.errors import EGRESS_REASONS
 from trentina.gateway import git_transport, upstream
 from trentina.gateway.errors import ProfileConfigError
@@ -32,6 +31,7 @@ from trentina.gateway.git_wire import REASONS, GitRefusedError
 from trentina.gateway.loader import ActiveConfig, GatewayConfig, load_profiles
 from trentina.gateway.profile import AuthConfig, GitGrant, GitRemote, Profile
 from trentina.outcomes import Outcome
+from trentina.reach import egress
 from trentina.tools.reload import _hold_perimeter_fields, _unapplied
 
 from . import git_harness as harness
