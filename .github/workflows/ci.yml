@@ -228,7 +228,7 @@ jobs:
       # always skip, and one went stale under the 0.55.0 default (#353).
       - name: Run L2 integration tests in container
         run: |
-          for model in prompt-injection-guard-small; do
+          for model in prompt-injection-guard-small-ct; do
             echo "::group::L2 integration: $model"
             docker run --rm \
               --entrypoint python \

@@ -1,0 +1,5 @@
+# What train_l2_model.py needs on the RunPod image (runpod_train.py IMAGE),
+# beyond its torch 2.8.0: the pins every GPU round trained with.
+transformers==4.57.6
+accelerate<2
+safetensors

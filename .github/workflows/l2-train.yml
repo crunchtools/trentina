@@ -1,0 +1,200 @@
+name: L2 - fine-tune
+
+# Fine-tune the shipped L2 model (Horizon) on benign and attack text in real
+# tool-reply envelopes, then hold the result to every L2 gate (#17, gaps 24,
+# 28, 31). The shipped model refuses benign tool replies because it never saw
+# one: scripts/l2_train_data.py builds the missing half from pinned public
+# sets, wrapping attacks in the same envelopes so the label follows the text.
+#
+# The model is an artifact of this run, not a release. With publish, the full
+# fine-tune, once it has passed every gate below, is also pushed as an image
+# (ghcr.io/crunchtools/trentina-l2-model); shipping it is a Containerfile
+# change that pins its digest, made after a screen on production shapes.
+#
+# Training runs on one RunPod Secure Cloud RTX 4090 (scripts/runpod_train.py),
+# the card the recipe was found on; the runner builds the data, exports and
+# gates. RUNPOD_API_KEY lives in the `runpod` environment, which releases it
+# only to this job, dispatched by hand on main or feature/l2-* (deployment
+# branch policy): no push, pull request or fork run ever sees it. The pod
+# gets only public datasets and the public base model.
+
+on:
+  workflow_dispatch:
+    inputs:
+      per_envelope:
+        description: "Benign rows per envelope (each with an attack twin)"
+        type: number
+        default: 120
+      replay:
+        description: "Plain benign rows, and plain attack rows"
+        type: number
+        default: 1000
+      epochs:
+        description: "Training epochs"
+        type: string
+        default: "2"
+      publish:
+        description: "Push the full fine-tune, if it passes every gate, as ghcr.io/crunchtools/trentina-l2-model"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: runpod
+    env:
+      PER_ENVELOPE: ${{ inputs.per_envelope || 120 }}
+      REPLAY: ${{ inputs.replay || 1000 }}
+      EPOCHS: ${{ inputs.epochs || '2' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: |
+          uv python install 3.14
+          uv sync --all-extras --locked
+          # The data builder reads parquet and the hub; neither is a gateway dependency.
+          uv pip install pandas pyarrow huggingface_hub
+
+      - name: Build the training set
+        run: |
+          for size in "$PER_ENVELOPE" "$REPLAY"; do
+            # Ten and up: one row in ten of each is validation.
+            [[ "$size" =~ ^[1-9][0-9]+$ ]] || { echo "sizes must be whole numbers from 10" >&2; exit 1; }
+          done
+          uv run --no-sync python scripts/l2_train_data.py --out build/l2-train --per-envelope "$PER_ENVELOPE" --replay "$REPLAY"
+
+      - name: Build the model-builder stage
+        run: docker build --target model-builder -t l2-builder -f Containerfile .
+
+      - name: Start the GPU pod
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: python3 scripts/runpod_train.py create
+
+      - name: Fine-tune on the pod
+        run: |
+          # EPOCHS is a dispatch input: checked as a number here, and parsed as
+          # a float by runpod_train.py before it reaches the pod.
+          [[ "$EPOCHS" =~ ^[0-9]*[.]?[0-9]+$ && ! "$EPOCHS" =~ ^[0.]+$ ]] \
+            || { echo "epochs must be a number above zero" >&2; exit 1; }
+          python3 scripts/runpod_train.py run --host "$POD_HOST" --port "$POD_PORT" --epochs "$EPOCHS"
+
+      - name: Terminate the pod
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: python3 scripts/runpod_train.py terminate --pod "${POD_ID:-}"
+
+      # The full fine-tune (blend 1), and any blend back toward Horizon that
+      # train_l2_model.py wrote (blend-<a>, only with --blends), side by side.
+      - name: Export
+        run: |
+          sudo chown -R "$(id -u)" build
+          shopt -s nullglob  # no blend-* without --blends
+          for src in build/l2-model build/l2-model/blend-*; do
+            name=$(basename "$src"); [[ "$name" == l2-model ]] && name=blend-1
+            docker run --rm -v "$PWD:/w" -w /w l2-builder python scripts/export_l2_model.py \
+              --src "$src" --repo "crunchtools/trentina:l2-train" --revision "$GITHUB_SHA" \
+              --out "build/l2-export/$name" --id prompt-injection-guard-small-ct --license Apache-2.0 \
+              --threshold 0.5 --window-tokens 512 --malicious-labels INJECTION
+            sudo chown -R "$(id -u)" build
+            cp "$src/training.json" "build/l2-export/$name/"
+            cp scripts/l2-model-NOTICE "build/l2-export/$name/NOTICE"
+          done
+
+      # Every blend meets every gate; the run passes when one blend passes all.
+      # Which one ships is chosen after the screen on production shapes, from
+      # those that pass: no shape may flag more often than under Horizon.
+      - name: Gates
+        run: |
+          set -o pipefail
+          passed=0
+          for model in build/l2-export/blend-*; do
+            status=0
+            echo "# $(basename "$model")" | tee -a "$GITHUB_STEP_SUMMARY"
+            for gate in l2_benign l2_envelopes l2_obfuscation; do
+              echo "## $gate" | tee -a "$GITHUB_STEP_SUMMARY"
+              CLASSIFIER_MODEL_PATH="$model" uv run --no-sync python "benchmarks/$gate.py" \
+                | tee -a "$GITHUB_STEP_SUMMARY" || status=1
+            done
+            echo "$(basename "$model"): $([[ $status == 0 ]] && echo pass || echo FAIL)" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            [[ $status == 0 ]] && passed=1 && touch "$model.passed"
+          done
+          [[ $passed == 1 ]]
+
+      # For screening on production shapes, which never leave the host they
+      # came from, before a Containerfile change pins a model. A derivative of
+      # Apache-2.0 and CC-BY-4.0 work, so it carries NOTICE and training.json
+      # (every source, revision and hash); kept a week, not published.
+      - name: Upload the model
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: l2-model
+          path: build/l2-export
+          retention-days: 7
+
+  # Its own job, so the only one holding packages: write runs no repo code and
+  # touches nothing the pod sent except the export the gates passed.
+  publish:
+    needs: train
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/trentina-l2-model
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: l2-model
+          path: export
+
+      # The one model the recipe ships, and only once it has passed every gate:
+      # the export as gated (manifest, NOTICE, training.json), nothing else.
+      # Nothing in it runs; the scratch image only carries the files.
+      - name: Check the full fine-tune passed every gate
+        run: |
+          [[ -e export/blend-1.passed ]] \
+            || { echo "the full fine-tune did not pass every gate" >&2; exit 1; }
+          printf 'FROM scratch\nCOPY blend-1/ /model/\n' > export/Containerfile
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: export
+          file: export/Containerfile
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: echo "Published \`$IMAGE@$DIGEST\`" | tee -a "$GITHUB_STEP_SUMMARY"

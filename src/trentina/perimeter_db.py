@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS tool_pins (
 );
 """
 
-PERIMETER_VERSION = "19"
+PERIMETER_VERSION = "20"
 """Bump whenever a change could alter what a scan CONCLUDES: a new detector, a
 retuned L3 prompt, a different L2 model or threshold set. Rows stamped with any
 other value are swept on load, so an older perimeter's verdict is unusable
@@ -89,6 +89,7 @@ petit (#419), so a journal response is judged as its samples and a summary.
 unpack stage reads a run of decimal digits as a number, not as hex (#431).
 "16" (1.5.0): the default judge is gemini-3.5-flash-lite (#397).
 "19": a remote backend's new or changed tool is held until approved (#469).
+"20": the default L2 model is the fine-tuned prompt-injection-guard-small-ct (#17).
 
 The L2 model and its threshold are no longer bumped here: they are an
 operator setting since 0.55.0 (#350), so :func:`perimeter_stamp` carries them."""

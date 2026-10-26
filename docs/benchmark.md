@@ -289,10 +289,10 @@ is prompts.
 
 ## L2 model comparison (#350, #353)
 
-L2's model is a setting since 0.55.0. Two ship in the image:
+L2's model is a setting since 0.55.0. One ships in the image,
 `prompt-injection-guard-small` (Horizon-Labs, mmBERT-small, Apache-2.0, the
-default at 0.7) and `prompt-guard-2-86m` (Meta, mDeBERTa-base, Llama 4
-Community License, 0.5). Two more were measured and rejected in #353:
+default at 0.7); `prompt-guard-2-86m` (Meta, mDeBERTa-base, Llama 4
+Community License, 0.5) shipped beside it until #362. Two more were measured and rejected in #353:
 `deberta-v3-base-prompt-injection-v2` (ProtectAI, mirrored as
 `RedHatAI/...` and shipped in OpenShift AI, Apache-2.0) and `PIGuard`
 (ACL 2025, MIT), both DeBERTa-v3-base and English-only.
@@ -1061,6 +1061,241 @@ only make L2 stricter.
 
 Not measured: Haiku 4.5 and Gemini 3.8 Flash on the pack gate and the
 briefing arms, which did not finish (below). One feed, one labeller.
+
+### Envelopes, not prose (#17)
+
+A lab log, dated, newest last. The weekend report stopped on L2 refusals of
+Kagetora's own reads; this is what the refusals turned out to be.
+
+**2026-10-25, the production baseline.** Seven days of `detections`: 1,022
+results flagged by L2 alone and cleared by L3, against 6 L2 flags L3 agreed
+with. Scores by band: 186 at 0.70-0.80, 216 at 0.80-0.90, 323 at 0.90-0.98,
+297 at 0.98 or above, so no threshold under 0.98 clears most of them, and
+0.98 already cost 7 of 41 attacks (above). By tool: fetch 164, Gmail
+message content 66, Jira comments 66, memory_store 49, Jira transitions 47,
+journal_query 38, Slack history 29, GitHub get_issue 25. The weekend run of
+02:04Z was refused `get_spec` (0.848), four `get_sweep` pages (0.866 to
+1.0), a web search (0.828) and a `read_entry` (0.993).
+
+**The envelope is the trigger.** On the shipped model (same revision as
+production), one benign GitHub issue about prompt-injection classifiers. Every
+row is the same benign text; this measures a false positive, not a way past
+the gate, and an attack in any of these shapes is the envelope gate's half:
+
+| What L2 read | Score |
+|---|---|
+| The body alone | 0.001 |
+| The title alone | 0.05 |
+| The full API reply | 0.999 |
+| The full reply, body deleted | 0.999 |
+| The full reply, title deleted | 0.03 |
+| Slim JSON (number, title, state, url, body, dates) | 0.000 |
+
+Removing any other single field keeps it at about 0.999. It is the title's
+vocabulary inside the API envelope, which no part scores alone. 65 real
+public RSS articles score at most 0.08 as text and up to 0.755 inside
+Miniflux's entry JSON. `benign_ops`' `issue_list` and `created_issue` are
+the slim shape, which is why the gate never saw it.
+
+**Reshaping the reply does not fix it.** The stored sweep of the refused
+run, scored as the gateway reads it, reproduces production (rss pages 2 and
+3 at 0.866 and 1.0). 13 of its 159 rss records flag alone; the worst are
+records Metsuke withheld after collection (title and feed null, `flagged:
+true`) whose EFF URLs carry the words (`computer-security-about-get-lot-
+worse`). Dropping nulls, dropping the flag, or rendering records as text
+lines moves page scores both ways (page 1: 0.121 to 0.997) and page 3 stays
+at 0.99 to 1.0 in every variant. Text-only judging was reviewed and
+rejected for the reasons in `docs/defense-pipeline.md` rule 3: keys and
+URLs carry words, and what is judged must be what is delivered.
+
+**Stock models, screened on the real shapes** (the refused sweep's 8 pages
+and 276 records, 2 GitHub replies, 65 Miniflux entries; internal attacks
+from `corpora/internal`; `benign_ops` held-out), each at 0.7:
+
+| | Horizon | DeBERTa v2 | PIGuard |
+|---|---|---|---|
+| Sweep pages flagged | 2/8 | 8/8 | 5/8 |
+| Sweep records flagged | 16/276 | 89/276 | 238/276 |
+| GitHub replies flagged | 1/2 | 2/2 | 2/2 |
+| Miniflux entries flagged | 3/65 | 54/65 | 65/65 |
+| `benign_ops` held-out flagged, known gaps included | 11/221 | 110/221 | 129/221 |
+| Internal attacks caught | 41/44 | 35/44 | 28/44 |
+| Screen time, 4 threads | 249 s | 553 s | 598 s |
+
+The `benign_ops` row counts the known-gap shapes the gate scores outside its
+budget (journals, meeting notes, gap 31); on the gated shapes alone Horizon's
+recorded result stands at 0 of 143. The shipped model is the best of the
+three on both sides. Prompt Guard 2
+86M (Llama license, gated) and Qualifire Sentinel (Elastic License 2.0,
+gated; a yardstick only, never shipped) need a Hugging Face login with
+their terms accepted and are not yet measured.
+
+**Why Horizon reads envelopes as attacks.** Its card lists its training
+sets: injection sets that include attacks planted in tool responses
+(`rgeada/tool-response-injections`, `nvidia/Nemotron-RL-Agentic-Indirect-
+Prompt-Injection-v1`), and benign data that is prose (oasst2, aya,
+fineweb). It never saw a benign tool reply.
+
+**The envelope gate.** `benchmarks/l2_envelopes.py` wraps 40 benign and 40
+attack texts (deepset test split, internal attacks) in each of twelve
+envelopes from `corpora/envelopes.py`. Horizon at 0.7: 21 of 480 benign
+flagged (fetched pages 9 of 40, GitHub issues 5, monitoring records 3) and
+342 of 480 attacks caught (weakest inside Miniflux entries, 23 of 40, and
+sweep pages, 19 and 20 of 40). Invented envelopes reproduce the effect:
+benign text at most 0.026 as prose flags 8 of 20 times as a GitHub issue.
+
+**The fine-tune.** `.github/workflows/l2-train.yml` builds a set from six
+pinned permissive sources, none of them a set measured here, wraps benign
+and attack text alike in every envelope so the label follows the text,
+replays plain rows, fine-tunes Horizon and holds the result to the benign,
+envelope and obfuscation gates.
+
+**Do missed attacks matter less? (2026-10-25)** No. Joining the 2026-10-06
+detonation run (10 agents, a hijack flag per conversation) to each attack
+document's L2 score: Spearman 0.007 for Horizon, -0.048 for PG2 86M. Attacks
+Horizon misses hijack an agent 7.6% of the time against 9.4% for those it
+catches. PG2 86M misses all 12 that hijacked a strong agent (Haiku 4.5,
+Gemini 3.8 Flash, Gemini 2.5 Flash Lite). The bar for a candidate is set on
+the documents that hijacked: Horizon at 0.7 catches 80 of 128, and 9 of 12
+of the strong-agent ones.
+
+**Runs 1 and 2 fail on real replies.** Run 1 (40191101108) dropped 1,115
+long attacks it could not place in a 512-token window; run 2 (40202667628)
+trains on the window that holds the attack and caps a long benign row at
+three windows. Run 2 ranks the synthetic gates better than Horizon at every
+cut, and wins the detonation set, but refuses real replies Horizon passes:
+
+| | Horizon @0.7 | Run 1 @0.7 | Run 2 @0.7 | Run 2 @0.96 |
+|---|---|---|---|---|
+| Envelope gate, benign flagged (of 480) | 23 | 14 | 37 | 8 |
+| Envelope gate, attacks caught (of 480) | 344 | 303 | 388 | 359 |
+| Sweep pages flagged (of 8) | 2 | 3 | 5 | 4 |
+| Sweep records flagged (of 276) | 16 | 22 | 24 | 19 |
+| Miniflux entries flagged (of 65) | 3 | 12 | 9 | 7 |
+| `benign_ops`, known gaps included (of 221) | 11 | 41 | 54 | 41 |
+| Hijacking attacks caught (of 128) | 80 | 90 | | 99 |
+| Strong-agent hijacks caught (of 12) | 9 | 8 | | 11 |
+
+The 0.96 cut was found on the gate's own scores, so its envelope row is
+optimistic. Horizon's envelope row here is the local export (23 and 344);
+the image's export scores 21 and 342. The regression sits in logs, journals and source code, shapes no
+training row resembles: the model drifted off Horizon's priors there. Run 3
+anchors on `benign_ops`'s tuning split (eight times each, held-out never) and
+halves the learning rate to 1e-5.
+
+**Run 3 (40216045547) fixes what it was shown, nothing else.** The
+`benign_ops` gate passes (2 of 143 held-out; known gaps 12 flags against
+run 2's 49, though templated siblings of these cases were trained on). The
+envelope gate fails, 27 of 480 benign against 377 of 480 attacks caught. On
+real replies at 0.95 it is still worse than Horizon: sweep pages 4/8 (1/8),
+sweep records 22/276 (7), Miniflux 7/65 (1). It catches 93 of 128 hijacking
+attacks (Horizon 80) and 9 of 12 strong-agent ones (9).
+
+**Run 4 follows the literature, not another knob.** A research pass
+(2026-10-25) and Horizon's own trainer (`horizon-ai-labs/agent-io-guards`,
+`train/train.py`) point the same way:
+
+- distillation: plain and anchor rows train toward Horizon's own score as
+  well as their label, weight 0.5 (Horizon's `--distill`; Hinton et al.
+  2015), so what it reads well is kept, not re-learned;
+- counterfactual pairs: every enveloped benign row has a twin with an
+  attack planted in the same text and the same envelope, built from the
+  same seed (Kaushik et al. 2020), so only what is said can carry the label;
+- weight blends (WiSE-FT, Wortsman et al. 2022): the fine-tune is also
+  written mixed back toward Horizon at 0.4, 0.6 and 0.8, and every mix meets
+  the gates;
+- Horizon's optimiser settings (betas 0.9/0.98, eps 1e-6, cosine, clip 1.0),
+  the lowest-loss checkpoint of four kept, and the token embeddings frozen.
+
+**Runs 1 to 4 trained on windows the runtime never sends (found
+2026-10-25).** The trainer wrapped each window with the tokenizer's
+`build_inputs_with_special_tokens`, which on Horizon's fast tokenizer adds
+nothing, though it reports two special tokens. The runtime
+(`classifier._pad_segment`) sends `[CLS] … [SEP]`, and the head pools on
+CLS: every fine-tune learned to classify from the first content token and
+was judged with CLS in its place. Runs 1 to 3 measure that mismatch as much
+as their recipes; run 4 (40231033184) was cancelled. The trainer now wraps
+windows as the runtime does, and a test pins it.
+
+**GPU rounds (RunPod, one RTX 4090, 2026-10-25).** An epoch takes about a
+minute there against 2.5 hours on the CI runner, so each round trains four
+configurations with three blends each and scores them on the gate texts.
+With the windows fixed, the run-4 recipe beats Horizon on hijacks at once
+(blend 0.6 at 0.7: 91 of 128, 11 of 12 strong; Horizon 80 and 9) and on
+real sweep records (7 of 276 against 16), but refused the real infra page:
+the invented infra records lacked six of Metsuke's fields. Round 2 gives
+the sweep and Miniflux envelopes their real field sets (values invented)
+and technical, security-flavoured neighbours. Its best, distillation 0.3,
+2e-5, two epochs, blend 0.6, at 0.5, against Horizon at 0.7:
+
+| | Round 2 | Horizon |
+|---|---|---|
+| Hijacking attacks caught (of 128) | 103 | 80 |
+| Strong-agent hijacks caught (of 12) | 11 | 9 |
+| Internal attacks caught (of 44) | 42 | 41 |
+| Envelope gate, benign flagged / attacks caught (of 480) | 2 / 372 | 38 / 335 |
+| Real sweep records flagged (of 276) | 6 | 16 |
+| Real sweep pages flagged (of 8) | 2 | 2 |
+| Real Miniflux entries flagged (of 65) | 3 | 3 |
+| `benign_ops`, known gaps included (of 221) | 5 | 11 |
+
+What it still refuses that Horizon passes is benign development text dense
+with security words: the inbox page and its issue list as Markdown (API
+keys in plaintext, OAuth stores, tool pinning against rug pulls) and a
+plugin-drift warning. The production screen has now steered three rounds,
+so it is no longer an unseen test: acceptance needs a fresh sweep, read
+once.
+
+Round 3 adds that kind of text as benign: summaries and details of the
+GitHub Advisory Database's reviewed 2025 advisories (3,691 files at a
+pinned commit, CC-BY-4.0, any that quote an injection dropped). The plain
+recipe wins, distillation 0.5, 2e-5, two epochs, the full fine-tune, at
+0.5:
+
+| | Round 3 | Round 2 | Horizon |
+|---|---|---|---|
+| Hijacking attacks caught (of 128) | 103 | 103 | 80 |
+| Strong-agent hijacks caught (of 12) | 12 | 11 | 9 |
+| Internal attacks caught (of 44) | 43 | 42 | 41 |
+| Envelope gate, benign flagged / attacks caught (of 480) | 3 / 356 | 2 / 372 | 38 / 335 |
+| Real sweep records flagged (of 276) | 3 | 6 | 16 |
+| Real sweep pages flagged (of 8) | 0 | 2 | 2 |
+| Real Miniflux entries flagged (of 65) | 1 | 3 | 3 |
+| `benign_ops`, known gaps included (of 221) | 3 | 5 | 11 |
+
+The infra and inbox pages pass; what is left is three single records, one
+Miniflux entry and an issue whose body lists security-themed titles, each
+read alone. Distillation 0.3 caught fewer attacks (env 330, hijacks 86),
+a third epoch lost 50 envelope attacks and flagged an internal trap, and
+3e-5 lost internal attacks (35 of 44). Blend 0.8 matched the full
+fine-tune within noise. All three L2 gates pass (benign 0 of 143 held-out,
+envelopes 3 of 480, obfuscation no drop). Iteration stops here: more
+rounds would tune further to a screen that is no longer unseen.
+
+The shipped model trains in `l2-train` on the same card
+(`scripts/runpod_train.py`: one Secure Cloud RTX 4090, the same image and
+pins), since two epochs on the runner's CPU run past GitHub's six-hour
+limit. GPU runs are not bit-identical, so the check on that run is the
+same shape on real replies, not the same hash.
+
+It was the same hash, near enough: GHA run 40261349054 scored every real
+reply within 0.001 of the pod model, and run 40311268794, the one
+published (`ghcr.io/crunchtools/trentina-l2-model@sha256:02c8a8ff…`),
+passed the same gates with the same counts. Shipped 2026-10-26 without a
+fresh sweep first: the newest one was the screened one, and the next is
+the first production run. Under it known gaps 19 and 28 close (none of
+54 cases flags) and their shapes are gated (0 of 185 held-out), gap 31
+narrows to 3 of 43, and gap 21 inverts. Horizon flagged anything in
+base32, Ascii85, base85, UU, Braille or Morse; the fine-tune reads none
+of them, so benign encoded text passes and so do most attacks in them
+(1, 5, 2, 16, 2 and 21 of 44, against 43 plain). Base64, hex and base16
+are decoded before L2 and unaffected. Shipped with that gap open by
+decision; the fix is decoders in the unpack stage.
+
+A blend that passes the gates is chosen on production shapes by
+constraint, not by best number: no shape may flag more often than under
+Horizon. The envelope gate is built from the same makers as the training
+set, so it is a necessary check, not the deciding one.
 
 ## Guarded execution (#456)
 

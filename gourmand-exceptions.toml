@@ -426,6 +426,12 @@ justification = "The word DEPRECATED appears inside a sample STRING that exercis
 classification = "by_design"
 
 [[exceptions]]
+check = "dead_code_markers"
+path = "scripts/train_l2_model.py"
+justification = "The word is inside transformers' TrainingArguments parameter remove_unused_columns, set to False so the distillation target reaches the loss (#17). It names a library option, not removed code."
+classification = "gourmand_bug"
+
+[[exceptions]]
 check = "copy_paste_detection"
 path = "src/trentina/l1/hidden.py"
 justification = "style_has_same_color is reported as identical to _safe_endpoint in tools/reconnect.py, and normalize_color as identical to _validate_file in tools/read.py. These pairs share a guard-then-return statement shape and nothing else -- one detects hidden text, the others validate an endpoint and a file path. Structural collision, not duplication. (Was l1/html.py until #172 split conversion out to transforms/html.py.)"
@@ -941,4 +947,31 @@ check = "copy_paste_detection"
 path = "src/trentina/gateway/matrix_proxy.py"
 pattern = "_forward_judged"
 justification = "_forward_judged (deliver a fully-judged Matrix response and settle its audit row) is reported 100% similar to gateway/tool_pins._pin_one and unpack/scan._data_uri. All three are a short compute-then-branch-then-return body; they share that skeleton and nothing else — one pins a tool, one decodes a data URI, this one forwards a judged sync. A structural collision, as with egress_http._resolve_upstream above."
+classification = "by_design"
+
+
+# --- #17 L2 envelopes ---
+
+[[exceptions]]
+check = "primitive_obsession"
+path = "corpora/envelopes.py"
+justification = "The numbers are the data, as in corpora/benign_ops.py: this file invents the values around a text in each backend's reply (#17), and the literals are ID ranges, month and day bounds, listing sizes and timestamp ranges, each used once where the field it fills is written. A named constant per range would be forty names for values the field name beside it already explains."
+classification = "by_design"
+
+[[exceptions]]
+check = "hardcoded_years"
+path = "scripts/l2_train_data.py"
+justification = "2025 names the slice of GitHub's advisory database the fine-tuning set reads (advisories/github-reviewed/2025), pinned by commit with every file hashed into training.json (#17). A moving year would change the training data under a fixed revision."
+classification = "by_design"
+
+[[exceptions]]
+check = "hardcoded_years"
+path = "corpora/envelopes.py"
+justification = "The dates are inside invented reply fields (#17): created_at, published, a URL's year. A fixed range keeps one seed one text on every run, which the envelope gate and the training set depend on."
+classification = "by_design"
+
+[[exceptions]]
+check = "absolute_paths"
+path = "scripts/runpod_train.py"
+justification = "Paths on the training pod, not on this machine: RunPod's workspace directory, the ssh directory where the pod's sshd reads the host key the runner pins, and the pinned image's own entrypoint and start script, which the boot command hands over to (#17)."
 classification = "by_design"

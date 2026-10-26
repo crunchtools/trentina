@@ -135,15 +135,15 @@ A prompt-injection classifier running on ONNX Runtime (CPU, no GPU required), sl
 
 | Model (`CLASSIFIER_MODEL`) | Threshold | Notes |
 |---|---|---|
-| `prompt-injection-guard-small` (default) | 0.7 | Horizon-Labs, Apache-2.0, mmBERT-small. Trained on injections planted in documents, tool output and mail. |
+| `prompt-injection-guard-small-ct` (default) | 0.5 | Horizon-Labs' `prompt-injection-guard-small` (Apache-2.0, mmBERT-small), fine-tuned by `l2-train` on benign tool replies and attacks in the same envelopes (#17). Published as `ghcr.io/crunchtools/trentina-l2-model`, pinned by digest; NOTICE and `training.json` (every source, revision and hash) ship beside it. |
 
-The image ships that one model. Meta's `prompt-guard-2-86m` shipped beside it from 0.55.0 to 0.58.0 and was dropped (#362): it fails five of the six transforms of the obfuscation gate, so one zero-width character blinded it. `CLASSIFIER_MODEL_PATH` still reaches an export of it, or of any model, for research.
+The image ships that one model. Horizon, the base, shipped until 2.0.0: it refused about 150 ordinary tool replies a day (feeds, monitoring pages, issue lists) that its training had never shown it, and the fine-tune was fixed at model selection ([benchmark](benchmark.md#envelopes-not-prose-17)). Meta's `prompt-guard-2-86m` shipped beside it from 0.55.0 to 0.58.0 and was dropped (#362): it fails five of the six transforms of the obfuscation gate, so one zero-width character blinded it. `CLASSIFIER_MODEL_PATH` still reaches an export of it, or of any model, for research.
 
 **The obfuscation gate is enforced.** The image build classifies every corpus attack plain and under six transforms with the shipped model and writes the result into its `trentina-model.json` (`benchmarks/l2_obfuscation.py --record`); a model that fails stops the build. At startup the gateway reads the record: a model with a failing record, or none, is logged as `l2_obfuscation_gate_failed` or `l2_obfuscation_gate_unrecorded`, and under `TRENTINA_REQUIRE_HARDENED` the gateway refuses to start. The gate's state is part of the verdict stamp. garak's sixteen further encodings are measured against the model and gate nothing (`benchmarks/l2_encodings.py`, #423): the model reads quoted-printable and MIME, which barely change the text, and none of the others; base16 and hex are decoded before it is asked, and the rest are known gaps 21 to 23. To run your own model, export it and record the gate against it before you point `CLASSIFIER_MODEL_PATH` at it.
 
-**So is the benign gate (#411).** The same build then runs the model, at the threshold it ships with, over 296 invented benign cases of the shapes production refused (unit properties, journals, disk-usage and container listings, metrics rows, replies that carry an identifier, agent-forum replies, machine-written meeting notes, writing about attacks), 207 of them gated, each read as the gateway reads a tool response: through the default transforms, the text block and then every string of the structured content, unpacked. A model that flags more than 2% of the held-out cases stops the build (`benchmarks/l2_benign.py --record`). The record carries the threshold it was taken at, so a gateway started with another `CLASSIFIER_THRESHOLD` reports `l2_benign_gate_unrecorded` until the gate is run at that one. Numbers, and the shapes the shipped model still flags (known gaps 19, 28 and 31), are in [benchmark.md](benchmark.md#l2-benign-gate-411-404).
+**So is the benign gate (#411).** The same build then runs the model, at the threshold it ships with, over 296 invented benign cases of the shapes production refused (unit properties, journals, disk-usage and container listings, metrics rows, replies that carry an identifier, agent-forum replies, machine-written meeting notes, writing about attacks), 207 of them gated, each read as the gateway reads a tool response: through the default transforms, the text block and then every string of the structured content, unpacked. A model that flags more than 2% of the held-out cases stops the build (`benchmarks/l2_benign.py --record`). The record carries the threshold it was taken at, so a gateway started with another `CLASSIFIER_THRESHOLD` reports `l2_benign_gate_unrecorded` until the gate is run at that one. Numbers, and the shapes the shipped model still flags (known gap 31), are in [benchmark.md](benchmark.md#l2-benign-gate-411-404).
 
-Measured on our corpora (`docs/benchmark.md`, #350), the default catches 36 of 39 internal attacks to Prompt Guard 2's 8, and 21 of 39 when they are planted inside long benign documents to Prompt Guard 2's 4, flagging 3 of 150 benign documents to Prompt Guard 2's 0, at 2.4x the throughput on CPU. Two English-only DeBERTa models, ProtectAI's v2 and PIGuard, were measured and rejected (#353): they flag 29 and 67 of the 150. Prompt Guard 2 is the better detector of DAN-style direct jailbreaks (624 vs 520 of 666 on the jackhhao set, 1 and 3 false positives of 640).
+Measured on our corpora (`docs/benchmark.md`, #350), Horizon, the base model and the default until 2.0.0, catches 36 of 39 internal attacks to Prompt Guard 2's 8, and 21 of 39 when they are planted inside long benign documents to Prompt Guard 2's 4, flagging 3 of 150 benign documents to Prompt Guard 2's 0, at 2.4x the throughput on CPU. Two English-only DeBERTa models, ProtectAI's v2 and PIGuard, were measured and rejected (#353): they flag 29 and 67 of the 150. Prompt Guard 2 is the better detector of DAN-style direct jailbreaks (624 vs 520 of 666 on the jackhhao set, 1 and 3 false positives of 640).
 
 Each model directory carries a `trentina-model.json`: its id, pinned revision, threshold, and which outputs are malicious. A model whose polarity cannot be read from it or its labels does not load, and L2's absence is then a gap like any other (`TRENTINA_REQUIRE_L2`). The model, revision and threshold are part of the perimeter verdict stamp, so switching models sweeps cached verdicts.
 
@@ -413,21 +413,15 @@ one does; the rest name the benchmark that measured them.
     its structured copy; the router drops the copy, and read once none
     flags. The shape is gated now. The number is kept so later gaps keep
     theirs.
-19. **A log can be flagged by L2** (#411, #419, #431). A journal or a mail
-    log is key fingerprints, container IDs, message IDs and audit records,
-    and the shipped model's score on one moves with which of them it holds.
-    Of a dozen to a score of lines, 3 of 20 held-out cases flag at 0.7
-    (`journal_query`, `syslog_search`); of a hundred lines in one JSON
-    string, 2 of 6 (`journal_query_100`). Since #419 `structured` hands the
-    long form to petit, and that did not close this: a journal of mixed
-    units keeps about two lines in three. Removing any one kind of token
-    from what the model reads clears some logs and flags others, so there is
-    nothing for a transform to do; it is fixed at model selection.
-    `block` refuses such a reply and offers `redact`; asking for fewer
-    lines, or a narrower unit or pattern, often avoids it. Scored on every
-    image build, outside the gate's budget
-    ([benchmark](benchmark.md#the-gate-reads-as-the-router-reads-431)).
-    Tested, in the image (`tests/test_l2_integration.py`).
+19. *Closed by the fine-tuned model (#17).* A journal or a mail log (key
+    fingerprints, container IDs, message IDs, audit records) was flagged by
+    Horizon, its score moving with which of them it held: 3 of 20 held-out
+    short logs and 2 of 6 hundred-line journals at 0.7. No transform could
+    fix it, so it was fixed at model selection: under
+    prompt-injection-guard-small-ct none of the 30 cases of `journal_query`,
+    `syslog_search` and `journal_query_100` flags, and the shapes are gated
+    ([benchmark](benchmark.md#envelopes-not-prose-17)). The number is kept
+    so later gaps keep theirs.
 20. **A request that reads as an ordinary one passes every layer** (#29).
     Varonis's published customer-export request, a colleague asking an agent
     to send this week's export, is flagged by nothing: L1 strips nothing, L2
@@ -441,21 +435,26 @@ one does; the rest name the benchmark that measured them.
     Flash-Lite, Gemini 3.8 Flash) pass it
     ([benchmark](benchmark.md#l3-on-them-2026-10-10-the-four-shipped-judges)).
     L1 and L2 tested, L2 in the image; the judges measured once each.
-21. **L2 flags an encoding it cannot read, whatever the text says** (#423).
-    base32, Ascii85, base85, UU, Braille and Morse reach L2 as they
-    arrived (gap 6). The shipped model flags 37 to 44 of 44 attacks written
-    in them and 79 to 86 of 86 benign texts
-    ([benchmark](benchmark.md#garaks-encodings-423)). So `block` refuses
-    harmless encoded text, and a flag on such a blob says it is a blob. The
-    same holds for base64 the unpack stage does not decode (gap 2): raw
-    base64 is flagged 130 times in 130. L3 reads the same blob; what it
-    makes of one is not measured. Tested, L2 in the image.
+21. **An attack in an encoding the unpack stage does not decode reaches
+    L3 alone** (#423, #17). base32, Ascii85, base85, UU, Braille and Morse
+    reach L2 as they arrived (gap 6). Horizon flagged nearly anything in
+    them, attacks (37 to 44 of 44) and benign text alike, so a flag said
+    only that the text was a blob. The fine-tuned model reads neither: it
+    passes benign encoded text and catches 1, 5, 2, 16, 2 and 21 of 44
+    attacks in them, against 43 plain
+    ([benchmark](benchmark.md#garaks-encodings-423)). So these attacks are
+    L3's to catch, and what L3 makes of them is not measured. The fix is a
+    decoder for each in the unpack stage, so L2 reads the plain text, as it
+    does base64, hex and base16 (43 of 44 caught). Shipped with the gap
+    open, by decision (2026-10-26). Tested, L2 in the image: the test fails
+    when a decoder lands.
 22. **A letter cipher costs L2 detections and adds false positives**
-    (#423). Under ROT13, Atbash and leetspeak the shipped model flags 24,
-    21 and 35 of 44 attacks against 41 plain, and 25, 18 and 21 of 86
-    benign texts against none. L1 matches its directive patterns through
-    ROT13 only, and those attacks carry none: it counted 1 of 44. Tested,
-    L2 in the image.
+    (#423). Under ROT13 and Atbash the shipped model flags 26 and 17 of 44
+    attacks against 43 plain, and 24 and 12 of 86 benign texts against
+    none. Under leetspeak it now loses only one (42 of 44), but still
+    flags 20 of the 86 benign texts. L1
+    matches its directive patterns through ROT13 only, and those attacks
+    carry none: it counted 1 of 44. Tested, L2 in the image.
 23. **An attack spelled in the NATO alphabet, or written in sneaky bits,
     passes L1 and L2** (#423). `India Golf November Oscar Romeo Echo` is
     six ordinary words: no attack of 44 scored above 0.11. Sneaky bits
@@ -530,26 +529,14 @@ one does; the rest name the benchmark that measured them.
     response with an image or a blob in it is not cut (gap 13), a part of a
     JSON response is text and not valid JSON on its own, and part N+1 is
     judged when it is asked for and not ahead of the request.
-28. **L2 flags machine-written meeting notes that end in bare links**
-    (#450). Notes a meeting assistant writes (summary, decisions, action
-    items addressed to their owners) close with where the recording and the
-    transcript are and a feedback link, each a bare URL ending in an
-    identifier no person wrote. On production two of two such documents
-    scored 0.91 and 0.93 at 0.7 while L3 read both clean. Of the invented
-    cases of that shape, 5 of 18 held-out flag (`meeting_notes`, up to
-    0.98); of the same notes without the links, none of 12
-    (`meeting_notes_unlinked`, at most 0.01), so that shape is gated. It is
-    the two together: the same links after ordinary prose flag 2 documents
-    in 11, and a Markdown link around the URL mostly does not flag. Like gap
-    19 it is an identifier the model reads as encoded text, and there is
-    nothing for a transform to remove that the agent does not need; it
-    is fixed at model selection. `block` refuses such a document and offers
-    `redact`, which returned a verified extraction on production. The flag
-    is L2's alone: every supported judge clears all 36 invented notes, so
-    each of the 7 that L2 flags is refused on its word only. Scored on
-    every image build, outside the gate's budget
-    ([benchmark](benchmark.md#meeting-notes-and-their-links-450)). Tested,
-    in the image (`tests/test_l2_integration.py`).
+28. *Closed by the fine-tuned model (#17).* Machine-written meeting notes
+    that close with bare links to the recording, the transcript and a
+    feedback form were flagged by Horizon (two of two on production, 5 of
+    18 held-out invented cases) while every supported judge cleared them.
+    It was fixed at model selection: under prompt-injection-guard-small-ct
+    none of the 24 `meeting_notes` cases flags, and the shape is gated
+    beside `meeting_notes_unlinked`. The number is kept so later gaps keep
+    theirs.
 29. **No layer reads what the git transport carries** (#453). A profile
     with a `git` block clones, fetches and pushes through `/proxy/git`. The
     gateway terminates that connection, so this is a choice and not a
@@ -607,7 +594,10 @@ one does; the rest name the benchmark that measured them.
     change goes through the benchmark work (#471). The scores of the
     original three cases were not recorded in this change; the false-positive
     rate for the class is whatever `benchmarks/l2_benign.py` reports for
-    these categories. Tested, in the image (`tests/test_l2_integration.py`).
+    these categories. The fine-tuned model (#17), trained on GitHub's
+    security advisories as benign text among others, narrowed it to 3 of 43
+    invented cases, all in the tuning split; it is not closed. Tested, in
+    the image (`tests/test_l2_integration.py`).
 32. **A binary egress response is not read** (#511). The terminating egress
     route judges a text response as ingress, but a response whose content type
     is not text (an image, an archive, `application/octet-stream`) is one no
