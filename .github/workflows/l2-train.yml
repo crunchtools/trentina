@@ -6,9 +6,10 @@ name: L2 - fine-tune
 # one: scripts/l2_train_data.py builds the missing half from pinned public
 # sets, wrapping attacks in the same envelopes so the label follows the text.
 #
-# The model is an artifact of this run, not a release: nothing here pushes
-# an image or a model. Shipping one is a Containerfile change that pins its
-# digest, made after the gates below and a screen on production shapes.
+# The model is an artifact of this run, not a release. With publish, the full
+# fine-tune, once it has passed every gate below, is also pushed as an image
+# (ghcr.io/crunchtools/trentina-l2-model); shipping it is a Containerfile
+# change that pins its digest, made after a screen on production shapes.
 #
 # Training runs on one RunPod Secure Cloud RTX 4090 (scripts/runpod_train.py),
 # the card the recipe was found on; the runner builds the data, exports and
@@ -32,6 +33,10 @@ on:
         description: "Training epochs"
         type: string
         default: "2"
+      publish:
+        description: "Push the full fine-tune, if it passes every gate, as ghcr.io/crunchtools/trentina-l2-model"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -124,7 +129,7 @@ jobs:
             done
             echo "$(basename "$model"): $([[ $status == 0 ]] && echo pass || echo FAIL)" \
               | tee -a "$GITHUB_STEP_SUMMARY"
-            [[ $status == 0 ]] && passed=1
+            [[ $status == 0 ]] && passed=1 && touch "$model.passed"
           done
           [[ $passed == 1 ]]
 
@@ -139,3 +144,57 @@ jobs:
           name: l2-model
           path: build/l2-export
           retention-days: 7
+
+  # Its own job, so the only one holding packages: write runs no repo code and
+  # touches nothing the pod sent except the export the gates passed.
+  publish:
+    needs: train
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/trentina-l2-model
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: l2-model
+          path: export
+
+      # The one model the recipe ships, and only once it has passed every gate:
+      # the export as gated (manifest, NOTICE, training.json), nothing else.
+      # Nothing in it runs; the scratch image only carries the files.
+      - name: Check the full fine-tune passed every gate
+        run: |
+          [[ -e export/blend-1.passed ]] \
+            || { echo "the full fine-tune did not pass every gate" >&2; exit 1; }
+          printf 'FROM scratch\nCOPY blend-1/ /model/\n' > export/Containerfile
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: export
+          file: export/Containerfile
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: echo "Published \`$IMAGE@$DIGEST\`" | tee -a "$GITHUB_STEP_SUMMARY"
