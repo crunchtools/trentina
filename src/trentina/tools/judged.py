@@ -20,9 +20,7 @@ import time
 from typing import TYPE_CHECKING, Any, assert_never
 
 from ..config import get_config
-from ..core import Decision, Posture, dispose, refusal_of
-from ..core.dispose import DEFAULT_REDACT_PROMPT
-from ..core.dispose import Disposition as Disposed
+from ..core import Decision, Gated, Posture, gate, refusal_of
 from ..database import is_blocked, record_capture
 from ..dbus_interface import emit_request_event
 from ..defense import DefenseVerdict, Provenance, defend, layer_verdicts
@@ -32,13 +30,13 @@ from ..gateway.context import current_call, get_current_parts
 from ..gateway.scope import current_scope
 from ..l1.pipeline import run_l1
 from ..modes import BLOCKLIST_REASON, Mode, current_policy, refusal_body
-from ..quarantine.agent import quarantine_redact
 from ..report import Disposition, LayerState, build_report
 from ..warning import build_warning
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from ..core.dispose import Disposition as Disposed
     from ..gateway.profile import DefenseConfig
     from ..l1.pipeline import PipelineResult
 
@@ -301,11 +299,14 @@ async def judge_and_deliver(
             "call_ref": current_call.get() or None,
         },
     )
+    # The gate disposes of the verdict once (core.gate/core.dispose) and, for a
+    # redact or a downgraded block, runs turns 2 and 3 and carries their result.
+    gated = await gate(verdict, posture)
     original = document if delivered is None else delivered
     if paged is None:
-        return await _dispose(call, verdict, original, posture, extras, redact_extras)
+        return await _dispose(call, gated, original, posture, extras, redact_extras)
     try:
-        response = await _dispose(call, verdict, original, posture, extras, redact_extras)
+        response = await _dispose(call, gated, original, posture, extras, redact_extras)
     except BlockedSourceError:
         # Nothing of it was delivered, so there is no rest to come back for.
         paging.release(paged)
@@ -315,14 +316,15 @@ async def judge_and_deliver(
 
 async def _dispose(
     call: _Call,
-    verdict: DefenseVerdict,
+    gated: Gated,
     original: Any,
     posture: Posture,
     extras: Mapping[str, Any] | None,
     redact_extras: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """Deliver, extract from or refuse a judged payload, as ``core.dispose`` decides."""
-    disposition = dispose(verdict, posture)
+    """Deliver, extract from or refuse a judged payload, as the gate decided."""
+    verdict = gated.verdict
+    disposition = gated.disposition
     match disposition.decision:
         case Decision.DELIVER:
             return _deliver(call, verdict, original, extras)
@@ -333,12 +335,7 @@ async def _dispose(
             return _deliver_unmarked(call, verdict, original, extras, honeypot)
         case Decision.REDACT:
             return await _redact(
-                call,
-                verdict,
-                disposition.prompt or DEFAULT_REDACT_PROMPT,
-                redact_extras,
-                posture,
-                downgraded=disposition.downgraded,
+                call, gated, redact_extras, posture, downgraded=disposition.downgraded
             )
         case Decision.REFUSE:
             raise call.refuse(verdict, disposition, posture)
@@ -491,31 +488,20 @@ def _scripted(extras: Mapping[str, Any] | None) -> bool:
 
 async def _redact(
     call: _Call,
-    verdict: DefenseVerdict,
-    prompt: str,
+    gated: Gated,
     redact_extras: Mapping[str, Any] | None,
     posture: Posture,
     *,
     downgraded: bool = False,
 ) -> dict[str, Any]:
-    """Turns 2 and 3 over the text the layers judged; refuse if either objects."""
-    result = await quarantine_redact(
-        verdict.read,
-        prompt,
-        detection=verdict.l3_assessment,
-    )
-    if result.refused_by is not None:
+    """Deliver the gate's verified extraction; refuse if its own turn objected."""
+    verdict = gated.verdict
+    if gated.extraction_refusal is not None:
         # redact's own turn objecting: nothing is suggested (no flag, no gap).
-        raise call.refuse(
-            verdict,
-            Disposed(
-                Decision.REFUSE,
-                reason=f"redact refused: {result.refused_by}",
-                offer_alternatives=False,
-            ),
-            posture,
-        )
-
+        raise call.refuse(verdict, gated.extraction_refusal, posture)
+    result = gated.extraction
+    if result is None:  # a non-refused redact disposition always carries an extraction
+        raise RuntimeError("judged: redact disposition carried no extraction")
     extraction = result.content
     if "nothing_to_extract" in extraction and _scripted(redact_extras):
         extraction["nothing_to_extract"] += (

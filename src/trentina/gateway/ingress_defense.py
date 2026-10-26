@@ -54,14 +54,12 @@ from dataclasses import field as dataclass_field
 from typing import TYPE_CHECKING, Any
 
 from ..config import get_config
-from ..core import Decision, Posture, dispose, refusal_from_warning, refusal_of
-from ..core.dispose import Disposition as Disposed
+from ..core import Decision, Gated, Posture, gate, refusal_from_warning, refusal_of
 from ..defense import Provenance, defend
 from ..l1.hidden import HiddenStats
 from ..l1.pipeline import run_l1
 from ..logsafe import exc_kind, exc_where, redact_source
 from ..modes import Gaps, Mode, ModePolicy
-from ..quarantine.agent import quarantine_redact
 from ..quarantine.packs import GENERIC_ID, pack_for
 from ..unpack.child import run_unpacking
 from ..unpack.scan import IMAGE_BLOCK, UNDECODABLE, image_too_small_to_draw, read_blobs
@@ -544,16 +542,24 @@ async def scan_tool_response(
     if unread:
         warning = _unread_warning(warning, unread)
 
-    # The disposition is decided once, in core.dispose: a flagged or
+    # The gate decides the fate once, in core.gate/core.dispose: a flagged or
     # incompletely-judged response is refused unless the mode is flag. "Could
     # not finish judging" is treated exactly like "this is hostile" (the
     # padding attack — L2 scans a benign head, an L3 outage answers "clean"),
     # because both are gaps that block. Binary blocks no layer could read
     # (#367) are tracked beside the verdict, so they fold in as extra_unread.
-    disposition = dispose(verdict, posture, extra_unread=bool(unread))
+    # For redact the gate also runs turns 2 and 3 and carries their result.
+    gated = await gate(verdict, posture, extra_unread=bool(unread))
+    disposition = gated.disposition
 
-    if mode is Mode.REDACT:
-        return await _redact_response(verdict, warning, disposition, posture, key)
+    # Consume exactly what the gate produced: it runs (and carries) the
+    # extraction iff the DECISION is redact, so the redact response edge is
+    # keyed on the decision, not the mode. They coincide on this path today
+    # (a proxied response is never allowlisted, so block never downgrades to
+    # redact), but keying on the decision is what keeps a future downgrade
+    # from delivering the original while its extraction is discarded.
+    if disposition.decision is Decision.REDACT or mode is Mode.REDACT:
+        return await _redact_response(gated, warning, posture, key)
 
     blocked = disposition.decision is Decision.REFUSE
     if blocked:
@@ -594,42 +600,36 @@ async def scan_tool_response(
 
 
 async def _redact_response(
-    verdict: Any,
+    gated: Gated,
     warning: dict[str, Any] | None,
-    disposition: Disposed,
     posture: Posture,
     key: str,
 ) -> IngressDecision:
     """redact on a proxied response: refuse on gaps, else extract and verify.
 
     A flag does not refuse redact — that is what redact is for — but a layer
-    that could not finish does, exactly as in ``tools/judged.py``. The core
-    already decided which: a REFUSE disposition means a blocking gap.
+    that could not finish does, exactly as in ``tools/judged.py``. The gate
+    already decided which and, when it extracted, carries the result: a REFUSE
+    disposition means a blocking gap; ``extraction_refusal`` means redact's own
+    turn objected.
     """
-    if disposition.decision is Decision.REFUSE:
+    if gated.disposition.decision is Decision.REFUSE:
         blocked_warning = {**(warning or {}), "blocked": True}
         _cache_put(key, blocked_warning)
         return IngressDecision(
             warning=blocked_warning,
             blocked=True,
-            refusal=refusal_of(disposition, posture),
+            refusal=refusal_of(gated.disposition, posture),
         )
-    result = await quarantine_redact(
-        verdict.read,
-        disposition.prompt or DEFAULT_REDACT_PROMPT,
-        detection=verdict.l3_assessment,
-    )
-    if result.refused_by is not None:
+    result = gated.extraction
+    if result is None:  # a non-REFUSE redact disposition always carries an extraction
+        raise RuntimeError("ingress_defense: redact disposition carried no extraction")
+    if gated.extraction_refusal is not None:
         # redact's own turn objecting: nothing is suggested (no flag, no gap).
-        refuse = Disposed(
-            Decision.REFUSE,
-            reason=f"redact refused: {result.refused_by}",
-            offer_alternatives=False,
-        )
         return IngressDecision(
             warning={**(warning or {}), "blocked": True, "clean_refused_by": result.refused_by},
             blocked=True,
-            refusal=refusal_of(refuse, posture),
+            refusal=refusal_of(gated.extraction_refusal, posture),
         )
     return IngressDecision(
         warning=warning,
