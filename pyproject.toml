@@ -219,7 +219,9 @@ max-complexity = 10
 # S106: `bearer_token_env` names an environment variable; it holds no token.
 "corpora/gateway_read.py" = ["S106"]
 # E402: the script puts the repo root on sys.path before importing corpora.
-"scripts/l2_train_data.py" = ["E402", "S311"]
+# S603: git fetches the advisory database at its pinned commit; every argument
+# is a constant, the cache path or that commit, none of it from a row.
+"scripts/l2_train_data.py" = ["E402", "S311", "S603"]
 "benchmarks/redact_input.py" = ["E402"]
 "benchmarks/l1_false_positives.py" = ["E402"]
 "benchmarks/unpack_archives.py" = ["E402"]

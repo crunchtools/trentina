@@ -946,6 +946,12 @@ classification = "by_design"
 
 [[exceptions]]
 check = "hardcoded_years"
+path = "scripts/l2_train_data.py"
+justification = "2025 names the slice of GitHub's advisory database the fine-tuning set reads (advisories/github-reviewed/2025), pinned by commit with every file hashed into training.json (#17). A moving year would change the training data under a fixed revision."
+classification = "by_design"
+
+[[exceptions]]
+check = "hardcoded_years"
 path = "corpora/envelopes.py"
 justification = "The dates are inside invented reply fields (#17): created_at, published, a URL's year. A fixed range keeps one seed one text on every run, which the envelope gate and the training set depend on."
 classification = "by_design"

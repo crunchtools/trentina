@@ -14,6 +14,8 @@ and SHA-256):
 - hendzh/PromptShield, Apache-2.0
 - microsoft/llmail-inject-challenge (emails_for_fp_tests.json), MIT,
   Copyright (c) Microsoft Corporation
+- github/advisory-database (advisories/github-reviewed/2025), CC-BY-4.0,
+  by GitHub, Inc.: advisory summaries and details, unmodified
 
 Rows were wrapped in invented tool-reply envelopes (corpora/envelopes.py)
 before training. Licensed Apache-2.0, as the base model.

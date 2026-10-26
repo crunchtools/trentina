@@ -34,6 +34,8 @@ import hashlib
 import json
 import random
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -109,6 +111,21 @@ SOURCES: tuple[dict[str, Any], ...] = (
     },
 )
 
+ADVISORIES: dict[str, str] = {
+    "repo": "https://github.com/github/advisory-database",
+    "revision": "764106e0e46f80b3df1ef769f4ca7086d441596b",
+    "dir": "advisories/github-reviewed/2025",
+}
+"""GitHub's reviewed security advisories for 2025 (CC-BY-4.0): benign text as
+dense with attack words as a repo's own issues are (API keys in plaintext,
+token revocation, tool pinning), which run 2 of the GPU rounds refused. Each
+gives its summary alone, as an issue or feed title, and summary with details."""
+
+QUOTED_ATTACK = re.compile(
+    r"ignore (all |any )?(previous|prior)|system prompt|you are now|disregard", re.IGNORECASE
+)
+"""An advisory quoting an injection payload is dropped, never labelled benign."""
+
 SECURITY_WORDS = re.compile(
     r"secur|attack|exploit|vulnerab|inject|malware|phish|password|credential|"
     r"prompt|jailbreak|classifier|firewall|breach|CVE-|patch|token|auth",
@@ -140,6 +157,55 @@ def _table_rows(src: dict[str, Any], path: Path) -> list[tuple[str, bool]]:
     ]
 
 
+def _fetch_advisories(root: Path) -> str:
+    """``ADVISORIES`` at its pinned commit, sparse, into ``root``; its HEAD."""
+    git = shutil.which("git")
+    if git is None:
+        raise RuntimeError("git is needed to fetch the advisory database")
+    if not (root / ".git").exists():
+        root.mkdir(parents=True, exist_ok=True)
+        for cmd in (
+            ["init", "-q"],
+            ["remote", "add", "origin", ADVISORIES["repo"]],
+            ["sparse-checkout", "set", "--no-cone", f"/{ADVISORIES['dir']}/"],
+            ["fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", ADVISORIES["revision"]],
+            ["checkout", "-q", "FETCH_HEAD"],
+        ):
+            subprocess.run([git, "-C", str(root), *cmd], check=True)
+    rev = [git, "-C", str(root), "rev-parse", "HEAD"]
+    head = subprocess.run(rev, check=True, capture_output=True, text=True).stdout.strip()
+    if head != ADVISORIES["revision"]:
+        raise RuntimeError(f"advisory-database at {head}, pinned {ADVISORIES['revision']}")
+    return head
+
+
+def _advisory_rows(cache: Path) -> tuple[list[tuple[str, bool]], dict[str, str]]:
+    """The pinned advisories as benign rows, and the provenance of what was read."""
+    root = cache / "advisory-database"
+    head = _fetch_advisories(root)
+    files = sorted((root / ADVISORIES["dir"]).rglob("*.json"))
+    if not files:
+        raise RuntimeError(f"no advisories under {ADVISORIES['dir']} at {head}")
+    digest = hashlib.sha256()
+    rows = []
+    for path in files:
+        raw = path.read_bytes()
+        digest.update(raw)
+        item = json.loads(raw)
+        summary, details = item.get("summary") or "", item.get("details") or ""
+        for raw_text in (summary, f"{summary}\n{details}"):
+            text = raw_text.strip()
+            if MIN_CHARS <= len(text) <= MAX_CHARS and not QUOTED_ATTACK.search(text):
+                rows.append((text, False))
+    provenance = {
+        "repo": ADVISORIES["repo"],
+        "revision": head,
+        "file": f"{ADVISORIES['dir']} ({len(files)} files)",
+        "sha256": digest.hexdigest(),
+    }
+    return rows, provenance
+
+
 def load_sources(cache: Path) -> tuple[list[str], list[str], list[dict[str, str]]]:
     """Deduplicated (benign, attack) texts and the provenance of each file."""
     from huggingface_hub import hf_hub_download
@@ -169,6 +235,10 @@ def load_sources(cache: Path) -> tuple[list[str], list[str], list[dict[str, str]
         rows = _email_rows(path) if src.get("emails") else _table_rows(src, path)
         for text, is_attack in rows:
             (attack if is_attack else benign).setdefault(text.strip(), None)
+    rows, record = _advisory_rows(cache)
+    provenance.append(record)
+    for text, _ in rows:
+        benign.setdefault(text, None)
     overlap = benign.keys() & attack.keys()
     for text in overlap:  # a text labelled both ways teaches nothing
         benign.pop(text)
