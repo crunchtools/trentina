@@ -90,11 +90,12 @@ jobs:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: python3 scripts/runpod_train.py terminate --pod "${POD_ID:-}"
 
-      # The full fine-tune (blend 1) and each blend back toward Horizon that
-      # train_l2_model.py wrote (blend-<a>), exported side by side.
+      # The full fine-tune (blend 1), and any blend back toward Horizon that
+      # train_l2_model.py wrote (blend-<a>, only with --blends), side by side.
       - name: Export
         run: |
           sudo chown -R "$(id -u)" build
+          shopt -s nullglob  # no blend-* without --blends
           for src in build/l2-model build/l2-model/blend-*; do
             name=$(basename "$src"); [[ "$name" == l2-model ]] && name=blend-1
             docker run --rm -v "$PWD:/w" -w /w l2-builder python scripts/export_l2_model.py \

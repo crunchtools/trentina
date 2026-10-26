@@ -168,8 +168,10 @@ def write_blends(
             json.dumps({**record, "blend": blend}, indent=2, default=str)
         )
 
-    tuned = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
     save(out, 1.0)
+    if not blends:
+        return
+    tuned = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
     base = AutoModelForSequenceClassification.from_pretrained(
         BASE, revision=BASE_REVISION
     ).state_dict()
@@ -203,9 +205,10 @@ def main() -> int:
     )
     p.add_argument(
         "--blends",
-        default="0.4,0.6,0.8",
+        default="",
         help="Comma-separated mixes of the fine-tuned weights to write beside the "
-        "full fine-tune (1.0, written to --out), the rest Horizon's.",
+        "full fine-tune (1.0, written to --out), the rest Horizon's, e.g. 0.4,0.6,0.8. "
+        "None by default: round 3 shipped the full fine-tune, blend 0.8 within noise.",
     )
     p.add_argument("--threads", type=int, default=0, help="torch threads; 0 keeps the default.")
     args = p.parse_args()
