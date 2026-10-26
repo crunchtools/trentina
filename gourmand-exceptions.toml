@@ -84,6 +84,13 @@ justification = "Not single-use: called from 7 test methods across three classes
 classification = "gourmand_bug"
 
 [[exceptions]]
+check = "single_use_helpers"
+path = "tests/test_orchestrator.py"
+pattern = "_reply"
+justification = "Not single-use: the canonical backend-reply fixture, called from 18 locations in the file, verified by grep. In changed-lines mode the check counts only the call sites inside the diff, so adding one new test that calls it makes the long-standing fixture look single-use. Upstream: https://gitlab.com/mattdm/gourmand/-/issues/25"
+classification = "gourmand_bug"
+
+[[exceptions]]
 check = "redundant_error_handling"
 path = "src/trentina/gateway/circuit.py"
 pattern = "_notify"

@@ -15,9 +15,16 @@ The mapping to ``router._tools_call`` is one-to-one:
   normalize the arguments, and run the argument guards. The REQUEST edge.
 * ``McpClientCarrier.carry`` — ``router._dispatch`` (remote backend or internal
   tool), with the backend-error refusal.
-* ``McpServerFace.deliver`` — the response guards, then ``router._deliver``
-  (assemble, scan, dispose, page, and the one audit row). The RESPONSE edge.
+* ``McpServerFace.deliver`` — the response guards, then the RESPONSE edge as
+  stages (``_assemble``: Arrived → Transformed → Judged → disposed), with the
+  one audit row written by the shared ``router._finish_delivery``.
 * ``McpServerFace.wrap``    — the JSON-RPC success envelope.
+
+``_assemble`` reproduces ``router._assemble_call_result`` as the stage pipeline
+(``core.stages``), composing the same collaborators in the same order so the
+delivered bytes are byte-identical; the paged branch still delegates to
+``router._hold_paged`` / ``_deliver_part`` until a later PR collapses the two
+paging holds into one Part mechanism.
 
 Because the coupling to the router's private helpers lives HERE and nowhere
 else, later Phase 4 PRs absorb those helpers into the orchestrator by editing
@@ -26,6 +33,7 @@ this file and deleting the router copies, not by touching every call site.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -34,20 +42,25 @@ from typing import TYPE_CHECKING, Any
 # the shared collaborators are imported from their own modules (mypy does not
 # re-export a name through an importer). This is the one place the orchestrator
 # couples to the gateway's internals, so the later cutover edits only this file.
+from ..core.stages import Arrived, Judged, Transformed
+from ..defense import Provenance
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
 from ..gateway import paging, router
 from ..gateway.destination import Destination, destination_of
 from ..gateway.errors import BackendCallError
 from ..gateway.filter import filter_tools
 from ..gateway.guards import check_response_guards
-from ..gateway.modes_policy import resolve_call, resolve_preprocess
+from ..gateway.ingress_defense import scan_tool_response
+from ..gateway.modes_policy import policy_for, resolve_call, resolve_preprocess
+from ..gateway.transform import transform_response
 from ..outcomes import Outcome, classify_exception
-from ..reserved import REFUSAL_KEY
+from ..reserved import REFUSAL_KEY, WARNING_KEY
 from .base import Carrier, Early, Face, Transport
 
 if TYPE_CHECKING:
     from ..gateway.args import Normalized
     from ..gateway.profile import Backend, Profile
+    from ..gateway.transform import TransformOutcome
     from ..modes import Mode, ModePolicy
     from ..transforms.policy import PreProcessPolicy
 
@@ -234,11 +247,18 @@ class McpServerFace(Face):
     async def deliver(
         self, ctx: McpCrossing, parsed: McpParsed, carried: McpCarried
     ) -> dict[str, Any] | Early:
-        """The RESPONSE edge — response guards, then ``router._deliver``.
+        """The RESPONSE edge — response guards, then the staged assembly.
 
         Returns the result mapping for ``wrap`` (the delivered result, or the
         ``executed, response withheld`` body a write tool gets when its response
         is guarded off), or an ``Early`` when a read tool's response is refused.
+
+        The assembly is reproduced here as the stage pipeline ``_assemble``
+        (Arrived → Transformed → Judged → the disposed ``Assembled``), composing
+        the same collaborators ``router._assemble_call_result`` does, in the same
+        order, so the delivered bytes match. The one audit row and the session
+        mark are written by the shared ``router._finish_delivery`` — the same
+        function the hand-rolled path uses — so the row is written exactly once.
         """
         profile, req_id = ctx.profile, ctx.req_id
         call_result = carried.call_result
@@ -263,20 +283,170 @@ class McpServerFace(Face):
             withheld = {REFUSAL_KEY: {"reason": response_err, "mode": parsed.mode.value}}
             return router._executed(withheld, call_result.is_error)
 
-        return await router._deliver(
+        t0 = carried.t0
+        try:
+            assembled = await self._assemble(ctx, parsed, carried)
+        except Exception as exc:
+            router._audit_assembly_failure(
+                profile.name, parsed.backend_name, parsed.tool_name, t0, exc, parsed.dest
+            )
+            raise
+        return await router._finish_delivery(
             profile,
             parsed.backend,
             parsed.backend_name,
             parsed.tool_name,
             call_result,
-            carried.t0,
-            mode=parsed.mode,
-            prompt=parsed.prompt,
-            policy=parsed.policy,
-            minify=parsed.minify,
+            t0,
+            assembled,
             normalized=parsed.normalized.dropped,
             destination=parsed.dest,
         )
+
+    async def _assemble(
+        self, ctx: McpCrossing, parsed: McpParsed, carried: McpCarried
+    ) -> router.Assembled:
+        """The response edge as stages — ``router._assemble_call_result`` reproduced.
+
+        Arrived (strip the gateway's reserved keys) → Transformed (the
+        pre-perimeter transform chain) → Judged (``scan_tool_response``) → the
+        disposed ``Assembled``. The same collaborators in the same order; the
+        paged branch still delegates to ``router._hold_paged`` / ``_deliver_part``
+        (collapsed into the one Part mechanism in a later PR). An internal tool
+        runs the pipeline at its own ingress, so it is neither transformed nor
+        scanned here and has no ``Transformed.reduced`` and no ``Judged`` stage.
+        """
+        profile = ctx.profile
+        backend, backend_name, tool_name = parsed.backend, parsed.backend_name, parsed.tool_name
+        call_result = carried.call_result
+        mode, prompt, policy, minify = parsed.mode, parsed.prompt, parsed.policy, parsed.minify
+
+        ok = Outcome.TOOL_ERROR if call_result.is_error else Outcome.OK
+        content_blocks, structured, stripped = await asyncio.to_thread(
+            router._arrived, backend, call_result
+        )
+        arrived = Arrived(
+            content_blocks=content_blocks,
+            structured=structured,
+            stripped=stripped,
+            # ``bool`` as the paging hold reads it; the result keeps the raw flag.
+            is_error=bool(call_result.is_error),
+            # The backend has answered, so a tool that may write has written (#425).
+            acted=router._may_have_acted(backend, tool_name),
+        )
+
+        # Transform BEFORE the perimeter, never after: the scan reads the
+        # transformed artifact and that artifact is delivered, so nothing a
+        # processor dropped is judged or delivered.
+        provenance = Provenance.EXTERNAL
+        reduced: TransformOutcome | None = None
+        content_blocks = arrived.content_blocks
+        if not backend.is_internal:
+            reduced = await transform_response(
+                profile=profile,
+                backend=backend,
+                backend_name=backend_name,
+                tool_name=tool_name,
+                content_blocks=content_blocks,
+                minify=minify,
+            )
+            if reduced.failed is not None:
+                failed = router._preprocess_refusal(reduced.failed, mode)
+                return router.Assembled(
+                    router._executed(failed, call_result.is_error) if arrived.acted else failed,
+                    Outcome.BLOCKED_DEFENSE,
+                    reduced.failed,
+                    stripped=stripped,
+                )
+            content_blocks = reduced.content_blocks
+            provenance = reduced.provenance
+            # Too large to judge in one call (#340): cut once, from the
+            # transformed text, so what is cut is what would have been delivered.
+            paged = await router._hold_paged(
+                profile,
+                backend,
+                backend_name,
+                tool_name,
+                content_blocks,
+                arrived.structured,
+                mode=mode,
+                prompt=prompt,
+                provenance=provenance,
+                l3_context=router._l3_context(backend, reduced),
+                hidden=reduced.hidden,
+                is_error=arrived.is_error,
+                acted=arrived.acted,
+            )
+            if paged is not None:
+                first = await router._deliver_part(
+                    profile,
+                    paged,
+                    1,
+                    mode=paged.mode,
+                    prompt=prompt,
+                    policy=policy or policy_for(profile, backend, tool_name),
+                )
+                first.stripped = stripped
+                return first
+        transformed = Transformed(
+            arrived=arrived, content_blocks=content_blocks, provenance=provenance, reduced=reduced
+        )
+
+        result: dict[str, Any] = {
+            "content": transformed.content_blocks,
+            "isError": call_result.is_error,
+        }
+        if arrived.structured is not None:
+            result["structuredContent"] = arrived.structured
+
+        gateway_warning: dict[str, Any] | None = None
+        if not backend.is_internal:
+            judged = Judged(
+                transformed=transformed,
+                decision=await scan_tool_response(
+                    profile=profile,
+                    backend_name=backend_name,
+                    tool_name=tool_name,
+                    content_blocks=transformed.content_blocks,
+                    structured_content=arrived.structured,
+                    provenance=transformed.provenance,
+                    mode=mode,
+                    prompt=prompt,
+                    policy=policy,
+                    l3_context=router._l3_context(backend, reduced)
+                    if reduced is not None
+                    else backend.l3_briefing,
+                    hidden=reduced.hidden if reduced is not None else None,
+                ),
+            )
+            gateway_warning = judged.decision.warning
+            if judged.decision.blocked:
+                # The content never reaches the agent; the warning does. Audited
+                # as a defense block so a misfiring threshold shows in the
+                # outcome column, not only in an agent's confusion.
+                risk = judged.decision.warning.get("risk_level") if judged.decision.warning else "?"
+                blocked = router._blocked_result(judged.decision)
+                return router.Assembled(
+                    router._executed(blocked, call_result.is_error) if arrived.acted else blocked,
+                    Outcome.BLOCKED_DEFENSE,
+                    f"response blocked by defense (risk={risk})",
+                    warning=gateway_warning,
+                    stripped=stripped,
+                )
+            if judged.decision.extraction is not None:
+                # redact: the verified extraction REPLACES the response, and
+                # structuredContent goes with it — redact never re-delivers what
+                # it replaced.
+                result = {
+                    "content": [{"type": "text", "text": judged.decision.extraction}],
+                    "isError": call_result.is_error,
+                }
+                if judged.decision.warning is not None:
+                    result[WARNING_KEY] = judged.decision.warning
+                return router.Assembled(result, ok, warning=gateway_warning, stripped=stripped)
+            router._attach_warning(result, judged.decision.warning)
+
+        return router.Assembled(result, ok, warning=gateway_warning, stripped=stripped)
 
     def wrap(self, ctx: McpCrossing, result: dict[str, Any]) -> dict[str, Any]:
         """The JSON-RPC success envelope."""

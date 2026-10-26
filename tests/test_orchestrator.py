@@ -88,7 +88,11 @@ async def _run(
     scan = AsyncMock(return_value=verdict)
     with (
         patch(f"{ROUTER}.call_backend_tool", call),
+        # ``scan_tool_response`` is patched in BOTH namespaces: the hand-rolled
+        # path reaches it as ``router.scan_tool_response``, the orchestrated path
+        # as ``transports.mcp.scan_tool_response`` (each imported the name).
         patch(f"{ROUTER}.scan_tool_response", scan),
+        patch(f"{MCP}.scan_tool_response", scan),
         patch(f"{ROUTER}._audit", MagicMock()),
     ):
         return await route_jsonrpc(profile, request)
@@ -113,6 +117,29 @@ async def test_deliver_parity(decision: IngressDecision) -> None:
     plain = await _run(_profile(orchestrated=False), req, reply=_reply(), decision=decision)
     assert orch == plain
     assert "result" in orch  # a delivered call, not an error envelope
+
+
+@pytest.mark.asyncio
+async def test_required_transform_failure_parity() -> None:
+    # A required processor that cannot run: assembly delivers the preprocess
+    # refusal in place of the response. Both paths reproduce the same arm of
+    # _assemble_call_result, so the refusal body and envelope must match.
+    from trentina.gateway.transform import TransformOutcome
+
+    failed = TransformOutcome(content_blocks=_reply().content, failed="required processor failed")
+    transform = AsyncMock(return_value=failed)
+    req = _request()
+    with (
+        patch(f"{ROUTER}.call_backend_tool", AsyncMock(return_value=_reply())),
+        patch(f"{ROUTER}.transform_response", transform),
+        patch(f"{MCP}.transform_response", transform),
+        patch(f"{ROUTER}._audit", MagicMock()),
+    ):
+        orch = await route_jsonrpc(_profile(orchestrated=True), req)
+        plain = await route_jsonrpc(_profile(orchestrated=False), req)
+    assert orch == plain
+    refusal = orch["result"]["_trentina_refusal"]
+    assert refusal["reason"] == "preprocess_failed"
 
 
 @pytest.mark.asyncio
@@ -204,16 +231,17 @@ async def _run_capture(
     """Route one request, returning the backend mock so a test can assert it was
     (not) dispatched. Patches the shared collaborators a guard branch rides.
 
-    ``check_response_guards`` is patched in BOTH the router and the MCP namespace
-    because each path imported the name into its own module; ``_refuse_call`` and
-    ``_may_have_acted`` are reached as ``router.*`` on both paths, so one patch
-    covers them.
+    ``check_response_guards`` and ``scan_tool_response`` are patched in BOTH the
+    router and the MCP namespace because each path imported the name into its own
+    module; ``_refuse_call`` and ``_may_have_acted`` are reached as ``router.*``
+    on both paths, so one patch covers them.
     """
     call = AsyncMock(return_value=reply)
     scan = AsyncMock(return_value=IngressDecision(warning=None))
     patches = [
         patch(f"{ROUTER}.call_backend_tool", call),
         patch(f"{ROUTER}.scan_tool_response", scan),
+        patch(f"{MCP}.scan_tool_response", scan),
         patch(f"{ROUTER}._audit", MagicMock()),
     ]
     if guard_err is not None:
