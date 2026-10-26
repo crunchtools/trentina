@@ -50,7 +50,7 @@ _ST_RDONLY = 1  # os.ST_RDONLY; spelled out because it is absent off Linux
 
 
 @dataclass
-class Posture:
+class ContainmentReport:
     """What the checks found. ``gaps`` are constant codes, safe to log."""
 
     gaps: list[str] = field(default_factory=list)
@@ -86,14 +86,14 @@ def _initial_env_names(raw: bytes) -> set[str]:
     return {item.split(b"=", 1)[0].decode("utf-8", "replace") for item in raw.split(b"\0") if item}
 
 
-def inspect(proc: Path = Path("/proc/self")) -> Posture:
+def inspect(proc: Path = Path("/proc/self")) -> ContainmentReport:
     """Read the running process's containment. Never raises.
 
     Without ``/proc`` nothing can be verified, and that is itself the gap
     ``unverifiable``: ``TRENTINA_REQUIRE_HARDENED`` must not pass a check
     that never ran.
     """
-    posture = Posture()
+    posture = ContainmentReport()
     try:
         status = _status_fields((proc / "status").read_text())
     except OSError:
@@ -122,7 +122,7 @@ def inspect(proc: Path = Path("/proc/self")) -> Posture:
     return posture
 
 
-def _check_env_secrets(proc: Path, names: Iterable[str], posture: Posture) -> None:
+def _check_env_secrets(proc: Path, names: Iterable[str], posture: ContainmentReport) -> None:
     try:
         initial = _initial_env_names((proc / "environ").read_bytes())
     except OSError:
@@ -133,7 +133,7 @@ def _check_env_secrets(proc: Path, names: Iterable[str], posture: Posture) -> No
         posture.gaps.append("secret_in_environment")
 
 
-def check_startup_posture(proc: Path = Path("/proc/self")) -> Posture:
+def check_startup_posture(proc: Path = Path("/proc/self")) -> ContainmentReport:
     """Log every gap; refuse to start on any when TRENTINA_REQUIRE_HARDENED is set."""
     posture = inspect(proc)
     if posture.gaps:
@@ -143,7 +143,9 @@ def check_startup_posture(proc: Path = Path("/proc/self")) -> Posture:
     return posture
 
 
-def check_secret_sources(names: Iterable[str], proc: Path = Path("/proc/self")) -> Posture:
+def check_secret_sources(
+    names: Iterable[str], proc: Path = Path("/proc/self")
+) -> ContainmentReport:
     """The same verdict for the secrets configuration named, once it is loaded.
 
     ``check_startup_posture`` runs before profiles exist, so it knows only the
@@ -151,14 +153,14 @@ def check_secret_sources(names: Iterable[str], proc: Path = Path("/proc/self")) 
     ``loader.secret_env_names()``: a profile's ``${VAR}`` or a bridge token
     that arrived in the environment is the same gap.
     """
-    posture = Posture()
+    posture = ContainmentReport()
     _check_env_secrets(proc, names, posture)
     if posture.gaps:
         _report(posture)
     return posture
 
 
-def check_l2_gate() -> Posture:
+def check_l2_gate() -> ContainmentReport:
     """Name an L2 model that has no passing record for either of its gates.
 
     The Layer contract makes reading through obfuscation the model's job, so
@@ -172,7 +174,7 @@ def check_l2_gate() -> Posture:
     """
     from .quarantine.classifier import model_info
 
-    posture = Posture()
+    posture = ContainmentReport()
     model = model_info()
     if model is not None and model.gate != "passed":
         posture.gaps.append(f"l2_obfuscation_gate_{model.gate}")
@@ -183,7 +185,7 @@ def check_l2_gate() -> Posture:
     return posture
 
 
-def _report(posture: Posture) -> None:
+def _report(posture: ContainmentReport) -> None:
     logger.warning(
         "posture: running without %s. See docs/deployment-hardening.md.",
         ", ".join(posture.gaps),
