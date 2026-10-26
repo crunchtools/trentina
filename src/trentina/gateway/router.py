@@ -1227,18 +1227,63 @@ async def _deliver(
             minify=minify,
         )
     except Exception as exc:
-        # The row is written after assembly, so a failure in it would
-        # otherwise leave the call unaudited.
-        _audit(
-            profile.name,
-            backend_name,
-            tool_name,
-            Outcome.GATEWAY_ERROR,
-            int((time.monotonic() - t0) * 1000),
-            f"assembly failed: {exc_kind(exc)}",
-            destination=destination,
-        )
+        _audit_assembly_failure(profile.name, backend_name, tool_name, t0, exc, destination)
         raise
+    return await _finish_delivery(
+        profile,
+        backend,
+        backend_name,
+        tool_name,
+        call_result,
+        t0,
+        assembled,
+        normalized=normalized,
+        destination=destination,
+    )
+
+
+def _audit_assembly_failure(
+    profile_name: str,
+    backend_name: str,
+    tool_name: str,
+    t0: float,
+    exc: Exception,
+    destination: Destination | None,
+) -> None:
+    """The one audit row for a call whose assembly raised.
+
+    Assembly decides the outcome, so the row is written after it; a failure in
+    it would otherwise leave the call unaudited.
+    """
+    _audit(
+        profile_name,
+        backend_name,
+        tool_name,
+        Outcome.GATEWAY_ERROR,
+        int((time.monotonic() - t0) * 1000),
+        f"assembly failed: {exc_kind(exc)}",
+        destination=destination,
+    )
+
+
+async def _finish_delivery(
+    profile: Profile,
+    backend: Backend,
+    backend_name: str,
+    tool_name: str,
+    call_result: Any,
+    t0: float,
+    assembled: Assembled,
+    *,
+    normalized: dict[str, str] | None = None,
+    destination: Destination | None = None,
+) -> dict[str, Any]:
+    """Finish an assembled result: the session mark, the warning, the one row.
+
+    The half of delivery that is the same whether ``_assemble_call_result`` or
+    the orchestrated response edge produced the ``Assembled`` — so both share
+    it and the audit row is written exactly once, by one function.
+    """
     _mark_session(assembled, None if not backend.is_internal else call_result)
     if normalized or assembled.stripped:
         # REPLACED, never merged into what the result carries (#265): built
