@@ -40,6 +40,9 @@ from .judge_key import with_judge_key
 pytestmark = pytest.mark.asyncio
 
 _I = "trentina.gateway.ingress_defense"
+# redact's extraction (turns 2 and 3) now runs in core.gate, so that is where
+# ``quarantine_redact`` is looked up and where a test stands in for it.
+_GATE = "trentina.core.gate"
 
 # A completed, unexcited L2 scan. Mocked verdicts carry this: a verdict with
 # `classification=None` now means "the classifier never ran", and such a
@@ -1016,7 +1019,7 @@ class TestPerCallMode:
         from trentina.quarantine.agent import CleanResult
 
         extract = AsyncMock(return_value=CleanResult(content={"extracted_text": "Tuesday"}))
-        with _l3_available_and_clean(), patch(f"{_I}.quarantine_redact", extract):
+        with _l3_available_and_clean(), patch(f"{_GATE}.quarantine_redact", extract):
             decision = await scan_tool_response(
                 profile=_profile("permode2"),
                 backend_name="jira",
@@ -1036,7 +1039,7 @@ class TestPerCallMode:
         from trentina.modes import Mode, ModePolicy
 
         extract = AsyncMock()
-        with patch(f"{_I}.quarantine_redact", extract):
+        with patch(f"{_GATE}.quarantine_redact", extract):
             decision = await scan_tool_response(
                 profile=_profile("permode3"),
                 backend_name="jira",
@@ -1186,7 +1189,7 @@ async def test_redact_is_never_served_from_the_verdict_cache() -> None:
     from trentina.quarantine.agent import CleanResult
 
     extract = AsyncMock(return_value=CleanResult(content={"extracted_text": "x"}))
-    with _l3_available_and_clean(), patch(f"{_I}.quarantine_redact", extract):
+    with _l3_available_and_clean(), patch(f"{_GATE}.quarantine_redact", extract):
         for prompt in ("first", "second"):
             decision = await scan_tool_response(
                 profile=_profile("nocache"),
