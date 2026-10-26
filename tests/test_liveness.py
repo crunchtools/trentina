@@ -29,7 +29,7 @@ from tests.test_egress_encoding import _Loopback as Loopback
 from tests.test_unpack import _defend
 from trentina import client as client_mod
 from trentina import config as config_mod
-from trentina import database, defense, egress
+from trentina import database, defense
 from trentina.errors import FetchError
 from trentina.gateway import ingress_defense
 from trentina.gateway.context import get_current_profile, profile_context
@@ -37,6 +37,7 @@ from trentina.gateway.profile import AuthConfig, Profile
 from trentina.httpbody import EncodedBodyError, TooLargeError, request_capped
 from trentina.l1.pipeline import run_l1
 from trentina.quarantine import agent as agent_mod
+from trentina.reach import egress
 from trentina.transforms import Selection, TransformContext
 from trentina.transforms.pdf import PdfProcessor
 from trentina.transforms.select import SelectProcessor

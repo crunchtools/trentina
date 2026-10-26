@@ -428,8 +428,9 @@ class TestProxies:
         """#453: a repository name, a ref, a query, a header and a body the
         caller chose, through a carried fetch, a carried push and five
         refusals. The repository is in the upstream URL httpx would log."""
-        from trentina import database, egress
+        from trentina import database
         from trentina.gateway import git_transport, upstream
+        from trentina.reach import egress
 
         from . import git_harness as harness
         from .egress_harness import PUBLIC_ADDRESS

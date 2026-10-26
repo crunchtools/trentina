@@ -24,11 +24,11 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from .. import egress
 from ..bridge.media import MAX_MEDIA_BYTES, MAX_NAME_CHARS, MEDIA_DEADLINE
 from ..errors import EgressRefusedError
 from ..httpbody import EncodedBodyError, TooLargeError, request_capped
 from ..logsafe import exc_kind
+from ..reach import egress
 from .backend import BackendError, Inbound
 
 if TYPE_CHECKING:

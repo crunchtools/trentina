@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from ..egress import (
+from ..reach.egress import (
     CONNECT_TIMEOUT,
     IDENTITY,
     PinnedBackend,
@@ -44,7 +44,7 @@ from .profile import CLIENT_EGRESS_PORT
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from ..egress import ResolvedTarget
+    from ..reach.egress import ResolvedTarget
     from .profile import Profile
 
 RESOLVER_BUSY = "resolver_busy"
