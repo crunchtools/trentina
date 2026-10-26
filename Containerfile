@@ -31,6 +31,13 @@
 #     -v ~/.local/share/trentina:/data:Z \
 #     quay.io/crunchtools/trentina
 
+# The shipped L2 model: Horizon fine-tuned on benign tool replies (#17),
+# trained and gated by .github/workflows/l2-train.yml (GHA run 40311268794,
+# commit b7fd870) and published as a scratch image holding the ONNX export,
+# its manifest, NOTICE and training.json. Pinned by digest: a new model is a
+# new run and a change to this line.
+FROM ghcr.io/crunchtools/trentina-l2-model@sha256:02c8a8ff165f1c133535f00523de68169c1c12c58632d415e2cd0e4c579ee4c6 AS l2-model
+
 # ============================================================
 # Stage 1: ONNX model conversion (Hummingbird builder — discarded)
 # Builder variant includes DNF for installing libstdc++ and
@@ -50,27 +57,17 @@ RUN pip install --no-cache-dir \
     transformers \
     sentencepiece
 
-# The L2 model, exported to ONNX from a PINNED revision of its safetensors,
-# with the trentina-model.json manifest the classifier reads for its
-# identity, polarity, threshold and window (#350, #438). The window is
-# stated here, not inherited from a default: no wider window measured reliably
-# faster for this model and a narrower one flagged benign text
-# (docs/benchmark.md, "L2 window width"). Bumping the revision is a model
-# change: re-run the L2 benchmark and update the expectations in
-# tests/test_l2_integration.py.
+# The exporter stays for l2-train, which builds this stage to export what it
+# trains (scripts/export_l2_model.py); the image no longer exports a model
+# itself. HORIZON_REVISION is the base the shipped fine-tune started from,
+# the revision scripts/train_l2_model.py pins (tests/test_l2_envelopes.py
+# holds the two together). Changing it is a new training run, not a rebuild.
 COPY scripts/export_l2_model.py /usr/local/bin/export_l2_model.py
-
-# Default: Horizon-Labs/prompt-injection-guard-small (Apache-2.0, ungated).
 ARG HORIZON_REVISION=3215a27edd62c5ba0bd786c57a9d243b2158e70e
-RUN python /usr/local/bin/export_l2_model.py \
-      --repo Horizon-Labs/prompt-injection-guard-small \
-      --revision "${HORIZON_REVISION}" \
-      --out /models/prompt-injection-guard-small \
-      --id prompt-injection-guard-small \
-      --license Apache-2.0 \
-      --threshold 0.7 \
-      --window-tokens 512 \
-      --malicious-labels INJECTION
+
+# The fine-tune as gated: export, manifest (threshold 0.5, window 512),
+# NOTICE and training.json.
+COPY --from=l2-model /model/ /models/prompt-injection-guard-small-ct/
 
 # ============================================================
 # Stage 2: pip install (builder variant — has shell for RUN)
@@ -139,7 +136,7 @@ COPY --from=model-builder /models/ /models/
 COPY benchmarks/l2_obfuscation.py benchmarks/l2_benign.py /gate/benchmarks/
 COPY corpora/internal.py corpora/benign_ops.py /gate/corpora/
 RUN cd /gate \
- && ORT_DISABLE_TELEMETRY=1 CLASSIFIER_MODEL_PATH=/models/prompt-injection-guard-small \
+ && ORT_DISABLE_TELEMETRY=1 CLASSIFIER_MODEL_PATH=/models/prompt-injection-guard-small-ct \
     python benchmarks/l2_obfuscation.py --record
 
 # The benign gate (#411), at the same threshold: the model must not refuse
@@ -147,7 +144,7 @@ RUN cd /gate \
 # through the default pre-processors as the gateway reads them. Its own layer,
 # after the obfuscation gate's, so a change to one corpus re-runs one gate.
 RUN cd /gate \
- && ORT_DISABLE_TELEMETRY=1 CLASSIFIER_MODEL_PATH=/models/prompt-injection-guard-small \
+ && ORT_DISABLE_TELEMETRY=1 CLASSIFIER_MODEL_PATH=/models/prompt-injection-guard-small-ct \
     python benchmarks/l2_benign.py --record
 
 # ============================================================
@@ -172,7 +169,7 @@ LABEL name="trentina" \
       org.opencontainers.image.source="https://github.com/crunchtools/trentina" \
       org.opencontainers.image.description="MCP gateway for AI agents: injection defense, token savings, policy and auth" \
       org.opencontainers.image.licenses="AGPL-3.0-or-later" \
-      com.crunchtools.l2.default="Horizon-Labs/prompt-injection-guard-small (Apache-2.0)"
+      com.crunchtools.l2.default="prompt-injection-guard-small-ct: Horizon-Labs/prompt-injection-guard-small fine-tuned (Apache-2.0)"
 
 WORKDIR /app
 
@@ -181,7 +178,7 @@ COPY --from=model-builder /usr/lib64/libstdc++.so.6* /usr/lib64/
 
 # The ONNX model, from the gate stage: its manifest carries the gate record.
 # No PyTorch in the final image.
-COPY --from=l2-gate /models/prompt-injection-guard-small/ /models/prompt-injection-guard-small/
+COPY --from=l2-gate /models/prompt-injection-guard-small-ct/ /models/prompt-injection-guard-small-ct/
 
 # Copy installed Python packages from pip-builder (pure Python + native C extensions)
 COPY --from=pip-builder /usr/lib/python3.14/site-packages/ /usr/lib/python3.14/site-packages/
@@ -191,7 +188,7 @@ COPY --from=pip-builder /usr/lib64/python3.14/site-packages/ /usr/lib64/python3.
 COPY --from=pip-builder /etc/machine-id.seed /etc/machine-id
 
 ENV QUARANTINE_DB=/data/quarantine.db
-ENV CLASSIFIER_MODEL=prompt-injection-guard-small
+ENV CLASSIFIER_MODEL=prompt-injection-guard-small-ct
 # The OAuth proxy's DCR registrations and token metadata live under
 # FASTMCP_HOME. Baked in so a deploy that forgets the operator env-file does
 # not silently fall back to ephemeral storage and drop every web client's

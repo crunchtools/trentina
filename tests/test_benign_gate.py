@@ -239,7 +239,7 @@ class TestHarness:
         assert classifier.resolve_model(str(tmp_path)).benign_gate == "failed"
 
     def test_a_known_gap_flagged_does_not_fail_the_gate(self, tmp_path: Path) -> None:
-        gaps = {c.id for c in BENIGN if c.category == "journal_query_100"}
+        gaps = {c.id for c in BENIGN if c.category == "detector_source"}
         reads = {asyncio.run(l2_benign.as_read(c)) for c in BENIGN if c.id in gaps}
 
         def score(text: str) -> float:
@@ -257,7 +257,7 @@ class TestHarness:
         ):
             assert l2_benign.main(["--record"]) == 0
         record = json.loads((tmp_path / classifier.MANIFEST_FILE).read_text())[BENIGN_KEY]
-        gap = record["known_gaps"]["journal_query_100"]
+        gap = record["known_gaps"]["detector_source"]
         assert gap["flagged"] == gap["of"] > 0
         assert record["flagged"] == 0
 

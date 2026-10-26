@@ -50,7 +50,7 @@ class TestClassifierConfig:
         assert DEFAULT_CLASSIFIER_THRESHOLD == 0.5
 
     def test_default_model(self) -> None:
-        assert DEFAULT_CLASSIFIER_MODEL == "prompt-injection-guard-small"
+        assert DEFAULT_CLASSIFIER_MODEL == "prompt-injection-guard-small-ct"
 
     def test_config_has_classifier_fields(self) -> None:
         unset = {"CLASSIFIER_THRESHOLD": "", "CLASSIFIER_MODEL": "", "CLASSIFIER_MODEL_PATH": ""}
@@ -60,8 +60,8 @@ class TestClassifierConfig:
             config = Config()
             # Unset: the model's manifest decides (#350).
             assert config.classifier_threshold is None
-            assert config.classifier_model == "prompt-injection-guard-small"
-            assert config.classifier_model_path == "/models/prompt-injection-guard-small"
+            assert config.classifier_model == "prompt-injection-guard-small-ct"
+            assert config.classifier_model_path == "/models/prompt-injection-guard-small-ct"
 
     def test_config_respects_env_vars(self) -> None:
         env = {

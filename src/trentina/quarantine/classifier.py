@@ -6,7 +6,8 @@ Synchronous — ONNX inference is CPU-bound, not I/O-bound.
 Which model is pluggable (#350): any sequence-classification ONNX export in a
 directory, described by a ``trentina-model.json`` manifest (or, failing one,
 by the labels in its ``config.json``). The image ships Horizon-Labs'
-prompt-injection-guard-small, the default.
+prompt-injection-guard-small fine-tuned on benign tool replies
+(prompt-injection-guard-small-ct, #17), the default.
 
 The classifier sees the L2 input (post-Layer 1) on the input path,
 and extracted text (post-Layer 3) on the output verification path.

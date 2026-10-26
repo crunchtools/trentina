@@ -691,43 +691,27 @@ BENIGN: tuple[Benign, ...] = _build()
 """The corpus: 296 cases across eighteen shapes."""
 
 KNOWN_GAPS: tuple[str, ...] = (
-    "journal_query",
-    "syslog_search",
-    "journal_query_100",
-    "meeting_notes",
     "security_docs",
     "detector_source",
     "issue_list",
     "created_issue",
 )
 """Shapes the shipped model is known to flag, measured on every run and held
-outside the gate's budget: known gaps 19, 28 and 31 in
-``docs/defense-pipeline.md``.
+outside the gate's budget: known gap 31 in ``docs/defense-pipeline.md``.
 
-The last four are gap 31 (#474): documentation that describes attacks, the
-source of a detector, and issue lists and replies from a security gateway's
-tracker. L2 flagged real ones at about 0.97 and the invented cases here are
-scored, not gated; their rate is whatever ``benchmarks/l2_benign.py`` reports.
+They are gap 31 (#474): documentation that describes attacks, the source of
+a detector, and issue lists and replies from a security gateway's tracker.
+L2 flagged real ones at about 0.97 and the invented cases here are scored,
+not gated; their rate is whatever ``benchmarks/l2_benign.py`` reports. The
+fine-tuned model (prompt-injection-guard-small-ct, #17) narrowed it, to 3
+of 43 (all three in the tuning split), but did not close it.
 
-``meeting_notes`` is gap 28 (#450): machine-written notes that end with bare
-links to the recording and a feedback form. 5 of its 18 held-out cases flag
-at 0.7, up to 0.98. ``meeting_notes_unlinked``, the same notes without the
-links, is gated and none of its twelve flags: it is the pair that says what
-the model is reading.
-
-The other three are logs, gap 19. A journal or a mail log is key fingerprints, container
-IDs, message IDs and audit records, and the model's score on one moves with
-which of them it holds: taking the container IDs out of one journal took it
-from 0.79 to 0.01 and another from 0.52 to 0.98. ``journal_query_100`` is a
-hundred such lines in one JSON string, which petit reduces by only a quarter
-to a third (#419: a line that differs in a word is its own group).
-``journal_query`` and ``syslog_search`` are a dozen to a score of lines, and
-were gated until the gate read a response as the router does (#431): read
-that way 3 of their 20 held-out cases flag, where the budget for the whole
-corpus is 2.
-
-``event_id_reply`` (known gap 18) left this list in the same change: read
-once, none of the twelve flags.
+Gap 19 (``journal_query``, ``syslog_search``, ``journal_query_100``: logs
+whose score moved with which key fingerprints and container IDs they held)
+and gap 28 (``meeting_notes``: machine-written notes ending in bare links)
+left this list when the fine-tuned model shipped: none of their 54 cases
+flags under it, so they are gated. ``event_id_reply`` (known gap 18) left
+earlier (#431): read once, none of the twelve flags.
 
 A shape leaves this list by passing, in the change that says so."""
 

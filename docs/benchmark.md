@@ -1278,6 +1278,20 @@ pins), since two epochs on the runner's CPU run past GitHub's six-hour
 limit. GPU runs are not bit-identical, so the check on that run is the
 same shape on real replies, not the same hash.
 
+It was the same hash, near enough: GHA run 40261349054 scored every real
+reply within 0.001 of the pod model, and run 40311268794, the one
+published (`ghcr.io/crunchtools/trentina-l2-model@sha256:02c8a8ff…`),
+passed the same gates with the same counts. Shipped 2026-10-26 without a
+fresh sweep first: the newest one was the screened one, and the next is
+the first production run. Under it known gaps 19 and 28 close (none of
+54 cases flags) and their shapes are gated (0 of 185 held-out), gap 31
+narrows to 3 of 43, and gap 21 inverts. Horizon flagged anything in
+base32, Ascii85, base85, UU, Braille or Morse; the fine-tune reads none
+of them, so benign encoded text passes and so do most attacks in them
+(1, 5, 2, 16, 2 and 21 of 44, against 43 plain). Base64, hex and base16
+are decoded before L2 and unaffected. Shipped with that gap open by
+decision; the fix is decoders in the unpack stage.
+
 A blend that passes the gates is chosen on production shapes by
 constraint, not by best number: no shape may flag more often than under
 Horizon. The envelope gate is built from the same makers as the training
