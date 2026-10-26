@@ -197,7 +197,7 @@ has **no effect on the egress leg** — honouring it would refuse every request,
 which is the same as not granting egress; it still governs any guarded tools in
 the same block. The destination is always recorded, so no `destination_params`
 is needed. A refusal is one HTTP `403` with `block_reason: gatekeeper`, not the
-JSON-RPC error below.
+tool result below.
 
 ## What the gatekeeper sees
 
@@ -227,11 +227,12 @@ for the answer.
 
 ## Refusals
 
-The agent receives a JSON-RPC error, `-32602`, with a reason code and nothing
-else:
+The agent receives an ordinary tool result (`isError` false, like every
+[refusal](quarantine-tools.md#refusals-name-what-to-try-next)) with a reason
+code and nothing else:
 
 ```
-Refused by guarded execution: bulk_private_data
+[TRENTINA] Refused (denied_gatekeeper). Refused by guarded execution: bulk_private_data
 ```
 
 | Code | From | Meaning |

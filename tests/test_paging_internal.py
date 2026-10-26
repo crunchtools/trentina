@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
+from tests.refusal_shape import refused
 from trentina import config as config_mod
 from trentina import database
 from trentina.errors import ContentSizeError
@@ -261,14 +262,14 @@ class TestAFlaggedPart:
             assert _blocklist_rows() == []
             third = await gateway.read(handle=handle)
         assert _body(second).startswith("w250 ")
-        assert third["isError"] is True
+        assert third["isError"] is False
         assert HOSTILE not in json.dumps(third)
         assert third["_trentina_refusal"]["part"] == 3
         assert _blocklist_rows() == [(URL, 1)]
 
         with layers(env, payload=LONG):
             again = await gateway.send(FETCH, url=URL, trentina_preprocess=False)
-        assert "on the blocklist" in json.dumps(again["error"])
+        assert "on the blocklist" in json.dumps(refused(again))
 
     async def test_flag_does_not_read_on_once_block_has_blocklisted_the_source(
         self, env: Path
@@ -287,7 +288,7 @@ class TestAFlaggedPart:
             redacted = await gateway.read(
                 handle=handle, part=3, trentina_mode={"redact": "What changed?"}
             )
-        assert flagged["isError"] is True
+        assert flagged["isError"] is False
         assert "on the blocklist" in flagged["content"][0]["text"]
         assert HOSTILE not in json.dumps(flagged)
         assert asked == 3  # refused unread, as the tool refuses before any bytes arrive
@@ -298,7 +299,7 @@ class TestAFlaggedPart:
         with layers(env, payload=LONG) as fakes:
             _where(fakes, "w7")
             resp = await gateway.send(FETCH, url=URL, trentina_preprocess=False)
-        assert "flagged by" in json.dumps(resp["error"])
+        assert "flagged by" in json.dumps(refused(resp))
         assert paging.held("agent1") == []
         assert _blocklist_rows() == [(URL, 1)]
 
@@ -329,7 +330,7 @@ class TestAFlaggedPart:
             second = await gateway.read(
                 handle=first[paging.PART_KEY]["handle"], trentina_mode="block"
             )
-        assert second["isError"] is True
+        assert second["isError"] is False
         assert "part 1 was flagged" in second["content"][0]["text"]
 
     async def test_an_allowlisted_source_is_refused_and_not_blocklisted(
@@ -343,7 +344,7 @@ class TestAFlaggedPart:
             handle = first[paging.PART_KEY]["handle"]
             await gateway.read(handle=handle)
             third = await gateway.read(handle=handle)
-        assert third["isError"] is True
+        assert third["isError"] is False
         assert _blocklist_rows() == [("https://example.com/long", 0)]
 
 

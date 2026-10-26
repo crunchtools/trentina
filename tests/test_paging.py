@@ -520,7 +520,7 @@ class TestReadPart:
         gateway = _Gateway()
         first = await gateway.call(_document(1_000))
         result = await gateway.read(handle=first[paging.PART_KEY]["handle"], part=part)
-        assert result["isError"] is True
+        assert result["isError"] is False
         assert "has 4 parts; ask for one of 1 to 4" in result["content"][0]["text"]
         assert gateway.outcomes()[-1] == ("docs", GET, Outcome.DENIED_GUARD)
 
@@ -535,7 +535,7 @@ class TestReadPart:
             await mine.read(handle=12),
         ]
         assert {a["content"][0]["text"] for a in answers} == {paging.UNKNOWN_HANDLE}
-        assert all(a["isError"] is True and paging.PART_KEY not in a for a in answers)
+        assert all(a["isError"] is False and paging.PART_KEY not in a for a in answers)
         assert theirs.outcomes()[-1] == ("web", paging.READ_PART_TOOL, Outcome.DENIED_GUARD)
 
     async def test_a_profile_that_lost_the_tool_loses_the_rest_of_its_response(self) -> None:
@@ -590,7 +590,7 @@ class TestBlock:
         await gateway.read(handle=handle, part=2)
         third = await gateway.read(handle=handle, part=3)
         text = third["content"][0]["text"]
-        assert third["isError"] is True
+        assert third["isError"] is False
         assert text.startswith("[TRENTINA] Refused part 3 of 4 of the")
         assert "(flagged by L2). Nothing from part 3 was delivered." in text
         assert "Parts 1 to 2 of it were delivered before this was found" in text
@@ -603,7 +603,7 @@ class TestBlock:
 
         judged = len(gateway.perimeter.calls)
         fourth = await gateway.read(handle=handle, part=4)
-        assert fourth["isError"] is True
+        assert fourth["isError"] is False
         assert (
             "part 3 was flagged by L2, so the response is withheld from there on"
             in (fourth["content"][0]["text"])
@@ -631,7 +631,7 @@ class TestBlock:
         gateway = _Gateway(w5=_flagged())
         first = await gateway.call(_document(1_000))
         text = first["content"][0]["text"]
-        assert first["isError"] is True
+        assert first["isError"] is False
         assert "Refused part 1 of 4" in text
         assert "delivered before this was found" not in text
         assert "Parts 2 to 4 are withheld as well." in text
@@ -663,7 +663,7 @@ class TestBlock:
         handle = first[paging.PART_KEY]["handle"]
         second = await gateway.read(handle=handle, part=2)
         text = second["content"][0]["text"]
-        assert second["isError"] is True
+        assert second["isError"] is False
         assert "Refused part 2 of 4" in text and "(not fully judged: L3 unavailable)" in text
         assert "The gap is this part's, not the response's" in text
         assert "Ask for part 2 again." in text
@@ -684,7 +684,7 @@ class TestOrder:
         handle = first[paging.PART_KEY]["handle"]
         skipped = await gateway.read(handle=handle, part=4)
         text = skipped["content"][0]["text"]
-        assert skipped["isError"] is True
+        assert skipped["isError"] is False
         assert "Part 4" in text and "cannot be read yet" in text and "part 2 is next" in text
         assert f'{READER}(handle="{handle}", part=2)' in text
         assert len(gateway.perimeter.calls) == 1

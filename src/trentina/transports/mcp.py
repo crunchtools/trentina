@@ -204,7 +204,12 @@ class McpServerFace(Face):
                 str(exc),
                 destination=dest,
             )
-            return Early(router._err(req_id, router.JSONRPC_INVALID_PARAMS, str(exc)))
+            return Early(
+                router._refused(
+                    req_id,
+                    {"reason": Outcome.DENIED_GUARD.value, "detail": str(exc), "alternatives": []},
+                )
+            )
 
         # Before the guards, so they judge exactly what is forwarded.
         normalized = router._normalize_arguments(
@@ -227,7 +232,11 @@ class McpServerFace(Face):
                 normalized=normalized.dropped or None,
                 destination=dest,
             )
-            return Early(router._err(req_id, router.JSONRPC_INVALID_PARAMS, message))
+            return Early(
+                router._refused(
+                    req_id, {"reason": outcome.value, "detail": message, "alternatives": []}
+                )
+            )
 
         return McpParsed(
             backend_name=backend_name,
@@ -279,7 +288,7 @@ class McpServerFace(Face):
                 destination=parsed.dest,
             )
             if not router._may_have_acted(parsed.backend, parsed.tool_name):
-                return Early(router._err(req_id, router.JSONRPC_INVALID_PARAMS, response_err))
+                return Early(router._response_guard_refusal(req_id, response_err, parsed.mode))
             withheld = {REFUSAL_KEY: {"reason": response_err, "mode": parsed.mode.value}}
             return router._executed(withheld, call_result.is_error)
 

@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
+from tests.refusal_shape import refused
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.errors import BackendCallError
 from trentina.gateway.ingress_defense import IngressDecision
@@ -204,7 +205,7 @@ async def test_disallowed_mode_parity() -> None:
     orch = await _run(_profile(orchestrated=True), req, reply=_reply())
     plain = await _run(_profile(orchestrated=False), req, reply=_reply())
     assert orch == plain
-    assert "error" in orch
+    assert refused(orch)
 
 
 @pytest.mark.asyncio
@@ -266,7 +267,7 @@ async def test_disallowed_preprocess_parity() -> None:
     orch, ocall = await _run_capture(_profile(orchestrated=True), req, reply=_reply())
     plain, pcall = await _run_capture(_profile(orchestrated=False), req, reply=_reply())
     assert orch == plain
-    assert "error" in orch
+    assert refused(orch)
     ocall.assert_not_called()
     pcall.assert_not_called()
 
@@ -284,7 +285,7 @@ async def test_post_normalization_refusal_parity() -> None:
         _profile(orchestrated=False), req, reply=_reply(), refuse=refuse
     )
     assert orch == plain
-    assert "error" in orch
+    assert refused(orch)
     ocall.assert_not_called()
     pcall.assert_not_called()
 

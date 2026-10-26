@@ -310,6 +310,41 @@ def _err(
     return {"jsonrpc": "2.0", "id": req_id, "error": error}
 
 
+def _refused(
+    req_id: Any, refusal: dict[str, Any], text: str | None = None, **extra: Any
+) -> dict[str, Any]:
+    """A policy refusal: the gateway's answer, delivered as an ordinary tool result.
+
+    Not a JSON-RPC error and not ``isError``. Stock agent clients count both
+    as strikes against the server, and every tool behind the gateway shares
+    one server name: three refusals in a row and hermes-agent paused all of an
+    agent's tools as "unreachable" (Kagetora's weekend report, #17). A JSON-RPC
+    error is kept for a request that is malformed, which is the client's bug.
+    The structured refusal is under ``REFUSAL_KEY``; ``text``, the line an
+    agent reads, defaults to the refusal's reason and the gateway's message.
+    """
+    if text is None:
+        text = f"[TRENTINA] Refused ({refusal['reason']}). {refusal.get('detail', '')}".rstrip()
+    return _ok(
+        req_id,
+        {
+            "content": [{"type": "text", "text": text}],
+            "isError": False,
+            REFUSAL_KEY: refusal,
+            **extra,
+        },
+    )
+
+
+def _response_guard_refusal(req_id: Any, response_err: str, mode: Mode) -> dict[str, Any]:
+    """A read-only tool's response a response guard forbade: refused, nothing delivered."""
+    return _refused(
+        req_id,
+        {"reason": response_err, "mode": mode.value, "alternatives": []},
+        f"[TRENTINA] Refused (response guard). {response_err} The response was not delivered.",
+    )
+
+
 def _spelled_modes(alternatives: list[str]) -> str:
     """The modes a refusal offers, as the arguments an agent would send."""
     return " or ".join(
@@ -737,7 +772,10 @@ def _decoy_call(
     except (ModeNotPermittedError, TransformNotPermittedError) as exc:
         _audit(profile.name, backend_name, tool_name, Outcome.DECOY_TRIPPED, 0, str(exc))
         record_trip(profile.name, backend_name, tool_name, "decoy tool")
-        return _err(req_id, JSONRPC_INVALID_PARAMS, str(exc))
+        # Word for word what a real tool's refusal of the same mode says.
+        return _refused(
+            req_id, {"reason": Outcome.DENIED_GUARD.value, "detail": str(exc), "alternatives": []}
+        )
     answer = canned_result(profile, decoy)
     return _tripped(profile.name, backend_name, tool_name, req_id, "decoy tool", answer, None)
 
@@ -919,7 +957,9 @@ async def _tools_call(profile: Profile, req_id: Any, params: dict[str, Any]) -> 
             str(exc),
             destination=dest,
         )
-        return _err(req_id, JSONRPC_INVALID_PARAMS, str(exc))
+        return _refused(
+            req_id, {"reason": Outcome.DENIED_GUARD.value, "detail": str(exc), "alternatives": []}
+        )
 
     # Before the guards, so they judge exactly what is forwarded.
     normalized = _normalize_arguments(profile, backend, backend_name, tool_name, forwarded)
@@ -940,7 +980,7 @@ async def _tools_call(profile: Profile, req_id: Any, params: dict[str, Any]) -> 
             normalized=normalized.dropped or None,
             destination=dest,
         )
-        return _err(req_id, JSONRPC_INVALID_PARAMS, message)
+        return _refused(req_id, {"reason": outcome.value, "detail": message, "alternatives": []})
 
     t0 = time.monotonic()
     try:
@@ -993,7 +1033,7 @@ async def _tools_call(profile: Profile, req_id: Any, params: dict[str, Any]) -> 
             destination=dest,
         )
         if not _may_have_acted(backend, tool_name):
-            return _err(req_id, JSONRPC_INVALID_PARAMS, response_err)
+            return _response_guard_refusal(req_id, response_err, mode)
         withheld = {REFUSAL_KEY: {"reason": response_err, "mode": mode.value}}
         return _ok(req_id, _executed(withheld, call_result.is_error))
 
@@ -1077,7 +1117,7 @@ def _failed_call(
         # The backend answered, at length, so it ran the call. The read
         # stopped at the cap: whether it reported an error is not known.
         return _ok(req_id, _executed({REFUSAL_KEY: refusal}, None))
-    return _err(req_id, JSONRPC_INTERNAL_ERROR, _refusal_text(refusal), refusal)
+    return _refused(req_id, refusal, _refusal_text(refusal))
 
 
 def _call_refusal(exc: BackendCallError, mode: Mode, policy: ModePolicy) -> dict[str, Any] | None:
@@ -1490,7 +1530,7 @@ def _blocked_result(decision: Any) -> dict[str, Any]:
                 + " Details are in _trentina_warning; the original content was not delivered.",
             }
         ],
-        "isError": True,
+        "isError": False,  # a refusal is an answer, not an error: see _refused
         "_trentina_warning": decision.warning,
     }
     if decision.refusal:
@@ -1510,7 +1550,7 @@ def _preprocess_refusal(failed: str, mode: Mode | None) -> dict[str, Any]:
                 "text": f"[TRENTINA] Refused: {failed}. The original content was not delivered.",
             }
         ],
-        "isError": True,
+        "isError": False,  # a refusal is an answer, not an error: see _refused
         "_trentina_refusal": {
             "reason": "preprocess_failed",
             "mode": mode.value if mode else None,
@@ -1882,7 +1922,7 @@ def _refused_part(
     warned = {**(warning or {}), **where}
     refused: dict[str, Any] = {
         "content": [{"type": "text", "text": text}],
-        "isError": True,
+        "isError": False,  # a refusal is an answer, not an error: see _refused
         WARNING_KEY: warned,
         REFUSAL_KEY: {**refusal, **where, "handle": paged.handle},
     }
@@ -2008,7 +2048,7 @@ async def _deliver_part(
 def _part_note(req_id: Any, text: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """A ``read_part`` answer that is the gateway's own words and no content."""
     return _ok(
-        req_id, {"content": [{"type": "text", "text": text}], "isError": True, **(extra or {})}
+        req_id, {"content": [{"type": "text", "text": text}], "isError": False, **(extra or {})}
     )
 
 
