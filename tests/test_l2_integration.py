@@ -332,6 +332,8 @@ class TestKnownGaps:
         reads neither, and nothing ahead of it decodes them, so the attacks
         reach L3 alone. When a decoder lands (or a model reads them) this fails
         on purpose: re-run ``benchmarks/l2_encodings.py`` and close the gap."""
+        if _MODEL is None or _MODEL.id != SHIPPED:
+            pytest.skip(f"measured on {SHIPPED}")
         attacks = [c.payload for c in INTERNAL if c.expect_injection]
         plain = _detected(attacks)
         for name in ("base32", "Ascii85", "base85", "UU", "Braille", "Morse"):

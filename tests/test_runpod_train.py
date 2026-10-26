@@ -240,3 +240,18 @@ def test_a_failing_remote_command_is_not_repeated(monkeypatch: pytest.MonkeyPatc
     with pytest.raises(subprocess.CalledProcessError):
         runpod_train.again_if_unreachable(fails)
     assert len(attempts) == 1
+
+
+def test_ssh_unreachable_every_time_fails_after_the_last_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runpod_train.time, "sleep", lambda _: None)
+    attempts: list[int] = []
+
+    def down() -> None:
+        attempts.append(1)
+        raise subprocess.CalledProcessError(runpod_train.SSH_UNREACHABLE, ["ssh"])
+
+    with pytest.raises(subprocess.CalledProcessError):
+        runpod_train.again_if_unreachable(down)
+    assert len(attempts) == runpod_train.SSH_ATTEMPTS

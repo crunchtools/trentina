@@ -268,7 +268,9 @@ def _article_html(r: random.Random, site: str, text: str) -> str:
 
 
 def miniflux_entry(r: random.Random, text: str) -> dict[str, Any]:
-    """``read_entry``: Miniflux's entry with its feed, content = ``text`` as HTML."""
+    """``read_entry``: Miniflux's entry with its feed. Its content is ``text`` as
+    HTML paragraphs, sometimes with a lead image, a related link and a "Read
+    more" footer, as feed articles arrive (``_article_html``)."""
     feed_title, site = r.choice(_FEEDS)
     fid = r.randint(1, 80)
     title = _title(text)
@@ -375,11 +377,12 @@ def sweep_infra_page(r: random.Random, text: str) -> dict[str, Any]:
     """Metsuke ``get_sweep`` infra page: monitoring records, ``text`` one plugin output."""
     records = []
     states = ("OK", "WARNING", "CRITICAL", "UNKNOWN")
-    others = [_plugin_output(r, r.choice(states)) for _ in range(r.randint(3, 40))]
-    for o in _among(r, text, others):
+    stated = [r.choice(states) for _ in range(r.randint(3, 40))]
+    said = {_plugin_output(r, state): state for state in stated}  # an output says its state
+    for o in _among(r, text, list(said)):
         host, svc = f"{r.choice(_HOSTS)}.example.org", r.choice(_SERVICES)
         q = f"host={host}&service={svc.replace(' ', '+')}"
-        state, last = r.choice(states), r.choice(states)
+        state, last = said.get(o) or r.choice(states), r.choice(states)
         records.append(
             {
                 "host": host,

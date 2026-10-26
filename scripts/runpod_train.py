@@ -266,18 +266,18 @@ def upload(ssh: list[str], paths: list[str]) -> bool:
 
 def again_if_unreachable(step: Callable[[], Any]) -> Any:
     """Repeat ``step`` while ssh cannot connect (exit 255); for steps safe to repeat."""
-    for attempt in range(1, SSH_ATTEMPTS + 1):
+    for attempt in range(1, SSH_ATTEMPTS):
         try:
             return step()
         except subprocess.CalledProcessError as e:
-            if e.returncode != SSH_UNREACHABLE or attempt == SSH_ATTEMPTS:
+            if e.returncode != SSH_UNREACHABLE:
                 raise
             print(
                 f"ssh unreachable on {e.cmd[-1]!r}, attempt {attempt} of {SSH_ATTEMPTS}",
                 file=sys.stderr,
             )
             time.sleep(POLL_SECONDS)
-    return None
+    return step()  # the last attempt: whatever it raises is the step's failure
 
 
 def fetch(ssh: list[str], archive: Path) -> None:

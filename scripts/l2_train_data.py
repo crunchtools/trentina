@@ -251,13 +251,13 @@ _SAFE_RUN = re.compile(r"[A-Za-z0-9 ,.:;!?()'-]{24,}")
 
 
 def attack_at(attack: str, rendered: str) -> int:
-    """Where ``attack`` begins in ``rendered``, by its first stretch that survives
-    JSON escaping; -1 when none can be found (the row is then dropped in training)."""
-    for run in _SAFE_RUN.finditer(attack):
-        at = rendered.find(run.group(0))
-        if at >= 0:
-            return max(0, at - run.start())
-    return -1
+    """Where ``attack`` begins in ``rendered``, by its longest stretch that survives
+    JSON escaping. -1 when that stretch is missing or appears more than once, since
+    the envelope around it may repeat it; the row is then dropped in training."""
+    runs = sorted(_SAFE_RUN.finditer(attack), key=lambda m: len(m.group(0)), reverse=True)
+    if not runs or rendered.count(runs[0].group(0)) != 1:
+        return -1
+    return max(0, rendered.find(runs[0].group(0)) - runs[0].start())
 
 
 def plant(rng: random.Random, text: str, attack: str) -> str:
