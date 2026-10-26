@@ -23,7 +23,8 @@ PROFILES=${PROFILES:-$DEMO/profiles.yaml}
 
 mkdir -p "$OUT/frames"
 cleanup() { $ENGINE rm -f td-workspace td-site td-gateway >/dev/null 2>&1 || true; $ENGINE network rm $NET >/dev/null 2>&1 || true; }
-trap cleanup EXIT
+# A failed render prints the gateway's log, not just an exit code.
+trap 'rc=$?; [ $rc -ne 0 ] && $ENGINE logs --tail 80 td-gateway 2>&1 | sed "s/^/gateway: /"; cleanup' EXIT
 cleanup
 $ENGINE network create $NET >/dev/null
 
