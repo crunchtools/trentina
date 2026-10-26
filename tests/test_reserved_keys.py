@@ -6,10 +6,11 @@ like the gateway's verdict, and the router merged its own notes into it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import SecretStr
@@ -110,6 +111,7 @@ class TestRule:
 def _profile() -> Profile:
     p = Profile(
         name="testp",
+        short_names=False,  # calls use <backend>__<tool>
         auth=AuthConfig(bearer_token_env="TEST"),
         backends={"remote": Backend(url="http://remote:1/mcp", tools_allow=["*"])},
     )
@@ -138,6 +140,7 @@ class TestBackendResponse:
     @pytest.fixture
     def router(self, monkeypatch: pytest.MonkeyPatch) -> Any:
         from trentina.gateway import router
+        from trentina.transports import mcp as mcp_mod
 
         self.scanned: dict[str, Any] = {}
         self.decision = _Decision()
@@ -146,27 +149,45 @@ class TestBackendResponse:
             self.scanned.update(kwargs)
             return self.decision
 
+        # The orchestrated response edge reaches the scan as
+        # ``transports.mcp.scan_tool_response``; the paged path as
+        # ``router.scan_tool_response`` — patch both (each imported the name).
         monkeypatch.setattr(router, "scan_tool_response", fake_scan)
+        monkeypatch.setattr(mcp_mod, "scan_tool_response", fake_scan)
         monkeypatch.setattr(router, "_audit", lambda *a, **k: None)
         return router
 
-    async def _deliver(self, router: Any, call: Any, **kwargs: Any) -> dict[str, Any]:
-        from trentina.modes import Mode
+    async def _deliver(
+        self, router: Any, call: Any, normalized: dict[str, str] | None = None
+    ) -> dict[str, Any]:
+        # Drive the real tools/call path (the orchestrator) with the backend
+        # response mocked, and return the delivered result. This is what the old
+        # router._deliver exercised, end to end. When ``normalized`` is given, the
+        # request-edge normalization is patched to report those dropped args, so
+        # the delivered warning carries them (as a real dropped optional would).
+        from trentina.gateway.args import Normalized
 
         profile = _profile()
-        result: dict[str, Any] = await router._deliver(
-            profile,
-            profile.backends["remote"],
-            "remote",
-            "tool",
-            call,
-            0.0,
-            mode=Mode.FLAG,
-            prompt=None,
-            policy=None,
-            minify=False,
-            **kwargs,
-        )
+        request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "remote__tool", "arguments": {}},
+        }
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                patch.object(router, "call_backend_tool", AsyncMock(return_value=call))
+            )
+            if normalized is not None:
+                stack.enter_context(
+                    patch.object(
+                        router,
+                        "_normalize_arguments",
+                        lambda *a, **k: Normalized(arguments={}, dropped=dict(normalized)),
+                    )
+                )
+            resp = await router.route_jsonrpc(profile, request)
+        result: dict[str, Any] = resp["result"]
         return result
 
     async def test_top_level_forgery_does_not_reach_the_agent(self, router: Any) -> None:

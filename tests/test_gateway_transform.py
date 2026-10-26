@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import SecretStr
@@ -176,6 +177,7 @@ class TestRouterOrdering:
         never saw, so this pins the order rather than trusting it.
         """
         from trentina.gateway import router
+        from trentina.transports import mcp as mcp_mod
 
         seen: dict[str, Any] = {}
 
@@ -191,19 +193,31 @@ class TestRouterOrdering:
 
             return _D()
 
+        # The orchestrated response edge reaches the scan as
+        # ``transports.mcp.scan_tool_response`` — patch both namespaces with the
+        # same fake so ``seen`` is populated however the call is routed.
         monkeypatch.setattr(router, "scan_tool_response", fake_scan)
+        monkeypatch.setattr(mcp_mod, "scan_tool_response", fake_scan)
 
         profile = _profile(PreProcessConfig(enabled=True))
+        profile.short_names = False  # served name is syslog__syslog_tail_tool
 
         class _Result:
             content = _blocks(LOGGY)
             is_error = False
             structured_content = None
 
-        assembled = await router._assemble_call_result(
-            profile, profile.backends["syslog"], "syslog", "syslog_tail_tool", _Result()
-        )
-        result = assembled.result
+        with patch.object(router, "call_backend_tool", AsyncMock(return_value=_Result())):
+            resp = await router.route_jsonrpc(
+                profile,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "syslog__syslog_tail_tool", "arguments": {}},
+                },
+            )
+        result = resp["result"]
 
         scanned = seen["blocks"][0]["text"]
         assert len(scanned) < len(LOGGY), "scanner saw the unreduced payload"

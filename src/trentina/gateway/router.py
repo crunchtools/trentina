@@ -35,11 +35,10 @@ from mcp_types.version import (
 
 from .. import __version__
 from ..database import is_blocked, record_gateway_call
-from ..defense import Provenance
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
 from ..logsafe import exc_kind, redact_source
 from ..modes import BLOCKLIST_REASON, Mode, parse_mode_arg, refusal_body
-from ..outcomes import Outcome, classify_exception, refusal_of
+from ..outcomes import Outcome, refusal_of
 from ..quarantine.limiter import Priority, l3_priority
 from ..reserved import (
     REFUSAL_KEY,
@@ -72,7 +71,7 @@ from .destination import Destination, destination_of
 from .errors import BackendCallError, BackendResponseTooLargeError
 from .filter import filter_tools
 from .gatekeeper import judge_call
-from .guards import check_parameter_guards, check_response_guards
+from .guards import check_parameter_guards
 from .ingress_defense import effective_mode, scan_tool_list, scan_tool_response
 from .internal import call_internal_tool, list_internal_tools
 from .modes_policy import (
@@ -106,9 +105,9 @@ from .surface import (
     wire_bytes,
     wire_digest,
 )
-from .transform import transform_response
 
 if TYPE_CHECKING:
+    from ..defense import Provenance
     from ..modes import ModePolicy
     from ..transforms.policy import PreProcessPolicy
     from .profile import Backend, Profile
@@ -647,12 +646,14 @@ async def _build_profile_tools(
 
 
 async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[str, Any]:
-    """``_tools_call``, with one audit row guaranteed for every call (#293).
+    """The ``tools/call`` edge, with one audit row guaranteed for every call (#293).
 
-    Every path inside writes its own row. An exception that escapes them all
-    is ours, so it is recorded as gateway_error before it propagates to the
-    HTTP edge's 500: a probe that crashes the router is the probe the audit
-    most needs to see.
+    Rejects a leaked-token probe and a non-mapping params, answers a discovery
+    meta name, then hands the resolved call to ``_crossing_call`` (the
+    orchestrator). Every path inside writes its own row. An exception that
+    escapes them all is ours, so it is recorded as gateway_error before it
+    propagates to the HTTP edge's 500: a probe that crashes the router is the
+    probe the audit most needs to see.
     """
     # Text held for a caller who never came back does not outlive its hold.
     paging.expire()
@@ -675,18 +676,7 @@ async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[
             return await _discovery_call(
                 profile, req_id, name, {} if arguments is None else arguments
             )
-        if profile.orchestrated:
-            # Phase 4 cutover flag: one profile rides the orchestrator while the
-            # rest stay here, for byte-identical verification. The crossing
-            # composes the same collaborators this path does (transports/mcp.py).
-            from ..orchestrator import crossing
-            from ..transports.mcp import McpCrossing, mcp_transport
-
-            crossed: dict[str, Any] = await crossing(
-                mcp_transport, McpCrossing(profile, req_id, params)
-            )
-            return crossed
-        return await _tools_call(profile, req_id, params)
+        return await _crossing_call(profile, req_id, params)
     except Exception as exc:
         if not _call_audited.get():
             _audit(
@@ -713,6 +703,25 @@ async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[
     finally:
         current_call.reset(call)
         _call_audited.reset(token)
+
+
+async def _crossing_call(profile: Profile, req_id: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """Run one resolved ``tools/call`` through the orchestrator (Trentina 3.0).
+
+    The one call path: ``orchestrator.crossing`` drives the MCP ``Face`` /
+    ``Carrier`` (``transports.mcp``), which resolves the target, re-checks the
+    allowlist, answers a decoy or ``read_part``, resolves the mode and
+    preprocess switch, normalizes and guards the arguments, dispatches, and
+    judges and shapes the response — writing the one audit row through
+    ``_finish_delivery``. Reached from the ``tools/call`` route and from
+    ``call_tool``'s re-entry; ``params`` is already a mapping and not a
+    discovery meta name by the time it arrives.
+    """
+    from ..orchestrator import crossing
+    from ..transports.mcp import McpCrossing, mcp_transport
+
+    crossed: dict[str, Any] = await crossing(mcp_transport, McpCrossing(profile, req_id, params))
+    return crossed
 
 
 def _tripped(
@@ -884,176 +893,6 @@ def _unknown_tool(profile: Profile, req_id: Any, served_name: object) -> dict[st
     return _err(req_id, JSONRPC_INVALID_PARAMS, f"Unknown tool {served_name!r}")
 
 
-async def _tools_call(profile: Profile, req_id: Any, params: dict[str, Any]) -> dict[str, Any]:
-    """Parse the namespaced tool name, validate routing, forward to the backend.
-
-    Re-applies the allowlist on call as defense in depth: even if a consumer
-    somehow learned about a tool name, calling it must still match the filter
-    that produced their tools/list view.
-
-    Every path here is audited, including every denial. Leaving those
-    unrecorded made a consumer probing tools outside its allowlist, or
-    repeatedly tripping parameter guards, completely invisible — the exact
-    signal you want for spotting a misbehaving or hijacked consumer, and the
-    most useful input for tuning an allowlist from evidence.
-
-    Outcomes are classified rather than reduced to a boolean.
-    ``classify_exception`` walks ``__cause__`` because ``call_internal_tool``
-    wraps every tool exception in ``BackendCallError``, so a fail-closed
-    defense block would otherwise be indistinguishable from the backend being
-    down. A backend can also report failure *without* raising, via
-    ``isError`` — that previously audited as a success, inflating the ok
-    column with tool-level errors.
-    """
-    served_name = params.get("name", "")
-    # Only an absent or null `arguments` defaults; a falsy `[]` stays malformed.
-    arguments = {} if params.get("arguments") is None else params["arguments"]
-
-    target = _resolve_target(profile, served_name)
-    if target is None:
-        return _unknown_tool(profile, req_id, served_name)
-    backend_name, tool_name, backend = target
-
-    # From the arguments as sent, so a call refused below still records where
-    # it was pointed (#266): an agent probing destinations is the signal.
-    dest = destination_of(backend, tool_name, arguments) if isinstance(arguments, dict) else None
-
-    if not filter_tools([{"name": tool_name}], backend):
-        message = f"Tool {tool_name!r} not permitted on backend {backend_name!r}"
-        _audit(
-            profile.name,
-            backend_name,
-            tool_name,
-            Outcome.DENIED_ALLOWLIST,
-            0,
-            message,
-            destination=dest,
-        )
-        return _err(req_id, JSONRPC_INVALID_PARAMS, message)
-
-    if not isinstance(arguments, dict):
-        # After the allowlist, so a probe of a forbidden tool still audits as
-        # that. Every guard below reads a mapping; before #293 a list here
-        # raised AttributeError and came back a 500 with no row.
-        message = "arguments must be an object"
-        _audit(profile.name, backend_name, tool_name, Outcome.DENIED_GUARD, 0, message)
-        return _err(req_id, JSONRPC_INVALID_PARAMS, message)
-
-    if backend.is_decoy or (backend.is_internal and tool_name == paging.READ_PART_TOOL):
-        return await _answered_here(profile, req_id, served_name, target, arguments)
-
-    # The mode resolves BEFORE any guard reads it: an omitted mode becomes
-    # the default and is checked as that, never skipped as absent.
-    try:
-        policy, mode, prompt, forwarded = resolve_call(profile, backend, tool_name, arguments)
-        preprocess, requested, minify = resolve_preprocess(profile, backend, tool_name, arguments)
-    except (ModeNotPermittedError, TransformNotPermittedError) as exc:
-        _audit(
-            profile.name,
-            backend_name,
-            tool_name,
-            Outcome.DENIED_GUARD,
-            0,
-            str(exc),
-            destination=dest,
-        )
-        return _refused(
-            req_id, {"reason": Outcome.DENIED_GUARD.value, "detail": str(exc), "alternatives": []}
-        )
-
-    # Before the guards, so they judge exactly what is forwarded.
-    normalized = _normalize_arguments(profile, backend, backend_name, tool_name, forwarded)
-    forwarded = normalized.arguments
-
-    refused = await _refuse_call(
-        profile, backend, backend_name, tool_name, forwarded, mode, prompt, normalized, dest
-    )
-    if refused is not None:
-        outcome, message, recorded = refused
-        _audit(
-            profile.name,
-            backend_name,
-            tool_name,
-            outcome,
-            0,
-            recorded,
-            normalized=normalized.dropped or None,
-            destination=dest,
-        )
-        return _refused(req_id, {"reason": outcome.value, "detail": message, "alternatives": []})
-
-    t0 = time.monotonic()
-    try:
-        call_result = await _dispatch(
-            profile,
-            backend,
-            backend_name,
-            tool_name,
-            forwarded,
-            policy=policy,
-            mode=mode,
-            prompt=prompt,
-            preprocess=preprocess,
-            requested=requested,
-        )
-    except BackendCallError as exc:
-        duration_ms = int((time.monotonic() - t0) * 1000)
-        outcome = classify_exception(exc)
-        _audit(
-            profile.name,
-            backend_name,
-            tool_name,
-            outcome,
-            duration_ms,
-            str(exc),
-            destination=dest,
-        )
-        return _failed_call(req_id, exc, _may_have_acted(backend, tool_name), mode, policy)
-
-    duration_ms = int((time.monotonic() - t0) * 1000)
-
-    # Response guards run on the RAW result, before reduction and before the
-    # scan. Reduction summarizes and paraphrases, which can dissolve the exact
-    # literal a guard matches on; a guard that reads the reduced artifact would
-    # therefore pass content the operator forbade. Internal backends are checked
-    # too — they skip reduce and scan because the firewall already filtered
-    # where that content ENTERED, but egress policy is about who is asking, and
-    # the asker is the same either way.
-    response_err = check_response_guards(
-        tool_name, call_result.content, call_result.structured_content, backend
-    )
-    if response_err:
-        _audit(
-            profile.name,
-            backend_name,
-            tool_name,
-            Outcome.DENIED_RESPONSE_GUARD,
-            duration_ms,
-            response_err,
-            destination=dest,
-        )
-        if not _may_have_acted(backend, tool_name):
-            return _response_guard_refusal(req_id, response_err, mode)
-        withheld = {REFUSAL_KEY: {"reason": response_err, "mode": mode.value}}
-        return _ok(req_id, _executed(withheld, call_result.is_error))
-
-    result = await _deliver(
-        profile,
-        backend,
-        backend_name,
-        tool_name,
-        call_result,
-        t0,
-        mode=mode,
-        prompt=prompt,
-        policy=policy,
-        minify=minify,
-        normalized=normalized.dropped,
-        destination=dest,
-    )
-    return _ok(req_id, result)
-
-
 async def _discovery_call(
     profile: Profile, req_id: Any, name: str, arguments: Any
 ) -> dict[str, Any]:
@@ -1072,7 +911,7 @@ async def _discovery_call(
         inner = arguments.get("name", "")
         if not isinstance(inner, str) or inner in discovery.meta_names(profile):
             return _unknown_tool(profile, req_id, inner)
-        return await _tools_call(
+        return await _crossing_call(
             profile, req_id, {"name": inner, "arguments": arguments.get("arguments")}
         )
     t0 = time.monotonic()
@@ -1234,54 +1073,6 @@ def _normalize_arguments(
     return normalized
 
 
-async def _deliver(
-    profile: Profile,
-    backend: Backend,
-    backend_name: str,
-    tool_name: str,
-    call_result: Any,
-    t0: float,
-    *,
-    mode: Mode,
-    prompt: str | None,
-    policy: ModePolicy,
-    minify: bool | None,
-    normalized: dict[str, str] | None = None,
-    destination: Destination | None = None,
-) -> dict[str, Any]:
-    """Assemble the result, then write the call's one audit row, sizes included.
-
-    Dropped arguments go back to the agent in ``_trentina_warning`` beside any
-    defense verdict, so a model can learn from them, and into the audit row.
-    """
-    try:
-        assembled = await _assemble_call_result(
-            profile,
-            backend,
-            backend_name,
-            tool_name,
-            call_result,
-            mode=mode,
-            prompt=prompt,
-            policy=policy,
-            minify=minify,
-        )
-    except Exception as exc:
-        _audit_assembly_failure(profile.name, backend_name, tool_name, t0, exc, destination)
-        raise
-    return await _finish_delivery(
-        profile,
-        backend,
-        backend_name,
-        tool_name,
-        call_result,
-        t0,
-        assembled,
-        normalized=normalized,
-        destination=destination,
-    )
-
-
 def _audit_assembly_failure(
     profile_name: str,
     backend_name: str,
@@ -1320,9 +1111,9 @@ async def _finish_delivery(
 ) -> dict[str, Any]:
     """Finish an assembled result: the session mark, the warning, the one row.
 
-    The half of delivery that is the same whether ``_assemble_call_result`` or
-    the orchestrated response edge produced the ``Assembled`` — so both share
-    it and the audit row is written exactly once, by one function.
+    The half of delivery below the orchestrator's response edge
+    (``transports.mcp.McpServerFace._assemble``): it hands the ``Assembled`` here
+    and the audit row is written exactly once, by this one function.
     """
     _mark_session(assembled, None if not backend.is_internal else call_result)
     if normalized or assembled.stripped:
@@ -1639,141 +1430,6 @@ def _drop_duplicate_structured(structured: Any, content_blocks: list[Any] | None
         return None if structured == {"result": text} else structured
     copies = {_CANONICAL(c) for c in ({"result": text}, parsed, {"result": parsed})}
     return None if _CANONICAL(structured) in copies else structured
-
-
-async def _assemble_call_result(
-    profile: Profile,
-    backend: Backend,
-    backend_name: str,
-    tool_name: str,
-    call_result: Any,
-    *,
-    mode: Mode | None = None,
-    prompt: str | None = None,
-    policy: ModePolicy | None = None,
-    minify: bool | None = None,
-) -> Assembled:
-    """Shape the MCP result and run it through the perimeter.
-
-    Flag mode: remote backends only. Internal tools run the pipeline at
-    their own ingress — the firewall filters where content ENTERS, and
-    scanning the same bytes twice is cost, not defense.
-    """
-    ok = Outcome.TOOL_ERROR if call_result.is_error else Outcome.OK
-    content_blocks, structured, stripped = await asyncio.to_thread(_arrived, backend, call_result)
-    provenance = Provenance.EXTERNAL
-    reduced: TransformOutcome | None = None
-    # The backend has answered, so a tool that may write has written (#425).
-    acted = _may_have_acted(backend, tool_name)
-
-    # Transform BEFORE the perimeter, never after. transforms/base.py
-    # invariant 2: the caller scans the transformed artifact and delivers that
-    # artifact, so what a processor dropped is never judged and never
-    # delivered. Transforming after the scan would hand the agent bytes the
-    # wall never saw.
-    #
-    # Internal tools are excluded for the same reason they skip the scan —
-    # they run the pipeline at their own ingress.
-    if not backend.is_internal:
-        reduced = await transform_response(
-            profile=profile,
-            backend=backend,
-            backend_name=backend_name,
-            tool_name=tool_name,
-            content_blocks=content_blocks,
-            minify=minify,
-        )
-        if reduced.failed is not None:
-            failed = _preprocess_refusal(reduced.failed, mode)
-            return Assembled(
-                _executed(failed, call_result.is_error) if acted else failed,
-                Outcome.BLOCKED_DEFENSE,
-                reduced.failed,
-                stripped=stripped,
-            )
-        content_blocks = reduced.content_blocks
-        provenance = reduced.provenance
-        # Too large to judge in one call (#340): cut once, here, from the
-        # transformed text, so what is cut is what would have been delivered.
-        paged = await _hold_paged(
-            profile,
-            backend,
-            backend_name,
-            tool_name,
-            content_blocks,
-            structured,
-            mode=mode,
-            prompt=prompt,
-            provenance=provenance,
-            l3_context=_l3_context(backend, reduced),
-            hidden=reduced.hidden,
-            is_error=bool(call_result.is_error),
-            acted=acted,
-        )
-        if paged is not None:
-            first = await _deliver_part(
-                profile,
-                paged,
-                1,
-                mode=paged.mode,
-                prompt=prompt,
-                policy=policy or policy_for(profile, backend, tool_name),
-            )
-            first.stripped = stripped
-            return first
-
-    result: dict[str, Any] = {
-        "content": content_blocks,
-        "isError": call_result.is_error,
-    }
-    if structured is not None:
-        result["structuredContent"] = structured
-
-    gateway_warning: dict[str, Any] | None = None
-    if not backend.is_internal:
-        decision = await scan_tool_response(
-            profile=profile,
-            backend_name=backend_name,
-            tool_name=tool_name,
-            content_blocks=content_blocks,
-            structured_content=structured,
-            provenance=provenance,
-            mode=mode,
-            prompt=prompt,
-            policy=policy,
-            l3_context=_l3_context(backend, reduced)
-            if reduced is not None
-            else backend.l3_briefing,
-            hidden=reduced.hidden if reduced is not None else None,
-        )
-        gateway_warning = decision.warning
-        if decision.blocked:
-            # The content never reaches the agent; the warning does. Audited
-            # as a defense block so a misfiring threshold is visible in the
-            # outcome column, not just in an agent's confusion.
-            risk = decision.warning.get("risk_level") if decision.warning else "?"
-            blocked = _blocked_result(decision)
-            return Assembled(
-                _executed(blocked, call_result.is_error) if acted else blocked,
-                Outcome.BLOCKED_DEFENSE,
-                f"response blocked by defense (risk={risk})",
-                warning=gateway_warning,
-                stripped=stripped,
-            )
-        if decision.extraction is not None:
-            # redact: the verified extraction REPLACES the response, and
-            # structuredContent goes with it — redact never re-delivers what
-            # it replaced.
-            result = {
-                "content": [{"type": "text", "text": decision.extraction}],
-                "isError": call_result.is_error,
-            }
-            if decision.warning is not None:
-                result[WARNING_KEY] = decision.warning
-            return Assembled(result, ok, warning=gateway_warning, stripped=stripped)
-        _attach_warning(result, decision.warning)
-
-    return Assembled(result, ok, warning=gateway_warning, stripped=stripped)
 
 
 def _attach_warning(result: dict[str, Any], warning: dict[str, Any] | None) -> None:

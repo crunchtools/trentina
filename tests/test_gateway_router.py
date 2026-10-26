@@ -518,8 +518,9 @@ class TestRouter:
                 "trentina.gateway.router.call_backend_tool",
                 side_effect=memory_call,
             ),
-            patch("trentina.gateway.router.transform_response") as mock_transform,
+            patch("trentina.transports.mcp.transform_response") as mock_transform,
             patch("trentina.gateway.router.scan_tool_response") as mock_scan,
+            patch("trentina.transports.mcp.scan_tool_response", mock_scan),
             patch("trentina.database.get_config") as mock_cfg,
         ):
             mock_cfg.return_value.db_path = str(tmp_path / "denied_response.db")
@@ -1072,7 +1073,8 @@ class TestOneAuditRowPerCall:
             patch(
                 "trentina.gateway.router.scan_tool_response",
                 side_effect=scan or fake_scan,
-            ),
+            ) as mock_scan,
+            patch("trentina.transports.mcp.scan_tool_response", mock_scan),
             patch("trentina.database.get_config") as mock_cfg,
         ):
             mock_cfg.return_value.db_path = str(tmp_path / "one_row.db")
@@ -1321,7 +1323,8 @@ class TestArgumentHygiene:
                 patch(
                     "trentina.gateway.router.scan_tool_response",
                     side_effect=fake_scan,
-                ),
+                ) as mock_scan,
+                patch("trentina.transports.mcp.scan_tool_response", mock_scan),
                 patch("trentina.database.get_config") as mock_cfg,
             ):
                 mock_cfg.return_value.db_path = str(tmp_path / "hygiene.db")

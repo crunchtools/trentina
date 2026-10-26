@@ -1,16 +1,15 @@
-"""Phase 4: the orchestrator's MCP crossing is byte-identical to the router path.
+"""Phase 4: the orchestrator is the one MCP ``tools/call`` path.
 
-PR #2 routes one profile's ``tools/call`` through ``orchestrator.crossing`` and
-the MCP ``Face``/``Carrier`` (``transports.mcp``) instead of
-``router._tools_call``. The crossing COMPOSES the same collaborators in the same
-order, so its JSON-RPC response must match the hand-rolled path's byte for byte.
-
-These tests drive one request through a profile with ``orchestrated=True`` and an
-otherwise-identical profile with ``orchestrated=False`` and assert the two
-responses are equal, across every branch of the call path: a clean delivery, a
-flag warning, a defense block, a redact extraction, a backend error, an unknown
-tool, non-object arguments, a disallowed mode, and an allowlist denial. The
-``crossing`` driver itself is unit-tested for its short-circuit on an ``Early``.
+Every profile's ``tools/call`` runs through ``orchestrator.crossing`` and the MCP
+``Face``/``Carrier`` (``transports.mcp``); the hand-rolled ``router._tools_call``
+path is gone. These tests drive one request per branch of the call path through
+``route_jsonrpc`` and assert the orchestrated response directly — a clean
+delivery, a flag warning, a defense block, a redact extraction, a required-
+transform failure, a backend error, an unknown tool, non-object arguments, a
+disallowed mode, an allowlist denial, the two guard branches that gate dispatch,
+and the response guard. (The byte-identical-to-the-old-path parity checks these
+replace retired with the dual path they guarded.) The ``crossing`` driver itself
+is unit-tested for its short-circuit on an ``Early`` and its edge ordering.
 """
 
 from __future__ import annotations
@@ -31,6 +30,7 @@ from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
 from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.orchestrator import crossing
 from trentina.outcomes import Outcome
+from trentina.reserved import REFUSAL_KEY, WARNING_KEY
 from trentina.transports.base import Carrier, Early, Face, Transport
 
 ROUTER = "trentina.gateway.router"
@@ -39,16 +39,13 @@ MCP = "trentina.transports.mcp"
 
 def _profile(
     *,
-    orchestrated: bool,
     enforcement: str = "flag",
     modes: list[str] | None = None,
     tools_deny: list[str] | None = None,
 ) -> Profile:
-    """Two of these, differing only in ``orchestrated``, must behave identically."""
     p = Profile(
         name="agent",
         short_names=False,  # calls use <backend>__<tool>
-        orchestrated=orchestrated,
         auth=AuthConfig(bearer_token_env="TEST"),
         defense=DefenseConfig(enforcement=enforcement, modes=modes or [enforcement]),
         backends={"rt": Backend(url="http://rt:8000/mcp", tools_deny=tools_deny or [])},
@@ -83,15 +80,17 @@ async def _run(
     decision: IngressDecision | None = None,
     exc: Exception | None = None,
 ) -> dict[str, Any]:
-    """Route one request with the backend call and the scan patched to fixed values."""
+    """Route one request with the backend call and the scan patched to fixed values.
+
+    ``scan_tool_response`` is patched in BOTH the router and the MCP namespace —
+    the orchestrated response edge reaches it as ``transports.mcp.scan_tool_response``
+    and the paged path as ``router.scan_tool_response`` (each imported the name).
+    """
     call = AsyncMock(side_effect=exc) if exc is not None else AsyncMock(return_value=reply)
     verdict = decision if decision is not None else IngressDecision(warning=None)
     scan = AsyncMock(return_value=verdict)
     with (
         patch(f"{ROUTER}.call_backend_tool", call),
-        # ``scan_tool_response`` is patched in BOTH namespaces: the hand-rolled
-        # path reaches it as ``router.scan_tool_response``, the orchestrated path
-        # as ``transports.mcp.scan_tool_response`` (each imported the name).
         patch(f"{ROUTER}.scan_tool_response", scan),
         patch(f"{MCP}.scan_tool_response", scan),
         patch(f"{ROUTER}._audit", MagicMock()),
@@ -99,125 +98,111 @@ async def _run(
         return await route_jsonrpc(profile, request)
 
 
-# --- Parity across every delivery verdict -------------------------------------
+# --- Every delivery verdict -------------------------------------------------
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "decision",
-    [
-        IngressDecision(warning=None),
-        IngressDecision(warning={"flagged_by": "l2", "risk_level": "high"}),
-        IngressDecision(warning=None, extraction="the gist of the response"),
-    ],
-    ids=["clean", "flag-warning", "redact-extraction"],
-)
-async def test_deliver_parity(decision: IngressDecision) -> None:
-    req = _request()
-    orch = await _run(_profile(orchestrated=True), req, reply=_reply(), decision=decision)
-    plain = await _run(_profile(orchestrated=False), req, reply=_reply(), decision=decision)
-    assert orch == plain
-    assert "result" in orch  # a delivered call, not an error envelope
+async def test_clean_delivery() -> None:
+    resp = await _run(
+        _profile(), _request(), reply=_reply(), decision=IngressDecision(warning=None)
+    )
+    assert "result" in resp
+    assert resp["result"]["isError"] is False
+    assert resp["result"]["content"]  # the backend's content was delivered
 
 
 @pytest.mark.asyncio
-async def test_required_transform_failure_parity() -> None:
-    # A required processor that cannot run: assembly delivers the preprocess
-    # refusal in place of the response. Both paths reproduce the same arm of
-    # _assemble_call_result, so the refusal body and envelope must match.
-    from trentina.gateway.transform import TransformOutcome
-
-    failed = TransformOutcome(content_blocks=_reply().content, failed="required processor failed")
-    transform = AsyncMock(return_value=failed)
-    req = _request()
-    with (
-        patch(f"{ROUTER}.call_backend_tool", AsyncMock(return_value=_reply())),
-        patch(f"{ROUTER}.transform_response", transform),
-        patch(f"{MCP}.transform_response", transform),
-        patch(f"{ROUTER}._audit", MagicMock()),
-    ):
-        orch = await route_jsonrpc(_profile(orchestrated=True), req)
-        plain = await route_jsonrpc(_profile(orchestrated=False), req)
-    assert orch == plain
-    refusal = orch["result"]["_trentina_refusal"]
-    assert refusal["reason"] == "preprocess_failed"
+async def test_flag_warning_attached() -> None:
+    decision = IngressDecision(warning={"flagged_by": "l2", "risk_level": "high"})
+    resp = await _run(_profile(), _request(), reply=_reply(), decision=decision)
+    assert "result" in resp
+    assert resp["result"][WARNING_KEY]["flagged_by"] == "l2"
 
 
 @pytest.mark.asyncio
-async def test_block_refusal_parity() -> None:
+async def test_redact_extraction_replaces_content() -> None:
+    decision = IngressDecision(warning=None, extraction="the gist of the response")
+    resp = await _run(_profile(), _request(), reply=_reply(), decision=decision)
+    assert "result" in resp
+    assert resp["result"]["content"] == [{"type": "text", "text": "the gist of the response"}]
+
+
+@pytest.mark.asyncio
+async def test_block_refusal() -> None:
     decision = IngressDecision(
         warning={"flagged_by": "l2", "risk_level": "high"},
         blocked=True,
         refusal={"reason": "flagged by l2", "mode": "block", "alternatives": []},
     )
-    req = _request()
-    orch = await _run(
-        _profile(orchestrated=True, enforcement="block"), req, reply=_reply(), decision=decision
-    )
-    plain = await _run(
-        _profile(orchestrated=False, enforcement="block"), req, reply=_reply(), decision=decision
-    )
-    assert orch == plain
-
-
-# --- Parity across every early-return branch ----------------------------------
+    resp = await _run(_profile(enforcement="block"), _request(), reply=_reply(), decision=decision)
+    assert "result" in resp
+    assert resp["result"][REFUSAL_KEY]["reason"] == "flagged by l2"
+    # `search` is not annotated read-only, so the block reads as executed-withheld.
+    assert resp["result"][REFUSAL_KEY]["executed"] is True
 
 
 @pytest.mark.asyncio
-async def test_backend_error_parity() -> None:
-    req = _request()
-    exc = BackendCallError("backend unreachable")
-    orch = await _run(_profile(orchestrated=True), req, exc=exc)
-    plain = await _run(_profile(orchestrated=False), req, exc=exc)
-    assert orch == plain
-    assert "error" in orch
+async def test_required_transform_failure() -> None:
+    # A required processor that cannot run: assembly delivers the preprocess
+    # refusal in place of the response (router._preprocess_refusal).
+    from trentina.gateway.transform import TransformOutcome
+
+    failed = TransformOutcome(content_blocks=_reply().content, failed="required processor failed")
+    transform = AsyncMock(return_value=failed)
+    with (
+        patch(f"{ROUTER}.call_backend_tool", AsyncMock(return_value=_reply())),
+        patch(f"{MCP}.transform_response", transform),
+        patch(f"{ROUTER}._audit", MagicMock()),
+    ):
+        resp = await route_jsonrpc(_profile(), _request())
+    assert resp["result"][REFUSAL_KEY]["reason"] == "preprocess_failed"
+
+
+# --- Every early-return branch ----------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_unknown_tool_parity() -> None:
-    # A backend not in the profile: the served name resolves to nothing.
+async def test_backend_error() -> None:
+    # A transport failure (backend unreachable) is a genuine failed call: a
+    # JSON-RPC error, not a policy refusal-as-result.
+    resp = await _run(_profile(), _request(), exc=BackendCallError("backend unreachable"))
+    assert "error" in resp
+
+
+@pytest.mark.asyncio
+async def test_unknown_tool() -> None:
     req = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "tools/call",
         "params": {"name": f"ghost{NAMESPACE_SEP}tool", "arguments": {}},
     }
-    orch = await _run(_profile(orchestrated=True), req, reply=_reply())
-    plain = await _run(_profile(orchestrated=False), req, reply=_reply())
-    assert orch == plain
-    assert "error" in orch
+    resp = await _run(_profile(), req, reply=_reply())
+    assert "error" in resp
 
 
 @pytest.mark.asyncio
-async def test_non_object_arguments_parity() -> None:
+async def test_non_object_arguments() -> None:
     req = _request()
     req["params"]["arguments"] = ["not", "an", "object"]
-    orch = await _run(_profile(orchestrated=True), req, reply=_reply())
-    plain = await _run(_profile(orchestrated=False), req, reply=_reply())
-    assert orch == plain
-    assert "error" in orch
+    resp = await _run(_profile(), req, reply=_reply())
+    assert "error" in resp
 
 
 @pytest.mark.asyncio
-async def test_disallowed_mode_parity() -> None:
-    # flag-only profile; a call asking for block must be refused the same way.
-    req = _request(arguments={"trentina_mode": "block"})
-    orch = await _run(_profile(orchestrated=True), req, reply=_reply())
-    plain = await _run(_profile(orchestrated=False), req, reply=_reply())
-    assert orch == plain
-    assert refused(orch)
+async def test_disallowed_mode() -> None:
+    # flag-only profile; a call asking for block is refused, delivered as a result (#549).
+    resp = await _run(_profile(), _request(arguments={"trentina_mode": "block"}), reply=_reply())
+    assert refused(resp)
 
 
 @pytest.mark.asyncio
-async def test_allowlist_denied_parity() -> None:
-    req = _request()
-    orch = await _run(_profile(orchestrated=True, tools_deny=["search"]), req, reply=_reply())
-    plain = await _run(_profile(orchestrated=False, tools_deny=["search"]), req, reply=_reply())
-    assert orch == plain
-    assert "error" in orch
+async def test_allowlist_denied() -> None:
+    resp = await _run(_profile(tools_deny=["search"]), _request(), reply=_reply())
+    assert "error" in resp
 
 
-# --- Parity across the guard branches that gate dispatch and delivery ---------
+# --- The guard branches that gate dispatch and delivery ---------------------
 
 
 async def _run_capture(
@@ -235,7 +220,7 @@ async def _run_capture(
     ``check_response_guards`` and ``scan_tool_response`` are patched in BOTH the
     router and the MCP namespace because each path imported the name into its own
     module; ``_refuse_call`` and ``_may_have_acted`` are reached as ``router.*``
-    on both paths, so one patch covers them.
+    on the orchestrated path, so one patch covers them.
     """
     call = AsyncMock(return_value=reply)
     scan = AsyncMock(return_value=IngressDecision(warning=None))
@@ -246,7 +231,6 @@ async def _run_capture(
         patch(f"{ROUTER}._audit", MagicMock()),
     ]
     if guard_err is not None:
-        patches.append(patch(f"{ROUTER}.check_response_guards", MagicMock(return_value=guard_err)))
         patches.append(patch(f"{MCP}.check_response_guards", MagicMock(return_value=guard_err)))
     if may_act is not None:
         patches.append(patch(f"{ROUTER}._may_have_acted", MagicMock(return_value=may_act)))
@@ -260,61 +244,46 @@ async def _run_capture(
 
 
 @pytest.mark.asyncio
-async def test_disallowed_preprocess_parity() -> None:
-    # An invalid trentina_preprocess value raises TransformNotPermittedError in
-    # resolve_preprocess; both paths must refuse it the same way and not dispatch.
+async def test_disallowed_preprocess_not_dispatched() -> None:
+    # An invalid trentina_preprocess raises TransformNotPermittedError in
+    # resolve_preprocess: refuse before the backend is reached.
     req = _request(arguments={"trentina_preprocess": "maybe"})
-    orch, ocall = await _run_capture(_profile(orchestrated=True), req, reply=_reply())
-    plain, pcall = await _run_capture(_profile(orchestrated=False), req, reply=_reply())
-    assert orch == plain
-    assert refused(orch)
-    ocall.assert_not_called()
-    pcall.assert_not_called()
+    resp, call = await _run_capture(_profile(), req, reply=_reply())
+    assert refused(resp)
+    call.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_post_normalization_refusal_parity() -> None:
-    # _refuse_call rejects a normalized argument (a parameter guard or an invalid
-    # argument): both paths must return the same error and never reach the backend.
+async def test_post_normalization_refusal_not_dispatched() -> None:
+    # _refuse_call rejects a normalized argument: refuse, never reach the backend.
     refuse = (Outcome.DENIED_GUARD, "value not permitted for argument", "guard: q")
-    req = _request()
-    orch, ocall = await _run_capture(
-        _profile(orchestrated=True), req, reply=_reply(), refuse=refuse
-    )
-    plain, pcall = await _run_capture(
-        _profile(orchestrated=False), req, reply=_reply(), refuse=refuse
-    )
-    assert orch == plain
-    assert refused(orch)
-    ocall.assert_not_called()
-    pcall.assert_not_called()
+    resp, call = await _run_capture(_profile(), _request(), reply=_reply(), refuse=refuse)
+    assert refused(resp)
+    call.assert_not_called()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("may_act", [False, True], ids=["read-tool", "may-have-acted"])
-async def test_response_guard_parity(may_act: bool) -> None:
-    # The response guard refuses the backend's answer. A read tool gets an error;
-    # a tool that may have acted gets an executed-but-withheld result. Both the
-    # error return and the withheld return must match the hand-rolled path.
-    req = _request()
-    orch, _ = await _run_capture(
-        _profile(orchestrated=True),
-        req,
-        reply=_reply(),
-        guard_err="forbidden literal in response",
-        may_act=may_act,
+async def test_response_guard_read_tool_refused() -> None:
+    # A read tool whose response the guard refuses is refused as a result (#549,
+    # _response_guard_refusal); the backend was dispatched (the guard runs on it).
+    resp, call = await _run_capture(
+        _profile(), _request(), reply=_reply(), guard_err="forbidden literal", may_act=False
     )
-    plain, _ = await _run_capture(
-        _profile(orchestrated=False),
-        req,
-        reply=_reply(),
-        guard_err="forbidden literal in response",
-        may_act=may_act,
-    )
-    assert orch == plain
+    assert refused(resp)
+    call.assert_called_once()
 
 
-# --- The crossing driver itself -----------------------------------------------
+@pytest.mark.asyncio
+async def test_response_guard_may_have_acted_withheld() -> None:
+    # A tool that may have acted gets an executed-but-withheld result, not an error.
+    resp, _ = await _run_capture(
+        _profile(), _request(), reply=_reply(), guard_err="forbidden literal", may_act=True
+    )
+    assert "result" in resp
+    assert resp["result"][REFUSAL_KEY]["executed"] is True
+
+
+# --- The crossing driver itself ---------------------------------------------
 
 
 class _RecordingFace(Face):
