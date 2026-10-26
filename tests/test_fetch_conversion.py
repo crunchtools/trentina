@@ -56,7 +56,7 @@ async def test_a_converter_that_raises_delivers_the_page_unminified(env: Path) -
     with (
         layers(env) as fakes,
         patch(
-            "trentina.preprocess.html.HtmlProcessor.run",
+            "trentina.transforms.html.HtmlProcessor.run",
             side_effect=RuntimeError("parser exploded"),
         ),
     ):

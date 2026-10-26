@@ -12,8 +12,16 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from trentina.preprocess import Cost, PreProcessContext, PreProcessResult
-from trentina.preprocess.detect import (
+from trentina.transforms import (
+    Applied,
+    Cost,
+    Declined,
+    Failed,
+    TransformContext,
+    TransformRecord,
+    TransformResult,
+)
+from trentina.transforms.detect import (
     DetectProcessor,
     Format,
     detect,
@@ -32,8 +40,8 @@ SYSLOG = "\n".join(
 )
 
 
-async def _run(payload: str, content_type: str | None = None) -> PreProcessResult:
-    return await DetectProcessor().run(payload, PreProcessContext(content_type=content_type))
+async def _run(payload: str, content_type: str | None = None) -> TransformResult:
+    return await DetectProcessor().run(payload, TransformContext(content_type=content_type))
 
 
 @pytest.mark.parametrize(
@@ -69,19 +77,25 @@ class TestRegressions:
     async def test_a_mail_header_keeps_its_addresses(self) -> None:
         mail = "From: Alice <alice@example.com>\nTo: Team <team@example.com>\n\nHi <b>all</b>."
         result = await _run(mail)
-        assert "<alice@example.com>" in result.content
+        delivered = result.content if isinstance(result, Applied) else mail
+        assert "<alice@example.com>" in delivered
 
     async def test_generics_survive(self) -> None:
         code = "fn names() -> Vec<String> {\n    Vec::<String>::new()\n}\n"
-        assert (await _run(code)).content == code
+        result = await _run(code)
+        delivered = result.content if isinstance(result, Applied) else code
+        assert delivered == code
 
     async def test_wikitext_references_survive(self) -> None:
         wiki = "RHEL 10 shipped in 2025.<ref>Red Hat press release</ref>\n" * 3
-        assert "<ref>" in (await _run(wiki)).content
+        result = await _run(wiki)
+        delivered = result.content if isinstance(result, Applied) else wiki
+        assert "<ref>" in delivered
 
     async def test_json_stays_json(self) -> None:
         doc = {"body": "<p>line one</p>\n<p>line two</p>", "items": list(range(5))}
         result = await _run(json.dumps(doc, indent=2))
+        assert isinstance(result, Applied)
         assert json.loads(result.content) == doc
         assert result.details["format"] == "json"
 
@@ -90,40 +104,40 @@ class TestRegressions:
 class TestChains:
     async def test_a_page_is_converted_and_accounted(self) -> None:
         result = await _run(PAGE, "text/html")
-        assert result.applied
+        assert isinstance(result, Applied)
         assert result.content.startswith("# Release notes")
         assert result.details["chain"] == "html"
         assert result.details["hidden_elements"] == 1
 
     async def test_a_log_is_collapsed_by_petit(self) -> None:
         result = await _run(SYSLOG)
-        assert result.applied
+        assert isinstance(result, Applied)
         assert result.details["chain"] == "petit"
         assert len(result.content) < len(SYSLOG)
 
     async def test_nothing_to_minify_declines_untouched(self) -> None:
         result = await _run("A short note.")
-        assert not result.applied
-        assert result.content == "A short note."
+        assert isinstance(result, Declined)
+        assert result.reason == "nothing_to_minify"
         assert result.details["format"] == "text"
 
     async def test_a_broken_inner_processor_declines_the_whole_result(self) -> None:
-        broken = PreProcessResult.declined("html", Cost.FREE, PAGE, reason="worker_error")
+        broken = Failed("worker_error")
         with patch(
-            "trentina.preprocess.html.HtmlProcessor.run",
+            "trentina.transforms.html.HtmlProcessor.run",
             AsyncMock(return_value=broken),
         ):
             result = await _run(PAGE, "text/html")
-        assert not result.applied
-        assert result.details["declined"] == "worker_error"
-        assert result.content == PAGE
+        assert isinstance(result, Failed)
+        assert result.reason == "worker_error"
+        assert result.details["failed"] == "html"
 
 
 def test_hiding_is_counted_only_when_markup_was_converted() -> None:
-    converted = PreProcessResult(
-        "detect", Cost.FREE, "x", True, 10, 1, {"chain": "html,petit", "hidden_elements": 2}
+    converted = TransformRecord(
+        "detect", Cost.FREE, Applied("x", {"chain": "html,petit", "hidden_elements": 2}), 10, 1
     )
-    reduced = PreProcessResult("detect", Cost.FREE, "x", True, 10, 1, {"chain": "petit"})
+    reduced = TransformRecord("detect", Cost.FREE, Applied("x", {"chain": "petit"}), 10, 1)
     assert hiding_removed([converted]) == 2
     assert hiding_removed([reduced]) is None
     assert hiding_briefing(0) is None
@@ -141,5 +155,6 @@ def test_a_tag_name_must_end_where_a_tag_name_ends(text: str) -> None:
 async def test_bracketed_text_that_is_not_json_takes_the_text_path() -> None:
     text = "[notice] " + "\n".join(f"line {i} of a bracketed log" for i in range(5)) + " [end]"
     result = await _run(text)
-    assert result.content == text
+    delivered = result.content if isinstance(result, Applied) else text
+    assert delivered == text
     assert result.details["format"] == "text"

@@ -5,8 +5,8 @@ call site: run it, degrade safely if it raises, and turn the coverage
 accounting into the fields an operator reads.
 
 This file held a second driver registry until #167, alongside a
-mirror of the pre-processor one. Two registries for two roles is how the
-pre-processor table ended up with no channel lock at all — the lock was
+mirror of the transform one. Two registries for two roles is how the
+transform table ended up with no channel lock at all — the lock was
 written once, in the half nobody copied it out of. Both tables now live in
 ``drivers.py``, and there is one role.
 """
@@ -19,10 +19,10 @@ from typing import TYPE_CHECKING, Any
 
 from ..jsonwalk import iter_leaves
 from ..logsafe import exc_kind, exc_where, redact_source
-from ..preprocess import Selection
+from ..transforms import Selection
 
 if TYPE_CHECKING:
-    from ..preprocess import DocumentProcessor, SelectionContext
+    from ..transforms import DocumentProcessor, SelectionContext
     from .profile import MatrixPreProcessConfig
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ async def run_l1(
     FAIL OPEN TO MORE READING, NEVER LESS. A processor that raises has told us
     nothing about the payload, and the only honest response to knowing nothing
     is to read all of it. No failure mode may result in "read nothing, looked
-    clean" — which is the same rule as the text pre-processors', where failing
+    clean" — which is the same rule as the text transforms', where failing
     open means delivering the original.
     """
     if extractor is None:

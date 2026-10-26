@@ -16,12 +16,32 @@ from typing import Any
 import pytest
 
 from trentina.gateway import relay
-from trentina.gateway.relay import Operation, Relayed, Slots
+from trentina.gateway.relay import Operation, Relayed, Slots, upstream_outcome
+from trentina.outcomes import Outcome
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (200, Outcome.OK),
+        (204, Outcome.OK),
+        (301, Outcome.OK),
+        (400, Outcome.TOOL_ERROR),
+        (404, Outcome.TOOL_ERROR),
+        (499, Outcome.TOOL_ERROR),
+        (500, Outcome.BACKEND_ERROR),
+        (503, Outcome.BACKEND_ERROR),
+    ],
+)
+def test_upstream_outcome_maps_status_classes(status: int, expected: Outcome) -> None:
+    """5xx is the backend failing, 4xx is the backend rejecting the request,
+    anything else is OK — the ONE mapping /egress and /llm share."""
+    assert upstream_outcome(status) is expected
 
 
 def _op(**kw: Any) -> Operation:
     """An Operation for a fake profile; only ``profile.name`` is read."""
-    return Operation(SimpleNamespace(name="agent1"), backend="egress:gh", **kw)
+    return Operation(SimpleNamespace(name="agent1"), backend="http:gh", **kw)
 
 
 async def test_finish_writes_one_row_however_many_times_it_is_called(

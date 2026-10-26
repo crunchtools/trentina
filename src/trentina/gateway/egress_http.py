@@ -1,12 +1,12 @@
 """Terminating HTTP(S) egress (#511): judge an agent's outbound request, then
-re-originate it to a named upstream, on the main port alongside ``/llm`` and
-``/git``.
+re-originate it to a named upstream, on the main port alongside ``/proxy/llm`` and
+``/proxy/git``.
 
-    /egress/{upstream}/{path}
+    /proxy/http/{upstream}/{path}
 
 What it decides, in order, each one deterministic:
 
-- **who is calling**: the gateway bearer token, as on ``/llm`` and ``/git``.
+- **who is calling**: the gateway bearer token, as on ``/proxy/llm`` and ``/proxy/git``.
   None of the caller's own credentials go upstream; the profile's token for the
   upstream is injected, so the agent never holds it.
 - **which upstream and path**: a configured ``egress_upstreams`` name the
@@ -55,7 +55,6 @@ from starlette.responses import Response
 
 from .. import logsafe
 from ..defense import Provenance, defend
-from ..egress import open_pinned
 from ..errors import EgressRefusedError as GuardRefusedError
 from ..modes import Mode, gaps_of
 from ..outcomes import Outcome
@@ -82,21 +81,19 @@ from .outbound import (
     judge_outbound,
 )
 from .proxy_utils import PLAIN_TEXT, normalize_proxy_path
-from .relay import MAX_OPERATIONS_PER_PROFILE, NO_OPERATION, Operation, Slots
-from .upstream import RESOLVER_BUSY, checked_target
+from .relay import MAX_OPERATIONS_PER_PROFILE, NO_OPERATION, Operation, Slots, upstream_outcome
+from .upstream import RESOLVER_BUSY, pinned_send
 
 if TYPE_CHECKING:
-    from contextlib import AbstractAsyncContextManager
-
     from starlette.requests import Request
 
     from .profile import EgressGrant, EgressUpstream, Profile
 
 logger = logging.getLogger(__name__)
 
-ROUTE = "/egress/{upstream}/{path:path}"
+ROUTE = "/proxy/http/{upstream}/{path:path}"
 METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
-BACKEND_PREFIX = "egress"
+BACKEND_PREFIX = "http"
 JSON = "application/json"
 WARNING_HEADER = "x-trentina-warning"
 REASON_HEADER = "X-Trentina-Reason"
@@ -139,7 +136,7 @@ _OUTCOME_OF: dict[str, Outcome] = {
 def register_egress_routes(
     mcp_server: Any, upstreams: dict[str, EgressUpstream], profiles: dict[str, Profile]
 ) -> None:
-    """Wire ``/egress/{upstream}/{path}`` onto the FastMCP server, if any upstream exists.
+    """Wire ``/proxy/http/{upstream}/{path}`` onto the FastMCP server, if any upstream exists.
 
     With no ``egress_upstreams`` at startup there is no route. The upstreams and
     every profile's ``egress_http`` are read from the active config per request,
@@ -152,7 +149,7 @@ def register_egress_routes(
         return await serve(request, profiles)
 
     mcp_server.custom_route(ROUTE, methods=METHODS)(egress_endpoint)
-    logger.info("egress: registered /egress/{upstream}/{path}")
+    logger.info("egress: registered /proxy/http/{upstream}/{path}")
 
 
 async def serve(request: Request, profiles: dict[str, Profile]) -> Response:
@@ -392,9 +389,9 @@ async def _judge_request(
     )
     verdict = await judge_outbound(
         document,
-        source=f"egress:{op.profile.name}:{name}",
+        source=f"{BACKEND_PREFIX}:{op.profile.name}:{name}",
         source_type="egress_request",
-        backend=f"egress:{name}",
+        backend=f"{BACKEND_PREFIX}:{name}",
         profile=op.profile,
         mode=mode,
         deadline=JUDGE_DEADLINE,
@@ -511,7 +508,7 @@ async def _send_and_judge(
     injected credential is scrubbed from a text response so an echo endpoint
     cannot hand the agent the token it never held.
     """
-    raw, status, ct, hdrs = await _fetch(op, upstream, method, url, headers, body)
+    raw, status, ct, hdrs = await _fetch(op, method, url, headers, body)
     op.received = len(raw)
     blocking = mode is Mode.BLOCK
     # The verdict header is ours; never let an upstream forge or echo it. And
@@ -554,7 +551,7 @@ async def _send_and_judge(
             raise EgressRefusedError(HTTPStatus.FORBIDDEN, "response_binary", executed=True)
         warning = warning or "binary_unread"
 
-    op.settle(Outcome.OK if status < 400 else Outcome.TOOL_ERROR, op.flag_reason)
+    op.settle(upstream_outcome(status), op.flag_reason)
     if warning:
         hdrs[WARNING_HEADER] = warning
     return Response(content=raw, status_code=status, media_type=ct or None, headers=hdrs)
@@ -604,7 +601,6 @@ async def _judge_response(
 
 async def _fetch(
     op: Operation,
-    upstream: EgressUpstream,
     method: str,
     url: str,
     headers: dict[str, str],
@@ -617,11 +613,9 @@ async def _fetch(
     """
     cap = response_byte_cap()
     try:
-        target = await checked_target(op.profile, upstream.host)
-        opener: AbstractAsyncContextManager[httpx.Response] = open_pinned(
-            method, url, target, idle=IDLE_TIMEOUT, headers=headers, content=body
-        )
-        async with opener as resp:
+        async with pinned_send(
+            op.profile, method, url, idle=IDLE_TIMEOUT, headers=headers, content=body
+        ) as resp:
             if body is not None:
                 op.sent = len(body)  # counted once the request is actually on the wire
             raw = await _read_response(resp, cap)
@@ -684,7 +678,7 @@ def _from_guard(exc: GuardRefusedError) -> EgressRefusedError:
       non-global address, an unresolvable host, a bad scheme/port: a defense
       block (403), nothing executed. The specific guard reason rides in
       ``detail`` for the audit; the caller sees only the ``denied_guard``
-      bucket. This matches how ``/git`` and the CONNECT tunnel label the same
+      bucket. This matches how ``/proxy/git`` and the CONNECT tunnel label the same
       refusals (Outcome.BLOCKED_DEFENSE), and stops the old mislabel that told
       the agent a never-sent request had "executed by the destination".
     """

@@ -7,8 +7,8 @@ import asyncio
 import pytest
 
 from trentina.channels import Channel, Kind
-from trentina.preprocess.base import Cost, PreProcessContext
-from trentina.preprocess.html import HtmlProcessor, to_markdown
+from trentina.transforms.base import Applied, Cost, Declined, Failed, TransformContext
+from trentina.transforms.html import HtmlProcessor, to_markdown
 
 
 class TestConversion:
@@ -193,7 +193,7 @@ class TestConversion:
 
 
 async def _run(payload: str):
-    return await HtmlProcessor().run(payload, PreProcessContext())
+    return await HtmlProcessor().run(payload, TransformContext())
 
 
 class TestClassElimination:
@@ -217,7 +217,7 @@ class TestClassElimination:
     async def test_hidden_payload_does_not_survive_conversion(self, style: str) -> None:
         payload = f'<p>Visible.</p><span style="{style}">SECRET-PAYLOAD</span>'
         result = await _run(payload)
-        assert result.applied
+        assert isinstance(result, Applied)
         assert "SECRET-PAYLOAD" not in result.content
         assert "Visible." in result.content
 
@@ -226,7 +226,7 @@ class TestClassElimination:
         which is exactly why the attack class cannot be expressed after this
         processor has run."""
         result = await _run('<p style="display:none">x</p><p style="color:red">y</p>')
-        assert result.applied
+        assert isinstance(result, Applied)
         assert "style" not in result.content
         assert "display" not in result.content
 
@@ -241,33 +241,32 @@ class TestDeclines:
 
     async def test_plain_text_declines_untouched(self) -> None:
         result = await _run("Just some prose with no markup at all.")
-        assert not result.applied
-        assert result.content == "Just some prose with no markup at all."
-        assert result.details["declined"] == "not_markup"
+        assert isinstance(result, Declined)
+        assert result.reason == "not_markup"
 
     async def test_prose_mentioning_a_bracket_declines(self) -> None:
         """`<` in prose is not markup. The cheap gate lets it through to the
         parse, and the parse finds no tags."""
         result = await _run("if x < 3 and y > 4 then stop")
-        assert not result.applied
-        assert result.details["declined"] == "not_markup"
+        assert isinstance(result, Declined)
+        assert result.reason == "not_markup"
 
     async def test_json_declines(self) -> None:
         """The reducers own JSON. This processor must not touch it."""
         result = await _run('[{"key": "PROJ-1", "summary": "a"}]')
-        assert not result.applied
+        assert isinstance(result, Declined)
 
     async def test_oversized_payload_declines_without_parsing(self) -> None:
         result = await _run("<p>" + "x" * 4_000_001 + "</p>")
-        assert not result.applied
-        assert result.details["declined"] == "too_large"
+        assert isinstance(result, Failed)
+        assert result.reason == "too_large"
 
     async def test_fragment_is_converted_not_declined(self) -> None:
         """The regression this whole change exists for: a fragment has no
         doctype and no <html>, and the old sniffer therefore never converted
         it. There is no sniffer now."""
         result = await _run('<div style="display:none">evil</div><p>Hello.</p>')
-        assert result.applied
+        assert isinstance(result, Applied)
         assert "evil" not in result.content
         assert "Hello." in result.content
 

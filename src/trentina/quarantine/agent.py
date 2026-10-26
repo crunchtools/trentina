@@ -24,7 +24,6 @@ import httpx
 
 from ..client import MAX_RESPONSE_SIZE
 from ..config import DEFAULT_SEARCH_MODEL, get_config
-from ..egress import open_guarded
 from ..errors import (
     EgressRefusedError,
     MalformedResponseError,
@@ -34,6 +33,7 @@ from ..errors import (
 )
 from ..l1.pipeline import run_l1
 from ..logsafe import exc_kind
+from ..reach.egress import open_guarded
 from ..unpack.child import run_unpacking
 from ..unpack.scan import unpack
 from .limiter import THROTTLE_STATUS, limited_generate, throttle_budget
@@ -768,7 +768,7 @@ async def quarantine_generate(
     """Isolated LLM generation under full Q-Agent discipline, for non-defense
     consumers.
 
-    Pre-processors (the summarizer above all) need model output over hostile
+    Transforms (the summarizer above all) need model output over hostile
     text without becoming a second, softer LLM path. This is the one door:
     the request is built with no tools and no functionDeclarations
     (structurally — the builder has no parameter for them), a per-request

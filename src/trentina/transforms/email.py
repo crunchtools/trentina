@@ -45,7 +45,7 @@ from __future__ import annotations
 import re
 
 from ..channels import Channel, Kind
-from .base import Cost, PreProcessContext, PreProcessResult
+from .base import Applied, Cost, Declined, TransformContext, TransformResult
 
 # A quoted line: any number of ">" markers, optionally spaced, at the start.
 _QUOTE = re.compile(r"^\s{0,4}(?:>\s?){1,10}")
@@ -177,61 +177,37 @@ class EmailProcessor:
     channels = frozenset({Channel.TOOL})
     kind = Kind.TEXT
 
-    async def run(self, payload: str, _ctx: PreProcessContext) -> PreProcessResult:
+    async def run(self, payload: str, _ctx: TransformContext) -> TransformResult:
         # Reduction is driven by the payload's shape; it reads no job context.
         bytes_in = len(payload.encode("utf-8"))
         lines = payload.split("\n")
 
         if len(lines) < _MIN_LINES:
-            return PreProcessResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="not_line_structured",
-                details={"lines_in": len(lines), "bytes_in": bytes_in},
-            )
+            return Declined("not_line_structured", {"lines_in": len(lines), "bytes_in": bytes_in})
 
         if not _looks_like_mail(lines):
-            return PreProcessResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="not_email",
-            )
+            return Declined("not_email")
 
         kept, quoted_dropped, runs, signature_dropped = _collapse(lines)
 
         if not quoted_dropped and not signature_dropped:
-            return PreProcessResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="nothing_repetitive",
-            )
+            return Declined("nothing_repetitive")
 
         reduced = "\n".join(kept)
         bytes_out = len(reduced.encode("utf-8"))
 
         if bytes_in > 0 and bytes_out >= bytes_in:
-            return PreProcessResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="not_smaller",
-                details={
+            return Declined(
+                "not_smaller",
+                {
                     "would_be_bytes": bytes_out,
                     "would_be_ratio": round(bytes_out / bytes_in, 4),
                 },
             )
 
-        return PreProcessResult(
-            name=self.name,
-            cost=self.cost,
-            content=reduced,
-            applied=True,
-            bytes_in=bytes_in,
-            bytes_out=bytes_out,
-            details={
+        return Applied(
+            reduced,
+            {
                 "lines_in": len(lines),
                 "lines_out": len(kept),
                 "quoted_lines_dropped": quoted_dropped,

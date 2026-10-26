@@ -1,6 +1,6 @@
 """Judging an agent's own OUTBOUND request content (#511).
 
-Shared by the ``/llm`` proxy and the terminating egress route. Both read the
+Shared by the ``/proxy/llm`` proxy and the terminating egress route. Both read the
 request as one document and must answer the same question: does it carry a
 credential the agent should not be sending out, or an injection the layers
 catch? So both run this:
@@ -14,7 +14,7 @@ catch? So both run this:
   is an added signal, never a per-layer off switch (the layer contract).
 
 It returns a verdict; the caller turns it into its own refusal or warning
-shape (a JSON deny marker for ``/llm`` and egress, an HTTP status either way).
+shape (a JSON deny marker for ``/proxy/llm`` and egress, an HTTP status either way).
 The ORIGINAL request is what each caller forwards upstream — never this copy.
 """
 
@@ -28,10 +28,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
+from ..core import Posture
 from ..credential_shapes import kinds as credential_kinds
 from ..credential_shapes import redact as credential_redact
 from ..logsafe import exc_kind, exc_where
-from ..modes import Mode
+from ..modes import Mode, ModePolicy
 from .context import profile_context
 
 if TYPE_CHECKING:
@@ -79,7 +80,7 @@ def judge_input(document: str) -> str:
 def body_text(body: bytes) -> str:
     """A request body as text the LAYERS can read.
 
-    A JSON body re-serialized with ``ensure_ascii=True`` (as ``/llm`` admits it)
+    A JSON body re-serialized with ``ensure_ascii=True`` (as ``/proxy/llm`` admits it)
     arrives as ``\\uXXXX`` escapes L2 cannot read and L1 does not count; parse
     and re-dump unescaped for judging. The bytes FORWARDED upstream are the
     caller's own and are not touched here.
@@ -162,7 +163,7 @@ async def judge_outbound(
     The scan is deadline- and exception-bounded: a hung or failed judge is
     treated as unjudged (``block`` refuses, ``flag`` forwards with a warning),
     as the Matrix path does. ``source``/``source_type`` identify the detection
-    row; ``backend`` is its backend column (``llm:<provider>``, ``egress:<name>``);
+    row; ``backend`` is its backend column (``llm:<provider>``, ``http:<name>``);
     ``mode`` is the caller's resolved mode, recorded in the attribution.
     """
     from ..defense import Provenance, defend  # heavy; deferred, and a test seam
@@ -171,6 +172,11 @@ async def judge_outbound(
     kinds = detect_credentials(document)
     flagged, unjudged, flagged_by, risk = False, True, None, "unknown"
     gaps = ["l3_unavailable"]
+    # The one definition of the partial-scan and blocklist rules (Posture),
+    # so this path fails closed for any future mode exactly as the tools do.
+    # Was `mode is Mode.BLOCK` here -- fail-open for a later non-BLOCK mode,
+    # masked only because redact is not an enforcement mode on this path.
+    posture = Posture(mode=mode, policy=ModePolicy((mode,), mode))
     try:
         with profile_context(profile):
             async with asyncio.timeout(deadline):
@@ -180,10 +186,10 @@ async def judge_outbound(
                     source_type=source_type,
                     defense=profile.defense,
                     provenance=Provenance.MODEL_OUTPUT,
-                    stop_on_partial=mode is Mode.BLOCK,
+                    stop_on_partial=posture.stop_on_partial,
                     attribution={
                         "direction": "request",
-                        "blocked": mode is Mode.BLOCK,
+                        "blocked": posture.records_block(),
                         "profile": profile.name,
                         "backend": backend,
                     },

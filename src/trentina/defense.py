@@ -77,7 +77,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .gateway.profile import DefenseConfig
-    from .preprocess import Selection
+    from .transforms import Selection
 
 
 class Layer(str, Enum):
@@ -92,7 +92,7 @@ class Provenance(str, Enum):
     """Where the content came from, recorded with every detection.
 
     MODEL_OUTPUT marks text an LLM wrote after reading hostile content — L0
-    search and the summarizing pre-processors. It can be talked into emitting
+    search and the summarizing transforms. It can be talked into emitting
     a payload, and what it emits is short, fluent and free of override
     syntax: the shape L2 is documented to miss. It once decided whether L3
     ran; L3 now runs on everything, and provenance says where a finding came
@@ -439,7 +439,7 @@ async def defend(
         source: URL, path, or identifier, recorded with any detection.
         source_type: Row type for the `detections` table.
         defense: Per-profile thresholds. None means built-in defaults.
-        provenance: EXTERNAL, or MODEL_OUTPUT for L0 and pre-processor output.
+        provenance: EXTERNAL, or MODEL_OUTPUT for L0 and transform output.
         stop_on_partial: The caller refuses a partial L2 scan anyway (block
             and redact), so skip the inference a truncated scan would cost.
         record: Write the detection row and emit the D-Bus event.

@@ -50,7 +50,7 @@ from markdownify import markdownify
 
 from ..channels import Channel, Kind
 from ..l1.hidden import ClassRules, class_declarations, class_style, classify_style
-from .base import Cost, PreProcessContext, PreProcessResult
+from .base import Applied, Cost, Declined, Failed, TransformContext, TransformResult
 
 # Past this, do not even parse. Matches structured.py: the converter refuses
 # to be the expensive step.
@@ -176,22 +176,26 @@ def to_markdown(html_content: str) -> tuple[str, ConversionStats]:
     return markdown, stats
 
 
-def _convert(payload: str) -> tuple[str | None, ConversionStats, str]:
-    """Convert, or say why not. Returns (markdown, stats, decline_reason)."""
-    stats = ConversionStats()
-    # No try/except around the parse. `compose.py` already fails a processor
-    # open, with a logged traceback naming it; swallowing here would trade
-    # that diagnosis for a decline reason that says less.
+def _convert(payload: str) -> tuple[str, ConversionStats] | None:
+    """Convert, or None when there is no markup to convert.
+
+    No try/except around the parse. A parse that raises is an operational
+    FAILURE, not a shape decline: ``compose.py`` catches it into ``Failed``
+    (logged, named) and the internal floor raises ``TransformFailedError``, so
+    a required converter fails closed. This function's only non-raising outcome
+    besides success is "there was nothing to convert", which is a shape decline
+    — so it returns None here and the caller spells that ``Declined`` itself,
+    never a reclassifiable reason string.
+    """
     soup = BeautifulSoup(payload, "html.parser")
 
     # The gate that replaces the sniffer. No decision about whether this "is
     # HTML" — only whether there is any markup to convert. Text that merely
     # mentions `<` in prose yields no tags and is handed back untouched.
     if not soup.find(True):
-        return None, stats, "not_markup"
+        return None
 
-    markdown, stats = to_markdown(payload)
-    return markdown, stats, ""
+    return to_markdown(payload)
 
 
 class HtmlProcessor:
@@ -202,42 +206,21 @@ class HtmlProcessor:
     channels = frozenset({Channel.TOOL})
     kind = Kind.TEXT
 
-    async def run(self, payload: str, _ctx: PreProcessContext) -> PreProcessResult:
+    async def run(self, payload: str, _ctx: TransformContext) -> TransformResult:
         # Conversion is driven by the payload's shape; it reads no job context.
-        bytes_in = len(payload.encode("utf-8"))
-
-        if bytes_in > _MAX_PARSE_BYTES:
-            return PreProcessResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="too_large",
-            )
+        if len(payload.encode("utf-8")) > _MAX_PARSE_BYTES:
+            # A required converter cannot excuse itself on size: padding a
+            # payload past the parse cap must not be a way around it. Failed,
+            # so a floor refuses rather than delivers the unconverted markup.
+            return Failed("too_large")
 
         # Cheap gate before spending a parse: markup contains a tag open.
         if "<" not in payload:
-            return PreProcessResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="not_markup",
-            )
+            return Declined("not_markup")
 
-        text, stats, reason = await asyncio.to_thread(_convert, payload)
-        if text is None:
-            return PreProcessResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason=reason,
-            )
+        converted = await asyncio.to_thread(_convert, payload)
+        if converted is None:
+            return Declined("not_markup")
 
-        return PreProcessResult(
-            name=self.name,
-            cost=self.cost,
-            content=text,
-            applied=True,
-            bytes_in=bytes_in,
-            bytes_out=len(text.encode("utf-8")),
-            details=asdict(stats),
-        )
+        text, stats = converted
+        return Applied(text, asdict(stats))

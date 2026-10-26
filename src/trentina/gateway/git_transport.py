@@ -6,13 +6,13 @@ forge, with a credential the agent holds, and no record of which repository
 or branch a push went to. This route carries git's smart HTTP protocol
 instead, on the main port::
 
-    /git/{remote}/{owner}/{repo}[.git]/info/refs?service=git-upload-pack
-    /git/{remote}/{owner}/{repo}[.git]/git-upload-pack
-    /git/{remote}/{owner}/{repo}[.git]/git-receive-pack
+    /proxy/git/{remote}/{owner}/{repo}[.git]/info/refs?service=git-upload-pack
+    /proxy/git/{remote}/{owner}/{repo}[.git]/git-upload-pack
+    /proxy/git/{remote}/{owner}/{repo}[.git]/git-receive-pack
 
 What it decides, in order, each one deterministic:
 
-- **who is calling**: the gateway bearer token, as on ``/llm``. None of the
+- **who is calling**: the gateway bearer token, as on ``/proxy/llm``. None of the
   caller's headers go upstream; the profile's forge token is injected, so the
   agent never holds one.
 - **which repository**: an owner and name the gateway validated, lower-cased,
@@ -53,7 +53,6 @@ from starlette.requests import ClientDisconnect
 from starlette.responses import Response
 
 from .. import logsafe
-from ..egress import open_pinned
 from ..errors import EgressRefusedError
 from ..outcomes import Outcome
 from .auth import resolve_profile_by_token
@@ -80,7 +79,7 @@ from .git_wire import (
 from .loader import get_active_config
 from .proxy_utils import PLAIN_TEXT
 from .relay import MAX_OPERATIONS_PER_PROFILE, Operation, Relayed, Slots
-from .upstream import RESOLVER_BUSY, checked_target
+from .upstream import RESOLVER_BUSY, pinned_send
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -91,7 +90,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-ROUTE = "/git/{remote}/{path:path}"
+ROUTE = "/proxy/git/{remote}/{path:path}"
 METHODS = [
     "GET",
     "POST",
@@ -162,7 +161,7 @@ class _Admitted:
 def register_git_routes(
     mcp_server: Any, remotes: dict[str, GitRemote], profiles: dict[str, Profile]
 ) -> None:
-    """Wire ``/git/{remote}/{path}`` onto the FastMCP server, if there is a remote.
+    """Wire ``/proxy/git/{remote}/{path}`` onto the FastMCP server, if there is a remote.
 
     With no ``git_remotes`` at startup there is no route. ``profiles`` is the
     live registry a reload refills in place, and the remotes are read from
@@ -177,7 +176,7 @@ def register_git_routes(
         return await serve(request, profiles)
 
     mcp_server.custom_route(ROUTE, methods=METHODS)(git_endpoint)
-    logger.info("git transport: registered /git/{remote}/{owner}/{repo}")
+    logger.info("git transport: registered /proxy/git/{remote}/{owner}/{repo}")
 
 
 async def serve(request: Request, profiles: dict[str, Profile]) -> Response:
@@ -473,9 +472,10 @@ async def _send(
     if admitted.lists_refs:
         url = f"{url}?service={admitted.service}"
     try:
-        target = await checked_target(op.profile, admitted.remote.host)
         return await op.upstream.enter_async_context(
-            open_pinned(method, url, target, idle=IDLE_TIMEOUT, headers=headers, content=content)
+            pinned_send(
+                op.profile, method, url, idle=IDLE_TIMEOUT, headers=headers, content=content
+            )
         )
     except EgressRefusedError as exc:
         if exc.reason == RESOLVER_BUSY:

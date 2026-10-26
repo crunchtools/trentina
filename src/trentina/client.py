@@ -10,8 +10,8 @@ from typing import NamedTuple
 import httpx
 
 from .config import int_env
-from .egress import open_guarded
 from .errors import FetchError, UnsupportedContentTypeError
+from .reach.egress import open_guarded
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ thousands of meaningless tokens."""
 
 PDF_CONTENT_TYPE = "application/pdf"
 """The one binary type fetched (#369): it is handed on as base64 and read by
-``preprocess/pdf.py`` or, undelivered as text, by the unpack stage."""
+``transforms/pdf.py`` or, undelivered as text, by the unpack stage."""
 
 TEXT_CONTENT_SUFFIXES = ("+json", "+xml")
 """Structured-syntax suffixes (RFC 6839) that imply a text body."""

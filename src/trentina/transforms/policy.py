@@ -35,7 +35,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from ..errors import PreProcessNotPermittedError
+from ..errors import TransformNotPermittedError
 
 logger = logging.getLogger(__name__)
 
@@ -50,14 +50,6 @@ def switch_value(requested: Any) -> Any:
         return _SPELLED.get(requested.strip().lower(), requested)
     return requested
 
-
-#: Declines that mean a processor did not do its job, rather than that the
-#: payload was not its shape. A REQUIRED processor that reports one refuses
-#: the call. ``too_large`` is here because padding a payload past the parse
-#: cap must not be a way around a converter the operator pinned.
-FAILED_DECLINES = frozenset(
-    {"error", "petit_error", "worker_error", "no_api_key", "empty_summary", "too_large"}
-)
 
 #: What the internal tools minify with, whatever the profile's processors
 #: say: those are tuned for proxied output, and a profile that lists only
@@ -104,20 +96,20 @@ class PreProcessPolicy:
         declared schema sends an undeclared value as a string (#244).
 
         Raises:
-            PreProcessNotPermittedError: anything but a bool, its spelling, or None.
+            TransformNotPermittedError: anything but a bool, its spelling, or None.
         """
         requested = switch_value(requested)
         if requested is None:
             return self.default
         if isinstance(requested, bool):
             return requested
-        raise PreProcessNotPermittedError(["true", "false"])
+        raise TransformNotPermittedError(["true", "false"])
 
     def resolve(self, requested: Any) -> tuple[str, ...]:
         """The processors this call runs, in order: required, then the chain.
 
         Raises:
-            PreProcessNotPermittedError: see ``minifies``.
+            TransformNotPermittedError: see ``minifies``.
         """
         return self.required + (self.chain if self.minifies(requested) else ())
 

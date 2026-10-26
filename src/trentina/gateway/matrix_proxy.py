@@ -60,16 +60,19 @@ from starlette.responses import Response, StreamingResponse
 
 from ..channels import Channel
 from ..defense import defend, defend_selection
+from ..errors import EgressRefusedError
 from ..logsafe import exc_kind, exc_where, redact_source, safe_url
 from ..matrix.keybackup import KeyBackupProvider
 from ..modes import gaps_of
-from ..preprocess import SelectionContext
+from ..outcomes import Outcome
 from ..quarantine.prompts import RISK_LEVELS
 from ..reserved import WARNING_KEY, strip_reserved, with_stripped
+from ..transforms import SelectionContext
 from ..unpack.ocr import MAX_IMAGE_BYTES
 from ..warning import build_warning
 from .context import profile_context
-from .drivers import build_preprocessors
+from .destination import MAX_DESTINATION_CHARS, DestinationKind
+from .drivers import build_transforms
 from .matrix_relation import withheld_relation
 from .profile import profile_for_address
 from .proxy_utils import (
@@ -78,7 +81,9 @@ from .proxy_utils import (
     forward_request_headers,
     normalize_proxy_path,
 )
+from .relay import Operation
 from .selection import describe, run_l1
+from .upstream import RESOLVER_BUSY, matrix_pinned_send
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
@@ -89,14 +94,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: The audit ``backend`` column for a Matrix proxy row (one per relayed
+#: operation, never per idle ``/sync`` long-poll — see ``_proxy_matrix``).
+BACKEND = "matrix"
+
 _DEFAULT_UPSTREAM = "https://matrix-client.matrix.org"
 
-_SYNC_TIMEOUT = httpx.Timeout(
-    connect=10.0,
-    read=120.0,
-    write=10.0,
-    pool=5.0,
-)
+#: Idle (read/write) budget for the pinned pool — a ``/sync`` long-poll holds the
+#: read open this long. matrix.org is a Matrix-only pooled origin, so it does not
+#: bleed onto the other proxies.
+_MATRIX_IDLE = 120.0
+
+#: Idle budget for a key-backup GET (#532). These are small JSON reads
+#: (``/room_keys/version``, a room's keys), not a long-poll, so they need
+#: nothing like ``_MATRIX_IDLE``.
+_KEYBACKUP_IDLE = 30.0
 
 MATRIX_HTTP_METHODS = [
     "GET",
@@ -212,23 +224,22 @@ every other field of the event is walked like any other."""
 
 _MAX_WALK_DEPTH = 64
 
-_matrix_client: httpx.AsyncClient | None = None
 
+def _keybackup_send(profile: Profile) -> Any:
+    """A pin-before-send GET for one profile's key-backup provider (#532).
 
-def _get_matrix_client() -> httpx.AsyncClient:
-    global _matrix_client
-    if _matrix_client is None:
-        # nosemgrep: trentina-httpx-client-outside-egress -- operator host, no redirects
-        _matrix_client = httpx.AsyncClient(timeout=_SYNC_TIMEOUT)
-    return _matrix_client
+    The provider's homeserver calls carry the Matrix access token, so they ride
+    the SAME pinned pool as the ``/sync`` forward instead of a bare client: the
+    origin is re-checked and pinned before each dial (``matrix_pinned_send`` →
+    ``checked_target``), closing the DNS-rebinding window an unpinned client left
+    open. The pool is torn down by ``upstream.close_pool`` at shutdown, so there
+    is no separate client to leak. The provider owns the response's close.
+    """
 
+    async def send(method: str, url: str, headers: dict[str, str]) -> httpx.Response:
+        return await matrix_pinned_send(profile, method, url, idle=_KEYBACKUP_IDLE, headers=headers)
 
-async def close_matrix_client() -> None:
-    """Close the Matrix proxy httpx client. Called on application shutdown."""
-    global _matrix_client
-    if _matrix_client is not None:
-        await _matrix_client.aclose()
-        _matrix_client = None
+    return send
 
 
 def _caller_address(request: Request) -> str | None:
@@ -336,56 +347,131 @@ async def _proxy_matrix(
     upstream: str,
     profile: Profile,
 ) -> Response:
-    """Forward one Matrix Client-Server API request."""
+    """Forward one Matrix Client-Server API request, and audit it on the ONE
+    lifecycle (``relay.Operation``, #511).
+
+    A ``gateway_calls`` row is written ONLY when the operation was refused, hit
+    an upstream error, or carried a security finding — a flagged response, a
+    blocking gap that withheld events, a withheld or too-large body. A clean
+    response and the exempt pass-through (acks, ``/versions``, E2EE key traffic,
+    media under annotate) write NO row, because ``/sync`` is a continuous
+    long-poll and a row per poll would flood the audit database.
+
+    The row is GATED on a ``reason`` being set, never on the outcome:
+    ``Operation`` defaults its outcome to ``CANCELLED`` but its reason to
+    ``None``, so gating on the outcome would turn any clean path that forgot to
+    settle into a logged row — the exact flood this avoids. A forwarded-with-
+    finding response settles ``(OK, <finding>)``, so the outcome column tells a
+    delivered finding (``ok``) from a withhold/refusal (a block outcome), the
+    way ``/proxy/http`` records a flag. Nothing is registered on ``op.upstream``
+    (the httpx response is closed by ``_buffer``/``_streamed`` as before), so a
+    skipped finish leaks nothing: no slot is taken and no close is pending.
+    """
+    op = Operation(
+        profile, backend=BACKEND, tool=request.method, destination_kind=DestinationKind.MATRIX
+    )
+    try:
+        return await _route(request, upstream, profile, op)
+    except httpx.HTTPError:
+        # A homeserver that drops mid-body (``_buffer`` reads outside the scan's
+        # own try) must still be audited — the Phase 0 /llm bug, not reborn here.
+        if op.reason is None:
+            op.settle(Outcome.BACKEND_ERROR, "upstream_failed")
+        raise
+    except Exception:
+        if op.reason is None:
+            op.settle(Outcome.GATEWAY_ERROR, "proxy_error")
+        raise
+    finally:
+        # The one place a Matrix row is (or is not) written. See the docstring:
+        # a clean or idle operation leaves reason None and is never audited.
+        if op.reason is not None:
+            await op.finish()
+
+
+async def _route(
+    request: Request,
+    upstream: str,
+    profile: Profile,
+    op: Operation,
+) -> Response:
+    """Forward one request; settle ``op`` on each refusal, error or finding."""
     raw_path = request.path_params.get("path", "")
     path = normalize_proxy_path(raw_path)
     if path is None:
+        op.settle(Outcome.DENIED_GUARD, "path_traversal")
         return Response(
             content="Path traversal rejected",
             status_code=400,
             media_type=PLAIN_TEXT,
         )
+    # The caller's path is the destination: stored in the audit row, never the
+    # query (older clients carry state there), never logged (#266).
+    op.destination = path[:MAX_DESTINATION_CHARS]
 
     upstream_url = f"{upstream}/{path}"
     if request.url.query:
         upstream_url = f"{upstream_url}?{request.url.query}"
 
     fwd_headers = forward_request_headers(list(request.headers.items()))
-
     has_body = request.method in ("POST", "PUT", "PATCH")
-    client = _get_matrix_client()
 
     try:
-        resp = await client.send(
-            client.build_request(
-                request.method,
-                upstream_url,
-                headers=fwd_headers,
-                content=request.stream() if has_body else None,
-            ),
-            stream=True,
+        # The pinned pool (#511): the homeserver origin is re-checked and the
+        # connection pinned before the send (Matrix crosses the egress guard now,
+        # like the other proxies), and reused. Matrix takes none of the
+        # terminating-proxy contract — no forced identity, no redirect/encoded
+        # refusal — so a 3xx is forwarded for the agent's client and a gzipped
+        # /sync is decoded by _buffer as before. The response is returned OPEN;
+        # _buffer / _streamed own its close.
+        resp = await matrix_pinned_send(
+            profile,
+            request.method,
+            upstream_url,
+            idle=_MATRIX_IDLE,
+            headers=fwd_headers,
+            content=request.stream() if has_body else None,
+        )
+    except EgressRefusedError as exc:
+        # The egress guard refused the homeserver origin (not global, not 443, or
+        # the resolver was busy). resolver_busy is gateway load (503), not a
+        # verdict on the name; everything else is the address rail (403).
+        if exc.reason == RESOLVER_BUSY:
+            op.settle(Outcome.DENIED_GUARD, exc.reason)
+            status = 503
+        else:
+            op.settle(Outcome.BLOCKED_DEFENSE, exc.reason)
+            status = 403
+        logger.warning("matrix_proxy: upstream refused reason=%s", exc.reason)
+        return Response(
+            content="Matrix upstream refused", status_code=status, media_type=PLAIN_TEXT
         )
     except httpx.TimeoutException:
-        return Response(
-            content="Matrix upstream timeout",
-            status_code=504,
-            media_type=PLAIN_TEXT,
-        )
+        op.settle(Outcome.BACKEND_ERROR, "upstream_timeout")
+        return Response(content="Matrix upstream timeout", status_code=504, media_type=PLAIN_TEXT)
     except httpx.ConnectError as exc:
         logger.warning("matrix_proxy: connect error: %s", exc_kind(exc))
+        op.settle(Outcome.BACKEND_ERROR, "upstream_unreachable")
         return Response(
-            content="Matrix upstream unreachable",
-            status_code=502,
-            media_type=PLAIN_TEXT,
+            content="Matrix upstream unreachable", status_code=502, media_type=PLAIN_TEXT
         )
 
-    resp_headers = filter_response_headers(list(resp.headers.items()))
-    ct = resp.headers.get("content-type", "application/json")
-
-    scanner = _SCANNERS.get(_judgement(request.method, path, resp.status_code, ct) or "")
-    if scanner is not None:
-        return await scanner(resp, resp_headers, ct, profile, path)
-    return _streamed(resp, resp_headers, ct)
+    # matrix_pinned_send returns a POOLED, pinned response held OPEN; until
+    # _buffer / _streamed take over its close, an exception in this span would
+    # leak a pinned connection to KEEPALIVE_EXPIRY, so close it here. The outer
+    # _proxy_matrix settles the row (GATEWAY_ERROR / upstream_failed).
+    try:
+        resp_headers = filter_response_headers(list(resp.headers.items()))
+        ct = resp.headers.get("content-type", "application/json")
+        scanner = _SCANNERS.get(_judgement(request.method, path, resp.status_code, ct) or "")
+        if scanner is not None:
+            return await scanner(resp, resp_headers, ct, profile, path, op)
+        # Exempt pass-through (acks, /versions, E2EE key traffic): nothing is
+        # judged and nothing is settled, so no row is written.
+        return _streamed(resp, resp_headers, ct)
+    except Exception:
+        await resp.aclose()
+        raise
 
 
 def _streamed(resp: httpx.Response, headers: dict[str, str], content_type: str) -> Response:
@@ -448,7 +534,7 @@ async def _provider_for(profile: Profile) -> Any:
                 homeserver=cfg.homeserver,
                 access_token=cfg.access_token.get_secret_value(),
                 recovery_key=cfg.recovery_key.get_secret_value(),
-                client=_get_matrix_client(),
+                send=_keybackup_send(profile),
                 max_sessions=cfg.max_sessions,
                 ttl_seconds=cfg.session_ttl_seconds,
                 concurrency=cfg.concurrency,
@@ -490,8 +576,8 @@ async def _extractor_for(profile: Profile) -> Any:
     key = f"{profile.name}:{','.join(cfg.processors)}:{cfg.skip_sample_bytes}"
     cached = _EXTRACTORS.get(key)
     if cached is None:
-        # The channel takes at most one, enforced in build_preprocessors.
-        cached = build_preprocessors(
+        # The channel takes at most one, enforced in build_transforms.
+        cached = build_transforms(
             cfg,
             channel=Channel.MATRIX,
             profile_name=profile.name,
@@ -544,6 +630,7 @@ async def _scan_and_forward(
     content_type: str,
     profile: Profile,
     path: str,
+    op: Operation,
 ) -> Response:
     """Buffer a message-bearing response, judge it, forward it.
 
@@ -553,13 +640,20 @@ async def _scan_and_forward(
     forwarded annotated. Unparseable JSON is scanned as text, then refused
     under withhold (there is no event to withhold, and no client can parse
     it either) or forwarded under annotate.
+
+    ``op`` is settled for the audit row: ``flag_reason`` on a forward that
+    carried a finding (flagged, or an annotate-mode unjudged forward), a
+    non-OK outcome with a reason on a withhold/refusal; a clean forward
+    settles nothing, so no row is written.
     """
     headers = {k: v for k, v in resp_headers.items() if k.lower() != "content-length"}
 
     buffered = await _buffer(resp, path)
     if isinstance(buffered, Response):
+        op.settle(Outcome.BLOCKED_DEFENSE, "response_too_large")
         return buffered
     body = buffered
+    op.received = op.sent = len(body)
 
     ingress = profile.matrix_ingress
     cfg = ingress.preprocess if ingress is not None else None
@@ -628,13 +722,14 @@ async def _scan_and_forward(
             redact_source(path),
             profile.name,
         )
+        withhold = _settle_unscanned(op, profile, "scan_timeout")
         return _respond(
             payload,
             body,
             headers,
             content_type,
             with_stripped({"risk_level": "unknown", "scan_timeout": True}, stripped),
-            withhold=_withholds(profile),
+            withhold=withhold,
         )
     except Exception as exc:
         # A parse failure here is attacker-reachable (any room member can
@@ -650,19 +745,64 @@ async def _scan_and_forward(
             exc_kind(exc),
             exc_where(exc),
         )
-        await _text_fallback_scan(body, profile, path)
+        flagged = await _text_fallback_scan(body, profile, path)
         restripped = await _restrip(payload)
         if restripped is None:
+            op.settle(Outcome.BLOCKED_DEFENSE, "scan_failed")
             return _refused()
+        withhold = _settle_unscanned(op, profile, "scan_failed", flagged=flagged)
         return _respond(
             restripped,
             body,
             headers,
             content_type,
             with_stripped({"risk_level": "unknown", "scan_failed": True}, stripped),
-            withhold=_withholds(profile),
+            withhold=withhold,
         )
 
+    return _forward_judged(
+        op, payload, body, view, verdict, headers, content_type, stripped, cfg, path
+    )
+
+
+def _settle_unscanned(
+    op: Operation, profile: Profile, reason: str, *, flagged: bool = False
+) -> bool:
+    """Settle the audit row for a response FORWARDED without a full scan, and
+    return whether its events are to be withheld.
+
+    Under withhold the response is a defense block carrying ``reason``; under
+    annotate it forwards, so it settles ``(OK, reason)`` (``,flagged`` when the
+    text-mode fallback flagged it) — the finding is on the row either way, with
+    the outcome telling the two apart.
+    """
+    withhold = _withholds(profile)
+    if withhold:
+        op.settle(Outcome.BLOCKED_DEFENSE, reason)
+    else:
+        op.settle(Outcome.OK, f"{reason},flagged" if flagged else reason)
+    return withhold
+
+
+def _forward_judged(
+    op: Operation,
+    payload: Any,
+    body: bytes,
+    view: Any,
+    verdict: Any,
+    headers: dict[str, str],
+    content_type: str,
+    stripped: int,
+    cfg: Any,
+    path: str,
+) -> Response:
+    """Deliver a fully-judged JSON response and settle its audit row.
+
+    A clean forward settles nothing, so no row is written. A flagged or
+    undecrypted-withheld forward settles ``(OK, <finding>)`` so the row records
+    it; a blocking gap under withhold is a defense block that rewrites events.
+    """
+    profile = op.profile
     extras = describe(view, cfg) if (view is not None and cfg is not None) else {}
     warning = with_stripped(build_warning(verdict, extras=extras), stripped)
     gaps = gaps_of(verdict)
@@ -687,18 +827,19 @@ async def _scan_and_forward(
             ",".join(gaps.names()),
         )
 
+    unread = 0
     if _withholds(profile):
         unread = _withhold_undecrypted(payload, view)
         if unread:
             warning = {**(warning or {}), "undecrypted_withheld": unread}
-    return _respond(
-        payload,
-        body,
-        headers,
-        content_type,
-        warning,
-        withhold=gaps.blocking() and _withholds(profile),
-    )
+    withhold = gaps.blocking() and _withholds(profile)
+    if withhold:
+        op.settle(Outcome.BLOCKED_DEFENSE, "events_withheld")
+    elif verdict.flagged:
+        op.settle(Outcome.OK, verdict.risk_level or "flagged")
+    elif unread:
+        op.settle(Outcome.OK, "undecrypted_withheld")
+    return _respond(payload, body, headers, content_type, warning, withhold=withhold)
 
 
 def _refused() -> Response:
@@ -731,6 +872,7 @@ async def _media(
     content_type: str,
     profile: Profile,
     path: str,
+    op: Operation,
 ) -> Response:
     """A binary media download: read if it is an image, never forwarded unread
     under withhold (#371).
@@ -740,15 +882,17 @@ async def _media(
     other unjudged body. Audio, video and ``application/octet-stream`` (an
     E2EE attachment is ciphertext under that type) have no reader, so they
     are refused under withhold. Under annotate every one of them forwards
-    with the warning header, as the gap it is.
+    with the warning header, as the gap it is — a finding on the row.
     """
     if not _withholds(profile):
+        op.settle(Outcome.OK, "media_unreadable")
         return _streamed(resp, {**resp_headers, WARNING_HEADER: "unknown"}, content_type)
     if content_type.strip().lower().startswith("image/"):
         return await _scan_text_and_forward(
-            resp, resp_headers, content_type, profile, path, image=True
+            resp, resp_headers, content_type, profile, path, op, image=True
         )
     await resp.aclose()
+    op.settle(Outcome.BLOCKED_DEFENSE, "media_withheld")
     logger.warning(
         "matrix_proxy: withheld a media download no layer can read, %s for profile=%s",
         redact_source(path),
@@ -763,6 +907,7 @@ async def _scan_text_and_forward(
     content_type: str,
     profile: Profile,
     path: str,
+    op: Operation,
     *,
     image: bool = False,
 ) -> Response:
@@ -772,13 +917,18 @@ async def _scan_text_and_forward(
     level. Flagged forwards, as a flagged JSON body does; unjudged forwards
     only under annotate. An ``image`` is judged as its base64, which the
     unpack stage reads by OCR; one too large to read is unjudged.
+
+    ``op`` is settled for the audit row as in ``_scan_and_forward``.
     """
     headers = {k: v for k, v in resp_headers.items() if k.lower() != "content-length"}
     buffered = await _buffer(resp, path)
     if isinstance(buffered, Response):
+        op.settle(Outcome.BLOCKED_DEFENSE, "response_too_large")
         return buffered
     if image and len(buffered) > MAX_IMAGE_BYTES:
+        op.settle(Outcome.BLOCKED_DEFENSE, "media_too_large")
         return _refused()
+    op.received = op.sent = len(buffered)
     ingress = profile.matrix_ingress
     deadline = (
         ingress.preprocess.deadline_seconds
@@ -809,6 +959,7 @@ async def _scan_text_and_forward(
             exc_where(exc),
         )
     if unjudged and _withholds(profile):
+        op.settle(Outcome.BLOCKED_DEFENSE, "response_withheld")
         return _refused()
     if flagged or unjudged:
         logger.warning(
@@ -819,6 +970,7 @@ async def _scan_text_and_forward(
             risk,
         )
         headers[WARNING_HEADER] = risk
+        op.settle(Outcome.OK, risk if flagged else "unjudged")
     return Response(content=buffered, status_code=200, headers=headers, media_type=content_type)
 
 
@@ -1017,12 +1169,13 @@ def _respond(
     return Response(content=body, status_code=200, headers=headers, media_type=content_type)
 
 
-async def _text_fallback_scan(body: bytes, profile: Profile, path: str) -> None:
+async def _text_fallback_scan(body: bytes, profile: Profile, path: str) -> bool:
     """Judge unparseable response bytes as plain text; record any flag.
 
     The annotation channel is gone (no JSON to attach a key to), so the flag
     lives in the detections table and the log — degraded, but never the
-    silent clean the recursive-parse fail-open used to produce.
+    silent clean the recursive-parse fail-open used to produce. Returns whether
+    the text was flagged, so the caller can carry it onto the audit row.
     """
     try:
         verdict = await defend(
@@ -1031,15 +1184,6 @@ async def _text_fallback_scan(body: bytes, profile: Profile, path: str) -> None:
             source_type="matrix_sync",
             defense=profile.defense,
         )
-        if verdict.flagged:
-            logger.error(
-                "matrix_proxy: UNPARSEABLE response FLAGGED for profile=%s "
-                "path=%s risk=%s — forwarded (no annotation channel); "
-                "investigate the sender",
-                profile.name,
-                redact_source(path),
-                verdict.risk_level,
-            )
     except Exception as exc:
         logger.error(  # the message may carry the payload (#262)
             "matrix_proxy: text-mode fallback scan failed for %s: %s at %s",
@@ -1047,3 +1191,14 @@ async def _text_fallback_scan(body: bytes, profile: Profile, path: str) -> None:
             exc_kind(exc),
             exc_where(exc),
         )
+        return False
+    if verdict.flagged:
+        logger.error(
+            "matrix_proxy: UNPARSEABLE response FLAGGED for profile=%s "
+            "path=%s risk=%s — forwarded (no annotation channel); "
+            "investigate the sender",
+            profile.name,
+            redact_source(path),
+            verdict.risk_level,
+        )
+    return verdict.flagged

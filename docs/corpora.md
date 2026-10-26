@@ -44,7 +44,7 @@ The L3 benchmark (#43). Every attack is written to pass the cheaper layers: no d
 - **Where it came from.** Hand-written. Each case's `notes` names the public research behind its pattern: Willison's lethal trifecta, the OpenClaw disclosures (#29), the Prompt Guard 2 benchmark (#17). The multilingual cases came with #353.
 - **What it does not measure.** It is small, and its authors wrote the defense. A miss here is informative; a clean sweep is weaker evidence than it looks.
 - **Rules.** `tests/test_adversarial_corpus.py` proves, with no API call, that each attack reaches L3 intact and that at least 70% bypass L1. Case ids are permanent: the tuning and held-out split is a hash of the id, and the shipped prompt packs record counts measured on it.
-- **Read by.** `benchmarks/provider_benchmark.py`, both L2 gates in the image build, the prompt-pack harness, the detonation harness, and the pre-processor and L1 stage tests.
+- **Read by.** `benchmarks/provider_benchmark.py`, both L2 gates in the image build, the prompt-pack harness, the detonation harness, and the transform and L1 stage tests.
 
 ### L1 patterns
 

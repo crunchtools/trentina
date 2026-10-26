@@ -23,7 +23,6 @@ from pydantic import SecretStr
 from starlette.testclient import TestClient
 
 from tests.egress_harness import route
-from trentina import egress
 from trentina.client import fetch_url
 from trentina.errors import EgressRefusedError, QuarantineAgentError
 from trentina.gateway import compress
@@ -39,6 +38,7 @@ from trentina.quarantine import classifier
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.quarantine.limiter import limited_generate, limiter_for
 from trentina.quarantine.providers import Provider, ProviderResult, get_provider
+from trentina.reach import egress
 from trentina.tools.reconnect import reconnect_backend
 
 SHARED_URL = "http://mcp-shared:8000/mcp"

@@ -397,13 +397,16 @@ class TestProxies:
         from .test_matrix_proxy import _matrix_profile
 
         resp = httpx.Response(200, content=f"{{not json {CANARY}".encode())
+        profile = _matrix_profile()
+        op = matrix_proxy.Operation(profile, backend=matrix_proxy.BACKEND, tool="GET")
         with patch.object(matrix_proxy, "defend", side_effect=RuntimeError(f"said {CANARY}")):
             await matrix_proxy._scan_and_forward(
                 resp,
                 {"content-type": "application/json"},
                 "application/json",
-                _matrix_profile(),
+                profile,
                 f"_matrix/client/v3/rooms/!{CANARY}:x/messages",
+                op,
             )
         assert any("structured scan failed" in r.getMessage() for r in captured.records)
         assert any("fallback scan failed" in r.getMessage() for r in captured.records)
@@ -425,8 +428,9 @@ class TestProxies:
         """#453: a repository name, a ref, a query, a header and a body the
         caller chose, through a carried fetch, a carried push and five
         refusals. The repository is in the upstream URL httpx would log."""
-        from trentina import database, egress
+        from trentina import database
         from trentina.gateway import git_transport, upstream
+        from trentina.reach import egress
 
         from . import git_harness as harness
         from .egress_harness import PUBLIC_ADDRESS
@@ -435,6 +439,7 @@ class TestProxies:
         config_mod._config = None
         database._db = None
         upstream._checked.clear()
+        upstream._pool.clear()
         profiles = {"agent1": harness.profile(fetch=("acme/*",), push=("acme/*",))}
         active = SimpleNamespace(config=SimpleNamespace(git_remotes=harness.remotes()))
         monkeypatch.setattr(git_transport, "get_active_config", lambda: active)
@@ -446,12 +451,12 @@ class TestProxies:
         try:
             async with harness.serving(forge.app()) as forge_port:
                 transport = harness.ToForge(forge_port)
-                monkeypatch.setattr(egress, "PinnedTransport", lambda _backend: transport)
+                monkeypatch.setattr(upstream, "PinnedTransport", lambda _backend, **_kw: transport)
                 async with (
                     harness.serving(harness.gateway_app(profiles)) as port,
                     httpx.AsyncClient(headers=bearer) as client,
                 ):
-                    url = f"http://127.0.0.1:{port}/git/{harness.REMOTE}"
+                    url = f"http://127.0.0.1:{port}/proxy/git/{harness.REMOTE}"
                     statuses = [
                         (await client.get(url + refs)).status_code,
                         (

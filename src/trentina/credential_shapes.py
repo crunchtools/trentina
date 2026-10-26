@@ -2,7 +2,7 @@
 
 Two readers share it, in opposite directions. ``logsafe`` cuts these out of a
 log record so a secret never reaches the journal an agent can read (#262,
-#341). The egress and ``/llm`` request paths (#511) read it the other way: a
+#341). The egress and ``/proxy/llm`` request paths (#511) read it the other way: a
 credential shape in a request an agent is about to send OUT is the
 exfiltration signal the prompt-injection layers do not look for — L1/L2/L3
 judge instructions and injected content, not key material, and there is no

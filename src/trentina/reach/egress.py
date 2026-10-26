@@ -38,8 +38,8 @@ from typing import TYPE_CHECKING, Any
 import httpcore
 import httpx
 
-from .config import get_config
-from .errors import EgressRefusedError
+from ..config import get_config
+from ..errors import EgressRefusedError
 
 if TYPE_CHECKING:
     import ssl
@@ -79,7 +79,7 @@ _profile_slots_lock = threading.Lock()
 def _slots_for_caller() -> threading.BoundedSemaphore:
     """The calling profile's own lookup slots; standalone shares one set."""
     # Imported here: the gateway package imports this module on its way in.
-    from .gateway.context import get_current_profile
+    from ..gateway.context import get_current_profile
 
     profile = get_current_profile()
     name = profile.name if profile is not None else None
@@ -108,6 +108,12 @@ class ResolvedTarget:
     Every answer, in the resolver's order: each one was checked, and trying
     the next when one will not connect is what a client dialling the name
     would do (an IPv6 answer on a host with no IPv6 route, say).
+
+    A sealed trust type. Within this repository ``check_url`` is its only
+    constructor, fenced by ``tests/test_seal.py``, so in-tree code cannot pin a
+    connection to an address the guard did not clear — do not build one
+    elsewhere. That binds our own code, not an out-of-tree caller; the runtime
+    seal that stops those is Phase 6.
     """
 
     host: str
@@ -295,7 +301,7 @@ def shared_ssl_context() -> ssl.SSLContext:
 
     ``httpx.create_ssl_context()`` loads the system CA bundle, which is slow and
     blocks the event loop. It was built once per ``PinnedTransport`` — i.e. per
-    ``/egress`` and ``/git`` request — and is now built once and reused.
+    ``/proxy/http`` and ``/proxy/git`` request — and is now built once and reused.
     ``warmup.trentina_lifespan`` calls this on a worker thread at startup, so the
     CA load lands there and not on the event loop during the first request.
     Sharing one context is how httpx's own
@@ -325,10 +331,29 @@ class PinnedTransport(httpx.AsyncHTTPTransport):
     with an ``httpx.MockTransport``.
     """
 
-    def __init__(self, backend: PinnedBackend) -> None:
+    def __init__(
+        self,
+        backend: PinnedBackend,
+        *,
+        max_connections: int | None = None,
+        keepalive_expiry: float | None = None,
+    ) -> None:
         ssl_context = shared_ssl_context()
         super().__init__(verify=ssl_context, trust_env=False)
-        self._pool = httpcore.AsyncConnectionPool(ssl_context=ssl_context, network_backend=backend)
+        # A per-call transport (open_pinned/open_guarded) leaves these unset and
+        # keeps httpcore's defaults; the pooled sender in gateway/upstream.py
+        # passes explicit limits so a long-lived client's keepalive and
+        # connection budget are its own, per origin (#511). Passed only when
+        # given: httpcore reads max_connections=None as UNLIMITED, not its
+        # default of 10, so forwarding None would quietly uncap the per-call pool.
+        limits: dict[str, Any] = {}
+        if max_connections is not None:
+            limits["max_connections"] = max_connections
+        if keepalive_expiry is not None:
+            limits["keepalive_expiry"] = keepalive_expiry
+        self._pool = httpcore.AsyncConnectionPool(
+            ssl_context=ssl_context, network_backend=backend, **limits
+        )
 
 
 @asynccontextmanager
@@ -478,12 +503,24 @@ async def open_pinned(
         request = client.build_request(method, url, headers=sent, content=content)
         resp = await client.send(request, stream=True)
         try:
-            if resp.status_code in _REDIRECTS:
-                log.warning("egress: refused a redirect on a pinned request")
-                raise EgressRefusedError("redirect")
-            if is_encoded(resp):
-                log.warning("egress: refused a content-encoded response")
-                raise EgressRefusedError("encoded")
+            raise_on_bad_pinned_response(resp)
             yield resp
         finally:
             await resp.aclose()
+
+
+def raise_on_bad_pinned_response(resp: httpx.Response) -> None:
+    """Refuse a pinned response that redirects or arrived content-encoded.
+
+    A redirect followed on a pinned request would carry the caller's injected
+    credential to a host nobody checked; an encoded body defeats the size cap
+    (httpx decompresses before any caller can count). The ONE check shared by
+    ``open_pinned`` and the pooled sender in ``gateway/upstream.py`` (#511), so
+    neither path can forget it.
+    """
+    if resp.status_code in _REDIRECTS:
+        log.warning("egress: refused a redirect on a pinned request")
+        raise EgressRefusedError("redirect")
+    if is_encoded(resp):
+        log.warning("egress: refused a content-encoded response")
+        raise EgressRefusedError("encoded")

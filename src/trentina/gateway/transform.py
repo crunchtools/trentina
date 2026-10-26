@@ -1,13 +1,13 @@
-"""Wire the pre-processors into the tool-response path.
+"""Wire the transforms into the tool-response path.
 
-This module is the call site the ``preprocess`` package was built for. It owns
+This module is the call site the ``transforms`` package was built for. It owns
 two things and nothing else: resolving which transformation policy applies to
 a given (profile, backend, tool), and rewriting the response's text blocks
 with whatever came back. Which processors exist, and whether one may run on
 this channel, is ``gateway/drivers.py``'s question.
 
 It does NOT scan, judge, or block — it is not a guard. Per
-``preprocess/base.py`` invariant 2 the caller transforms first and then scans
+``transforms/base.py`` invariant 2 the caller transforms first and then scans
 the TRANSFORMED artifact, so the router calls ``transform_response`` before
 ``scan_tool_response``, and what the perimeter judges is exactly what the
 agent will receive. Transforming before the wall is the whole point: what a
@@ -16,7 +16,7 @@ either, so there is nothing to smuggle through.
 
 This file was ``reduce.py`` until issue #160. Reduction is what every
 processor wired here does today; the contract is transformation generally
-(``preprocess/base.py``), and the narrower name was part of how the two roles
+(``transforms/base.py``), and the narrower name was part of how the two roles
 got muddled in the first place.
 
 Two-level resolution, profile then tool:
@@ -42,11 +42,17 @@ from ..channels import Channel
 from ..defense import Provenance
 from ..l1.hidden import HiddenStats, detect_hidden_markup
 from ..logsafe import exc_kind, exc_where, redact_source
-from ..preprocess import PreProcessContext, PreProcessor, Strategy, run_preprocessors
-from ..preprocess.detect import document_hidden, hiding_briefing, hiding_removed
-from ..preprocess.policy import FAILED_DECLINES
+from ..transforms import (
+    Strategy,
+    Transform,
+    TransformContext,
+    TransformRecord,
+    first_failure,
+    run_transforms,
+)
+from ..transforms.detect import document_hidden, hiding_briefing, hiding_removed
 from .backend import loggable_tool
-from .drivers import build_preprocessors
+from .drivers import build_transforms
 from .errors import ProfileConfigError
 from .profile import Backend, PreProcessConfig, Profile, ToolPreProcess
 
@@ -127,7 +133,7 @@ def _text_blocks(content_blocks: list[Any] | None) -> list[tuple[int, str]]:
     return out
 
 
-def _describe_decline(outcome: Any) -> str:
+def _describe_decline(record: TransformRecord) -> str:
     """One processor's decline, with the evidence it already measured.
 
     A bare reason is the same word for very different outcomes, so print
@@ -136,7 +142,7 @@ def _describe_decline(outcome: Any) -> str:
     Shape stays `name:reason(...)` so existing greps for a reason string
     keep matching.
     """
-    detail = outcome.details
+    detail = record.details
     parts: list[str] = []
     if "would_be_ratio" in detail:
         parts.append(f"would_be={detail['would_be_ratio']:.0%}")
@@ -145,7 +151,7 @@ def _describe_decline(outcome: Any) -> str:
         if "bytes_in" in detail:
             parts.append(f"bytes={detail['bytes_in']}")
     suffix = f"({','.join(parts)})" if parts else ""
-    return f"{outcome.name}:{detail.get('declined', '?')}{suffix}"
+    return f"{record.name}:{record.reason or '?'}{suffix}"
 
 
 def _processors_for(
@@ -154,10 +160,10 @@ def _processors_for(
     backend_name: str,
     tool_name: str,
     names: list[str] | None = None,
-) -> list[PreProcessor]:
+) -> list[Transform]:
     """Resolve the configured processors, or none at all.
 
-    ``build_preprocessors`` fails closed, which is right at config load —
+    ``build_transforms`` fails closed, which is right at config load —
     ``loader._check_drivers`` builds every driver a profile names so an
     unusable one is a refused start — and wrong here. If one reaches this far
     anyway, it should cost the profile its transformation, not its tool call.
@@ -168,7 +174,7 @@ def _processors_for(
             return []
         cfg = cfg.model_copy(update={"processors": names, "required": []})
     try:
-        return build_preprocessors(cfg, channel=Channel.TOOL, profile_name=profile_name)
+        return build_transforms(cfg, channel=Channel.TOOL, profile_name=profile_name)
     except ProfileConfigError as exc:
         # The kind only: the names checked may be ones the call asked for (#262).
         logger.warning(
@@ -183,42 +189,37 @@ def _processors_for(
 @dataclass
 class _Block:
     content: str
-    results: list[Any]
+    results: list[TransformRecord]
     metered: bool = False
     failed: str | None = None
 
 
 async def _transform_block(
     text: str,
-    floor: list[PreProcessor],
-    processors: list[PreProcessor],
+    floor: list[Transform],
+    processors: list[Transform],
     strategy: Strategy,
-    ctx: PreProcessContext,
+    ctx: TransformContext,
 ) -> _Block:
     """Stage 1 the floor, fail-closed; stage 2 the rest, fail-open."""
     block = _Block(text, [])
     if floor:
-        stage = await run_preprocessors(text, processors=floor, strategy="chain", ctx=ctx)
-        broken = next(
-            (r for r in stage.results if r.details.get("declined") in FAILED_DECLINES), None
-        )
+        stage = await run_transforms(text, processors=floor, strategy="chain", ctx=ctx)
+        broken = first_failure(stage.results)
         if broken is not None:
-            block.failed = (
-                f"required pre-processor {broken.name!r} could not run "
-                f"({broken.details.get('declined')})"
-            )
+            block.failed = f"required transform {broken.name!r} could not run ({broken.reason})"
             return block
         block.results.extend(stage.results)
         block.metered = stage.metered_used
         block.content = stage.content
     if processors:
         try:
-            outcome = await run_preprocessors(
+            outcome = await run_transforms(
                 block.content, processors=processors, strategy=strategy, ctx=ctx
             )
         except Exception as exc:
             logger.error(  # the message may carry the payload (#262)
-                "transform: preprocessing failed for %s; delivering block unchanged: %s at %s",
+                "transform: transforming failed for %s; delivering block unchanged: %s at %s",
                 ctx.source,
                 exc_kind(exc),
                 exc_where(exc),
@@ -280,7 +281,7 @@ async def transform_response(
     floor = _processors_for(cfg, profile.name, backend_name, tool_name, required)
     if len(floor) != len(required):
         return TransformOutcome(
-            content_blocks=None, failed=f"required pre-processors {required} unusable"
+            content_blocks=None, failed=f"required transforms {required} unusable"
         )
     processors = _processors_for(cfg, profile.name, backend_name, tool_name, optional)
     if not floor and not processors:
@@ -290,7 +291,7 @@ async def transform_response(
     # backend chose, and a reducer that welds them into one loses it.
     # target_bytes is shared across blocks so a response's budget does not
     # multiply by how many pieces it arrived in.
-    ctx = PreProcessContext(
+    ctx = TransformContext(
         # Logged below: the tool as listed, or a fingerprint of a name the
         # caller typed that the backend answered anyway (#262).
         source=f"{profile.name}:{backend_name}:{loggable_tool(backend.url, tool_name)}",
@@ -306,13 +307,13 @@ async def transform_response(
 async def _transform_blocks(
     content_blocks: list[Any] | None,
     targets: list[tuple[tuple[int, str], int]],
-    stages: tuple[list[PreProcessor], list[PreProcessor]],
+    stages: tuple[list[Transform], list[Transform]],
     strategy: Strategy,
-    ctx: PreProcessContext,
+    ctx: TransformContext,
 ) -> TransformOutcome:
     """Each text block through both stages, then the accounting and the hiding."""
     new_blocks = list(content_blocks or [])
-    results: list[Any] = []
+    results: list[TransformRecord] = []
     metered = False
     sizes = [0, 0]
     for (idx, text), length in targets:
@@ -352,13 +353,13 @@ def _account(
     source: str,
     content_blocks: list[Any] | None,
     new_blocks: list[Any],
-    results: list[Any],
+    results: list[TransformRecord],
     metered: bool,
     bytes_in: int,
     bytes_out: int,
 ) -> TransformOutcome:
     """Log what every processor did, and build the outcome and its sidecar."""
-    applied = any(getattr(r, "applied", False) for r in results)
+    applied = any(r.applied for r in results)
 
     # Every candidate is logged, applied or not, at WARNING: the gateway runs
     # at TRENTINA_LOG_LEVEL=WARNING so INFO goes nowhere, and this is the same
@@ -384,7 +385,7 @@ def _account(
         return TransformOutcome(content_blocks=content_blocks)
 
     # An LLM rewrote the payload, so the artifact is model output and the
-    # perimeter owes it unconditional L3 — see preprocess/compose.py's
+    # perimeter owes it unconditional L3 — see transforms/compose.py's
     # provenance() and defense.Provenance. Deterministic reduction cannot
     # compose a payload, so it keeps the input's provenance.
     provenance = Provenance.MODEL_OUTPUT if metered else Provenance.EXTERNAL
@@ -394,17 +395,7 @@ def _account(
         "bytes_out": bytes_out,
         "ratio": round(bytes_out / bytes_in, 4) if bytes_in else 1.0,
         "metered": metered,
-        "processors": [
-            {
-                "name": r.name,
-                "cost": r.cost.value,
-                "applied": r.applied,
-                "bytes_in": r.bytes_in,
-                "bytes_out": r.bytes_out,
-                **r.details,
-            }
-            for r in results
-        ],
+        "processors": [r.row() for r in results],
     }
 
     return TransformOutcome(

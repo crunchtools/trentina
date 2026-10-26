@@ -17,9 +17,12 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, assert_never
 
 from ..config import get_config
+from ..core import Decision, Posture, dispose, refusal_of
+from ..core.dispose import DEFAULT_REDACT_PROMPT
+from ..core.dispose import Disposition as Disposed
 from ..database import is_blocked, record_capture
 from ..dbus_interface import emit_request_event
 from ..defense import DefenseVerdict, Provenance, defend, layer_verdicts
@@ -28,7 +31,7 @@ from ..gateway import paging
 from ..gateway.context import current_call, get_current_parts
 from ..gateway.scope import current_scope
 from ..l1.pipeline import run_l1
-from ..modes import BLOCKLIST_REASON, Mode, gaps_of, refusal_body, refusal_reason
+from ..modes import BLOCKLIST_REASON, Mode, current_policy, refusal_body
 from ..quarantine.agent import quarantine_redact
 from ..report import Disposition, LayerState, build_report
 from ..warning import build_warning
@@ -38,10 +41,6 @@ if TYPE_CHECKING:
 
     from ..gateway.profile import DefenseConfig
     from ..l1.pipeline import PipelineResult
-
-DEFAULT_REDACT_PROMPT = "Extract the main content."
-"""Used when block downgrades an allowlisted source to redact: the agent asked
-for the bytes, so there is no extraction prompt of its own to use."""
 
 
 PAGED_FAMILIES = frozenset({"fetch", "read", "content"})
@@ -174,25 +173,20 @@ class _Call:
         )
 
     def refuse(
-        self, verdict: DefenseVerdict, reason: str, *, judged: bool = True
+        self, verdict: DefenseVerdict, disposition: Disposed, posture: Posture
     ) -> BlockedSourceError:
-        """The refusal, naming the modes this caller may try next.
+        """The refusal the core decided, rendered through the one composer.
 
-        ``judged`` is False when the refusal is redact's own extraction turn
-        objecting: then neither the verdict's flag nor its gaps is the reason,
-        and nothing is suggested.
+        ``disposition.offer_alternatives`` is False when the refusal is redact's
+        own extraction turn objecting: neither the verdict's flag nor its gaps
+        is the reason, and nothing is suggested.
         """
         self.emit(verdict, Disposition.REFUSED, 0)
-        flagged_by = verdict.flagged_by.value if verdict.flagged_by is not None else None
-        refusal = refusal_body(
-            reason,
-            self.mode,
-            flagged_by=flagged_by if judged else None,
-            gaps=gaps_of(verdict) if judged else None,
+        return BlockedSourceError(
+            self.source,
+            disposition.reason or "refused by the defense pipeline",
+            refusal=refusal_of(disposition, posture),
         )
-        if not judged:
-            refusal["alternatives"] = []
-        return BlockedSourceError(self.source, reason, refusal=refusal)
 
     def warning(self, verdict: DefenseVerdict, **more: Any) -> dict[str, Any] | None:
         """``_trentina_warning``, or None when the scan completed and found nothing."""
@@ -274,6 +268,13 @@ async def judge_and_deliver(
         allowlisted=allowlisted,
         asserted={"blocklisted": blocklisted},
     )
+    posture = Posture(
+        mode=mode,
+        policy=current_policy(),
+        allowlisted=allowlisted,
+        honeypot=honeypot_caller() is not None,
+        prompt=prompt,
+    )
     verdict = await defend(
         document,
         source=source,
@@ -284,8 +285,9 @@ async def judge_and_deliver(
         provenance=provenance,
         domain=domain,
         # flag delivers a partial scan with a warning, so it pays for the
-        # partial scan; block and redact would refuse it, so they do not.
-        stop_on_partial=mode is not Mode.FLAG,
+        # partial scan; block and redact would refuse it. The one definition
+        # of the rule lives on Posture.
+        stop_on_partial=posture.stop_on_partial,
         precomputed_l1=precomputed_l1,
         l3_context=l3_context,
         # `blocked` feeds the blocklist. Only a block refusal belongs there:
@@ -295,15 +297,15 @@ async def judge_and_deliver(
         attribution={
             "profile": _caller()[0],
             "tool": call.tool,
-            "blocked": mode is Mode.BLOCK and not allowlisted,
+            "blocked": posture.records_block(blocklists=not allowlisted),
             "call_ref": current_call.get() or None,
         },
     )
     original = document if delivered is None else delivered
     if paged is None:
-        return await _dispose(call, verdict, original, prompt, extras, redact_extras)
+        return await _dispose(call, verdict, original, posture, extras, redact_extras)
     try:
-        response = await _dispose(call, verdict, original, prompt, extras, redact_extras)
+        response = await _dispose(call, verdict, original, posture, extras, redact_extras)
     except BlockedSourceError:
         # Nothing of it was delivered, so there is no rest to come back for.
         paging.release(paged)
@@ -315,34 +317,33 @@ async def _dispose(
     call: _Call,
     verdict: DefenseVerdict,
     original: Any,
-    prompt: str | None,
+    posture: Posture,
     extras: Mapping[str, Any] | None,
     redact_extras: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """Deliver, extract from or refuse a judged payload, as the call's mode says."""
-    mode, allowlisted = call.mode, call.allowlisted
-    if mode is Mode.FLAG:
-        honeypot = honeypot_caller()
-        if honeypot is not None:
-            return _deliver_unmarked(call, verdict, original, extras, honeypot)
-        return _deliver(call, verdict, original, extras)
-
-    flagged_by = verdict.flagged_by.value if verdict.flagged_by is not None else None
-    reason = refusal_reason(flagged_by, gaps_of(verdict))
-    if mode is Mode.BLOCK:
-        if reason is None:
+    """Deliver, extract from or refuse a judged payload, as ``core.dispose`` decides."""
+    disposition = dispose(verdict, posture)
+    match disposition.decision:
+        case Decision.DELIVER:
             return _deliver(call, verdict, original, extras)
-        gaps = gaps_of(verdict)
-        absent = gaps.blocking() and not gaps.redactable_only()
-        if allowlisted and not absent:
+        case Decision.DELIVER_UNMARKED:
+            honeypot = honeypot_caller()
+            if honeypot is None:  # invariant: only a honeypot reaches this decision
+                return _deliver(call, verdict, original, extras)
+            return _deliver_unmarked(call, verdict, original, extras, honeypot)
+        case Decision.REDACT:
             return await _redact(
-                call, verdict, DEFAULT_REDACT_PROMPT, redact_extras, downgraded=True
+                call,
+                verdict,
+                disposition.prompt or DEFAULT_REDACT_PROMPT,
+                redact_extras,
+                posture,
+                downgraded=disposition.downgraded,
             )
-        raise call.refuse(verdict, reason)
-
-    if gaps_of(verdict).blocking():
-        raise call.refuse(verdict, reason or "not fully judged")
-    return await _redact(call, verdict, prompt or DEFAULT_REDACT_PROMPT, redact_extras)
+        case Decision.REFUSE:
+            raise call.refuse(verdict, disposition, posture)
+        case _:  # pragma: no cover - exhaustiveness is the point
+            assert_never(disposition.decision)
 
 
 def pageable(tokens: int) -> bool:
@@ -493,6 +494,7 @@ async def _redact(
     verdict: DefenseVerdict,
     prompt: str,
     redact_extras: Mapping[str, Any] | None,
+    posture: Posture,
     *,
     downgraded: bool = False,
 ) -> dict[str, Any]:
@@ -503,7 +505,16 @@ async def _redact(
         detection=verdict.l3_assessment,
     )
     if result.refused_by is not None:
-        raise call.refuse(verdict, f"redact refused: {result.refused_by}", judged=False)
+        # redact's own turn objecting: nothing is suggested (no flag, no gap).
+        raise call.refuse(
+            verdict,
+            Disposed(
+                Decision.REFUSE,
+                reason=f"redact refused: {result.refused_by}",
+                offer_alternatives=False,
+            ),
+            posture,
+        )
 
     extraction = result.content
     if "nothing_to_extract" in extraction and _scripted(redact_extras):

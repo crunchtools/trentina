@@ -84,7 +84,7 @@ bytes the agent would pay for and not read (0.38.0):
   pre-processing and the scan, so what the perimeter judges is what is
   delivered. Anything else, including a structured copy that differs in one
   value, is kept and judged. Response guards run on the result as it arrived.
-- **Minified text.** The text blocks go through the profile's pre-processors,
+- **Minified text.** The text blocks go through the profile's transforms,
   `detect` by default, unless the call passes `trentina_preprocess: false`.
   See [Minifying and exact text](profiles.md#minifying-and-exact-text).
 

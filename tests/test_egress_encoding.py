@@ -18,12 +18,12 @@ import httpx
 import pytest
 
 from tests.egress_harness import PUBLIC_ADDRESS
-from trentina import egress
 from trentina.client import MAX_RESPONSE_SIZE, fetch_url
 from trentina.errors import BlockedSourceError, EgressRefusedError
 from trentina.gateway.errors import BackendCallError
 from trentina.modes import Mode
 from trentina.outcomes import Outcome, classify_exception
+from trentina.reach import egress
 
 BOMB = gzip.compress(b"\0" * (MAX_RESPONSE_SIZE * 4))
 """20 MB of zeros in about 20 KB: four times the cap once inflated."""

@@ -16,7 +16,7 @@ API key theft is particularly dangerous because:
 
 ## How It Works
 
-Trentina exposes LLM API proxy endpoints at `/llm/{provider}/{path}` that mirror the upstream APIs. The agent authenticates with its **gateway bearer token** (the same token it uses for `/gateway/{profile}/mcp`), as `Authorization: Bearer`, or as `x-api-key` on **any** provider shape when `Authorization` is absent (Anthropic SDKs send a key that way to a proxy; the fallback is read without the provider's API shape so authentication can precede the provider lookup). Trentina resolves which profile the token belongs to, strips the agent's token header, injects the real API key for that profile, forwards to the upstream provider, and returns the response. Streaming (SSE) and non-streaming responses are forwarded transparently.
+Trentina exposes LLM API proxy endpoints at `/proxy/llm/{provider}/{path}` that mirror the upstream APIs. The agent authenticates with its **gateway bearer token** (the same token it uses for `/gateway/{profile}/mcp`), as `Authorization: Bearer`, or as `x-api-key` on **any** provider shape when `Authorization` is absent (Anthropic SDKs send a key that way to a proxy; the fallback is read without the provider's API shape so authentication can precede the provider lookup). Trentina resolves which profile the token belongs to, strips the agent's token header, injects the real API key for that profile, forwards to the upstream provider, and returns the response. Streaming (SSE) and non-streaming responses are forwarded transparently.
 
 ### Per-Profile Keys and Rate-Limit Isolation
 
@@ -36,7 +36,7 @@ unauthenticated request is `401` whether or not `{provider}` exists — the `404
 is only ever returned to a caller with a valid token, and 404-vs-401 cannot be
 used to enumerate configured provider names.
 
-The caller's token (`Authorization` or `x-api-key`) is never forwarded upstream. Trentina's own Q-Agent does not go through `/llm/`; it calls providers directly, but with the same `llm_keys`. Judging a profile's tool response bills that profile's key. Judging a shared tool description, or compressing one, is the gateway's own work, and bills the operator's key ([operator.md](operator.md#service-identity)). The global `GEMINI_API_KEY` applies only when no operator is declared.
+The caller's token (`Authorization` or `x-api-key`) is never forwarded upstream. Trentina's own Q-Agent does not go through `/proxy/llm/`; it calls providers directly, but with the same `llm_keys`. Judging a profile's tool response bills that profile's key. Judging a shared tool description, or compressing one, is the gateway's own work, and bills the operator's key ([operator.md](operator.md#service-identity)). The global `GEMINI_API_KEY` applies only when no operator is declared.
 
 ### What the Proxy Admits
 
@@ -182,7 +182,7 @@ The provider name under `llm_keys` must match a configured `llm_providers` entry
 ```
 ┌──────────┐                    ┌────────────────┐    Real API key    ┌──────────┐
 │  Agent   │ ────────────────► │   Trentina     │ ─────────────────► │  Gemini  │
-│          │  /llm/gemini/...  │   Gateway      │                    │  OpenAI  │
+│          │  /proxy/llm/gemini/...  │   Gateway      │                    │  OpenAI  │
 │ No API   │ ◄──────────────── │                │ ◄───────────────── │  etc.    │
 │ keys     │    LLM response   │  Key injection │    LLM response   └──────────┘
 └──────────┘                   └────────────────┘
@@ -190,7 +190,7 @@ The provider name under `llm_keys` must match a configured `llm_providers` entry
 
 ### Request Flow
 
-1. Agent sends `POST /llm/gemini/v1beta/models/gemini-2.5-flash:generateContent` with `Authorization: Bearer <profile gateway token>`
+1. Agent sends `POST /proxy/llm/gemini/v1beta/models/gemini-2.5-flash:generateContent` with `Authorization: Bearer <profile gateway token>`
 2. Trentina looks up the `gemini` provider config and resolves the caller profile from the bearer token (`401` if it matches none)
 3. Looks up the profile's `llm_keys.gemini` key (`502` if the profile has none)
 4. Admits the request ([what the proxy admits](#what-the-proxy-admits)) or refuses it, audited either way

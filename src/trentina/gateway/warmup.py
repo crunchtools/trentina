@@ -147,7 +147,7 @@ async def trentina_lifespan() -> AsyncIterator[dict[str, Any]]:
     # Warm the pinned-connection TLS context on a worker thread, so the system
     # CA bundle is loaded here at startup and never on the event loop during the
     # first /egress, /git or fetch request (egress.shared_ssl_context, #511).
-    from ..egress import shared_ssl_context
+    from ..reach.egress import shared_ssl_context
 
     await asyncio.to_thread(shared_ssl_context)
 
@@ -160,6 +160,10 @@ async def trentina_lifespan() -> AsyncIterator[dict[str, Any]]:
         yield {}
     finally:
         await client_egress.stop()
+        # Close the pinned connection pool's long-lived clients (#511, Phase 2).
+        from .upstream import close_pool
+
+        await close_pool()
         if started_here and _task is not None:
             _task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

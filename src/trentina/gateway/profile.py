@@ -149,8 +149,8 @@ def _normalize_enforcement(block: Any, *, key: str) -> Any:
 # empty processor list rather than to a name.
 _EXTRACTOR_RENAMES: dict[str, str] = {"generic": "select"}
 
-# Registered pre-processors. Adding one means adding it here, to
-# gateway.drivers.PREPROCESSORS, and nowhere else. Declared twice on purpose:
+# Registered transforms. Adding one means adding it here, to
+# gateway.drivers.TRANSFORMS, and nowhere else. Declared twice on purpose:
 # this Literal is what makes pydantic reject an unknown name at YAML load,
 # and the parity test in tests/test_gateway_drivers.py keeps the two in step.
 ProcessorName = Literal[
@@ -172,7 +172,7 @@ ProcessorName = Literal[
 # that fit it: html then petit for a page, structured for JSON, email then
 # petit for anything else. Until 0.38.0 the default was all four in a row,
 # and `html` ran first on everything, which is how a mail header lost its
-# addresses (preprocess/detect.py). summarize is never a default: METERED,
+# addresses (transforms/detect.py). summarize is never a default: METERED,
 # and its output draws unconditional L3.
 _DEFAULT_PROCESSORS: list[ProcessorName] = ["detect"]
 
@@ -347,8 +347,8 @@ class ProcessorChainConfig(BaseModel):
 class PreProcessConfig(ProcessorChainConfig):
     """Transformation applied to tool responses before the perimeter scan.
 
-    Transformation is not defense (see ``preprocess/base.py``, invariant 1: a
-    pre-processor may subtract, never absolve). What this configures is how
+    Transformation is not defense (see ``transforms/base.py``, invariant 1: a
+    transform may subtract, never absolve). What this configures is how
     hard to try to improve a payload; what comes out is exactly as untrusted
     as what went in, and the caller scans the transformed artifact before
     delivering it.
@@ -692,7 +692,7 @@ class Backend(BaseModel):
     preprocess_tool_descriptions: ProcessorChainConfig = Field(
         default_factory=ProcessorChainConfig,
         description=(
-            "Pre-processors for this backend's tool and parameter descriptions "
+            "Transforms for this backend's tool and parameter descriptions "
             "(#176). {processors: [summarize]} compresses them with the "
             "operator's model in the background, cached; until a description "
             "is compressed it is served as the backend wrote it. Replaced "
@@ -1846,7 +1846,7 @@ class EgressCredential(BaseModel):
 
     The agent never holds the credential: the gateway reads it from the
     profile's ``token_env`` and sends it in this header, exactly as the git
-    transport injects a Basic header and ``/llm`` injects the provider key. A
+    transport injects a Basic header and ``/proxy/llm`` injects the provider key. A
     caller's own ``Authorization`` for the destination is dropped, never
     forwarded.
     """
@@ -2628,6 +2628,20 @@ class Profile(BaseModel):
             "tagged with its backend only where two backends' names collide "
             "(gateway/names.py). Off: <backend>__<tool>, as before 0.38.0. "
             "Only the form served routes (0.43.0)."
+        ),
+    )
+    orchestrated: bool = Field(
+        default=False,
+        description=(
+            "Route this profile's tools/call through the Trentina 3.0 "
+            "orchestrator (crossing/edge) instead of the hand-rolled router "
+            "path. A temporary Phase 4 cutover flag: it lets one profile ride "
+            "the new path for byte-identical verification while others stay on "
+            "the old one, and is removed when every profile is cut over. "
+            "Operator scaffolding: set it in profiles.yaml, not per call. While "
+            "the orchestrated path stays byte-identical no agent can observe the "
+            "flag; the hold against an agent reload flipping it lands with the "
+            "cutover that removes the flag."
         ),
     )
     alert_ingress: AlertIngressConfig | None = Field(

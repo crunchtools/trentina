@@ -74,7 +74,7 @@ uv run trentina
   (`confine.refused`), audited `blocked_defense` like egress's (#278).
 - `TRENTINA_FETCH_ALLOW_PRIVATE` — default false. Lifts the egress guard's
   address rule so fetch can reach non-global addresses; scheme, port and
-  redirect rules still hold. Warns at startup. See `egress.py` (#260).
+  redirect rules still hold. Warns at startup. See `reach/egress.py` (#260).
 - `TRENTINA_REQUIRE_HARDENED` — default false. On a network transport,
   `posture.py` reads `/proc/self` at startup and WARNs each containment gap
   (no-new-privileges, capabilities, seccomp, writable rootfs or import path,
@@ -247,9 +247,10 @@ new pattern goes into that file's attack, benign and linearity tables.
 
 - A second listener, `--egress-port` (8021): HTTP `CONNECT` only, for a
   profile's `client_egress` (#442). Not a route on the app below.
-- `GET|POST /git/{remote}/{owner}/{repo}[.git]/{info/refs,git-upload-pack,git-receive-pack}` —
+- `GET|POST /proxy/git/{remote}/{owner}/{repo}[.git]/{info/refs,git-upload-pack,git-receive-pack}` —
   the git transport (#453), registered only when the file has `git_remotes`.
-  Bearer token picks the profile, as on `/llm`.
+  Bearer token picks the profile, as on `/proxy/llm`. (Renamed from `/git` in
+  2.0.0 with `/proxy/http` and `/proxy/llm`, #511; the old paths now 404.)
 - `GET /health` — unauthenticated liveness probe returning `{status, classifier, profiles}`.
   A timeout here means the asyncio event loop is blocked, not merely that a
   backend is slow.
@@ -321,8 +322,8 @@ Every call runs L1 ∥ L2 on the arrived bytes, then L3 briefed with both. The
   tool declares `trentina_mode` unless the profile sets `declare_modes`.
 
 "Arrived" means arrived at the perimeter, AFTER pre-processing. Output is
-minified by default (0.38.0): the `detect` pre-processor picks the minifier by
-format (`preprocess/detect.py`), and takes undeclared text for HTML only when
+minified by default (0.38.0): the `detect` transform picks the minifier by
+format (`transforms/detect.py`), and takes undeclared text for HTML only when
 no tag name in it is foreign to HTML, because `html` deletes `<a@b.c>` and
 `Vec<String>`. `trentina_preprocess` is a switch (#183): `false` exact, `true`
 minified, omitted the tool's default (`read` and any `preprocess_tools` entry
@@ -332,7 +333,7 @@ and content always. `required` is the floor it cannot remove,
 and the one failure rule is: floor fails closed, minifying fails open. The
 internal tools run it in `tools/preprocess.py` (the router skips
 `transform_response` for them) with `INTERNAL_CHAIN`. Policy:
-`preprocess/policy.py`; gateway side rides `modes_policy.py` like the mode.
+`transforms/policy.py`; gateway side rides `modes_policy.py` like the mode.
 Proxied conversion hands L1 the ORIGINAL's hiding counts (#229).
 
 Tools are served under short names (`gateway/names.py`), tagged with a backend
@@ -367,7 +368,7 @@ its own posture and nothing enforced it. Now the policy does:
   JSON-RPC `error.data` for web tools, `_trentina_refusal` for proxied ones.
   Flagged → `redact` only, NEVER `flag`; gap-only → `flag`.
 - A response withheld AFTER the backend answered (defense block, response
-  guard, byte cap, failed required pre-processor) is not a refusal for a tool
+  guard, byte cap, failed required transform) is not a refusal for a tool
   that may write (#425): `router._executed` rewords it as "executed, response
   withheld", `isError` the backend's own (true at the byte cap, where it was
   never read), `_trentina_refusal.executed` true.
@@ -510,7 +511,7 @@ garak's encodings (`corpora/garak_encodings.py`, #423) are measured by
 nothing: each is a Coverage row or one of gaps 21 to 23.
 
 Pre-processing is two stages, always in this order (#365). Stage 1,
-`preprocess/`, decides what the agent receives. Stage 2, `unpack/`, builds
+`transforms/`, decides what the agent receives. Stage 2, `unpack/`, builds
 what L1, L2 and L3 read from that delivery, inside `defense.defend()`, and
 never changes it. Nothing restores anything afterwards, because nothing was
 replaced.
@@ -538,11 +539,11 @@ replaced.
   `hidden_elements`; XML with a DOCTYPE is not parsed. A file inside an
   archive goes back through `scan.py`'s own rules. Stage 1 reduces a base64
   office file in a JSON string to `{"format", "as_markdown"}`
-  (`preprocess/structured.py`).
+  (`transforms/structured.py`).
   `pdf.py` reads a PDF by running `pdf_worker.py` as a child process (#369)
   through `child.ask`: pypdf under RLIMIT_CPU and RLIMIT_AS, no credential
   in its environment, a wall-clock kill, a bounded wait for a slot, and its
-  JSON checked field by field. Never import pypdf into the gateway process. `preprocess/pdf.py` is the stage-1 reducer, for
+  JSON checked field by field. Never import pypdf into the gateway process. `transforms/pdf.py` is the stage-1 reducer, for
   a fetched PDF (handed over as base64 by `client.py`) and for a base64 PDF
   in a JSON string.
   `ocr.py` reads images the same way (#370): `ocr_worker.py` runs RapidOCR
@@ -582,9 +583,9 @@ replaced.
   - `hidden.py` — content-hiding fingerprints (`display:none`, off-screen
     positioning, same-colour text), counted on EVERY payload rather than
     behind a format guess. Tier 2 of the markup answer; tier 1 is
-    `preprocess/html.py`, which removes the class outright. Counts only — the
+    `transforms/html.py`, which removes the class outright. Counts only — the
     hidden text's words are what L2 should still read. Owns the predicate
-    table that `preprocess/html.py` imports, so the converter that strips an
+    table that `transforms/html.py` imports, so the converter that strips an
     element and the stage that counts one decide by one rule.
   - `shadows.py` — Python stdlib module shadow detection and obfuscation scanning.
     `scan_shadows` reads through the descriptor `dir_tool` listed (#287) and
@@ -603,7 +604,7 @@ replaced.
   matches neither: `classifier.py` is L2 (a pluggable local ONNX classifier) and
   `agent.py` is L3 (Gemini REST via httpx, NO SDK, NO tools). CLAUDE.md called
   this "Layer 2: Q-Agent" until 0.29.0, which was simply wrong.
-- `egress.py` — the ONE egress guard (#260) for every gateway-side fetch
+- `reach/egress.py` — the ONE egress guard (#260) for every gateway-side fetch
   (`client.fetch_url`, grounding redirects). Refuses on the RESOLVED address,
   pins the connection to it (`PinnedBackend` under httpx's pool; TLS still
   verifies the hostname), and follows redirects by hand, checking each hop.
@@ -665,10 +666,10 @@ replaced.
 - `perimeter_db.py` — the perimeter's own store, deliberately a second database:
   verdicts `defend()` reached, so a restart does not re-judge ~210 tool
   descriptions through all three layers before the first `tools/list` answers
-- `channels.py` — the two driver roles, the ingresses a driver may be bound to,
-  and what each ingress hands a driver (`Kind`). Guards decide admission;
-  pre-processors transform outside the perimeter. Everything wired into a
-  request path is one of the two.
+- `channels.py` — the one driver role (the transform) and the fixed guards
+  beside it, the ingresses a driver may be bound to, and what each ingress
+  hands a driver (`Kind`). Guards decide admission; transforms run outside the
+  perimeter. Everything wired into a request path is one or the other.
 - `jsonwalk.py` — the ONE JSON walk. There were two hand-maintained copies
   until #167; `tests/test_full_is_defend_json.py` proves they agreed, which is
   what made deleting one safe.
@@ -676,7 +677,7 @@ replaced.
   at any depth, `RESERVED_ROOT_KEYS` at a document's root. Every path that
   carries someone else's JSON strips them before the scan and before adding
   its own marker. A new marker takes the prefix and is covered automatically.
-- `preprocess/` — Payload transformation, OUTSIDE the perimeter. May subtract
+- `transforms/` — Payload transformation, OUTSIDE the perimeter. May subtract
   but never absolve: it drops, collapses, normalizes and restructures, and
   everything it emits still crosses `defend()` as untrusted. Reduction is the
   common case, not the contract. Two INPUT SHAPES, not two roles: most are
@@ -731,7 +732,7 @@ replaced.
     failing required one, for the router to refuse (#335: the call without it
     can do more than was asked). Never evaluates
     `pattern` (a backend's regex is a ReDoS here).
-  - `llm_policy.py` — what `/llm/<provider>/` admits (#297), per API shape
+  - `llm_policy.py` — what `/proxy/llm/<provider>/` admits (#297), per API shape
     (`anthropic`, `openai`, `openrouter`, `gemini`; a provider's `api`,
     inferred for the four known hosts, required otherwise). Allowlists
     endpoint, query, headers and body keys; refuses provider-run tools,
@@ -755,12 +756,12 @@ replaced.
   - **Parameter guards**: per-tool argument validation with allow/deny value patterns — see `docs/gateway-design.md`
   - `drivers.py` — the ONE registry. A configured name becomes a driver, for
     either role, with one channel lock and one parity test. Two registries
-    here is what left the pre-processor table with no channel lock at all.
+    here is what left the transform table with no channel lock at all.
   - `schema_compact.py` — drops null branches, null defaults and `$schema`
     from served inputSchemas, AFTER the perimeter scan. Tighten-only, and a
     subset of the judged strings, so it changes no verdict. Per backend
     `compact_schemas`, default on.
-  - `transform.py` — the pre-processor call site on the tool path (was
+  - `transform.py` — the transform call site on the tool path (was
     `reduce.py`; the contract is transformation, not reduction).
   - `selection.py` — the call site on the Matrix path. Runs the document
     processor, degrades to reading everything if it raises, and turns coverage

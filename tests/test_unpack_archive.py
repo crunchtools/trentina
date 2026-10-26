@@ -21,9 +21,9 @@ import pytest
 
 from corpora.owasp import OWASP_TEST_ATTACKS
 from trentina.l1.pipeline import run_l1
-from trentina.preprocess.base import PreProcessContext
-from trentina.preprocess.detect import document_hidden, hiding_removed
-from trentina.preprocess.structured import StructuredProcessor
+from trentina.transforms.base import Applied, TransformContext
+from trentina.transforms.detect import document_hidden, hiding_removed
+from trentina.transforms.structured import StructuredProcessor
 from trentina.unpack import archive, office
 from trentina.unpack.archive import Budget, open_archive
 from trentina.unpack.scan import ENCRYPTED_ENTRY, read_blob, unpack
@@ -588,8 +588,8 @@ class TestHiddenCountReachesL1:
 
 class TestStageOneReducer:
     async def _reduce(self, document: object) -> tuple[object, dict]:
-        result = await StructuredProcessor().run(json.dumps(document), PreProcessContext("test"))
-        return (json.loads(result.content) if result.applied else None), result.details
+        result = await StructuredProcessor().run(json.dumps(document), TransformContext("test"))
+        return (json.loads(result.content) if isinstance(result, Applied) else None), result.details
 
     @pytest.mark.asyncio
     async def test_a_base64_docx_field_becomes_its_visible_text(self) -> None:
@@ -639,20 +639,16 @@ class TestStageOneReducer:
         assert office.reduce_base64(b64(bytes(data)), 140_000) is None
 
     def test_the_hidden_count_is_handed_to_l1(self) -> None:
-        from trentina.preprocess.base import Cost, PreProcessResult
+        from trentina.transforms.base import Cost, TransformRecord
 
-        applied = PreProcessResult(
-            name="structured",
-            cost=Cost.FREE,
-            content="{}",
-            applied=True,
-            bytes_in=10,
-            bytes_out=2,
-            details={"office_converted": 1, "office_hidden": 3},
+        applied = TransformRecord(
+            "structured",
+            Cost.FREE,
+            Applied("{}", {"office_converted": 1, "office_hidden": 3}),
+            10,
+            2,
         )
         assert hiding_removed([applied]) == 3
         assert document_hidden([applied]) == 3
-        clean = PreProcessResult(
-            name="structured", cost=Cost.FREE, content="{}", applied=True, bytes_in=10, bytes_out=2
-        )
+        clean = TransformRecord("structured", Cost.FREE, Applied("{}"), 10, 2)
         assert hiding_removed([clean]) is None

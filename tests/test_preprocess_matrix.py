@@ -17,7 +17,7 @@ import pytest
 
 from trentina.matrix.keybackup import KeyBackupProvider
 from trentina.matrix.megolm import megolm_available
-from trentina.preprocess import (
+from trentina.transforms import (
     MatrixProcessor,
     SelectionContext,
     SelectProcessor,
@@ -38,11 +38,16 @@ async def _provider(v: Vectors) -> KeyBackupProvider:
             return httpx.Response(200, json=v.version_response())
         return httpx.Response(200, json=v.keys_response())
 
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+
+    async def send(method: str, url: str, headers: dict[str, str]) -> httpx.Response:
+        return await client.send(client.build_request(method, url, headers=headers), stream=True)
+
     p = KeyBackupProvider(
         homeserver="https://hs.invalid",
         access_token="tok",
         recovery_key=v.recovery_key,
-        client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+        send=send,
     )
     await p.start()
     return p

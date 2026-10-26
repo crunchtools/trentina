@@ -24,7 +24,6 @@ from starlette.responses import Response, StreamingResponse
 
 from trentina import config as config_mod
 from trentina import database as database_mod
-from trentina import egress
 from trentina.errors import EGRESS_REASONS
 from trentina.gateway import git_transport, upstream
 from trentina.gateway.errors import ProfileConfigError
@@ -32,6 +31,7 @@ from trentina.gateway.git_wire import REASONS, GitRefusedError
 from trentina.gateway.loader import ActiveConfig, GatewayConfig, load_profiles
 from trentina.gateway.profile import AuthConfig, GitGrant, GitRemote, Profile
 from trentina.outcomes import Outcome
+from trentina.reach import egress
 from trentina.tools.reload import _hold_perimeter_fields, _unapplied
 
 from . import git_harness as harness
@@ -68,6 +68,9 @@ def audit_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 def no_slot_is_left_held() -> Iterator[None]:
     """Whatever a test did, every operation it started gave its slot back."""
     upstream._checked.clear()
+    # The pinned pool caches a client per origin across tests; each test points
+    # PinnedTransport at its own forge, so start from an empty pool (#511, Phase 2).
+    upstream._pool.clear()
     git_transport._SLOTS._open.clear()
     yield
     assert not any(git_transport._SLOTS._open.values()), git_transport._SLOTS._open
@@ -116,9 +119,11 @@ async def _stack(monkeypatch: pytest.MonkeyPatch, forge: Any) -> AsyncIterator[_
     monkeypatch.setattr(egress, "_lookup", lambda _host, _port: [PUBLIC_ADDRESS])
     async with harness.serving(forge.app()) as forge_port:
         transport = harness.ToForge(forge_port)
-        monkeypatch.setattr(egress, "PinnedTransport", lambda _backend: transport)
+        # The pool builds its client from upstream.PinnedTransport, so patch it
+        # there; the pooled sender passes keepalive/max_connections kwargs.
+        monkeypatch.setattr(upstream, "PinnedTransport", lambda _backend, **_kw: transport)
         async with harness.serving(harness.gateway_app(profiles)) as port:
-            url = f"http://127.0.0.1:{port}/git/{harness.REMOTE}"
+            url = f"http://127.0.0.1:{port}/proxy/git/{harness.REMOTE}"
             async with httpx.AsyncClient(headers=BEARER, timeout=10) as client:
                 yield _Stack(
                     port=port,
@@ -286,31 +291,59 @@ class TestWhatItMayAsk:
     @pytest.mark.parametrize(
         ("line", "status", "reason"),
         [
-            ("GET /git/forge/acme%2Fwidgets/x/info/refs?service=git-upload-pack", 400, "name"),
-            ("GET /git/forge/acme/%2e%2e/info/refs?service=git-upload-pack", 400, "name"),
-            ("GET /git/forge/acme/../info/refs?service=git-upload-pack", 400, "name"),
-            ("GET /git/forge/../widgets/info/refs?service=git-upload-pack", 400, "name"),
-            ("GET /git/forge/acme/wid..gets/info/refs?service=git-upload-pack", 400, "name"),
-            ("GET /git/forge/acme/widgets%2Egit/info/refs?service=git-upload-pack", 400, "name"),
-            ("GET /git/forge/acme/widgets/HEAD", 404, "path"),
-            ("GET /git/forge/acme/widgets/objects/info/packs", 404, "path"),
-            ("GET /git/forge/acme/widgets/info/refs/x?service=git-upload-pack", 404, "path"),
-            ("GET /git/forge/acme/widgets", 404, "path"),
-            ("GET /git/forge/acme/team/widgets/info/refs?service=git-upload-pack", 404, "path"),
-            ("POST /git/forge/acme/widgets/git-upload-archive", 404, "path"),
-            ("GET /git/forge/acme/widgets/info/refs", 400, "service"),
-            ("GET /git/forge/acme/widgets/info/refs?service=git-upload-archive", 400, "service"),
-            ("GET /git/forge/acme/widgets/info/refs?service=git-upload-pack&x=1", 400, "service"),
-            ("GET /git/forge/acme/widgets/info/refs?x=1&service=git-upload-pack", 400, "service"),
-            ("GET /git/forge/acme/widgets/info/refs?service=git-upload-pack%00", 400, "service"),
             (
-                "POST /git/forge/acme/widgets/git-upload-pack?service=git-receive-pack",
+                "GET /proxy/git/forge/acme%2Fwidgets/x/info/refs?service=git-upload-pack",
+                400,
+                "name",
+            ),
+            ("GET /proxy/git/forge/acme/%2e%2e/info/refs?service=git-upload-pack", 400, "name"),
+            ("GET /proxy/git/forge/acme/../info/refs?service=git-upload-pack", 400, "name"),
+            ("GET /proxy/git/forge/../widgets/info/refs?service=git-upload-pack", 400, "name"),
+            ("GET /proxy/git/forge/acme/wid..gets/info/refs?service=git-upload-pack", 400, "name"),
+            (
+                "GET /proxy/git/forge/acme/widgets%2Egit/info/refs?service=git-upload-pack",
+                400,
+                "name",
+            ),
+            ("GET /proxy/git/forge/acme/widgets/HEAD", 404, "path"),
+            ("GET /proxy/git/forge/acme/widgets/objects/info/packs", 404, "path"),
+            ("GET /proxy/git/forge/acme/widgets/info/refs/x?service=git-upload-pack", 404, "path"),
+            ("GET /proxy/git/forge/acme/widgets", 404, "path"),
+            (
+                "GET /proxy/git/forge/acme/team/widgets/info/refs?service=git-upload-pack",
+                404,
+                "path",
+            ),
+            ("POST /proxy/git/forge/acme/widgets/git-upload-archive", 404, "path"),
+            ("GET /proxy/git/forge/acme/widgets/info/refs", 400, "service"),
+            (
+                "GET /proxy/git/forge/acme/widgets/info/refs?service=git-upload-archive",
                 400,
                 "service",
             ),
-            ("POST /git/forge/acme/widgets/info/refs?service=git-upload-pack", 405, "method"),
-            ("GET /git/forge/acme/widgets/git-upload-pack", 405, "method"),
-            ("GET /git/forge/acme/widgets/git-receive-pack", 405, "method"),
+            (
+                "GET /proxy/git/forge/acme/widgets/info/refs?service=git-upload-pack&x=1",
+                400,
+                "service",
+            ),
+            (
+                "GET /proxy/git/forge/acme/widgets/info/refs?x=1&service=git-upload-pack",
+                400,
+                "service",
+            ),
+            (
+                "GET /proxy/git/forge/acme/widgets/info/refs?service=git-upload-pack%00",
+                400,
+                "service",
+            ),
+            (
+                "POST /proxy/git/forge/acme/widgets/git-upload-pack?service=git-receive-pack",
+                400,
+                "service",
+            ),
+            ("POST /proxy/git/forge/acme/widgets/info/refs?service=git-upload-pack", 405, "method"),
+            ("GET /proxy/git/forge/acme/widgets/git-upload-pack", 405, "method"),
+            ("GET /proxy/git/forge/acme/widgets/git-receive-pack", 405, "method"),
         ],
     )
     async def test_a_request_line_outside_the_three_endpoints_is_refused(
@@ -330,8 +363,8 @@ class TestWhatItMayAsk:
         """Not by the router: an unlisted method would get a 405 nobody
         authenticated or recorded."""
         for target in (
-            "/git/forge/acme/widgets/git-receive-pack",
-            "/git/forge/acme/widgets/info/refs",
+            "/proxy/git/forge/acme/widgets/git-receive-pack",
+            "/proxy/git/forge/acme/widgets/info/refs",
         ):
             got, headers, _body = await harness.raw_request(
                 stack.port, f"{method} {target} HTTP/1.1"
@@ -352,7 +385,8 @@ class TestWhatItMayAsk:
         self, stack: _Stack, audit_db: Path
     ) -> None:
         await harness.raw_request(
-            stack.port, "GET /git/forge/acme/wid..gets/info/refs?service=git-upload-pack HTTP/1.1"
+            stack.port,
+            "GET /proxy/git/forge/acme/wid..gets/info/refs?service=git-upload-pack HTTP/1.1",
         )
         (row,) = await _settled(audit_db)
         assert (row["destination"], row["tool"]) == (None, "-")
@@ -371,7 +405,8 @@ class TestWhatItMayAsk:
     ) -> None:
         got, headers, _body = await harness.raw_request(
             stack.port,
-            f"GET /git/forge{REFS} HTTP/1.1\r\nGit-Protocol: version=2\r\nGit-Protocol: version=1",
+            f"GET /proxy/git/forge{REFS} HTTP/1.1\r\n"
+            "Git-Protocol: version=2\r\nGit-Protocol: version=1",
         )
         assert (got, headers["x-trentina-reason"]) == (400, "protocol")
         (row,) = await _settled(audit_db)
@@ -924,7 +959,7 @@ class TestWhereItGoes:
                 dialled.append((host, port))
                 raise httpcore.ConnectError("the test does not leave the host")
 
-        monkeypatch.setattr(egress, "PinnedTransport", real_transport)
+        monkeypatch.setattr(upstream, "PinnedTransport", real_transport)
         monkeypatch.setattr(egress, "_socket_backend", _Refusing)
         response = await stack.client.get(stack.url + REFS)
         assert response.status_code == 502
@@ -1058,7 +1093,7 @@ class TestBounds:
         piece = pkt(ONE + b" " + TWO + b" refs/heads/agent/x\n")
         reader, writer = await asyncio.open_connection("127.0.0.1", stack.port)
         head = (
-            "POST /git/forge/acme/widgets/git-receive-pack HTTP/1.1\r\n"
+            "POST /proxy/git/forge/acme/widgets/git-receive-pack HTTP/1.1\r\n"
             "Host: gateway\r\n"
             f"Authorization: Bearer {harness.GATEWAY_TOKEN}\r\n"
             f"Content-Type: {RECEIVE_REQUEST}\r\n"
@@ -1080,7 +1115,7 @@ class TestBounds:
         piece = pkt(ONE + b" " + TWO + b" refs/heads/agent/x\n")
         _reader, writer = await asyncio.open_connection("127.0.0.1", stack.port)
         head = (
-            "POST /git/forge/acme/widgets/git-receive-pack HTTP/1.1\r\n"
+            "POST /proxy/git/forge/acme/widgets/git-receive-pack HTTP/1.1\r\n"
             "Host: gateway\r\n"
             f"Authorization: Bearer {harness.GATEWAY_TOKEN}\r\n"
             f"Content-Type: {RECEIVE_REQUEST}\r\n"

@@ -16,16 +16,16 @@ import types
 import pytest
 from pypdf import PdfWriter
 
-from trentina.preprocess.base import PreProcessContext
-from trentina.preprocess.detect import (
+from trentina.transforms.base import Applied, Cost, Declined, TransformContext, TransformRecord
+from trentina.transforms.detect import (
     DetectProcessor,
     Format,
     detect,
     document_hidden,
     hiding_removed,
 )
-from trentina.preprocess.pdf import PdfProcessor
-from trentina.preprocess.structured import StructuredProcessor
+from trentina.transforms.pdf import PdfProcessor
+from trentina.transforms.structured import StructuredProcessor
 from trentina.unpack import child, pdf_worker
 from trentina.unpack import pdf as pdf_reader
 from trentina.unpack.pdf import _checked, read_pdf
@@ -366,20 +366,22 @@ class TestStageOneReducer:
             show("Second page text."),
             annotations=[{"URI": "https://example.com/next"}],
         )
-        result = await PdfProcessor().run(b64(file), PreProcessContext("test"))
-        assert result.applied
+        result = await PdfProcessor().run(b64(file), TransformContext("test"))
+        assert isinstance(result, Applied)
         assert result.content == (
             "Quarterly report for the storage team.\n\nSecond page text.\n\n"
             "Links:\n- https://example.com/next"
         )
         assert result.details == {"pdf_converted": 1, "pdf_hidden": 1}
-        assert hiding_removed([result]) == 1
-        assert document_hidden([result]) == 1
+        record = TransformRecord.of("pdf", Cost.FREE, b64(file), result)
+        assert hiding_removed([record]) == 1
+        assert document_hidden([record]) == 1
 
     @pytest.mark.asyncio
     async def test_what_was_left_out_is_said(self) -> None:
         file = pdf(_SHOWN, "", image=True, attachments={"notes.txt": b"attached"})
-        result = await PdfProcessor().run(b64(file), PreProcessContext("test"))
+        result = await PdfProcessor().run(b64(file), TransformContext("test"))
+        assert isinstance(result, Applied)
         assert (
             "[1 page(s) of this PDF are images with no text and were not read.]" in result.content
         )
@@ -392,9 +394,8 @@ class TestStageOneReducer:
         ids=["text", "corrupt", "zip"],
     )
     async def test_anything_else_is_declined(self, payload: str) -> None:
-        result = await PdfProcessor().run(payload, PreProcessContext("test"))
-        assert not result.applied
-        assert result.content == payload
+        result = await PdfProcessor().run(payload, TransformContext("test"))
+        assert isinstance(result, Declined)
 
     def test_a_declared_or_bare_pdf_is_detected(self) -> None:
         token = b64(pdf(_SHOWN))
@@ -405,16 +406,17 @@ class TestStageOneReducer:
 
     @pytest.mark.asyncio
     async def test_detect_runs_the_pdf_chain(self) -> None:
-        ctx = PreProcessContext("test", content_type="application/pdf")
+        ctx = TransformContext("test", content_type="application/pdf")
         result = await DetectProcessor().run(b64(pdf(show(_NOTE))), ctx)
-        assert result.applied
+        assert isinstance(result, Applied)
         assert result.content == _NOTE
         assert result.details["format"] == "pdf"
 
     @pytest.mark.asyncio
     async def test_a_base64_pdf_in_a_json_field_is_reduced(self) -> None:
         document = {"name": "report.pdf", "data": b64(pdf(_SHOWN + _UNSEEN["render-mode-3"]))}
-        result = await StructuredProcessor().run(json.dumps(document), PreProcessContext("test"))
+        result = await StructuredProcessor().run(json.dumps(document), TransformContext("test"))
+        assert isinstance(result, Applied)
         assert json.loads(result.content) == {
             "name": "report.pdf",
             "data": {"format": "pdf", "as_markdown": "Quarterly report for the storage team."},

@@ -50,13 +50,24 @@ class _Homeserver:
         return sum("/room_keys/keys/" in p for p in self.requests)
 
 
+def _send_via(client: httpx.AsyncClient) -> Any:
+    """Wrap a MockTransport client as the provider's injected sender: a streaming
+    GET, as the production pin-before-send sender returns (the caller reads and
+    closes it)."""
+
+    async def send(method: str, url: str, headers: dict[str, str]) -> httpx.Response:
+        return await client.send(client.build_request(method, url, headers=headers), stream=True)
+
+    return send
+
+
 def _provider(hs: _Homeserver, *, recovery_key: str | None = None, **kw: Any):
     client = httpx.AsyncClient(transport=hs.transport())
     return KeyBackupProvider(
         homeserver="https://hs.invalid",
         access_token="tok",
         recovery_key=recovery_key or hs.v.recovery_key,
-        client=client,
+        send=_send_via(client),
         **kw,
     )
 
@@ -146,7 +157,7 @@ class TestFetchDiscipline:
             homeserver="https://hs.invalid",
             access_token="tok",
             recovery_key=v.recovery_key,
-            client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+            send=_send_via(httpx.AsyncClient(transport=httpx.MockTransport(handle))),
         )
         await p.start()
         assert await p.session_for(v.room_id, v.session_id) is None

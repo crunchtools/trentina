@@ -107,7 +107,7 @@ from petit.Filter import Filter
 from ..channels import Channel, Kind
 from ..unpack.child import run_unpacking
 from ..unpack.office import reduce_base64
-from .base import Cost, PreProcessContext, PreProcessResult
+from .base import Applied, Cost, Declined, Failed, TransformContext, TransformResult
 from .pdf import reduce_base64 as reduce_pdf
 from .petit import _MIN_BYTES as _MIN_LOG_CHARS
 from .petit import _MIN_LINES as _MIN_LOG_LINES
@@ -339,18 +339,20 @@ class _Reducer:
             self.logs_failed += 1
             self.log_error = type(exc).__name__
             return node
-        details = result.details
-        if details.get("declined") == "petit_error":
+        if isinstance(result, Failed) and result.reason == "petit_error":
             self.logs_failed += 1
             # petit.py reports the exception's class. Held to that shape
             # here, so a message can never ride out in the details (#262).
-            error = str(details.get("error", ""))
+            error = str(result.details.get("error", ""))
             self.log_error = error if error.isidentifier() else "PetitError"
+        if not isinstance(result, Applied):
+            return node
+        details = result.details
         # Degraded is a log too: a driver claimed the value and then met a
         # line it could not parse, so petit grouped the whole of it
         # structurally.
         named = details.get("petit_driver") != _RAW_DRIVER or details.get("petit_degraded")
-        if not (result.applied and named):
+        if not named:
             return node
         self.logs_reduced += 1
         self.log_lines_in += int(details["lines_in"])
@@ -514,29 +516,37 @@ class _Lister:
         return [k for i, k in enumerate(kept) if i not in empty]
 
 
-def _parse_and_reduce(payload: str, *, truncate: bool) -> tuple[str | None, _Reducer, str]:
-    """Parse, reduce, re-serialize. Returns (text, reducer, decline_reason)."""
+def _parse_and_reduce(payload: str, *, truncate: bool) -> Declined | tuple[str, _Reducer]:
+    """Parse, reduce, re-serialize. Returns the reduced text and its reducer,
+    or a ``Declined`` naming why nothing was reduced.
+
+    Every outcome here is a shape decline, named by the producer rather than a
+    reason string the caller reclassifies: a document that is not JSON, a
+    bare scalar, nesting too deep to walk, or nothing repetitive to collapse.
+    An operational failure (a worker crash) raises instead and becomes
+    ``Failed`` at the composition, so a required ``structured`` fails closed.
+    """
     reducer = _Reducer(truncate=truncate)
     try:
         document = json.loads(payload)
     except (ValueError, RecursionError):
-        return None, reducer, "not_json"
+        return Declined("not_json")
 
     # A bare scalar is JSON but has nothing to reduce.
     if not isinstance(document, (list, dict)):
-        return None, reducer, "not_json"
+        return Declined("not_json")
 
     try:
         reduced = reducer.walk(document)
     except RecursionError:
-        return None, reducer, "too_deep"
+        return Declined("too_deep")
 
     # Serializable by construction: everything in `reduced` came out of
     # json.loads or is a marker string this module wrote.
     text = json.dumps(reduced, separators=(",", ":"), ensure_ascii=False)
     if not reducer.changed and len(text.encode("utf-8")) >= len(payload.encode("utf-8")):
-        return None, reducer, "nothing_repetitive"
-    return text, reducer, ""
+        return Declined("nothing_repetitive")
+    return text, reducer
 
 
 class StructuredProcessor:
@@ -547,51 +557,34 @@ class StructuredProcessor:
     channels = frozenset({Channel.TOOL})
     kind = Kind.TEXT
 
-    async def run(self, payload: str, ctx: PreProcessContext) -> PreProcessResult:
+    async def run(self, payload: str, ctx: TransformContext) -> TransformResult:
         bytes_in = len(payload.encode("utf-8"))
 
         if bytes_in > _MAX_PARSE_BYTES:
-            return PreProcessResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="too_large",
-            )
+            # Like html: a required reducer cannot excuse itself on size, so
+            # this is a Failure a floor refuses rather than a shape decline.
+            return Failed("too_large")
 
         # Cheap gate before spending a parse: JSON documents worth reducing
         # start with a bracket.
         stripped = payload.lstrip()
         if not stripped or stripped[0] not in "[{":
-            return PreProcessResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="not_json",
-            )
+            return Declined("not_json")
 
         over_budget = ctx.target_bytes is not None and bytes_in > ctx.target_bytes
         # A field holding a PDF is read by a worker process (#383).
-        text, reducer, reason = await run_unpacking(
-            partial(_parse_and_reduce, payload, truncate=over_budget)
-        )
-        if text is None:
-            return PreProcessResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason=reason,
-            )
+        outcome = await run_unpacking(partial(_parse_and_reduce, payload, truncate=over_budget))
+        if isinstance(outcome, Declined):
+            return outcome
+        text, reducer = outcome
 
         bytes_out = len(text.encode("utf-8"))
         if bytes_in > 0 and bytes_out >= bytes_in:
             # See petit.py: the ratio is measured, so report it rather than
             # collapse every near-miss and every no-hoper into one word.
-            return PreProcessResult.declined(
-                self.name,
-                self.cost,
-                payload,
-                reason="not_smaller",
-                details={
+            return Declined(
+                "not_smaller",
+                {
                     "would_be_bytes": bytes_out,
                     "would_be_ratio": round(bytes_out / bytes_in, 4),
                     "groups_collapsed": reducer.groups_collapsed,
@@ -599,14 +592,9 @@ class StructuredProcessor:
                 },
             )
 
-        return PreProcessResult(
-            name=self.name,
-            cost=self.cost,
-            content=text,
-            applied=True,
-            bytes_in=bytes_in,
-            bytes_out=bytes_out,
-            details={
+        return Applied(
+            text,
+            {
                 "groups_collapsed": reducer.groups_collapsed,
                 "elements_dropped": reducer.elements_dropped,
                 "groups_listed": reducer.groups_listed,

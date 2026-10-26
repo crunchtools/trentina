@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import pytest
 
-from trentina.preprocess import (
+from trentina.transforms import (
+    Applied,
     Cost,
+    Declined,
     EmailProcessor,
-    PreProcessContext,
-    PreProcessResult,
+    TransformContext,
+    TransformResult,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -39,25 +41,27 @@ def _thread(depth: int = 6, body_lines: int = 12) -> str:
     return "\n".join(lines)
 
 
-async def _run(payload: str) -> PreProcessResult:
-    return await EmailProcessor().run(payload, PreProcessContext())
+async def _run(payload: str) -> TransformResult:
+    return await EmailProcessor().run(payload, TransformContext())
 
 
 class TestEmailReduction:
     async def test_collapses_quoted_chain(self) -> None:
         result = await _run(_thread())
-        assert result.applied
+        assert isinstance(result, Applied)
         assert result.details["quoted_lines_dropped"] > 0
         assert "[email]" in result.content
 
     async def test_keeps_the_new_message(self) -> None:
         """The part the reader actually wants is the unquoted top."""
         result = await _run(_thread())
+        assert isinstance(result, Applied)
         assert "Agreed, let us go with the second option." in result.content
 
     async def test_keeps_the_head_of_each_quote(self) -> None:
         """Enough quotation to see what is being answered, not all of it."""
         result = await _run(_thread())
+        assert isinstance(result, Applied)
         assert "> On Sep 1, 2026, someone wrote:" in result.content
 
     async def test_strips_signature(self) -> None:
@@ -77,7 +81,7 @@ class TestEmailReduction:
             + [f"Legal disclaimer line {i}" for i in range(12)]
         )
         result = await _run(payload)
-        assert result.applied
+        assert isinstance(result, Applied)
         assert "The actual message." in result.content
         assert "Legal disclaimer line 5" not in result.content
         assert result.details["signature_lines_dropped"] > 0
@@ -92,15 +96,14 @@ class TestDoesNotDeleteTheWrongThing:
             f"An ordinary sentence number {i} with no mail shape at all." for i in range(60)
         )
         result = await _run(prose)
-        assert not result.applied
-        assert result.details["declined"] == "not_email"
-        assert result.content == prose
+        assert isinstance(result, Declined)
+        assert result.reason == "not_email"
 
     async def test_one_angle_bracket_does_not_qualify(self) -> None:
         """A single quoted line in prose is a citation, not a thread."""
         payload = "\n".join([f"Ordinary line {i}." for i in range(40)] + ["> a single quoted line"])
         result = await _run(payload)
-        assert not result.applied
+        assert isinstance(result, Declined)
 
     async def test_short_quote_survives_intact(self) -> None:
         payload = "\n".join(
@@ -116,8 +119,9 @@ class TestDoesNotDeleteTheWrongThing:
             + [f"Further thoughts line {i}." for i in range(30)]
         )
         result = await _run(payload)
-        assert not result.applied
-        assert "> the one line being answered" in result.content
+        assert isinstance(result, Declined)
+        delivered = result.content if isinstance(result, Applied) else payload
+        assert "> the one line being answered" in delivered
 
     async def test_crafted_signature_cannot_swallow_the_message(self) -> None:
         """An attacker who can place "-- " must not be able to suppress an
@@ -132,6 +136,7 @@ class TestDoesNotDeleteTheWrongThing:
             + [f"victim line {i}" for i in range(200)]
         )
         result = await _run(payload)
+        assert isinstance(result, Applied)
         survivors = [i for i in range(200) if f"victim line {i}" in result.content]
         assert survivors, "the bound must leave the tail of the message intact"
         assert len(survivors) >= 150
@@ -139,13 +144,12 @@ class TestDoesNotDeleteTheWrongThing:
     async def test_declining_returns_input_untouched(self) -> None:
         payload = "\n".join(f"line {i}" for i in range(40))
         result = await _run(payload)
-        assert result.content == payload
-        assert result.bytes_in == result.bytes_out
+        assert isinstance(result, Declined)
 
     async def test_short_payload_declines(self) -> None:
         result = await _run("From: a@b.com\nTo: c@d.com\n> quoted")
-        assert not result.applied
-        assert result.details["declined"] == "not_line_structured"
+        assert isinstance(result, Declined)
+        assert result.reason == "not_line_structured"
 
 
 class TestProperties:
@@ -159,7 +163,7 @@ class TestProperties:
         delivered, so it cannot carry anything to the agent."""
         payload = _thread(depth=2, body_lines=30)
         result = await _run(payload)
-        assert result.applied
+        assert isinstance(result, Applied)
         assert "Message 1 body line 25" not in result.content
 
     async def test_counts_account_for_what_was_dropped(self) -> None:
@@ -179,4 +183,4 @@ class TestProperties:
             + [f"{'> ' * 40}nested line {i}" for i in range(40)]
         )
         result = await _run(payload)
-        assert isinstance(result, PreProcessResult)
+        assert isinstance(result, TransformResult)

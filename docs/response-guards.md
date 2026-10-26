@@ -69,7 +69,7 @@ Tool in allowlist? → Parameter guards → Backend call → Response guards →
 
 Two properties of that position are deliberate:
 
-**Before pre-processing.** [Pre-processors](token-routing.md#defense-pipeline-interaction) collapse, summarize and paraphrase. A guard reading the transformed artifact would be matching text a model rewrote, and a literal the operator forbade could be dissolved on the way past. The guard reads the bytes the backend actually sent.
+**Before pre-processing.** [Transforms](token-routing.md#defense-pipeline-interaction) collapse, summarize and paraphrase. A guard reading the transformed artifact would be matching text a model rewrote, and a literal the operator forbade could be dissolved on the way past. The guard reads the bytes the backend actually sent.
 
 **On internal backends too.** Internal (`internal://`) backends skip pre-processing and the defense scan, because the firewall already filtered that content where it *entered*. Egress policy is a different question — it is about who is asking, and the asker is the same either way — so response guards run regardless.
 

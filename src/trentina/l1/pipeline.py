@@ -5,7 +5,7 @@ is handed. The ``looks_like_html`` dispatch that used to choose between an
 HTML pipeline and a text pipeline is gone: it matched a leading ``<!DOCTYPE``
 or ``<html>``, so an HTML FRAGMENT took the text path, and identical bytes
 received two different security behaviours depending on their first few
-characters. Conversion now belongs to ``preprocess/html.py``, which declines
+characters. Conversion now belongs to ``transforms/html.py``, which declines
 on what it cannot parse instead of asking whether anything "is HTML", and
 hidden-markup fingerprints are counted by an ordinary stage that runs on
 every payload. See ``l1/hidden.py`` for the two tiers.
