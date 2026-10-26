@@ -37,7 +37,10 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 API = "https://rest.runpod.io/v1/pods"
 GPU = "NVIDIA GeForce RTX 4090"
@@ -49,6 +52,9 @@ CREATE_FOR_SECONDS = 600
 READY_FOR_SECONDS = 600
 POLL_SECONDS = 15
 WATCHDOG_SECONDS = 7200
+SSH_ATTEMPTS = 5
+"""Run 40260690102 trained, then lost the download to one connect timeout."""
+SSH_UNREACHABLE = 255
 REMOTE = "/workspace/w"
 MODEL_DIR = "build/l2-model"
 HOST_ALIAS = "trentina-l2-pod"
@@ -258,6 +264,28 @@ def upload(ssh: list[str], paths: list[str]) -> bool:
     return packer.wait() == 0
 
 
+def again_if_unreachable(step: Callable[[], Any]) -> Any:
+    """Repeat ``step`` while ssh cannot connect (exit 255); for steps safe to repeat."""
+    for attempt in range(1, SSH_ATTEMPTS + 1):
+        try:
+            return step()
+        except subprocess.CalledProcessError as e:
+            if e.returncode != SSH_UNREACHABLE or attempt == SSH_ATTEMPTS:
+                raise
+            print(
+                f"ssh unreachable on {e.cmd[-1]!r}, attempt {attempt} of {SSH_ATTEMPTS}",
+                file=sys.stderr,
+            )
+            time.sleep(POLL_SECONDS)
+    return None
+
+
+def fetch(ssh: list[str], archive: Path) -> None:
+    """Write the pod's MODEL_DIR to ``archive`` as a tar, whole or not at all."""
+    with archive.open("wb") as out:
+        subprocess.run([*ssh, f"tar cf - -C {REMOTE} {MODEL_DIR}"], stdout=out, check=True)
+
+
 def run(host: str, port: str, epochs: float) -> int:
     """Ship the scripts and training set, train on the pod, bring MODEL_DIR back.
 
@@ -265,12 +293,11 @@ def run(host: str, port: str, epochs: float) -> int:
     ``CalledProcessError`` and a tampered archive ``ValueError``.
     """
     ssh = ssh_base(host, port)
-    if not upload(ssh, ["scripts", "build/l2-train"]):
+    if not again_if_unreachable(lambda: upload(ssh, ["scripts", "build/l2-train"])):
         return 1
     subprocess.run([*ssh, "bash -s"], input=remote_script(epochs).encode(), check=True)
     archive = runner_temp() / "l2-model.tar"
-    with archive.open("wb") as out:
-        subprocess.run([*ssh, f"tar cf - -C {REMOTE} {MODEL_DIR}"], stdout=out, check=True)
+    again_if_unreachable(lambda: fetch(ssh, archive))
     unpack_model(archive, Path.cwd())
     return 0
 

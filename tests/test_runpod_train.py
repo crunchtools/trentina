@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import shutil
+import subprocess
 import tarfile
 import urllib.error
 import urllib.request
@@ -212,3 +213,30 @@ def test_create_waits_out_a_busy_api_then_proceeds(
     monkeypatch.setattr(runpod_train, "ssh_base", lambda *_: [shutil.which("true") or "true"])
     assert runpod_train.create() == 0
     assert (tmp_path / "env").read_text() == "POD_ID=p1\nPOD_HOST=192.0.2.1\nPOD_PORT=10802\n"
+
+
+def test_unreachable_ssh_is_tried_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runpod_train.time, "sleep", lambda _: None)
+    attempts: list[int] = []
+
+    def flaky() -> str:
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise subprocess.CalledProcessError(runpod_train.SSH_UNREACHABLE, ["ssh"])
+        return "fetched"
+
+    assert runpod_train.again_if_unreachable(flaky) == "fetched"
+    assert len(attempts) == 3
+
+
+def test_a_failing_remote_command_is_not_repeated(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runpod_train.time, "sleep", lambda _: None)
+    attempts: list[int] = []
+
+    def fails() -> None:
+        attempts.append(1)
+        raise subprocess.CalledProcessError(2, ["ssh"])
+
+    with pytest.raises(subprocess.CalledProcessError):
+        runpod_train.again_if_unreachable(fails)
+    assert len(attempts) == 1
