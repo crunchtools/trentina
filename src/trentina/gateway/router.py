@@ -640,6 +640,17 @@ async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[
             return await _discovery_call(
                 profile, req_id, name, {} if arguments is None else arguments
             )
+        if profile.orchestrated:
+            # Phase 4 cutover flag: one profile rides the orchestrator while the
+            # rest stay here, for byte-identical verification. The crossing
+            # composes the same collaborators this path does (transports/mcp.py).
+            from ..orchestrator import crossing
+            from ..transports.mcp import McpCrossing, mcp_transport
+
+            crossed: dict[str, Any] = await crossing(
+                mcp_transport, McpCrossing(profile, req_id, params)
+            )
+            return crossed
         return await _tools_call(profile, req_id, params)
     except Exception as exc:
         if not _call_audited.get():
