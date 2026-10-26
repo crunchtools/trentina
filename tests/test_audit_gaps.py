@@ -18,6 +18,7 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
+from tests.refusal_shape import refused, refused_text
 from trentina.client import fetch_url
 from trentina.database import get_db, issue_tool_names
 from trentina.errors import QuarantineAgentError, SearchCanaryLeakedError
@@ -169,11 +170,11 @@ class TestFetchAdvisory:
                     "arguments": {"url": "https://x.example/"},
                 },
             )
-        data = resp["error"]["data"]
+        data = refused(resp)
         assert data["reason"] == "security advisory (suspicious_http_415)"
         assert data["security_advisory"]["pattern"] == "suspicious_http_415"
         assert data["alternatives"] == []
-        assert "curl" in resp["error"]["message"], "the text says what not to do, too"
+        assert "curl" in refused_text(resp), "the text says what not to do, too"
         assert _rows() == [("web", "fetch_tool", "blocked_defense")]
         emitted.assert_called_once()
         assert emitted.call_args.kwargs["disposition"] == "refused"
@@ -201,5 +202,5 @@ class TestSearchFailures:
                 _profile(),
                 {"name": f"web{NAMESPACE_SEP}search_tool", "arguments": {"query": "q"}},
             )
-        assert resp["error"]["data"]["flagged_by"] == "l0"
+        assert refused(resp)["flagged_by"] == "l0"
         assert _rows() == [("web", "search_tool", "blocked_defense")]

@@ -256,7 +256,7 @@ async def test_a_decoy_refuses_what_a_real_tool_refuses_and_trips_anyway(
 ) -> None:
     decoy = await _rpc("tools/call", {"name": "host__send_email", "arguments": extra})
     real = await _rpc("tools/call", {"name": "tickets__comment", "arguments": extra})
-    assert decoy["error"] == real["error"]
+    assert decoy["result"] == real["result"]
     assert [row[2] for row in list(map(tuple, get_db().execute(AUDITED)))] == [
         "decoy_tripped",
         "denied_guard",

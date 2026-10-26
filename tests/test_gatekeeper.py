@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import SecretStr, ValidationError
 
+from tests.refusal_shape import refused, refused_text
 from trentina.database import has_sent_to, record_gateway_call
 from trentina.errors import QuarantineAgentError
 from trentina.gateway import gatekeeper, session_marks
@@ -568,8 +569,8 @@ class TestRouter:
         ):
             resp = await route_jsonrpc(_profile(), _call("send_message"))
         backend.assert_not_awaited()
-        assert resp["error"]["code"] == -32602
-        assert resp["error"]["message"] == "Refused by guarded execution: bulk_private_data"
+        assert refused(resp)
+        assert refused_text(resp).endswith("Refused by guarded execution: bulk_private_data")
         ((args, kwargs),) = audits
         assert args[3] is Outcome.DENIED_GATEKEEPER
         assert "first_contact=yes" in args[5]
@@ -609,7 +610,7 @@ class TestRouter:
             patch("trentina.gateway.router._audit"),
         ):
             resp = await route_jsonrpc(p, _call("send_message"))
-        assert "not in allow list" in resp["error"]["message"]
+        assert "not in allow list" in refused_text(resp)
         judge.defend.assert_not_awaited()
 
     async def test_a_flagged_delivery_marks_the_session_the_next_call_reads(self) -> None:

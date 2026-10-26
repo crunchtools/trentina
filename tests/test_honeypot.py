@@ -17,6 +17,7 @@ import httpx
 import pytest
 from pydantic import SecretStr, ValidationError
 
+from tests import refusal_shape
 from trentina import database
 from trentina.client import fetch_url
 from trentina.database import get_db
@@ -123,7 +124,8 @@ async def test_an_error_page_that_carries_an_attack_is_kept_and_not_explained(
             response = await route_jsonrpc(
                 profile, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": FETCH}
             )
-        return str(response["error"])
+        # A honeypot gets the backend's plain error; anyone else the refusal.
+        return str(response.get("error") or refusal_shape.refused(response))
 
     explained = await refused(_profile(honeypot=False))
     plain = await refused(_profile())

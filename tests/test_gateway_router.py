@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import SecretStr
 
+from tests.refusal_shape import refused, refused_text
 from trentina.database import get_gateway_call_stats
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.circuit import breaker
@@ -536,9 +537,8 @@ class TestRouter:
                 },
             )
 
-            assert "result" not in resp
-            assert resp["error"]["code"] == -32602
-            assert secret not in resp["error"]["message"]
+            assert refused(resp)
+            assert secret not in refused_text(resp)
             mock_transform.assert_not_called()
             mock_scan.assert_not_called()
 
@@ -677,8 +677,8 @@ class TestRouter:
                 },
             },
         )
-        assert resp["error"]["code"] == -32602
-        assert "not in allow list" in resp["error"]["message"]
+        assert refused(resp)
+        assert "not in allow list" in refused_text(resp)
 
     async def test_tools_call_allowed_guarded_parameter_passes(self) -> None:
         """Parameter guard allows a call with a permitted argument value."""
@@ -1407,8 +1407,8 @@ class TestArgumentHygiene:
         resp, seen, row = await self._call(tmp_path, "save_output", {"content": "x", "priority": 0})
 
         assert seen is None
-        assert resp["error"]["code"] == -32602
-        assert "priority below minimum 1" in resp["error"]["message"]
+        assert refused(resp)
+        assert "priority below minimum 1" in refused_text(resp)
         assert row["outcome"] == "tool_error"
         assert breaker._get(url).consecutive_failures == 0
 
@@ -1418,7 +1418,7 @@ class TestArgumentHygiene:
         )
 
         assert seen is None
-        assert resp["error"]["code"] == -32602
+        assert refused(resp)
         assert json.loads(row["normalized"]) == {"run_id": "dropped: empty"}
 
     @pytest.mark.parametrize(
@@ -1437,9 +1437,9 @@ class TestArgumentHygiene:
         resp, seen, row = await self._call(tmp_path, "image_prune_tool", arguments)
 
         assert seen is None
-        assert resp["error"]["code"] == -32602
-        assert "filters matches no allowed form" in resp["error"]["message"]
-        assert "720h" not in resp["error"]["message"]
+        assert refused(resp)
+        assert "filters matches no allowed form" in refused_text(resp)
+        assert "720h" not in refused_text(resp)
         assert row["outcome"] == "tool_error"
         assert breaker._get(url).consecutive_failures == 0
 
@@ -1450,7 +1450,7 @@ class TestArgumentHygiene:
             resp, seen, _row = await self._call(tmp_path, "delete_entries", {"limit": 0})
 
         assert seen is None
-        assert "limit below minimum 1" in resp["error"]["message"]
+        assert "limit below minimum 1" in refused_text(resp)
 
     async def test_empty_optionals_on_a_writing_tool_are_still_dropped(self, tmp_path: Any) -> None:
         resp, seen, row = await self._call(
@@ -1481,7 +1481,7 @@ class TestArgumentHygiene:
         )
 
         assert seen is None
-        assert resp["error"]["code"] == -32602
+        assert refused(resp)
         assert row["outcome"] == "denied_guard"
 
     async def test_guards_judge_the_forwarded_arguments(self, tmp_path: Any) -> None:

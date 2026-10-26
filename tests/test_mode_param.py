@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import SecretStr, ValidationError
 
+from tests.refusal_shape import refused, refused_text
 from trentina.config import get_config
 from trentina.errors import ConfigError, ModeNotPermittedError
 from trentina.gateway.backend import BackendCall
@@ -374,8 +375,8 @@ class TestRouter:
             _profile(["block", "redact"]),
             {"issue_key": "X-1", MODE_PARAM: "redact", PROMPT_PARAM: "the summary"},
         )
-        assert resp["error"]["code"] == -32602
-        assert "no longer exists" in resp["error"]["message"]
+        assert refused(resp)
+        assert "no longer exists" in refused_text(resp)
         assert forwarded == {}
         scan.assert_not_called()
 
@@ -387,8 +388,8 @@ class TestRouter:
         resp, forwarded, scan = await self._call(
             _profile(["block", "redact"]), {"issue_key": "X-1", MODE_PARAM: "flag"}
         )
-        assert resp["error"]["code"] == -32602
-        assert MODE_PARAM in resp["error"]["message"]
+        assert refused(resp)
+        assert MODE_PARAM in refused_text(resp)
         assert forwarded == {}
         scan.assert_not_called()
 
@@ -401,7 +402,7 @@ class TestRouter:
             IngressDecision(warning={"flagged_by": "L3"}, blocked=True, refusal=refusal),
         )
         result = resp["result"]
-        assert result["isError"] is True
+        assert result["isError"] is False
         assert result["_trentina_refusal"] == refusal
         assert f'{MODE_PARAM}={{"redact": "<what you need>"}}' in result["content"][0]["text"]
 
@@ -516,11 +517,11 @@ class TestInternalBackend:
                 },
             },
         )
-        data = resp["error"]["data"]
+        data = refused(resp)
         assert data["mode"] == "block"
         assert data["flagged_by"]
         assert data["alternatives"] == ["redact"]
-        assert f'{MODE_PARAM}={{"redact": "<what you need>"}}' in resp["error"]["message"]
+        assert f'{MODE_PARAM}={{"redact": "<what you need>"}}' in refused_text(resp)
         assert "ignore previous" not in str(resp), "payload text leaked into the refusal"
 
 
@@ -590,7 +591,7 @@ async def test_a_mode_guard_refuses_at_call_even_when_the_mode_is_omitted() -> N
                     },
                 },
             )
-            assert resp["error"]["code"] == -32602, arguments
+            assert refused(resp), arguments
     call.assert_not_called()
 
 

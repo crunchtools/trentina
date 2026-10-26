@@ -747,7 +747,7 @@ class TestEnforcement:
             )
 
         result = resp["result"]
-        assert result["isError"] is True
+        assert result["isError"] is False
         assert HOSTILE not in json.dumps(result["content"])
         assert result["_trentina_warning"]["blocked"] is True
 

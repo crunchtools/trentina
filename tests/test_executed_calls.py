@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
+from tests.refusal_shape import refused, refused_text
 from trentina.gateway.backend import BackendCall, _tool_list_cache
 from trentina.gateway.errors import BackendResponseTooLargeError
 from trentina.gateway.ingress_defense import IngressDecision
@@ -131,7 +132,7 @@ class TestBlockedResponse:
     async def test_a_read_only_tool_is_refused_as_before(self) -> None:
         resp, _, _ = await _call(SEARCH)
         result = resp["result"]
-        assert result["isError"] is True
+        assert result["isError"] is False
         assert result["content"][0]["text"].startswith("[TRENTINA] Refused (flagged by L2).")
         assert result["_trentina_refusal"] == FLAGGED
 
@@ -160,7 +161,7 @@ class TestOtherWithheldResponses:
         assert audit.call_args.args[3] is Outcome.DENIED_RESPONSE_GUARD
 
         resp, _, _ = await _call(SEARCH, profile=profile)
-        assert resp["error"]["code"] == -32602
+        assert refused(resp)
 
     async def test_a_response_over_the_byte_cap(self) -> None:
         too_big = BackendResponseTooLargeError("cut", cap_bytes=1024)
@@ -174,7 +175,7 @@ class TestOtherWithheldResponses:
         assert audit.call_args.args[3] is Outcome.BLOCKED_DEFENSE
 
         resp, _, _ = await _call(SEARCH, answer=BackendResponseTooLargeError("cut", cap_bytes=1024))
-        assert resp["error"]["message"].startswith("[TRENTINA] Refused")
+        assert refused_text(resp).startswith("[TRENTINA] Refused")
 
     async def test_a_required_pre_processor_that_fails(self) -> None:
         profile = _profile()

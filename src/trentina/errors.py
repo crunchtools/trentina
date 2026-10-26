@@ -138,10 +138,10 @@ class SearchCanaryLeakedError(QuarantineAgentError):
 class BlockedSourceError(TrentinaError):
     """Refused: flagged, not fully judged, or on the blocklist.
 
-    ``refusal`` is the structured body the gateway hands the agent as
-    JSON-RPC ``error.data``: why, which layer or gap, and the modes this
-    caller may try next. Gateway-authored fields only — never payload text,
-    never L3 prose.
+    ``refusal`` is the structured body the gateway hands the agent under
+    ``_trentina_refusal`` of an ordinary tool result (``router._refused``):
+    why, which layer or gap, and the modes this caller may try next.
+    Gateway-authored fields only — never payload text, never L3 prose.
     """
 
     def __init__(self, source: str, reason: str, *, refusal: dict[str, Any] | None = None) -> None:

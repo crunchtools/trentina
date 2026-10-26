@@ -59,7 +59,7 @@ Before 0.35.0, `flag` was `warn` and `redact` was `clean`. The old names were ac
 
 ### Refusals name what to try next
 
-A refusal carries a structured body — JSON-RPC `error.data` for these tools, `_trentina_refusal` for a proxied response — and the same thing as one line of text for clients that strip structured fields:
+Behind the gateway a refusal is an ordinary tool result: `isError` false, one `[TRENTINA] Refused (...)` line of text an agent reads first, and the structured body under `_trentina_refusal`. It is not a JSON-RPC error and not `isError`, because stock agent clients count either as a strike against the server, and every tool behind the gateway is one server: three refusals in a row and hermes-agent paused all of an agent's tools as "unreachable" (2026-10-26). A JSON-RPC error is kept for a request that is malformed (params that are not an object, an unknown tool), which is the client's bug. The body:
 
 ```json
 {"reason": "flagged by L3", "mode": "block", "flagged_by": "L3", "alternatives": ["redact"]}

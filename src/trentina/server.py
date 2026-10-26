@@ -246,7 +246,7 @@ async def read_part_tool(
         part's text, a [TRENTINA] line with the next call) and
         ``_trentina_part`` with ``part``, ``parts``, ``delivered`` and, until
         the last part, ``handle`` and ``next``. A part that is refused: one
-        text block saying why, ``isError`` true, ``_trentina_refusal`` and
+        text block saying why, ``isError`` false, ``_trentina_refusal`` and
         ``_trentina_warning``. With no arguments: ``held``, a list of
         ``handle``, ``tool``, ``parts``, ``delivered`` and
         ``expires_in_seconds``.

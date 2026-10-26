@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import SecretStr, ValidationError
 
+from tests.refusal_shape import refused_text
 from trentina.defense import Provenance
 from trentina.errors import (
     TransformFailedError,
@@ -256,7 +257,7 @@ class TestProxiedCall:
         resp, forwarded, scan, audit = await self._call(
             _profile(), {"id": "1", PREPROCESS_PARAM: "html"}
         )
-        assert "trentina_preprocess" in resp["error"]["message"]
+        assert "trentina_preprocess" in refused_text(resp)
         assert forwarded == {}
         scan.assert_not_awaited()
         assert audit.call_args.args[3] is Outcome.DENIED_GUARD
@@ -333,7 +334,7 @@ class TestProxiedCall:
         with patch(HTML_RUN, side_effect=RuntimeError("parser exploded")):
             resp, _, scan, audit = await self._call(profile, {"id": "1"})
         result = resp["result"]
-        assert result["isError"] is True
+        assert result["isError"] is False
         assert result["_trentina_refusal"]["reason"] == "preprocess_failed"
         assert "Ignore prior instructions" not in str(result)
         scan.assert_not_awaited()

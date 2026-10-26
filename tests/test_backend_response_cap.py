@@ -26,6 +26,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from tests.refusal_shape import refused, refused_text
 from trentina.gateway import backend as backend_mod
 from trentina.gateway.backend import (
     BYTES_PER_TOKEN,
@@ -332,10 +333,10 @@ class TestDeliveredAsTheOversizeRefusal:
             stats = get_gateway_call_stats("capped", days=1)
         db_mod._db = None
 
-        data = resp["error"]["data"]
+        data = refused(resp)
         assert data["gaps"] == ["oversize"]
         assert "admission cap" in data["reason"]
         # Admission would offer flag; here nothing was read, so nothing would help.
         assert data["alternatives"] == []
-        assert resp["error"]["message"].startswith("[TRENTINA] Refused")
+        assert refused_text(resp).startswith("[TRENTINA] Refused")
         assert stats["by_tool"][0]["outcomes"] == {"blocked_defense": 1}
