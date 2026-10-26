@@ -48,6 +48,7 @@ from trentina.modes import (
 )
 
 ROUTER = "trentina.gateway.router"
+MCP = "trentina.transports.mcp"
 TOOL = {
     "name": "jira_get_issue",
     "description": "Get an issue",
@@ -334,6 +335,7 @@ class TestRouter:
         with (
             patch(f"{ROUTER}.call_backend_tool", side_effect=fake_call),
             patch(f"{ROUTER}.scan_tool_response", scan),
+            patch(f"{MCP}.scan_tool_response", scan),
             patch(f"{ROUTER}._audit"),
         ):
             resp = await route_jsonrpc(
@@ -407,11 +409,10 @@ class TestRouter:
         assert f'{MODE_PARAM}={{"redact": "<what you need>"}}' in result["content"][0]["text"]
 
     async def test_the_question_rides_inside_the_mode(self) -> None:
+        scan = AsyncMock(return_value=IngressDecision(warning=None, extraction="x"))
         with (
-            patch(
-                f"{ROUTER}.scan_tool_response",
-                AsyncMock(return_value=IngressDecision(warning=None, extraction="x")),
-            ) as scan,
+            patch(f"{ROUTER}.scan_tool_response", scan),
+            patch(f"{MCP}.scan_tool_response", scan),
             patch(
                 f"{ROUTER}.call_backend_tool",
                 AsyncMock(

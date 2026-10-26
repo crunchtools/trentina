@@ -121,8 +121,11 @@ class TestMalformedCalls:
 
 class TestCatchAll:
     async def test_an_escaped_exception_is_a_gateway_error_row(self) -> None:
+        # ``resolve_call`` runs on the orchestrated request edge
+        # (``transports.mcp`` parse); a bug there escapes every audited path and
+        # lands in ``_route_tools_call``'s outer except as the one gateway_error row.
         with (
-            patch.object(router_mod, "resolve_call", side_effect=RuntimeError("bug")),
+            patch("trentina.transports.mcp.resolve_call", side_effect=RuntimeError("bug")),
             pytest.raises(RuntimeError),
         ):
             await _call(_profile(), {"name": f"web{NAMESPACE_SEP}fetch_tool", "arguments": {}})
@@ -130,20 +133,28 @@ class TestCatchAll:
 
     async def test_a_cancelled_call_is_a_cancelled_row(self) -> None:
         with (
-            patch.object(router_mod, "resolve_call", side_effect=asyncio.CancelledError),
+            patch("trentina.transports.mcp.resolve_call", side_effect=asyncio.CancelledError),
             pytest.raises(asyncio.CancelledError),
         ):
             await _call(_profile(), {"name": f"web{NAMESPACE_SEP}fetch_tool", "arguments": {}})
         assert _rows() == [("", redact_source(f"web{NAMESPACE_SEP}fetch_tool"), "cancelled")]
 
     async def test_a_path_that_audited_before_raising_is_not_counted_twice(self) -> None:
+        # Dispatch returns, then assembly raises: the response edge's
+        # ``McpServerFace._assemble`` is the orchestrated equivalent of the old
+        # ``router._assemble_call_result``. Its failure is audited gateway_error
+        # by ``router._audit_assembly_failure`` (deliver's except), which sets the
+        # audited flag so the outer except does not count it a second time.
         with (
             patch.object(
                 router_mod,
                 "_dispatch",
                 return_value=SimpleNamespace(content=[], structured_content=None, is_error=False),
             ),
-            patch.object(router_mod, "_assemble_call_result", side_effect=RuntimeError("bug")),
+            patch(
+                "trentina.transports.mcp.McpServerFace._assemble",
+                side_effect=RuntimeError("bug"),
+            ),
             pytest.raises(RuntimeError),
         ):
             await _call(

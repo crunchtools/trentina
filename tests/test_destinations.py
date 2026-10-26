@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import SecretStr, ValidationError
@@ -258,14 +258,17 @@ async def test_fetch_search_and_a_declared_tool_are_recorded() -> None:
         return ok
 
     url = "https://docs.example.org/page?id=7"
+    # The orchestrated response edge reaches these as ``transports.mcp.*``;
+    # patch both namespaces with the SAME mock so either path is captured.
+    transform = AsyncMock(side_effect=_passthrough_transform)
+    scan = AsyncMock(side_effect=_clean_scan)
     with (
         patch("trentina.gateway.router.call_internal_tool", side_effect=internal),
         patch("trentina.gateway.router.call_backend_tool", side_effect=remote),
-        patch("trentina.gateway.router.transform_response") as transform,
-        patch("trentina.gateway.router.scan_tool_response") as scan,
+        patch("trentina.transports.mcp.transform_response", transform),
+        patch("trentina.gateway.router.scan_tool_response", scan),
+        patch("trentina.transports.mcp.scan_tool_response", scan),
     ):
-        transform.side_effect = _passthrough_transform
-        scan.side_effect = _clean_scan
         await _call(_slack_and_web(), f"web{NAMESPACE_SEP}fetch_tool", {"url": url})
         await _call(_slack_and_web(), f"web{NAMESPACE_SEP}search_tool", {"query": "rhel 11"})
         await _call(

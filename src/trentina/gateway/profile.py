@@ -2632,16 +2632,14 @@ class Profile(BaseModel):
     )
     orchestrated: bool = Field(
         default=False,
+        deprecated=True,
         description=(
-            "Route this profile's tools/call through the Trentina 3.0 "
-            "orchestrator (crossing/edge) instead of the hand-rolled router "
-            "path. A temporary Phase 4 cutover flag: it lets one profile ride "
-            "the new path for byte-identical verification while others stay on "
-            "the old one, and is removed when every profile is cut over. "
-            "Operator scaffolding: set it in profiles.yaml, not per call. While "
-            "the orchestrated path stays byte-identical no agent can observe the "
-            "flag; the hold against an agent reload flipping it lands with the "
-            "cutover that removes the flag."
+            "DEPRECATED, ignored. Every profile's tools/call now runs through "
+            "the Trentina 3.0 orchestrator (crossing/edge) unconditionally; the "
+            "hand-rolled router path is gone. The field is kept, accepted but "
+            "unread, only so a profiles.yaml that still sets it (as the live "
+            "config did during the Phase 4 cutover) continues to load. Remove "
+            "the key from profiles.yaml, then this field, in a later change."
         ),
     )
     alert_ingress: AlertIngressConfig | None = Field(
