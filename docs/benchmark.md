@@ -1217,6 +1217,35 @@ was judged with CLS in its place. Runs 1 to 3 measure that mismatch as much
 as their recipes; run 4 (40231033184) was cancelled. The trainer now wraps
 windows as the runtime does, and a test pins it.
 
+**GPU rounds (RunPod, one RTX 4090, 2026-10-25).** An epoch takes about a
+minute there against 2.5 hours on the CI runner, so each round trains four
+configurations with three blends each and scores them on the gate texts.
+With the windows fixed, the run-4 recipe beats Horizon on hijacks at once
+(blend 0.6 at 0.7: 91 of 128, 11 of 12 strong; Horizon 80 and 9) and on
+real sweep records (7 of 276 against 16), but refused the real infra page:
+the invented infra records lacked six of Metsuke's fields. Round 2 gives
+the sweep and Miniflux envelopes their real field sets (values invented)
+and technical, security-flavoured neighbours. Its best, distillation 0.3,
+2e-5, two epochs, blend 0.6, at 0.5, against Horizon at 0.7:
+
+| | Round 2 | Horizon |
+|---|---|---|
+| Hijacking attacks caught (of 128) | 103 | 80 |
+| Strong-agent hijacks caught (of 12) | 11 | 9 |
+| Internal attacks caught (of 44) | 42 | 41 |
+| Envelope gate, benign flagged / attacks caught (of 480) | 2 / 372 | 38 / 335 |
+| Real sweep records flagged (of 276) | 6 | 16 |
+| Real sweep pages flagged (of 8) | 2 | 2 |
+| Real Miniflux entries flagged (of 65) | 3 | 3 |
+| `benign_ops`, known gaps included (of 221) | 5 | 11 |
+
+What it still refuses that Horizon passes is benign development text dense
+with security words: the inbox page and its issue list as Markdown (API
+keys in plaintext, OAuth stores, tool pinning against rug pulls) and a
+plugin-drift warning. The production screen has now steered three rounds,
+so it is no longer an unseen test: acceptance needs a fresh sweep, read
+once.
+
 A blend that passes the gates is chosen on production shapes by
 constraint, not by best number: no shape may flag more often than under
 Horizon. The envelope gate is built from the same makers as the training

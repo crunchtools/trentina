@@ -50,6 +50,51 @@ _SERVICES = (
     "TLS Expiry",
 )
 _CHANNELS = ("C04ABCD1234", "C05EFGH5678", "C06IJKL9012")
+_TOPICS = (
+    "token refresh",
+    "OAuth revocation",
+    "TLS certificate rotation",
+    "CVE triage",
+    "prompt-injection classifier threshold",
+    "signing key rollover",
+    "backup retention",
+    "rate limiter",
+    "container image digest pinning",
+    "audit log export",
+    "SSH host key check",
+    "secret scanning",
+)
+_PACKAGES = ("openssl", "glibc", "curl", "libxml2")
+_VERBS = ("Fix", "Docs:", "Add", "Pin", "Harden", "Revert", "Bump", "Test", "Refactor")
+
+
+def _dev_title(r: random.Random) -> str:
+    """An issue or release title of the kind a repo inbox lists: technical,
+    often about security, never an instruction to the reader."""
+    topic = r.choice(_TOPICS)
+    return r.choice(
+        (
+            f"{r.choice(_VERBS)} {topic} for {r.choice(_REPOS)}",
+            f"{topic}: best-effort fallback when the upstream is down",
+            f"{r.choice(_VERBS)} {topic} (follow-up to #{r.randint(10, 600)})",
+            f"CVE-2026-{r.randint(1000, 49999)}: bump {r.choice(_PACKAGES)}",
+        )
+    )
+
+
+def _plugin_output(r: random.Random, state: str) -> str:
+    """A monitoring plugin's one-line output for ``state``."""
+    n = r.randint(1, 95)
+    return r.choice(
+        (
+            f"{state} - {n}% used on /var",
+            f"{state} - await {r.randint(1, 900) / 10}ms on sda",
+            f"{state} - {r.randint(1, 12)} plugins drift from released image",
+            f"{state} - certificate expires in {n} days",
+            f"{state} - last backup {r.randint(1, 72)}h ago",
+            f"{state}: {r.randint(1, 30)} failed logins in 5 minutes",
+        )
+    )
 
 
 def slug(text: str, words: int = 9) -> str:
@@ -208,13 +253,27 @@ def github_comments(r: random.Random, text: str) -> list[dict[str, Any]]:
     return out
 
 
+def _article_html(r: random.Random, site: str, text: str) -> str:
+    """``text`` as a feed item's HTML body: paragraphs, and sometimes a lead
+    image, an inline link and a "Read more" footer, as real feeds send them."""
+    paras = [f"<p>{p}</p>" for p in text.split("\n") if p.strip()]
+    if r.random() < 0.4:
+        img = f"{site}/wp-content/uploads/{r.randint(2024, 2026)}/{_hex(r, 8)}.jpg"
+        paras.insert(0, f'<figure><img src="{img}" alt="" width="1200" height="630"/></figure>')
+    if r.random() < 0.4:
+        paras.append(f'<p>Related: <a href="{site}/{slug(_dev_title(r))}">{_dev_title(r)}</a></p>')
+    if r.random() < 0.5:
+        paras.append(f'<p><a href="{site}/{_hex(r, 6)}" rel="nofollow">Read more</a></p>')
+    return "".join(paras)
+
+
 def miniflux_entry(r: random.Random, text: str) -> dict[str, Any]:
     """``read_entry``: Miniflux's entry with its feed, content = ``text`` as HTML."""
     feed_title, site = r.choice(_FEEDS)
     fid = r.randint(1, 80)
     title = _title(text)
     url = f"{site}/{r.randint(2024, 2026)}/{r.randint(1, 12):02d}/{slug(title)}"
-    html = "".join(f"<p>{p}</p>" for p in text.split("\n") if p.strip())
+    html = _article_html(r, site, text)
     return {
         "id": r.randint(1000, 99999),
         "user_id": 1,
@@ -261,16 +320,14 @@ def sweep_rss_page(r: random.Random, text: str) -> dict[str, Any]:
     only their URL, as Metsuke stores an entry Trentina flagged at collection.
     """
     records = []
-    others = [
-        f"Release notes {r.randint(1, 9)}.{r.randint(0, 20)}" for _ in range(r.randint(2, 30))
-    ]
+    others = [_dev_title(r) for _ in range(r.randint(2, 30))]
     for t in _among(r, text, others):
         feed_title, site = r.choice(_FEEDS)
         withheld = t is not text and r.random() < 0.3
         records.append(
             {
-                "entry_id": str(r.randint(1000, 9999)),
-                "category_id": str(r.randint(1, 7)),
+                "entry_id": r.randint(1000, 9999),
+                "category_id": r.randint(1, 7),
                 "title": None if withheld else _whole(t),
                 "url": f"{site}/{r.randint(2024, 2026)}/{r.randint(1, 12):02d}/{slug(t)}",
                 "feed": None if withheld else feed_title,
@@ -284,7 +341,7 @@ def sweep_rss_page(r: random.Random, text: str) -> dict[str, Any]:
 def sweep_inbox_page(r: random.Random, text: str) -> dict[str, Any]:
     """Metsuke ``get_sweep`` inbox page: issue records, ``text`` the title of one."""
     records = []
-    others = [f"Fix {r.choice(_SERVICES).lower()} check timeout" for _ in range(r.randint(2, 15))]
+    others = [_dev_title(r) for _ in range(r.randint(2, 15))]
     for t in _among(r, text, others):
         repo, n = r.choice(_REPOS), r.randint(1, 600)
         records.append(
@@ -301,9 +358,14 @@ def sweep_inbox_page(r: random.Random, text: str) -> dict[str, Any]:
                 "title": _whole(t),
                 "author": r.choice(_USERS),
                 "opened": _ts(r)[:10],
-                "recommendation": r.choice(("merge", "request changes", "close", None)),
+                "recommendation": r.choice(("merge", "request changes", "close", "")),
                 "repo": repo,
-                "number": str(n),
+                "number": n,
+                "labels": ", ".join(r.sample(_LABELS, r.randint(0, 2))),
+                "closed": _ts(r)[:10],
+                "triaged": _ts(r)[:10],
+                "last_run": _ts(r),
+                "conclusion": r.choice(("success", "failure", "skipped")),
             }
         )
     return _sweep_page(r, "inbox", records)
@@ -312,25 +374,34 @@ def sweep_inbox_page(r: random.Random, text: str) -> dict[str, Any]:
 def sweep_infra_page(r: random.Random, text: str) -> dict[str, Any]:
     """Metsuke ``get_sweep`` infra page: monitoring records, ``text`` one plugin output."""
     records = []
-    others = [f"OK - {r.randint(10, 90)}% used" for _ in range(r.randint(3, 20))]
+    states = ("OK", "WARNING", "CRITICAL", "UNKNOWN")
+    others = [_plugin_output(r, r.choice(states)) for _ in range(r.randint(3, 40))]
     for o in _among(r, text, others):
-        host, svc = r.choice(_HOSTS), r.choice(_SERVICES)
+        host, svc = f"{r.choice(_HOSTS)}.example.org", r.choice(_SERVICES)
         q = f"host={host}&service={svc.replace(' ', '+')}"
+        state, last = r.choice(states), r.choice(states)
         records.append(
             {
                 "host": host,
                 "service": svc,
                 "open_now": r.random() < 0.3,
-                "state_now": r.choice(("OK", "WARNING", "CRITICAL", "UNKNOWN")),
-                "since": _ts(r),
-                "duration": f"{r.randint(0, 9)}d {r.randint(0, 23)}h",
-                "acknowledged": False,
-                "output_now": o,
-                "events": r.randint(0, 80),
-                "counts": {"CRITICAL": r.randint(0, 20), "WARNING": r.randint(0, 40)},
                 "pages": r.randint(0, 3),
+                "events": r.randint(0, 80),
                 "status_url": f"https://monitor.example.org/cgi-bin/extinfo.cgi?type=2&{q}",
                 "history_url": f"https://monitor.example.org/cgi-bin/history.cgi?{q}",
+                "state_now": state,
+                "since": _ts(r),
+                "duration": f"{r.randint(0, 9)}d {r.randint(0, 23)}h",
+                "hard_now": r.random() < 0.5,
+                "acknowledged": r.random() < 0.2,
+                "output_now": o,
+                "counts": {s: r.randint(1, 20) for s in r.sample(states[1:], r.randint(1, 2))},
+                "hard_events": r.randint(0, 20),
+                "first": _ts(r),
+                "last": _ts(r),
+                "last_state": last,
+                "last_output": o if r.random() < 0.5 else _plugin_output(r, last),
+                "last_page": _ts(r),
             }
         )
     return _sweep_page(r, "infra", records)
