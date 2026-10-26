@@ -82,6 +82,7 @@ CORPORA: tuple[Corpus, ...] = (
     Corpus("Agent egress", "egress_bench", OURS, "AGPL-3.0-or-later", VENDORED),
 )
 
-SUPPORT: frozenset[str] = frozenset({"envelopes", "fetch", "registry"})
+SUPPORT: frozenset[str] = frozenset({"envelopes", "fetch", "gateway_read", "registry"})
 """Modules here that hold no corpus. ``envelopes`` wraps other corpora's text
-in tool-reply shapes; it holds no text of its own."""
+in tool-reply shapes and ``gateway_read`` renders a reply as L2 reads it;
+neither holds text of its own."""
