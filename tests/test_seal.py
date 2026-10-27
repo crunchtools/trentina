@@ -38,6 +38,9 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "trentina"
 SEALED: dict[str, tuple[str, str]] = {
     # A ResolvedTarget is proof an address passed egress.check_url.
     "ResolvedTarget": ("reach/egress.py", "check_url"),
+    # A ResolvedPath is proof a path passed confinement and was opened under
+    # O_NOFOLLOW — so no code can hand read_tool/dir_tool a forged "confined" path.
+    "ResolvedPath": ("tools/confine.py", "open_confined"),
 }
 
 

@@ -58,6 +58,7 @@ from __future__ import annotations
 import errno
 import os
 import stat
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -235,13 +236,31 @@ def _walk_open(resolved: Path, flags: int) -> int:
 FileKind = Literal["file", "dir"]
 
 
-def open_confined(path: str, kind: FileKind) -> tuple[int, os.stat_result, Path]:
+@dataclass(frozen=True)
+class ResolvedPath:
+    """A path that passed confinement AND was opened read-only under ``O_NOFOLLOW``.
+
+    One of Trentina 3.0's unforgeable trust types (``tests/test_seal.py``):
+    holding one is proof that ``confine()`` admitted the path as written and
+    resolved, the ``O_NOFOLLOW`` walk bound the descriptor to what was admitted,
+    and the fstat is the descriptor's own. Only ``open_confined`` constructs it,
+    so no other code can hand ``read_tool`` / ``dir_tool`` a path claiming to be
+    confined. The caller closes ``fd``.
+    """
+
+    fd: int
+    st: os.stat_result
+    path: Path
+
+
+def open_confined(path: str, kind: FileKind) -> ResolvedPath:
     """Open ``path`` read-only if confinement admits it; the caller closes the fd.
 
-    Returns the descriptor, its ``fstat`` and the resolved path. ``kind`` is
-    the file type the caller reads: anything else is refused before the open,
-    so a FIFO cannot hang it and a device is never opened at all. The
-    returned stat is the descriptor's own and is of that type too.
+    Returns a ``ResolvedPath`` — the descriptor, its ``fstat`` and the resolved
+    path, the three of them proof confinement ran. ``kind`` is the file type the
+    caller reads: anything else is refused before the open, so a FIFO cannot hang
+    it and a device is never opened at all. The returned stat is the descriptor's
+    own and is of that type too.
     """
     resolved = confine(path)
     try:
@@ -274,4 +293,4 @@ def open_confined(path: str, kind: FileKind) -> tuple[int, os.stat_result, Path]
     except BaseException:
         os.close(fd)
         raise
-    return fd, opened, resolved
+    return ResolvedPath(fd=fd, st=opened, path=resolved)
