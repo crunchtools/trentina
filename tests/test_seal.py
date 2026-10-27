@@ -17,10 +17,11 @@ runtime token is the stricter layer for untrusted authors. It is the same
 structural shape as ``test_disposition_parity``: one rule in one place, no
 enforcement spread across the codebase.
 
-As Trentina 3.0 lands its other trust types each joins ``SEALED`` with the
-function that builds it: ``Posture`` and ``Judged`` when their factories arrive
-with the orchestrator (``identity.posture`` / ``core.gate``, Phase 4), and
-``ResolvedPath`` when the confined open returns one.
+All four of Trentina 3.0's unforgeable trust types are now sealed, each to the
+function that builds it: ``ResolvedTarget`` to ``egress.check_url``,
+``ResolvedPath`` to the confined open, ``Posture`` to ``identity.posture``, and
+``Judged`` to the orchestrator's ``judge_response`` (built only once the gate
+has run).
 """
 
 from __future__ import annotations
@@ -44,6 +45,10 @@ SEALED: dict[str, tuple[str, str]] = {
     # A Posture is built from the bound request identity (honeypot read from the
     # ambient scope), never assembled ad hoc where a field could drift.
     "Posture": ("core/identity.py", "posture"),
+    # A Judged binds a gate verdict to the exact transformed bytes it was reached
+    # over — built only after scan_tool_response (the gate) has run, so holding
+    # one is proof the gate ran on those bytes and no others.
+    "Judged": ("orchestrator.py", "judge_response"),
 }
 
 

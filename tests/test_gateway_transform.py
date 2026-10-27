@@ -176,8 +176,8 @@ class TestRouterOrdering:
         Reducing after the scan would hand the agent content the perimeter
         never saw, so this pins the order rather than trusting it.
         """
+        from trentina import orchestrator as orch_mod
         from trentina.gateway import router
-        from trentina.transports import mcp as mcp_mod
 
         seen: dict[str, Any] = {}
 
@@ -193,11 +193,12 @@ class TestRouterOrdering:
 
             return _D()
 
-        # The orchestrated response edge reaches the scan as
-        # ``transports.mcp.scan_tool_response`` — patch both namespaces with the
-        # same fake so ``seen`` is populated however the call is routed.
+        # The non-paged response edge reaches the scan as
+        # ``orchestrator.scan_tool_response`` (via ``judge_response``), the paged
+        # path as ``router.scan_tool_response`` — patch both with the same fake so
+        # ``seen`` is populated however the call is routed.
         monkeypatch.setattr(router, "scan_tool_response", fake_scan)
-        monkeypatch.setattr(mcp_mod, "scan_tool_response", fake_scan)
+        monkeypatch.setattr(orch_mod, "scan_tool_response", fake_scan)
 
         profile = _profile(PreProcessConfig(enabled=True))
         profile.short_names = False  # served name is syslog__syslog_tail_tool

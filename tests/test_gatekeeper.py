@@ -594,6 +594,14 @@ class TestRouter:
                     )
                 ),
             ),
+            patch(
+                "trentina.orchestrator.scan_tool_response",
+                AsyncMock(
+                    return_value=SimpleNamespace(
+                        warning=None, blocked=False, refusal=None, extraction=None
+                    )
+                ),
+            ),
         ):
             await route_jsonrpc(_profile(), _call("send_message"))
         backend.assert_awaited_once()
@@ -633,6 +641,7 @@ class TestRouter:
                 patch(
                     "trentina.gateway.router.scan_tool_response", AsyncMock(return_value=scanned)
                 ),
+                patch("trentina.orchestrator.scan_tool_response", AsyncMock(return_value=scanned)),
             ):
                 await route_jsonrpc(_profile(), _call("get_message"))
             facts = gatekeeper.gather_facts(_profile(), "mail", "send_message", None)

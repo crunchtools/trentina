@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any
 # the shared collaborators are imported from their own modules (mypy does not
 # re-export a name through an importer). This is the one place the orchestrator
 # couples to the gateway's internals, so the later cutover edits only this file.
-from ..core.stages import Arrived, Judged, Transformed
+from ..core.stages import Arrived, Transformed
 from ..defense import Provenance
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
 from ..gateway import paging, router
@@ -52,7 +52,7 @@ from ..gateway.filter import filter_tools
 from ..gateway.guards import check_response_guards
 from ..gateway.modes_policy import policy_for, resolve_call, resolve_preprocess
 from ..gateway.transform import transform_response
-from ..orchestrator import scan_tool_response
+from ..orchestrator import judge_response
 from ..outcomes import Outcome, classify_exception
 from ..reserved import REFUSAL_KEY, WARNING_KEY
 from .base import Carrier, Early, Face, Transport
@@ -318,7 +318,7 @@ class McpServerFace(Face):
         """The response edge as stages — ``router._assemble_call_result`` reproduced.
 
         Arrived (strip the gateway's reserved keys) → Transformed (the
-        pre-perimeter transform chain) → Judged (``scan_tool_response``) → the
+        pre-perimeter transform chain) → Judged (``judge_response``) → the
         disposed ``Assembled``. The same collaborators in the same order; the
         paged branch still delegates to ``router._hold_paged`` / ``_deliver_part``
         (collapsed into the one Part mechanism in a later PR). An internal tool
@@ -410,23 +410,19 @@ class McpServerFace(Face):
 
         gateway_warning: dict[str, Any] | None = None
         if not backend.is_internal:
-            judged = Judged(
-                transformed=transformed,
-                decision=await scan_tool_response(
-                    profile=profile,
-                    backend_name=backend_name,
-                    tool_name=tool_name,
-                    content_blocks=transformed.content_blocks,
-                    structured_content=arrived.structured,
-                    provenance=transformed.provenance,
-                    mode=mode,
-                    prompt=prompt,
-                    policy=policy,
-                    l3_context=router._l3_context(backend, reduced)
-                    if reduced is not None
-                    else backend.l3_briefing,
-                    hidden=reduced.hidden if reduced is not None else None,
-                ),
+            judged = await judge_response(
+                transformed,
+                profile=profile,
+                backend_name=backend_name,
+                tool_name=tool_name,
+                structured_content=arrived.structured,
+                mode=mode,
+                prompt=prompt,
+                policy=policy,
+                l3_context=router._l3_context(backend, reduced)
+                if reduced is not None
+                else backend.l3_briefing,
+                hidden=reduced.hidden if reduced is not None else None,
             )
             gateway_warning = judged.decision.warning
             if judged.decision.blocked:

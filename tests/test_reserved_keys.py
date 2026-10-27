@@ -139,8 +139,8 @@ def _call(structured: Any = None, text: str = "hello") -> Any:
 class TestBackendResponse:
     @pytest.fixture
     def router(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+        from trentina import orchestrator as orch_mod
         from trentina.gateway import router
-        from trentina.transports import mcp as mcp_mod
 
         self.scanned: dict[str, Any] = {}
         self.decision = _Decision()
@@ -149,11 +149,11 @@ class TestBackendResponse:
             self.scanned.update(kwargs)
             return self.decision
 
-        # The orchestrated response edge reaches the scan as
-        # ``transports.mcp.scan_tool_response``; the paged path as
-        # ``router.scan_tool_response`` — patch both (each imported the name).
+        # The non-paged response edge reaches the scan as
+        # ``orchestrator.scan_tool_response`` (via ``judge_response``); the paged
+        # path as ``router.scan_tool_response`` — patch both (each imported the name).
         monkeypatch.setattr(router, "scan_tool_response", fake_scan)
-        monkeypatch.setattr(mcp_mod, "scan_tool_response", fake_scan)
+        monkeypatch.setattr(orch_mod, "scan_tool_response", fake_scan)
         monkeypatch.setattr(router, "_audit", lambda *a, **k: None)
         return router
 

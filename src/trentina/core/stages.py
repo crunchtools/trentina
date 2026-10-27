@@ -10,14 +10,14 @@ it (``Judged``). Each stage holds a back-reference to the one before it, so the
 layer-contract identity assertions (``judged … is transformed …``) have real
 objects to hold once the cutover lands.
 
-Phase 4 state: these are frozen data carriers, not yet sealed. They carry the
-ACTUAL gateway types (``TransformOutcome``, ``IngressDecision``), not plan §B's
-idealized ``Verdict``/``Coverage``. The seal — construction confined to the one
-rail that produces each — lands with the Phase 4 cutover (PR #4), when the
-orchestrator is the sole constructor and ``tests/test_seal.py`` can fence them;
-sealing them while ``router._assemble_call_result`` still runs the default path
-would fence a type both paths build. The disposed result remains the router's
-``Assembled`` until that cutover, for the same reason.
+These carry the ACTUAL gateway types (``TransformOutcome``, ``IngressDecision``),
+not plan §B's idealized ``Verdict``/``Coverage``. Of the three, only ``Judged``
+carries trust: it pairs a verdict with the exact bytes it was reached over, so
+it is one of the four unforgeable types and its construction is confined to the
+orchestrator's ``judge_response`` (``tests/test_seal.py``), which builds one only
+after the gate has run. ``Arrived`` and ``Transformed`` are plain frozen carriers
+— no check stands behind holding one — so they are not sealed. The disposed
+result remains the router's ``Assembled``.
 """
 
 from __future__ import annotations
@@ -72,7 +72,9 @@ class Judged:
     Built only for a remote backend's response, which the perimeter scans here;
     an internal tool is judged at its own ingress and reaches no ``Judged``
     stage. ``decision`` is what ``scan_tool_response`` returned, and the
-    disposition — deliver, redact, or block — reads from it.
+    disposition — deliver, redact, or block — reads from it. Sealed to
+    ``orchestrator.judge_response`` so holding one is proof the gate ran on
+    ``transformed.content_blocks`` and no other bytes.
     """
 
     transformed: Transformed

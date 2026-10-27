@@ -49,6 +49,7 @@ from trentina.modes import (
 
 ROUTER = "trentina.gateway.router"
 MCP = "trentina.transports.mcp"
+ORCH = "trentina.orchestrator"
 TOOL = {
     "name": "jira_get_issue",
     "description": "Get an issue",
@@ -335,7 +336,7 @@ class TestRouter:
         with (
             patch(f"{ROUTER}.call_backend_tool", side_effect=fake_call),
             patch(f"{ROUTER}.scan_tool_response", scan),
-            patch(f"{MCP}.scan_tool_response", scan),
+            patch(f"{ORCH}.scan_tool_response", scan),
             patch(f"{ROUTER}._audit"),
         ):
             resp = await route_jsonrpc(
@@ -412,7 +413,7 @@ class TestRouter:
         scan = AsyncMock(return_value=IngressDecision(warning=None, extraction="x"))
         with (
             patch(f"{ROUTER}.scan_tool_response", scan),
-            patch(f"{MCP}.scan_tool_response", scan),
+            patch(f"{ORCH}.scan_tool_response", scan),
             patch(
                 f"{ROUTER}.call_backend_tool",
                 AsyncMock(
