@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
-from ..core import Posture
+from ..core import identity
 from ..credential_shapes import kinds as credential_kinds
 from ..credential_shapes import redact as credential_redact
 from ..logsafe import exc_kind, exc_where
@@ -176,7 +176,7 @@ async def judge_outbound(
     # so this path fails closed for any future mode exactly as the tools do.
     # Was `mode is Mode.BLOCK` here -- fail-open for a later non-BLOCK mode,
     # masked only because redact is not an enforcement mode on this path.
-    posture = Posture(mode=mode, policy=ModePolicy((mode,), mode))
+    posture = identity.posture(mode, ModePolicy((mode,), mode))
     try:
         with profile_context(profile):
             async with asyncio.timeout(deadline):

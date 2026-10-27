@@ -41,6 +41,9 @@ SEALED: dict[str, tuple[str, str]] = {
     # A ResolvedPath is proof a path passed confinement and was opened under
     # O_NOFOLLOW — so no code can hand read_tool/dir_tool a forged "confined" path.
     "ResolvedPath": ("tools/confine.py", "open_confined"),
+    # A Posture is built from the bound request identity (honeypot read from the
+    # ambient scope), never assembled ad hoc where a field could drift.
+    "Posture": ("core/identity.py", "posture"),
 }
 
 
