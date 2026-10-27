@@ -59,12 +59,12 @@ import httpx
 from starlette.responses import Response, StreamingResponse
 
 from ..channels import Channel
-from ..defense import defend, defend_selection
+from ..defense import defend_selection
 from ..errors import EgressRefusedError
 from ..logsafe import exc_kind, exc_where, redact_source, safe_url
 from ..matrix.keybackup import KeyBackupProvider
 from ..modes import gaps_of
-from ..orchestrator import judge_matrix_response
+from ..orchestrator import judge_matrix_response, judge_matrix_text_fallback
 from ..outcomes import Outcome
 from ..reserved import WARNING_KEY, strip_reserved, with_stripped
 from ..transforms import SelectionContext
@@ -1164,28 +1164,16 @@ async def _text_fallback_scan(body: bytes, profile: Profile, path: str) -> bool:
     silent clean the recursive-parse fail-open used to produce. Returns whether
     the text was flagged, so the caller can carry it onto the audit row.
     """
-    try:
-        verdict = await defend(
-            body.decode("utf-8", errors="replace"),
-            source=f"matrix:{profile.name}:{path}",
-            source_type="matrix_sync",
-            defense=profile.defense,
-        )
-    except Exception as exc:
-        logger.error(  # the message may carry the payload (#262)
-            "matrix_proxy: text-mode fallback scan failed for %s: %s at %s",
-            redact_source(path),
-            exc_kind(exc),
-            exc_where(exc),
-        )
-        return False
-    if verdict.flagged:
+    judgement = await judge_matrix_text_fallback(
+        body, profile=profile, source=f"matrix:{profile.name}:{path}"
+    )
+    if judgement.flagged:
         logger.error(
             "matrix_proxy: UNPARSEABLE response FLAGGED for profile=%s "
             "path=%s risk=%s — forwarded (no annotation channel); "
             "investigate the sender",
             profile.name,
             redact_source(path),
-            verdict.risk_level,
+            judgement.risk,
         )
-    return verdict.flagged
+    return judgement.flagged
