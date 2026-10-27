@@ -38,6 +38,7 @@ from ..database import is_blocked, record_gateway_call
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
 from ..logsafe import exc_kind, redact_source
 from ..modes import BLOCKLIST_REASON, Mode, parse_mode_arg, refusal_body
+from ..orchestrator import scan_tool_response
 from ..outcomes import Outcome, refusal_of
 from ..quarantine.limiter import Priority, l3_priority
 from ..reserved import (
@@ -72,7 +73,7 @@ from .errors import BackendCallError, BackendResponseTooLargeError
 from .filter import filter_tools
 from .gatekeeper import judge_call
 from .guards import check_parameter_guards
-from .ingress_defense import effective_mode, scan_tool_list, scan_tool_response
+from .ingress_defense import effective_mode, scan_tool_list
 from .internal import call_internal_tool, list_internal_tools
 from .modes_policy import (
     MODE_PARAM,

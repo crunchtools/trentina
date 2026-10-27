@@ -27,12 +27,10 @@ from pydantic import SecretStr
 
 from trentina.defense import Provenance
 from trentina.defense import defend as _real_defend
-from trentina.gateway.ingress_defense import (
-    scan_tool_list,
-    scan_tool_response,
-)
+from trentina.gateway.ingress_defense import scan_tool_list
 from trentina.gateway.profile import AuthConfig, Backend, Profile
 from trentina.modes import Mode, ModePolicy
+from trentina.orchestrator import scan_tool_response
 from trentina.quarantine.classifier import ClassifierResult
 
 from .judge_key import with_judge_key

@@ -29,11 +29,11 @@ from trentina.gateway import compress
 from trentina.gateway.app import MCP_SESSION_ID_HEADER, gateway_app
 from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
-from trentina.gateway.ingress_defense import scan_tool_response
 from trentina.gateway.loader import GatewayConfig, register_active_config
 from trentina.gateway.profile import AuthConfig, Backend, Profile
 from trentina.gateway.router import _profile_backend_urls, _profile_tools_cache
 from trentina.gateway.sessions import SessionRegistry
+from trentina.orchestrator import scan_tool_response
 from trentina.quarantine import classifier
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.quarantine.limiter import limited_generate, limiter_for
