@@ -1060,7 +1060,9 @@ async def test_post_hoc_completion_scan_timeout_is_logged_not_raised(
     monkeypatch.setattr(defense_mod, "defend", hanging_defend)
     profile = _profile("agent1", "agent1-tok", {"gemini": "agent1-key"})
 
-    with caplog.at_level(logging.WARNING, logger="trentina.gateway.llm_proxy"):
+    # The completion scan (and its timeout log) lives in the orchestrator now;
+    # the proxy only schedules it and records a flag.
+    with caplog.at_level(logging.WARNING, logger="trentina.orchestrator"):
         llm_proxy._schedule_completion_scan(b'{"completion": "x"}', 19, "gemini", profile)
         pending = set(llm_proxy._scan_tasks)
         assert pending, "a scan task should have been scheduled"
