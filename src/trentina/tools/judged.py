@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, assert_never
 
 from ..config import get_config
-from ..core import Decision, Gated, Posture, gate, refusal_of
+from ..core import Decision, Gated, Posture, refusal_of
 from ..database import is_blocked, record_capture
 from ..dbus_interface import emit_request_event
 from ..defense import DefenseVerdict, Provenance, defend, layer_verdicts
@@ -195,7 +196,27 @@ class _Call:
         return warning
 
 
-async def judge_and_deliver(
+@dataclass(frozen=True)
+class JudgeScan:
+    """An internal tool's produced payload, judged but not yet disposed.
+
+    ``produce_judgement`` builds this (hold, defend); the orchestrator calls
+    ``gate`` on it and hands the result to ``dispose_judgement``. The split
+    keeps the one ``gate()`` call in the orchestration layer (Trentina 3.0
+    Phase 4) while the paging hold, the ``_Call`` accounting and the family
+    renderers stay here.
+    """
+
+    call: _Call
+    verdict: DefenseVerdict
+    posture: Posture
+    paged: paging.Paged | None
+    original: Any
+    extras: Mapping[str, Any] | None
+    redact_extras: Mapping[str, Any] | None
+
+
+async def produce_judgement(
     document: str,
     *,
     mode: Mode,
@@ -214,8 +235,14 @@ async def judge_and_deliver(
     delivered: Any = None,
     extras: Mapping[str, Any] | None = None,
     redact_extras: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Judge ``document`` with all three layers and dispose of it per ``mode``.
+) -> JudgeScan:
+    """Judge ``document`` with all three layers — the pre-gate half of the edge.
+
+    Holds an over-large payload (part 1 is judged, the rest held), builds the
+    ``_Call`` accounting and the ``Posture``, and runs ``defend``. Returns a
+    ``JudgeScan`` for the orchestrator to ``gate`` and hand to
+    ``dispose_judgement``; it makes no ``gate()`` call and raises nothing on a
+    detection.
 
     Args:
         document: The payload as produced — what every layer reads.
@@ -231,10 +258,6 @@ async def judge_and_deliver(
         extras: Family fields for block and flag responses.
         redact_extras: Family fields for redact responses. Separate because
             redact must not re-deliver the payload it replaced.
-
-    Raises:
-        BlockedSourceError: block or redact refused. The message names the
-            layer or gap, never the payload.
     """
     paged = None
     if delivered is None and family in PAGED_FAMILIES:
@@ -299,19 +322,41 @@ async def judge_and_deliver(
             "call_ref": current_call.get() or None,
         },
     )
-    # The gate disposes of the verdict once (core.gate/core.dispose) and, for a
-    # redact or a downgraded block, runs turns 2 and 3 and carries their result.
-    gated = await gate(verdict, posture)
-    original = document if delivered is None else delivered
-    if paged is None:
-        return await _dispose(call, gated, original, posture, extras, redact_extras)
+    return JudgeScan(
+        call=call,
+        verdict=verdict,
+        posture=posture,
+        paged=paged,
+        original=document if delivered is None else delivered,
+        extras=extras,
+        redact_extras=redact_extras,
+    )
+
+
+async def dispose_judgement(scan: JudgeScan, gated: Gated) -> dict[str, Any]:
+    """Dispose of a judged internal payload — the post-gate half of the edge.
+
+    The gate disposed of the verdict once (core.gate/core.dispose) and, for a
+    redact or a downgraded block, ran turns 2 and 3 and carries their result.
+    Delivers, extracts or refuses per that decision; for a paged response, part
+    1 is shaped and the rest left held, releasing the hold if part 1 is refused.
+
+    Raises:
+        BlockedSourceError: block or redact refused. The message names the
+            layer or gap, never the payload.
+    """
+    call, posture = scan.call, scan.posture
+    if scan.paged is None:
+        return await _dispose(call, gated, scan.original, posture, scan.extras, scan.redact_extras)
     try:
-        response = await _dispose(call, gated, original, posture, extras, redact_extras)
+        response = await _dispose(
+            call, gated, scan.original, posture, scan.extras, scan.redact_extras
+        )
     except BlockedSourceError:
         # Nothing of it was delivered, so there is no rest to come back for.
-        paging.release(paged)
+        paging.release(scan.paged)
         raise
-    return _first_part(paged, verdict, response)
+    return _first_part(scan.paged, gated.verdict, response)
 
 
 async def _dispose(

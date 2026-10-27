@@ -147,3 +147,43 @@ class TestOnePipeline:
         # modes live in modes.py and decide delivery only.
         for gone in ("advise", "enforce_block"):
             assert not hasattr(defense, gone), f"defense.{gone} is back"
+
+
+class TestGateOwnership:
+    """``core.gate.gate()`` runs the perimeter's one dispose-and-extraction, so
+    the ORDER it runs in — arrive, transform, gate, dispose — is a security
+    property only the orchestrator knows. If the gate could be called from
+    anywhere, a path (or, later, a plugin) could invoke it out of order or skip
+    a step. So only the orchestration layer imports it; every other importer
+    would be a second way into the gate (Trentina 3.0 Phase 4).
+    """
+
+    # The defining package re-exports the name (its own public API); the
+    # orchestrator is the one caller. Nothing else may import ``gate``.
+    ALLOWED = frozenset({"orchestrator.py", "core/__init__.py"})
+
+    @staticmethod
+    def _imports_gate(path: Path) -> bool:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if _resolve(path, node) not in ("core", "core.gate"):
+                continue
+            if any(alias.name == "gate" for alias in node.names):
+                return True
+        return False
+
+    def test_core_gate_is_imported_only_by_the_orchestrator(self) -> None:
+        offenders = sorted(
+            path.relative_to(SRC).as_posix()
+            for path in SRC.rglob("*.py")
+            if "__pycache__" not in path.parts
+            and path.relative_to(SRC).as_posix() not in self.ALLOWED
+            and self._imports_gate(path)
+        )
+        assert not offenders, (
+            "core.gate.gate() is the perimeter's one dispose-and-extraction and "
+            "only the orchestrator may call it — these modules import it, which "
+            "is a second way into the gate:\n  " + "\n  ".join(offenders)
+        )

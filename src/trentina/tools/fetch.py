@@ -21,9 +21,10 @@ from ..errors import (
 from ..gateway.context import current_call
 from ..logsafe import exc_kind, redact_source
 from ..modes import Mode
+from ..orchestrator import judge_and_deliver
 from ..quarantine.prompts import finding_types
 from ..report import Disposition
-from .judged import check_blocklist, honeypot_caller, judge_and_deliver
+from .judged import check_blocklist, honeypot_caller
 from .preprocess import prepare
 
 log = logging.getLogger(__name__)

@@ -26,8 +26,9 @@ from ..errors import FileReadError
 from ..l1.pipeline import run_l1
 from ..l1.shadows import ShadowScanResult, ShadowStats, scan_shadows
 from ..modes import Mode
+from ..orchestrator import judge_and_deliver
 from .confine import REFUSAL_REASONS, open_confined, refused
-from .judged import check_blocklist, judge_and_deliver
+from .judged import check_blocklist
 
 MAX_DIR_ENTRIES = 500
 
