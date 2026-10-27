@@ -139,6 +139,30 @@ async def judge_response(
     this function by ``tests/test_seal.py``. An internal tool is judged at its
     own ingress and reaches no ``Judged``; only the proxied response edge
     (``transports.mcp._assemble``) builds one, here.
+
+    Args:
+        transformed: The response after the pre-perimeter transform chain. Its
+            ``content_blocks`` are what the layers read and what is delivered,
+            and its ``provenance`` is carried into the scan; the returned
+            ``Judged`` holds this exact stage by reference.
+        profile: The calling profile, whose ``defense`` settings the scan runs under.
+        backend_name: The backend the response came from, for the detection row.
+        tool_name: The tool that produced the response, for the detection row.
+        structured_content: The response's ``structuredContent`` (or None),
+            judged alongside the text blocks.
+        mode: The resolved delivery mode (block, flag or redact), or None to
+            resolve the profile default. It decides delivery, never detection.
+        prompt: The extraction request for ``redact``; ignored in other modes.
+        policy: The mode policy whose ``alternatives`` a refusal offers, or None
+            for the single-mode default at the call site.
+        l3_context: The L3 briefing for this response (the backend's briefing,
+            or a paging part's), or None.
+        hidden: Hiding counts carried from the transform (``HiddenStats``), so
+            L1 sees what a converter removed, or None.
+
+    Returns:
+        The ``Judged`` stage pairing ``transformed`` with the gate's
+        ``IngressDecision`` — deliver, redact or block — for the caller to render.
     """
     decision = await scan_tool_response(
         profile=profile,
