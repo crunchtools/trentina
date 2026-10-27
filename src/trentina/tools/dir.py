@@ -56,7 +56,8 @@ def _list_confined(path: str) -> tuple[list[dict[str, Any]], str, ShadowScanResu
     (#287). It re-listed by path until then, which followed symlinks out of
     the root and could see a different directory from the one delivered.
     """
-    fd, _, confined = open_confined(path, "dir")
+    opened = open_confined(path, "dir")
+    fd, confined = opened.fd, opened.path
     resolved = str(confined)
     try:
         # Listed through the checked descriptor, and lazily: a directory of a
