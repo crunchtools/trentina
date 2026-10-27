@@ -595,6 +595,55 @@ async def judge_matrix_response(
     return MatrixJudgement(flagged=flagged, unjudged=unjudged, risk=risk)
 
 
+@dataclass(frozen=True)
+class MatrixTextFallbackJudgement:
+    """An unparseable Matrix /sync response reduced to the proxy's degraded facts.
+
+    The recursive JSON parse failed, so there is no object to attach a warning
+    to: the proxy can neither withhold nor annotate, only record. This is a
+    fact-extractor; the proxy forwards regardless and words its own
+    flagged-but-forwarded log from these facts. ``risk`` is the verdict's own
+    risk level, carried through for that log.
+    """
+
+    flagged: bool
+    risk: str
+
+
+async def judge_matrix_text_fallback(
+    body: bytes,
+    *,
+    profile: Profile,
+    source: str,
+) -> MatrixTextFallbackJudgement:
+    """Judge unparseable Matrix /sync bytes as plain text — the degraded edge.
+
+    The recursive JSON parse failed, so there is no annotation channel. A failed
+    or flagged scan cannot be withheld (withholding breaks the room) and is only
+    recorded; failing closed on an exception means ``flagged`` False here
+    precisely because there is nothing to withhold, so the proxy forwards and
+    logs rather than reproducing the silent clean the old recursive-parse
+    fail-open produced. The ``defend()`` call lives here; the proxy keeps its
+    own flagged-but-forwarded log.
+    """
+    try:
+        verdict = await defend(
+            body.decode("utf-8", errors="replace"),
+            source=source,
+            source_type="matrix_sync",
+            defense=profile.defense,
+        )
+    except Exception as exc:
+        logger.error(  # the message may carry the payload (#262); source is hashed
+            "matrix: text-fallback scan failed source=%s: %s at %s",
+            redact_source(source),
+            exc_kind(exc),
+            exc_where(exc),
+        )
+        return MatrixTextFallbackJudgement(flagged=False, risk="unknown")
+    return MatrixTextFallbackJudgement(flagged=verdict.flagged, risk=verdict.risk_level)
+
+
 async def judge_matrix_bridge_event(
     scanned: dict[str, Any],
     *,
