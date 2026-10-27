@@ -56,16 +56,21 @@ OPS=( $ENGINE run --rm --network $NET -v "$DEMO:/demo:ro,z" --entrypoint python3
 # until the operator approves it (#469): listing records the holds, the
 # operator releases the four the tape uses. Wait for both, so the recording
 # starts warm.
+TAPE_TOOLS="search_gmail_messages get_gmail_message_content draft_gmail_message send_gmail_message"
+missing() {
+    local served; served=$("${VHS[@]}" --entrypoint python3 trentina-demo-vhs /demo/tq tools 2>/dev/null || true)
+    for t in $TAPE_TOOLS; do grep -qx "$t" <<<"$served" || echo "$t"; done
+}
 for _ in $(seq 60); do
-    if "${VHS[@]}" --entrypoint python3 trentina-demo-vhs /demo/tq tools 2>/dev/null | grep -qx draft_gmail_message; then
-        break
-    fi
-    for t in search_gmail_messages get_gmail_message_content draft_gmail_message send_gmail_message; do
-        "${OPS[@]}" call tool_pins action=approve backend=workspace tool=$t >/dev/null 2>&1 || true
+    need=$(missing)
+    [ -z "$need" ] && break
+    for t in $need; do
+        "${OPS[@]}" call tool_pins action=approve backend=workspace tool="$t" >/dev/null 2>&1 || true
     done
     sleep 5
 done
-"${VHS[@]}" --entrypoint python3 trentina-demo-vhs /demo/tq tools | grep -qx draft_gmail_message
+need=$(missing)
+[ -z "$need" ] || { echo "not served after warm-up: $need" >&2; exit 1; }
 
 "${VHS[@]}" -w /out trentina-demo-vhs /demo/trentina.tape
 
