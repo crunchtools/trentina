@@ -22,3 +22,12 @@ CVE-2025-47273
 # service never runs pip so the vendored bundle is never loaded. Drop once the
 # base ships a fixed pip. Accepted by Josui (CTO) 2026-10-22, review 2026-11-22.
 GHSA-6q48-6c7w-9gw2
+
+# pip 26.2's vendored msgpack 1.1.2 (pip/_vendor), HIGH CVE-2026-114613, a DoS
+# via memory leak while unpacking, fixed in msgpack 1.2.3. Same situation as
+# the vendored urllib3/setuptools block above: it is pip's bundled copy in the
+# Hummingbird python base, which uv cannot bump, and this distroless service
+# never runs pip so the vendored copy is never loaded — nothing untrusted ever
+# reaches it. Drop once the base ships a fixed pip. Accepted by Josui (CTO)
+# 2026-10-27, review 2026-11-27.
+CVE-2026-114613
