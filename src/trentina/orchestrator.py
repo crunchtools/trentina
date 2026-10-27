@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from .core import gate, identity
@@ -31,6 +31,13 @@ from .core.stages import Judged
 from .defense import Provenance, defend
 from .gateway.context import profile_context
 from .gateway.ingress_defense import IngressDecision, disposed_response, scan_response
+from .gateway.outbound import (
+    REASON_CREDENTIAL,
+    REASON_FLAGGED,
+    REASON_UNJUDGED,
+    detect_credentials,
+    judge_input,
+)
 from .logsafe import exc_kind, exc_where
 from .modes import Mode, ModePolicy, gaps_of
 from .transports.base import Early, Transport
@@ -274,6 +281,151 @@ async def judge_egress_response(
         flagged=verdict.flagged,
         unjudged=gaps_of(verdict).blocking(),
         risk=verdict.risk_level,
+    )
+
+
+@dataclass(frozen=True)
+class OutboundVerdict:
+    """What judging an agent's OUTBOUND request concluded (the request edge).
+
+    Carries no wire shape: the caller (``/proxy/llm`` or the egress route) turns
+    it into its own JSON deny marker or warning header. ``refused`` is the gate's
+    decision for this mode, decided here so no caller re-derives ``flag or gap``;
+    ``kinds``/``flagged``/``gaps``/``risk`` are the facts the caller words its
+    marker or warning from.
+    """
+
+    refused: bool = False
+    kinds: list[str] = field(default_factory=list)
+    flagged: bool = False
+    flagged_by: str | None = None
+    unjudged: bool = True
+    # A ``modes.Gaps`` name, not a reason code: this is what a deny marker's
+    # `gaps` field carries. l3_unavailable is the default while no verdict ran.
+    gaps: list[str] = field(default_factory=lambda: ["l3_unavailable"])
+    risk: str = "unknown"
+
+    @property
+    def reason(self) -> str | None:
+        """The refusal reason code, by precedence credential > flagged > gap."""
+        if self.kinds:
+            return REASON_CREDENTIAL
+        if self.flagged:
+            return REASON_FLAGGED
+        if self.unjudged:
+            return REASON_UNJUDGED
+        return None
+
+    @property
+    def warning(self) -> str | None:
+        """The flag-mode annotation: a finding, never a gap list."""
+        if self.kinds:
+            return "credential"
+        if self.flagged:
+            return self.risk
+        if self.unjudged:
+            return "unjudged"
+        return None
+
+
+async def judge_outbound(
+    document: str,
+    *,
+    source: str,
+    source_type: str,
+    backend: str,
+    profile: Profile,
+    mode: Mode,
+    deadline: float,
+) -> OutboundVerdict:
+    """Judge an agent's outbound request — the request edge for /proxy/llm and egress.
+
+    Scans ``document`` for credential shapes and judges a credential-redacted copy
+    through L1/L2/L3 (the layer contract: the credential detector adds a signal,
+    it never switches a layer off). Deadline- and exception-bounded: a hung or
+    failed judge counts as unjudged, so ``block`` refuses and ``flag`` forwards
+    with a warning, never fails open.
+
+    ``refused`` is decided here, not at the caller: under ``block`` a credential,
+    a flag or a blocking gap refuses before anything is sent. The layer part goes
+    through ``refusal_reason`` — the one rule ``dispose()`` delegates to — rather
+    than a hand-rolled ``flag or gap``, so this path cannot drift from the gate.
+    It does not call ``dispose()`` itself: the request edge can never allowlist or
+    redact (block/flag only, so dispose's other branches are dead), the credential
+    dimension sits outside ``dispose()``'s model, and routing it through
+    ``dispose()`` would couple its gap derivation to the response edge's in one
+    crossing. The ORIGINAL request is what each caller forwards upstream.
+
+    Args:
+        document: The request as text the layers read.
+        source: The detection row's source.
+        source_type: The detection row's source type.
+        backend: The row's backend column (``llm:<provider>``, ``http:<name>``).
+        profile: The calling profile, whose ``defense`` settings the scan runs under.
+        mode: The caller's resolved mode (``block`` or ``flag``).
+        deadline: Seconds the scan may take before it counts as unjudged.
+
+    Returns:
+        An ``OutboundVerdict``: ``refused`` (the caller withholds), plus the
+        ``kinds``/``flagged``/``gaps``/``risk`` facts it words its marker from.
+    """
+    from .defense import defend  # heavy; deferred, and the REQUEST-edge test seam
+    from .modes import gaps_of, refusal_reason  # resolved here so a test's gaps_of patch is seen
+
+    kinds = detect_credentials(document)
+    flagged, unjudged, flagged_by, risk = False, True, None, "unknown"
+    gaps = ["l3_unavailable"]
+    # The partial-scan and blocklist rules live in Posture, so this path fails
+    # closed for any future mode exactly as the tools do. Was `mode is Mode.BLOCK`
+    # here -- a fail-open for a later non-BLOCK mode, masked only because redact is
+    # not an enforcement mode on this path.
+    posture = identity.posture(mode, ModePolicy((mode,), mode))
+    layer_refuses = False
+    try:
+        with profile_context(profile):
+            async with asyncio.timeout(deadline):
+                verdict = await defend(
+                    judge_input(document),
+                    source=source,
+                    source_type=source_type,
+                    defense=profile.defense,
+                    provenance=Provenance.MODEL_OUTPUT,
+                    stop_on_partial=posture.stop_on_partial,
+                    attribution={
+                        "direction": "request",
+                        "blocked": posture.records_block(),
+                        "profile": profile.name,
+                        "backend": backend,
+                    },
+                )
+        flagged = verdict.flagged
+        flagged_by = verdict.flagged_by.value if verdict.flagged_by else None
+        g = gaps_of(verdict)
+        unjudged = g.blocking()
+        gaps = g.names()
+        risk = verdict.risk_level
+        layer_refuses = refusal_reason(flagged_by, g) is not None
+    except Exception as exc:  # TimeoutError too: no verdict was reached
+        logger.error(  # backend is server-configured (#262-safe); the message may carry the request
+            "outbound: request scan failed backend=%s source_type=%s: %s at %s",
+            backend,
+            source_type,
+            exc_kind(exc),
+            exc_where(exc),
+        )
+        layer_refuses = True  # no verdict is an unjudged request: block refuses it
+    # block refuses a credential, a flag or a blocking gap; flag forwards with a
+    # warning and consults `warning` instead. The credential dimension is
+    # outbound-only, OR'd onto the shared layer rule.
+    refused = mode is Mode.BLOCK and (bool(kinds) or layer_refuses)
+    return OutboundVerdict(
+        refused=refused,
+        kinds=kinds,
+        flagged=flagged,
+        flagged_by=flagged_by,
+        unjudged=unjudged,
+        gaps=gaps,
+        risk=risk,
     )
 
 
