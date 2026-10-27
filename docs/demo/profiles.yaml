@@ -13,6 +13,21 @@ llm_providers:               # a profile's llm_keys must name one of these
     api_key_env: OPENROUTER_API_KEY
 
 profiles:
+  # render.sh approves the workspace tools the tape uses from this seat: the
+  # demo starts on an empty store, and an empty store holds every remote tool
+  # until an operator releases it (#469).
+  ops:
+    role: operator
+    auth:
+      bearer_token_env: TRENTINA_PROFILE_OPS_TOKEN
+    llm_keys:
+      openrouter:
+        api_key_env: OPENROUTER_API_KEY
+    backends:
+      web:
+        url: "internal://web"
+        tools_allow: ["tool_pins_tool"]
+
   assistant:
     auth:
       bearer_token_env: TRENTINA_PROFILE_ASSISTANT_TOKEN
@@ -37,6 +52,6 @@ profiles:
             bcc: {allow: ["me@example.com"]}
     defense:
       provider: openrouter
-      model: google/gemini-2.5-flash
+      model: google/gemini-3.5-flash-lite
       enforcement: block
       modes: [block, redact]
