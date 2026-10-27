@@ -18,8 +18,8 @@ from typing import Any
 from ..defense import Provenance
 from ..errors import BlockedSourceError, QuarantineAgentError, SearchCanaryLeakedError
 from ..modes import Mode
+from ..orchestrator import judge_and_deliver
 from ..quarantine.agent import resolve_grounding_urls, search_grounded
-from .judged import judge_and_deliver
 
 L0_CANARY_REASON = "L0 canary leaked"
 SEARCH_UNAVAILABLE = "search provider unavailable"

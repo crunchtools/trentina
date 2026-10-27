@@ -27,8 +27,11 @@ from .gateway.ingress_defense import IngressDecision, disposed_response, scan_re
 from .transports.base import Early, Transport
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from .gateway.profile import Profile
     from .l1.hidden import HiddenStats
+    from .l1.pipeline import PipelineResult
     from .modes import Mode, ModePolicy
 
 
@@ -109,3 +112,66 @@ async def scan_tool_response(
         return scanned
     gated = await gate(scanned.verdict, scanned.posture, extra_unread=scanned.extra_unread)
     return await disposed_response(scanned, gated)
+
+
+async def judge_and_deliver(
+    document: str,
+    *,
+    mode: Mode,
+    family: str,
+    source: str,
+    source_type: str,
+    kind: str,
+    ref: str,
+    prompt: str | None = None,
+    allowlisted: bool = False,
+    blocklisted: bool = False,
+    provenance: Provenance = Provenance.EXTERNAL,
+    domain: str | None = None,
+    precomputed_l1: PipelineResult | None = None,
+    l3_context: str | None = None,
+    delivered: Any = None,
+    extras: Mapping[str, Any] | None = None,
+    redact_extras: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Judge an internal tool's produced ``document`` and deliver it — the edge.
+
+    The one place the gate runs on an internal tool's output: ``produce_judgement``
+    does the pre-gate work (hold, the ``_Call`` accounting, ``defend``), ``gate``
+    disposes of the verdict and runs redact's extraction, and ``dispose_judgement``
+    renders the tool-result dict (raising ``BlockedSourceError`` on a refusal).
+    Holding the order here is why ``core.gate`` is imported only by the
+    orchestration layer (Trentina 3.0 Phase 4); the tools ``fetch``/``read``/
+    ``dir``/``content``/``search`` call this, not the gateway internals.
+
+    Raises:
+        BlockedSourceError: block or redact refused. The message names the
+            layer or gap, never the payload.
+    """
+    # Imported here, not at module scope: tools/__init__ imports gateway.router
+    # (via tools.cache), and the orchestrator is imported during router's own
+    # load — a module-level import would close that cycle. By call time both are
+    # fully loaded.
+    from .tools.judged import dispose_judgement, produce_judgement
+
+    scan = await produce_judgement(
+        document,
+        mode=mode,
+        family=family,
+        source=source,
+        source_type=source_type,
+        kind=kind,
+        ref=ref,
+        prompt=prompt,
+        allowlisted=allowlisted,
+        blocklisted=blocklisted,
+        provenance=provenance,
+        domain=domain,
+        precomputed_l1=precomputed_l1,
+        l3_context=l3_context,
+        delivered=delivered,
+        extras=extras,
+        redact_extras=redact_extras,
+    )
+    gated = await gate(scan.verdict, scan.posture)
+    return await dispose_judgement(scan, gated)

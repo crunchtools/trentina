@@ -11,8 +11,9 @@ from ..config import get_config
 from ..errors import FileReadError
 from ..models import ALLOWED_TEXT_EXTENSIONS
 from ..modes import Mode
+from ..orchestrator import judge_and_deliver
 from .confine import REFUSAL_REASONS, open_confined, refused
-from .judged import check_blocklist, judge_and_deliver
+from .judged import check_blocklist
 from .preprocess import prepare
 
 MAX_FILE_SIZE = 2_000_000
