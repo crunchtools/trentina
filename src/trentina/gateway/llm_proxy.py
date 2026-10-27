@@ -45,12 +45,11 @@ from starlette.requests import ClientDisconnect
 from starlette.responses import Response
 
 from ..errors import EgressRefusedError
-from ..logsafe import exc_kind, exc_where, redact_source
+from ..logsafe import exc_kind, redact_source
 from ..modes import Mode
-from ..orchestrator import judge_outbound
+from ..orchestrator import judge_llm_completion, judge_outbound
 from ..outcomes import Outcome
 from .auth import resolve_profile_by_token
-from .context import profile_context
 from .destination import MAX_DESTINATION_CHARS, DestinationKind
 from .errors import ProfileConfigError
 from .ingress_defense import effective_mode
@@ -808,46 +807,23 @@ def _schedule_completion_scan(
         )
 
     async def _scan() -> None:
-        try:
-            from ..defense import Provenance, defend
-
-            text = body.decode("utf-8", errors="replace")
-            # Bound here, not at the handler: this runs after the stream ends,
-            # outside the request's context (RT #1505). A hung L3 must not leave
-            # an unbounded task running per completion, so the scan is deadlined
-            # like the request-side judge.
-            with profile_context(profile):
-                async with asyncio.timeout(_JUDGE_DEADLINE):
-                    verdict = await defend(
-                        text,
-                        source=f"llm:{profile.name}:{provider_name}",
-                        source_type="llm_completion",
-                        defense=profile.defense,
-                        provenance=Provenance.MODEL_OUTPUT,
-                    )
-            if verdict.flagged:
-                logger.warning(
-                    "llm_proxy: completion flagged profile=%s provider=%s "
-                    "risk=%s flagged_by=%s (already streamed — recorded only)",
-                    profile.name,
-                    provider_name,
-                    verdict.risk_level,
-                    verdict.flagged_by.value if verdict.flagged_by else None,
-                )
-        except TimeoutError:
-            # The scan outran JUDGE_DEADLINE. This is a background task (the
-            # response already streamed), so the timeout cannot affect the
-            # caller — it is recorded and dropped, like any other scan failure.
+        # The scan (defend + deadline + fail-closed handling) lives on the
+        # response edge in the orchestrator; here flag mode only RECORDS the
+        # finding, since the completion has already streamed.
+        judgement = await judge_llm_completion(
+            body.decode("utf-8", errors="replace"),
+            profile=profile,
+            provider_name=provider_name,
+            deadline=_JUDGE_DEADLINE,
+        )
+        if judgement.flagged:
             logger.warning(
-                "llm_proxy: post-hoc completion scan timed out profile=%s provider=%s",
+                "llm_proxy: completion flagged profile=%s provider=%s "
+                "risk=%s flagged_by=%s (already streamed — recorded only)",
                 profile.name,
                 provider_name,
-            )
-        except Exception as exc:
-            logger.error(  # the message may carry the completion (#262)
-                "llm_proxy: post-hoc completion scan failed: %s at %s",
-                exc_kind(exc),
-                exc_where(exc),
+                judgement.risk,
+                judgement.flagged_by,
             )
 
     try:

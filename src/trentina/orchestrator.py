@@ -429,6 +429,92 @@ async def judge_outbound(
     )
 
 
+@dataclass(frozen=True)
+class LlmCompletionJudgement:
+    """An assembled LLM completion reduced to what the proxy records or withholds.
+
+    The ``/proxy/llm`` response edge. In flag mode (the default) the completion
+    has already streamed, so these facts are RECORDED only; a block profile
+    buffers and withholds on ``flagged`` (the enforcement path). ``risk``/
+    ``flagged_by`` are the closed-set facts the detection row and any future deny
+    marker carry.
+    """
+
+    flagged: bool
+    risk: str
+    flagged_by: str | None
+
+
+async def judge_llm_completion(
+    text: str,
+    *,
+    profile: Profile,
+    provider_name: str,
+    deadline: float,
+) -> LlmCompletionJudgement:
+    """Judge an assembled LLM completion — the /proxy/llm response edge.
+
+    Runs L1/L2/L3 over the completion as ``MODEL_OUTPUT``, deadline- and
+    exception-bounded: in flag mode (today's only caller) this runs AFTER the
+    stream ends, outside the request's context, so a hung judge must not leave an
+    unbounded task. A timeout, a failed scan or a failed deferred import is logged
+    and reported as no finding (``flagged`` False): flag has already streamed the
+    completion, so there is nothing to retract and nothing to record. The block
+    path (which buffers before releasing) will need a distinct unjudged signal to
+    withhold on a scan that did not complete; it is added with that path, not
+    inferred from ``flagged`` here. The ``defend()`` call lives here, on the
+    response edge; the proxy records the finding.
+
+    Args:
+        text: The assembled completion as text the layers read.
+        profile: The calling profile, whose ``defense`` settings the scan runs under.
+        provider_name: The upstream provider (server-configured; the row's backend).
+        deadline: Seconds the scan may take before a timeout reports no finding.
+
+    Returns:
+        An ``LlmCompletionJudgement``: ``flagged`` and the ``risk``/``flagged_by``
+        facts the proxy records the finding from.
+    """
+    try:
+        # Deferred INSIDE the try: the import is heavy, is the completion-scan
+        # test seam, and — like the original inline scan — an import failure is
+        # caught here rather than left to fail the background task unhandled.
+        from .defense import defend
+
+        with profile_context(profile):
+            async with asyncio.timeout(deadline):
+                verdict = await defend(
+                    text,
+                    source=f"llm:{profile.name}:{provider_name}",
+                    source_type="llm_completion",
+                    defense=profile.defense,
+                    provenance=Provenance.MODEL_OUTPUT,
+                )
+    except TimeoutError:
+        # The scan outran the deadline. In flag mode the response already
+        # streamed, so this is recorded and dropped; it never reaches the caller.
+        logger.warning(
+            "llm: post-hoc completion scan timed out profile=%s provider=%s",
+            profile.name,
+            provider_name,
+        )
+        return LlmCompletionJudgement(flagged=False, risk="unknown", flagged_by=None)
+    except Exception as exc:
+        logger.error(  # the message may carry the completion (#262)
+            "llm: post-hoc completion scan failed profile=%s provider=%s: %s at %s",
+            profile.name,
+            provider_name,
+            exc_kind(exc),
+            exc_where(exc),
+        )
+        return LlmCompletionJudgement(flagged=False, risk="unknown", flagged_by=None)
+    return LlmCompletionJudgement(
+        flagged=verdict.flagged,
+        risk=verdict.risk_level,
+        flagged_by=verdict.flagged_by.value if verdict.flagged_by else None,
+    )
+
+
 async def judge_and_deliver(
     document: str,
     *,
