@@ -267,7 +267,7 @@ async def test_fetch_search_and_a_declared_tool_are_recorded() -> None:
         patch("trentina.gateway.router.call_backend_tool", side_effect=remote),
         patch("trentina.transports.mcp.transform_response", transform),
         patch("trentina.gateway.router.scan_tool_response", scan),
-        patch("trentina.transports.mcp.scan_tool_response", scan),
+        patch("trentina.orchestrator.scan_tool_response", scan),
     ):
         await _call(_slack_and_web(), f"web{NAMESPACE_SEP}fetch_tool", {"url": url})
         await _call(_slack_and_web(), f"web{NAMESPACE_SEP}search_tool", {"query": "rhel 11"})

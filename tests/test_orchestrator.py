@@ -35,6 +35,7 @@ from trentina.transports.base import Carrier, Early, Face, Transport
 
 ROUTER = "trentina.gateway.router"
 MCP = "trentina.transports.mcp"
+ORCH = "trentina.orchestrator"
 
 
 def _profile(
@@ -82,9 +83,10 @@ async def _run(
 ) -> dict[str, Any]:
     """Route one request with the backend call and the scan patched to fixed values.
 
-    ``scan_tool_response`` is patched in BOTH the router and the MCP namespace —
-    the orchestrated response edge reaches it as ``transports.mcp.scan_tool_response``
-    and the paged path as ``router.scan_tool_response`` (each imported the name).
+    ``scan_tool_response`` is patched in BOTH the router and the orchestrator
+    namespace — the non-paged response edge reaches it as
+    ``orchestrator.scan_tool_response`` (via ``judge_response``) and the paged
+    path as ``router.scan_tool_response`` (which imported the name).
     """
     call = AsyncMock(side_effect=exc) if exc is not None else AsyncMock(return_value=reply)
     verdict = decision if decision is not None else IngressDecision(warning=None)
@@ -92,7 +94,7 @@ async def _run(
     with (
         patch(f"{ROUTER}.call_backend_tool", call),
         patch(f"{ROUTER}.scan_tool_response", scan),
-        patch(f"{MCP}.scan_tool_response", scan),
+        patch(f"{ORCH}.scan_tool_response", scan),
         patch(f"{ROUTER}._audit", MagicMock()),
     ):
         return await route_jsonrpc(profile, request)
@@ -217,17 +219,18 @@ async def _run_capture(
     """Route one request, returning the backend mock so a test can assert it was
     (not) dispatched. Patches the shared collaborators a guard branch rides.
 
-    ``check_response_guards`` and ``scan_tool_response`` are patched in BOTH the
-    router and the MCP namespace because each path imported the name into its own
-    module; ``_refuse_call`` and ``_may_have_acted`` are reached as ``router.*``
-    on the orchestrated path, so one patch covers them.
+    ``scan_tool_response`` is patched as ``router.*`` (the paged path) and
+    ``orchestrator.*`` (the non-paged edge, via ``judge_response``);
+    ``check_response_guards`` is reached as ``transports.mcp.*``; ``_refuse_call``
+    and ``_may_have_acted`` are reached as ``router.*`` on the orchestrated path,
+    so one patch covers each.
     """
     call = AsyncMock(return_value=reply)
     scan = AsyncMock(return_value=IngressDecision(warning=None))
     patches = [
         patch(f"{ROUTER}.call_backend_tool", call),
         patch(f"{ROUTER}.scan_tool_response", scan),
-        patch(f"{MCP}.scan_tool_response", scan),
+        patch(f"{ORCH}.scan_tool_response", scan),
         patch(f"{ROUTER}._audit", MagicMock()),
     ]
     if guard_err is not None:

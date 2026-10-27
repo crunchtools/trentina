@@ -117,6 +117,10 @@ async def _call(profile: Profile, name: str) -> tuple[dict[str, Any], AsyncMock]
         patch(
             f"{ROUTER}.scan_tool_response", AsyncMock(return_value=IngressDecision(warning=None))
         ),
+        patch(
+            "trentina.orchestrator.scan_tool_response",
+            AsyncMock(return_value=IngressDecision(warning=None)),
+        ),
         patch(f"{ROUTER}._audit", MagicMock()) as audit,
     ):
         backend.audit = audit

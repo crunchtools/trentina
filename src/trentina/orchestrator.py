@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from .core import gate
+from .core.stages import Judged
 from .defense import Provenance
 from .gateway.ingress_defense import IngressDecision, disposed_response, scan_response
 from .transports.base import Early, Transport
@@ -29,6 +30,7 @@ from .transports.base import Early, Transport
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from .core.stages import Transformed
     from .gateway.profile import Profile
     from .l1.hidden import HiddenStats
     from .l1.pipeline import PipelineResult
@@ -112,6 +114,46 @@ async def scan_tool_response(
         return scanned
     gated = await gate(scanned.verdict, scanned.posture, extra_unread=scanned.extra_unread)
     return await disposed_response(scanned, gated)
+
+
+async def judge_response(
+    transformed: Transformed,
+    *,
+    profile: Profile,
+    backend_name: str,
+    tool_name: str,
+    structured_content: Any,
+    mode: Mode | None,
+    prompt: str | None,
+    policy: ModePolicy | None,
+    l3_context: str | None,
+    hidden: HiddenStats | None,
+) -> Judged:
+    """Judge a proxied response and bind the verdict to the exact bytes judged.
+
+    The sole constructor of the ``Judged`` stage. It runs the response edge
+    (``scan_tool_response`` → the gate) over ``transformed.content_blocks`` and
+    returns the stage pairing that decision with the ``Transformed`` it was
+    reached over, so holding a ``Judged`` is proof the gate ran on those bytes
+    and no others — one of Trentina 3.0's unforgeable trust types, fenced to
+    this function by ``tests/test_seal.py``. An internal tool is judged at its
+    own ingress and reaches no ``Judged``; only the proxied response edge
+    (``transports.mcp._assemble``) builds one, here.
+    """
+    decision = await scan_tool_response(
+        profile=profile,
+        backend_name=backend_name,
+        tool_name=tool_name,
+        content_blocks=transformed.content_blocks,
+        structured_content=structured_content,
+        provenance=transformed.provenance,
+        mode=mode,
+        prompt=prompt,
+        policy=policy,
+        l3_context=l3_context,
+        hidden=hidden,
+    )
+    return Judged(transformed=transformed, decision=decision)
 
 
 async def judge_and_deliver(

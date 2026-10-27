@@ -56,6 +56,7 @@ from .mode_harness import layers
 
 ROUTER = "trentina.gateway.router"
 MCP = "trentina.transports.mcp"
+ORCH = "trentina.orchestrator"
 HTML_RUN = "trentina.transforms.html.HtmlProcessor.run"
 SUMMARIZE_RUN = "trentina.transforms.summarize.SummarizeProcessor.run"
 PAGE = (
@@ -237,7 +238,7 @@ class TestProxiedCall:
         with (
             patch(f"{ROUTER}.call_backend_tool", side_effect=fake_call),
             patch(f"{ROUTER}.scan_tool_response", scan),
-            patch(f"{MCP}.scan_tool_response", scan),
+            patch(f"{ORCH}.scan_tool_response", scan),
             patch(f"{ROUTER}._audit", audit),
         ):
             resp = await route_jsonrpc(

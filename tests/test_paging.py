@@ -29,6 +29,7 @@ from trentina.quarantine.classifier import GUARD_TOKENS
 
 ROUTER = "trentina.gateway.router"
 MCP = "trentina.transports.mcp"
+ORCH = "trentina.orchestrator"
 URL = "http://docs:8000/mcp"
 GET, SEND = "get_doc", "send_doc"
 READER = f"web{NAMESPACE_SEP}{paging.READ_PART_TOOL}"
@@ -129,7 +130,7 @@ class _Gateway:
         with (
             patch(f"{ROUTER}.call_backend_tool", self.backend),
             patch(f"{ROUTER}.scan_tool_response", self.perimeter),
-            patch(f"{MCP}.scan_tool_response", self.perimeter),
+            patch(f"{ORCH}.scan_tool_response", self.perimeter),
             patch(f"{ROUTER}._audit", self.audit),
         ):
             return await route_jsonrpc(
