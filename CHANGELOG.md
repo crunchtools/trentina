@@ -10,6 +10,10 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+
+- The surface report's `offered` stage counts the tools pinning holds (#469). It was measured after the hold, so a backend whose tools awaited approval looked smaller than it is and the allowlist's savings were understated: the README demo, in front of a Workspace backend listing 122 tools, reported 17 offered and 61% saved. A held tool is still what the backend offers; it is still withheld from the served list.
+
 ## [2.0.0] - 2026-10-26
 
 ### Changed

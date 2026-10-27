@@ -514,9 +514,20 @@ async def _offered_tools(
         return await list_internal_tools()
     if backend.is_decoy:
         return served_tools(backend)
-    # A new or changed tool is withheld from every profile, an explicit
-    # allowlist and "*" alike, until an operator approves it (#469).
-    tools = await list_backend_tools(backend_name, backend, profile)
+    return await list_backend_tools(backend_name, backend, profile)
+
+
+def _without_held(
+    backend_name: str, backend: Backend, tools: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """A remote backend's list less the tools pinning holds (#469).
+
+    A new or changed tool is withheld from every profile, an explicit
+    allowlist and "*" alike, until an operator approves it. Applied after the
+    offered measure: a held tool is still what the backend offers.
+    """
+    if backend.is_internal or backend.is_decoy:
+        return tools
     return tool_pins.check_tools(backend.url, backend_name, tools)
 
 
@@ -553,6 +564,7 @@ async def _build_profile_tools(
         """
         raw_tools = await _offered_tools(backend_name, backend, profile)
         offered = await asyncio.to_thread(Stage.of, raw_tools)
+        raw_tools = _without_held(backend_name, backend, raw_tools)
         # An internal tool takes a mode only if it declares one: the admin
         # tools return gateway-authored data that no mode applies to. Every
         # REMOTE tool takes one, because its response crosses the perimeter.
