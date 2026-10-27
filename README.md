@@ -14,7 +14,7 @@ Ragusa, where ships anchored offshore for thirty days before anyone came
 ashore: commerce keeps flowing, and nothing dangerous gets in.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/crunchtools/trentina/main/docs/demo/trentina.gif" alt="Demo: a request crosses Trentina's auth, policy, defense and minify stages; then, in a terminal, a 131-tool list is served as 6 tools, a recipe page with an injection in its comments is refused and then answered through redact, and a send to an outside address is refused while a draft goes through" width="800">
+  <img src="https://raw.githubusercontent.com/crunchtools/trentina/main/docs/demo/trentina.gif" alt="Demo: a request crosses Trentina's auth, policy, defense and minify stages; then, in a terminal, a 135-tool list is served as 6 tools, a recipe page with an injection in its comments is refused and then answered through redact, and a send to an outside address is refused while a draft goes through" width="800">
 </p>
 
 ## Why Trentina
