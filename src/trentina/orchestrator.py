@@ -678,6 +678,54 @@ async def judge_matrix_bridge_event(
     return result.verdict
 
 
+@dataclass(frozen=True)
+class AlertJudgement:
+    """An alert payload's verdict plus what the ingress forwards it as.
+
+    JSON is judged leaf-by-leaf and rebuilt (``defend_json``); unparseable bytes
+    are judged as text (``defend``). ``forward_payload`` is the rebuilt object
+    for the JSON case (the ingress attaches its warning to it) or None for text,
+    and ``joined_text`` is the text forwarded when there is no object. The alert
+    ingress keeps the reserved-key strip, the L1 risk model and the hand-built
+    warning; this owns only the ``defend*`` calls.
+    """
+
+    verdict: DefenseVerdict
+    forward_payload: Any
+    joined_text: str
+
+
+async def judge_alert(
+    payload: Any,
+    body: bytes,
+    *,
+    profile: Profile,
+    source: str,
+) -> AlertJudgement:
+    """Judge an alert payload — the alert ingress response edge.
+
+    ``payload`` is the parsed, reserved-stripped JSON or None when the body did
+    not parse. A JSON alert is judged per-leaf but as one document and rebuilt;
+    an unparseable one is judged as plain text and nothing can be attached to
+    it. The ``defend_json``/``defend`` calls live here; the ingress keeps its
+    own risk level, warning and body assembly.
+    """
+    defense = profile.defense
+    if payload is not None:
+        jv = await defend_json(payload, source=source, source_type="alert", defense=defense)
+        return AlertJudgement(
+            verdict=jv.verdict, forward_payload=jv.payload, joined_text=jv.joined_text
+        )
+    first = await defend(
+        body.decode("utf-8", errors="replace"),
+        source=source,
+        source_type="alert",
+        defense=defense,
+        record=False,
+    )
+    return AlertJudgement(verdict=first, forward_payload=None, joined_text=first.content)
+
+
 async def judge_and_deliver(
     document: str,
     *,

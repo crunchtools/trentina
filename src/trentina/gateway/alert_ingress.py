@@ -47,7 +47,6 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from starlette.responses import Response
 
-from ..defense import defend, defend_json
 from ..httpbody import (
     STATUS_TOO_LARGE,
     EncodedBodyError,
@@ -59,6 +58,7 @@ from ..httpbody import (
 from ..l1.pipeline import risk_level_for_count
 from ..logsafe import exc_kind, redact_source, safe_url
 from ..modes import Mode, gaps_of
+from ..orchestrator import judge_alert
 from ..reserved import WARNING_KEY, strip_reserved, with_stripped
 from .context import profile_context
 
@@ -337,7 +337,6 @@ async def _defend_alert(
     except (json.JSONDecodeError, UnicodeDecodeError):
         payload = None
 
-    defense = profile.defense
     source = f"alert:{profile.name}"
 
     # The sender does not get to write the gateway's markers (#265): stripped
@@ -351,38 +350,19 @@ async def _defend_alert(
             profile.name,
         )
 
-    if payload is not None:
-        # L1 per leaf so the JSON survives; L2/L3 read the joined document, so
-        # an instruction split across two fields is still visible.
-        verdict = await defend_json(
-            payload,
-            source=source,
-            source_type="alert",
-            defense=defense,
-        )
-        counts = _L1Counts(
-            detections=verdict.verdict.pipeline.stats.total_detections(),
-            suspicious=verdict.verdict.pipeline.stats.suspicious_detections(),
-        )
-        forward_payload: Any = verdict.payload
-        joined_text = verdict.joined_text
-        final = verdict.verdict
-    else:
-        text = body.decode("utf-8", errors="replace")
-        first = await defend(
-            text,
-            source=source,
-            source_type="alert",
-            defense=defense,
-            record=False,
-        )
-        counts = _L1Counts(
-            detections=first.pipeline.stats.total_detections(),
-            suspicious=first.pipeline.stats.suspicious_detections(),
-        )
-        final = first
-        forward_payload = None
-        joined_text = first.content
+    # L1 per leaf so JSON survives; L2/L3 read the joined document, so an
+    # instruction split across two fields is still visible. Unparseable bytes
+    # are judged as text, with nothing to carry a warning. The defend* calls
+    # live in the orchestrator (the alert response edge); the risk model and
+    # the hand-built warning below stay here.
+    judgement = await judge_alert(payload, body, profile=profile, source=source)
+    final = judgement.verdict
+    forward_payload: Any = judgement.forward_payload
+    joined_text = judgement.joined_text
+    counts = _L1Counts(
+        detections=final.pipeline.stats.total_detections(),
+        suspicious=final.pipeline.stats.suspicious_detections(),
+    )
 
     risk_level = risk_level_for_count(counts.suspicious)
     classification = final.classification
