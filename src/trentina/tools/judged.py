@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, assert_never
 
 from ..config import get_config
-from ..core import Decision, Gated, Posture, refusal_of
+from ..core import Decision, Gated, Posture, identity, refusal_of
 from ..database import is_blocked, record_capture
 from ..dbus_interface import emit_request_event
 from ..defense import DefenseVerdict, Provenance, defend, layer_verdicts
@@ -289,13 +289,7 @@ async def produce_judgement(
         allowlisted=allowlisted,
         asserted={"blocklisted": blocklisted},
     )
-    posture = Posture(
-        mode=mode,
-        policy=current_policy(),
-        allowlisted=allowlisted,
-        honeypot=honeypot_caller() is not None,
-        prompt=prompt,
-    )
+    posture = identity.posture(mode, current_policy(), allowlisted=allowlisted, prompt=prompt)
     verdict = await defend(
         document,
         source=source,

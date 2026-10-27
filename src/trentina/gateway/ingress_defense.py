@@ -54,7 +54,7 @@ from dataclasses import field as dataclass_field
 from typing import TYPE_CHECKING, Any
 
 from ..config import get_config
-from ..core import Decision, Gated, Posture, refusal_from_warning, refusal_of
+from ..core import Decision, Gated, Posture, identity, refusal_from_warning, refusal_of
 from ..defense import Provenance, defend
 from ..l1.hidden import HiddenStats
 from ..l1.pipeline import run_l1
@@ -512,7 +512,7 @@ async def scan_response(
     joined = lead_in + joined if lead_in and joined.strip() else joined
     mode = effective_mode(profile, mode)
     policy = policy or ModePolicy((mode,), mode)
-    posture = Posture(mode=mode, policy=policy, prompt=prompt or DEFAULT_REDACT_PROMPT)
+    posture = identity.posture(mode, policy, prompt=prompt or DEFAULT_REDACT_PROMPT)
 
     if not joined.strip():
         return _binary_only(unscannable, unread, posture)
@@ -811,7 +811,7 @@ async def _judge_description(
     """
     perimeter_counts["judged"] += 1
     mode = effective_mode(profile)
-    posture = Posture(mode=mode, policy=ModePolicy((mode,), mode))
+    posture = identity.posture(mode, ModePolicy((mode,), mode))
     # A shared description is the gateway's own work, judged as the service
     # identity (#138); the thresholds stay the requester's.
     with service_context(operator):
