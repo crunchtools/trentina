@@ -42,14 +42,12 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from ...database import record_gateway_call
-from ...defense import defend_json
 from ...httpbody import request_capped
 from ...logsafe import exc_kind, redact_source
 from ...modes import gaps_of, refusal_reason
 from ...outcomes import Outcome
 from ...reserved import WARNING_KEY, strip_reserved, with_stripped
 from ...warning import build_warning
-from ..context import profile_context
 from ..matrix_relation import withheld_relation
 from ..profile import MATRIX_CHANNEL
 from .appservice import ConduitError, MediaRefusedError
@@ -347,20 +345,17 @@ class ProfileBridge:
     # -------------------------------------------------------------- verdict
 
     async def _judge(self, scanned: dict[str, Any], *, room: str, direction: str) -> Any:
-        with profile_context(self.profile):
-            result = await defend_json(
-                scanned,
-                source=f"matrix_bridge:{self.label}:{room}",
-                source_type="matrix_bridge",
-                defense=self.profile.defense,
-                record=True,
-                attribution={
-                    "profile": self.profile.name,
-                    "direction": direction,
-                    "blocked": self.cfg.enforcement == "block",
-                },
-            )
-        return result.verdict
+        # Lazy: tools/__init__ -> gateway.router -> orchestrator is loaded during
+        # this package's own import, so a module-level import would close the cycle.
+        from ...orchestrator import judge_matrix_bridge_event
+
+        return await judge_matrix_bridge_event(
+            scanned,
+            profile=self.profile,
+            source=f"matrix_bridge:{self.label}:{room}",
+            direction=direction,
+            blocked=self.cfg.enforcement == "block",
+        )
 
     def _refusal(self, verdict: Any, *, unread: bool = False) -> str | None:
         """Why this event may not be delivered as-is, or None.

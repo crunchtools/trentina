@@ -23,6 +23,7 @@ import pytest
 from pydantic import SecretStr
 
 from trentina import database
+from trentina import orchestrator as orchestrator_mod
 from trentina.bridge.client import ROOM_ANNOUNCE, ROOM_LEFT
 from trentina.defense import DefenseVerdict, Layer
 from trentina.gateway.matrix_bridge import appservice as appservice_mod
@@ -212,7 +213,9 @@ def rig_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
             verdict = verdicts.pop(0) if verdicts else _verdict()
             return type("JV", (), {"verdict": verdict, "payload": payload})()
 
-        monkeypatch.setattr(core, "defend_json", fake_defend_json)
+        # The defend_json call lives in the orchestrator now (the appservice
+        # response edge), so the stub is patched there, not in core.
+        monkeypatch.setattr(orchestrator_mod, "defend_json", fake_defend_json)
         profile = _profile(enforcement)
         mapping = BridgeMapping(tmp_path / f"bridge-{enforcement}.db")
         if reported:
