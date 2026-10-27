@@ -50,9 +50,9 @@ from ..gateway.destination import Destination, destination_of
 from ..gateway.errors import BackendCallError
 from ..gateway.filter import filter_tools
 from ..gateway.guards import check_response_guards
-from ..gateway.ingress_defense import scan_tool_response
 from ..gateway.modes_policy import policy_for, resolve_call, resolve_preprocess
 from ..gateway.transform import transform_response
+from ..orchestrator import scan_tool_response
 from ..outcomes import Outcome, classify_exception
 from ..reserved import REFUSAL_KEY, WARNING_KEY
 from .base import Carrier, Early, Face, Transport

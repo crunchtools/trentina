@@ -174,8 +174,8 @@ async def test_a_part_is_read_once_behind_the_end_of_the_part_before() -> None:
     delivered in parts is a delivery per part. Each layer reads a part once,
     with the previous part's last tokens in front of it, and never reads the
     part a second time."""
-    from trentina.gateway.ingress_defense import scan_tool_response
     from trentina.gateway.profile import AuthConfig, Profile
+    from trentina.orchestrator import scan_tool_response
 
     profile = Profile(name="agent1", auth=AuthConfig(bearer_token_env="TEST"), backends={})
     verdict = MagicMock(flagged=False, flagged_by=None)

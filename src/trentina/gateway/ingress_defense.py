@@ -54,7 +54,7 @@ from dataclasses import field as dataclass_field
 from typing import TYPE_CHECKING, Any
 
 from ..config import get_config
-from ..core import Decision, Gated, Posture, gate, refusal_from_warning, refusal_of
+from ..core import Decision, Gated, Posture, refusal_from_warning, refusal_of
 from ..defense import Provenance, defend
 from ..l1.hidden import HiddenStats
 from ..l1.pipeline import run_l1
@@ -70,6 +70,7 @@ from .service import judge_of, service_context, service_profile
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
+    from ..defense import DefenseVerdict
     from .profile import Profile
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,29 @@ class IngressDecision:
     blocked: bool = False
     refusal: dict[str, Any] | None = None
     extraction: str | None = None
+
+
+@dataclass(frozen=True)
+class ResponseScan:
+    """A judged-but-not-yet-disposed proxied response: the hand-off to the gate.
+
+    ``scan_response`` produces this on a cache miss with text to judge; the
+    orchestrator calls ``gate(verdict, posture, …)`` on it and hands the result
+    back to ``disposed_response``. The split keeps the one ``gate()`` call in the
+    orchestration layer (Trentina 3.0 Phase 4) while the verdict cache, the
+    binary-only shortcut and the warning build stay here. ``profile_name`` /
+    ``backend_name`` / ``tool_name`` are carried only for the flagged-response
+    log line.
+    """
+
+    verdict: DefenseVerdict
+    posture: Posture
+    warning: dict[str, Any] | None
+    key: str
+    extra_unread: bool
+    profile_name: str
+    backend_name: str
+    tool_name: str
 
 
 _CACHE_MAX = 4096
@@ -421,7 +445,7 @@ def _unread_warning(warning: dict[str, Any] | None, unread: set[str]) -> dict[st
     return {**(warning or {}), "binary_unread": True, "unread_kinds": kinds}
 
 
-async def scan_tool_response(
+async def scan_response(
     *,
     profile: Profile,
     backend_name: str,
@@ -439,8 +463,16 @@ async def scan_tool_response(
     source_type: str = "tool_response",
     domain: str | None = None,
     blocklists: bool = True,
-) -> IngressDecision:
-    """Judge one tool response and decide its fate under the call's mode.
+) -> IngressDecision | ResponseScan:
+    """Judge one tool response up to the gate — the pre-gate half of the edge.
+
+    Returns an ``IngressDecision`` directly for the two no-gate exits (a binary-
+    only response, or a verdict-cache hit), else a ``ResponseScan`` for the
+    orchestrator to ``gate`` and hand to ``disposed_response``. The split keeps
+    the one ``gate()`` call in the orchestration layer while the cache, the
+    binary-only shortcut and the warning build stay here (Phase 4).
+
+    Judge one tool response and decide its fate under the call's mode.
 
     flag — deliver intact, warning attached (`blocked=False`).
     block — a flagged or incompletely judged response is refused
@@ -542,15 +574,31 @@ async def scan_tool_response(
     if unread:
         warning = _unread_warning(warning, unread)
 
-    # The gate decides the fate once, in core.gate/core.dispose: a flagged or
-    # incompletely-judged response is refused unless the mode is flag. "Could
-    # not finish judging" is treated exactly like "this is hostile" (the
-    # padding attack — L2 scans a benign head, an L3 outage answers "clean"),
-    # because both are gaps that block. Binary blocks no layer could read
-    # (#367) are tracked beside the verdict, so they fold in as extra_unread.
-    # For redact the gate also runs turns 2 and 3 and carries their result.
-    gated = await gate(verdict, posture, extra_unread=bool(unread))
+    return ResponseScan(
+        verdict=verdict,
+        posture=posture,
+        warning=warning,
+        key=key,
+        extra_unread=bool(unread),
+        profile_name=profile.name,
+        backend_name=backend_name,
+        tool_name=tool_name,
+    )
+
+
+async def disposed_response(scan: ResponseScan, gated: Gated) -> IngressDecision:
+    """Dispose of a judged proxied response — the post-gate half of the edge.
+
+    Takes the ``ResponseScan`` ``scan_response`` produced and the ``Gated`` the
+    orchestrator got from ``gate()``, and writes the verdict cache (the one
+    writer). It makes no ``gate()`` call: the decision is already made. The gate
+    decided the fate once, in core.gate/core.dispose — a flagged or
+    incompletely-judged response is refused unless the mode is flag; "could not
+    finish judging" is treated exactly like "this is hostile" (the padding
+    attack: L2 scans a benign head, an L3 outage answers "clean").
+    """
     disposition = gated.disposition
+    posture, warning, key = scan.posture, scan.warning, scan.key
 
     # Consume exactly what the gate produced: it runs (and carries) the
     # extraction iff the DECISION is redact, so the redact response edge is
@@ -558,7 +606,7 @@ async def scan_tool_response(
     # (a proxied response is never allowlisted, so block never downgrades to
     # redact), but keying on the decision is what keeps a future downgrade
     # from delivering the original while its extraction is discarded.
-    if disposition.decision is Decision.REDACT or mode is Mode.REDACT:
+    if disposition.decision is Decision.REDACT or posture.mode is Mode.REDACT:
         return await _redact_response(gated, warning, posture, key)
 
     blocked = disposition.decision is Decision.REFUSE
@@ -574,7 +622,7 @@ async def scan_tool_response(
         if disposition.flagged_by is None:
             logger.warning(
                 "gateway: refusing incompletely-judged response for profile=%s (%s)",
-                profile.name,
+                scan.profile_name,
                 disposition.gaps,
             )
         warning = {**warning, "blocked": True}
@@ -584,12 +632,12 @@ async def scan_tool_response(
         logger.warning(
             "gateway: tool response flagged profile=%s backend=%s tool=%s "
             "risk=%s flagged_by=%s enforcement=%s blocked=%s",
-            profile.name,
-            backend_name,
-            tool_name,
+            scan.profile_name,
+            scan.backend_name,
+            scan.tool_name,
             warning.get("risk_level"),
             warning.get("flagged_by"),
-            mode.value,
+            posture.mode.value,
             blocked,
         )
     return IngressDecision(
