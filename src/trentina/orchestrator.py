@@ -455,27 +455,32 @@ async def judge_llm_completion(
     """Judge an assembled LLM completion — the /proxy/llm response edge.
 
     Runs L1/L2/L3 over the completion as ``MODEL_OUTPUT``, deadline- and
-    exception-bounded: in flag mode this runs AFTER the stream ends, outside the
-    request's context, so a hung judge must not leave an unbounded task. A
-    timeout or failure is logged and treated as no finding — flag has already
-    streamed the completion, so there is nothing to retract; a block profile that
-    buffers first withholds on ``flagged`` instead. The ``defend()`` call lives
-    here, on the response edge; the proxy records the finding (flag) or withholds
-    (block).
+    exception-bounded: in flag mode (today's only caller) this runs AFTER the
+    stream ends, outside the request's context, so a hung judge must not leave an
+    unbounded task. A timeout, a failed scan or a failed deferred import is logged
+    and reported as no finding (``flagged`` False): flag has already streamed the
+    completion, so there is nothing to retract and nothing to record. The block
+    path (which buffers before releasing) will need a distinct unjudged signal to
+    withhold on a scan that did not complete; it is added with that path, not
+    inferred from ``flagged`` here. The ``defend()`` call lives here, on the
+    response edge; the proxy records the finding.
 
     Args:
         text: The assembled completion as text the layers read.
         profile: The calling profile, whose ``defense`` settings the scan runs under.
         provider_name: The upstream provider (server-configured; the row's backend).
-        deadline: Seconds the scan may take before it is dropped (flag) / fails closed.
+        deadline: Seconds the scan may take before a timeout reports no finding.
 
     Returns:
         An ``LlmCompletionJudgement``: ``flagged`` and the ``risk``/``flagged_by``
-        facts the proxy records or words its withholding from.
+        facts the proxy records the finding from.
     """
-    from .defense import defend  # heavy; deferred, and the completion-scan test seam
-
     try:
+        # Deferred INSIDE the try: the import is heavy, is the completion-scan
+        # test seam, and — like the original inline scan — an import failure is
+        # caught here rather than left to fail the background task unhandled.
+        from .defense import defend
+
         with profile_context(profile):
             async with asyncio.timeout(deadline):
                 verdict = await defend(
