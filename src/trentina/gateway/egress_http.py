@@ -43,7 +43,6 @@ response paging is a documented limit, not a planned slice.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from http import HTTPStatus
@@ -54,13 +53,12 @@ from starlette.requests import ClientDisconnect
 from starlette.responses import Response
 
 from .. import logsafe
-from ..defense import Provenance, defend
 from ..errors import EgressRefusedError as GuardRefusedError
-from ..modes import Mode, gaps_of
+from ..modes import Mode
+from ..orchestrator import judge_egress_response
 from ..outcomes import Outcome
 from .auth import resolve_profile_by_token
 from .backend import response_byte_cap
-from .context import profile_context
 from .destination import MAX_DESTINATION_CHARS, Destination, DestinationKind, fingerprint
 from .egress_policy import (
     EgressRefusedError,
@@ -162,7 +160,8 @@ async def serve(request: Request, profiles: dict[str, Profile]) -> Response:
     # TRUST: an agent's outbound HTTP request, to a destination the operator named
     #   untrusted: upstream name, path, query, headers and body, all agent-chosen
     #   judged-by: EgressGrant (method/path), judge_outbound (L1/L2/L3 + credential
-    #     detector over the request), egress (resolved address), defend (response)
+    #     detector over the request), egress (resolved address),
+    #     judge_egress_response (L1/L2/L3 + dispose over the response)
     #   on-failure: fail-closed; refused with a closed reason and audited
     #   owner: gateway/egress_http.py, gateway/egress_policy.py
     #   evidence: T3 this module's docstring; T4 tests/test_egress_http.py
@@ -562,41 +561,28 @@ async def _judge_response(
 ) -> str | None:
     """Judge a response (its headers, and its body when text) as ingress.
 
-    Returns a flag-mode warning, or None. Deadline- and exception-bounded like
-    the request judge: a hung or failed scan is treated as unjudged (``block``
-    withholds, ``flag`` warns). Under ``block`` a flagged or unjudged response
-    raises — the request executed (#425).
+    The scan and its disposition run in the orchestrator
+    (``judge_egress_response``); this reads the verdict and words egress's own
+    wire. Under ``block`` a flagged or unjudged response raises — the request
+    executed (#425); under ``flag`` it returns the warning, or None when clean.
     """
-    try:
-        with profile_context(op.profile):
-            async with asyncio.timeout(JUDGE_DEADLINE):
-                rv = await defend(
-                    document,
-                    source=op.destination or upstream.host,
-                    source_type="egress_response",
-                    defense=op.profile.defense,
-                    provenance=Provenance.EXTERNAL,
-                    stop_on_partial=blocking,
-                    domain=upstream.host,
-                )
-        flagged, unjudged, risk = rv.flagged, gaps_of(rv).blocking(), rv.risk_level
-    except Exception as exc:  # TimeoutError too: no verdict was reached
-        logger.error(
-            "egress: response scan failed profile=%s: %s at %s",
-            op.profile.name,
-            logsafe.exc_kind(exc),
-            logsafe.exc_where(exc),
-        )
-        flagged, unjudged, risk = False, True, "unknown"
-    if not flagged and not unjudged:
-        return None
-    if blocking:
+    judgement = await judge_egress_response(
+        document,
+        profile=op.profile,
+        source=op.destination or upstream.host,
+        domain=upstream.host,
+        blocking=blocking,
+        deadline=JUDGE_DEADLINE,
+    )
+    if judgement.refuse:
         raise EgressRefusedError(
             HTTPStatus.FORBIDDEN,
-            "response_flagged" if flagged else "response_unjudged",
+            "response_flagged" if judgement.flagged else "response_unjudged",
             executed=True,
         )
-    return risk if flagged else "unjudged"
+    if not judgement.flagged and not judgement.unjudged:
+        return None
+    return judgement.risk if judgement.flagged else "unjudged"
 
 
 async def _fetch(

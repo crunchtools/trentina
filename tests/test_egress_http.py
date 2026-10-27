@@ -9,6 +9,7 @@ L2/L3.
 
 from __future__ import annotations
 
+import importlib
 import json
 import sqlite3
 from collections.abc import AsyncIterator, Iterator
@@ -109,10 +110,16 @@ def _clean_verdict() -> SimpleNamespace:
 
 def _stub_judge(monkeypatch: pytest.MonkeyPatch, *, req: Any = None, resp: Any = None) -> None:
     """Stub the request judge (outbound's lazy defend/gaps_of) and the response
-    judge (egress_http's defend/gaps_of). Default: everything clean."""
+    judge (the orchestrator's defend/gaps_of, via judge_egress_response). Default:
+    everything clean."""
     from trentina import defense as defense_mod
     from trentina import modes as modes_mod
+    from trentina import orchestrator as orchestrator_mod
     from trentina.modes import Gaps
+
+    # The trentina.core package re-exports the ``dispose`` function, shadowing the
+    # submodule attribute, so reach the module through importlib to patch its binding.
+    dispose_mod = importlib.import_module("trentina.core.dispose")
 
     async def req_defend(*_a: Any, **_k: Any) -> Any:
         return req if req is not None else _clean_verdict()
@@ -122,8 +129,11 @@ def _stub_judge(monkeypatch: pytest.MonkeyPatch, *, req: Any = None, resp: Any =
 
     monkeypatch.setattr(defense_mod, "defend", req_defend)
     monkeypatch.setattr(modes_mod, "gaps_of", lambda _v: Gaps())
-    monkeypatch.setattr(egress_http, "defend", resp_defend)
-    monkeypatch.setattr(egress_http, "gaps_of", lambda _v: Gaps())
+    monkeypatch.setattr(orchestrator_mod, "defend", resp_defend)
+    # The response judge reads gaps_of for its facts and runs dispose() for the
+    # refuse decision; both resolve gaps on the (stub) verdict, so both are stubbed.
+    monkeypatch.setattr(orchestrator_mod, "gaps_of", lambda _v: Gaps())
+    monkeypatch.setattr(dispose_mod, "gaps_of", lambda _v: Gaps())
 
 
 def _profile(
@@ -383,8 +393,13 @@ class TestResponseJudging:
         from trentina.modes import Gaps
 
         _stub_judge(monkeypatch)  # request clean
-        # Make only the RESPONSE judge report a blocking gap.
-        monkeypatch.setattr(egress_http, "gaps_of", lambda _v: Gaps(oversize=True))
+        # Make only the RESPONSE judge report a blocking gap — both where it reads
+        # the facts (orchestrator) and where dispose() decides to refuse (core).
+        from trentina import orchestrator as orchestrator_mod
+
+        dispose_mod = importlib.import_module("trentina.core.dispose")
+        monkeypatch.setattr(orchestrator_mod, "gaps_of", lambda _v: Gaps(oversize=True))
+        monkeypatch.setattr(dispose_mod, "gaps_of", lambda _v: Gaps(oversize=True))
         h = _harness(monkeypatch)
         resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 403
