@@ -23,8 +23,9 @@ PROFILES=${PROFILES:-$DEMO/profiles.yaml}
 
 mkdir -p "$OUT/frames"
 cleanup() { $ENGINE rm -f td-workspace td-site td-gateway >/dev/null 2>&1 || true; $ENGINE network rm $NET >/dev/null 2>&1 || true; }
-# A failed render prints the gateway's log, not just an exit code.
-trap 'rc=$?; [ $rc -ne 0 ] && $ENGINE logs --tail 80 td-gateway 2>&1 | sed "s/^/gateway: /"; cleanup' EXIT
+# A failed render prints the gateway's warnings and errors, not just an exit
+# code; the wait loop's own session churn is left out.
+trap 'rc=$?; [ $rc -ne 0 ] && $ENGINE logs td-gateway 2>&1 | grep -E "WARNING|ERROR|CRITICAL|Traceback" | grep -v "gateway.sessions" | tail -60 | sed "s/^/gateway: /"; cleanup' EXIT
 cleanup
 $ENGINE network create $NET >/dev/null
 
