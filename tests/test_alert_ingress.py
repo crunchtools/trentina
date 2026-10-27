@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
@@ -560,3 +561,32 @@ class TestTokenNotInTheUrl:
         resp = client.post("/alert/old-token-value", json={"output": "x"})
         assert resp.status_code == 404
         assert "old-token-value" not in resp.text
+
+
+class TestJudgeAlert:
+    """judge_alert's dispatch, directly: JSON is rebuilt, text carries no object."""
+
+    async def test_json_is_judged_and_rebuilt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trentina import orchestrator
+
+        async def _dj(_payload: Any, **_k: Any) -> Any:
+            return SimpleNamespace(verdict="V", payload={"rebuilt": True}, joined_text="joined")
+
+        monkeypatch.setattr(orchestrator, "defend_json", _dj)
+        j = await orchestrator.judge_alert(
+            {"a": 1}, b'{"a":1}', profile=SimpleNamespace(defense=None, name="p"), source="alert:p"
+        )
+        assert (j.verdict, j.forward_payload, j.joined_text) == ("V", {"rebuilt": True}, "joined")
+
+    async def test_unparseable_is_judged_as_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trentina import orchestrator
+
+        async def _d(text: str, **_k: Any) -> Any:
+            return SimpleNamespace(content=text)
+
+        monkeypatch.setattr(orchestrator, "defend", _d)
+        j = await orchestrator.judge_alert(
+            None, b"raw bytes", profile=SimpleNamespace(defense=None, name="p"), source="alert:p"
+        )
+        assert (j.forward_payload, j.joined_text) == (None, "raw bytes")
+        assert j.verdict.content == "raw bytes"
