@@ -717,6 +717,12 @@ async def _forward_upstream(
     # close is already registered (via pinned_send on op.upstream); the outcome
     # is settled by the stream.
     op.sent = len(body) if body else 0
+    # The response edge, per profile (defense.llm_completion). flag streams
+    # through and records post-hoc; block buffers the completion, judges it, and
+    # withholds a flagged or unjudged one. Default flag — production is unchanged
+    # until a profile opts into block.
+    if profile.defense.llm_completion == "block":
+        return await _buffered_block_response(op, resp, provider_name, profile, warning)
     return _streaming_response(op, resp, provider_name, profile, warning)
 
 
@@ -835,3 +841,94 @@ def _schedule_completion_scan(
 
 
 _scan_tasks: set[Any] = set()
+
+
+async def _buffered_block_response(
+    op: Operation,
+    resp: httpx.Response,
+    provider_name: str,
+    profile: Profile,
+    warning: str | None,
+) -> Response:
+    """Block mode: buffer the completion, judge it, deliver only if clean.
+
+    The opposite tradeoff from flag. An autonomous seat has no human waiting on
+    time-to-first-token, so it pays the buffer-scan latency to gain the power to
+    WITHHOLD a flagged or not-fully-judged completion rather than only record it
+    after it has streamed. The whole body is read before a byte reaches the agent;
+    a completion over the scan cap cannot be judged whole and is withheld as
+    unjudged. ``op`` is settled and finished here — no streaming ``Relayed`` owns
+    it — and the refusal is the same deny marker the request edge uses, with a
+    closed reason code (#262/#263).
+    """
+    resp_headers = filter_response_headers(list(resp.headers.items()))
+    # Starlette recomputes content-length for a buffered body; never let the
+    # upstream forge our verdict header either.
+    resp_headers = {k: v for k, v in resp_headers.items() if k.lower() != "content-length"}
+    resp_headers.pop(WARNING_HEADER, None)
+    status = resp.status_code
+    content_type = resp.headers.get("content-type", JSON)
+
+    collected: list[bytes] = []
+    size = 0
+    oversize = False
+    try:
+        async for chunk in resp.aiter_bytes():
+            size += len(chunk)
+            if size > _MAX_COMPLETION_SCAN_BYTES:
+                oversize = True
+                break
+            collected.append(chunk)
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "llm_proxy: upstream stream broke (block) provider=%s: %s",
+            provider_name,
+            exc_kind(exc),
+        )
+        op.settle(Outcome.BACKEND_ERROR, op.flag_reason)
+        await op.finish()
+        return Response(content="LLM upstream error", status_code=502, media_type=PLAIN_TEXT)
+    op.received = size
+
+    if oversize:
+        # Over the scan cap: unjudged, so block withholds (fail closed).
+        op.settle(Outcome.BLOCKED_DEFENSE, "completion_oversize")
+        await op.finish()
+        logger.warning(
+            "llm_proxy: completion withheld (block, over scan cap) profile=%s provider=%s",
+            profile.name,
+            provider_name,
+        )
+        return Response(
+            content=json.dumps(_deny_marker("completion_oversize", mode="block")),
+            status_code=403,
+            media_type=JSON,
+        )
+
+    body = b"".join(collected)
+    judgement = await judge_llm_completion(
+        body.decode("utf-8", errors="replace"),
+        profile=profile,
+        provider_name=provider_name,
+        deadline=_JUDGE_DEADLINE,
+    )
+    if judgement.flagged or judgement.unjudged:
+        reason = "completion_flagged" if judgement.flagged else "completion_unjudged"
+        op.settle(Outcome.BLOCKED_DEFENSE, reason)
+        await op.finish()
+        logger.warning(
+            "llm_proxy: completion withheld (block) profile=%s provider=%s reason=%s risk=%s",
+            profile.name,
+            provider_name,
+            reason,
+            judgement.risk,
+        )
+        marker = _deny_marker(reason, flagged_by=judgement.flagged_by, mode="block")
+        return Response(content=json.dumps(marker), status_code=403, media_type=JSON)
+
+    # Clean: safe to deliver, buffered (the stream was traded for the scan).
+    op.settle(upstream_outcome(status), op.flag_reason)
+    await op.finish()
+    if warning:
+        resp_headers[WARNING_HEADER] = warning
+    return Response(content=body, status_code=status, headers=resp_headers, media_type=content_type)

@@ -436,12 +436,14 @@ class LlmCompletionJudgement:
 
     The ``/proxy/llm`` response edge. In flag mode (the default) the completion
     has already streamed, so these facts are RECORDED only; a block profile
-    buffers and withholds on ``flagged`` (the enforcement path). ``risk``/
-    ``flagged_by`` are the closed-set facts the detection row and any future deny
-    marker carry.
+    buffers and withholds on ``flagged`` OR ``unjudged`` (a scan that did not
+    complete — timeout, failure, or over the cap — fails closed). ``risk``/
+    ``flagged_by`` are the closed-set facts the detection row and the deny marker
+    carry.
     """
 
     flagged: bool
+    unjudged: bool
     risk: str
     flagged_by: str | None
 
@@ -456,25 +458,24 @@ async def judge_llm_completion(
     """Judge an assembled LLM completion — the /proxy/llm response edge.
 
     Runs L1/L2/L3 over the completion as ``MODEL_OUTPUT``, deadline- and
-    exception-bounded: in flag mode (today's only caller) this runs AFTER the
-    stream ends, outside the request's context, so a hung judge must not leave an
-    unbounded task. A timeout, a failed scan or a failed deferred import is logged
-    and reported as no finding (``flagged`` False): flag has already streamed the
-    completion, so there is nothing to retract and nothing to record. The block
-    path (which buffers before releasing) will need a distinct unjudged signal to
-    withhold on a scan that did not complete; it is added with that path, not
-    inferred from ``flagged`` here. The ``defend()`` call lives here, on the
-    response edge; the proxy records the finding.
+    exception-bounded. In flag mode it runs AFTER the stream ends, outside the
+    request's context, so a hung judge must not leave an unbounded task; the
+    finding is recorded only, since a stream cannot be retracted. In block mode
+    the caller buffers the completion first and withholds on ``flagged`` or
+    ``unjudged``. A timeout, a failed scan or a failed deferred import is logged
+    and reported as ``unjudged`` with no flag — fail closed, so block withholds
+    and flag simply records nothing. The ``defend()`` call lives here, on the
+    response edge.
 
     Args:
         text: The assembled completion as text the layers read.
         profile: The calling profile, whose ``defense`` settings the scan runs under.
         provider_name: The upstream provider (server-configured; the row's backend).
-        deadline: Seconds the scan may take before a timeout reports no finding.
+        deadline: Seconds the scan may take before a timeout counts as unjudged.
 
     Returns:
-        An ``LlmCompletionJudgement``: ``flagged`` and the ``risk``/``flagged_by``
-        facts the proxy records the finding from.
+        An ``LlmCompletionJudgement``: ``flagged``/``unjudged`` and the
+        ``risk``/``flagged_by`` facts the proxy records or withholds from.
     """
     try:
         # Deferred INSIDE the try: the import is heavy, is the completion-scan
@@ -491,15 +492,18 @@ async def judge_llm_completion(
                     defense=profile.defense,
                     provenance=Provenance.MODEL_OUTPUT,
                 )
+        # Inside the try: a malformed verdict's gap derivation fails closed
+        # (unjudged) rather than propagating out of the background task.
+        unjudged = gaps_of(verdict).blocking()
     except TimeoutError:
         # The scan outran the deadline. In flag mode the response already
-        # streamed, so this is recorded and dropped; it never reaches the caller.
+        # streamed, so this is recorded and dropped; in block it withholds.
         logger.warning(
             "llm: post-hoc completion scan timed out profile=%s provider=%s",
             profile.name,
             provider_name,
         )
-        return LlmCompletionJudgement(flagged=False, risk="unknown", flagged_by=None)
+        return LlmCompletionJudgement(flagged=False, unjudged=True, risk="unknown", flagged_by=None)
     except Exception as exc:
         logger.error(  # the message may carry the completion (#262)
             "llm: post-hoc completion scan failed profile=%s provider=%s: %s at %s",
@@ -508,9 +512,10 @@ async def judge_llm_completion(
             exc_kind(exc),
             exc_where(exc),
         )
-        return LlmCompletionJudgement(flagged=False, risk="unknown", flagged_by=None)
+        return LlmCompletionJudgement(flagged=False, unjudged=True, risk="unknown", flagged_by=None)
     return LlmCompletionJudgement(
         flagged=verdict.flagged,
+        unjudged=unjudged,
         risk=verdict.risk_level,
         flagged_by=verdict.flagged_by.value if verdict.flagged_by else None,
     )

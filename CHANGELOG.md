@@ -10,6 +10,10 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- A per-profile block/flag guard on the `/proxy/llm` **completion** edge: `defense.llm_completion` (`flag` by default, `block` to opt in). `flag` is today's behavior — the completion streams back untouched and is judged post-hoc (`source_type=llm_completion`), recording a flag but never retracting what already streamed, since a token stream has no annotation channel and an interactive seat keeps its time-to-first-token. `block` buffers the whole completion, judges it, and **withholds** a flagged or not-fully-judged one (a timeout, a scan failure, or a body over the scan cap all fail closed to `completion_unjudged`/`completion_oversize`); the agent gets the same deny marker as a request refusal, never the completion. This is a separate knob from the per-provider request `enforcement` because withholding model output is a property of the consuming agent's trust posture, not of which provider answered — the trade an autonomous seat with no human waiting can make. `redact` is meaningless on a stream and refused. The `defend()` call for the completion now lives on the orchestrator's response edge (`judge_llm_completion`). See [docs/llm-proxying.md](docs/llm-proxying.md).
+
 ### Fixed
 
 - The surface report's `offered` stage counts the tools pinning holds (#469). It was measured after the hold, so a backend whose tools awaited approval looked smaller than it is and the allowlist's savings were understated: the README demo, in front of a Workspace backend listing 122 tools, reported 17 offered and 61% saved. A held tool is still what the backend offers; it is still withheld from the served list.

@@ -230,6 +230,14 @@ class TestProfileModel:
         assert d.audit is True
         assert d.l2_threshold is None  # the model's own threshold (#350)
 
+    def test_llm_completion_guard(self) -> None:
+        # The /proxy/llm response edge: flag by default (today's stream+record),
+        # block opt-in (buffer-scan-release), redact meaningless on a token stream.
+        assert DefenseConfig().llm_completion == "flag"
+        assert DefenseConfig(llm_completion="block").llm_completion == "block"
+        with pytest.raises(ValidationError):
+            DefenseConfig(llm_completion="redact")
+
     def test_defense_threshold_bounds(self) -> None:
         with pytest.raises(ValidationError):
             DefenseConfig(l2_threshold=1.5)
