@@ -7,12 +7,15 @@ the gateway audits as ``blocked_defense`` (#293), never ``ok``.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from tests.egress_harness import route
+from trentina import orchestrator as orchestrator_mod
 from trentina.client import fetch_url
 from trentina.errors import (
     BlockedSourceError,
@@ -369,3 +372,28 @@ class TestSafeFetchAdvisory:
             pytest.raises(FetchError, match="HTTP 404"),
         ):
             await block_fetch("https://example.com/missing")
+
+
+async def test_judge_fetched_error_body_relocates_the_defend_call() -> None:
+    """The error-body defend() lives in the orchestrator now; pin its wire."""
+    captured: dict[str, Any] = {}
+
+    async def _spy(body: str, **kw: Any) -> SimpleNamespace:
+        captured["body"] = body
+        captured.update(kw)
+        return SimpleNamespace(flagged=False)
+
+    with patch.object(orchestrator_mod, "defend", _spy):
+        # Advisory path: carries the fetch tool's steering briefing.
+        await orchestrator_mod.judge_fetched_error_body(
+            "boom", source="https://x/y", l3_context="BRIEF"
+        )
+        assert captured["source"] == "https://x/y"
+        assert captured["source_type"] == "url"
+        assert captured["record"] is False
+        assert captured["l3_context"] == "BRIEF"
+        # Honeypot path: no briefing.
+        captured.clear()
+        await orchestrator_mod.judge_fetched_error_body("boom", source="https://x/y")
+        assert captured["l3_context"] is None
+        assert captured["record"] is False

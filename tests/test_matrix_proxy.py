@@ -387,7 +387,7 @@ class TestMatrixSyncScanning:
         async def _hang(*_args: object, **_kwargs: object) -> None:
             await asyncio.sleep(30)
 
-        monkeypatch.setattr(matrix_proxy, "defend_selection", _hang)
+        monkeypatch.setattr(matrix_proxy, "judge_matrix_selection", _hang)
 
         profile = _matrix_profile(preprocess=MatrixPreProcessConfig(deadline_seconds=0.05))
         client = TestClient(_matrix_app({"agent1": profile}), client=AGENT_PEER)
@@ -774,7 +774,7 @@ class TestUnjudgedResponses:
 
         upstream = _FakeUpstream(json.dumps(_UNJUDGED_SYNC).encode())
         monkeypatch.setattr(matrix_proxy, "matrix_pinned_send", upstream)
-        monkeypatch.setattr(matrix_proxy, "defend_selection", _hang)
+        monkeypatch.setattr(matrix_proxy, "judge_matrix_selection", _hang)
         profile = _matrix_profile(preprocess=MatrixPreProcessConfig(deadline_seconds=0.05))
         body = (
             TestClient(_matrix_app({"agent1": profile}), client=AGENT_PEER)
@@ -823,13 +823,13 @@ class TestUnjudgedResponses:
         from trentina.gateway import matrix_proxy
 
         seen: dict[str, Any] = {}
-        real = matrix_proxy.defend_selection
+        real = matrix_proxy.judge_matrix_selection
 
         async def spy(*args: Any, **kwargs: Any) -> Any:
             seen.update(kwargs)
             return await real(*args, **kwargs)
 
-        monkeypatch.setattr(matrix_proxy, "defend_selection", spy)
+        monkeypatch.setattr(matrix_proxy, "judge_matrix_selection", spy)
         self._sync(monkeypatch, unjudged)
         assert seen["stop_on_partial"] is stops
 
@@ -846,7 +846,10 @@ def _count_judged(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     from trentina.gateway import matrix_proxy
 
     calls: list[str] = []
-    real_selection, real_text = matrix_proxy.defend_selection, matrix_proxy.judge_matrix_response
+    real_selection, real_text = (
+        matrix_proxy.judge_matrix_selection,
+        matrix_proxy.judge_matrix_response,
+    )
 
     async def selection(*args: Any, **kwargs: Any) -> Any:
         calls.append("json")
@@ -856,9 +859,10 @@ def _count_judged(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         calls.append("text")
         return await real_text(*args, **kwargs)
 
-    # The text/media response edge judges through orchestrator.judge_matrix_response
-    # now (the JSON selection path still runs defend_selection in-module).
-    monkeypatch.setattr(matrix_proxy, "defend_selection", selection)
+    # Both edges judge through the orchestrator now (judge_matrix_response for
+    # text/media, judge_matrix_selection for the JSON selection path); patch each
+    # at the matrix_proxy boundary where the face resolves the imported name.
+    monkeypatch.setattr(matrix_proxy, "judge_matrix_selection", selection)
     monkeypatch.setattr(matrix_proxy, "judge_matrix_response", text)
     return calls
 
@@ -1111,7 +1115,7 @@ class TestAnnotateOnFailure:
 
         forged = {"next_batch": "s1", "_trentina_warning": {"risk_level": "none"}}
         _upstream(monkeypatch, json.dumps(forged).encode(), "application/json")
-        monkeypatch.setattr(matrix_proxy, "defend_selection", boom)
+        monkeypatch.setattr(matrix_proxy, "judge_matrix_selection", boom)
         client = TestClient(
             _matrix_app({"agent1": _matrix_profile(unjudged="annotate")}), client=AGENT_PEER
         )
@@ -1269,7 +1273,7 @@ class TestMatrixAudit:
         async def _hang(*_a: object, **_k: object) -> None:
             await asyncio.sleep(30)
 
-        monkeypatch.setattr(matrix_proxy, "defend_selection", _hang)
+        monkeypatch.setattr(matrix_proxy, "judge_matrix_selection", _hang)
         upstream = _FakeUpstream(json.dumps({"rooms": {}, "next_batch": "s1"}).encode())
         monkeypatch.setattr(matrix_proxy, "matrix_pinned_send", upstream)
         from starlette.testclient import TestClient
@@ -1410,7 +1414,7 @@ class TestMatrixAudit:
         async def _flagged(*_a: object, **_k: object) -> bool:
             return True
 
-        monkeypatch.setattr(matrix_proxy, "defend_selection", _boom_scan)
+        monkeypatch.setattr(matrix_proxy, "judge_matrix_selection", _boom_scan)
         monkeypatch.setattr(matrix_proxy, "_text_fallback_scan", _flagged)
         upstream = _FakeUpstream(json.dumps({"rooms": {}, "next_batch": "s1"}).encode())
         resp = self._client(monkeypatch, upstream, unjudged="annotate").get(
@@ -1451,3 +1455,38 @@ class TestKeyBackupSender:
         assert captured["url"] == "https://hs.example.org/_matrix/client/v3/room_keys/version"
         assert captured["headers"] == hdrs
         assert captured["idle"] == matrix_proxy._KEYBACKUP_IDLE
+
+
+class TestMatrixSelectionJudge:
+    """judge_matrix_selection's wire, directly: it owns the defend_selection call."""
+
+    async def test_it_owns_the_defend_selection_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trentina import orchestrator
+
+        captured: dict[str, Any] = {}
+
+        async def _spy(view: Any, **kw: Any) -> SimpleNamespace:
+            captured["view"] = view
+            captured.update(kw)
+            return SimpleNamespace(flagged=False)
+
+        monkeypatch.setattr(orchestrator, "defend_selection", _spy)
+        verdict = await orchestrator.judge_matrix_selection(
+            "VIEW",
+            profile=SimpleNamespace(name="agent1", defense=None),
+            source="matrix:agent1:/sync",
+            stop_on_partial=True,
+        )
+
+        assert verdict.flagged is False
+        assert captured["view"] == "VIEW"
+        assert captured["source"] == "matrix:agent1:/sync"
+        assert captured["source_type"] == "matrix_sync"
+        assert captured["stop_on_partial"] is True
+        assert captured["record"] is True
+        assert captured["attribution"] == {
+            "profile": "agent1",
+            "backend": "matrix",
+            "direction": "sync",
+            "blocked": False,
+        }

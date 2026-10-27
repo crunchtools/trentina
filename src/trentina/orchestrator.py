@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 from .core import gate, identity
 from .core.dispose import Decision, dispose
 from .core.stages import Judged
-from .defense import Provenance, defend, defend_json
+from .defense import Provenance, defend, defend_json, defend_selection
 from .gateway.context import profile_context
 from .gateway.ingress_defense import IngressDecision, disposed_response, scan_response
 from .gateway.outbound import (
@@ -724,6 +724,95 @@ async def judge_alert(
         record=False,
     )
     return AlertJudgement(verdict=first, forward_payload=None, joined_text=first.content)
+
+
+async def judge_tool_arguments(
+    text: str,
+    *,
+    profile: Profile,
+    backend: str,
+    tool: str,
+    l3_context: str,
+    call_ref: str | None,
+) -> DefenseVerdict:
+    """Judge a guarded tool call's serialized arguments — the request-edge arg guard.
+
+    The gatekeeper serializes a guarded call's arguments and this judges them as
+    ``MODEL_OUTPUT`` (the agent wrote them) before the backend sees them.
+    ``stop_on_partial`` decides at admission, so an over-cap argument blob is
+    refused without paying for a partial scan, and ``blocked`` is True because a
+    flag here refuses the call. The ``defend()`` call lives here; the gatekeeper
+    keeps its ``GateRefusal`` wire (reading ``flagged`` and ``gaps_of``) and its
+    own briefing, passed in as ``l3_context``.
+    """
+    return await defend(
+        text,
+        source=f"{profile.name}:{backend}:{tool}:arguments",
+        source_type="tool_arguments",
+        defense=profile.defense,
+        provenance=Provenance.MODEL_OUTPUT,
+        stop_on_partial=True,
+        l3_context=l3_context,
+        attribution={
+            "profile": profile.name,
+            "backend": backend,
+            "tool": tool,
+            "direction": "arguments",
+            "blocked": True,
+            "call_ref": call_ref,
+        },
+    )
+
+
+async def judge_fetched_error_body(
+    body: str,
+    *,
+    source: str,
+    l3_context: str | None = None,
+) -> DefenseVerdict:
+    """Judge an HTTP error body a fetch tool got back — the error response edge.
+
+    A 4xx/415/406 body is attacker-controlled text that is never delivered as
+    content, so it is scanned (``record=False``) only so the fetch tool can turn
+    a suspicious verdict into a security advisory, or a honeypot can capture it
+    with every layer's verdict. The ``defend()`` call lives here; ``fetch`` keeps
+    the advisory it builds and the honeypot capture it records. ``l3_context`` is
+    the fetch tool's own briefing for the advisory path, or None for a honeypot
+    capture.
+    """
+    return await defend(body, source=source, source_type="url", record=False, l3_context=l3_context)
+
+
+async def judge_matrix_selection(
+    view: Any,
+    *,
+    profile: Profile,
+    source: str,
+    stop_on_partial: bool,
+) -> DefenseVerdict:
+    """Judge the selected subset of a Matrix /sync JSON response — the selection edge.
+
+    The extractor decided WHAT to read; this judges what it means
+    (``defend_selection`` over the ``view``). The matrix proxy keeps the deadline
+    that wraps BOTH the extraction and this call, its withhold/annotate
+    disposition (``_forward_judged``), and the timeout/parse-failure fallbacks;
+    only the ``defend_selection()`` call lives here. ``stop_on_partial`` refuses a
+    partial scan at admission under withhold, so it is not paid for.
+    """
+    return await defend_selection(
+        view,
+        source=source,
+        source_type="matrix_sync",
+        defense=profile.defense,
+        stop_on_partial=stop_on_partial,
+        record=True,
+        attribution={
+            "profile": profile.name,
+            "backend": "matrix",
+            "direction": "sync",
+            "blocked": False,
+        },
+    )
 
 
 async def judge_and_deliver(

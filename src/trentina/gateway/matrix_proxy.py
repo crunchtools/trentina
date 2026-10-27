@@ -59,12 +59,15 @@ import httpx
 from starlette.responses import Response, StreamingResponse
 
 from ..channels import Channel
-from ..defense import defend_selection
 from ..errors import EgressRefusedError
 from ..logsafe import exc_kind, exc_where, redact_source, safe_url
 from ..matrix.keybackup import KeyBackupProvider
 from ..modes import gaps_of
-from ..orchestrator import judge_matrix_response, judge_matrix_text_fallback
+from ..orchestrator import (
+    judge_matrix_response,
+    judge_matrix_selection,
+    judge_matrix_text_fallback,
+)
 from ..outcomes import Outcome
 from ..reserved import WARNING_KEY, strip_reserved, with_stripped
 from ..transforms import SelectionContext
@@ -690,22 +693,16 @@ async def _scan_and_forward(
                     path=path,
                 ),
             )
-            verdict = await defend_selection(
+            # Withholding refuses a partial scan anyway, so it is refused at
+            # admission rather than paid for (#227); annotate keeps the head scan
+            # it forwards with. The defend_selection() call lives in the
+            # orchestrator now (the selection edge); the deadline above still
+            # wraps both the extraction and this judge.
+            verdict = await judge_matrix_selection(
                 view,
+                profile=profile,
                 source=f"matrix:{profile.name}:{path}",
-                source_type="matrix_sync",
-                defense=profile.defense,
-                # Withholding refuses a partial scan anyway, so it is refused
-                # at admission rather than paid for (#227). annotate keeps
-                # the head scan it forwards with.
                 stop_on_partial=_withholds(profile),
-                record=True,
-                attribution={
-                    "profile": profile.name,
-                    "backend": "matrix",
-                    "direction": "sync",
-                    "blocked": False,
-                },
             )
     except TimeoutError:
         # Must precede the bare `except Exception`: TimeoutError descends from

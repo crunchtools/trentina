@@ -12,6 +12,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from tests.refusal_shape import refused, refused_text
+from trentina import orchestrator as orchestrator_mod
 from trentina.database import has_sent_to, record_gateway_call
 from trentina.errors import QuarantineAgentError
 from trentina.gateway import gatekeeper, session_marks
@@ -77,7 +78,9 @@ class _Judge:
         self.defend = AsyncMock(return_value=_verdict(flagged=flagged))
         self.generate = AsyncMock(side_effect=self._generate)
         self._patches = [
-            patch.object(gatekeeper, "defend", self.defend),
+            # defend() moved to the orchestrator (judge_tool_arguments); gaps_of
+            # stays in the gatekeeper, which still reads it off the verdict.
+            patch.object(orchestrator_mod, "defend", self.defend),
             patch.object(gatekeeper, "gaps_of", lambda _v: _gaps(blocking=blocking)),
             patch.object(gatekeeper, "quarantine_generate", self.generate),
             patch.object(gatekeeper, "llm_available", lambda: llm),
@@ -759,3 +762,39 @@ class TestPrompt:
         rendered = gatekeeper.GATEKEEPER_SYSTEM_PROMPT.format(policy="P-RULE")
         assert rendered.count("P-RULE") == 1
         assert '{"decision": "allow" or "refuse"' in rendered
+
+
+async def test_judge_tool_arguments_relocates_the_defend_call() -> None:
+    """The arg-guard defend() lives in the orchestrator now; pin its wire."""
+    captured: dict[str, Any] = {}
+
+    async def _spy(text: str, **kw: Any) -> SimpleNamespace:
+        captured["text"] = text
+        captured.update(kw)
+        return _verdict(flagged=False)
+
+    with patch.object(orchestrator_mod, "defend", _spy):
+        verdict = await orchestrator_mod.judge_tool_arguments(
+            '{"to":"x"}',
+            profile=SimpleNamespace(name="alpha", defense=None),
+            backend="mail",
+            tool="send_message",
+            l3_context="BRIEF",
+            call_ref="c1",
+        )
+
+    assert verdict.flagged is False
+    assert captured["text"] == '{"to":"x"}'
+    assert captured["source"] == "alpha:mail:send_message:arguments"
+    assert captured["source_type"] == "tool_arguments"
+    assert captured["stop_on_partial"] is True
+    assert captured["l3_context"] == "BRIEF"
+    assert captured["provenance"].name == "MODEL_OUTPUT"
+    assert captured["attribution"] == {
+        "profile": "alpha",
+        "backend": "mail",
+        "tool": "send_message",
+        "direction": "arguments",
+        "blocked": True,
+        "call_ref": "c1",
+    }

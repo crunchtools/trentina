@@ -38,7 +38,6 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from ..defense import Provenance, defend
 from ..errors import QuarantineAgentError
 from ..logsafe import exc_kind
 from ..modes import gaps_of
@@ -310,23 +309,17 @@ async def evaluate(
     if cfg.refuse_when_flagged and facts.session_flagged is not False:
         return GateRefusal(SESSION_FLAGGED, facts)
     text = json.dumps(arguments, sort_keys=True, ensure_ascii=False, default=str)
-    verdict = await defend(
+    # The defend() call lives in the orchestrator (the request-edge arg guard).
+    # Lazy: gateway.router imports the orchestrator during this package's load.
+    from ..orchestrator import judge_tool_arguments
+
+    verdict = await judge_tool_arguments(
         text,
-        source=f"{profile.name}:{facts.backend}:{facts.tool}:arguments",
-        source_type="tool_arguments",
-        defense=profile.defense,
-        provenance=Provenance.MODEL_OUTPUT,
-        stop_on_partial=True,
+        profile=profile,
+        backend=facts.backend,
+        tool=facts.tool,
         l3_context=ARGUMENTS_BRIEFING,
-        attribution={
-            "profile": profile.name,
-            "backend": facts.backend,
-            "tool": facts.tool,
-            "direction": "arguments",
-            # A flag here refuses the call. Nothing reads this source back.
-            "blocked": True,
-            "call_ref": current_call.get() or None,
-        },
+        call_ref=current_call.get() or None,
     )
     if verdict.flagged:
         return GateRefusal(ARGUMENTS_FLAGGED, facts)
