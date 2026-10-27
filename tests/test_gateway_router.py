@@ -1220,6 +1220,19 @@ class TestSurfaceRecording:
         assert report["served"]["bytes"] == wire_bytes(resp["result"]["tools"])
         assert report["by_backend"]["mcp-slack"]["allowed"]["tools"] == 1
 
+    async def test_a_held_tool_still_counts_as_offered(self) -> None:
+        """Pinning (#469) withholds a tool from the served list, not from what
+        the backend offers: offered is what a direct client would pay for."""
+        from trentina.gateway.surface import surface_report
+
+        with patch("trentina.gateway.router.tool_pins.check_tools", lambda *_: []):
+            await self._list(_profile())
+        report = surface_report("testp")
+
+        assert report is not None
+        assert report["offered"]["tools"] == 3
+        assert report["served"]["tools"] == 0
+
     async def test_invalidation_drops_the_surface(self) -> None:
         from trentina.gateway.router import invalidate_profile_cache
         from trentina.gateway.surface import surface_report
