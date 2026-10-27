@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .core import gate, identity
+from .core.dispose import Decision, dispose
 from .core.stages import Judged
 from .defense import Provenance, defend
 from .gateway.context import profile_context
@@ -263,16 +264,15 @@ async def judge_egress_response(
         # Fail closed: no verdict is an unjudged response. block withholds it,
         # flag warns — the same the route did when it owned the scan.
         return ResponseJudgement(refuse=blocking, flagged=False, unjudged=True, risk="unknown")
-    flagged = verdict.flagged
-    unjudged = gaps_of(verdict).blocking()
-    # block withholds a flagged or unjudged response; flag never withholds. This
-    # is exactly ``dispose()``'s BLOCK rule for an un-allowlisted source
-    # (``refusal_reason`` is non-None iff flagged or a blocking gap), kept inline
-    # because the route's own deny marker, not ``core.render``, words the refusal.
+    # The one gate policy decides whether to refuse — ``dispose()``, never a
+    # second copy here — so the response edge cannot drift from it. The route
+    # then words its own deny marker (block) or warning header (flag) from the
+    # facts below, because egress's wire is not ``core.render``'s.
+    refuse = dispose(verdict, posture).decision is Decision.REFUSE
     return ResponseJudgement(
-        refuse=blocking and (flagged or unjudged),
-        flagged=flagged,
-        unjudged=unjudged,
+        refuse=refuse,
+        flagged=verdict.flagged,
+        unjudged=gaps_of(verdict).blocking(),
         risk=verdict.risk_level,
     )
 
