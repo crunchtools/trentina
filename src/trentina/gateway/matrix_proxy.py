@@ -64,8 +64,8 @@ from ..errors import EgressRefusedError
 from ..logsafe import exc_kind, exc_where, redact_source, safe_url
 from ..matrix.keybackup import KeyBackupProvider
 from ..modes import gaps_of
+from ..orchestrator import judge_matrix_response
 from ..outcomes import Outcome
-from ..quarantine.prompts import RISK_LEVELS
 from ..reserved import WARNING_KEY, strip_reserved, with_stripped
 from ..transforms import SelectionContext
 from ..unpack.ocr import MAX_IMAGE_BYTES
@@ -935,29 +935,16 @@ async def _scan_text_and_forward(
         if ingress is not None
         else _FALLBACK_SCAN_DEADLINE_SECONDS
     )
-    flagged, unjudged, risk = False, True, "unknown"
-    try:
-        async with asyncio.timeout(deadline):
-            verdict = await defend(
-                base64.b64encode(buffered).decode("ascii")
-                if image
-                else buffered.decode("utf-8", errors="replace"),
-                source=f"matrix:{profile.name}:{path}",
-                source_type="matrix_sync",
-                defense=profile.defense,
-                stop_on_partial=_withholds(profile),
-            )
-        flagged, unjudged = verdict.flagged, gaps_of(verdict).blocking()
-        # A closed set, never L3 prose.
-        risk = verdict.risk_level if verdict.risk_level in RISK_LEVELS else "unknown"
-    except Exception as exc:
-        # TimeoutError too: either way no verdict was reached.
-        logger.error(  # the message may carry the payload (#262)
-            "matrix_proxy: text scan failed for %s: %s at %s",
-            redact_source(path),
-            exc_kind(exc),
-            exc_where(exc),
-        )
+    judgement = await judge_matrix_response(
+        base64.b64encode(buffered).decode("ascii")
+        if image
+        else buffered.decode("utf-8", errors="replace"),
+        profile=profile,
+        source=f"matrix:{profile.name}:{path}",
+        stop_on_partial=_withholds(profile),
+        deadline=deadline,
+    )
+    flagged, unjudged, risk = judgement.flagged, judgement.unjudged, judgement.risk
     if unjudged and _withholds(profile):
         op.settle(Outcome.BLOCKED_DEFENSE, "response_withheld")
         return _refused()
