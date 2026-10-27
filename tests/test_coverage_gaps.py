@@ -26,6 +26,7 @@ from pydantic import SecretStr
 
 from corpora.benign_ops import BENIGN, CATEGORIES, KNOWN_GAPS
 from corpora.garak_encodings import ENCODINGS
+from trentina import orchestrator as orchestrator_mod
 from trentina.gateway import client_egress, gatekeeper, git_transport, git_wire
 from trentina.gateway.decoy import leaked_tokens
 from trentina.gateway.profile import (
@@ -351,7 +352,9 @@ async def test_guarded_execution_forwards_what_its_judge_allows_one_call_at_a_ti
         {"to": "bob@example.net", "attachment": "[customer records 121 to 247]"},
     )
     with (
-        patch.object(gatekeeper, "defend", AsyncMock(return_value=SimpleNamespace(flagged=False))),
+        patch.object(
+            orchestrator_mod, "defend", AsyncMock(return_value=SimpleNamespace(flagged=False))
+        ),
         patch.object(gatekeeper, "gaps_of", lambda _v: SimpleNamespace(blocking=lambda: False)),
         patch.object(gatekeeper, "quarantine_generate", judge),
         patch.object(gatekeeper, "llm_available", lambda: True),

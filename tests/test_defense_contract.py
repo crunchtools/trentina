@@ -187,3 +187,69 @@ class TestGateOwnership:
             "only the orchestrator may call it — these modules import it, which "
             "is a second way into the gate:\n  " + "\n  ".join(offenders)
         )
+
+
+class TestDefendOwnership:
+    """Every ``defend()`` reaches the layers from the orchestration layer.
+
+    ``defend``/``defend_json``/``defend_selection`` (defense.py) are the one way
+    content crosses L1/L2/L3. Trentina 3.0 Phase 5 moved every FACE's defend call
+    — matrix proxy + bridge, alert, the gatekeeper argument guard, egress, llm,
+    fetch's error bodies — onto an ``orchestrator.judge_*`` function, so a face
+    now hands content to the orchestrator and never calls ``defend`` itself.
+    Three modules may import it, each reached only through the orchestrator:
+
+    * ``orchestrator.py`` — the orchestration layer: every ``judge_*`` edge.
+    * ``gateway/ingress_defense.py`` — ``scan_response``, the proxied response-edge
+      scan primitive, called ONLY by ``orchestrator.scan_tool_response``.
+    * ``tools/judged.py`` — ``produce_judgement``, the internal-tool scan primitive,
+      called ONLY by ``orchestrator.judge_and_deliver``.
+
+    A new direct importer is a face reaching past the orchestrator to the layers
+    — the regression this phase closed. (Folding the two scan primitives' own
+    ``defend`` into the orchestrator is the deferred internal-tools-as-transports
+    work; until then they are the two named exemptions, each verified above to be
+    unreachable except through the orchestrator.)
+    """
+
+    ENTRIES = frozenset({"defend", "defend_json", "defend_selection"})
+    ALLOWED = frozenset({"orchestrator.py", "gateway/ingress_defense.py", "tools/judged.py"})
+
+    @classmethod
+    def _imports_defend(cls, path: Path) -> bool:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if _resolve(path, node) != "defense":
+                continue
+            if any(alias.name in cls.ENTRIES for alias in node.names):
+                return True
+        return False
+
+    def test_defend_is_imported_only_by_the_orchestration_layer(self) -> None:
+        offenders = sorted(
+            path.relative_to(SRC).as_posix()
+            for path in SRC.rglob("*.py")
+            if "__pycache__" not in path.parts
+            and path.relative_to(SRC).as_posix() not in self.ALLOWED
+            and self._imports_defend(path)
+        )
+        assert not offenders, (
+            "defend()/defend_json()/defend_selection() reach the layers, and "
+            "every face routes through an orchestrator.judge_* function instead "
+            "of calling them directly — these modules import one, which is a "
+            "face reaching past the orchestrator:\n  "
+            + "\n  ".join(offenders)
+            + "\n\nAdd an orchestrator judge_* edge for this face (see "
+            "judge_alert, judge_tool_arguments) rather than importing defend."
+        )
+
+    def test_the_allowed_scan_primitives_still_import_defend(self) -> None:
+        """An allowed exemption that no longer imports defend is a stale lie."""
+        for key in self.ALLOWED:
+            path = SRC / key
+            assert path.exists(), f"ALLOWED names a file that no longer exists: {key}"
+            assert self._imports_defend(path), (
+                f"{key} is allowed to import defend but no longer does — remove it from ALLOWED."
+            )
