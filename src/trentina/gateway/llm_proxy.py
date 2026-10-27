@@ -47,6 +47,7 @@ from starlette.responses import Response
 from ..errors import EgressRefusedError
 from ..logsafe import exc_kind, exc_where, redact_source
 from ..modes import Mode
+from ..orchestrator import judge_outbound
 from ..outcomes import Outcome
 from .auth import resolve_profile_by_token
 from .context import profile_context
@@ -68,7 +69,6 @@ from .outbound import (
     REASON_FLAGGED,
     REASON_UNJUDGED,
     body_text,
-    judge_outbound,
 )
 from .proxy_utils import (
     PLAIN_TEXT,
@@ -378,7 +378,7 @@ async def _judge_request(
     # reason is non-None whenever blocks()/warning holds; the `or` only narrows
     # the Optional for the type checker.
     reason_code = verdict.reason or REASON_UNJUDGED
-    if mode is Mode.BLOCK and verdict.blocks():
+    if verdict.refused:
         reason = _REASON_OF[reason_code]
         op.settle(Outcome.BLOCKED_DEFENSE, reason.value)
         logger.warning(

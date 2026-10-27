@@ -55,7 +55,7 @@ from starlette.responses import Response
 from .. import logsafe
 from ..errors import EgressRefusedError as GuardRefusedError
 from ..modes import Mode
-from ..orchestrator import judge_egress_response
+from ..orchestrator import judge_egress_response, judge_outbound
 from ..outcomes import Outcome
 from .auth import resolve_profile_by_token
 from .backend import response_byte_cap
@@ -76,7 +76,6 @@ from .outbound import (
     REASON_UNJUDGED,
     body_text,
     judge_input,
-    judge_outbound,
 )
 from .proxy_utils import PLAIN_TEXT, normalize_proxy_path
 from .relay import MAX_OPERATIONS_PER_PROFILE, NO_OPERATION, Operation, Slots, upstream_outcome
@@ -395,7 +394,7 @@ async def _judge_request(
         mode=mode,
         deadline=JUDGE_DEADLINE,
     )
-    if mode is Mode.BLOCK and verdict.blocks():
+    if verdict.refused:
         reason = _request_reason(verdict.reason or REASON_UNJUDGED)
         logger.warning("egress: request blocked profile=%s reason=%s", op.profile.name, reason)
         raise EgressRefusedError(HTTPStatus.FORBIDDEN, reason)
