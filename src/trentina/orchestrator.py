@@ -38,8 +38,9 @@ from .gateway.outbound import (
     detect_credentials,
     judge_input,
 )
-from .logsafe import exc_kind, exc_where
+from .logsafe import exc_kind, exc_where, redact_source
 from .modes import Mode, ModePolicy, gaps_of
+from .quarantine.prompts import RISK_LEVELS
 from .transports.base import Early, Transport
 
 logger = logging.getLogger(__name__)
@@ -513,6 +514,79 @@ async def judge_llm_completion(
         risk=verdict.risk_level,
         flagged_by=verdict.flagged_by.value if verdict.flagged_by else None,
     )
+
+
+@dataclass(frozen=True)
+class MatrixJudgement:
+    """A non-JSON Matrix /sync response reduced to what the proxy renders.
+
+    The matrix proxy's disposition is its own: withhold applies to an UNJUDGED
+    response (a coverage gap), while a FLAGGED event is always forwarded with a
+    warning, never withheld — withholding a flagged message would break the room.
+    So this is a fact-extractor, not a ``dispose()`` decision: the proxy reads
+    these facts and applies its own withhold/annotate wire. ``risk`` is a closed
+    ``RISK_LEVELS`` name, never L3 prose.
+    """
+
+    flagged: bool
+    unjudged: bool
+    risk: str
+
+
+async def judge_matrix_response(
+    document: str,
+    *,
+    profile: Profile,
+    source: str,
+    stop_on_partial: bool,
+    deadline: float,
+) -> MatrixJudgement:
+    """Judge a non-JSON Matrix /sync response — the text/media response edge.
+
+    Runs L1/L2/L3 over the response (plain text, or an image's base64 the unpack
+    stage reads by OCR). Deadline- and exception-bounded: a hung or failed scan
+    is treated as unjudged (``flagged`` False, ``unjudged`` True), so the proxy
+    withholds under ``withhold`` and warns under ``annotate``, never fails open.
+    The ``defend()`` call and the fact extraction live here, on the response edge;
+    the proxy keeps its own withhold/annotate wire and warning header.
+
+    Args:
+        document: The response as text the layers read (an image as its base64).
+        profile: The calling profile, whose ``defense`` settings the scan runs under.
+        source: The detection row's source (``matrix:<profile>:<path>``).
+        stop_on_partial: Whether a partial scan short-circuits (withhold refuses a
+            partial scan at admission; annotate keeps the head scan it forwards).
+        deadline: Seconds the scan may take before it counts as unjudged.
+
+    Returns:
+        A ``MatrixJudgement``: ``flagged``/``unjudged``/``risk``, the facts the
+        proxy words its warning or withholding from.
+    """
+    try:
+        async with asyncio.timeout(deadline):
+            verdict = await defend(
+                document,
+                source=source,
+                source_type="matrix_sync",
+                defense=profile.defense,
+                stop_on_partial=stop_on_partial,
+            )
+        flagged = verdict.flagged
+        unjudged = gaps_of(verdict).blocking()
+        # A closed set, never L3 prose.
+        risk = verdict.risk_level if verdict.risk_level in RISK_LEVELS else "unknown"
+    except Exception as exc:  # TimeoutError too: either way no verdict was reached
+        logger.error(  # the message may carry the payload (#262); source is hashed
+            "matrix: text response scan failed profile=%s source=%s: %s at %s",
+            profile.name,
+            redact_source(source),
+            exc_kind(exc),
+            exc_where(exc),
+        )
+        # Fail closed: no verdict is an unjudged response (withhold withholds it,
+        # annotate forwards with a warning) -- never the silent clean of a swallow.
+        return MatrixJudgement(flagged=False, unjudged=True, risk="unknown")
+    return MatrixJudgement(flagged=flagged, unjudged=unjudged, risk=risk)
 
 
 async def judge_and_deliver(
