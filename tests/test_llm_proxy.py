@@ -30,6 +30,7 @@ from trentina.gateway.llm_proxy import (
 )
 from trentina.gateway.profile import (
     AuthConfig,
+    DefenseConfig,
     LlmKeyOverride,
     Profile,
 )
@@ -1116,3 +1117,116 @@ async def test_an_upstream_mid_stream_break_is_backend_error(
     assert chunks == [b"partial"]  # what was relayed before the break
     assert (op.outcome, op.reason) == (Outcome.BACKEND_ERROR, "upstream_failed")
     assert op.received == len(b"partial")
+
+
+def _block_profile() -> Profile:
+    """An agent1 profile whose /proxy/llm completion edge is set to block."""
+    p = _profile("agent1", "agent1-tok", {"anthropic": "agent1-key"})
+    p.defense = DefenseConfig(llm_completion="block")
+    return p
+
+
+def _stub_completion(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    flagged: bool = False,
+    risk: str = "low",
+    completion_gaps: Any = None,
+) -> None:
+    """Stub both edges for a block-mode completion test.
+
+    The request edge (judge_outbound) resolves gaps in ``trentina.modes``; the
+    completion edge (judge_llm_completion) resolves them in
+    ``trentina.orchestrator``. ``defend`` branches on source_type so the request
+    stays clean while the completion carries the verdict under test.
+    """
+    from trentina import defense as defense_mod
+    from trentina import modes as modes_mod
+    from trentina import orchestrator as orch
+    from trentina.modes import Gaps
+
+    clean = SimpleNamespace(flagged=False, flagged_by=None, risk_level="low")
+    completion = SimpleNamespace(
+        flagged=flagged,
+        flagged_by=SimpleNamespace(value="L2") if flagged else None,
+        risk_level=risk,
+    )
+
+    async def defend(_doc: Any, **kw: Any) -> Any:
+        return completion if kw.get("source_type") == "llm_completion" else clean
+
+    monkeypatch.setattr(defense_mod, "defend", defend)
+    monkeypatch.setattr(modes_mod, "gaps_of", lambda _v: Gaps())
+    monkeypatch.setattr(orch, "gaps_of", lambda _v: completion_gaps or Gaps())
+
+
+class TestLlmCompletionBlock:
+    """defense.llm_completion=block: the completion is buffered, judged, and
+    withheld if flagged or not fully judged (the per-profile product call). flag,
+    the default exercised throughout above, streams through and records post-hoc."""
+
+    def _client(self, fake: _FakeClient, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+        monkeypatch.setattr(llm_proxy, "pinned_send", fake)
+        providers = {"anthropic": _anthropic_provider()}
+        profiles = {"agent1": _block_profile()}
+
+        async def endpoint(request: Request) -> Response:
+            return await _proxy_llm(request, providers, profiles)
+
+        app = Starlette(
+            routes=[Route("/proxy/llm/{provider}/{path:path}", endpoint, methods=["GET", "POST"])]
+        )
+        return TestClient(app)
+
+    def _post(self, client: TestClient, body: dict[str, Any]) -> Any:
+        return client.post(
+            "/proxy/llm/anthropic/v1/messages",
+            headers={"authorization": "Bearer agent1-tok"},
+            content=json.dumps(body).encode(),
+        )
+
+    def test_a_clean_completion_is_delivered_buffered(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        _stub_completion(monkeypatch)
+        resp = self._post(self._client(_FakeClient(), monkeypatch), _PLAIN)
+        assert resp.status_code == 200
+        assert resp.content == b'{"ok": true}'  # delivered intact, not withheld
+        [row] = _rows(audit_db)
+        assert row["outcome"] == "ok"
+
+    def test_a_flagged_completion_is_withheld(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        _stub_completion(monkeypatch, flagged=True, risk="high")
+        resp = self._post(self._client(_FakeClient(), monkeypatch), _PLAIN)
+        assert resp.status_code == 403
+        marker = resp.json()
+        assert marker["blocked"] is True
+        assert marker["block_reason"] == "completion_flagged"
+        assert resp.content != b'{"ok": true}'  # the completion never reaches the agent
+        [row] = _rows(audit_db)
+        assert (row["outcome"], row["error_message"]) == ("blocked_defense", "completion_flagged")
+
+    def test_an_unjudged_completion_is_withheld(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        from trentina.modes import Gaps
+
+        _stub_completion(monkeypatch, completion_gaps=Gaps(oversize=True))
+        resp = self._post(self._client(_FakeClient(), monkeypatch), _PLAIN)
+        assert resp.status_code == 403
+        assert resp.json()["block_reason"] == "completion_unjudged"
+        [row] = _rows(audit_db)
+        assert (row["outcome"], row["error_message"]) == ("blocked_defense", "completion_unjudged")
+
+    def test_a_completion_over_the_scan_cap_is_withheld(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        _stub_completion(monkeypatch)  # would be clean, but the cap is reached first
+        monkeypatch.setattr(llm_proxy, "_MAX_COMPLETION_SCAN_BYTES", 4)
+        resp = self._post(self._client(_FakeClient(), monkeypatch), _PLAIN)
+        assert resp.status_code == 403
+        assert resp.json()["block_reason"] == "completion_oversize"
+        [row] = _rows(audit_db)
+        assert (row["outcome"], row["error_message"]) == ("blocked_defense", "completion_oversize")

@@ -1060,6 +1060,21 @@ class DefenseConfig(BaseModel):
             "must be in this list."
         ),
     )
+    llm_completion: EnforcementMode = Field(
+        default="flag",
+        description=(
+            "How an LLM completion streamed back through /proxy/llm is judged "
+            "on the RESPONSE edge, independent of `enforcement` (which governs "
+            "the tool and request edges). flag (default): the completion "
+            "streams to the agent untouched and is scanned post-hoc, the "
+            "finding recorded only — a stream cannot be retracted once sent, "
+            "and an interactive seat keeps time-to-first-token. block: the "
+            "completion is buffered, judged, and WITHHELD if flagged or not "
+            "fully judged — the latency a buffer costs is one an autonomous "
+            "seat with no human waiting can pay. `redact` cannot apply to a "
+            "token stream and is refused here, as for `enforcement`."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod

@@ -109,9 +109,22 @@ Three consequences worth stating plainly:
   credential marker, an L-layer risk level, or `unjudged`; the specific gap
   names (`oversize`, `l3_unavailable`, …) are in a `block` refusal body only.
 
-The completion streams back unchanged and is judged after the last frame
-(`source_type=llm_completion`), which records a flag but cannot withhold what
-already streamed (see `_streaming_response`).
+The completion edge is governed per profile by `defense.llm_completion`
+(`flag` by default, `block` to opt in) — a separate knob from the per-provider
+request `enforcement`, because withholding *model output* is a property of the
+consuming agent's trust posture, not of which provider answered.
+
+- **`flag` (default).** The completion streams back unchanged and is judged
+  after the last frame (`source_type=llm_completion`), which records a flag but
+  cannot withhold what already streamed (see `_streaming_response`): a token
+  stream carries no annotation channel, and an interactive seat keeps its
+  time-to-first-token.
+- **`block`.** The completion is buffered, judged, and **withheld** if flagged
+  or not fully judged — a timeout, a scan failure, or a body over the scan cap
+  all fail closed to `completion_unjudged`/`completion_oversize`. The agent gets
+  the same deny marker as a request refusal, never the completion. Buffering
+  forfeits streaming, which is the trade an autonomous seat with no human
+  waiting can make; `redact` is meaningless on a token stream and is refused.
 
 ### What This Buys You
 
