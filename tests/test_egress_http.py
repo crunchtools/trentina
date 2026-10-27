@@ -109,9 +109,11 @@ def _clean_verdict() -> SimpleNamespace:
 
 def _stub_judge(monkeypatch: pytest.MonkeyPatch, *, req: Any = None, resp: Any = None) -> None:
     """Stub the request judge (outbound's lazy defend/gaps_of) and the response
-    judge (egress_http's defend/gaps_of). Default: everything clean."""
+    judge (the orchestrator's defend/gaps_of, via judge_egress_response). Default:
+    everything clean."""
     from trentina import defense as defense_mod
     from trentina import modes as modes_mod
+    from trentina import orchestrator as orchestrator_mod
     from trentina.modes import Gaps
 
     async def req_defend(*_a: Any, **_k: Any) -> Any:
@@ -122,8 +124,8 @@ def _stub_judge(monkeypatch: pytest.MonkeyPatch, *, req: Any = None, resp: Any =
 
     monkeypatch.setattr(defense_mod, "defend", req_defend)
     monkeypatch.setattr(modes_mod, "gaps_of", lambda _v: Gaps())
-    monkeypatch.setattr(egress_http, "defend", resp_defend)
-    monkeypatch.setattr(egress_http, "gaps_of", lambda _v: Gaps())
+    monkeypatch.setattr(orchestrator_mod, "defend", resp_defend)
+    monkeypatch.setattr(orchestrator_mod, "gaps_of", lambda _v: Gaps())
 
 
 def _profile(
@@ -383,8 +385,10 @@ class TestResponseJudging:
         from trentina.modes import Gaps
 
         _stub_judge(monkeypatch)  # request clean
-        # Make only the RESPONSE judge report a blocking gap.
-        monkeypatch.setattr(egress_http, "gaps_of", lambda _v: Gaps(oversize=True))
+        # Make only the RESPONSE judge (in the orchestrator) report a blocking gap.
+        from trentina import orchestrator as orchestrator_mod
+
+        monkeypatch.setattr(orchestrator_mod, "gaps_of", lambda _v: Gaps(oversize=True))
         h = _harness(monkeypatch)
         resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 403

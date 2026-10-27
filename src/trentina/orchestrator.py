@@ -8,24 +8,33 @@ property: parse the request, carry it, deliver the response, wrap it. A
 transport supplies the protocol; it does not get to choose the order, so it
 cannot skip the gate (Trentina 3.0 plan §A/§C).
 
-Phase 4 state: ``crossing`` drives the MCP ``tools/call`` path for a profile
-flagged ``orchestrated``, composing the gateway's existing collaborators
-through ``transports.mcp`` so its output is byte-identical to the hand-rolled
-``gateway/router.py`` path it will replace. The ``edge()`` Part mechanism (the
-one home for paging and streaming), the stage types it produces, and the
-``Posture`` it carries arrive in the later Phase 4 PRs as logic moves off the
-router and into here.
+``crossing`` drives the MCP ``tools/call`` path for every profile; the
+hand-rolled ``gateway/router.py`` path it replaced is gone. Alongside it this
+module owns the response-edge entries that run the gate for the ingresses that
+are not yet full transports — ``scan_tool_response`` (proxied), ``judge_response``
+(the sealed ``Judged`` stage), ``judge_and_deliver`` (internal tools) and
+``judge_egress_response`` (the terminating ``/proxy/http`` route) — so that
+``defend()`` and ``core.gate`` are reached from the orchestration layer and the
+order no caller may reorder is held here (Trentina 3.0 plan §A/§C).
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from .core import gate
+from .core import gate, identity
 from .core.stages import Judged
-from .defense import Provenance
+from .defense import Provenance, defend
+from .gateway.context import profile_context
 from .gateway.ingress_defense import IngressDecision, disposed_response, scan_response
+from .logsafe import exc_kind, exc_where
+from .modes import Mode, ModePolicy, gaps_of
 from .transports.base import Early, Transport
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -34,7 +43,6 @@ if TYPE_CHECKING:
     from .gateway.profile import Profile
     from .l1.hidden import HiddenStats
     from .l1.pipeline import PipelineResult
-    from .modes import Mode, ModePolicy
 
 
 async def crossing(transport: Transport, ctx: Any) -> Any:
@@ -178,6 +186,95 @@ async def judge_response(
         hidden=hidden,
     )
     return Judged(transformed=transformed, decision=decision)
+
+
+@dataclass(frozen=True)
+class ResponseJudgement:
+    """A terminating response-edge verdict reduced to what the face renders.
+
+    For an ingress that answers with one buffered reply (the ``/proxy/http``
+    egress route), not the staged ``tools/call`` path. ``refuse`` is the gate's
+    decision — ``dispose()`` concluded REFUSE, so ``block`` must withhold — while
+    ``flagged``/``unjudged``/``risk`` are the facts the face needs to word its own
+    deny marker (block) or warning header (flag). The face spells the wire; the
+    decision is made here.
+    """
+
+    refuse: bool
+    flagged: bool
+    unjudged: bool
+    risk: str
+
+
+async def judge_egress_response(
+    document: str,
+    *,
+    profile: Profile,
+    source: str,
+    domain: str,
+    blocking: bool,
+    deadline: float,
+) -> ResponseJudgement:
+    """Judge a terminating egress HTTP response — the response edge for /proxy/http.
+
+    Runs L1/L2/L3 over the response (its headers, and its body when text) and
+    disposes of the verdict under ``block`` or ``flag``. Deadline- and
+    exception-bounded: a hung or failed scan is treated as unjudged, so ``block``
+    withholds and ``flag`` warns, never fails open. The ``defend()`` call and the
+    ``dispose()`` decision live here, not at the route, so the gate is reached
+    from the orchestration layer; the route reads the ``ResponseJudgement`` and
+    raises its own refusal or sets its own warning header.
+
+    Args:
+        document: The response as text the layers read — headers always, the
+            body when it is text.
+        profile: The calling profile, whose ``defense`` settings the scan runs under.
+        source: The detection row's source (the destination, or the upstream host).
+        domain: The upstream host, for blocklist scoping.
+        blocking: True under ``block`` (a flag or blocking gap withholds), False
+            under ``flag`` (the response forwards with a warning).
+        deadline: Seconds the scan may take before it counts as unjudged.
+
+    Returns:
+        A ``ResponseJudgement``: ``refuse`` (block must withhold), and the
+        ``flagged``/``unjudged``/``risk`` facts the route words its wire from.
+    """
+    mode = Mode.BLOCK if blocking else Mode.FLAG
+    posture = identity.posture(mode, ModePolicy((mode,), mode))
+    try:
+        with profile_context(profile):
+            async with asyncio.timeout(deadline):
+                verdict = await defend(
+                    document,
+                    source=source,
+                    source_type="egress_response",
+                    defense=profile.defense,
+                    provenance=Provenance.EXTERNAL,
+                    stop_on_partial=posture.stop_on_partial,
+                    domain=domain,
+                )
+    except Exception as exc:  # TimeoutError too: no verdict was reached
+        logger.error(
+            "egress: response scan failed profile=%s: %s at %s",
+            profile.name,
+            exc_kind(exc),
+            exc_where(exc),
+        )
+        # Fail closed: no verdict is an unjudged response. block withholds it,
+        # flag warns — the same the route did when it owned the scan.
+        return ResponseJudgement(refuse=blocking, flagged=False, unjudged=True, risk="unknown")
+    flagged = verdict.flagged
+    unjudged = gaps_of(verdict).blocking()
+    # block withholds a flagged or unjudged response; flag never withholds. This
+    # is exactly ``dispose()``'s BLOCK rule for an un-allowlisted source
+    # (``refusal_reason`` is non-None iff flagged or a blocking gap), kept inline
+    # because the route's own deny marker, not ``core.render``, words the refusal.
+    return ResponseJudgement(
+        refuse=blocking and (flagged or unjudged),
+        flagged=flagged,
+        unjudged=unjudged,
+        risk=verdict.risk_level,
+    )
 
 
 async def judge_and_deliver(
