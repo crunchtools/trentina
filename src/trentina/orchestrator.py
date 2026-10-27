@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 from .core import gate, identity
 from .core.dispose import Decision, dispose
 from .core.stages import Judged
-from .defense import Provenance, defend
+from .defense import Provenance, defend, defend_json
 from .gateway.context import profile_context
 from .gateway.ingress_defense import IngressDecision, disposed_response, scan_response
 from .gateway.outbound import (
@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from .core.stages import Transformed
+    from .defense import DefenseVerdict
     from .gateway.profile import Profile
     from .l1.hidden import HiddenStats
     from .l1.pipeline import PipelineResult
@@ -592,6 +593,40 @@ async def judge_matrix_response(
         # annotate forwards with a warning) -- never the silent clean of a swallow.
         return MatrixJudgement(flagged=False, unjudged=True, risk="unknown")
     return MatrixJudgement(flagged=flagged, unjudged=unjudged, risk=risk)
+
+
+async def judge_matrix_bridge_event(
+    scanned: dict[str, Any],
+    *,
+    profile: Profile,
+    source: str,
+    direction: str,
+    blocked: bool,
+) -> DefenseVerdict:
+    """Judge one bridged Matrix event — the appservice response edge.
+
+    Runs L1 ∥ L2 → L3 over the event's scanned fields as one JSON document
+    (``defend_json``) under the profile's service identity, and hands the
+    verdict back. Bidirectional: ``direction`` is ``inbound`` or ``outbound``
+    and ``blocked`` the profile's enforcement, both carried onto the detection
+    row's attribution exactly as the bridge recorded them. The ``defend_json``
+    call lives here; the bridge renders its own warning (``build_warning``) and
+    refusal (``_refusal``) from the verdict, and delivers over the appservice.
+    """
+    with profile_context(profile):
+        result = await defend_json(
+            scanned,
+            source=source,
+            source_type="matrix_bridge",
+            defense=profile.defense,
+            record=True,
+            attribution={
+                "profile": profile.name,
+                "direction": direction,
+                "blocked": blocked,
+            },
+        )
+    return result.verdict
 
 
 async def judge_and_deliver(
