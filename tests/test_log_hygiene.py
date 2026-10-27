@@ -392,6 +392,7 @@ class TestProxies:
     async def test_matrix_unparseable_response_and_failed_fallback(
         self, captured: _Capture
     ) -> None:
+        from trentina import orchestrator
         from trentina.gateway import matrix_proxy
 
         from .test_matrix_proxy import _matrix_profile
@@ -399,7 +400,9 @@ class TestProxies:
         resp = httpx.Response(200, content=f"{{not json {CANARY}".encode())
         profile = _matrix_profile()
         op = matrix_proxy.Operation(profile, backend=matrix_proxy.BACKEND, tool="GET")
-        with patch.object(matrix_proxy, "defend", side_effect=RuntimeError(f"said {CANARY}")):
+        # The text-fallback defend() lives in the orchestrator now; patch it there
+        # so the fallback path still fails and logs (its message moved with it).
+        with patch.object(orchestrator, "defend", side_effect=RuntimeError(f"said {CANARY}")):
             await matrix_proxy._scan_and_forward(
                 resp,
                 {"content-type": "application/json"},
