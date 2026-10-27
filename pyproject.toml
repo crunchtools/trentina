@@ -283,3 +283,14 @@ ignore_missing_imports = true
 # instead (see the dependency comment above). A marker that is never true
 # removes the GUI build from every resolution.
 override-dependencies = ["opencv-python ; sys_platform == 'never'"]
+
+# Security floors on TRANSITIVE dependencies (both arrive through fastmcp:
+# authlib directly, dnspython via pydantic[email] -> email-validator). These
+# are constraints, not direct dependencies — we do not import either; we only
+# refuse to resolve a version with a known CVE. authlib is the OAuth/JWT stack
+# behind the gateway's proxy auth, so its advisories are load-bearing here.
+#   authlib < 1.9.0:  CVE-2026-96760, -114615, -114617, -114618, -114620
+#   dnspython < 2.9.0: CVE-2026-114605
+# Raise each floor (never lower it) as fixes land; drop a line only once no
+# resolvable version is affected.
+constraint-dependencies = ["authlib>=1.9.0", "dnspython>=2.9.0"]
