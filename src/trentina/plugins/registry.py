@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 
 from ..gateway.errors import ProfileConfigError
 from ..transforms.base import Transform
+from .isolation import Harnessed
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -123,4 +124,8 @@ def resolve_transform(
             f"Profile {profile_name!r}: plugin transform {ref!r} declares api_version "
             f"{api_version!r}; this build supports {sorted(SUPPORTED_TRANSFORM_API)}"
         )
-    return instance
+    # Every plugin runs behind the in-process harness (result type,
+    # amplification). The wrapper IS a Transform and passes the contract
+    # attributes through, so the channel/kind locks and the composition are
+    # unchanged. In-tree transforms are trusted and are not wrapped.
+    return Harnessed(instance)
