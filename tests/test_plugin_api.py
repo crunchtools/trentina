@@ -12,6 +12,7 @@ by an operator, not an agent.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -214,3 +215,41 @@ def test_plugin_config_is_scalar_only_no_credentials(monkeypatch: pytest.MonkeyP
     )
     assert set(captured) == {"skip_sample_bytes", "target_bytes"}
     assert captured["skip_sample_bytes"] == 512
+
+
+_PLUGIN_PROFILE = """
+profiles:
+  josui:
+    auth:
+      bearer_token_env: TRENTINA_TEST_TOKEN
+    preprocess:
+      enabled: true
+      processors: ["petit-plus:dedupe"]
+"""
+
+
+def test_loader_accepts_a_clean_plugin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A profile naming the benign fixture loads: its import scan is clean."""
+    from trentina.gateway.loader import load_profiles
+
+    monkeypatch.setenv("TRENTINA_TEST_TOKEN", "tok")
+    cfg = tmp_path / "profiles.yaml"
+    cfg.write_text(_PLUGIN_PROFILE)
+    assert "josui" in load_profiles(cfg).profiles
+
+
+def test_loader_refuses_a_plugin_that_violates_the_import_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The loader runs `scan_imports` for each referenced plugin and refuses by
+    name — a forbidden network import stands in for any violation."""
+    from trentina.gateway.loader import load_profiles
+
+    monkeypatch.setattr(
+        "trentina.testing.suite.scan_imports", lambda _dist: ["forbidden-import:socket"]
+    )
+    monkeypatch.setenv("TRENTINA_TEST_TOKEN", "tok")
+    cfg = tmp_path / "profiles.yaml"
+    cfg.write_text(_PLUGIN_PROFILE)
+    with pytest.raises(ProfileConfigError, match="violates the plugin contract"):
+        load_profiles(cfg)

@@ -31,6 +31,7 @@ from .profile import (
     EgressUpstream,
     GitRemote,
     MatrixIngressConfig,
+    ProcessorChainConfig,
     Profile,
     is_matrix_user_id,
 )
@@ -123,6 +124,7 @@ def _build_profile(name: str, body: Any) -> Profile:
     _resolve_grant_tokens(name, profile)
     _expand_backend_env_refs(name, profile)
     _check_drivers(name, profile)
+    _check_plugin_imports(name, profile)
     _check_destination_params(name, profile)
     _check_guarded_tools(name, profile)
     _resolve_bridge_secrets(name, profile)
@@ -133,6 +135,42 @@ def _build_profile(name: str, body: Any) -> Profile:
         _resolve_matrix_ingress_secrets(name, profile.matrix_ingress)
 
     return profile
+
+
+def _check_plugin_imports(name: str, profile: Profile) -> None:
+    """The load-bearing half of the plugin conformance suite (Phase 6): scan
+    each referenced plugin distribution's own source for import-boundary
+    violations (``trentina.testing.scan_imports``), once per distribution. A
+    plugin that imports a private ``trentina`` module or a network/subprocess
+    module is refused BY NAME at load.
+
+    Only the chains that accept a plugin ref are walked: the profile, each
+    backend's tool-description chain, the matrix ingress and the channel
+    bridges. A per-tool override cannot name a plugin (the ``ToolPreProcess``
+    validator refuses a ``dist:name``), so it carries none.
+    """
+    from ..testing.suite import scan_imports
+
+    chains: list[ProcessorChainConfig] = [profile.preprocess]
+    chains.extend(b.preprocess_tool_descriptions for b in profile.backends.values())
+    if profile.matrix_ingress is not None:
+        chains.append(profile.matrix_ingress.preprocess)
+    chains.extend(bridge.preprocess for bridge in profile.channel_bridges().values())
+
+    scanned: dict[str, list[str]] = {}
+    for chain in chains:
+        required = getattr(chain, "required", None) or []
+        for ref in (*chain.processors, *required):
+            if ":" not in ref:
+                continue
+            dist = ref.partition(":")[0]
+            if dist not in scanned:
+                scanned[dist] = scan_imports(dist)
+            if scanned[dist]:
+                raise ProfileConfigError(
+                    f"Profile {name!r}: plugin {ref!r} violates the plugin contract "
+                    f"(distribution {dist!r}): {scanned[dist]}"
+                )
 
 
 def _check_destination_params(name: str, profile: Profile) -> None:
