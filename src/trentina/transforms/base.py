@@ -127,13 +127,13 @@ the input must not be able to buy quadratic work.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import Any
 
-if TYPE_CHECKING:
-    from ..channels import Channel, Kind
+from ..channels import Channel, Kind
 
 #: Processor-specific accounting: lines collapsed, groups formed, model used,
 #: anything a human auditing token spend would want. Values stay scalar so the
@@ -286,19 +286,40 @@ class TransformRecord:
         return row
 
 
-@runtime_checkable
-class Transform(Protocol):
-    """The shape of a transform. Implementations are stateless."""
+class Transform(ABC):
+    """The base class every transform subclasses — the public plugin contract.
 
+    An author overrides one method (``run``) and inherits sane defaults; a
+    Protocol would carry no defaults. ``api_version`` is the compat anchor:
+    within a major version core may only ADD methods that carry defaults and
+    never change ``run``'s signature, so a plugin written against version 1
+    keeps running (Trentina 3.0 plan §B.5/§C). An unknown ``api_version`` is
+    refused by name at load, never with an ``AttributeError`` at the first
+    request. ``tests/test_transform_contract.py`` freezes ``run``'s signature
+    to hold that promise.
+
+    Implementations are stateless, and the in-tree transforms subclass this
+    too — core code gets no privileged contract the ecosystem does not.
+    """
+
+    #: The registry name. No default and not abstract — an ABC cannot mark a
+    #: bare attribute abstract — so conformance checks it is set and matches
+    #: the entry-point name.
     name: str
-    cost: Cost
-    kind: Kind
-    # Which ingresses this processor understands. Enforced once, in
-    # gateway/drivers.py — a processor tuned for one payload shape and
-    # pointed at another declines forever and looks like it is working.
-    channels: frozenset[Channel]
+    #: What running the transform spends (see ``Cost``).
+    cost: Cost = Cost.FREE
+    #: The input shape this transform consumes. The kind lock
+    #: (``gateway/drivers.py``) refuses a channel/kind mismatch at config load.
+    kind: Kind = Kind.TEXT
+    #: Which ingresses this transform understands. Enforced once, in
+    #: gateway/drivers.py — a transform tuned for one payload shape and pointed
+    #: at another declines forever and looks like it is working.
+    channels: frozenset[Channel] = frozenset({Channel.TOOL})
+    #: The contract version this transform was written against.
+    api_version: int = 1
 
-    async def run(self, payload: str, ctx: TransformContext) -> TransformResult:
+    @abstractmethod
+    async def run(self, payload: str, ctx: TransformContext, /) -> TransformResult:
         """Transform the payload. Returns ``Applied`` when it rewrote the
         payload, ``Declined`` when the payload was not its shape, or ``Failed``
         when it tried and could not finish — never raises on hostile input."""

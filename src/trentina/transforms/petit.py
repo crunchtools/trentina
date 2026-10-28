@@ -84,7 +84,7 @@ from typing import TYPE_CHECKING
 from petit import PetitError, analyze_text
 
 from ..channels import Channel, Kind
-from .base import Applied, Cost, Declined, Failed, TransformContext, TransformResult
+from .base import Applied, Cost, Declined, Failed, Transform, TransformContext, TransformResult
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -152,7 +152,7 @@ def _samples(lines: list[str], groups: Sequence[Group]) -> list[str]:
     return out_lines
 
 
-class PetitProcessor:
+class PetitProcessor(Transform):
     """FREE. Collapses repetitive records, keeps samples, accounts for the rest."""
 
     name = "petit"

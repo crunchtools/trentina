@@ -107,7 +107,7 @@ from petit.Filter import Filter
 from ..channels import Channel, Kind
 from ..unpack.child import run_unpacking
 from ..unpack.office import reduce_base64
-from .base import Applied, Cost, Declined, Failed, TransformContext, TransformResult
+from .base import Applied, Cost, Declined, Failed, Transform, TransformContext, TransformResult
 from .pdf import reduce_base64 as reduce_pdf
 from .petit import _MIN_BYTES as _MIN_LOG_CHARS
 from .petit import _MIN_LINES as _MIN_LOG_LINES
@@ -549,7 +549,7 @@ def _parse_and_reduce(payload: str, *, truncate: bool) -> Declined | tuple[str, 
     return text, reducer
 
 
-class StructuredProcessor:
+class StructuredProcessor(Transform):
     """FREE. Collapses repeated JSON elements and logs in strings, truncates long strings."""
 
     name = "structured"
