@@ -185,5 +185,19 @@ def _gateway_stats() -> dict[str, Any]:
         "fanout": get_fanout(),
         "compression": get_compression_stats(),
         "surface": {name: surface_report(name) for name in surface_profiles()},
+        "plugins": _plugins(),
         "token_note": TOKEN_NOTE,
     }
+
+
+def _plugins() -> list[dict[str, Any]]:
+    """The installed transform plugins (the ``trentina.transforms.v1`` entry
+    points), each by ``dist:name`` and version. Entry-point METADATA only — no
+    plugin code is imported or run to report this. Empty in a stock image,
+    which ships no plugin."""
+    from ..plugins.registry import TRANSFORM_GROUP, discover, installed_version
+
+    return [
+        {"ref": ref, "version": installed_version(ref.partition(":")[0])}
+        for ref in sorted(discover(TRANSFORM_GROUP))
+    ]

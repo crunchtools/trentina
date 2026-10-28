@@ -36,6 +36,25 @@ An operator who trusts a plugin fully can opt it down to the in-process tier
 (`TRENTINA_PLUGIN_INLINE`) for speed; there the plugin runs in the gateway
 process with full reach and no resource bound.
 
+## Four walls
+
+No single mistake or malice in a plugin gets through a single wall:
+
+- **Type** — at load, a factory that does not return a `Transform` is refused;
+  that plugin never enters the chain.
+- **Seal** — a plugin cannot forge a verdict. Two separate checks guard it: the
+  conformance import scan refuses a private `trentina` import of a sealed trust
+  type (at load), and the runtime token rejects constructing one outside its own
+  factory (if the type is somehow in hand).
+- **Harness** — at run time, a `run` that returns anything but the three
+  outcomes, or an `Applied` past the amplification cap, becomes a `Failed`; and
+  whatever a plugin does return still crosses `defend()` as untrusted.
+- **Logsafe** — a plugin that logs the payload it was handed fails the
+  conformance canary at load.
+
+`quarantine_stats` reports each installed plugin by `dist:name` and version
+(entry-point metadata only), so an operator sees exactly what is loaded.
+
 ## The contract
 
 A transform plugin is an ordinary Python distribution that:
