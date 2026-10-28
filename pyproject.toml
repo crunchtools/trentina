@@ -101,6 +101,11 @@ dev = [
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
     "mypy>=1.13",
+    # A benign out-of-tree transform plugin, the test fixture + worked example
+    # for the Phase 6 registry. A dev-only path source: `uv export` for the
+    # image names only --extra matrix --extra bridge, so it never reaches the
+    # production wheel (and the wheel packages only src/trentina regardless).
+    "petit-plus",
 ]
 
 [project.scripts]
@@ -294,3 +299,8 @@ override-dependencies = ["opencv-python ; sys_platform == 'never'"]
 # Raise each floor (never lower it) as fixes land; drop a line only once no
 # resolvable version is affected.
 constraint-dependencies = ["authlib>=1.9.0", "dnspython>=2.9.0"]
+
+[tool.uv.sources]
+# The Phase 6 transform-plugin test fixture, resolved from the repo, never from
+# an index. Dev-only (see the `dev` extra); excluded from the container image.
+petit-plus = { path = "tests/fixtures/plugins/petit_plus" }

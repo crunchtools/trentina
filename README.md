@@ -131,6 +131,7 @@ Then point Claude Code at it:
 | [Git Transport](docs/git-transport.md) | Clone, fetch and push to listed repositories and branches |
 | [HTTP(S) Egress](docs/egress-http.md) | An agent's outbound request judged and re-originated to a named destination |
 | [Deployment Hardening](docs/deployment-hardening.md) | Container flags, secrets, egress, the startup check |
+| [Plugins](docs/plugins.md) | Write, test, install and name your own transform plugins |
 | [Cockpit Plugin](docs/cockpit-plugin.md) | Live defense pipeline dashboard |
 | [Internal: Gateway Design](docs/internal/gateway-design.md) | Original design document, for contributors |
 
