@@ -121,12 +121,16 @@ _TOKEN = re.compile(
     r"(?:;[a-z0-9=.+-]{1,64}){0,4};base64,(?P<payload>[A-Za-z0-9+/]*={0,2}))"
     # Braille cells (U+2800 block), with spaces, tabs and newlines between them.
     r"|(?P<braille>[⠁-⣿][⠀-⣿ \t\n\r]*)"
-    # Morse: two or more code groups, separated by spaces or word slashes.
-    r"|(?P<morse>[.-]+(?:[ /]+[.-]+)+)"
-    # uuencode: two or more b2a_uu lines (data is 0x20-0x60, no lower case, so a
+    # Morse: two or more code groups, separated by spaces or word slashes. Each
+    # atom is BOUNDED (a Morse letter is at most six symbols), so a long run
+    # that is not Morse costs O(1) per start position, never O(n) (ReDoS).
+    r"|(?P<morse>[.-]{1,6}(?:[ /]{1,6}[.-]{1,6})+)"
+    # uuencode: one or more b2a_uu lines (data is 0x20-0x60, no lower case, so a
     # lower-case base64 token on its own line is never mistaken for one). The
     # ranges are case-sensitive despite the flag below, or they catch lower case.
-    r"|(?P<uu>(?-i:(?:[\x21-\x60][\x20-\x60]*\n)+))"
+    # The line body is BOUNDED (b2a_uu emits at most 60 data chars), so a long
+    # newline-free run cannot make each start position rescan the suffix (ReDoS).
+    r"|(?P<uu>(?-i:(?:[\x21-\x60][\x20-\x60]{0,60}\n)+))"
     # base32 (A-Z2-7), its own group so the full 0-6 padding is captured: the
     # run below stops at two '='. Tried as base32 then base64 (all-upper tokens).
     # Case-sensitive, else the flag below lets it fragment a base64 token.
@@ -363,6 +367,8 @@ def _base32_token(token: str, depth: int, state: _Pass) -> str | None:
     text first (#546): a padless base32 token is valid base64 too, so trying
     base64 first would read the wrong bytes. An all-upper token that is not
     base32 text falls through to base64, which it can also be."""
+    if len(token) > MAX_TOKEN:
+        return _run(token, depth, state)  # _run's _long path, no large base32 decode
     decoded = _strict_base32(token)
     if decoded is not None:
         text = _as_text(decoded)
