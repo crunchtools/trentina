@@ -50,7 +50,7 @@ from markdownify import markdownify
 
 from ..channels import Channel, Kind
 from ..l1.hidden import ClassRules, class_declarations, class_style, classify_style
-from .base import Applied, Cost, Declined, Failed, TransformContext, TransformResult
+from .base import Applied, Cost, Declined, Failed, Transform, TransformContext, TransformResult
 
 # Past this, do not even parse. Matches structured.py: the converter refuses
 # to be the expensive step.
@@ -198,7 +198,7 @@ def _convert(payload: str) -> tuple[str, ConversionStats] | None:
     return to_markdown(payload)
 
 
-class HtmlProcessor:
+class HtmlProcessor(Transform):
     """FREE. Converts markup to Markdown, deleting what a human never sees."""
 
     name = "html"

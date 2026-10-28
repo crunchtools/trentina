@@ -39,7 +39,7 @@ from ..errors import QuarantineAgentError
 from ..logsafe import exc_kind
 from ..quarantine.agent import llm_available, quarantine_generate
 from ..quarantine.limiter import limited_generate
-from .base import Applied, Cost, Declined, Failed, TransformContext, TransformResult
+from .base import Applied, Cost, Declined, Failed, Transform, TransformContext, TransformResult
 
 if TYPE_CHECKING:
     from ..quarantine.providers.base import Provider
@@ -78,7 +78,7 @@ _RESPONSE_SCHEMA: dict[str, Any] = {
 }
 
 
-class SummarizeProcessor:
+class SummarizeProcessor(Transform):
     """METERED. Rewrites an oversized payload into a compact summary."""
 
     name = "summarize"

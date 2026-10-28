@@ -30,7 +30,7 @@ import binascii
 from ..channels import Channel, Kind
 from ..unpack.child import run_unpacking
 from ..unpack.pdf import PdfReading, read_pdf
-from .base import Applied, Cost, Declined, TransformContext, TransformResult
+from .base import Applied, Cost, Declined, Transform, TransformContext, TransformResult
 
 PDF_BASE64_PREFIX = "JVBERi0"
 """How canonical base64 of ``%PDF-`` always starts."""
@@ -80,7 +80,7 @@ def reduce_base64(token: str) -> tuple[str, int] | None:
     return (markdown, reading.hidden) if markdown else None
 
 
-class PdfProcessor:
+class PdfProcessor(Transform):
     """FREE. Converts a base64 PDF to the text its pages show."""
 
     name = "pdf"
