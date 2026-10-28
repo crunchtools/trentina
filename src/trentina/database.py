@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-from . import audit_chain
+from . import audit_chain, telemetry
 from .config import get_config, int_env
 from .outcomes import Outcome, group_of
 
@@ -736,6 +736,9 @@ def record_gateway_call(
     except BaseException:
         db.rollback()
         raise
+    # The row is committed; emit its safe metadata to any telemetry sink. emit
+    # swallows a sink's failure, so this never fails the call (#556).
+    telemetry.emit(telemetry.from_row(row))
 
 
 def reset_gateway_calls() -> int:
