@@ -15,8 +15,9 @@ import logging
 from typing import TYPE_CHECKING
 
 from trentina.channels import Channel, Kind
-from trentina.plugins.isolation import Harnessed
+from trentina.plugins.isolation import Harnessed, Isolated, _result_from_worker
 from trentina.transforms.base import Applied, Cost, Declined, Failed, Transform, TransformContext
+from trentina.unpack import child
 
 if TYPE_CHECKING:
     import pytest
@@ -146,17 +147,57 @@ def test_a_raise_logs_the_kind_not_the_message(caplog: pytest.LogCaptureFixture)
     assert "RuntimeError" in caplog.text
 
 
-def test_registry_wraps_a_plugin_in_the_harness() -> None:
-    """The real fixture resolves to a Harnessed transform through the registry;
-    an in-tree transform (named without a colon) is not wrapped."""
+def _build(ref: str) -> object:
     from trentina.gateway.drivers import build_transforms
     from trentina.gateway.profile import PreProcessConfig
 
-    built = build_transforms(
-        PreProcessConfig(processors=["petit-plus:dedupe"]), channel=Channel.TOOL
-    )
-    assert isinstance(built[0], Harnessed)
-    assert built[0].name == "dedupe"
+    return build_transforms(PreProcessConfig(processors=[ref]), channel=Channel.TOOL)[0]
 
-    in_tree = build_transforms(PreProcessConfig(processors=["detect"]), channel=Channel.TOOL)
-    assert not isinstance(in_tree[0], Harnessed)
+
+def test_registry_isolates_a_plugin_by_default() -> None:
+    """A plugin resolves to the process tier (Isolated) by default; an in-tree
+    transform (no colon) is unwrapped."""
+    built = _build("petit-plus:dedupe")
+    assert isinstance(built, Isolated)
+    assert built.name == "dedupe"
+    assert not isinstance(_build("detect"), (Isolated, Harnessed))
+
+
+def test_inline_opt_down_uses_the_harness(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TRENTINA_PLUGIN_INLINE opts a plugin down to the in-process harness."""
+    monkeypatch.setenv("TRENTINA_PLUGIN_INLINE", "1")
+    assert isinstance(_build("petit-plus:dedupe"), Harnessed)
+
+
+class TestWorkerResultMapping:
+    def test_phrases_map_to_failed(self) -> None:
+        assert _result_from_worker(child.DEADLINE) == Failed("deadline")
+        assert _result_from_worker(child.NO_SLOT) == Failed("no_slot")
+        assert _result_from_worker(child.NOT_STARTED) == Failed("not_started")
+        assert _result_from_worker(child.FAILED) == Failed("error")
+        assert _result_from_worker(child.TOO_LARGE) == Failed("amplified")
+
+    def test_json_body_maps_to_the_outcome(self) -> None:
+        applied = _result_from_worker(b'{"kind":"applied","content":"x","details":{}}')
+        assert applied == Applied("x")
+        assert _result_from_worker(b'{"kind":"declined","reason":"r"}') == Declined("r")
+        assert _result_from_worker(b'{"kind":"failed","reason":"r"}') == Failed("r")
+
+    def test_malformed_body_is_failed_error(self) -> None:
+        assert _result_from_worker(b"not json") == Failed("error")
+        assert _result_from_worker(b'{"kind":"invalid"}') == Failed("error")
+
+
+def test_isolated_runs_a_plugin_end_to_end() -> None:
+    """The real fixture runs in a child process and comes back Applied — the
+    whole process-isolation path."""
+    built = _build("petit-plus:dedupe")
+    result = asyncio.run(built.run("a\na\nb", TransformContext()))
+    assert isinstance(result, Applied)
+    assert result.content == "a\nb"
+
+
+def test_the_worker_environment_holds_no_credential() -> None:
+    """The child the worker runs in carries only the import path, no secret."""
+    env = child.environment()
+    assert not any("KEY" in k or "TOKEN" in k or "SECRET" in k for k in env)
