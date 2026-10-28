@@ -68,6 +68,25 @@ class TestTheFlow:
         assert grant.generation == 1
         assert grant.expires_at is not None
 
+    async def test_honours_server_preferred_auth_method(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        # A server that lists client_secret_post first must get a client
+        # registered for post and authenticate the token exchange with it.
+        # Some servers advertise client_secret_basic but only accept
+        # client_secret_post (the Red Hat AI Factory Workspace MCP), so a
+        # fixed basic-first order failed the exchange with 401 invalid_client.
+        server.auth_methods = ["client_secret_post", "client_secret_basic", "none"]
+        link = await start(profiles["josui"], "era", authorized_by="self")
+        authorize = await authorize_url(link)
+        (client,) = server.clients.values()
+        assert client["token_endpoint_auth_method"] == "client_secret_post"
+        state, code = server.authorize(authorize)
+        await complete(state, code, None, None)
+        grant = await token_store().get_grant("josui", "era", profiles["josui"].backends["era"])
+        assert grant is not None
+        assert grant.access_token.get_secret_value() == "access-1"
+
     async def test_the_registration_is_reused(
         self, server: FakeServer, profiles: dict[str, Profile]
     ) -> None:
