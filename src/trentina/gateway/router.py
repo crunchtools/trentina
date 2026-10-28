@@ -731,9 +731,11 @@ async def _crossing_call(profile: Profile, req_id: Any, params: dict[str, Any]) 
     discovery meta name by the time it arrives.
     """
     from ..orchestrator import crossing
-    from ..transports.mcp import McpCrossing, mcp_transport
+    from ..transports.mcp import McpCrossing
+    from ..transports.registry import build_transport
 
-    crossed: dict[str, Any] = await crossing(mcp_transport, McpCrossing(profile, req_id, params))
+    transport = build_transport("mcp")
+    crossed: dict[str, Any] = await crossing(transport, McpCrossing(profile, req_id, params))
     return crossed
 
 

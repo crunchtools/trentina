@@ -179,6 +179,12 @@ ProcessorName = Literal[
 PluginRef = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*:[a-z0-9_]+$")]
 ProcessorRef = ProcessorName | PluginRef
 
+# The wire protocols a backend may be reached by. Mirrors
+# ``transports.registry.TRANSPORTS``; the parity test in
+# ``tests/test_transport_registry.py`` holds the two in step. A ``dist:name``
+# ``PluginRef`` passes this shape but is refused at load until 3.0.0.
+TransportName = Literal["mcp"]
+
 # FREE only. `detect` (0.38.0) looks at the payload and runs the minifiers
 # that fit it: html then petit for a page, structured for JSON, email then
 # petit for anything else. Until 0.38.0 the default was all four in a row,
@@ -640,6 +646,14 @@ class Backend(BaseModel):
             "Backend location. A streamable-http URL (http(s)://), "
             "internal://<label> for trentina's own in-process tool surface, or "
             "decoy://<label> for tools nothing answers (see `decoys`)."
+        ),
+    )
+    transport: TransportName | PluginRef = Field(
+        default="mcp",
+        description=(
+            "The wire protocol used to reach this backend. 'mcp' (the only "
+            "built-in) today; a 'dist:name' transport plugin is refused at load "
+            "until the Face/Carrier contract is frozen in 3.0.0."
         ),
     )
     decoys: dict[str, DecoyTool] = Field(

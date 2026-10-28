@@ -125,6 +125,7 @@ def _build_profile(name: str, body: Any) -> Profile:
     _expand_backend_env_refs(name, profile)
     _check_drivers(name, profile)
     _check_plugin_imports(name, profile)
+    _check_transports(name, profile)
     _check_destination_params(name, profile)
     _check_guarded_tools(name, profile)
     _resolve_bridge_secrets(name, profile)
@@ -171,6 +172,20 @@ def _check_plugin_imports(name: str, profile: Profile) -> None:
                     f"Profile {name!r}: plugin {ref!r} violates the plugin contract "
                     f"(distribution {dist!r}): {scanned[dist]}"
                 )
+
+
+def _check_transports(name: str, profile: Profile) -> None:
+    """Validate every backend's transport at load. 'mcp' resolves; a 'dist:name'
+    transport plugin is refused by name until the contract is frozen in 3.0.0
+    (``transports.registry.build_transport``). Lazy import avoids the
+    transports→gateway import cycle at module load."""
+    from ..transports.registry import build_transport
+
+    for backend_name, backend in profile.backends.items():
+        try:
+            build_transport(backend.transport)
+        except ProfileConfigError as exc:
+            raise ProfileConfigError(f"Profile {name!r} backend {backend_name!r}: {exc}") from exc
 
 
 def _check_destination_params(name: str, profile: Profile) -> None:
