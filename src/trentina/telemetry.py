@@ -81,7 +81,11 @@ def register_sink(sink: Callable[[CallRecord], None]) -> None:
 
 
 def reset_sinks() -> None:
-    """Drop every sink (startup re-wiring, and test isolation)."""
+    """Drop every sink (startup re-wiring, and test isolation), stopping any
+    writer's drain thread first so a re-install does not leak one."""
+    for sink in _SINKS:
+        if isinstance(sink, JsonLineWriter):
+            sink.stop()
     _SINKS.clear()
 
 
@@ -103,6 +107,10 @@ def _json_line(record: CallRecord) -> str:
     return json.dumps(asdict(record), separators=(",", ":"))
 
 
+_STOP = object()
+"""Sentinel put on a writer's queue to end its drain thread."""
+
+
 class JsonLineWriter:
     """A non-blocking one-JSON-object-per-call stderr stream (#556).
 
@@ -114,10 +122,11 @@ class JsonLineWriter:
     """
 
     def __init__(self, stream: TextIO | None = None, maxsize: int = TELEMETRY_QUEUE_MAX) -> None:
-        self._queue: queue.Queue[str] = queue.Queue(maxsize=maxsize)
+        self._queue: queue.Queue[object] = queue.Queue(maxsize=maxsize)
         self._stream: TextIO = sys.stderr if stream is None else stream
         self.dropped = 0
-        threading.Thread(target=self._drain, name="trentina-telemetry", daemon=True).start()
+        self._thread = threading.Thread(target=self._drain, name="trentina-telemetry", daemon=True)
+        self._thread.start()
 
     def __call__(self, record: CallRecord) -> None:
         try:
@@ -125,12 +134,20 @@ class JsonLineWriter:
         except queue.Full:
             self.dropped += 1
 
+    def stop(self) -> None:
+        """End the drain thread, so resetting sinks does not leak one."""
+        self._queue.put(_STOP)
+        self._thread.join(timeout=2)
+
     def _drain(self) -> None:
         while True:
-            line = self._queue.get()
+            item = self._queue.get()
+            if item is _STOP:
+                self._queue.task_done()
+                return
             # A broken stream must not kill the drain thread or block the queue.
             with contextlib.suppress(Exception):
-                self._stream.write(line + "\n")
+                self._stream.write(f"{item}\n")
                 self._stream.flush()
             self._queue.task_done()
 

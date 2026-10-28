@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import sqlite3
@@ -97,6 +98,7 @@ def test_json_writer_is_non_blocking_and_drops_when_full() -> None:
     writer._queue.join()
     assert writer.dropped > 0, "an overflowing queue must drop, not block the caller"
     assert writer._stream.getvalue().count("\n") >= 1
+    writer.stop()
 
 
 def test_json_writer_line_is_parseable_without_caller_strings() -> None:
@@ -109,6 +111,14 @@ def test_json_writer_line_is_parseable_without_caller_strings() -> None:
     assert parsed["profile"] == "kagetora"
     assert parsed["outcome"] == "denied_guard"
     assert _CANARY not in line
+    writer.stop()
+
+
+def test_stop_ends_the_writer_thread() -> None:
+    writer = telemetry.JsonLineWriter(stream=io.StringIO())
+    assert writer._thread.is_alive()
+    writer.stop()
+    assert not writer._thread.is_alive(), "stop() must end the drain thread (no leak)"
 
 
 def test_record_gateway_call_emits_a_record() -> None:
@@ -136,3 +146,49 @@ def test_record_gateway_call_emits_a_record() -> None:
     assert seen[0].outcome == "denied_guard"
     blob = json.dumps(asdict(seen[0]))
     assert _CANARY not in blob, "no caller-chosen string reaches the record (#262)"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, "text"), ("json", "json"), ("JSON", "json"), ("TEXT", "text"), ("bogus", "text")],
+)
+def test_config_log_format(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, expected: str
+) -> None:
+    from trentina import config as config_mod
+
+    config_mod._config = None
+    if value is None:
+        monkeypatch.delenv("TRENTINA_LOG_FORMAT", raising=False)
+    else:
+        monkeypatch.setenv("TRENTINA_LOG_FORMAT", value)
+    try:
+        assert config_mod.get_config().log_format == expected
+    finally:
+        config_mod._config = None
+
+
+def test_main_installs_telemetry_from_the_configured_format(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The entry point hands the configured log format to telemetry.install
+    before it parses args, so JSON records turn on from startup, not only when
+    install() is called directly."""
+    import trentina
+    from trentina import config as config_mod
+
+    seen: list[str] = []
+    monkeypatch.setattr(telemetry, "install", seen.append)
+
+    def _exit(_self: argparse.ArgumentParser, *_a: object, **_k: object) -> None:
+        raise SystemExit(0)
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", _exit)
+    monkeypatch.setenv("TRENTINA_LOG_FORMAT", "json")
+    config_mod._config = None
+    try:
+        with pytest.raises(SystemExit):
+            trentina.main()
+        assert seen == ["json"]
+    finally:
+        config_mod._config = None
