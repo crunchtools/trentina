@@ -41,7 +41,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import timedelta
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
@@ -361,11 +361,17 @@ def _configured_client(backend: Backend, disc: Discovered) -> BackendClient | No
         return None
     method: AuthMethod = "none"
     if auth.client_secret is not None:
-        method = (
-            "client_secret_post"
-            if "client_secret_basic" not in disc.auth_methods
-            and "client_secret_post" in disc.auth_methods
-            else "client_secret_basic"
+        # Honour the server's advertised preference order (RFC 8414). Some
+        # servers list client_secret_basic but only accept client_secret_post
+        # (the Red Hat AI Factory Workspace MCP does exactly this), so pick the
+        # first secret method the server names, not a fixed basic-first order.
+        method = next(
+            (
+                cast("AuthMethod", m)
+                for m in disc.auth_methods
+                if m in ("client_secret_basic", "client_secret_post")
+            ),
+            "client_secret_basic",
         )
     return BackendClient(
         client_id=auth.client_id,
@@ -396,7 +402,11 @@ async def _client_for(
         return existing
     if disc.registration_endpoint is None:
         raise BackendAuthError("needs_client_id")
-    method = next((m for m in _AUTH_METHODS if m in disc.auth_methods), None)
+    # Pick the first method the server advertises that the gateway supports,
+    # in the server's own preference order (RFC 8414) — not a fixed order of
+    # ours. A server may list client_secret_basic yet only honour
+    # client_secret_post at the token endpoint (Red Hat AI Factory Workspace).
+    method = next((m for m in disc.auth_methods if m in _AUTH_METHODS), None)
     if method is None:
         raise BackendAuthError("no_usable_auth_method")
     metadata = OAuthClientMetadata.model_validate(
