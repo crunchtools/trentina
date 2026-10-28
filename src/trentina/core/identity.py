@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .dispose import Posture
+from .dispose import _POSTURE_SEAL, Posture
 
 if TYPE_CHECKING:
     from ..modes import Mode, ModePolicy
@@ -54,4 +54,5 @@ def posture(
         allowlisted=allowlisted,
         honeypot=honeypot,
         prompt=prompt,
+        _seal=_POSTURE_SEAL,
     )

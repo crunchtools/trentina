@@ -9,7 +9,7 @@ from this table.
 from __future__ import annotations
 
 from trentina.core import Decision, Posture, dispose, refusal_of
-from trentina.core.dispose import DEFAULT_REDACT_PROMPT
+from trentina.core.dispose import _POSTURE_SEAL, DEFAULT_REDACT_PROMPT
 from trentina.defense import DefenseVerdict, Layer
 from trentina.l1.pipeline import PipelineResult, PipelineStats
 from trentina.modes import Mode, ModePolicy
@@ -52,7 +52,9 @@ def _verdict(
 
 
 def _posture(mode: Mode, *, allowlisted: bool = False, honeypot: bool = False) -> Posture:
-    return Posture(mode=mode, policy=POLICY, allowlisted=allowlisted, honeypot=honeypot)
+    return Posture(
+        mode=mode, policy=POLICY, allowlisted=allowlisted, honeypot=honeypot, _seal=_POSTURE_SEAL
+    )
 
 
 class TestFlagAlwaysDelivers:
@@ -124,7 +126,7 @@ class TestRedact:
         assert d.prompt == DEFAULT_REDACT_PROMPT
 
     def test_carries_prompt(self) -> None:
-        p = Posture(mode=Mode.REDACT, policy=POLICY, prompt="just the title")
+        p = Posture(mode=Mode.REDACT, policy=POLICY, prompt="just the title", _seal=_POSTURE_SEAL)
         assert dispose(_verdict(), p).prompt == "just the title"
 
     def test_flagged_but_no_gap_extracts(self) -> None:
