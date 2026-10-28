@@ -2,13 +2,13 @@
 
 *Part of Trentina's **Determinism** promise; see [Why Trentina](../README.md#why-trentina).*
 
-Response guards validate what a backend *returns* before the gateway relays it. They are the egress half of [parameter guards](parameter-guards.md): the same allow/deny constraint, the same evaluator, the same fail-closed behaviour — applied to the tool result instead of the tool arguments.
+Response guards validate what a backend *returns* before the gateway relays it. They are the egress half of [request guards](request-guards.md): the same allow/deny constraint, the same evaluator, the same fail-closed behaviour — applied to the tool result instead of the tool arguments.
 
 ## Why This Matters
 
-Parameter guards can only match what the agent typed. That is enough for `send_gmail_message`, where the dangerous value *is* an argument. It is not enough for a semantic tool.
+Request guards can only match what the agent typed. That is enough for `send_gmail_message`, where the dangerous value *is* an argument. It is not enough for a semantic tool.
 
-A memory server is the clear case. An agent asks it for "my employer's OS roadmap." The request carries no matchable token — no company name, no project code, nothing an argument-side glob could catch. The restricted material arrives in the *response*, which a parameter guard never sees. The same shape appears anywhere retrieval is semantic: a wiki search, a ticket query, a feed reader.
+A memory server is the clear case. An agent asks it for "my employer's OS roadmap." The request carries no matchable token — no company name, no project code, nothing an argument-side glob could catch. The restricted material arrives in the *response*, which a request guard never sees. The same shape appears anywhere retrieval is semantic: a wiki search, a ticket query, a feed reader.
 
 That gap matters when agents on one gateway are not equally trusted. Trentina's own deployment runs work-supervised and internet-isolated agents side by side against a shared memory backend; the isolated ones must not receive work-covered material, and "ask the model nicely" is not a control. Response guards make the refusal happen at the gateway, where the agent's cooperation is not a variable.
 
@@ -20,7 +20,7 @@ For semantic judgement of content, that is what the [defense pipeline](defense-p
 
 ## How It Works
 
-Response guards are configured per-backend, per-tool, with exactly the shape of parameter guards:
+Response guards are configured per-backend, per-tool, with exactly the shape of request guards:
 
 ```yaml
 backends:
@@ -50,7 +50,7 @@ Image blocks and binary blobs carry no string to match. A guard cannot speak abo
 
 ### Constraint Schema
 
-Identical to parameter guards — the same `ParameterConstraint` model, validated by the same rules:
+Identical to request guards — the same `ParameterConstraint` model, validated by the same rules:
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -64,7 +64,7 @@ Matching uses `fnmatch.fnmatchcase()`, which matches across newlines — so `*NI
 ## Pipeline Position
 
 ```
-Tool in allowlist? → Parameter guards → Backend call → Response guards → Pre-process → Defense scan → Agent
+Tool in allowlist? → Request guards → Backend call → Response guards → Pre-process → Defense scan → Agent
 ```
 
 Two properties of that position are deliberate:
@@ -139,7 +139,7 @@ Guard patterns are operator-authored and are not echoed back, for the same reaso
 
 ## Related
 
-- [Parameter Guards](parameter-guards.md) — the request-side half, same evaluator
+- [Request Guards](request-guards.md) — the request-side half, same evaluator
 - [Tool Filtering](tool-filtering.md) — removing a tool entirely, when no response is acceptable
 - [Per-Agent Profiles](profiles.md) — where response guards are configured
 - [Defense Pipeline](defense-pipeline.md) — semantic judgement of content, downstream of this

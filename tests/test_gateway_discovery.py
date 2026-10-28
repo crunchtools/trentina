@@ -222,7 +222,7 @@ class TestFindAndCall:
             resp = await _call(_profile(), "call_tool", {"name": name, "arguments": {}})
             assert resp["error"]["code"] == -32602
 
-    async def test_guarded_execution_sees_the_real_backend_and_tool(self) -> None:
+    async def test_intent_guards_sees_the_real_backend_and_tool(self) -> None:
         seen: list[tuple[str, str]] = []
 
         async def judge(_p: Any, _b: Any, backend_name: str, tool: str, *_a: Any) -> None:

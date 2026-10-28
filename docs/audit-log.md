@@ -110,9 +110,9 @@ blocked 34 hostile pages.
 | `ok` | ok | Backend returned content and did not flag an error. |
 | `blocked_defense` | blocked | L1/L2/L3 refused the content. Working as designed. |
 | `denied_allowlist` | blocked | Tool not permitted for this profile. |
-| `denied_guard` | blocked | A parameter guard rejected the arguments. |
+| `denied_guard` | blocked | A request guard rejected the arguments. |
 | `denied_response_guard` | blocked | A response guard rejected the backend's result. |
-| `denied_gatekeeper` | blocked | [Guarded execution](guarded-execution.md) refused the call before it was forwarded. The message is the reason code, then what the gatekeeper was told: `first_contact` and `session_flagged`. |
+| `denied_gatekeeper` | blocked | [Intent guards](intent-guards.md) refused the call before it was forwarded. The message is the reason code, then what the gatekeeper was told: `first_contact` and `session_flagged`. |
 | `decoy_tripped` | tripped | A [decoy tool](profiles.md#decoy-tools-and-honeytokens) was called, or a planted credential was in a call's arguments. An alarm about the caller. |
 | `tool_error` | failed | Backend completed but reported `isError`. |
 | `backend_error` | failed | Upstream failed: network, timeout, auth, 4xx/5xx. |

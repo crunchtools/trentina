@@ -15,10 +15,10 @@ where the agent can make it, and nowhere else:
   sends one.
 * **tools/call** — `resolve_call` pops the arguments, resolves an omitted mode
   to the default, and only then checks the policy. Checking first would let an
-  omitted mode skip the check, the way a parameter guard skips an argument
+  omitted mode skip the check, the way a request guard skips an argument
   that is absent. Remote backends never see either argument.
 
-`Backend.modes` and a `parameter_guards` entry on `trentina_mode` narrow the
+`Backend.modes` and a `request_guards` entry on `trentina_mode` narrow the
 policy for one backend or one tool. Neither is needed for the base policy.
 
 `trentina_preprocess` (#183; a switch since 0.38.0) rides the same three
@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     from .profile import Backend, Profile
 
 MODE_PARAM = "trentina_mode"
-# The redact question, as parameter guards address it. No longer an argument
+# The redact question, as request guards address it. No longer an argument
 # (0.43.0): a call carrying one is refused.
 PROMPT_PARAM = "trentina_prompt"
 INSERTED_PARAMS = (MODE_PARAM, PROMPT_PARAM, PREPROCESS_PARAM)
@@ -69,7 +69,7 @@ _MODE_TEXT = {
 def policy_for(profile: Profile, backend: Backend, tool_name: str) -> ModePolicy:
     """The modes this profile may use on this tool, and its default."""
     names = backend.modes if backend.modes is not None else (profile.defense.modes or [])
-    guard = backend.parameter_guards.get(tool_name, {}).get(MODE_PARAM)
+    guard = backend.request_guards.get(tool_name, {}).get(MODE_PARAM)
     allowed = [n for n in names if guard is None or evaluate_constraint(n, guard) is None]
     return ModePolicy.of(allowed, profile.defense.enforcement)
 

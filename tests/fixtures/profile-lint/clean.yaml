@@ -25,6 +25,6 @@ profiles:
       slack:
         url: "http://mcp-slack:8000/mcp"
         tools_allow: ["send_message", "search_messages"]
-        parameter_guards:
+        request_guards:
           send_message:
             channel: {allow: ["C0OPS*"]}

@@ -27,7 +27,7 @@ Two-level resolution, profile then tool:
 Tool wins field-by-field; anything it leaves unset inherits. Whether petit
 helps is a property of the tool's output shape rather than of its caller —
 ``syslog_tail_tool`` is log-shaped for everybody — which is why the override
-lives on the backend next to ``parameter_guards`` and not in a second copy
+lives on the backend next to ``request_guards`` and not in a second copy
 per profile.
 """
 

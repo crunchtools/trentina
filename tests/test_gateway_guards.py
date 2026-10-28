@@ -1,9 +1,9 @@
-"""Tests for gateway/guards.py — parameter and response value validation."""
+"""Tests for gateway/guards.py — request and response value validation."""
 
 from __future__ import annotations
 
 from trentina.gateway.guards import (
-    check_parameter_guards,
+    check_request_guards,
     check_response_guards,
 )
 from trentina.gateway.profile import Backend, ParameterConstraint
@@ -16,7 +16,7 @@ def _backend(
     return Backend(
         url="http://x/mcp",
         tools_allow=["*"],
-        parameter_guards=guards or {},
+        request_guards=guards or {},
         response_guards=response or {},
     )
 
@@ -31,16 +31,14 @@ def _guarded(field: str, **constraint: list[str]) -> Backend:
 
 
 class TestParameterGuards:
-    """check_parameter_guards behaviour across allow, deny, and edge cases."""
+    """check_request_guards behaviour across allow, deny, and edge cases."""
 
     def test_no_guards_configured_passes(self) -> None:
-        result = check_parameter_guards(
-            "send_gmail_message", {"to": "evil@example.com"}, _backend()
-        )
+        result = check_request_guards("send_gmail_message", {"to": "evil@example.com"}, _backend())
         assert result is None
 
     def test_no_guard_for_this_tool_passes(self) -> None:
-        result = check_parameter_guards(
+        result = check_request_guards(
             "other_tool",
             {"to": "evil@example.com"},
             _backend({"send_gmail_message": {"to": ParameterConstraint(allow=["ok@x.com"])}}),
@@ -48,7 +46,7 @@ class TestParameterGuards:
         assert result is None
 
     def test_exact_allow_match_passes(self) -> None:
-        result = check_parameter_guards(
+        result = check_request_guards(
             "send_gmail_message",
             {"to": "alice@example.com"},
             _backend(
@@ -58,7 +56,7 @@ class TestParameterGuards:
         assert result is None
 
     def test_glob_allow_match_passes(self) -> None:
-        result = check_parameter_guards(
+        result = check_request_guards(
             "send_gmail_message",
             {"to": "you@corp.example.com"},
             _backend(
@@ -68,7 +66,7 @@ class TestParameterGuards:
         assert result is None
 
     def test_value_not_in_allow_list_rejected(self) -> None:
-        result = check_parameter_guards(
+        result = check_request_guards(
             "send_gmail_message",
             {"to": "evil@example.com"},
             _backend(
@@ -79,7 +77,7 @@ class TestParameterGuards:
         assert "not in allow list" in result
 
     def test_deny_wins_over_allow(self) -> None:
-        result = check_parameter_guards(
+        result = check_request_guards(
             "send_gmail_message",
             {"to": "banned@corp.example.com"},
             _backend(
@@ -97,7 +95,7 @@ class TestParameterGuards:
         assert "deny" in result
 
     def test_missing_parameter_passes(self) -> None:
-        result = check_parameter_guards(
+        result = check_request_guards(
             "send_gmail_message",
             {"subject": "hello"},
             _backend(
@@ -107,7 +105,7 @@ class TestParameterGuards:
         assert result is None
 
     def test_none_parameter_passes(self) -> None:
-        result = check_parameter_guards(
+        result = check_request_guards(
             "send_gmail_message",
             {"to": None},
             _backend(
@@ -123,7 +121,7 @@ class TestParameterGuards:
                 "cc": ParameterConstraint(allow=["alice@example.com"]),
             }
         }
-        result = check_parameter_guards(
+        result = check_request_guards(
             "send_gmail_message",
             {"to": "alice@example.com", "cc": "evil@example.com"},
             _backend(guards),
@@ -132,7 +130,7 @@ class TestParameterGuards:
         assert "cc" in result
 
     def test_wildcard_allow_passes_anything(self) -> None:
-        result = check_parameter_guards(
+        result = check_request_guards(
             "send_gmail_message",
             {"to": "anyone@anywhere.com"},
             _backend({"send_gmail_message": {"to": ParameterConstraint(allow=["*"])}}),
@@ -140,7 +138,7 @@ class TestParameterGuards:
         assert result is None
 
     def test_empty_arguments_passes(self) -> None:
-        result = check_parameter_guards(
+        result = check_request_guards(
             "send_gmail_message",
             {},
             _backend(
@@ -151,7 +149,7 @@ class TestParameterGuards:
 
     def test_error_message_does_not_leak_value(self) -> None:
         secret = "secret-address@evil.com"
-        result = check_parameter_guards(
+        result = check_request_guards(
             "send_gmail_message",
             {"to": secret},
             _backend(

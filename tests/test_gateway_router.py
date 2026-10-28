@@ -438,7 +438,7 @@ class TestRouter:
                 "gws": Backend(
                     url="http://gws:8011/mcp",
                     tools_allow=["*"],
-                    parameter_guards={
+                    request_guards={
                         "send_gmail_message": {
                             "to": ParameterConstraint(allow=["self@example.com"]),
                         }
@@ -657,7 +657,7 @@ class TestRouter:
                 "gws": Backend(
                     url="http://gws:8011/mcp",
                     tools_allow=["*"],
-                    parameter_guards={
+                    request_guards={
                         "send_gmail_message": {
                             "to": ParameterConstraint(allow=["self@example.com"]),
                         }
@@ -706,7 +706,7 @@ class TestRouter:
                 "gws": Backend(
                     url="http://gws:8011/mcp",
                     tools_allow=["*"],
-                    parameter_guards={
+                    request_guards={
                         "send_gmail_message": {
                             "to": ParameterConstraint(allow=["self@example.com"]),
                         }
@@ -1489,7 +1489,7 @@ class TestArgumentHygiene:
         guarded = Backend(
             url="http://luna:8000/mcp",
             tools_allow=["*"],
-            parameter_guards={"save_output": {"priority": ParameterConstraint(deny=["0"])}},
+            request_guards={"save_output": {"priority": ParameterConstraint(deny=["0"])}},
         )
 
         resp, seen, row = await self._call(
@@ -1504,7 +1504,7 @@ class TestArgumentHygiene:
         guarded = Backend(
             url="http://luna:8000/mcp",
             tools_allow=["*"],
-            parameter_guards={"send_message": {"cc": ParameterConstraint(allow=["*@ok.com"])}},
+            request_guards={"send_message": {"cc": ParameterConstraint(allow=["*@ok.com"])}},
         )
 
         resp, seen, _row = await self._call(

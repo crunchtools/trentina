@@ -72,7 +72,7 @@ from .destination import Destination, destination_of
 from .errors import BackendCallError, BackendResponseTooLargeError
 from .filter import filter_tools
 from .gatekeeper import judge_call
-from .guards import check_parameter_guards
+from .guards import check_request_guards
 from .ingress_defense import effective_mode, scan_tool_list
 from .internal import call_internal_tool, list_internal_tools
 from .modes_policy import (
@@ -1011,7 +1011,7 @@ async def _refuse_call(
 ) -> tuple[Outcome, str, str] | None:
     """Every refusal of a call's arguments: outcome, what the agent is told, what is audited.
 
-    The guards and the schema first; guarded execution last (#456), so the
+    The guards and the schema first; intent guards last (#456), so the
     cheap and certain rules have spoken before a model is asked anything.
     """
     refused = _refuse_arguments(
@@ -1032,7 +1032,7 @@ async def _refuse_call(
 def _refuse_arguments(
     backend: Backend, tool_name: str, judged: dict[str, Any], normalized: Normalized
 ) -> tuple[Outcome, str] | None:
-    """The parameter guards' refusal, else the schema's, else None.
+    """The request guards' refusal, else the schema's, else None.
 
     Guards first, so a probe a guard refuses still audits as one. A required
     argument that fails its schema would be refused by the backend too;
@@ -1040,7 +1040,7 @@ def _refuse_arguments(
     the backend never received. An optional one is refused because the call
     without it is not the call that was asked for (#335).
     """
-    guard_err = check_parameter_guards(tool_name, judged, backend)
+    guard_err = check_request_guards(tool_name, judged, backend)
     if guard_err:
         return Outcome.DENIED_GUARD, guard_err
     if normalized.invalid_required:

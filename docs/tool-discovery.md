@@ -42,9 +42,9 @@ still apply; they help a client that searches by itself (below).
   input schemas, ready to call.
 - `call_tool(name, arguments)` calls one. It re-enters the router with the
   real served name, so the call meets every rule a direct call meets:
-  allowlist, modes, argument normalization, parameter guards, guarded
+  allowlist, modes, argument normalization, request guards, intent
   execution, response guards, the perimeter, paging. The audit row is the
-  real backend and tool, and it is the only row; guarded execution judges
+  real backend and tool, and it is the only row; intent guards judges
   the real tool. `call_tool` cannot call a discovery tool.
 
 **`dynamic`** lists the core tools plus `load_tools(category | query)`.
@@ -141,4 +141,4 @@ uv run python benchmarks/tool_search.py --misses
 
 - [Per-Agent Profiles](profiles.md)
 - [MCP Gateway](gateway.md#tool-names)
-- [Guarded Execution](guarded-execution.md)
+- [Intent Guards](intent-guards.md)

@@ -152,10 +152,10 @@ def _profile(
         from pydantic import SecretStr
 
         grant.token = SecretStr("forge-token")
-    from trentina.gateway.profile import GuardedExecutionConfig
+    from trentina.gateway.profile import IntentGuardsConfig
 
     guard = (
-        GuardedExecutionConfig(policy="No bulk customer data leaves.", egress_http=["gh"])
+        IntentGuardsConfig(policy="No bulk customer data leaves.", egress_http=["gh"])
         if guarded
         else None
     )
@@ -163,7 +163,7 @@ def _profile(
         name="agent1",
         auth=AuthConfig(bearer_token_env="TOK"),
         egress_http={"gh": grant},
-        guarded_execution=guard,
+        intent_guards=guard,
     )
     from pydantic import SecretStr
 
@@ -669,7 +669,7 @@ class TestJsonUpstream:
 
 
 class TestGatekeeper:
-    """#511: the guarded-execution hook, wired into the request path."""
+    """#511: the intent-guards hook, wired into the request path."""
 
     @staticmethod
     def _patch_judge(monkeypatch: pytest.MonkeyPatch, result: Any) -> list[dict[str, Any]]:
