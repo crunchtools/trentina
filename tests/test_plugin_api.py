@@ -253,3 +253,11 @@ def test_loader_refuses_a_plugin_that_violates_the_import_boundary(
     cfg.write_text(_PLUGIN_PROFILE)
     with pytest.raises(ProfileConfigError, match="violates the plugin contract"):
         load_profiles(cfg)
+
+
+def test_stats_lists_installed_plugins() -> None:
+    """The operator stats report each installed plugin by ref and version —
+    entry-point metadata only, no plugin code run."""
+    from trentina.tools.stats import _plugins
+
+    assert {"ref": FIXTURE_REF, "version": "0.1.0"} in _plugins()
