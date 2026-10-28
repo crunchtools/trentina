@@ -549,12 +549,16 @@ What the rows say, in the order of the table:
   unpack stage decodes all 44, upper case or lower, so the pipeline's
   numbers are plain's: 41 attacks and no benign text. Alone, the model
   flags every one of the 130 blobs.
-- **base32, Ascii85, base85, UU, Braille, Morse and variant selectors are
-  flagged for what they are.** Between 37 and 44 attacks, and between 79
-  and 86 of the 86 benign texts. Nothing decodes the first six, so that is
-  the pipeline's answer as well; L1 counts variant selectors as hiding, on
-  every text. None is read: an attack rate with the same benign rate
-  beside it measures the encoding.
+- **base32, Ascii85, base85, UU, Braille and Morse are now decoded; variant
+  selectors are flagged for what they are.** The *alone* columns above
+  measure the model on the raw blob (between 37 and 44 attacks, and most of
+  the 86 benign texts flagged): read nothing, recoil from the shape. Since
+  #546 the unpack stage decodes all six (base32/UU/Braille/Morse at any
+  length, Ascii85/base85 between 16 and 20000 characters), so the *pipeline*
+  columns now read like plain's — the attack inside is caught and the benign
+  text is not. The pre-#546 pipeline figures for these six rows are refreshed
+  by the CI `benchmarks/l2_encodings.py` run against the shipped model. Variant
+  selectors are not an encoding: L1 counts them as hiding, on every text.
 - **Quoted-printable and MIME are read.** They are one routine and one
   row. ASCII passes through them unchanged except for a soft line break
   every 76 characters, which is why garak ships both probes switched off.
@@ -1289,8 +1293,8 @@ narrows to 3 of 43, and gap 21 inverts. Horizon flagged anything in
 base32, Ascii85, base85, UU, Braille or Morse; the fine-tune reads none
 of them, so benign encoded text passes and so do most attacks in them
 (1, 5, 2, 16, 2 and 21 of 44, against 43 plain). Base64, hex and base16
-are decoded before L2 and unaffected. Shipped with that gap open by
-decision; the fix is decoders in the unpack stage.
+are decoded before L2 and unaffected. Gap 21 was then closed by #546: the
+unpack stage decodes all six before L2, so it reads their plain text.
 
 A blend that passes the gates is chosen on production shapes by
 constraint, not by best number: no shape may flag more often than under
