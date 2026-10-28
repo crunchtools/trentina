@@ -39,6 +39,10 @@ if TYPE_CHECKING:
 def main() -> None:
     """Entry point for trentina."""
     log_level = logsafe.configure("TRENTINA_LOG_LEVEL")
+    from . import telemetry
+    from .config import get_config
+
+    telemetry.install(get_config().log_format)
     parser = argparse.ArgumentParser(
         prog="trentina",
         description="MCP gateway: injection defense, token savings, policy and auth for AI agents",
