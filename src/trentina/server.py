@@ -380,7 +380,7 @@ async def reload_profiles_tool() -> dict[str, Any]:
     loaded at startup. Validates the whole file first: if it does not parse,
     the running config is kept and the error is returned.
 
-    Applies live: backends, tools_allow/tools_deny, parameter guards, defense
+    Applies live: backends, tools_allow/tools_deny, request guards, defense
     settings, per-profile llm_keys, bearer tokens, and session limits. Needs a
     restart: the llm_providers and matrix sections, and adding an alert or
     matrix ingress where no route was registered at startup — the result names

@@ -57,7 +57,7 @@ profiles:
         headers:
           Authorization: "Bearer ${MCP_MEMORY_API_KEY}"
         tools_allow: ["*"]
-        # Response guards — the egress half of parameter_guards. The memory
+        # Response guards — the egress half of request_guards. The memory
         # server is shared with supervised profiles, and recall is semantic:
         # this agent can ask for "the codename project's roadmap" without
         # naming it, so nothing in the REQUEST is matchable and a parameter
@@ -106,7 +106,7 @@ profiles:
           - create_issue_comment_tool
           - search_code_tool
 
-      # ── Write-capable backend — parameter guards on sends ───────
+      # ── Write-capable backend — request guards on sends ───────
       mail:
         url: "http://mcp-mail:8000/mcp"
         # Short tool names carry this tag only where they collide with
@@ -118,7 +118,7 @@ profiles:
           - get_gmail_thread_content
           - draft_gmail_message
           - send_gmail_message
-        parameter_guards:
+        request_guards:
           send_gmail_message:
             to:
               allow: ["alice@example.com"]

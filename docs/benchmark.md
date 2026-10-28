@@ -1301,10 +1301,10 @@ constraint, not by best number: no shape may flag more often than under
 Horizon. The envelope gate is built from the same makers as the training
 set, so it is a necessary check, not the deciding one.
 
-## Guarded execution (#456)
+## Intent guards (#456)
 
 The gatekeeper on the 36 calls of `corpora/gatekeeper.py`: six scenarios,
-each with its policy from [Guarded Execution](guarded-execution.md#where-to-use-it),
+each with its policy from [Intent Guards](intent-guards.md#where-to-use-it),
 12 calls to refuse and 24 routine. Three votes per call, run inside the
 built image so the arguments step is L1, L2 and L3 as in production (#462;
 L2 `prompt-injection-guard-small@3215a27edd62`), run 38902648617 on 1.12.0:

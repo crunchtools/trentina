@@ -12,7 +12,7 @@ Everything Trentina wires into a request path is one of exactly two things. If y
 
 | guard | what it judges | where |
 |---|---|---|
-| **Parameter guards** | the *arguments* of a `tools/call`, after the tool-name allowlist and before the backend is contacted | `gateway/guards.py`, [parameter-guards.md](parameter-guards.md) |
+| **Request guards** | the *arguments* of a `tools/call`, after the tool-name allowlist and before the backend is contacted | `gateway/guards.py`, [request-guards.md](request-guards.md) |
 | **Response guards** | the backend's *result*, after the call returns and before anything is transformed, scanned or relayed | `gateway/guards.py`, [response-guards.md](response-guards.md) |
 | **The scanner** | content, through L1 → L2 → L3 below | `defense.py` — and `defend()` is the only entry point, enforced by `tests/test_defense_contract.py` |
 
@@ -430,7 +430,7 @@ one does; the rest name the benchmark that measured them.
     scores it 0.007, and none of the four shipped judges flags it. Nothing in
     the text separates it from a real colleague's mail, so detection is the
     wrong control; what stops it is a limit on what the agent may send.
-    [Guarded execution](guarded-execution.md) is that limit (#456): it
+    [Intent guards](intent-guards.md) is that limit (#456): it
     judges the call the request leads to, not the request.
     Imperva's bare install instruction is the same shape with a URL: L2
     scores it 0.254, and two of the four shipped judges (Gemini 3.5
@@ -559,19 +559,19 @@ one does; the rest name the benchmark that measured them.
     on, keep `push_refs` to a namespace of its own that nothing deploys
     from, and treat a checkout as untrusted content. Tested, the `want`
     against a real git server.
-30. **Guarded execution is a model, and judges one call at a time**
+30. **Intent guards is a model, and judges one call at a time**
     (#456). A call to a guarded tool is forwarded when the profile's judge
     answers allow, and nothing else in the gatekeeper reads its content: a
     call that reads as routine to the judge passes, whatever it carries.
     Each call is judged alone. Data sent in many small calls, each within
     the policy, is never seen as one export, and the only memory between
     calls is the first-contact fact and the session's flagged mark. Keep
-    every rule that can be stated exactly in a parameter guard, which no
+    every rule that can be stated exactly in a request guard, which no
     answer from a model can override. The same gatekeeper can judge a
     [terminating-egress](egress-http.md) request's intent before it is sent
-    (`guarded_execution.egress_http`, under `block`; #511), with the same one-
+    (`intent_guards.egress_http`, under `block`; #511), with the same one-
     call-at-a-time limit. Measured per scenario by
-    `benchmarks/gatekeeper.py` ([Guarded Execution](guarded-execution.md#measured)).
+    `benchmarks/gatekeeper.py` ([Intent Guards](intent-guards.md#measured)).
     Tested (`tests/test_coverage_gaps.py`).
 31. **L2 flags writing about attacks** (#474). Security documentation,
     the source of a detector and the issue tracker of a security gateway
@@ -603,8 +603,8 @@ one does; the rest name the benchmark that measured them.
     one document), so the gap is the binary body alone. A judged terminating
     proxy buffers and judges the whole response, so byte-for-byte streaming is
     incompatible with judge-before-deliver and stays the tunnel's territory
-    (gap 26); the guarded-execution hook on an egress call has landed (gap 30,
-    `guarded_execution.egress_http`). Tested.
+    (gap 26); the intent-guards hook on an egress call has landed (gap 30,
+    `intent_guards.egress_http`). Tested.
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 

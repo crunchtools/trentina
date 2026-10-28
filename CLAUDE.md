@@ -724,7 +724,7 @@ replaced.
   crosses; the bytes ride base64 (event `media`, bridge `POST /upload`) and are
   judged WITH the event (`scanned["attachment"]`), read by signature first
   (`media.read_attachment`), capped at `ocr.MAX_IMAGE_BYTES`, thumbnails dropped.
-- `gateway/` — Per-consumer MCP gateway proxy with tool allowlists, parameter guards, and defense pipeline
+- `gateway/` — Per-consumer MCP gateway proxy with tool allowlists, request guards, and defense pipeline
   - `args.py` — schema-driven argument normalization (#241): drops an
     optional that is `""` or `null`, never one equal to its `default`, which
     is only an annotation. An optional that provably fails its schema is

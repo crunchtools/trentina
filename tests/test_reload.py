@@ -143,7 +143,7 @@ SWAPPED_BACKEND_YAML = DENIED_YAML.replace(
 BETA_GUARDED_YAML = BASE_YAML.replace(
     '      wiki:\n        url: http://wiki:1/mcp\n        tools_allow: ["*"]\n',
     '      wiki:\n        url: http://wiki:1/mcp\n        tools_allow: ["*"]\n'
-    "        parameter_guards:\n"
+    "        request_guards:\n"
     "          wiki_delete_page_tool:\n"
     "            title:\n"
     '              deny: ["Runbook*"]\n',
@@ -297,12 +297,12 @@ class TestAppliedReload:
     async def test_diff_names_guard_parameters_without_echoing_patterns(
         self, profiles_path: Path
     ) -> None:
-        """The motivating edit: a destructive tool gets a parameter guard."""
+        """The motivating edit: a destructive tool gets a request guard."""
         profiles_path.write_text(
             BASE_YAML.replace(
                 "        tools_deny: []\n",
                 "        tools_deny: []\n"
-                "        parameter_guards:\n"
+                "        request_guards:\n"
                 "          jira_delete_issue:\n"
                 "            key:\n"
                 '              deny: ["PROD-*"]\n',
@@ -311,7 +311,7 @@ class TestAppliedReload:
         )
         result = await _reload_as("alpha")
 
-        guards = result["changes"]["alpha"]["backends_changed"]["jira"]["parameter_guards"]
+        guards = result["changes"]["alpha"]["backends_changed"]["jira"]["request_guards"]
         assert guards == {"jira_delete_issue": {"parameters_added": ["key"]}}
         assert "PROD-" not in str(result)
 
@@ -1181,7 +1181,7 @@ class TestServiceIdentityMoves:
 BETA_GUARDED_EXECUTION_YAML = BASE_YAML.replace(
     "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n",
     "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n"
-    "    guarded_execution:\n"
+    "    intent_guards:\n"
     "      policy: Edits stay on our own pages.\n"
     "      tools:\n"
     "        wiki: [edit_page]\n",
@@ -1198,10 +1198,10 @@ class TestGuardedExecutionIsOperatorOnly:
         profiles_path.write_text(BASE_YAML, encoding="utf-8")
         result = await _reload_as("beta")
 
-        guarded = _registry()["beta"].guarded_execution
+        guarded = _registry()["beta"].intent_guards
         assert guarded is not None
         assert guarded.guards("wiki", "edit_page")
-        assert "guarded_execution" in result["not_applied"]["operator_only"]
+        assert "intent_guards" in result["not_applied"]["operator_only"]
 
     async def test_agent_cannot_rewrite_the_policy(self, profiles_path: Path) -> None:
         profiles_path.write_text(BETA_GUARDED_EXECUTION_YAML, encoding="utf-8")
@@ -1215,7 +1215,7 @@ class TestGuardedExecutionIsOperatorOnly:
         )
         await _reload_as("beta")
 
-        guarded = _registry()["beta"].guarded_execution
+        guarded = _registry()["beta"].intent_guards
         assert guarded is not None
         assert guarded.policy == "Edits stay on our own pages."
 
@@ -1224,4 +1224,4 @@ class TestGuardedExecutionIsOperatorOnly:
         result = await _reload_as("alpha")
 
         assert result["reloaded"] is True
-        assert _registry()["beta"].guarded_execution is not None
+        assert _registry()["beta"].intent_guards is not None

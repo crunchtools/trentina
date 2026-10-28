@@ -16,7 +16,7 @@ from .backend import BackendCall, call_backend_tool, list_backend_tools
 from .circuit import CircuitBreaker, breaker
 from .errors import AuthError, GatewayError, ProfileConfigError
 from .filter import filter_tools
-from .guards import check_parameter_guards
+from .guards import check_request_guards
 from .internal import (
     call_internal_tool,
     internal_server_registered,
@@ -53,7 +53,7 @@ __all__ = [
     "breaker",
     "call_backend_tool",
     "call_internal_tool",
-    "check_parameter_guards",
+    "check_request_guards",
     "filter_tools",
     "gateway_app",
     "internal_server_registered",

@@ -136,7 +136,7 @@ class TestResolution:
         p = _profile(
             ["block", "redact"],
             backend={
-                "parameter_guards": {
+                "request_guards": {
                     "jira_get_issue": {MODE_PARAM: ParameterConstraint(allow=["redact"])}
                 }
             },
@@ -573,7 +573,7 @@ async def test_a_mode_guard_refuses_at_call_even_when_the_mode_is_omitted() -> N
     p = _profile(
         ["block", "redact"],
         backend={
-            "parameter_guards": {
+            "request_guards": {
                 "jira_get_issue": {MODE_PARAM: ParameterConstraint(allow=["redact"])}
             }
         },
@@ -778,7 +778,7 @@ class TestPre035SpellingsAreGone:
             _profile(
                 ["block", "flag", "redact"],
                 backend={
-                    "parameter_guards": {
+                    "request_guards": {
                         "jira_get_issue": {
                             MODE_PARAM: ParameterConstraint(allow=["*"], deny=[value])
                         }

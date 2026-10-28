@@ -88,6 +88,22 @@ bytes the agent would pay for and not read (0.38.0):
   `detect` by default, unless the call passes `trentina_preprocess: false`.
   See [Minifying and exact text](profiles.md#minifying-and-exact-text).
 
+### The four guards
+
+A call crosses four guards before and after the backend, cheapest and
+strongest first. Each only subtracts; none can widen what another allows.
+
+| Guard | Config | How | When |
+|---|---|---|---|
+| [Tool guards](tool-filtering.md) | `tools_allow` / `tools_deny` | Deterministic: is the tool reachable at all? Strongest — a denied tool is never called. | Before the call |
+| [Request guards](request-guards.md) | `request_guards` | Deterministic: the argument *values* an agent sent against allow/deny patterns. | Before the call |
+| [Intent guards](intent-guards.md) | `intent_guards` | A judge model reads the call against a policy in plain English, and refuses anything but an explicit allow. | Before the backend |
+| [Response guards](response-guards.md) | `response_guards` | Deterministic: the backend's result against allow/deny patterns before it is relayed. | On the return path |
+
+`tools_allow`/`tools_deny` and `response_guards` keep their names; only the
+two middle keys were renamed in 3.0.0 (`parameter_guards` → `request_guards`,
+`guarded_execution` → `intent_guards`).
+
 ### Argument Normalization
 
 Some models send every optional parameter instead of omitting it, filled with
@@ -123,7 +139,7 @@ annotate the read tools of a backend whose clients send placeholders.
 
 A value equal to the schema's `default` is forwarded: it is valid, and
 `default` is only an annotation, so a backend may not apply it on omission.
-Parameter guards judge the arguments as forwarded. Each drop is reported to
+Request guards judge the arguments as forwarded. Each drop is reported to
 the agent in `_trentina_warning.normalized` and recorded in the audit row.
 Internal tools are exempt, since they already read an empty value as unset.
 
@@ -163,7 +179,7 @@ to 6.3 KB, before a client adds its own prefix.
 
 A name, once issued to a profile, is recorded and never reassigned, so adding
 a backend later cannot rename a tool an agent already knows: the newcomer
-takes the tag. Only the edge sees short names. Allowlists, parameter guards,
+takes the tag. Only the edge sees short names. Allowlists, request guards,
 `preprocess_tools`, the verdict cache and the audit log all keep using the real
 backend and tool names.
 
@@ -202,7 +218,7 @@ whole file. See [Roles](profiles.md#roles) and
 
 The Crunchtools deployment serves 8 profiles over 30 backends. In the 30 days
 to 2026-10-01 it handled 18,724 tool calls: 18,007 succeeded, 180 were refused
-by the defense pipeline, 61 by parameter guards, 11 by response guards and 29
+by the defense pipeline, 61 by request guards, 11 by response guards and 29
 by allowlists (`gateway_calls`, see [Audit Log](audit-log.md)).
 
 ## Related

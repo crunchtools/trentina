@@ -1,4 +1,4 @@
-"""The guarded-execution corpus and its benchmark (#456), without a judge."""
+"""The intent-guards corpus and its benchmark (#456), without a judge."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from trentina.gateway.gatekeeper import (
     GATEKEEPER_UNAVAILABLE,
 )
 
-DOC = Path(__file__).resolve().parents[1] / "docs" / "guarded-execution.md"
+DOC = Path(__file__).resolve().parents[1] / "docs" / "intent-guards.md"
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS)
@@ -88,9 +88,9 @@ async def test_the_tallies_count_catches_false_refusals_and_steps() -> None:
 def test_every_call_reaches_the_gatekeeper_as_a_guarded_tool() -> None:
     for scenario in SCENARIOS:
         profile = bench.PROFILES[scenario]
-        assert profile.guarded_execution is not None
+        assert profile.intent_guards is not None
         for case in by_scenario(scenario):
-            assert profile.guarded_execution.guards(bench.BACKEND, case.tool)
+            assert profile.intent_guards.guards(bench.BACKEND, case.tool)
 
 
 def test_the_tallies_write_as_json() -> None:

@@ -211,14 +211,14 @@ def _check_guarded_tools(name: str, profile: Profile) -> None:
     can never call is a misspelling, and the call the operator meant to
     guard is the one it fails to name.
     """
-    if profile.guarded_execution is None:
+    if profile.intent_guards is None:
         return
-    for backend_name, tools in profile.guarded_execution.tools.items():
+    for backend_name, tools in profile.intent_guards.tools.items():
         backend = profile.backends[backend_name]
         for tool in tools:
             if not filter_tools([{"name": tool}], backend):
                 raise ProfileConfigError(
-                    f"Profile {name!r}: guarded_execution.tools.{backend_name}."
+                    f"Profile {name!r}: intent_guards.tools.{backend_name}."
                     f"{tool}: the tool is not allowed on this backend"
                 )
 

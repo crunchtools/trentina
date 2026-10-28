@@ -215,6 +215,7 @@ max-complexity = 10
 "benchmarks/l2_encodings.py" = ["E402"]
 # S106: `bearer_token_env` names an environment variable; it holds no token.
 "benchmarks/l2_benign.py" = ["E402", "S106"]
+"benchmarks/gatekeeper.py" = ["E402", "S106"]
 "benchmarks/l1_briefing.py" = ["E402"]
 # E402 and S106 as l2_benign above; S311: envelope texts are drawn from a fixed seed.
 "benchmarks/l2_envelopes.py" = ["E402", "S106", "S311"]

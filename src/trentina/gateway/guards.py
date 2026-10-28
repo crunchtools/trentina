@@ -52,23 +52,23 @@ def evaluate_constraint(value: str, constraint: ParameterConstraint) -> str | No
     return None
 
 
-def check_parameter_guards(
+def check_request_guards(
     tool_name: str,
     arguments: dict[str, Any],
     backend: Backend,
 ) -> str | None:
-    """Validate tool arguments against the backend's parameter guards.
+    """Validate tool arguments against the backend's request guards.
 
     Args:
         tool_name: The un-namespaced tool name (e.g. ``send_gmail_message``).
         arguments: The arguments dict from the JSON-RPC ``tools/call`` params.
-        backend: Backend config carrying ``parameter_guards``.
+        backend: Backend config carrying ``request_guards``.
 
     Returns:
         ``None`` if all checks pass, or a terse error message on the first
         violation. Error messages never include the rejected value.
     """
-    tool_guards = backend.parameter_guards.get(tool_name)
+    tool_guards = backend.request_guards.get(tool_name)
     if not tool_guards:
         return None
 

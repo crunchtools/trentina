@@ -5,7 +5,7 @@ request passes all of them (known gap 20): nothing in the text separates it
 from a colleague's. The call it leads to is another matter. Bulk records, to
 an address this profile has never written to, from a session that was just
 delivered flagged mail, is a judgment a model can make, and a profile's
-``guarded_execution`` block names the calls it is asked to make it on.
+``intent_guards`` block names the calls it is asked to make it on.
 
 A guarded call is held to three steps, in order, before it is forwarded:
 
@@ -48,7 +48,7 @@ from .session_marks import was_flagged
 
 if TYPE_CHECKING:
     from .destination import Destination
-    from .profile import Backend, GuardedExecutionConfig, Profile
+    from .profile import Backend, IntentGuardsConfig, Profile
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ ARGUMENTS_UNJUDGED = "arguments_unjudged"
 GATEKEEPER_UNAVAILABLE = "gatekeeper_unavailable"
 SESSION_FLAGGED = "session_flagged"
 
-REFUSAL_PREFIX = "Refused by guarded execution: "
+REFUSAL_PREFIX = "Refused by intent guards: "
 
 _RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -237,7 +237,7 @@ async def judge_call(
 
     A call to a tool the profile does not guard costs nothing here.
     """
-    cfg = profile.guarded_execution
+    cfg = profile.intent_guards
     if cfg is None or not cfg.guards(backend_name, tool_name):
         return None
     facts = gather_facts(profile, backend_name, tool_name, dest)
@@ -256,7 +256,7 @@ async def judge_call(
 
 async def judge_egress(
     profile: Profile,
-    cfg: GuardedExecutionConfig,
+    cfg: IntentGuardsConfig,
     *,
     backend: str,
     method: str,
@@ -299,7 +299,7 @@ async def judge_egress(
 
 async def evaluate(
     profile: Profile,
-    cfg: GuardedExecutionConfig,
+    cfg: IntentGuardsConfig,
     facts: CallFacts,
     arguments: dict[str, Any],
 ) -> GateRefusal | None:
@@ -330,7 +330,7 @@ async def evaluate(
     return None if reason is None else GateRefusal(reason, facts)
 
 
-async def _ask(cfg: GuardedExecutionConfig, facts: CallFacts, arguments: str) -> str | None:
+async def _ask(cfg: IntentGuardsConfig, facts: CallFacts, arguments: str) -> str | None:
     """The judge's refusal reason, or None for an explicit allow."""
     if not llm_available():
         return GATEKEEPER_UNAVAILABLE

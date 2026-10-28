@@ -86,7 +86,7 @@ def _profile(
             "cms": Backend(
                 url=url,
                 preprocess_tools=tools or {},
-                parameter_guards=guards or {},
+                request_guards=guards or {},
             )
         },
         preprocess=preprocess or PreProcessConfig(),

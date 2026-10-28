@@ -297,7 +297,7 @@ async def test_a_refused_call_still_records_where_it_pointed() -> None:
     profile.backends["slack"] = Backend(
         url="http://mcp-slack:8000/mcp",
         destination_params={"send_message": "channel"},
-        parameter_guards={"send_message": {"channel": ParameterConstraint(allow=["C0OPS"])}},
+        request_guards={"send_message": {"channel": ParameterConstraint(allow=["C0OPS"])}},
     )
     await _call(profile, f"slack{NAMESPACE_SEP}send_message", {"channel": "C0EXFIL"})
 
