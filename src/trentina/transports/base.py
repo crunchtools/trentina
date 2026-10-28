@@ -54,6 +54,10 @@ class Face(ABC):
     """
 
     name: str
+    #: The transport contract version this face was written against — the compat
+    #: anchor for when transport plugins unlock (3.0.0). Not yet enforced; the
+    #: built-in ``mcp`` face is version 1.
+    api_version: int = 1
 
     @abstractmethod
     async def parse(self, ctx: Any) -> Any:
@@ -80,6 +84,8 @@ class Carrier(ABC):
     """Carry a parsed, outbound request to its destination and bring back the reply."""
 
     name: str
+    #: The transport contract version this carrier was written against; see ``Face``.
+    api_version: int = 1
 
     @abstractmethod
     async def carry(self, ctx: Any, parsed: Any) -> Any:
