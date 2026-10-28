@@ -194,6 +194,12 @@ justification = "Four Pydantic field validators that each match a different valu
 classification = "by_design"
 
 [[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/plugins/registry.py"
+justification = "resolve_transform (resolve a plugin entry point) and tools/confine.open_confined (open a confined file descriptor) are unrelated — one touches importlib.metadata, the other os.open under O_NOFOLLOW. They share only the shape every fail-closed validator in this gateway has: do a step, raise a named ProfileConfigError/FileReadError on failure, return the proven value. That shape is the idiom, not a copy; collapsing them would couple plugin resolution to filesystem confinement."
+classification = "by_design"
+
+[[exceptions]]
 check = "primitive_obsession"
 path = "src/trentina/defense.py"
 pattern = "_should_run_l3"

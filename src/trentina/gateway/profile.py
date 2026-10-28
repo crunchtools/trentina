@@ -24,6 +24,7 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
+    StringConstraints,
     field_validator,
     model_validator,
 )
@@ -168,13 +169,23 @@ ProcessorName = Literal[
     "select",
     "matrix",
 ]
+
+# An out-of-tree plugin reference, `dist:name` (e.g. "petit-plus:dedupe"): the
+# installed distribution and its entry point. Validated here by SHAPE only;
+# resolved against the installed `trentina.transforms.v1` entry points at config
+# load (`plugins.registry` via `build_transforms`), where an unknown dist or name
+# is a ProfileConfigError naming both. The smart union tries ProcessorName first,
+# so a typo'd built-in ("detct") matches neither and is refused as before.
+PluginRef = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*:[a-z0-9_]+$")]
+ProcessorRef = ProcessorName | PluginRef
+
 # FREE only. `detect` (0.38.0) looks at the payload and runs the minifiers
 # that fit it: html then petit for a page, structured for JSON, email then
 # petit for anything else. Until 0.38.0 the default was all four in a row,
 # and `html` ran first on everything, which is how a mail header lost its
 # addresses (transforms/detect.py). summarize is never a default: METERED,
 # and its output draws unconditional L3.
-_DEFAULT_PROCESSORS: list[ProcessorName] = ["detect"]
+_DEFAULT_PROCESSORS: list[ProcessorRef] = ["detect"]
 
 # Fields of MatrixPreProcessConfig an AGENT may change by reloading its own
 # profile.
@@ -327,7 +338,7 @@ class ProcessorChainConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    processors: list[ProcessorName] = Field(
+    processors: list[ProcessorRef] = Field(
         default_factory=list,
         description="Which processors run, in order. Empty is the no-op.",
     )
@@ -379,7 +390,7 @@ class PreProcessConfig(ProcessorChainConfig):
             "keeps whichever came out smallest."
         ),
     )
-    processors: list[ProcessorName] = Field(
+    processors: list[ProcessorRef] = Field(
         default_factory=lambda: list(_DEFAULT_PROCESSORS),
         description=(
             "Which processors may run, in order. 'summarize' is METERED: it "
@@ -406,7 +417,7 @@ class PreProcessConfig(ProcessorChainConfig):
             "Reduction has a fixed cost and small payloads cannot repay it."
         ),
     )
-    required: list[ProcessorName] = Field(
+    required: list[ProcessorRef] = Field(
         default_factory=list,
         description=(
             "Processors that run on every response, trentina_preprocess: "
@@ -442,10 +453,10 @@ class ToolPreProcess(BaseModel):
 
     enabled: bool | None = None
     strategy: Literal["none", "chain", "best_of", "auto"] | None = None
-    processors: list[ProcessorName] | None = None
+    processors: list[ProcessorRef] | None = None
     target_bytes: int | None = Field(default=None, ge=0)
     min_bytes: int | None = Field(default=None, ge=0)
-    required: list[ProcessorName] | None = Field(
+    required: list[ProcessorRef] | None = Field(
         default=None,
         description=(
             "This tool's floor. Unset inherits the profile's; set, it "
@@ -456,6 +467,20 @@ class ToolPreProcess(BaseModel):
         default=None,
         description="Declare trentina_preprocess on this tool. Unset inherits the profile's.",
     )
+
+    @field_validator("processors", "required")
+    @classmethod
+    def _no_plugin_in_tool_override(cls, v: list[str] | None) -> list[str] | None:
+        """A plugin (``dist:name``) is named only at the operator-held profile or
+        channel level, never in a per-tool override — per-tool overrides can sit
+        closer to agent reach, and resolving a plugin runs its code in-process.
+        Built-ins only here keeps an agent from introducing plugin code."""
+        if v and any(":" in name for name in v):
+            raise ValueError(
+                "a per-tool override names built-in transforms only; name a plugin "
+                "(dist:name) at the profile or channel level instead"
+            )
+        return v
 
 
 #: A backend's L3 briefing says what the backend IS in a sentence or two.

@@ -2186,6 +2186,11 @@ wheels = [
 ]
 
 [[package]]
+name = "petit-plus"
+version = "0.1.0"
+source = { directory = "tests/fixtures/plugins/petit_plus" }
+
+[[package]]
 name = "pillow"
 version = "13.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3482,6 +3487,7 @@ bridge = [
 ]
 dev = [
     { name = "mypy" },
+    { name = "petit-plus" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -3505,6 +3511,7 @@ requires-dist = [
     { name = "onnxruntime", specifier = ">=1.17" },
     { name = "opencv-python-headless", specifier = ">=4.10" },
     { name = "petit-log-crunchtools", specifier = ">=4.10.2" },
+    { name = "petit-plus", marker = "extra == 'dev'", directory = "tests/fixtures/plugins/petit_plus" },
     { name = "py-key-value-aio", specifier = ">=0.4.6,<0.5" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pypdf", specifier = ">=6.19" },
