@@ -58,13 +58,14 @@ from __future__ import annotations
 import errno
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from ..config import get_config
 from ..errors import BlockedSourceError, FileReadError
 from ..gateway.loader import get_active_config
+from ..seal import UNSEALED, Seal, require
 
 if TYPE_CHECKING:
     from ..modes import Mode
@@ -251,6 +252,14 @@ class ResolvedPath:
     fd: int
     st: os.stat_result
     path: Path
+    _seal: InitVar[Seal] = UNSEALED
+
+    def __post_init__(self, _seal: Seal) -> None:
+        require(_seal, _PATH_SEAL, "ResolvedPath")
+
+
+#: The token ``open_confined`` holds to build a ``ResolvedPath``; see ``core.seal``.
+_PATH_SEAL = Seal("open_confined")
 
 
 def open_confined(path: str, kind: FileKind) -> ResolvedPath:
@@ -293,4 +302,4 @@ def open_confined(path: str, kind: FileKind) -> ResolvedPath:
     except BaseException:
         os.close(fd)
         raise
-    return ResolvedPath(fd=fd, st=opened, path=resolved)
+    return ResolvedPath(fd=fd, st=opened, path=resolved, _seal=_PATH_SEAL)

@@ -19,11 +19,12 @@ it is handled, rather than silently taking a non-FLAG site's fail-open branch.
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, assert_never
 
 from ..modes import Gaps, Mode, ModePolicy, gaps_of, refusal_reason
+from ..seal import UNSEALED, Seal, require
 
 if TYPE_CHECKING:
     from ..defense import DefenseVerdict
@@ -54,6 +55,10 @@ class Posture:
     nothing about what the layers made of the content."""
     prompt: str | None = None
     """The redact extraction request, when the caller carries one."""
+    _seal: InitVar[Seal] = UNSEALED
+
+    def __post_init__(self, _seal: Seal) -> None:
+        require(_seal, _POSTURE_SEAL, "Posture")
 
     @property
     def stop_on_partial(self) -> bool:
@@ -75,6 +80,10 @@ class Posture:
         never put on the blocklist.
         """
         return self.mode is Mode.BLOCK and blocklists
+
+
+#: The token ``identity.posture`` holds to build a ``Posture``; see ``core.seal``.
+_POSTURE_SEAL = Seal("posture")
 
 
 class Decision(Enum):

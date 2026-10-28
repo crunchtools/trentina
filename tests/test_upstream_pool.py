@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from trentina.gateway import upstream
-from trentina.reach.egress import ResolvedTarget
+from trentina.reach.egress import _TARGET_SEAL, ResolvedTarget
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -47,7 +47,7 @@ def _stub_check(monkeypatch: pytest.MonkeyPatch, pinned: list[str]) -> None:
 
     async def fake(_profile: Any, host: str) -> ResolvedTarget:
         pinned.append(host)
-        return ResolvedTarget(host, 443, (ADDR,))
+        return ResolvedTarget(host, 443, (ADDR,), _seal=_TARGET_SEAL)
 
     monkeypatch.setattr(upstream, "checked_target", fake)
 

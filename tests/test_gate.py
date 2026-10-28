@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from trentina.core import Decision, gate
-from trentina.core.dispose import DEFAULT_REDACT_PROMPT, Posture
+from trentina.core.dispose import _POSTURE_SEAL, DEFAULT_REDACT_PROMPT, Posture
 from trentina.defense import DefenseVerdict, Layer
 from trentina.l1.pipeline import PipelineResult, PipelineStats
 from trentina.modes import Mode, ModePolicy
@@ -46,7 +46,9 @@ def _verdict(
 
 
 def _posture(mode: Mode, *, allowlisted: bool = False, prompt: str | None = None) -> Posture:
-    return Posture(mode=mode, policy=POLICY, allowlisted=allowlisted, prompt=prompt)
+    return Posture(
+        mode=mode, policy=POLICY, allowlisted=allowlisted, prompt=prompt, _seal=_POSTURE_SEAL
+    )
 
 
 class TestNonRedactNeverExtracts:

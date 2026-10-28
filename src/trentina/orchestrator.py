@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from .core import gate, identity
 from .core.dispose import Decision, dispose
-from .core.stages import Judged
+from .core.stages import _JUDGED_SEAL, Judged
 from .defense import Provenance, defend, defend_json, defend_selection
 from .gateway.context import profile_context
 from .gateway.ingress_defense import IngressDecision, disposed_response, scan_response
@@ -195,7 +195,7 @@ async def judge_response(
         l3_context=l3_context,
         hidden=hidden,
     )
-    return Judged(transformed=transformed, decision=decision)
+    return Judged(transformed=transformed, decision=decision, _seal=_JUDGED_SEAL)
 
 
 @dataclass(frozen=True)

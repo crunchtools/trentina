@@ -22,8 +22,10 @@ result remains the router's ``Assembled``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from typing import TYPE_CHECKING, Any
+
+from ..seal import UNSEALED, Seal, require
 
 if TYPE_CHECKING:
     from ..defense import Provenance
@@ -79,3 +81,11 @@ class Judged:
 
     transformed: Transformed
     decision: IngressDecision
+    _seal: InitVar[Seal] = UNSEALED
+
+    def __post_init__(self, _seal: Seal) -> None:
+        require(_seal, _JUDGED_SEAL, "Judged")
+
+
+#: The token ``orchestrator.judge_response`` holds to build a ``Judged``; see ``core.seal``.
+_JUDGED_SEAL = Seal("judge_response")

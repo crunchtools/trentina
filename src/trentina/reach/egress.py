@@ -32,7 +32,7 @@ import socket
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from typing import TYPE_CHECKING, Any
 
 import httpcore
@@ -40,6 +40,7 @@ import httpx
 
 from ..config import get_config
 from ..errors import EgressRefusedError
+from ..seal import UNSEALED, Seal, require
 
 if TYPE_CHECKING:
     import ssl
@@ -119,6 +120,14 @@ class ResolvedTarget:
     host: str
     port: int
     addresses: tuple[str, ...]
+    _seal: InitVar[Seal] = UNSEALED
+
+    def __post_init__(self, _seal: Seal) -> None:
+        require(_seal, _TARGET_SEAL, "ResolvedTarget")
+
+
+#: The token ``check_url`` holds to build a ``ResolvedTarget``; see ``core.seal``.
+_TARGET_SEAL = Seal("check_url")
 
 
 def _embedded_v4(ip: ipaddress.IPv6Address) -> list[ipaddress.IPv4Address]:
@@ -226,7 +235,9 @@ async def check_url(url: str | httpx.URL) -> ResolvedTarget:
             if not is_global_address(ip):
                 log.warning("egress: refused a non-global address")
                 raise EgressRefusedError("non_global_address")
-    return ResolvedTarget(host=host, port=port, addresses=tuple(dict.fromkeys(addresses)))
+    return ResolvedTarget(
+        host=host, port=port, addresses=tuple(dict.fromkeys(addresses)), _seal=_TARGET_SEAL
+    )
 
 
 def is_encoded(response: httpx.Response) -> bool:

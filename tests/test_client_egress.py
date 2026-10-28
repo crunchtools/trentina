@@ -763,7 +763,7 @@ class TestABurstIsOneLookup:
             nonlocal calls
             calls += 1
             await release.wait()
-            return egress.ResolvedTarget(ALLOWED, 443, (PUBLIC_ADDRESS,))
+            return egress.ResolvedTarget(ALLOWED, 443, (PUBLIC_ADDRESS,), _seal=egress._TARGET_SEAL)
 
         monkeypatch.setattr(upstream_mod, "check_url", check)
         profile = _profile()
@@ -790,7 +790,7 @@ class TestABurstIsOneLookup:
 
         async def check(_url: str) -> egress.ResolvedTarget:
             await release.wait()
-            return egress.ResolvedTarget(ALLOWED, 443, (PUBLIC_ADDRESS,))
+            return egress.ResolvedTarget(ALLOWED, 443, (PUBLIC_ADDRESS,), _seal=egress._TARGET_SEAL)
 
         monkeypatch.setattr(upstream_mod, "check_url", check)
         profile = _profile()
