@@ -89,11 +89,26 @@ group. A plugin declaring an `api_version` this build does not support is refuse
 
 ## Testing your plugin
 
-*Planned for this release line; not yet available.* Trentina will ship a public
-`trentina.testing` conformance suite you run against your plugin before shipping
-it, and the gateway will run the same suite at startup, so a plugin that fails
-conformance is refused by name rather than at the first request. Until it lands,
-test your plugin against the `Transform` contract directly.
+`trentina.testing` is public, alongside the two base contracts. Run it against
+your plugin before you ship it:
+
+```python
+import asyncio
+from trentina.testing import conformance, scan_imports
+from my_plugin import make
+
+# The load-bearing, synchronous check: the import boundary over your dist.
+assert scan_imports("acme-shout") == []
+# The full suite over a built instance: declines empty/binary, bounded
+# amplification, roughly linear cost, logs no payload.
+result = asyncio.run(conformance("acme-shout:shout", make({})))
+assert result.ok, result.failures
+```
+
+The gateway runs the load-bearing half (`scan_imports`) at startup for every
+plugin a profile names, so a plugin that imports a private `trentina` module or
+a network/subprocess module is refused BY NAME at config load, never at the
+first request.
 
 ## Installing (operator)
 

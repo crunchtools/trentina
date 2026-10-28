@@ -48,6 +48,7 @@ from trentina.gateway.profile import (
     Profile,
 )
 from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
+from trentina.testing.hygiene import LogCapture, capture_logs, leaked
 from trentina.tools import cache as cache_tool
 from trentina.tools import reconnect as reconnect_tool
 
@@ -59,58 +60,19 @@ if TYPE_CHECKING:
 CANARY = "zqx7canary"
 URL = f"https://{CANARY}.example.com/{CANARY}?q={CANARY}"
 
-#: Loggers that do not propagate to the root, so they are watched directly.
-_DETACHED = ("fastmcp",)
-
-
-class _Capture(logging.Handler):
-    def __init__(self) -> None:
-        super().__init__(logging.DEBUG)
-        self.records: list[logging.LogRecord] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record)
-
-
-def _rendered(record: logging.LogRecord) -> str:
-    fmt = logging.Formatter()
-    parts = [record.getMessage()]
-    if record.exc_info:
-        parts.append(fmt.formatException(record.exc_info))
-    if record.exc_text:
-        parts.append(record.exc_text)
-    if record.stack_info:
-        parts.append(fmt.formatStack(record.stack_info))
-    return "\n".join(parts)
+# The capture harness lives in the public `trentina.testing.hygiene`, shared
+# with the plugin conformance suite (Phase 6). `_Capture` stays as the alias
+# this file's ~35 fixtures annotate against.
+_Capture = LogCapture
 
 
 @pytest.fixture
-def captured() -> Iterator[_Capture]:
+def captured() -> Iterator[LogCapture]:
     """Every record at DEBUG, with the production filters and clamps installed."""
-    watched = ["", "httpx", "httpcore", "mcp", "uvicorn.access", *_DETACHED]
-    saved = {name: logging.getLogger(name).level for name in watched}
-    handler = _Capture()
-    root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
-    logging.getLogger("httpx").setLevel(logging.DEBUG)
-    logsafe.install(logging.DEBUG)
-    root.addHandler(handler)
-    for name in _DETACHED:
-        logging.getLogger(name).addHandler(handler)
-    try:
+    with capture_logs() as handler:
         yield handler
-    finally:
-        root.removeHandler(handler)
-        for name in _DETACHED:
-            logging.getLogger(name).removeHandler(handler)
-        for name, level in saved.items():
-            logging.getLogger(name).setLevel(level)
-    leaked = [
-        f"{r.name}:{r.levelname}: {_rendered(r)[:300]}"
-        for r in handler.records
-        if CANARY in _rendered(r)
-    ]
-    assert not leaked, "caller-chosen text reached the log:\n" + "\n".join(leaked)
+    found = leaked(handler, CANARY)
+    assert not found, "caller-chosen text reached the log:\n" + "\n".join(found)
     assert handler.records, "nothing was logged: the path under test did not run"
 
 
