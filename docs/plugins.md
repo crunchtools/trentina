@@ -6,27 +6,35 @@ fail-closed verdict is not pluggable — sameness is the security property, so i
 is one sealed function, never a plugin.
 
 This page is the author and operator guide for **transform plugins**. A plugin
-is Python code the operator installs into the image. Two boundaries make the
-ecosystem safe, and it is worth keeping them apart because they arrive at
-different times:
+is Python code the operator installs into the image, so **review a plugin before
+you install it, as you would any dependency**. Two boundaries hold regardless of
+that review, and they are different in kind:
 
 - **The type system bounds what a plugin can do to Trentina's decisions — in
-  effect now, by construction.** A transform returns `str`-shaped results; it
-  cannot construct a verdict, skip or reorder the gate, dial an unchecked
-  address, or forge a `_trentina_*` marker. Everything it emits crosses
-  `defend()` as untrusted, exactly like a built-in transform's output. So a
-  buggy or hostile plugin cannot turn a *refuse* into a *deliver* or smuggle
-  content past the scanner, reviewed or not.
-- **Process isolation bounds what a plugin can do to the host** — its secrets
-  and its network. This is the boundary that makes running a plugin you have
-  *not* audited tolerable, and it arrives later in this release line (see
-  [Isolation](#isolation)).
+  effect now, by construction, reviewed or not.** A transform returns
+  `str`-shaped results; it cannot construct a verdict, skip or reorder the gate,
+  dial an unchecked address, or forge a `_trentina_*` marker. Everything it
+  emits crosses `defend()` as untrusted, exactly like a built-in transform's
+  output. A buggy or hostile plugin cannot turn a *refuse* into a *deliver* or
+  smuggle content past the scanner.
+- **The process tier bounds a plugin's resources and environment.** By default a
+  plugin runs in a child process with CPU, memory and wall-clock limits and no
+  credential in its environment, so it cannot exhaust the gateway or read a
+  secret from its own environment (see [Isolation](#isolation)).
 
-**Today a plugin runs in the gateway process** with full import, environment and
-network reach, so install only plugins you trust as you trust the gateway's own
-code — review them as you would any dependency you add to the image. Process
-isolation changes that; until it is in effect, the operator's review is the
-boundary.
+The process tier is **not** a sandbox for hostile code: a plugin runs as the
+gateway's OS user, so it can still read any file that user can read and reach
+whatever the container's network allows. Bounding a plugin's filesystem and
+network is the job of the deployment's container hardening (read-only rootfs,
+network isolation; [Deployment Hardening](deployment-hardening.md)) — and even
+hardened, running a plugin you have not reviewed is not something Trentina's
+in-image tiers make safe on their own. Treat an installed plugin as code you
+trust; the ecosystem is authors writing plugins, sharing them, and operators
+reviewing and installing the ones they choose.
+
+An operator who trusts a plugin fully can opt it down to the in-process tier
+(`TRENTINA_PLUGIN_INLINE`) for speed; there the plugin runs in the gateway
+process with full reach and no resource bound.
 
 ## The contract
 
@@ -162,22 +170,28 @@ Run-time refusals an agent sees stay closed reason codes, never these strings.
 
 ## Isolation
 
-**Planned for this release line; not yet in effect.** A plugin will run in one
-of two tiers, set per plugin in the profile:
+A plugin runs in one of two tiers:
 
-- `process` (the planned default) — the plugin runs in a child process with
-  `RLIMIT_CPU`/`RLIMIT_AS`, a wall-clock kill, and no credentials in its
-  environment, the same sandbox Trentina runs hostile document parsers in. A
-  plugin in this tier cannot read the gateway's secrets or reach the network,
-  so an un-audited plugin becomes tolerable.
-- `inline` — the plugin runs in the gateway process. Faster, but with full
-  import, environment and network reach, so choose it only for a plugin you
-  trust as you trust the gateway's own code.
+- `process` (the default) — the plugin runs in a child process
+  (`python -m trentina.plugins.worker`) that sets `RLIMIT_CPU`/`RLIMIT_AS` on
+  itself, holds no credential in its environment, runs under a slot cap, and is
+  killed at a wall-clock deadline — the same mechanism Trentina runs hostile
+  document parsers in. The child rebuilds the plugin from its ref, so the plugin
+  never runs in the gateway process. This bounds the plugin's TIME, CPU, MEMORY
+  and ENVIRONMENT credentials; it does NOT by itself restrict the plugin's
+  filesystem or network — those are bounded by the container's hardening (see
+  [Deployment Hardening](deployment-hardening.md)). It is a resource and
+  environment bound, not a sandbox for hostile code (review what you install).
+- `inline` — set `TRENTINA_PLUGIN_INLINE=true`. The plugin runs in the gateway
+  process. Faster, but with full import, environment and network reach and no
+  time/CPU bound, so choose it only for a plugin you trust as you trust the
+  gateway's own code.
 
-Until the tier lands, **every plugin runs inline**, so treat each as trusted
-code you reviewed. An in-process harness also bounds a plugin's output: a
-deadline, a check that the result is one of the three outcomes, and an
-amplification cap (a transform may not return far more than it was given).
+Both tiers bound a plugin's OUTPUT: a result that is not one of the three
+outcomes (or an `Applied` with non-string content) is a failure, and an
+`Applied` far larger than its input is refused (a transform may not inflate).
+The process tier adds the time, CPU, memory and host bounds the in-process tier
+cannot enforce.
 
 ## Sharing and promotion
 

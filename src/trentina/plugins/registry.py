@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 
 from ..gateway.errors import ProfileConfigError
 from ..transforms.base import Transform
-from .isolation import Harnessed
+from .isolation import Harnessed, Isolated
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -124,8 +124,14 @@ def resolve_transform(
             f"Profile {profile_name!r}: plugin transform {ref!r} declares api_version "
             f"{api_version!r}; this build supports {sorted(SUPPORTED_TRANSFORM_API)}"
         )
-    # Every plugin runs behind the in-process harness (result type,
-    # amplification). The wrapper IS a Transform and passes the contract
-    # attributes through, so the channel/kind locks and the composition are
-    # unchanged. In-tree transforms are trusted and are not wrapped.
-    return Harnessed(instance)
+    # Lazy: importing config at module level pulls a chain back to drivers,
+    # which imports this module (a cycle). Read the tier at call time instead.
+    from ..config import bool_env
+
+    # Default: the process tier (credential-free child, CPU/memory/wall-clock
+    # limits; filesystem/network bound by the container, see isolation.py).
+    # TRENTINA_PLUGIN_INLINE opts down to in-process for a plugin trusted as the
+    # gateway's own code. In-tree transforms are unwrapped.
+    if bool_env("TRENTINA_PLUGIN_INLINE", False):
+        return Harnessed(instance)
+    return Isolated(ref, config, instance)
