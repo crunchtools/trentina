@@ -26,7 +26,6 @@ from trentina.gateway.profile import (
 )
 from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 
-ROUTER = "trentina.gateway.router"
 PARTS = "trentina.gateway.parts"
 AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"

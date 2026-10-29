@@ -20,8 +20,8 @@ import pytest
 
 from trentina import orchestrator as orch
 from trentina.config import get_config
+from trentina.gateway import aggregate, router
 from trentina.gateway import ingress_defense as ing
-from trentina.gateway import router
 from trentina.gateway.compress import _call_compress_model
 from trentina.gateway.context import get_current_profile, profile_context
 from trentina.gateway.errors import ProfileConfigError
@@ -363,24 +363,24 @@ class TestPerProfileGeneration:
 
         beta = self._profile("beta")
         with (
-            patch.object(router, "list_backend_tools", slow_list),
-            patch.object(router, "scan_tool_list", passthrough),
-            patch.object(router, "maybe_trigger_compression", AsyncMock()),
+            patch.object(aggregate, "list_backend_tools", slow_list),
+            patch.object(aggregate, "scan_tool_list", passthrough),
+            patch.object(aggregate, "maybe_trigger_compression", AsyncMock()),
         ):
             build = asyncio.create_task(router._route_tools_list(beta, 1))
             await asyncio.sleep(0)
-            router.invalidate_profile_cache("alpha")
+            aggregate.invalidate_profile_cache("alpha")
             gate.set()
             await build
 
-        assert "beta" in router._profile_tools_cache
+        assert "beta" in aggregate._profile_tools_cache
 
     def test_invalidating_one_profile_leaves_the_others_generation(self) -> None:
-        before = router._cache_generation.get("beta", 0)
+        before = aggregate._cache_generation.get("beta", 0)
 
-        router.invalidate_profile_cache("alpha")
+        aggregate.invalidate_profile_cache("alpha")
 
-        assert router._cache_generation.get("beta", 0) == before
+        assert aggregate._cache_generation.get("beta", 0) == before
 
 
 class TestExplainMissing:

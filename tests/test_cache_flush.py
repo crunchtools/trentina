@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from trentina.gateway import compress
+from trentina.gateway.aggregate import _profile_tools_cache
 from trentina.gateway.backend import _tool_list_cache
 from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
@@ -21,7 +22,6 @@ from trentina.gateway.loader import (
     load_profiles,
     register_active_config,
 )
-from trentina.gateway.router import _profile_tools_cache
 from trentina.tools.cache import cache_flush
 
 pytestmark = pytest.mark.asyncio

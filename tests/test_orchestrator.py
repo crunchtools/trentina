@@ -33,7 +33,6 @@ from trentina.outcomes import Outcome
 from trentina.reserved import REFUSAL_KEY, WARNING_KEY
 from trentina.transports.base import Carrier, Early, Face, Transport
 
-ROUTER = "trentina.gateway.router"
 PARTS = "trentina.gateway.parts"
 REQUEST_EDGE = "trentina.gateway.request_edge"
 AUDIT = "trentina.gateway.audit"

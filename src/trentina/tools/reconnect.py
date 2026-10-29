@@ -33,6 +33,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+from ..gateway.aggregate import invalidate_profile_cache, invalidate_profile_cache_for_backend
 from ..gateway.backend import (
     evict_backend_cache_url,
     list_backend_tools,
@@ -43,7 +44,6 @@ from ..gateway.compress import get_profiles
 from ..gateway.decoy import served_tools
 from ..gateway.errors import BackendCallError, ScopeError
 from ..gateway.filter import filter_tools
-from ..gateway.router import invalidate_profile_cache, invalidate_profile_cache_for_backend
 from ..gateway.scope import (
     CallerScope,
     current_scope,

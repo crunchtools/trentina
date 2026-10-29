@@ -27,7 +27,6 @@ from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.outcomes import Outcome
 from trentina.quarantine.classifier import GUARD_TOKENS
 
-ROUTER = "trentina.gateway.router"
 PARTS = "trentina.gateway.parts"
 AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"

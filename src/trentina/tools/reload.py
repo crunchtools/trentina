@@ -54,6 +54,7 @@ from collections import Counter
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from ..gateway.aggregate import invalidate_profile_cache
 from ..gateway.compress import retrigger_compression
 from ..gateway.errors import ScopeError
 from ..gateway.llm_proxy import validate_profile_llm_keys
@@ -63,7 +64,6 @@ from ..gateway.loader import (
     replace_active_config,
 )
 from ..gateway.profile import PREPROCESS_AGENT_FIELDS
-from ..gateway.router import invalidate_profile_cache
 from ..gateway.scope import CallerScope, require_caller
 from ..gateway.service import find_operator, judge_of, log_service_identity
 from ..gateway.sessions import session_registry

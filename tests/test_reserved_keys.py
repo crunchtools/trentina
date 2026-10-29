@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import SecretStr
 
+from trentina.gateway import aggregate
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.reserved import (
@@ -243,7 +244,7 @@ class TestBackendResponse:
             "inputSchema": {"type": "object"},
             "annotations": {WARNING_KEY: FORGED},
         }
-        out = router._backend_tool_entry(tool, profile.backends["remote"])
+        out = aggregate._backend_tool_entry(tool, profile.backends["remote"])
         assert out["annotations"] == {}
         assert tool["annotations"] == {WARNING_KEY: FORGED}, "the cached entry is untouched"
 

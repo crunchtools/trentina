@@ -239,10 +239,10 @@ class TestRouter:
 
         with (
             patch(
-                "trentina.gateway.router.list_backend_tools",
+                "trentina.gateway.aggregate.list_backend_tools",
                 side_effect=fake_list,
             ),
-            patch("trentina.gateway.router.scan_tool_list", side_effect=fake_scan),
+            patch("trentina.gateway.aggregate.scan_tool_list", side_effect=fake_scan),
         ):
             resp = await route_jsonrpc(
                 _profile(compact), {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}

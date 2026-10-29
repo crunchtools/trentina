@@ -34,6 +34,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from trentina.gateway import compress
+from trentina.gateway.aggregate import (
+    _profile_tools_cache,
+    invalidate_profile_cache,
+    invalidate_profile_cache_for_backend,
+)
 from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
 from trentina.gateway.filter import filter_tools
@@ -44,19 +49,14 @@ from trentina.gateway.loader import (
     replace_active_config,
     reset_active_config,
 )
-from trentina.gateway.router import (
-    _profile_tools_cache,
-    invalidate_profile_cache,
-    invalidate_profile_cache_for_backend,
-    route_jsonrpc,
-)
+from trentina.gateway.router import route_jsonrpc
 from trentina.gateway.sessions import session_registry
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.tools.reload import AGENT_SCOPE_NOTE, reload_profiles
 
 pytestmark = pytest.mark.asyncio
 
-_ROUTER = "trentina.gateway.router"
+_AGGREGATE = "trentina.gateway.aggregate"
 
 _BENIGN = ClassifierResult(label="BENIGN", score=0.01, latency_ms=1.0)
 
@@ -965,7 +965,7 @@ class TestCacheBehaviour:
         """Only the edited profile's aggregate is thrown away."""
         with (
             patch(
-                f"{_ROUTER}.list_backend_tools",
+                f"{_AGGREGATE}.list_backend_tools",
                 AsyncMock(return_value=_tools_result(["jira_get_issue"])),
             ),
             patch(
@@ -1008,7 +1008,7 @@ class TestCacheBehaviour:
         # measure.
         with (
             patch(
-                f"{_ROUTER}.list_backend_tools",
+                f"{_AGGREGATE}.list_backend_tools",
                 AsyncMock(return_value=_tools_result(["jira_get_issue", "jira_delete_issue"])),
             ),
             patch(
@@ -1076,7 +1076,7 @@ class TestCacheBehaviour:
             # The eviction cascade only knows a profile's backend URLs once an
             # aggregate has been cached, so warm one first — with a fast list.
             with patch(
-                f"{_ROUTER}.list_backend_tools",
+                f"{_AGGREGATE}.list_backend_tools",
                 AsyncMock(return_value=_tools_result(["jira_get_issue"])),
             ):
                 await _list_tools("alpha")
@@ -1084,7 +1084,7 @@ class TestCacheBehaviour:
             # What cache_flush leaves behind: the aggregate gone, the
             # backend-URL map still mapping alpha to jira.
             _profile_tools_cache.pop("alpha")
-            with patch(f"{_ROUTER}.list_backend_tools", slow_list):
+            with patch(f"{_AGGREGATE}.list_backend_tools", slow_list):
                 build = asyncio.create_task(_list_tools("alpha"))
                 await asyncio.sleep(0)
                 invalidate_profile_cache_for_backend("http://jira:1/mcp")
@@ -1109,7 +1109,7 @@ class TestCacheBehaviour:
             return _tools_result(["jira_delete_issue"])
 
         with (
-            patch(f"{_ROUTER}.list_backend_tools", slow_list),
+            patch(f"{_AGGREGATE}.list_backend_tools", slow_list),
             patch(
                 "trentina.defense.classify_async",
                 AsyncMock(return_value=_BENIGN),

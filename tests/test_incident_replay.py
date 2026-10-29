@@ -39,7 +39,6 @@ from .mode_harness import layers
 if TYPE_CHECKING:
     from pathlib import Path
 
-ROUTER = "trentina.gateway.router"
 MCP = "trentina.transports.mcp"
 PARTS = "trentina.gateway.parts"
 AUDIT = "trentina.gateway.audit"

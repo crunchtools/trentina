@@ -27,10 +27,10 @@ from typing import TYPE_CHECKING, Any
 
 from ..logsafe import exc_kind, exc_where
 from ..quarantine.limiter import Priority, all_limiters, l3_priority, l3_throttle_budget
+from .aggregate import ensure_profile_build, invalidate_profile_cache_for_backend
 from .backend import revalidate_backend_tools
 from .ingress_defense import perimeter_counts
 from .loader import get_active_config
-from .router import ensure_profile_build, invalidate_profile_cache_for_backend
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator

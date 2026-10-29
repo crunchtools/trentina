@@ -24,7 +24,7 @@ from trentina.gateway.router import route_jsonrpc
 
 pytestmark = pytest.mark.usefixtures("env")
 
-ROUTER = "trentina.gateway.router"
+AGGREGATE = "trentina.gateway.aggregate"
 MCP = "trentina.transports.mcp"
 PLANTED = "AKIAQ7HONEYTOKEN4X2B"
 # Every audit row, oldest first, as the tests compare them.
@@ -61,8 +61,8 @@ def _profile() -> Profile:
 async def _rpc(method: str, params: Any = None) -> dict[str, Any]:
     real = [{"name": "comment", "description": "Comment on a ticket.", "inputSchema": SCHEMA}]
     with (
-        patch(f"{ROUTER}.list_backend_tools", return_value=real),
-        patch(f"{ROUTER}.scan_tool_list", side_effect=lambda *a: a[3]),
+        patch(f"{AGGREGATE}.list_backend_tools", return_value=real),
+        patch(f"{AGGREGATE}.scan_tool_list", side_effect=lambda *a: a[3]),
         patch(
             f"{MCP}.call_backend_tool",
             return_value=BackendCall([{"type": "text", "text": "ticket"}], False, None),
