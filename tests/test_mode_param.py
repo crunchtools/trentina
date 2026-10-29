@@ -18,9 +18,9 @@ from pydantic import SecretStr, ValidationError
 
 from tests.refusal_shape import refused, refused_text
 from trentina.config import get_config
+from trentina.core.stages import IngressDecision
 from trentina.errors import ConfigError, ModeNotPermittedError
 from trentina.gateway.backend import BackendCall
-from trentina.gateway.ingress_defense import IngressDecision
 from trentina.gateway.modes_policy import (
     MODE_PARAM,
     PROMPT_PARAM,

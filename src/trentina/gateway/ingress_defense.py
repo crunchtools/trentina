@@ -47,7 +47,6 @@ import functools
 import hashlib
 import json
 import logging
-import os
 from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from dataclasses import field as dataclass_field
@@ -55,16 +54,18 @@ from typing import TYPE_CHECKING, Any
 
 from ..config import get_config
 from ..core import Decision, Gated, Posture, identity, refusal_from_warning, refusal_of
+from ..core.stages import IngressDecision
 from ..defense import Provenance
 from ..l1.hidden import HiddenStats
 from ..l1.pipeline import run_l1
-from ..logsafe import exc_kind, exc_where, redact_source
+from ..logsafe import exc_kind, exc_where
 from ..modes import Gaps, Mode, ModePolicy
 from ..quarantine.packs import GENERIC_ID, pack_for
 from ..unpack.child import run_unpacking
 from ..unpack.scan import IMAGE_BLOCK, UNDECODABLE, image_too_small_to_draw, read_blobs
 from ..warning import build_warning
 from .context import current_call
+from .modes_policy import effective_mode
 from .service import judge_of, service_context, service_profile
 
 if TYPE_CHECKING:
@@ -76,55 +77,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Kill switch (owner requirement, ahead of any enforcement flip): setting
-#: TRENTINA_ENFORCEMENT_OVERRIDE=flag forces every profile to flag, for the
-#: night `block` misfires at 3am. Any other value is ignored loudly.
-#:
-#: `warn` (before 0.35.0) and `annotate` (before 0.25.0) are still accepted,
-#: because the one moment this variable is reached for is the moment nobody
-#: wants to discover it was renamed.
-_OVERRIDE_ENV = "TRENTINA_ENFORCEMENT_OVERRIDE"
-_OVERRIDE_VALUES = {"flag": "flag", "warn": "flag", "annotate": "flag"}
-
-
-def effective_mode(profile: Profile, mode: Mode | None = None) -> Mode:
-    """The call's resolved mode, or the profile default; the kill switch
-    wins over both, including a call that asked for block or redact."""
-    override = os.environ.get(_OVERRIDE_ENV, "").strip().lower()
-    if override in _OVERRIDE_VALUES:
-        if override != "flag":
-            logger.warning(
-                "%s (%s) is an old spelling of 'flag'; honouring it",
-                _OVERRIDE_ENV,
-                redact_source(override),
-            )
-        return Mode(_OVERRIDE_VALUES[override])
-    if override:
-        logger.error(
-            "%s (%s) is not a valid override (only 'flag' is); ignoring",
-            _OVERRIDE_ENV,
-            redact_source(override),
-        )
-    return mode if mode is not None else Mode(profile.defense.enforcement)
-
-
 DEFAULT_REDACT_PROMPT = "Extract the information this tool response contains."
 """redact on a proxied response whose call asked no question: a bare ``"redact"``."""
-
-
-@dataclass(frozen=True)
-class IngressDecision:
-    """What the router should do with a scanned tool response.
-
-    ``refusal`` is set with ``blocked``: the structured body naming the
-    modes the caller may try next. ``extraction`` is set under redact: the
-    verified text that REPLACES the response.
-    """
-
-    warning: dict[str, Any] | None
-    blocked: bool = False
-    refusal: dict[str, Any] | None = None
-    extraction: str | None = None
 
 
 @dataclass(frozen=True)

@@ -20,12 +20,12 @@ import pytest
 from pydantic import SecretStr
 
 from trentina import logsafe
+from trentina.core.stages import IngressDecision
 from trentina.database import record_detection
 from trentina.errors import BlockedSourceError
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.context import profile_context
 from trentina.gateway.errors import BackendCallError
-from trentina.gateway.ingress_defense import IngressDecision
 from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, Profile
 from trentina.modes import Mode

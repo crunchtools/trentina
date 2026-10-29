@@ -26,8 +26,7 @@ from ..transports.jsonrpc import JSONRPC_INVALID_PARAMS, _err, _ok
 from . import audit, paging, session_marks
 from .backend import loggable_tool
 from .filter import filter_tools
-from .ingress_defense import effective_mode
-from .modes_policy import MODE_PARAM, policy_for
+from .modes_policy import MODE_PARAM, effective_mode, policy_for
 from .names import served_name
 from .results import _executed, _spelled_modes
 from .surface import wire_digest

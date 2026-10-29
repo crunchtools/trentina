@@ -52,7 +52,6 @@ from ..outcomes import Outcome
 from .auth import resolve_profile_by_token
 from .destination import MAX_DESTINATION_CHARS, DestinationKind
 from .errors import ProfileConfigError
-from .ingress_defense import effective_mode
 from .llm_policy import (
     API_BY_HOST,
     Admitted,
@@ -63,6 +62,7 @@ from .llm_policy import (
     forward_headers,
 )
 from .loader import read_secret_env
+from .modes_policy import effective_mode
 from .outbound import (
     REASON_CREDENTIAL,
     REASON_FLAGGED,

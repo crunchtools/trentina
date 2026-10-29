@@ -27,11 +27,10 @@ from typing import TYPE_CHECKING, Any
 
 from .core import gate, identity
 from .core.dispose import Decision, dispose
-from .core.stages import _JUDGED_SEAL, Judged
+from .core.stages import _JUDGED_SEAL, IngressDecision, Judged
 from .defense import Provenance, defend, defend_json, defend_selection
 from .gateway.context import profile_context
 from .gateway.ingress_defense import (
-    IngressDecision,
     disposed_response,
     finish_response_scan,
     prepare_response_scan,

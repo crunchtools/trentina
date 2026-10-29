@@ -30,7 +30,6 @@ from ..seal import UNSEALED, Seal, require
 
 if TYPE_CHECKING:
     from ..defense import Provenance
-    from ..gateway.ingress_defense import IngressDecision
     from ..gateway.transform import TransformOutcome
     from ..outcomes import Outcome
 
@@ -67,6 +66,21 @@ class Transformed:
     content_blocks: list[Any] | None
     provenance: Provenance
     reduced: TransformOutcome | None
+
+
+@dataclass(frozen=True)
+class IngressDecision:
+    """What the transport should do with a scanned tool response.
+
+    ``refusal`` is set with ``blocked``: the structured body naming the
+    modes the caller may try next. ``extraction`` is set under redact: the
+    verified text that REPLACES the response.
+    """
+
+    warning: dict[str, Any] | None
+    blocked: bool = False
+    refusal: dict[str, Any] | None = None
+    extraction: str | None = None
 
 
 @dataclass(frozen=True)

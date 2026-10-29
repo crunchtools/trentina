@@ -68,8 +68,8 @@ from .egress_policy import (
     response_headers,
 )
 from .gatekeeper import judge_egress
-from .ingress_defense import effective_mode
 from .loader import get_active_config
+from .modes_policy import effective_mode
 from .outbound import (
     REASON_CREDENTIAL,
     REASON_FLAGGED,

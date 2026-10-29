@@ -28,7 +28,7 @@ from pydantic import SecretStr
 
 from trentina import config as config_mod
 from trentina import logsafe
-from trentina.gateway import ingress_defense, loader
+from trentina.gateway import loader, modes_policy
 from trentina.gateway.profile import AuthConfig, Backend, Profile
 
 #: A secret with no shape of its own, so only ``hold`` can know it.
@@ -719,10 +719,10 @@ def test_a_bad_override_does_not_print_its_value(monkeypatch: pytest.MonkeyPatch
         backends={"b": Backend(url="http://b:8000/mcp", tools_allow=["*"])},
     )
     profile.auth.bearer_token = SecretStr("testp-token")
-    monkeypatch.setenv(ingress_defense._OVERRIDE_ENV, _PASTED)
-    out = _printed(ingress_defense.logger.name, lambda _: ingress_defense.effective_mode(profile))
+    monkeypatch.setenv(modes_policy._OVERRIDE_ENV, _PASTED)
+    out = _printed(modes_policy.logger.name, lambda _: modes_policy.effective_mode(profile))
     assert _PASTED not in out
-    assert ingress_defense._OVERRIDE_ENV in out
+    assert modes_policy._OVERRIDE_ENV in out
 
 
 @pytest.mark.parametrize(
