@@ -26,14 +26,14 @@ from tests.refusal_shape import refused
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.errors import BackendCallError
 from trentina.gateway.ingress_defense import IngressDecision
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.orchestrator import crossing
 from trentina.outcomes import Outcome
 from trentina.reserved import REFUSAL_KEY, WARNING_KEY
 from trentina.transports.base import Carrier, Early, Face, Transport
+from trentina.transports.mcp import route_jsonrpc
 
-ROUTER = "trentina.gateway.router"
 PARTS = "trentina.gateway.parts"
 REQUEST_EDGE = "trentina.gateway.request_edge"
 AUDIT = "trentina.gateway.audit"
@@ -223,7 +223,7 @@ async def _run_capture(
     """Route one request, returning the backend mock so a test can assert it was
     (not) dispatched. Patches the shared collaborators a guard branch rides.
 
-    ``scan_tool_response`` is patched as ``router.*`` (the paged path) and
+    ``scan_tool_response`` is patched as ``parts.*`` (the paged path) and
     ``orchestrator.*`` (the non-paged edge, via ``judge_response``);
     ``check_response_guards`` is reached as ``transports.mcp.*``; ``_refuse_call``
     is reached as ``request_edge.*`` and ``_may_have_acted`` as ``results.*`` on

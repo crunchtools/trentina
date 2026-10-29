@@ -24,6 +24,7 @@ from mcp.types import ListToolsResult, Tool
 
 from trentina.database import record_detection, record_gateway_call
 from trentina.gateway import compress
+from trentina.gateway.aggregate import _profile_tools_cache
 from trentina.gateway.backend import _tool_list_cache
 from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
@@ -31,7 +32,6 @@ from trentina.gateway.loader import (
     load_profiles,
     register_active_config,
 )
-from trentina.gateway.router import _profile_tools_cache
 from trentina.outcomes import Outcome
 from trentina.tools.cache import cache_flush
 from trentina.tools.reconnect import reconnect_backend

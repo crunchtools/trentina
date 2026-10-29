@@ -12,9 +12,9 @@ import logging
 from typing import Any
 
 from ..gateway import tool_pins
+from ..gateway.aggregate import invalidate_profile_cache_for_backend
 from ..gateway.compress import get_profiles
 from ..gateway.errors import ScopeError
-from ..gateway.router import invalidate_profile_cache_for_backend
 from ..gateway.scope import require_caller, require_operator
 from ..logsafe import exc_kind
 

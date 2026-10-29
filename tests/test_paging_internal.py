@@ -23,12 +23,13 @@ from trentina import database
 from trentina.errors import ContentSizeError
 from trentina.gateway import internal, paging
 from trentina.gateway.context import PartsOffer, profile_context
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.modes import Mode
 from trentina.outcomes import Outcome
 from trentina.tools.content import judge_content
 from trentina.tools.fetch import fetch_page
+from trentina.transports.mcp import route_jsonrpc
 
 from .judge_key import with_judge_key
 from .mode_harness import BENIGN, EXTRACTION, MALICIOUS, Layers, allowlist, layers

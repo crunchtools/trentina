@@ -12,7 +12,8 @@ from typing import Any
 from trentina.gateway.errors import BackendCallError
 from trentina.gateway.guards import check_request_guards
 from trentina.gateway.audit import _audit
-from trentina.gateway.router import _err, _ok, filter_tools
+from trentina.gateway.filter import filter_tools
+from trentina.transports.jsonrpc import _err, _ok
 from trentina.transports.mcp import _dispatch
 from trentina.outcomes import Outcome, classify_exception
 

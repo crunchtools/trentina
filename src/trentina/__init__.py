@@ -1269,8 +1269,8 @@ def _wire_login_notifications(session_registry: Any) -> None:
     profile has no grant; once the human signs in, the client must hear that
     the list changed or it keeps the old one until it reconnects (#479).
     """
+    from .gateway.aggregate import invalidate_profile_cache
     from .gateway.backend_oauth import on_grant_stored
-    from .gateway.router import invalidate_profile_cache
 
     async def _after_login(profile_name: str) -> None:
         invalidate_profile_cache(profile_name)
@@ -1290,8 +1290,8 @@ def _wire_circuit_notifications(
     affected backend URL and broadcasts ``tools/list_changed`` to all
     active sessions for those profiles.
     """
+    from .gateway.aggregate import invalidate_profile_cache
     from .gateway.circuit import State
-    from .gateway.router import invalidate_profile_cache
 
     pending_tasks: set[asyncio.Task[int]] = set()
 

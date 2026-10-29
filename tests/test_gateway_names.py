@@ -9,13 +9,14 @@ import pytest
 from pydantic import SecretStr
 
 from trentina.database import issued_tool_names
+from trentina.gateway.aggregate import reset_profile_tools_cache
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.ingress_defense import IngressDecision
 from trentina.gateway.names import _issued, assign, base_names
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import reset_profile_tools_cache, route_jsonrpc
+from trentina.transports.mcp import route_jsonrpc
 
-ROUTER = "trentina.gateway.router"
+AGGREGATE = "trentina.gateway.aggregate"
 MCP = "trentina.transports.mcp"
 PARTS = "trentina.gateway.parts"
 AUDIT = "trentina.gateway.audit"
@@ -102,8 +103,8 @@ async def _list(profile: Profile) -> list[str]:
 
     reset_profile_tools_cache()
     with (
-        patch(f"{ROUTER}.list_backend_tools", side_effect=fake_list),
-        patch(f"{ROUTER}.scan_tool_list", side_effect=fake_scan),
+        patch(f"{AGGREGATE}.list_backend_tools", side_effect=fake_list),
+        patch(f"{AGGREGATE}.scan_tool_list", side_effect=fake_scan),
     ):
         resp = await route_jsonrpc(profile, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     return [t["name"] for t in resp["result"]["tools"]]

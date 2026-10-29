@@ -29,6 +29,7 @@ from trentina.gateway.modes_policy import (
     policy_for,
     strip_params,
 )
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -38,7 +39,6 @@ from trentina.gateway.profile import (
     ParameterConstraint,
     Profile,
 )
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.modes import (
     Gaps,
     Mode,
@@ -46,8 +46,9 @@ from trentina.modes import (
     parse_mode_arg,
     refusal_body,
 )
+from trentina.transports.mcp import route_jsonrpc
 
-ROUTER = "trentina.gateway.router"
+AGGREGATE = "trentina.gateway.aggregate"
 PARTS = "trentina.gateway.parts"
 AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"
@@ -311,8 +312,8 @@ class TestRouter:
             },
         }
         with (
-            patch(f"{ROUTER}.list_backend_tools", AsyncMock(return_value=[declared])),
-            patch(f"{ROUTER}.scan_tool_list", side_effect=fake_scan),
+            patch(f"{AGGREGATE}.list_backend_tools", AsyncMock(return_value=[declared])),
+            patch(f"{AGGREGATE}.scan_tool_list", side_effect=fake_scan),
         ):
             resp = await route_jsonrpc(
                 _profile(["block", "redact"]), {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
@@ -489,7 +490,7 @@ class TestInternalBackend:
             internal._server = saved
 
     async def test_admin_tools_get_no_mode(self) -> None:
-        with patch(f"{ROUTER}.scan_tool_list", new=_identity):
+        with patch(f"{AGGREGATE}.scan_tool_list", new=_identity):
             resp = await self._route(
                 self._profile(["block", "flag", "redact"]),
                 {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
@@ -501,7 +502,7 @@ class TestInternalBackend:
         assert MODE_PARAM not in (stats.get("properties") or {})
 
     async def test_block_only_seat_sees_no_parameter(self) -> None:
-        with patch(f"{ROUTER}.scan_tool_list", new=_identity):
+        with patch(f"{AGGREGATE}.scan_tool_list", new=_identity):
             resp = await self._route(
                 self._profile(["block"]), {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
             )

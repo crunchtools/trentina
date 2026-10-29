@@ -465,7 +465,7 @@ class TestAudit:
         from trentina.database import get_db
         from trentina.gateway.names import NAMESPACE_SEP
         from trentina.gateway.profile import AuthConfig, Backend, Profile
-        from trentina.gateway.router import route_jsonrpc
+        from trentina.transports.mcp import route_jsonrpc
 
         profile = Profile(
             short_names=False,

@@ -909,8 +909,8 @@ async def judge_and_deliver(
         BlockedSourceError: block or redact refused. The message names the
             layer or gap, never the payload.
     """
-    # Imported here, not at module scope: tools/__init__ imports gateway.router
-    # (via tools.cache), and the orchestrator is imported during router's own
+    # Imported here, not at module scope: tools/__init__ imports gateway.aggregate
+    # (via tools.cache), and the orchestrator is imported during the gateway's own
     # load — a module-level import would close that cycle. By call time both are
     # fully loaded.
     from .tools.judged import JudgeScan, dispose_judgement, prepare_judgement

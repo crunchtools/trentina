@@ -15,12 +15,12 @@ from trentina import config as config_mod
 from trentina import database as database_mod
 from trentina import logsafe
 from trentina import perimeter_db as perimeter_db_mod
+from trentina.gateway.aggregate import reset_profile_tools_cache
 from trentina.gateway.backend import reset_tool_list_cache
 from trentina.gateway.circuit import breaker
 from trentina.gateway.ingress_defense import reset_verdict_cache
 from trentina.gateway.loader import reset_active_config
 from trentina.gateway.matrix_proxy import reset_extractors
-from trentina.gateway.router import reset_profile_tools_cache
 from trentina.quarantine.limiter import reset_limiters
 from trentina.quarantine.providers import reset_provider
 
@@ -98,9 +98,9 @@ def _isolated_fastmcp_home(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPat
 def _tools_not_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests that are not about pinning (#469) see every tool served.
     ``tests/test_tool_pins.py`` puts the real check back."""
-    from trentina.gateway import router
+    from trentina.gateway import tool_pins
 
-    monkeypatch.setattr(router.tool_pins, "check_tools", lambda url, backend, tools: tools)
+    monkeypatch.setattr(tool_pins, "check_tools", lambda url, backend, tools: tools)
 
 
 @pytest.fixture(autouse=True)

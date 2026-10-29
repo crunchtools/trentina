@@ -30,6 +30,7 @@ from ..httpbody import STATUS_TOO_LARGE, RequestBodyCap, TooLargeError
 from ..logsafe import exc_kind, exc_where, redact_source, safe_address
 from ..quarantine.classifier import classifier_status
 from ..transports.jsonrpc import JSONRPC_INTERNAL_ERROR
+from ..transports.mcp import route_jsonrpc
 from .auth import verify_bearer, verify_oauth
 from .context import current_session, session_fingerprint
 from .errors import (
@@ -41,7 +42,6 @@ from .errors import (
 )
 from .google_verifier import token_digest
 from .matrix_bridge.routes import media_refused, outbound_refused
-from .router import route_jsonrpc
 from .sessions import SessionRegistry, session_registry
 
 if TYPE_CHECKING:

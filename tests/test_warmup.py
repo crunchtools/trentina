@@ -15,14 +15,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from trentina import orchestrator as orch
+from trentina.gateway import aggregate, warmup
 from trentina.gateway import ingress_defense as ing
-from trentina.gateway import router, warmup
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
 from trentina.quarantine.limiter import (
     Priority,
     l3_priority,
     l3_throttle_budget,
 )
+from trentina.transports import mcp
 
 TOOLS = [{"name": f"t{n}", "description": f"Does thing number {n}."} for n in range(6)]
 
@@ -121,11 +122,11 @@ class TestWarmUp:
         profile = _profile("alpha")
         with (
             patch.object(warmup, "get_active_config", return_value=_active(profile)),
-            patch.object(router, "_build_profile_tools", build),
+            patch.object(aggregate, "_build_profile_tools", build),
         ):
             warm = asyncio.create_task(warmup.warm_all())
             await _settle()
-            client = asyncio.create_task(router._route_tools_list(profile, 1))
+            client = asyncio.create_task(mcp._route_tools_list(profile, 1))
             await _settle()
             gate.set()
             await warm
@@ -144,7 +145,7 @@ class TestWarmUp:
 
         with (
             patch.object(warmup, "get_active_config", return_value=_active(_profile("a"))),
-            patch.object(router, "_build_profile_tools", build),
+            patch.object(aggregate, "_build_profile_tools", build),
         ):
             await warmup.warm_all()
 
@@ -165,11 +166,11 @@ class TestWarmUp:
             patch.object(
                 warmup, "get_active_config", return_value=_active(_profile("bad"), _profile("ok"))
             ),
-            patch.object(router, "_build_profile_tools", build),
+            patch.object(aggregate, "_build_profile_tools", build),
         ):
             await warmup.warm_all()
 
-        assert router._profile_inflight == {}
+        assert aggregate._profile_inflight == {}
 
 
 class TestPersistedListsAreRevalidated:
@@ -204,7 +205,7 @@ class TestPersistedListsAreRevalidated:
             ),
             patch.object(warmup, "revalidate_backend_tools", revalidate),
             patch.object(warmup, "invalidate_profile_cache_for_backend") as invalidate,
-            patch.object(router, "_build_profile_tools", build),
+            patch.object(aggregate, "_build_profile_tools", build),
         ):
             await warmup.warm_all()
 
@@ -223,7 +224,7 @@ class TestPersistedListsAreRevalidated:
             patch.object(warmup, "get_active_config", return_value=_active(self._sharing("a"))),
             patch.object(warmup, "revalidate_backend_tools", revalidate),
             patch.object(warmup, "invalidate_profile_cache_for_backend") as invalidate,
-            patch.object(router, "_build_profile_tools", build),
+            patch.object(aggregate, "_build_profile_tools", build),
         ):
             await warmup.warm_all()
 
@@ -245,7 +246,7 @@ class TestLifespan:
 
         with (
             patch.object(warmup, "get_active_config", return_value=_active(_profile("a"))),
-            patch.object(router, "_build_profile_tools", build),
+            patch.object(aggregate, "_build_profile_tools", build),
         ):
             async with warmup.trentina_lifespan():
                 task = warmup._task

@@ -177,7 +177,8 @@ class TestRouterOrdering:
         never saw, so this pins the order rather than trusting it.
         """
         from trentina import orchestrator as orch_mod
-        from trentina.gateway import parts, router
+        from trentina.gateway import parts
+        from trentina.transports import mcp
 
         seen: dict[str, Any] = {}
 
@@ -209,7 +210,7 @@ class TestRouterOrdering:
             structured_content = None
 
         with patch("trentina.transports.mcp.call_backend_tool", AsyncMock(return_value=_Result())):
-            resp = await router.route_jsonrpc(
+            resp = await mcp.route_jsonrpc(
                 profile,
                 {
                     "jsonrpc": "2.0",

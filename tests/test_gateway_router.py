@@ -13,6 +13,7 @@ from pydantic import SecretStr
 
 from tests.refusal_shape import refused, refused_text
 from trentina.database import get_gateway_call_stats
+from trentina.gateway.aggregate import _profile_tools_cache
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.circuit import breaker
 from trentina.gateway.context import (
@@ -20,18 +21,14 @@ from trentina.gateway.context import (
     profile_context,
 )
 from trentina.gateway.errors import BackendCallError
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
     ParameterConstraint,
     Profile,
 )
-from trentina.gateway.router import (
-    NAMESPACE_SEP,
-    PROTOCOL_VERSION,
-    _profile_tools_cache,
-    route_jsonrpc,
-)
+from trentina.transports.mcp import PROTOCOL_VERSION, route_jsonrpc
 
 
 def _profile() -> Profile:
@@ -103,7 +100,7 @@ class TestRouter:
             return [{"name": "jira_search", "description": "", "inputSchema": {}}]
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=fake_list,
         ):
             resp = await route_jsonrpc(
@@ -123,7 +120,7 @@ class TestRouter:
             return [{"name": "jira_search", "description": "", "inputSchema": {}}]
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=fake_list,
         ):
             resp = await route_jsonrpc(
@@ -218,11 +215,11 @@ class TestRouter:
 
         with (
             patch(
-                "trentina.gateway.router.list_backend_tools",
+                "trentina.gateway.aggregate.list_backend_tools",
                 side_effect=fake_list,
             ),
             patch(
-                "trentina.gateway.router.list_internal_tools",
+                "trentina.gateway.aggregate.list_internal_tools",
                 side_effect=fake_internal_list,
             ),
         ):
@@ -754,7 +751,7 @@ class TestRouter:
             return [{"name": f"{backend_name}_tool", "description": "", "inputSchema": {}}]
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=slow_list,
         ):
             resp = await route_jsonrpc(
@@ -844,7 +841,7 @@ class TestProfileToolsCache:
             return [{"name": "tool_a", "description": "", "inputSchema": {}}]
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=counting_list,
         ):
             await route_jsonrpc(
@@ -881,7 +878,7 @@ class TestProfileToolsCache:
         p2.auth.bearer_token = SecretStr("x")
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=fake_list,
         ):
             await route_jsonrpc(
@@ -915,7 +912,7 @@ class TestProfileToolsCache:
             return [{"name": f"{backend_name}_tool", "description": "", "inputSchema": {}}]
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=flaky_list,
         ):
             resp1 = await route_jsonrpc(
@@ -958,7 +955,7 @@ class TestProfileToolsCache:
             return [{"name": f"{backend_name}_tool", "description": "", "inputSchema": {}}]
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=slow_list,
         ):
             calls = [
@@ -1202,7 +1199,7 @@ class TestSurfaceRecording:
             return [{"name": "jira_search", "description": "d" * 50, "inputSchema": {}}]
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=fake_list,
         ):
             return await route_jsonrpc(profile, {"jsonrpc": "2.0", "id": 5, "method": "tools/list"})
@@ -1225,7 +1222,7 @@ class TestSurfaceRecording:
         the backend offers: offered is what a direct client would pay for."""
         from trentina.gateway.surface import surface_report
 
-        with patch("trentina.gateway.router.tool_pins.check_tools", lambda *_: []):
+        with patch("trentina.gateway.aggregate.tool_pins.check_tools", lambda *_: []):
             await self._list(_profile())
         report = surface_report("testp")
 
@@ -1234,7 +1231,7 @@ class TestSurfaceRecording:
         assert report["served"]["tools"] == 0
 
     async def test_invalidation_drops_the_surface(self) -> None:
-        from trentina.gateway.router import invalidate_profile_cache
+        from trentina.gateway.aggregate import invalidate_profile_cache
         from trentina.gateway.surface import surface_report
 
         await self._list(_profile())

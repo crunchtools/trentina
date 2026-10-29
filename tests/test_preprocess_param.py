@@ -34,6 +34,7 @@ from trentina.gateway.modes_policy import (
     mode_instructions,
     preprocess_policy_for,
 )
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -42,7 +43,6 @@ from trentina.gateway.profile import (
     Profile,
     ToolPreProcess,
 )
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.gateway.transform import resolve, transform_response
 from trentina.modes import Mode
 from trentina.outcomes import Outcome, classify_exception
@@ -51,10 +51,11 @@ from trentina.tools.read import read_file
 from trentina.tools.reload import _hold_preprocess_floor
 from trentina.transforms import Applied, Declined, Failed, TransformResult
 from trentina.transforms.policy import PREPROCESS_PARAM, PreProcessPolicy
+from trentina.transports.mcp import route_jsonrpc
 
 from .mode_harness import layers
 
-ROUTER = "trentina.gateway.router"
+AGGREGATE = "trentina.gateway.aggregate"
 PARTS = "trentina.gateway.parts"
 AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"
@@ -181,8 +182,8 @@ class TestToolsList:
             "list_internal_tools" if profile.backends["cms"].is_internal else ("list_backend_tools")
         )
         with (
-            patch(f"{ROUTER}.{lister}", AsyncMock(return_value=[tool])),
-            patch(f"{ROUTER}.scan_tool_list", side_effect=fake_scan),
+            patch(f"{AGGREGATE}.{lister}", AsyncMock(return_value=[tool])),
+            patch(f"{AGGREGATE}.scan_tool_list", side_effect=fake_scan),
         ):
             resp = await route_jsonrpc(profile, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         (listed,) = resp["result"]["tools"]

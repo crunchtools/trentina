@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import SecretStr
 
+from trentina.gateway import aggregate
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.reserved import (
@@ -140,7 +141,8 @@ class TestBackendResponse:
     @pytest.fixture
     def router(self, monkeypatch: pytest.MonkeyPatch) -> Any:
         from trentina import orchestrator as orch_mod
-        from trentina.gateway import audit, parts, router
+        from trentina.gateway import audit, parts
+        from trentina.transports import mcp
 
         self.scanned: dict[str, Any] = {}
         self.decision = _Decision()
@@ -155,7 +157,7 @@ class TestBackendResponse:
         monkeypatch.setattr(parts, "scan_tool_response", fake_scan)
         monkeypatch.setattr(orch_mod, "scan_tool_response", fake_scan)
         monkeypatch.setattr(audit, "_audit", lambda *a, **k: None)
-        return router
+        return mcp
 
     async def _deliver(
         self, router: Any, call: Any, normalized: dict[str, str] | None = None
@@ -243,7 +245,7 @@ class TestBackendResponse:
             "inputSchema": {"type": "object"},
             "annotations": {WARNING_KEY: FORGED},
         }
-        out = router._backend_tool_entry(tool, profile.backends["remote"])
+        out = aggregate._backend_tool_entry(tool, profile.backends["remote"])
         assert out["annotations"] == {}
         assert tool["annotations"] == {WARNING_KEY: FORGED}, "the cached entry is untouched"
 

@@ -17,6 +17,7 @@ from pydantic import SecretStr
 
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.ingress_defense import IngressDecision
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -24,9 +25,8 @@ from trentina.gateway.profile import (
     PreProcessConfig,
     Profile,
 )
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
+from trentina.transports.mcp import route_jsonrpc
 
-ROUTER = "trentina.gateway.router"
 PARTS = "trentina.gateway.parts"
 AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"

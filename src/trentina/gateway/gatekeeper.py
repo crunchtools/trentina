@@ -486,7 +486,7 @@ async def evaluate(
         return GateRefusal(SESSION_FLAGGED, facts)
     text = json.dumps(arguments, sort_keys=True, ensure_ascii=False, default=str)
     # The defend() call lives in the orchestrator (the request-edge arg guard).
-    # Lazy: gateway.router imports the orchestrator during this package's load.
+    # Lazy: the gateway imports the orchestrator during this package's load.
     from ..orchestrator import judge_tool_arguments
 
     verdict = await judge_tool_arguments(

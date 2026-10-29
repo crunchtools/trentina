@@ -195,7 +195,7 @@ either alone prevents the crash.
 ## Boot warm-up and L3 pacing (#216)
 
 `gateway/warmup.py` runs from the FastMCP lifespan and builds every profile's
-aggregate through `router.ensure_profile_build`, the same single-flight task a
+aggregate through `aggregate.ensure_profile_build`, the same single-flight task a
 client's `tools/list` joins. Descriptions within a backend are judged
 concurrently (`scan_tool_list`); what paces them is the per-judge
 `AdaptiveLimiter` wrapped around every `provider.generate` call via
@@ -282,7 +282,7 @@ in memory only, by a handle bound to the profile. Wording an agent reads is
 in `paging.py`; say "part", never "page" (wiki and PDF pages own that word).
 A profile without `read_part_tool` on its internal backend is not paged.
 `fetch`, `read` and `content` are paged too (#446), from the other side:
-`router._dispatch` binds a `context.PartsOffer`, `judged.judge_and_deliver`
+`transports.mcp._dispatch` binds a `context.PartsOffer`, `judged.judge_and_deliver`
 cuts and holds, judges part 1 and returns it in the tool's shape under
 `_trentina_part`; parts 2 on take `_read_part` like any other, judged as the
 tool's own source (`Paged.source`), so a late flag blocklists the URL.

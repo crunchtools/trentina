@@ -297,8 +297,9 @@ class TestDeliveredAsTheOversizeRefusal:
 
         import trentina.database as db_mod
         from trentina.database import get_gateway_call_stats
+        from trentina.gateway.names import NAMESPACE_SEP
         from trentina.gateway.profile import AuthConfig, Profile
-        from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
+        from trentina.transports.mcp import route_jsonrpc
 
         profile = Profile(
             short_names=False,
