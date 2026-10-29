@@ -55,6 +55,7 @@ from trentina.transforms.policy import PREPROCESS_PARAM, PreProcessPolicy
 from .mode_harness import layers
 
 ROUTER = "trentina.gateway.router"
+AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"
 ORCH = "trentina.orchestrator"
 HTML_RUN = "trentina.transforms.html.HtmlProcessor.run"
@@ -239,7 +240,7 @@ class TestProxiedCall:
             patch(f"{ROUTER}.call_backend_tool", side_effect=fake_call),
             patch(f"{ROUTER}.scan_tool_response", scan),
             patch(f"{ORCH}.scan_tool_response", scan),
-            patch(f"{ROUTER}._audit", audit),
+            patch(f"{AUDIT}._audit", audit),
         ):
             resp = await route_jsonrpc(
                 profile,
@@ -591,7 +592,7 @@ class TestInternalTools:
         try:
             with (
                 patch(f"trentina.server.{family}", fake),
-                patch(f"{ROUTER}._audit"),
+                patch(f"{AUDIT}._audit"),
             ):
                 resp = await route_jsonrpc(
                     profile,

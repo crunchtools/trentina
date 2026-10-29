@@ -140,7 +140,7 @@ class TestBackendResponse:
     @pytest.fixture
     def router(self, monkeypatch: pytest.MonkeyPatch) -> Any:
         from trentina import orchestrator as orch_mod
-        from trentina.gateway import router
+        from trentina.gateway import audit, router
 
         self.scanned: dict[str, Any] = {}
         self.decision = _Decision()
@@ -154,7 +154,7 @@ class TestBackendResponse:
         # path as ``router.scan_tool_response`` — patch both (each imported the name).
         monkeypatch.setattr(router, "scan_tool_response", fake_scan)
         monkeypatch.setattr(orch_mod, "scan_tool_response", fake_scan)
-        monkeypatch.setattr(router, "_audit", lambda *a, **k: None)
+        monkeypatch.setattr(audit, "_audit", lambda *a, **k: None)
         return router
 
     async def _deliver(

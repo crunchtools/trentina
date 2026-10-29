@@ -11,7 +11,8 @@ from typing import Any
 
 from trentina.gateway.errors import BackendCallError
 from trentina.gateway.guards import check_request_guards
-from trentina.gateway.router import _audit, _dispatch, _err, _ok, filter_tools
+from trentina.gateway.audit import _audit
+from trentina.gateway.router import _dispatch, _err, _ok, filter_tools
 from trentina.outcomes import Outcome, classify_exception
 
 JSONRPC_INVALID_PARAMS = -32602

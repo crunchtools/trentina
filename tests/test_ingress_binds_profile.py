@@ -78,7 +78,7 @@ async def test_a_proxied_tool_response(judged: list[tuple[str, str | None]]) -> 
             "trentina.gateway.router.call_backend_tool",
             AsyncMock(return_value=reply),
         ),
-        patch("trentina.gateway.router._audit"),
+        patch("trentina.gateway.audit._audit"),
     ):
         await route_jsonrpc(
             _profile(),
@@ -184,7 +184,7 @@ async def test_a_profile_without_its_key_never_falls_back_to_the_global_one(
             "trentina.gateway.router.call_backend_tool",
             AsyncMock(return_value=reply),
         ),
-        patch("trentina.gateway.router._audit"),
+        patch("trentina.gateway.audit._audit"),
     ):
         resp = await route_jsonrpc(
             profile,

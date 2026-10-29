@@ -18,7 +18,6 @@ forwards. Only a name tools/list serves resolves: since 0.43.0 the
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import copy
 import json
 import logging
@@ -33,7 +32,7 @@ from mcp_types.version import (
 
 from .. import __version__
 from ..core.stages import Assembled
-from ..database import is_blocked, record_gateway_call
+from ..database import is_blocked
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
 from ..logsafe import exc_kind, redact_source
 from ..modes import BLOCKLIST_REASON, Mode, parse_mode_arg, refusal_body
@@ -55,7 +54,7 @@ from ..transports.jsonrpc import (
     _ok,
     _refused,
 )
-from . import discovery, paging, tool_pins
+from . import audit, discovery, paging, tool_pins
 from .backend import (
     call_backend_tool,
     list_backend_tools,
@@ -142,14 +141,6 @@ _rebuild_task: asyncio.Future[None] | None = None
 # discarded every neighbour's in-flight build as well.
 _cache_generation: dict[str, int] = {}
 
-# Whether the tools/call running in this task has written its audit row.
-# ``_route_tools_call`` answers an exception that escaped every audited path
-# with a gateway_error row (#293), and must not write a second row for a call
-# whose own path recorded it before re-raising.
-_call_audited: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "trentina_call_audited", default=False
-)
-
 
 def _bump(profile_name: str) -> None:
     _cache_generation[profile_name] = _cache_generation.get(profile_name, 0) + 1
@@ -234,47 +225,6 @@ def reset_profile_tools_cache() -> None:
     _profile_inflight.clear()
     forget_issued_names()
     discovery.reset()
-
-
-def _audit(
-    profile: str,
-    backend: str,
-    tool: str,
-    outcome: Outcome,
-    duration_ms: int,
-    error_message: str | None = None,
-    *,
-    bytes_arrived: int | None = None,
-    bytes_delivered: int | None = None,
-    normalized: dict[str, str] | None = None,
-    destination: Destination | None = None,
-    content_digest: str | None = None,
-) -> None:
-    _call_audited.set(True)
-    # The audit must never fail the call it records, and sqlite3.Error is not
-    # all a write can raise (a closed connection, a thread-affinity
-    # ProgrammingError, a full disk surfacing as OSError). A lost row is
-    # still a finding, so it is logged: the profile and the class, nothing
-    # the caller chose (#262).
-    try:
-        record_gateway_call(
-            profile,
-            backend,
-            tool,
-            outcome.value,
-            duration_ms,
-            error_message,
-            bytes_arrived=bytes_arrived,
-            bytes_delivered=bytes_delivered,
-            normalized=normalized,
-            destination=destination.value if destination else None,
-            destination_kind=destination.kind.value if destination else None,
-            session=current_session.get() or None,
-            call_ref=current_call.get() or None,
-            content_digest=content_digest,
-        )
-    except Exception as exc:
-        logger.warning("gateway: audit row lost profile=%s err=%s", profile, exc_kind(exc))
 
 
 def _negotiate_protocol_version(requested: Any) -> str:
@@ -578,7 +528,7 @@ async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[
     """
     # Text held for a caller who never came back does not outlive its hold.
     paging.expire()
-    token = _call_audited.set(False)
+    token = audit._call_audited.set(False)
     # Random, not the JSON-RPC id: that one is the caller's to choose.
     call = current_call.set(secrets.token_hex(8))
     t0 = time.monotonic()
@@ -589,7 +539,7 @@ async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[
         if leaked:
             return _leaked(profile, req_id, params, leaked)
         if not isinstance(params, dict):
-            _audit(profile.name, "", "", Outcome.DENIED_GUARD, 0, "params must be an object")
+            audit._audit(profile.name, "", "", Outcome.DENIED_GUARD, 0, "params must be an object")
             return _err(req_id, JSONRPC_INVALID_PARAMS, "params must be an object")
         name = params.get("name")
         if isinstance(name, str) and name in discovery.meta_names(profile):
@@ -599,8 +549,8 @@ async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[
             )
         return await _crossing_call(profile, req_id, params)
     except Exception as exc:
-        if not _call_audited.get():
-            _audit(
+        if not audit._call_audited.get():
+            audit._audit(
                 profile.name,
                 "",
                 redact_source(params.get("name") if isinstance(params, dict) else None),
@@ -612,8 +562,8 @@ async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[
     except asyncio.CancelledError:
         # A BaseException: the task was cancelled mid-scan (#439), by a hang-up or a
         # shutdown. Re-raised, so the cancellation still propagates.
-        if not _call_audited.get():
-            _audit(
+        if not audit._call_audited.get():
+            audit._audit(
                 profile.name,
                 "",
                 redact_source(params.get("name") if isinstance(params, dict) else None),
@@ -623,7 +573,7 @@ async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[
         raise
     finally:
         current_call.reset(call)
-        _call_audited.reset(token)
+        audit._call_audited.reset(token)
 
 
 async def _crossing_call(profile: Profile, req_id: Any, params: dict[str, Any]) -> dict[str, Any]:
@@ -662,7 +612,7 @@ def _tripped(
     ``what`` goes in the audit row: the kind of trip and the ids of any
     planted credentials, never a value.
     """
-    _audit(
+    audit._audit(
         profile,
         backend_name,
         tool_name,
@@ -702,7 +652,7 @@ def _decoy_call(
         resolve_call(profile, backend, tool_name, arguments)
         resolve_preprocess(profile, backend, tool_name, arguments)
     except (ModeNotPermittedError, TransformNotPermittedError) as exc:
-        _audit(profile.name, backend_name, tool_name, Outcome.DECOY_TRIPPED, 0, str(exc))
+        audit._audit(profile.name, backend_name, tool_name, Outcome.DECOY_TRIPPED, 0, str(exc))
         record_trip(profile.name, backend_name, tool_name, "decoy tool")
         # Word for word what a real tool's refusal of the same mode says.
         return _refused(
@@ -792,7 +742,7 @@ def _unknown_tool(profile: Profile, req_id: Any, served_name: object) -> dict[st
     has since left it — so the refusal says nothing about which. The name is
     the caller's, so the row carries its fingerprint, not its text.
     """
-    _audit(
+    audit._audit(
         profile.name,
         "",
         redact_source(served_name),
@@ -815,7 +765,7 @@ async def _discovery_call(
     """
     if not isinstance(arguments, dict):
         message = "arguments must be an object"
-        _audit(profile.name, "", name, Outcome.DENIED_GUARD, 0, message)
+        audit._audit(profile.name, "", name, Outcome.DENIED_GUARD, 0, message)
         return _err(req_id, JSONRPC_INVALID_PARAMS, message)
     if name == discovery.CALL_TOOL:
         inner = arguments.get("name", "")
@@ -842,9 +792,9 @@ async def _discovery_call(
                 await session_registry.notify_session(profile.name, session)
     except ValueError as exc:
         # The messages are ours and quote nothing the caller sent.
-        _audit(profile.name, "", name, Outcome.DENIED_GUARD, 0, str(exc))
+        audit._audit(profile.name, "", name, Outcome.DENIED_GUARD, 0, str(exc))
         return _err(req_id, JSONRPC_INVALID_PARAMS, str(exc))
-    _audit(
+    audit._audit(
         profile.name,
         "",
         name,
@@ -927,7 +877,7 @@ def _audit_assembly_failure(
     Assembly decides the outcome, so the row is written after it; a failure in
     it would otherwise leave the call unaudited.
     """
-    _audit(
+    audit._audit(
         profile_name,
         backend_name,
         tool_name,
@@ -983,7 +933,7 @@ async def _finish_delivery(
         )
     )
     delivered, digest = await asyncio.to_thread(wire_digest, assembled.result)
-    _audit(
+    audit._audit(
         profile.name,
         backend_name,
         tool_name,
@@ -1379,7 +1329,7 @@ async def _read_part(
     handle = arguments.get("handle")
     if handle is None:
         open_now = paging.listing(profile.name)
-        _audit(profile.name, reader_backend, paging.READ_PART_TOOL, Outcome.OK, 0, "listing")
+        audit._audit(profile.name, reader_backend, paging.READ_PART_TOOL, Outcome.OK, 0, "listing")
         text = (
             f"{len(open_now)} response(s) held for this profile."
             if open_now
@@ -1399,7 +1349,7 @@ async def _read_part(
     # The tool that produced it must still be this profile's to call: a
     # reload that took the tool away takes the rest of its response too.
     if paged is None or backend is None or not filter_tools([{"name": paged.tool}], backend):
-        _audit(
+        audit._audit(
             profile.name,
             reader_backend,
             paging.READ_PART_TOOL,
@@ -1413,7 +1363,9 @@ async def _read_part(
     if number is None:
         number = paging.next_part(paged)
     if isinstance(number, bool) or not isinstance(number, int) or not 1 <= number <= paged.count:
-        _audit(profile.name, paged.backend, paged.tool, Outcome.DENIED_GUARD, 0, "no such part")
+        audit._audit(
+            profile.name, paged.backend, paged.tool, Outcome.DENIED_GUARD, 0, "no such part"
+        )
         return _part_note(req_id, paging.no_such_part(paged))
     # Under today's policy, not the one the response arrived under: a reload
     # that took a mode away takes it from a response still being read.
@@ -1425,7 +1377,7 @@ async def _read_part(
             name, prompt = parse_mode_arg(arguments[MODE_PARAM])
         mode = policy.resolve(name)
     except (ModeNotPermittedError, ValueError) as exc:
-        _audit(profile.name, paged.backend, paged.tool, Outcome.DENIED_GUARD, 0, str(exc))
+        audit._audit(profile.name, paged.backend, paged.tool, Outcome.DENIED_GUARD, 0, str(exc))
         return _err(req_id, JSONRPC_INVALID_PARAMS, str(exc))
 
     # In order: a part is read only after every part before it was delivered,
@@ -1435,7 +1387,9 @@ async def _read_part(
     # flag: it is told why, which "part K is next" would not say.
     withheld = mode is Mode.BLOCK and paged.flagged_at is not None and number > paged.flagged_at
     if number > paging.next_part(paged) and not withheld:
-        _audit(profile.name, paged.backend, paged.tool, Outcome.DENIED_GUARD, 0, "out of order")
+        audit._audit(
+            profile.name, paged.backend, paged.tool, Outcome.DENIED_GUARD, 0, "out of order"
+        )
         return _part_note(
             req_id, paging.out_of_order(paged, number, _part_reader(profile) or "read_part")
         )
@@ -1443,7 +1397,7 @@ async def _read_part(
     assembled = await _deliver_part(profile, paged, number, mode=mode, prompt=prompt, policy=policy)
     _mark_session(assembled)
     delivered, digest = await asyncio.to_thread(wire_digest, assembled.result)
-    _audit(
+    audit._audit(
         profile.name,
         paged.backend,
         paged.tool,

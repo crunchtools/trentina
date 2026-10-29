@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 ROUTER = "trentina.gateway.router"
+AUDIT = "trentina.gateway.audit"
 CANARY = "zqx7replay"
 
 
@@ -148,7 +149,7 @@ class TestForgedTrustMarkers:
                 "trentina.orchestrator.scan_tool_response",
                 AsyncMock(return_value=IngressDecision(warning=None)),
             ),
-            patch(f"{ROUTER}._audit", MagicMock()),
+            patch(f"{AUDIT}._audit", MagicMock()),
         ):
             resp = await route_jsonrpc(
                 _profile("kagetora", {"luna": backend}),

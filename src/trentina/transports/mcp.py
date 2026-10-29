@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, Any
 from ..core.stages import Arrived, Assembled, Transformed
 from ..defense import Provenance
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
-from ..gateway import gatekeeper, paging, request_edge, results, router
+from ..gateway import audit, gatekeeper, paging, request_edge, results, router
 from ..gateway.destination import Destination, destination_of
 from ..gateway.errors import BackendCallError
 from ..gateway.filter import filter_tools
@@ -234,7 +234,7 @@ class McpServerFace(Face):
 
         if not filter_tools([{"name": tool_name}], backend):
             message = f"Tool {tool_name!r} not permitted on backend {backend_name!r}"
-            router._audit(
+            audit._audit(
                 profile.name,
                 backend_name,
                 tool_name,
@@ -247,7 +247,7 @@ class McpServerFace(Face):
 
         if not isinstance(arguments, dict):
             message = "arguments must be an object"
-            router._audit(profile.name, backend_name, tool_name, Outcome.DENIED_GUARD, 0, message)
+            audit._audit(profile.name, backend_name, tool_name, Outcome.DENIED_GUARD, 0, message)
             return Early(_err(req_id, JSONRPC_INVALID_PARAMS, message))
 
         if backend.is_decoy or (backend.is_internal and tool_name == paging.READ_PART_TOOL):
@@ -279,7 +279,7 @@ class McpServerFace(Face):
                 profile, backend, tool_name, arguments
             )
         except (ModeNotPermittedError, TransformNotPermittedError) as exc:
-            router._audit(
+            audit._audit(
                 profile.name,
                 backend_name,
                 tool_name,
@@ -306,7 +306,7 @@ class McpServerFace(Face):
         )
         if refused is not None:
             outcome, message, recorded = refused
-            router._audit(
+            audit._audit(
                 profile.name,
                 backend_name,
                 tool_name,
@@ -360,7 +360,7 @@ class McpServerFace(Face):
             parsed.tool_name, call_result.content, call_result.structured_content, parsed.backend
         )
         if response_err:
-            router._audit(
+            audit._audit(
                 profile.name,
                 parsed.backend_name,
                 parsed.tool_name,
@@ -395,7 +395,7 @@ class McpServerFace(Face):
                 uninspectable=uninspectable,
             )
             if gated is not None:
-                router._audit(
+                audit._audit(
                     profile.name,
                     parsed.backend_name,
                     parsed.tool_name,
@@ -605,7 +605,7 @@ class McpClientCarrier(Carrier):
         except BackendCallError as exc:
             duration_ms = int((time.monotonic() - t0) * 1000)
             outcome = classify_exception(exc)
-            router._audit(
+            audit._audit(
                 profile.name,
                 parsed.backend_name,
                 parsed.tool_name,

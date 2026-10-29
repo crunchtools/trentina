@@ -34,6 +34,7 @@ from trentina.reserved import REFUSAL_KEY, WARNING_KEY
 from trentina.transports.base import Carrier, Early, Face, Transport
 
 ROUTER = "trentina.gateway.router"
+AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"
 ORCH = "trentina.orchestrator"
 RESULTS = "trentina.gateway.results"
@@ -96,7 +97,7 @@ async def _run(
         patch(f"{ROUTER}.call_backend_tool", call),
         patch(f"{ROUTER}.scan_tool_response", scan),
         patch(f"{ORCH}.scan_tool_response", scan),
-        patch(f"{ROUTER}._audit", MagicMock()),
+        patch(f"{AUDIT}._audit", MagicMock()),
     ):
         return await route_jsonrpc(profile, request)
 
@@ -155,7 +156,7 @@ async def test_required_transform_failure() -> None:
     with (
         patch(f"{ROUTER}.call_backend_tool", AsyncMock(return_value=_reply())),
         patch(f"{MCP}.transform_response", transform),
-        patch(f"{ROUTER}._audit", MagicMock()),
+        patch(f"{AUDIT}._audit", MagicMock()),
     ):
         resp = await route_jsonrpc(_profile(), _request())
     assert resp["result"][REFUSAL_KEY]["reason"] == "preprocess_failed"
@@ -232,7 +233,7 @@ async def _run_capture(
         patch(f"{ROUTER}.call_backend_tool", call),
         patch(f"{ROUTER}.scan_tool_response", scan),
         patch(f"{ORCH}.scan_tool_response", scan),
-        patch(f"{ROUTER}._audit", MagicMock()),
+        patch(f"{AUDIT}._audit", MagicMock()),
     ]
     if guard_err is not None:
         patches.append(patch(f"{MCP}.check_response_guards", MagicMock(return_value=guard_err)))

@@ -16,6 +16,7 @@ from trentina.gateway.profile import AuthConfig, Backend, Profile
 from trentina.gateway.router import reset_profile_tools_cache, route_jsonrpc
 
 ROUTER = "trentina.gateway.router"
+AUDIT = "trentina.gateway.audit"
 
 
 @pytest.mark.parametrize(
@@ -121,7 +122,7 @@ async def _call(profile: Profile, name: str) -> tuple[dict[str, Any], AsyncMock]
             "trentina.orchestrator.scan_tool_response",
             AsyncMock(return_value=IngressDecision(warning=None)),
         ),
-        patch(f"{ROUTER}._audit", MagicMock()) as audit,
+        patch(f"{AUDIT}._audit", MagicMock()) as audit,
     ):
         backend.audit = audit
         resp = await route_jsonrpc(

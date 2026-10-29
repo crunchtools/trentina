@@ -814,7 +814,7 @@ class TestRouter:
         with (
             _Judge({"decision": "refuse", "reason": "bulk_private_data"}),
             patch("trentina.gateway.router.call_backend_tool", backend),
-            patch("trentina.gateway.router._audit", lambda *a, **k: audits.append((a, k))),
+            patch("trentina.gateway.audit._audit", lambda *a, **k: audits.append((a, k))),
         ):
             resp = await route_jsonrpc(_profile(), _call("send_message"))
         backend.assert_not_awaited()
@@ -834,7 +834,7 @@ class TestRouter:
         with (
             _Judge(),
             patch("trentina.gateway.router.call_backend_tool", backend),
-            patch("trentina.gateway.router._audit"),
+            patch("trentina.gateway.audit._audit"),
             patch(
                 "trentina.gateway.router.scan_tool_response",
                 AsyncMock(
@@ -864,7 +864,7 @@ class TestRouter:
         }
         with (
             _Judge() as judge,
-            patch("trentina.gateway.router._audit"),
+            patch("trentina.gateway.audit._audit"),
         ):
             resp = await route_jsonrpc(p, _call("send_message"))
         assert "not in allow list" in refused_text(resp)
@@ -886,7 +886,7 @@ class TestRouter:
         try:
             with (
                 patch("trentina.gateway.router.call_backend_tool", backend),
-                patch("trentina.gateway.router._audit"),
+                patch("trentina.gateway.audit._audit"),
                 patch(
                     "trentina.gateway.router.scan_tool_response", AsyncMock(return_value=scanned)
                 ),
