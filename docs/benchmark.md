@@ -645,7 +645,7 @@ a part) three ways: **whole**, inside one part; **adjacent**, cut at 25, 50
 and 75% with the pieces ending one part and opening the next; and **apart**,
 cut in half with the pieces in parts 2 and 6 of 6. Every part goes through
 `defend()` with the part briefing, behind its lead-in, as
-`router._deliver_part` sends it. An arrangement is caught when L3 flags a
+`parts._deliver_part` sends it. An arrangement is caught when L3 flags a
 part that holds a piece, by majority of three votes. The split rows count
 only the attacks L3 catches whole, and six parts with no attack in them give
 the false-positive floor.

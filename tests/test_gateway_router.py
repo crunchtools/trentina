@@ -519,7 +519,7 @@ class TestRouter:
                 side_effect=memory_call,
             ),
             patch("trentina.transports.mcp.transform_response") as mock_transform,
-            patch("trentina.gateway.router.scan_tool_response") as mock_scan,
+            patch("trentina.gateway.parts.scan_tool_response") as mock_scan,
             patch("trentina.orchestrator.scan_tool_response", mock_scan),
             patch("trentina.database.get_config") as mock_cfg,
         ):
@@ -1071,7 +1071,7 @@ class TestOneAuditRowPerCall:
                 side_effect=fake_call,
             ),
             patch(
-                "trentina.gateway.router.scan_tool_response",
+                "trentina.gateway.parts.scan_tool_response",
                 side_effect=scan or fake_scan,
             ) as mock_scan,
             patch("trentina.orchestrator.scan_tool_response", mock_scan),
@@ -1334,7 +1334,7 @@ class TestArgumentHygiene:
                     side_effect=fake_call,
                 ),
                 patch(
-                    "trentina.gateway.router.scan_tool_response",
+                    "trentina.gateway.parts.scan_tool_response",
                     side_effect=fake_scan,
                 ) as mock_scan,
                 patch("trentina.orchestrator.scan_tool_response", mock_scan),

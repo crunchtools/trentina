@@ -55,6 +55,7 @@ from trentina.transforms.policy import PREPROCESS_PARAM, PreProcessPolicy
 from .mode_harness import layers
 
 ROUTER = "trentina.gateway.router"
+PARTS = "trentina.gateway.parts"
 AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"
 ORCH = "trentina.orchestrator"
@@ -238,7 +239,7 @@ class TestProxiedCall:
         audit = MagicMock()
         with (
             patch(f"{ROUTER}.call_backend_tool", side_effect=fake_call),
-            patch(f"{ROUTER}.scan_tool_response", scan),
+            patch(f"{PARTS}.scan_tool_response", scan),
             patch(f"{ORCH}.scan_tool_response", scan),
             patch(f"{AUDIT}._audit", audit),
         ):

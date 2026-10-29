@@ -23,7 +23,7 @@ The mapping to ``router._tools_call`` is one-to-one:
 ``_assemble`` reproduces ``router._assemble_call_result`` as the stage pipeline
 (``core.stages``), composing the same collaborators in the same order so the
 delivered bytes are byte-identical; the paged branch still delegates to
-``router._hold_paged`` / ``_deliver_part`` until a later PR collapses the two
+``parts._hold_paged`` / ``_deliver_part`` until a later PR collapses the two
 paging holds into one Part mechanism.
 
 Because the coupling to the router's private helpers lives HERE and nowhere
@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, Any
 from ..core.stages import Arrived, Assembled, Transformed
 from ..defense import Provenance
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
-from ..gateway import audit, gatekeeper, paging, request_edge, results, router
+from ..gateway import audit, gatekeeper, paging, parts, request_edge, results, router
 from ..gateway.destination import Destination, destination_of
 from ..gateway.errors import BackendCallError
 from ..gateway.filter import filter_tools
@@ -437,7 +437,7 @@ class McpServerFace(Face):
         Arrived (strip the gateway's reserved keys) → Transformed (the
         pre-perimeter transform chain) → Judged (``judge_response``) → the
         disposed ``Assembled``. The same collaborators in the same order; the
-        paged branch still delegates to ``router._hold_paged`` / ``_deliver_part``
+        paged branch still delegates to ``parts._hold_paged`` / ``_deliver_part``
         (collapsed into the one Part mechanism in a later PR). An internal tool
         runs the pipeline at its own ingress, so it is neither transformed nor
         scanned here and has no ``Transformed.reduced`` and no ``Judged`` stage.
@@ -488,7 +488,7 @@ class McpServerFace(Face):
             provenance = reduced.provenance
             # Too large to judge in one call (#340): cut once, from the
             # transformed text, so what is cut is what would have been delivered.
-            paged = await router._hold_paged(
+            paged = await parts._hold_paged(
                 profile,
                 backend,
                 backend_name,
@@ -504,7 +504,7 @@ class McpServerFace(Face):
                 acted=arrived.acted,
             )
             if paged is not None:
-                first = await router._deliver_part(
+                first = await parts._deliver_part(
                     profile,
                     paged,
                     1,

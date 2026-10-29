@@ -28,6 +28,7 @@ from trentina.outcomes import Outcome
 from trentina.quarantine.classifier import GUARD_TOKENS
 
 ROUTER = "trentina.gateway.router"
+PARTS = "trentina.gateway.parts"
 AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"
 ORCH = "trentina.orchestrator"
@@ -130,7 +131,7 @@ class _Gateway:
     async def _send(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         with (
             patch(f"{ROUTER}.call_backend_tool", self.backend),
-            patch(f"{ROUTER}.scan_tool_response", self.perimeter),
+            patch(f"{PARTS}.scan_tool_response", self.perimeter),
             patch(f"{ORCH}.scan_tool_response", self.perimeter),
             patch(f"{AUDIT}._audit", self.audit),
         ):

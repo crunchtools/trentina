@@ -274,7 +274,7 @@ reliably faster and 4096 and 8192 far slower. One cap bounds the scan (#225):
 
 A text response over `Config.whole_tokens` (16K) is not judged in one
 call (#340): `gateway/paging.py` cuts it once into parts of about
-`TRENTINA_PART_TOKENS` (12000; 0 is off), the router delivers part 1
+`TRENTINA_PART_TOKENS` (12000; 0 is off), `gateway/parts.py` delivers part 1
 (`_hold_paged`, `_deliver_part`) and answers the `read_part` tool itself
 (`_read_part`), never forwarding it. Each part crosses `scan_tool_response`
 with the previous part's last 64 tokens as `lead_in`. The remainder is held

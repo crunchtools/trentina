@@ -252,7 +252,7 @@ async def read_part_tool(
         ``expires_in_seconds``.
     """
     # Behind the gateway the router answers this call itself and it never
-    # arrives here (``router._read_part``, #340). Standalone nothing is cut
+    # arrives here (``parts._read_part``, #340). Standalone nothing is cut
     # and nothing is held, so there is never a part to read.
     del handle, part, trentina_mode
     return {"held": [], "note": "Responses are delivered in parts only behind the gateway."}

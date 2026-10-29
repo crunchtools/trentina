@@ -34,6 +34,7 @@ from trentina.reserved import REFUSAL_KEY, WARNING_KEY
 from trentina.transports.base import Carrier, Early, Face, Transport
 
 ROUTER = "trentina.gateway.router"
+PARTS = "trentina.gateway.parts"
 REQUEST_EDGE = "trentina.gateway.request_edge"
 AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"
@@ -89,14 +90,14 @@ async def _run(
     ``scan_tool_response`` is patched in BOTH the router and the orchestrator
     namespace — the non-paged response edge reaches it as
     ``orchestrator.scan_tool_response`` (via ``judge_response``) and the paged
-    path as ``router.scan_tool_response`` (which imported the name).
+    path as ``parts.scan_tool_response`` (which imported the name).
     """
     call = AsyncMock(side_effect=exc) if exc is not None else AsyncMock(return_value=reply)
     verdict = decision if decision is not None else IngressDecision(warning=None)
     scan = AsyncMock(return_value=verdict)
     with (
         patch(f"{ROUTER}.call_backend_tool", call),
-        patch(f"{ROUTER}.scan_tool_response", scan),
+        patch(f"{PARTS}.scan_tool_response", scan),
         patch(f"{ORCH}.scan_tool_response", scan),
         patch(f"{AUDIT}._audit", MagicMock()),
     ):
@@ -232,7 +233,7 @@ async def _run_capture(
     scan = AsyncMock(return_value=IngressDecision(warning=None))
     patches = [
         patch(f"{ROUTER}.call_backend_tool", call),
-        patch(f"{ROUTER}.scan_tool_response", scan),
+        patch(f"{PARTS}.scan_tool_response", scan),
         patch(f"{ORCH}.scan_tool_response", scan),
         patch(f"{AUDIT}._audit", MagicMock()),
     ]

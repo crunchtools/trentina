@@ -13,6 +13,7 @@ from pydantic import SecretStr, ValidationError
 
 from tests.refusal_shape import refused, refused_text
 from trentina import orchestrator as orchestrator_mod
+from trentina.core.stages import Assembled
 from trentina.database import has_sent_to, record_gateway_call
 from trentina.errors import QuarantineAgentError
 from trentina.gateway import gatekeeper, session_marks
@@ -28,7 +29,7 @@ from trentina.gateway.profile import (
     SemanticGuardsConfig,
 )
 from trentina.gateway.profile_lint import check_guarded_destinations
-from trentina.gateway.router import NAMESPACE_SEP, Assembled, route_jsonrpc
+from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.gateway.session_marks import _mark_session
 from trentina.outcomes import BLOCKED_OUTCOMES, Outcome
 
@@ -837,7 +838,7 @@ class TestRouter:
             patch("trentina.gateway.router.call_backend_tool", backend),
             patch("trentina.gateway.audit._audit"),
             patch(
-                "trentina.gateway.router.scan_tool_response",
+                "trentina.gateway.parts.scan_tool_response",
                 AsyncMock(
                     return_value=SimpleNamespace(
                         warning=None, blocked=False, refusal=None, extraction=None
@@ -888,9 +889,7 @@ class TestRouter:
             with (
                 patch("trentina.gateway.router.call_backend_tool", backend),
                 patch("trentina.gateway.audit._audit"),
-                patch(
-                    "trentina.gateway.router.scan_tool_response", AsyncMock(return_value=scanned)
-                ),
+                patch("trentina.gateway.parts.scan_tool_response", AsyncMock(return_value=scanned)),
                 patch("trentina.orchestrator.scan_tool_response", AsyncMock(return_value=scanned)),
             ):
                 await route_jsonrpc(_profile(), _call("get_message"))
