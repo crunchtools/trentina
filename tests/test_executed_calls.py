@@ -167,6 +167,64 @@ class TestOtherWithheldResponses:
         resp, _, _ = await _call(SEARCH, profile=profile)
         assert refused(resp)
 
+    async def test_a_semantic_response_guard(self) -> None:
+        """#456: the policy judge refuses delivery, after the backend answered."""
+        from trentina.gateway.profile import SemanticGuardsConfig
+
+        profile = _profile()
+        profile.semantic_response_guards = SemanticGuardsConfig(
+            policy="no customer data leaves", tools={"mail": [SEND, SEARCH]}
+        )
+        refuse = AsyncMock(return_value={"decision": "refuse", "reason": "restricted_content"})
+        with (
+            patch("trentina.gateway.gatekeeper.llm_available", lambda: True),
+            patch("trentina.gateway.gatekeeper.quarantine_generate", refuse),
+        ):
+            resp, _, audit = await _call(SEND, profile=profile)
+            result = resp["result"]
+            assert result["isError"] is False
+            assert result["_trentina_refusal"]["executed"] is True
+            assert (
+                result["_trentina_refusal"]["reason"]
+                == "Refused by semantic response guards: restricted_content"
+            )
+            assert "bob@example.com" not in str(result)
+            assert audit.call_args.args[3] is Outcome.DENIED_RESPONSE_GATEKEEPER
+
+            # A read-only tool is refused outright, nothing delivered.
+            resp, _, _ = await _call(SEARCH, profile=profile)
+            assert refused(resp)
+            assert "semantic response guards: restricted_content" in refused_text(resp)
+
+    async def test_a_semantic_response_guard_fails_closed_on_binary(self) -> None:
+        """#456: a guarded response the judge cannot read is withheld unasked."""
+        from trentina.gateway.profile import SemanticGuardsConfig
+
+        profile = _profile()
+        profile.semantic_response_guards = SemanticGuardsConfig(
+            policy="no customer data leaves", tools={"mail": [SEND, SEARCH]}
+        )
+        image = BackendCall(
+            content=[{"type": "image", "data": "aGVsbG8=", "mimeType": "image/png"}],
+            is_error=False,
+            structured_content=None,
+        )
+        judge = AsyncMock(return_value={"decision": "allow", "reason": "within_policy"})
+        with (
+            patch("trentina.gateway.gatekeeper.llm_available", lambda: True),
+            patch("trentina.gateway.gatekeeper.quarantine_generate", judge),
+        ):
+            resp, _, audit = await _call(SEND, profile=profile, answer=image)
+        result = resp["result"]
+        assert result["_trentina_refusal"]["executed"] is True
+        assert (
+            result["_trentina_refusal"]["reason"]
+            == "Refused by semantic response guards: uninspectable_response"
+        )
+        assert audit.call_args.args[3] is Outcome.DENIED_RESPONSE_GATEKEEPER
+        # The judge was never asked — the policy cannot be checked against bytes.
+        judge.assert_not_awaited()
+
     async def test_a_response_over_the_byte_cap(self) -> None:
         too_big = BackendResponseTooLargeError("cut", cap_bytes=1024)
         resp, _, audit = await _call(SEND, answer=too_big)

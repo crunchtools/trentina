@@ -2765,6 +2765,15 @@ class Profile(BaseModel):
             "before they are forwarded (optional, #456)"
         ),
     )
+    semantic_response_guards: SemanticGuardsConfig | None = Field(
+        default=None,
+        description=(
+            "Tools whose RESPONSES a gatekeeper judges against a written policy "
+            "before the agent receives them — the semantic twin of the literal "
+            "response guard. ``tools`` scopes which tools' responses are judged "
+            "(optional, #456)"
+        ),
+    )
     oauth: OAuthConfig | None = Field(
         default=None,
         description="Google-backed OAuth access for this profile (optional)",
@@ -2838,6 +2847,7 @@ class Profile(BaseModel):
             "git": bool(self.git),
             "egress_http": bool(self.egress_http),
             "semantic_request_guards": self.semantic_request_guards is not None,
+            "semantic_response_guards": self.semantic_response_guards is not None,
             # Gateway tools it does not name, and categories that could
             # say which backends are decoys (#473).
             "tool_discovery": self.tool_discovery != ToolDiscoveryConfig(),
@@ -2933,6 +2943,28 @@ class Profile(BaseModel):
                 raise ValueError(
                     f"semantic_request_guards.egress_http.{name}: "
                     "not an egress_http grant of this profile"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def guarded_responses_name_real_backends(self) -> Profile:
+        """Every guarded response is on a backend this profile has, and a real one.
+
+        The response twin of ``guarded_tools_name_real_backends`` (#456): a
+        name that matches no backend never fires, and a decoy's response is
+        canned, so there is nothing to judge. ``egress_http`` has no meaning on
+        a response — there is no outbound request to judge the result of — so
+        only ``tools`` is checked.
+        """
+        if self.semantic_response_guards is None:
+            return self
+        for name in self.semantic_response_guards.tools:
+            backend = self.backends.get(name)
+            if backend is None:
+                raise ValueError(f"semantic_response_guards.tools.{name}: no such backend")
+            if backend.is_decoy:
+                raise ValueError(
+                    f"semantic_response_guards.tools.{name}: a decoy backend is not judged"
                 )
         return self
 

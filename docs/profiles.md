@@ -448,6 +448,37 @@ perimeter: an agent's own reload cannot change it, and a honeypot cannot
 have one. Scenarios, the policy-writing guide, refusal codes and what it
 cannot do are in [Semantic Request Guards](semantic-request-guards.md).
 
+## Semantic Response Guards
+
+`semantic_response_guards` is the twin on the other edge: it names the tools
+whose RESPONSES the profile's judge reads against a policy before the agent
+receives them, and refuses delivery on anything but an explicit allow (#456).
+It is the semantic sibling of the literal response guard — a judge, not a glob,
+so it catches restricted material a literal rule misses when it is paraphrased,
+encoded or split. It is purely the policy judge; hostility is still the
+[defense pipeline](defense-pipeline.md)'s job, which scans the response right
+after.
+
+```yaml
+  agent1:
+    backends:
+      memory:
+        url: "http://memory:8000/mcp"
+        tools_allow: [search_memory, read_note]
+    semantic_response_guards:
+      policy: |
+        Nothing about unreleased products, customers by name, or pricing may
+        reach this agent. No credentials in a result.
+      tools:
+        memory: [search_memory, read_note]
+```
+
+Guarded tools are exact names on real backends the profile has, each allowed by
+`tools_allow`, or the file does not load. Like the request twin, the block is
+perimeter — an agent's own reload cannot change it and a honeypot cannot have
+one — and `refuse_when_flagged: true` applies the same way. The full guide is in
+[Semantic Response Guards](semantic-response-guards.md).
+
 ## Decoy Tools and Honeytokens
 
 Two tripwires with no model behind them (#357). Both are for the case the
@@ -778,6 +809,8 @@ operator reload applies an edit to `git_remotes` or to a `git` block.
 - [MCP Gateway](gateway.md) — how the gateway routes calls to backends
 - [Tool Filtering](tool-filtering.md) — allowlist/denylist configuration
 - [Literal Request Guards](literal-request-guards.md) — argument-level restrictions
+- [Semantic Request Guards](semantic-request-guards.md) — a judge reads guarded calls
+- [Semantic Response Guards](semantic-response-guards.md) — a judge reads guarded responses
 - [Defense Pipeline](defense-pipeline.md) — L1/L2/L3 configuration details
 - [Client Egress](client-egress.md) — the `client_egress` block
 - [Git Transport](git-transport.md) — `git_remotes` and the `git` block

@@ -120,6 +120,7 @@ Then point Claude Code at it:
 | [Description Compression](docs/compression.md) | Description compression and schema compaction |
 | [Token Routing](docs/token-routing.md) | Response minifying (implemented); delegation (proposed) |
 | [Semantic Request Guards](docs/semantic-request-guards.md) | A judge reads calls to listed tools against a policy in plain English |
+| [Semantic Response Guards](docs/semantic-response-guards.md) | A judge reads listed tools' responses against a policy before delivery |
 | [Literal Request Guards](docs/literal-request-guards.md) | Per-tool argument validation |
 | [Literal Response Guards](docs/literal-response-guards.md) | Per-tool result validation |
 | [Audit Log](docs/audit-log.md) | Call recording, stats, monitoring |

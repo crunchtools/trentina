@@ -88,6 +88,13 @@ class Outcome(str, Enum):
     a pattern the operator wrote, this is a model's reading of a rule.
     """
 
+    DENIED_RESPONSE_GATEKEEPER = "denied_response_gatekeeper"
+    """The semantic response guard / policy judge refused delivery of the
+    backend's result. The backend was contacted and answered; the answer was
+    withheld at the gateway. Distinct from ``DENIED_RESPONSE_GUARD``, which is
+    the deterministic literal response guard.
+    """
+
     DECOY_TRIPPED = "decoy_tripped"
     """A decoy tool was called, or a planted credential was in a call's
     arguments (#357). Neither blocked nor failed: an alarm about the caller.
@@ -117,6 +124,7 @@ BLOCKED_OUTCOMES: frozenset[Outcome] = frozenset(
         Outcome.DENIED_GUARD,
         Outcome.DENIED_RESPONSE_GUARD,
         Outcome.DENIED_GATEKEEPER,
+        Outcome.DENIED_RESPONSE_GATEKEEPER,
     }
 )
 """Policy outcomes. The gateway did its job; nothing is broken."""

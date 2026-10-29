@@ -1224,3 +1224,36 @@ class TestGuardedExecutionIsOperatorOnly:
 
         assert result["reloaded"] is True
         assert _registry()["beta"].semantic_request_guards is not None
+
+
+BETA_RESPONSE_GUARD_YAML = BASE_YAML.replace(
+    "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n",
+    "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n"
+    "    semantic_response_guards:\n"
+    "      policy: Nothing about other customers reaches this agent.\n"
+    "      tools:\n"
+    "        wiki: [edit_page]\n",
+)
+
+
+class TestResponseGuardIsOperatorOnly:
+    """#456: which responses are judged, and by what rule, is not the agent's to reload."""
+
+    async def test_agent_cannot_drop_its_own_response_guard(self, profiles_path: Path) -> None:
+        profiles_path.write_text(BETA_RESPONSE_GUARD_YAML, encoding="utf-8")
+        await _reload_as("alpha")
+
+        profiles_path.write_text(BASE_YAML, encoding="utf-8")
+        result = await _reload_as("beta")
+
+        guarded = _registry()["beta"].semantic_response_guards
+        assert guarded is not None
+        assert guarded.guards("wiki", "edit_page")
+        assert "semantic_response_guards" in result["not_applied"]["operator_only"]
+
+    async def test_operator_reload_applies_it(self, profiles_path: Path) -> None:
+        profiles_path.write_text(BETA_RESPONSE_GUARD_YAML, encoding="utf-8")
+        result = await _reload_as("alpha")
+
+        assert result["reloaded"] is True
+        assert _registry()["beta"].semantic_response_guards is not None
