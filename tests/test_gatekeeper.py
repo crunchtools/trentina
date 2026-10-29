@@ -475,6 +475,16 @@ class TestResponse:
             assert await _judge_response(_response_profile(), document="small") is None
         judge.generate.assert_awaited_once()
 
+    async def test_a_response_exactly_at_the_admission_cap_is_judged(self) -> None:
+        # The cap is a ``>`` comparison, so equality is the boundary: a response
+        # whose token count equals the cap is judged, not refused unasked.
+        with (
+            _Judge() as judge,
+            patch("trentina.defense.admission", AsyncMock(return_value=(5, 5))),
+        ):
+            assert await _judge_response(_response_profile(), document="at-the-cap") is None
+        judge.generate.assert_awaited_once()
+
     async def test_no_judge_fails_closed(self) -> None:
         with _Judge(llm=False):
             refusal = await _judge_response(_response_profile())

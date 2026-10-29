@@ -126,9 +126,11 @@ The judge is given three things, kept apart:
 - **The policy**, in its instructions, from the operator.
 - **The gateway's facts**, stated as true: the backend and tool, and whether
   this session was delivered content the layers flagged.
-- **The backend's response**, exactly as it arrived (text blocks joined, plus
-  the structured content serialized), marked as untrusted data. A claim in it
-  that delivery was approved is evidence, not permission.
+- **The backend's response**, exactly as it arrived: every text block joined,
+  each embedded resource read whole (its `text` and its `uri`/`mimeType`, so a
+  secret hidden in a resource URI is judged too, not only the body), and the
+  structured content serialized — marked as untrusted data. A claim in it that
+  delivery was approved is evidence, not permission.
 
 The judge is the profile's own L3 model, called under the same rules as every
 L3 request: no tools, a per-request canary, and a closed JSON schema for the

@@ -122,14 +122,32 @@ class McpCarried:
 def _result_document(call_result: Any) -> str:
     """The raw result as one text blob for the semantic response guard.
 
-    The same text the literal response guard read (every text block joined),
-    plus the structured content serialized, so the judge sees what the agent
-    would receive. Empty when the result carries neither — nothing to judge.
+    The same text the literal response guard read (every text block joined, and
+    an embedded ``resource``'s ``text``), plus each resource's OTHER delivered
+    fields (``uri``, ``mimeType``) and the structured content, every piece
+    serialized — so the judge sees everything the agent would receive, not only
+    the joined text. ``_response_text`` reads only a resource's ``text``, but
+    the agent is handed the whole resource dict; a backend could hide
+    policy-restricted data (a credential in a resource ``uri``) in a field that
+    extractor drops, so those fields are judged too. Empty when the result
+    carries nothing to judge.
     """
     parts: list[str] = []
     text = _response_guard_text(call_result.content)
     if text:
         parts.append(text)
+    for block in call_result.content or []:
+        if not isinstance(block, dict) or block.get("type") != "resource":
+            continue
+        resource = block.get("resource")
+        if not isinstance(resource, dict):
+            continue
+        # Everything delivered except the ``text`` already joined above — the
+        # ``uri`` and ``mimeType`` the agent also sees. ``_has_uninspectable_content``
+        # has already refused any resource carrying a binary ``blob``.
+        meta = {k: v for k, v in resource.items() if k != "text"}
+        if meta:
+            parts.append(json.dumps(meta, sort_keys=True, ensure_ascii=False, default=str))
     structured = call_result.structured_content
     if structured is not None:
         parts.append(json.dumps(structured, sort_keys=True, ensure_ascii=False, default=str))
@@ -139,25 +157,39 @@ def _result_document(call_result: Any) -> str:
 def _has_uninspectable_content(call_result: Any) -> bool:
     """True when any content block carries something the judge cannot read as text.
 
-    The judge reads only text — a ``text`` block, or a ``resource`` block with a
-    ``text`` field. Every other block (an image, audio, a binary resource
-    ``blob``, a ``resource_link``, an unknown type, or a non-dict shape) is
-    content the operator's policy cannot be checked against, so a guarded
-    response holding any is failed closed — refused — rather than judged on the
-    text around it. An allowlist, not a denylist: a block type we do not
-    explicitly read as text fails closed, so a new MCP block type cannot open a
-    hole here.
+    The judge reads only text — a ``text`` block whose ``text`` is a string, or
+    a ``resource`` block that is a text resource we can read whole. Every other
+    block (an image, audio, a binary resource ``blob``, a ``resource_link``, an
+    unknown type, a non-dict shape, or a ``text``/``resource`` block too
+    malformed to read) is content the operator's policy cannot be checked
+    against, so a guarded response holding any is failed closed — refused —
+    rather than judged on the text around it. An allowlist, not a denylist: a
+    block we do not explicitly read as text fails closed, so neither a new MCP
+    block type nor a malformed block can open a hole here.
     """
     for block in call_result.content or []:
         if not isinstance(block, dict):
             return True
         kind = block.get("type")
         if kind == "text":
-            continue
+            # Inspectable only when the text is actually a string: a missing or
+            # non-string ``text`` extracts to nothing, which would reach the
+            # judge as an empty document and pass the policy unchecked.
+            if isinstance(block.get("text"), str):
+                continue
+            return True
         if kind == "resource":
             resource = block.get("resource")
-            if isinstance(resource, dict) and isinstance(resource.get("text"), str):
+            # A text resource we can read whole: a dict, a string ``text``, and
+            # no binary ``blob``. Its ``uri``/``mimeType`` are judged by
+            # ``_result_document``; a ``blob`` is binary the judge cannot read.
+            if (
+                isinstance(resource, dict)
+                and isinstance(resource.get("text"), str)
+                and "blob" not in resource
+            ):
                 continue
+            return True
         return True
     return False
 
