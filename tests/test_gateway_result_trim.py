@@ -27,6 +27,8 @@ from trentina.gateway.profile import (
 from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 
 ROUTER = "trentina.gateway.router"
+PARTS = "trentina.gateway.parts"
+AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"
 ORCH = "trentina.orchestrator"
 DOC = {"issues": [{"key": "RT-1", "summary": "disk full"}], "total": 1}
@@ -56,10 +58,10 @@ async def _call(
     reply = BackendCall(content=blocks, is_error=False, structured_content=structured)
     scan = AsyncMock(return_value=IngressDecision(warning=None))
     with (
-        patch(f"{ROUTER}.call_backend_tool", AsyncMock(return_value=reply)),
-        patch(f"{ROUTER}.scan_tool_response", scan),
+        patch(f"{MCP}.call_backend_tool", AsyncMock(return_value=reply)),
+        patch(f"{PARTS}.scan_tool_response", scan),
         patch(f"{ORCH}.scan_tool_response", scan),
-        patch(f"{ROUTER}._audit", MagicMock()),
+        patch(f"{AUDIT}._audit", MagicMock()),
     ):
         resp = await route_jsonrpc(
             _profile(minify=minify),

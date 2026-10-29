@@ -99,7 +99,7 @@ class _Gateway:
         self.audit = MagicMock()
 
     async def send(self, name: str, **arguments: Any) -> dict[str, Any]:
-        with patch("trentina.gateway.router._audit", self.audit):
+        with patch("trentina.gateway.audit._audit", self.audit):
             return await route_jsonrpc(
                 self.profile,
                 {

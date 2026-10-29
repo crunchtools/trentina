@@ -263,10 +263,10 @@ async def test_fetch_search_and_a_declared_tool_are_recorded() -> None:
     transform = AsyncMock(side_effect=_passthrough_transform)
     scan = AsyncMock(side_effect=_clean_scan)
     with (
-        patch("trentina.gateway.router.call_internal_tool", side_effect=internal),
-        patch("trentina.gateway.router.call_backend_tool", side_effect=remote),
+        patch("trentina.transports.mcp.call_internal_tool", side_effect=internal),
+        patch("trentina.transports.mcp.call_backend_tool", side_effect=remote),
         patch("trentina.transports.mcp.transform_response", transform),
-        patch("trentina.gateway.router.scan_tool_response", scan),
+        patch("trentina.gateway.parts.scan_tool_response", scan),
         patch("trentina.orchestrator.scan_tool_response", scan),
     ):
         await _call(_slack_and_web(), f"web{NAMESPACE_SEP}fetch_tool", {"url": url})
@@ -492,10 +492,10 @@ class TestFanoutCheck:
 
 def test_a_lost_audit_row_is_logged_not_raised(caplog: pytest.LogCaptureFixture) -> None:
     """The audit never fails the call, and never loses a row silently (#281)."""
-    from trentina.gateway import router
+    from trentina.gateway import audit
 
-    with patch.object(router, "record_gateway_call", side_effect=OSError("disk full C0SECRET")):
-        router._audit("kage", "slack", "send_message", Outcome.OK, 1)
+    with patch.object(audit, "record_gateway_call", side_effect=OSError("disk full C0SECRET")):
+        audit._audit("kage", "slack", "send_message", Outcome.OK, 1)
 
     lost = [r for r in caplog.records if "audit row lost" in r.getMessage()]
     assert len(lost) == 1

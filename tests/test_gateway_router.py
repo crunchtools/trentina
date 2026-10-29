@@ -151,7 +151,7 @@ class TestRouter:
             )
 
         with patch(
-            "trentina.gateway.router.call_backend_tool",
+            "trentina.transports.mcp.call_backend_tool",
             side_effect=fake_call,
         ):
             resp = await route_jsonrpc(
@@ -257,11 +257,11 @@ class TestRouter:
 
         with (
             patch(
-                "trentina.gateway.router.call_internal_tool",
+                "trentina.transports.mcp.call_internal_tool",
                 side_effect=fake_internal_call,
             ),
             patch(
-                "trentina.gateway.router.call_backend_tool",
+                "trentina.transports.mcp.call_backend_tool",
                 side_effect=fail_http,
             ),
         ):
@@ -322,7 +322,7 @@ class TestRouter:
         tool_name = f"mcp-slack{NAMESPACE_SEP}slack_list_channels"
         with (
             patch(
-                "trentina.gateway.router.call_backend_tool",
+                "trentina.transports.mcp.call_backend_tool",
                 side_effect=fake_call,
             ),
             patch("trentina.database.get_config") as mock_cfg,
@@ -365,7 +365,7 @@ class TestRouter:
         tool_name = f"mcp-slack{NAMESPACE_SEP}slack_list_channels"
         with (
             patch(
-                "trentina.gateway.router.call_backend_tool",
+                "trentina.transports.mcp.call_backend_tool",
                 side_effect=fail_call,
             ),
             patch("trentina.database.get_config") as mock_cfg,
@@ -515,11 +515,11 @@ class TestRouter:
 
         with (
             patch(
-                "trentina.gateway.router.call_backend_tool",
+                "trentina.transports.mcp.call_backend_tool",
                 side_effect=memory_call,
             ),
             patch("trentina.transports.mcp.transform_response") as mock_transform,
-            patch("trentina.gateway.router.scan_tool_response") as mock_scan,
+            patch("trentina.gateway.parts.scan_tool_response") as mock_scan,
             patch("trentina.orchestrator.scan_tool_response", mock_scan),
             patch("trentina.database.get_config") as mock_cfg,
         ):
@@ -582,7 +582,7 @@ class TestRouter:
         p.auth.bearer_token = SecretStr("x")
 
         with patch(
-            "trentina.gateway.router.call_backend_tool",
+            "trentina.transports.mcp.call_backend_tool",
             side_effect=memory_call,
         ):
             resp = await route_jsonrpc(
@@ -621,7 +621,7 @@ class TestRouter:
 
         with (
             patch(
-                "trentina.gateway.router.call_backend_tool",
+                "trentina.transports.mcp.call_backend_tool",
                 side_effect=error_call,
             ),
             patch("trentina.database.get_config") as mock_cfg,
@@ -716,7 +716,7 @@ class TestRouter:
         )
         p.auth.bearer_token = SecretStr("x")
         with patch(
-            "trentina.gateway.router.call_backend_tool",
+            "trentina.transports.mcp.call_backend_tool",
             side_effect=fake_call,
         ):
             resp = await route_jsonrpc(
@@ -1024,7 +1024,7 @@ class TestProfileContext:
             )
 
         with patch(
-            "trentina.gateway.router.call_internal_tool",
+            "trentina.transports.mcp.call_internal_tool",
             side_effect=fake_internal_call,
         ):
             await route_jsonrpc(
@@ -1067,11 +1067,11 @@ class TestOneAuditRowPerCall:
 
         with (
             patch(
-                "trentina.gateway.router.call_backend_tool",
+                "trentina.transports.mcp.call_backend_tool",
                 side_effect=fake_call,
             ),
             patch(
-                "trentina.gateway.router.scan_tool_response",
+                "trentina.gateway.parts.scan_tool_response",
                 side_effect=scan or fake_scan,
             ) as mock_scan,
             patch("trentina.orchestrator.scan_tool_response", mock_scan),
@@ -1151,7 +1151,7 @@ class TestOneAuditRowPerCall:
 
         with (
             patch(
-                "trentina.gateway.router.call_internal_tool",
+                "trentina.transports.mcp.call_internal_tool",
                 side_effect=fake_internal,
             ),
             patch("trentina.database.get_config") as mock_cfg,
@@ -1330,11 +1330,11 @@ class TestArgumentHygiene:
         try:
             with (
                 patch(
-                    "trentina.gateway.router.call_backend_tool",
+                    "trentina.transports.mcp.call_backend_tool",
                     side_effect=fake_call,
                 ),
                 patch(
-                    "trentina.gateway.router.scan_tool_response",
+                    "trentina.gateway.parts.scan_tool_response",
                     side_effect=fake_scan,
                 ) as mock_scan,
                 patch("trentina.orchestrator.scan_tool_response", mock_scan),

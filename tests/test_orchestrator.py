@@ -34,8 +34,12 @@ from trentina.reserved import REFUSAL_KEY, WARNING_KEY
 from trentina.transports.base import Carrier, Early, Face, Transport
 
 ROUTER = "trentina.gateway.router"
+PARTS = "trentina.gateway.parts"
+REQUEST_EDGE = "trentina.gateway.request_edge"
+AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"
 ORCH = "trentina.orchestrator"
+RESULTS = "trentina.gateway.results"
 
 
 def _profile(
@@ -86,16 +90,16 @@ async def _run(
     ``scan_tool_response`` is patched in BOTH the router and the orchestrator
     namespace — the non-paged response edge reaches it as
     ``orchestrator.scan_tool_response`` (via ``judge_response``) and the paged
-    path as ``router.scan_tool_response`` (which imported the name).
+    path as ``parts.scan_tool_response`` (which imported the name).
     """
     call = AsyncMock(side_effect=exc) if exc is not None else AsyncMock(return_value=reply)
     verdict = decision if decision is not None else IngressDecision(warning=None)
     scan = AsyncMock(return_value=verdict)
     with (
-        patch(f"{ROUTER}.call_backend_tool", call),
-        patch(f"{ROUTER}.scan_tool_response", scan),
+        patch(f"{MCP}.call_backend_tool", call),
+        patch(f"{PARTS}.scan_tool_response", scan),
         patch(f"{ORCH}.scan_tool_response", scan),
-        patch(f"{ROUTER}._audit", MagicMock()),
+        patch(f"{AUDIT}._audit", MagicMock()),
     ):
         return await route_jsonrpc(profile, request)
 
@@ -146,15 +150,15 @@ async def test_block_refusal() -> None:
 @pytest.mark.asyncio
 async def test_required_transform_failure() -> None:
     # A required processor that cannot run: assembly delivers the preprocess
-    # refusal in place of the response (router._preprocess_refusal).
+    # refusal in place of the response (results._preprocess_refusal).
     from trentina.gateway.transform import TransformOutcome
 
     failed = TransformOutcome(content_blocks=_reply().content, failed="required processor failed")
     transform = AsyncMock(return_value=failed)
     with (
-        patch(f"{ROUTER}.call_backend_tool", AsyncMock(return_value=_reply())),
+        patch(f"{MCP}.call_backend_tool", AsyncMock(return_value=_reply())),
         patch(f"{MCP}.transform_response", transform),
-        patch(f"{ROUTER}._audit", MagicMock()),
+        patch(f"{AUDIT}._audit", MagicMock()),
     ):
         resp = await route_jsonrpc(_profile(), _request())
     assert resp["result"][REFUSAL_KEY]["reason"] == "preprocess_failed"
@@ -222,23 +226,23 @@ async def _run_capture(
     ``scan_tool_response`` is patched as ``router.*`` (the paged path) and
     ``orchestrator.*`` (the non-paged edge, via ``judge_response``);
     ``check_response_guards`` is reached as ``transports.mcp.*``; ``_refuse_call``
-    and ``_may_have_acted`` are reached as ``router.*`` on the orchestrated path,
-    so one patch covers each.
+    is reached as ``request_edge.*`` and ``_may_have_acted`` as ``results.*`` on
+    the orchestrated path, so one patch covers each.
     """
     call = AsyncMock(return_value=reply)
     scan = AsyncMock(return_value=IngressDecision(warning=None))
     patches = [
-        patch(f"{ROUTER}.call_backend_tool", call),
-        patch(f"{ROUTER}.scan_tool_response", scan),
+        patch(f"{MCP}.call_backend_tool", call),
+        patch(f"{PARTS}.scan_tool_response", scan),
         patch(f"{ORCH}.scan_tool_response", scan),
-        patch(f"{ROUTER}._audit", MagicMock()),
+        patch(f"{AUDIT}._audit", MagicMock()),
     ]
     if guard_err is not None:
         patches.append(patch(f"{MCP}.check_response_guards", MagicMock(return_value=guard_err)))
     if may_act is not None:
-        patches.append(patch(f"{ROUTER}._may_have_acted", MagicMock(return_value=may_act)))
+        patches.append(patch(f"{RESULTS}._may_have_acted", MagicMock(return_value=may_act)))
     if refuse is not None:
-        patches.append(patch(f"{ROUTER}._refuse_call", AsyncMock(return_value=refuse)))
+        patches.append(patch(f"{REQUEST_EDGE}._refuse_call", AsyncMock(return_value=refuse)))
     with contextlib.ExitStack() as stack:
         for p in patches:
             stack.enter_context(p)

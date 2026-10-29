@@ -32,6 +32,8 @@ from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.outcomes import Outcome
 
 ROUTER = "trentina.gateway.router"
+PARTS = "trentina.gateway.parts"
+AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"
 ORCH = "trentina.orchestrator"
 URL = "http://mail:8000/mcp"
@@ -87,10 +89,10 @@ async def _call(
     audit = MagicMock()
     scan = AsyncMock(return_value=decision or BLOCKED)
     with (
-        patch(f"{ROUTER}.call_backend_tool", backend_call),
-        patch(f"{ROUTER}.scan_tool_response", scan),
+        patch(f"{MCP}.call_backend_tool", backend_call),
+        patch(f"{PARTS}.scan_tool_response", scan),
         patch(f"{ORCH}.scan_tool_response", scan),
-        patch(f"{ROUTER}._audit", audit),
+        patch(f"{AUDIT}._audit", audit),
     ):
         resp = await route_jsonrpc(
             profile or _profile(),

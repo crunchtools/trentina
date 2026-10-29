@@ -723,9 +723,9 @@ classification = "gourmand_bug"
 
 [[exceptions]]
 check = "redundant_error_handling"
-path = "src/trentina/gateway/router.py"
+path = "src/trentina/gateway/audit.py"
 pattern = "_audit"
-justification = "The audit row must never fail the tools/call it records, and a write can raise more than sqlite3.Error (thread-affinity ProgrammingError, OSError on a full disk). Logging profile and exception class is the handling: a silently lost audit row was itself a finding on #281."
+justification = "The audit row must never fail the tools/call it records, and a write can raise more than sqlite3.Error (thread-affinity ProgrammingError, OSError on a full disk). Logging profile and exception class is the handling: a silently lost audit row was itself a finding on #281. Lifted from gateway/router.py to gateway/audit.py in PR3a (#579)."
 classification = "by_design"
 
 [[exceptions]]

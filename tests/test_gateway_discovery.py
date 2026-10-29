@@ -92,7 +92,7 @@ def backends(tmp_path: Any) -> Iterator[list[tuple[str, str, dict[str, Any]]]]:
     db_mod._db = None
     with (
         patch("trentina.gateway.router.list_backend_tools", side_effect=_list_tools),
-        patch("trentina.gateway.router.call_backend_tool", side_effect=call),
+        patch("trentina.transports.mcp.call_backend_tool", side_effect=call),
         patch("trentina.database.get_config") as cfg,
     ):
         cfg.return_value.db_path = str(tmp_path / "audit.db")
@@ -228,7 +228,7 @@ class TestFindAndCall:
         async def judge(_p: Any, _b: Any, backend_name: str, tool: str, *_a: Any) -> None:
             seen.append((backend_name, tool))
 
-        with patch("trentina.gateway.router.judge_call", side_effect=judge):
+        with patch("trentina.gateway.request_edge.judge_call", side_effect=judge):
             await _call(
                 _profile(),
                 "call_tool",

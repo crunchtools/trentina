@@ -160,7 +160,7 @@ class TestGatewayApp:
             )
 
         with patch(
-            "trentina.gateway.router.call_backend_tool",
+            "trentina.transports.mcp.call_backend_tool",
             side_effect=fake_call,
         ):
             resp = client.post(

@@ -27,7 +27,7 @@ from corpora.garak_encodings import ENCODINGS
 from corpora.internal import CORPUS as INTERNAL
 from trentina.gateway.ingress_defense import _collect_response_texts
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import _drop_duplicate_structured
+from trentina.gateway.results import _drop_duplicate_structured
 from trentina.gateway.transform import transform_response
 from trentina.l1.pipeline import run_l1
 from trentina.quarantine.classifier import (

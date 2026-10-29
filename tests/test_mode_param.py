@@ -48,6 +48,8 @@ from trentina.modes import (
 )
 
 ROUTER = "trentina.gateway.router"
+PARTS = "trentina.gateway.parts"
+AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"
 ORCH = "trentina.orchestrator"
 TOOL = {
@@ -334,10 +336,10 @@ class TestRouter:
 
         scan = AsyncMock(return_value=decision or IngressDecision(warning=None))
         with (
-            patch(f"{ROUTER}.call_backend_tool", side_effect=fake_call),
-            patch(f"{ROUTER}.scan_tool_response", scan),
+            patch(f"{MCP}.call_backend_tool", side_effect=fake_call),
+            patch(f"{PARTS}.scan_tool_response", scan),
             patch(f"{ORCH}.scan_tool_response", scan),
-            patch(f"{ROUTER}._audit"),
+            patch(f"{AUDIT}._audit"),
         ):
             resp = await route_jsonrpc(
                 profile,
@@ -412,15 +414,15 @@ class TestRouter:
     async def test_the_question_rides_inside_the_mode(self) -> None:
         scan = AsyncMock(return_value=IngressDecision(warning=None, extraction="x"))
         with (
-            patch(f"{ROUTER}.scan_tool_response", scan),
+            patch(f"{PARTS}.scan_tool_response", scan),
             patch(f"{ORCH}.scan_tool_response", scan),
             patch(
-                f"{ROUTER}.call_backend_tool",
+                f"{MCP}.call_backend_tool",
                 AsyncMock(
                     return_value=BackendCall(content=[], is_error=False, structured_content=None)
                 ),
             ) as backend,
-            patch(f"{ROUTER}._audit"),
+            patch(f"{AUDIT}._audit"),
         ):
             await route_jsonrpc(
                 _profile(["block", "redact"]),
@@ -481,7 +483,7 @@ class TestInternalBackend:
         saved = internal._server
         internal.register_internal_server(mcp)
         try:
-            with patch(f"{ROUTER}._audit"):
+            with patch(f"{AUDIT}._audit"):
                 return await route_jsonrpc(profile, request)
         finally:
             internal._server = saved
@@ -579,7 +581,7 @@ async def test_a_mode_guard_refuses_at_call_even_when_the_mode_is_omitted() -> N
         },
     )
     call = AsyncMock()
-    with patch(f"{ROUTER}.call_backend_tool", call), patch(f"{ROUTER}._audit"):
+    with patch(f"{MCP}.call_backend_tool", call), patch(f"{AUDIT}._audit"):
         for arguments in ({"issue_key": "X-1"}, {"issue_key": "X-1", MODE_PARAM: "block"}):
             resp = await route_jsonrpc(
                 p,
@@ -720,7 +722,7 @@ class TestInternalModes:
         try:
             with (
                 patch(f"trentina.server.{family_fn}", fake),
-                patch(f"{ROUTER}._audit"),
+                patch(f"{AUDIT}._audit"),
             ):
                 resp = await route_jsonrpc(
                     self._profile(),

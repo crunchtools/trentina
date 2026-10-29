@@ -13,6 +13,7 @@ from pydantic import SecretStr, ValidationError
 
 from tests.refusal_shape import refused, refused_text
 from trentina import orchestrator as orchestrator_mod
+from trentina.core.stages import Assembled
 from trentina.database import has_sent_to, record_gateway_call
 from trentina.errors import QuarantineAgentError
 from trentina.gateway import gatekeeper, session_marks
@@ -28,7 +29,8 @@ from trentina.gateway.profile import (
     SemanticGuardsConfig,
 )
 from trentina.gateway.profile_lint import check_guarded_destinations
-from trentina.gateway.router import NAMESPACE_SEP, Assembled, _mark_session, route_jsonrpc
+from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
+from trentina.gateway.session_marks import _mark_session
 from trentina.outcomes import BLOCKED_OUTCOMES, Outcome
 
 POLICY = "Mail leaves only to example.com addresses. No customer data in bulk."
@@ -747,7 +749,7 @@ class TestSessionMarks:
         flagged = Assembled(result={}, outcome=Outcome.OK, warning={"flagged_by": "L2"})
         session_token = current_session.set("s-0123456789")
         try:
-            with caplog.at_level("INFO", logger="trentina.gateway.router"):
+            with caplog.at_level("INFO", logger="trentina.gateway.session_marks"):
                 for ref in ("ref-one", "ref-two"):
                     call_token = current_call.set(ref)
                     try:
@@ -813,8 +815,8 @@ class TestRouter:
         audits: list[tuple[Any, ...]] = []
         with (
             _Judge({"decision": "refuse", "reason": "bulk_private_data"}),
-            patch("trentina.gateway.router.call_backend_tool", backend),
-            patch("trentina.gateway.router._audit", lambda *a, **k: audits.append((a, k))),
+            patch("trentina.transports.mcp.call_backend_tool", backend),
+            patch("trentina.gateway.audit._audit", lambda *a, **k: audits.append((a, k))),
         ):
             resp = await route_jsonrpc(_profile(), _call("send_message"))
         backend.assert_not_awaited()
@@ -833,10 +835,10 @@ class TestRouter:
         )
         with (
             _Judge(),
-            patch("trentina.gateway.router.call_backend_tool", backend),
-            patch("trentina.gateway.router._audit"),
+            patch("trentina.transports.mcp.call_backend_tool", backend),
+            patch("trentina.gateway.audit._audit"),
             patch(
-                "trentina.gateway.router.scan_tool_response",
+                "trentina.gateway.parts.scan_tool_response",
                 AsyncMock(
                     return_value=SimpleNamespace(
                         warning=None, blocked=False, refusal=None, extraction=None
@@ -864,7 +866,7 @@ class TestRouter:
         }
         with (
             _Judge() as judge,
-            patch("trentina.gateway.router._audit"),
+            patch("trentina.gateway.audit._audit"),
         ):
             resp = await route_jsonrpc(p, _call("send_message"))
         assert "not in allow list" in refused_text(resp)
@@ -885,11 +887,9 @@ class TestRouter:
         token = current_session.set("fp-1")
         try:
             with (
-                patch("trentina.gateway.router.call_backend_tool", backend),
-                patch("trentina.gateway.router._audit"),
-                patch(
-                    "trentina.gateway.router.scan_tool_response", AsyncMock(return_value=scanned)
-                ),
+                patch("trentina.transports.mcp.call_backend_tool", backend),
+                patch("trentina.gateway.audit._audit"),
+                patch("trentina.gateway.parts.scan_tool_response", AsyncMock(return_value=scanned)),
                 patch("trentina.orchestrator.scan_tool_response", AsyncMock(return_value=scanned)),
             ):
                 await route_jsonrpc(_profile(), _call("get_message"))

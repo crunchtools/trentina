@@ -313,7 +313,7 @@ class TestDeliveredAsTheOversizeRefusal:
 
         db_mod._db = None
         with (
-            patch("trentina.gateway.router.call_backend_tool", side_effect=too_big),
+            patch("trentina.transports.mcp.call_backend_tool", side_effect=too_big),
             patch("trentina.database.get_config") as mock_cfg,
         ):
             mock_cfg.return_value.db_path = str(tmp_path / "audit.db")
