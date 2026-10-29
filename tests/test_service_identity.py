@@ -22,6 +22,7 @@ from trentina import orchestrator as orch
 from trentina.config import get_config
 from trentina.gateway import aggregate
 from trentina.gateway import ingress_defense as ing
+from trentina.gateway import verdict_cache as vc
 from trentina.gateway.compress import _call_compress_model
 from trentina.gateway.context import get_current_profile, profile_context
 from trentina.gateway.errors import ProfileConfigError
@@ -236,7 +237,7 @@ class TestPerimeterRunsAsTheOperator:
         for tool in tools:
             surface = ing._tool_surface_text(tool)
             filed = ing._cache_key(profiles["tenant"], "tool:external", surface, judge_of(first))
-            assert filed in ing._verdicts
+            assert filed in vc._verdicts
 
     def test_description_verdicts_are_keyed_by_the_operators_model(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

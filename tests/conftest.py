@@ -18,9 +18,9 @@ from trentina import perimeter_db as perimeter_db_mod
 from trentina.gateway.aggregate import reset_profile_tools_cache
 from trentina.gateway.backend import reset_tool_list_cache
 from trentina.gateway.circuit import breaker
-from trentina.gateway.ingress_defense import reset_verdict_cache
 from trentina.gateway.loader import reset_active_config
 from trentina.gateway.matrix_proxy import reset_extractors
+from trentina.gateway.verdict_cache import reset_verdict_cache
 from trentina.quarantine.limiter import reset_limiters
 from trentina.quarantine.providers import reset_provider
 

@@ -26,8 +26,8 @@ from unittest.mock import patch
 import pytest
 
 from trentina import perimeter_db
-from trentina.gateway import ingress_defense
-from trentina.gateway.ingress_defense import (
+from trentina.gateway import verdict_cache
+from trentina.gateway.verdict_cache import (
     _cache_get,
     _cache_put,
     load_verdict_cache,
@@ -177,10 +177,10 @@ class TestStartupLoad:
 
     def test_load_respects_the_memory_bound(self) -> None:
         """A store larger than the LRU must not push the process over it."""
-        for i in range(ingress_defense._CACHE_MAX + 10):
+        for i in range(verdict_cache._CACHE_MAX + 10):
             save_verdict(f"k{i}", None, perimeter_stamp())
         reset_verdict_cache()
-        assert load_verdict_cache() == ingress_defense._CACHE_MAX
+        assert load_verdict_cache() == verdict_cache._CACHE_MAX
 
     def test_reset_does_not_touch_the_store(self) -> None:
         """reset_verdict_cache is the test hook; forgetting a verdict in
