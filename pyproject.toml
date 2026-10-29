@@ -204,7 +204,7 @@ max-complexity = 10
 # allowed, parameter guard, backend error, response guard -- and each one returns
 # its own refusal. Collapsing them into a single exit would hide which gate fired,
 # which is the one thing an operator reading an audit row needs.
-"src/trentina/gateway/router.py" = ["PLR0911"]
+"src/trentina/transports/mcp.py" = ["PLR0911"]
 # E402: the benchmark inserts the repo root on sys.path before importing the
 # corpus and package, so those imports intentionally follow that setup.
 # PLR0915: render_markdown is a linear report builder — many append statements,
