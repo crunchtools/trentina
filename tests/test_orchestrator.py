@@ -34,6 +34,7 @@ from trentina.reserved import REFUSAL_KEY, WARNING_KEY
 from trentina.transports.base import Carrier, Early, Face, Transport
 
 ROUTER = "trentina.gateway.router"
+REQUEST_EDGE = "trentina.gateway.request_edge"
 AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"
 ORCH = "trentina.orchestrator"
@@ -224,8 +225,8 @@ async def _run_capture(
     ``scan_tool_response`` is patched as ``router.*`` (the paged path) and
     ``orchestrator.*`` (the non-paged edge, via ``judge_response``);
     ``check_response_guards`` is reached as ``transports.mcp.*``; ``_refuse_call``
-    is reached as ``router.*`` and ``_may_have_acted`` as ``results.*`` on the
-    orchestrated path, so one patch covers each.
+    is reached as ``request_edge.*`` and ``_may_have_acted`` as ``results.*`` on
+    the orchestrated path, so one patch covers each.
     """
     call = AsyncMock(return_value=reply)
     scan = AsyncMock(return_value=IngressDecision(warning=None))
@@ -240,7 +241,7 @@ async def _run_capture(
     if may_act is not None:
         patches.append(patch(f"{RESULTS}._may_have_acted", MagicMock(return_value=may_act)))
     if refuse is not None:
-        patches.append(patch(f"{ROUTER}._refuse_call", AsyncMock(return_value=refuse)))
+        patches.append(patch(f"{REQUEST_EDGE}._refuse_call", AsyncMock(return_value=refuse)))
     with contextlib.ExitStack() as stack:
         for p in patches:
             stack.enter_context(p)

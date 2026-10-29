@@ -301,7 +301,7 @@ class McpServerFace(Face):
         )
         forwarded = normalized.arguments
 
-        refused = await router._refuse_call(
+        refused = await request_edge._refuse_call(
             profile, backend, backend_name, tool_name, forwarded, mode, prompt, normalized, dest
         )
         if refused is not None:

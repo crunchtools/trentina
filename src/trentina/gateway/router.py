@@ -72,13 +72,10 @@ from .decoy import canned_result, keep_arguments, leaked_tokens, record_trip, se
 from .destination import Destination, destination_of
 from .errors import BackendCallError
 from .filter import filter_tools
-from .gatekeeper import judge_call
-from .guards import check_request_guards
 from .ingress_defense import effective_mode, scan_tool_list
 from .internal import call_internal_tool, list_internal_tools
 from .modes_policy import (
     MODE_PARAM,
-    PROMPT_PARAM,
     insert_params,
     insert_preprocess,
     mode_instructions,
@@ -113,7 +110,6 @@ if TYPE_CHECKING:
     from ..defense import Provenance
     from ..modes import ModePolicy
     from ..transforms.policy import PreProcessPolicy
-    from .args import Normalized
     from .profile import Backend, Profile
 
 logger = logging.getLogger(__name__)
@@ -803,65 +799,6 @@ async def _discovery_call(
         bytes_delivered=wire_bytes(result),
     )
     return _ok(req_id, result)
-
-
-async def _refuse_call(
-    profile: Profile,
-    backend: Backend,
-    backend_name: str,
-    tool_name: str,
-    forwarded: dict[str, Any],
-    mode: Mode,
-    prompt: str | None,
-    normalized: Normalized,
-    dest: Destination | None,
-) -> tuple[Outcome, str, str] | None:
-    """Every refusal of a call's arguments: outcome, what the agent is told, what is audited.
-
-    The guards and the schema first; semantic request guards last (#456), so the
-    cheap and certain rules have spoken before a model is asked anything.
-    """
-    refused = _refuse_arguments(
-        backend,
-        tool_name,
-        {**forwarded, MODE_PARAM: mode.value, PROMPT_PARAM: prompt},
-        normalized,
-    )
-    if refused is not None:
-        outcome, message = refused
-        return outcome, message, message
-    gated = await judge_call(profile, backend, backend_name, tool_name, forwarded, dest)
-    if gated is not None:
-        return Outcome.DENIED_GATEKEEPER, gated.message, gated.audit
-    return None
-
-
-def _refuse_arguments(
-    backend: Backend, tool_name: str, judged: dict[str, Any], normalized: Normalized
-) -> tuple[Outcome, str] | None:
-    """The request guards' refusal, else the schema's, else None.
-
-    Guards first, so a probe a guard refuses still audits as one. A required
-    argument that fails its schema would be refused by the backend too;
-    answering here spares the round trip, and the breaker never sees a call
-    the backend never received. An optional one is refused because the call
-    without it is not the call that was asked for (#335).
-    """
-    guard_err = check_request_guards(tool_name, judged, backend)
-    if guard_err:
-        return Outcome.DENIED_GUARD, guard_err
-    if normalized.invalid_required:
-        return Outcome.TOOL_ERROR, "Invalid required arguments: " + "; ".join(
-            f"{name} {reason}" for name, reason in normalized.invalid_required.items()
-        )
-    if normalized.invalid_optional:
-        return Outcome.TOOL_ERROR, (
-            "Invalid optional arguments: "
-            + "; ".join(f"{name} {reason}" for name, reason in normalized.invalid_optional.items())
-            + ". Correct or omit them: this tool is not marked read-only, so the call"
-            " was not forwarded without them."
-        )
-    return None
 
 
 async def _finish_delivery(
