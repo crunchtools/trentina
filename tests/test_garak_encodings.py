@@ -126,8 +126,11 @@ class TestHarness:
         assert (encoded.l2, encoded.decoded, encoded.flagged) == (False, True, True)
 
     def test_a_text_nothing_decodes_is_read_as_it_arrived(self) -> None:
+        # ROT13 is a cipher the unpack stage does not undo, so the model reads
+        # the text as it arrived and never sees the plaintext word it flags.
+        # (base32 stood here until #546 taught unpack to decode it — gap 21.)
         with patch.object(l2_encodings, "classify", _flags("quarterly")):
-            reading = l2_encodings.read(ENCODINGS["base32"]("the quarterly numbers are attached"))
+            reading = l2_encodings.read(ENCODINGS["ROT13"]("the quarterly numbers are attached"))
         assert (reading.l2, reading.decoded, reading.flagged) == (False, False, False)
         assert reading.l1 == 0
 
