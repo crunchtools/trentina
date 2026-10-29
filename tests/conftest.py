@@ -189,12 +189,14 @@ def read_only_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     A test whose backend never listed its tools gets an unannotated one, and
     the router treats that as a tool that may write (#425).
 
-    Both the router's own read-only check and ``results._may_have_acted`` bind
-    ``cached_tool_read_only`` as a module-local name, so each is patched where
-    it resolves it (the acted-vs-refused helper moved to ``gateway/results.py``
-    in PR3a).
+    ``cached_tool_read_only`` is bound as a module-local name wherever it is
+    used, so each caller is patched where it resolves it: argument
+    normalization in ``gateway/request_edge.py`` and the acted-vs-refused
+    helper in ``gateway/results.py`` (both lifted out of the router in PR3a).
     """
-    monkeypatch.setattr("trentina.gateway.router.cached_tool_read_only", lambda _url, _tool: True)
+    monkeypatch.setattr(
+        "trentina.gateway.request_edge.cached_tool_read_only", lambda _url, _tool: True
+    )
     monkeypatch.setattr("trentina.gateway.results.cached_tool_read_only", lambda _url, _tool: True)
 
 

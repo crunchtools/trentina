@@ -165,6 +165,7 @@ class TestBackendResponse:
         # router._deliver exercised, end to end. When ``normalized`` is given, the
         # request-edge normalization is patched to report those dropped args, so
         # the delivered warning carries them (as a real dropped optional would).
+        from trentina.gateway import request_edge
         from trentina.gateway.args import Normalized
 
         profile = _profile()
@@ -181,7 +182,7 @@ class TestBackendResponse:
             if normalized is not None:
                 stack.enter_context(
                     patch.object(
-                        router,
+                        request_edge,
                         "_normalize_arguments",
                         lambda *a, **k: Normalized(arguments={}, dropped=dict(normalized)),
                     )

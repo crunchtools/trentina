@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, Any
 from ..core.stages import Arrived, Assembled, Transformed
 from ..defense import Provenance
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
-from ..gateway import gatekeeper, paging, results, router
+from ..gateway import gatekeeper, paging, request_edge, results, router
 from ..gateway.destination import Destination, destination_of
 from ..gateway.errors import BackendCallError
 from ..gateway.filter import filter_tools
@@ -221,7 +221,7 @@ class McpServerFace(Face):
         # Only an absent or null ``arguments`` defaults; a falsy ``[]`` stays malformed.
         arguments = {} if params.get("arguments") is None else params["arguments"]
 
-        target = router._resolve_target(profile, served_name)
+        target = request_edge._resolve_target(profile, served_name)
         if target is None:
             return Early(router._unknown_tool(profile, req_id, served_name))
         backend_name, tool_name, backend = target
@@ -296,7 +296,7 @@ class McpServerFace(Face):
             )
 
         # Before the guards, so they judge exactly what is forwarded.
-        normalized = router._normalize_arguments(
+        normalized = request_edge._normalize_arguments(
             profile, backend, backend_name, tool_name, forwarded
         )
         forwarded = normalized.arguments

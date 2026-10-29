@@ -56,10 +56,7 @@ from ..transports.jsonrpc import (
     _refused,
 )
 from . import discovery, paging, tool_pins
-from .args import Normalized, normalize_arguments
 from .backend import (
-    cached_tool_read_only,
-    cached_tool_schema,
     call_backend_tool,
     list_backend_tools,
     loggable_tool,
@@ -95,10 +92,10 @@ from .modes_policy import (
 from .names import (
     NAMESPACE_SEP,
     forget_issued_names,
-    resolve_name,
     serve_short_names,
     served_name,
 )
+from .request_edge import _resolve_target
 from .results import _executed, _spelled_modes
 from .schema_compact import compact_tool
 from .session_marks import mark_flagged
@@ -117,6 +114,7 @@ if TYPE_CHECKING:
     from ..defense import Provenance
     from ..modes import ModePolicy
     from ..transforms.policy import PreProcessPolicy
+    from .args import Normalized
     from .profile import Backend, Profile
 
 logger = logging.getLogger(__name__)
@@ -786,19 +784,6 @@ def _reached_for(profile: Profile, params: Any) -> tuple[Any, Any]:
     return name, arguments
 
 
-def _resolve_target(profile: Profile, served_name: object) -> tuple[str, str, Backend] | None:
-    """The (backend name, tool, backend) a served name routes to in this profile."""
-    if not isinstance(served_name, str):
-        return None
-    resolved = resolve_name(profile, served_name)
-    if resolved is None or not resolved[1]:
-        return None
-    backend_name, tool_name = resolved
-    # None for an issued short name whose backend has since left the profile.
-    backend = profile.backends.get(backend_name)
-    return (backend_name, tool_name, backend) if backend is not None else None
-
-
 def _unknown_tool(profile: Profile, req_id: Any, served_name: object) -> dict[str, Any]:
     """Refuse a name this profile was never served, and audit it (#269, #293).
 
@@ -927,37 +912,6 @@ def _refuse_arguments(
             " was not forwarded without them."
         )
     return None
-
-
-def _normalize_arguments(
-    profile: Profile,
-    backend: Backend,
-    backend_name: str,
-    tool_name: str,
-    forwarded: dict[str, Any],
-) -> Normalized:
-    """Normalize arguments against the backend's schema before a remote call (``args.py``).
-
-    Internal tools are ours and already read an empty value as unset.
-    """
-    if backend.is_internal:
-        return Normalized(forwarded)
-    normalized = normalize_arguments(
-        forwarded,
-        cached_tool_schema(backend.url, tool_name),
-        read_only=cached_tool_read_only(backend.url, tool_name),
-    )
-    if normalized.dropped:
-        # How many and why, never which: a name is the caller's (#262).
-        logger.info(
-            "gateway: profile=%s %s/%s normalized %d arg(s): %s",
-            profile.name,
-            backend_name,
-            loggable_tool(backend.url, tool_name),
-            len(normalized.dropped),
-            ",".join(sorted(set(normalized.dropped.values()))),
-        )
-    return normalized
 
 
 def _audit_assembly_failure(
