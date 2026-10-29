@@ -180,7 +180,7 @@ async def test_a_part_is_read_once_behind_the_end_of_the_part_before() -> None:
     profile = Profile(name="agent1", auth=AuthConfig(bearer_token_env="TEST"), backends={})
     verdict = MagicMock(flagged=False, flagged_by=None)
     with (
-        patch(f"{_INGRESS}.defend", AsyncMock(return_value=verdict)) as defend,
+        patch("trentina.orchestrator.defend", AsyncMock(return_value=verdict)) as defend,
         patch(f"{_INGRESS}.build_warning", return_value=None),
         # The disposition decision (and its gaps_of) moved into core.dispose.
         patch("trentina.core.dispose.gaps_of", return_value=MagicMock(blocking=lambda: False)),

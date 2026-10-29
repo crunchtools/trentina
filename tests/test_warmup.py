@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from trentina import orchestrator as orch
 from trentina.gateway import ingress_defense as ing
 from trentina.gateway import router, warmup
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
@@ -54,7 +55,7 @@ class TestDescriptionsJudgedTogether:
     async def test_every_description_is_in_flight_at_once(self) -> None:
         defend = _GatedDefend()
         with (
-            patch.object(ing, "defend", defend),
+            patch.object(orch, "defend", defend),
             patch.object(ing, "build_warning", return_value=None),
         ):
             scan = asyncio.create_task(ing.scan_tool_list(_profile("a"), "b", TOOLS, TOOLS))
@@ -78,7 +79,7 @@ class TestDescriptionsJudgedTogether:
             return {"flagged_by": "L2", "risk_level": "high"} if name in flagged else None
 
         with (
-            patch.object(ing, "defend", defend),
+            patch.object(orch, "defend", defend),
             patch.object(ing, "build_warning", side_effect=warning_for),
             patch.object(ing, "effective_mode", return_value=ing.Mode.BLOCK),
         ):
@@ -91,7 +92,7 @@ class TestDescriptionsJudgedTogether:
         defend = _GatedDefend()
         defend.gate.set()
         with (
-            patch.object(ing, "defend", defend),
+            patch.object(orch, "defend", defend),
             patch.object(ing, "build_warning", return_value=None),
         ):
             await ing.scan_tool_list(_profile("a"), "b", TOOLS, TOOLS)
@@ -285,7 +286,7 @@ class TestAFailedJudgement:
 
         profile = _profile("a")
         with (
-            patch.object(ing, "defend", defend),
+            patch.object(orch, "defend", defend),
             patch.object(ing, "build_warning", return_value=None),
         ):
             scan = asyncio.create_task(ing.scan_tool_list(profile, "b", TOOLS, TOOLS))
@@ -296,7 +297,7 @@ class TestAFailedJudgement:
             await _settle()
             # The rest were single-flight tasks: they finished and banked.
             before = ing.perimeter_counts["hits"]
-            with patch.object(ing, "defend", side_effect=AssertionError("re-judged")):
+            with patch.object(orch, "defend", side_effect=AssertionError("re-judged")):
                 result = await ing.scan_tool_list(profile, "b", TOOLS[1:], TOOLS[1:])
 
         assert len(result) == len(TOOLS) - 1

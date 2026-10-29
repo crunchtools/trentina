@@ -57,7 +57,6 @@ from trentina.tools.reload import AGENT_SCOPE_NOTE, reload_profiles
 pytestmark = pytest.mark.asyncio
 
 _ROUTER = "trentina.gateway.router"
-_INGRESS = "trentina.gateway.ingress_defense"
 
 _BENIGN = ClassifierResult(label="BENIGN", score=0.01, latency_ms=1.0)
 
@@ -992,10 +991,10 @@ class TestCacheBehaviour:
         key is (kind, thresholds, text) — none of which a tools_deny edit
         touches — so the rebuilt aggregate is a pure cache read.
         """
-        from trentina.gateway import ingress_defense
+        from trentina import orchestrator
 
         judged: list[str] = []
-        real_defend = ingress_defense.defend
+        real_defend = orchestrator.defend
 
         async def counting_defend(*args: Any, **kwargs: Any) -> Any:
             judged.append(str(kwargs.get("source")))
@@ -1021,7 +1020,7 @@ class TestCacheBehaviour:
                 "trentina.defense.quarantine_detect",
                 AsyncMock(return_value={"injection_detected": False, "risk_level": "low"}),
             ),
-            patch(f"{_INGRESS}.defend", counting_defend),
+            patch("trentina.orchestrator.defend", counting_defend),
         ):
             _cfg.return_value.has_api_key = True
             _cfg.return_value.admission_tokens = 32_768

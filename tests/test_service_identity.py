@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from trentina import orchestrator as orch
 from trentina.config import get_config
 from trentina.gateway import ingress_defense as ing
 from trentina.gateway import router
@@ -196,7 +197,7 @@ class TestPerimeterRunsAsTheOperator:
             return MagicMock(flagged=False)
 
         with (
-            patch.object(ing, "defend", fake_defend),
+            patch.object(orch, "defend", fake_defend),
             patch.object(ing, "build_warning", return_value=None),
             profile_context(profiles["tenant"]),
         ):
@@ -220,7 +221,7 @@ class TestPerimeterRunsAsTheOperator:
 
         with (
             patch.object(ing, "service_profile", side_effect=[first, second, second]),
-            patch.object(ing, "defend", fake_defend),
+            patch.object(orch, "defend", fake_defend),
             patch.object(ing, "build_warning", return_value=None),
         ):
             tools = [
