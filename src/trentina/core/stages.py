@@ -16,8 +16,9 @@ carries trust: it pairs a verdict with the exact bytes it was reached over, so
 it is one of the four unforgeable types and its construction is confined to the
 orchestrator's ``judge_response`` (``tests/test_seal.py``), which builds one only
 after the gate has run. ``Arrived`` and ``Transformed`` are plain frozen carriers
-— no check stands behind holding one — so they are not sealed. The disposed
-result remains the router's ``Assembled``.
+— no check stands behind holding one — so they are not sealed. ``Assembled``
+is the disposed result: a plain, mutable carrier of the finished result and
+what the one audit row should say, so it is not sealed either.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
     from ..defense import Provenance
     from ..gateway.ingress_defense import IngressDecision
     from ..gateway.transform import TransformOutcome
+    from ..outcomes import Outcome
 
 
 @dataclass(frozen=True)
@@ -89,3 +91,22 @@ class Judged:
 
 #: The token ``orchestrator.judge_response`` holds to build a ``Judged``; see ``core.seal``.
 _JUDGED_SEAL = Seal("judge_response")
+
+
+@dataclass
+class Assembled:
+    """A tools/call result and what the audit row should say about it.
+
+    Assembly decides the outcome — the perimeter may block what the backend
+    returned — so the one audit row is written after it, not before. Writing
+    ``ok`` first and ``blocked_defense`` later counted every block twice.
+    """
+
+    result: dict[str, Any]
+    outcome: Outcome
+    error: str | None = None
+    # The perimeter's own warning, kept apart from ``result`` so what
+    # ``_deliver`` writes is built only from gateway parts (#265).
+    warning: dict[str, Any] | None = None
+    # Gateway-reserved keys the backend's response carried and lost (#265).
+    stripped: int = 0

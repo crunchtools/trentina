@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any
 # the shared collaborators are imported from their own modules (mypy does not
 # re-export a name through an importer). This is the one place the orchestrator
 # couples to the gateway's internals, so the later cutover edits only this file.
-from ..core.stages import Arrived, Transformed
+from ..core.stages import Arrived, Assembled, Transformed
 from ..defense import Provenance
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
 from ..gateway import gatekeeper, paging, results, router
@@ -431,7 +431,7 @@ class McpServerFace(Face):
 
     async def _assemble(
         self, ctx: McpCrossing, parsed: McpParsed, carried: McpCarried
-    ) -> router.Assembled:
+    ) -> Assembled:
         """The response edge as stages — ``router._assemble_call_result`` reproduced.
 
         Arrived (strip the gateway's reserved keys) → Transformed (the
@@ -478,7 +478,7 @@ class McpServerFace(Face):
             )
             if reduced.failed is not None:
                 failed = results._preprocess_refusal(reduced.failed, mode)
-                return router.Assembled(
+                return Assembled(
                     results._executed(failed, call_result.is_error) if arrived.acted else failed,
                     Outcome.BLOCKED_DEFENSE,
                     reduced.failed,
@@ -548,7 +548,7 @@ class McpServerFace(Face):
                 # outcome column, not only in an agent's confusion.
                 risk = judged.decision.warning.get("risk_level") if judged.decision.warning else "?"
                 blocked = results._blocked_result(judged.decision)
-                return router.Assembled(
+                return Assembled(
                     results._executed(blocked, call_result.is_error) if arrived.acted else blocked,
                     Outcome.BLOCKED_DEFENSE,
                     f"response blocked by defense (risk={risk})",
@@ -565,10 +565,10 @@ class McpServerFace(Face):
                 }
                 if judged.decision.warning is not None:
                     result[WARNING_KEY] = judged.decision.warning
-                return router.Assembled(result, ok, warning=gateway_warning, stripped=stripped)
+                return Assembled(result, ok, warning=gateway_warning, stripped=stripped)
             results._attach_warning(result, judged.decision.warning)
 
-        return router.Assembled(result, ok, warning=gateway_warning, stripped=stripped)
+        return Assembled(result, ok, warning=gateway_warning, stripped=stripped)
 
     def wrap(self, ctx: McpCrossing, result: dict[str, Any]) -> dict[str, Any]:
         """The JSON-RPC success envelope."""

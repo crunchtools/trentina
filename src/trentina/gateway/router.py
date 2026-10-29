@@ -24,7 +24,6 @@ import json
 import logging
 import secrets
 import time
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from mcp_types.version import (
@@ -33,6 +32,7 @@ from mcp_types.version import (
 )
 
 from .. import __version__
+from ..core.stages import Assembled
 from ..database import is_blocked, record_gateway_call
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
 from ..logsafe import exc_kind, redact_source
@@ -277,25 +277,6 @@ def _audit(
         )
     except Exception as exc:
         logger.warning("gateway: audit row lost profile=%s err=%s", profile, exc_kind(exc))
-
-
-@dataclass
-class Assembled:
-    """A tools/call result and what the audit row should say about it.
-
-    Assembly decides the outcome — the perimeter may block what the backend
-    returned — so the one audit row is written after it, not before. Writing
-    ``ok`` first and ``blocked_defense`` later counted every block twice.
-    """
-
-    result: dict[str, Any]
-    outcome: Outcome
-    error: str | None = None
-    # The perimeter's own warning, kept apart from ``result`` so what
-    # ``_deliver`` writes is built only from gateway parts (#265).
-    warning: dict[str, Any] | None = None
-    # Gateway-reserved keys the backend's response carried and lost (#265).
-    stripped: int = 0
 
 
 def _negotiate_protocol_version(requested: Any) -> str:
