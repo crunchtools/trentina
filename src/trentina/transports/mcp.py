@@ -58,6 +58,13 @@ from ..orchestrator import judge_response
 from ..outcomes import Outcome, classify_exception
 from ..reserved import REFUSAL_KEY, WARNING_KEY
 from .base import Carrier, Early, Face, Transport
+from .jsonrpc import (
+    JSONRPC_INVALID_PARAMS,
+    _err,
+    _ok,
+    _refused,
+    _response_guard_refusal,
+)
 
 if TYPE_CHECKING:
     from ..gateway.args import Normalized
@@ -236,12 +243,12 @@ class McpServerFace(Face):
                 message,
                 destination=dest,
             )
-            return Early(router._err(req_id, router.JSONRPC_INVALID_PARAMS, message))
+            return Early(_err(req_id, JSONRPC_INVALID_PARAMS, message))
 
         if not isinstance(arguments, dict):
             message = "arguments must be an object"
             router._audit(profile.name, backend_name, tool_name, Outcome.DENIED_GUARD, 0, message)
-            return Early(router._err(req_id, router.JSONRPC_INVALID_PARAMS, message))
+            return Early(_err(req_id, JSONRPC_INVALID_PARAMS, message))
 
         if backend.is_decoy or (backend.is_internal and tool_name == paging.READ_PART_TOOL):
             answer = await router._answered_here(profile, req_id, served_name, target, arguments)
@@ -282,7 +289,7 @@ class McpServerFace(Face):
                 destination=dest,
             )
             return Early(
-                router._refused(
+                _refused(
                     req_id,
                     {"reason": Outcome.DENIED_GUARD.value, "detail": str(exc), "alternatives": []},
                 )
@@ -310,9 +317,7 @@ class McpServerFace(Face):
                 destination=dest,
             )
             return Early(
-                router._refused(
-                    req_id, {"reason": outcome.value, "detail": message, "alternatives": []}
-                )
+                _refused(req_id, {"reason": outcome.value, "detail": message, "alternatives": []})
             )
 
         return McpParsed(
@@ -365,7 +370,7 @@ class McpServerFace(Face):
                 destination=parsed.dest,
             )
             if not router._may_have_acted(parsed.backend, parsed.tool_name):
-                return Early(router._response_guard_refusal(req_id, response_err, parsed.mode))
+                return Early(_response_guard_refusal(req_id, response_err, parsed.mode))
             withheld = {REFUSAL_KEY: {"reason": response_err, "mode": parsed.mode.value}}
             return router._executed(withheld, call_result.is_error)
 
@@ -400,7 +405,7 @@ class McpServerFace(Face):
                     destination=parsed.dest,
                 )
                 if not router._may_have_acted(parsed.backend, parsed.tool_name):
-                    return Early(router._response_guard_refusal(req_id, gated.message, parsed.mode))
+                    return Early(_response_guard_refusal(req_id, gated.message, parsed.mode))
                 withheld = {REFUSAL_KEY: {"reason": gated.message, "mode": parsed.mode.value}}
                 return router._executed(withheld, call_result.is_error)
 
@@ -567,7 +572,7 @@ class McpServerFace(Face):
 
     def wrap(self, ctx: McpCrossing, result: dict[str, Any]) -> dict[str, Any]:
         """The JSON-RPC success envelope."""
-        return router._ok(ctx.req_id, result)
+        return _ok(ctx.req_id, result)
 
 
 class McpClientCarrier(Carrier):
