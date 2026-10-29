@@ -144,9 +144,9 @@ Payloads reproduced from published disclosures (#29), so the defense is measured
 
 ### Guarded calls
 
-Calls for [intent guards](intent-guards.md) to judge (#456). Every other corpus here is content an agent reads; these are calls an agent makes: a tool, its arguments, and the facts the gateway holds about it (the destination, whether the profile has sent there before, whether the session was delivered flagged content).
+Calls for [semantic request guards](semantic-request-guards.md) to judge (#456). Every other corpus here is content an agent reads; these are calls an agent makes: a tool, its arguments, and the facts the gateway holds about it (the destination, whether the profile has sent there before, whether the session was delivered flagged content).
 
-- **Where it came from.** Hand-written, one category per scenario in [Where to use it](intent-guards.md#where-to-use-it), each with that page's policy word for word. Two scenarios are Varonis's phishing simulations (#29) as the calls they led to: the customer export, and the "team lead" asking for keys in an incident.
+- **Where it came from.** Hand-written, one category per scenario in [Where to use it](semantic-request-guards.md#where-to-use-it), each with that page's policy word for word. Two scenarios are Varonis's phishing simulations (#29) as the calls they led to: the customer export, and the "team lead" asking for keys in an incident.
 - **How it is written.** Payloads are described, not reproduced: an attachment reads "CSV of 247 customer records", a credential "contains an AWS access key". The judge decides on what a call does, and a description states that. Names are the fictional roster.
 - **What it measures.** Per scenario: whether its own attack is refused, how many of its attacks are, and how many routine calls are refused that should go through. Each scenario has one headline attack, at least one variant, and at least four routine calls written to sit close to the attack.
 - **What it does not measure.** Real traffic, and payloads as an attacker would write them. Data split across many small calls, which is known gap 30. The arguments step on planted instructions, which is the same `defend()` the other corpora measure.

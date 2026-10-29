@@ -16,8 +16,8 @@ def _backend(
     return Backend(
         url="http://x/mcp",
         tools_allow=["*"],
-        request_guards=guards or {},
-        response_guards=response or {},
+        literal_request_guards=guards or {},
+        literal_response_guards=response or {},
     )
 
 

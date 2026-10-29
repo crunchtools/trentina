@@ -4,8 +4,8 @@ There is one driver role — the transform. Guards are fixed trust machinery,
 not a pluggable driver role. This module names the thing a transform and a
 guard share: the ingress each one understands.
 
-* **Guards** decide admission to the trust perimeter. Parameter guards,
-  response guards, and L1/L2/L3. Guards decide; nothing else does. A guard
+* **Guards** decide admission to the trust perimeter. Literal request guards,
+  literal response guards, and L1/L2/L3. Guards decide; nothing else does. A guard
   also decides what it READS, which is a guard's read policy and not a
   separate concept — ``transforms/view.py`` carries it.
 * **Transforms** are everything before that. They run outside the

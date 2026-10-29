@@ -41,7 +41,7 @@ request, so it can refuse that.
    layers always run; the detector is an added signal, not a per-layer off
    switch.
 4. **Its intent** (optional) — when the profile's
-   [`intent_guards`](intent-guards.md) names this upstream, the
+   [`semantic_request_guards`](semantic-request-guards.md) names this upstream, the
    request — already past the layers — is handed to the profile's judge with
    the gateway's own facts (the upstream, whether the profile has reached it
    before, whether the session was flagged), and anything but an explicit
@@ -99,14 +99,14 @@ profiles:
         enforcement: block
     # token_env is optional (absent = no injected credential); a write method is
     # listed, never a switch; paths are prefix globs and empty allows any.
-    intent_guards:                    # optional: judge the request's intent
+    semantic_request_guards:                    # optional: judge the request's intent
       policy: |
         Writes stay on example-corp repositories. Never post tokens, keys or
         file contents from outside the repository.
       egress_http: [github]               # each must be a grant above
 ```
 
-`intent_guards.egress_http` adds the [gatekeeper](intent-guards.md):
+`semantic_request_guards.egress_http` adds the [gatekeeper](semantic-request-guards.md):
 under `block`, the request — already past the layers — is judged for intent
 (destination, first contact, flagged session) before it is sent, and anything
 but an explicit allow is one `403` with `block_reason: gatekeeper`.

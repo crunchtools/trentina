@@ -26,7 +26,7 @@ the agent follows because it cannot tell data from instructions.
   whether plain, obfuscated, encoded, hidden in markup, or inside an archive,
   office file, PDF or image; a server steering an agent toward tools that
   bypass the gateway; an agent's own calls leaving its policy (tool filters,
-  request and response guards, egress, intent guards).
+  request and response guards, egress, semantic request guards).
 - **Assumed compromised:** the L3 judge. It reads hostile content, so it has
   no tools, no memory and no ability to act, and its prose is never delivered.
 - **Not defended:** a user jailbreaking their own model directly (the judge
@@ -179,15 +179,15 @@ Captured content is not a test fixture. An attack found there enters a
 corpus only rewritten by hand, with every third party's name, handle and
 host replaced (constitution XVII, profile VII).
 
-## Intent Guards
+## Semantic Request Guards
 
-A profile's `intent_guards` block names tools whose calls the profile's
+A profile's `semantic_request_guards` block names tools whose calls the profile's
 judge reads, against an operator's policy in plain language, before they are
 forwarded (#456). It asks the judge a second question, and four rules keep
 that inside the threat model, which assumes the judge compromised:
 
 - **It only subtracts.** An allow grants nothing: the call still passes the
-  allowlist, the request guards and every other rule, which all run first.
+  allowlist, the literal request guards and every other rule, which all run first.
   No answer from the judge forwards a call another rule refused.
 - **It fails closed.** No judge, an error, a timeout, a malformed or
   off-schema answer, a leaked canary, and any answer but an explicit allow

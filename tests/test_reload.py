@@ -142,7 +142,7 @@ SWAPPED_BACKEND_YAML = DENIED_YAML.replace(
 BETA_GUARDED_YAML = BASE_YAML.replace(
     '      wiki:\n        url: http://wiki:1/mcp\n        tools_allow: ["*"]\n',
     '      wiki:\n        url: http://wiki:1/mcp\n        tools_allow: ["*"]\n'
-    "        request_guards:\n"
+    "        literal_request_guards:\n"
     "          wiki_delete_page_tool:\n"
     "            title:\n"
     '              deny: ["Runbook*"]\n',
@@ -301,7 +301,7 @@ class TestAppliedReload:
             BASE_YAML.replace(
                 "        tools_deny: []\n",
                 "        tools_deny: []\n"
-                "        request_guards:\n"
+                "        literal_request_guards:\n"
                 "          jira_delete_issue:\n"
                 "            key:\n"
                 '              deny: ["PROD-*"]\n',
@@ -310,7 +310,7 @@ class TestAppliedReload:
         )
         result = await _reload_as("alpha")
 
-        guards = result["changes"]["alpha"]["backends_changed"]["jira"]["request_guards"]
+        guards = result["changes"]["alpha"]["backends_changed"]["jira"]["literal_request_guards"]
         assert guards == {"jira_delete_issue": {"parameters_added": ["key"]}}
         assert "PROD-" not in str(result)
 
@@ -322,7 +322,7 @@ class TestAppliedReload:
             BASE_YAML.replace(
                 "        tools_deny: []\n",
                 "        tools_deny: []\n"
-                "        response_guards:\n"
+                "        literal_response_guards:\n"
                 "          jira_get_issue:\n"
                 "            content:\n"
                 '              deny: ["*NIGHTJAR*"]\n',
@@ -331,7 +331,7 @@ class TestAppliedReload:
         )
         result = await _reload_as("alpha")
 
-        guards = result["changes"]["alpha"]["backends_changed"]["jira"]["response_guards"]
+        guards = result["changes"]["alpha"]["backends_changed"]["jira"]["literal_response_guards"]
         assert guards == {"jira_get_issue": {"fields_added": ["content"]}}
         assert "NIGHTJAR" not in str(result)
 
@@ -1180,7 +1180,7 @@ class TestServiceIdentityMoves:
 BETA_GUARDED_EXECUTION_YAML = BASE_YAML.replace(
     "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n",
     "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n"
-    "    intent_guards:\n"
+    "    semantic_request_guards:\n"
     "      policy: Edits stay on our own pages.\n"
     "      tools:\n"
     "        wiki: [edit_page]\n",
@@ -1197,10 +1197,10 @@ class TestGuardedExecutionIsOperatorOnly:
         profiles_path.write_text(BASE_YAML, encoding="utf-8")
         result = await _reload_as("beta")
 
-        guarded = _registry()["beta"].intent_guards
+        guarded = _registry()["beta"].semantic_request_guards
         assert guarded is not None
         assert guarded.guards("wiki", "edit_page")
-        assert "intent_guards" in result["not_applied"]["operator_only"]
+        assert "semantic_request_guards" in result["not_applied"]["operator_only"]
 
     async def test_agent_cannot_rewrite_the_policy(self, profiles_path: Path) -> None:
         profiles_path.write_text(BETA_GUARDED_EXECUTION_YAML, encoding="utf-8")
@@ -1214,7 +1214,7 @@ class TestGuardedExecutionIsOperatorOnly:
         )
         await _reload_as("beta")
 
-        guarded = _registry()["beta"].intent_guards
+        guarded = _registry()["beta"].semantic_request_guards
         assert guarded is not None
         assert guarded.policy == "Edits stay on our own pages."
 
@@ -1223,4 +1223,4 @@ class TestGuardedExecutionIsOperatorOnly:
         result = await _reload_as("alpha")
 
         assert result["reloaded"] is True
-        assert _registry()["beta"].intent_guards is not None
+        assert _registry()["beta"].semantic_request_guards is not None

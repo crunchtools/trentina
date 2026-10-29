@@ -1011,7 +1011,7 @@ async def _refuse_call(
 ) -> tuple[Outcome, str, str] | None:
     """Every refusal of a call's arguments: outcome, what the agent is told, what is audited.
 
-    The guards and the schema first; intent guards last (#456), so the
+    The guards and the schema first; semantic request guards last (#456), so the
     cheap and certain rules have spoken before a model is asked anything.
     """
     refused = _refuse_arguments(
@@ -1176,7 +1176,7 @@ async def _finish_delivery(
 def _mark_session(assembled: Assembled, internal: Any = None) -> None:
     """Mark the session when content it receives was flagged or partly judged (#456).
 
-    Guarded execution reads the mark before a guarded call leaves. A refused
+    Semantic request guards read the mark before a guarded call leaves. A refused
     response reached the agent as a refusal, not as content, so it does not
     mark. An internal tool judges its own content and says so in the result
     it returns, which is where its warning is read (``internal``).

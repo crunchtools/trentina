@@ -152,10 +152,10 @@ def _profile(
         from pydantic import SecretStr
 
         grant.token = SecretStr("forge-token")
-    from trentina.gateway.profile import IntentGuardsConfig
+    from trentina.gateway.profile import SemanticGuardsConfig
 
     guard = (
-        IntentGuardsConfig(policy="No bulk customer data leaves.", egress_http=["gh"])
+        SemanticGuardsConfig(policy="No bulk customer data leaves.", egress_http=["gh"])
         if guarded
         else None
     )
@@ -163,7 +163,7 @@ def _profile(
         name="agent1",
         auth=AuthConfig(bearer_token_env="TOK"),
         egress_http={"gh": grant},
-        intent_guards=guard,
+        semantic_request_guards=guard,
     )
     from pydantic import SecretStr
 

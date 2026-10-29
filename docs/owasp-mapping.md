@@ -16,15 +16,15 @@ not assume it.
 | Risk | Rating | Trentina mechanisms |
 |---|---|---|
 | [MCP01](#mcp01-token-mismanagement--secret-exposure) Token Mismanagement & Secret Exposure | Strong | [LLM key proxying](llm-proxying.md), [secret scrubbing and `_FILE` secrets](deployment-hardening.md), [log hygiene](../CLAUDE.md#logging-rule-262), [honeytokens](profiles.md#decoy-tools-and-honeytokens) |
-| [MCP02](#mcp02-privilege-escalation-via-scope-creep) Privilege Escalation via Scope Creep | Strong | [Tool filtering](tool-filtering.md), [roles](profiles.md), [request guards](request-guards.md), [modes](defense-pipeline.md#pipeline-flow) |
+| [MCP02](#mcp02-privilege-escalation-via-scope-creep) Privilege Escalation via Scope Creep | Strong | [Tool filtering](tool-filtering.md), [roles](profiles.md), [literal request guards](literal-request-guards.md), [modes](defense-pipeline.md#pipeline-flow) |
 | [MCP03](#mcp03-tool-poisoning) Tool Poisoning | Partial | Tool definitions judged by [L1/L2/L3](defense-pipeline.md#the-three-layers) on every `tools/list`, [served-surface filtering](tool-filtering.md), [description compression](compression.md) |
 | [MCP04](#mcp04-software-supply-chain-attacks--dependency-tampering) Software Supply Chain & Dependency Tampering | Partial | Backend allowlists, [hardened image](deployment-hardening.md), L2 model pinned by revision and gated, [unpack stage](defense-pipeline.md#coverage) |
-| [MCP05](#mcp05-command-injection--execution) Command Injection & Execution | Strong | [Request guards](request-guards.md), [intent guards](intent-guards.md), [content tools' egress guard and file confinement](quarantine-tools.md), [git transport](git-transport.md) |
+| [MCP05](#mcp05-command-injection--execution) Command Injection & Execution | Strong | [Literal request guards](literal-request-guards.md), [semantic request guards](semantic-request-guards.md), [content tools' egress guard and file confinement](quarantine-tools.md), [git transport](git-transport.md) |
 | [MCP06](#mcp06-prompt-injection-via-contextual-payloads-intent-flow-subversion) Prompt Injection via Contextual Payloads (Intent Flow Subversion) | Strong | L1 ∥ L2 → L3 at every ingress, [blocklist](blocklist.md), [benchmark](benchmark.md) |
 | [MCP07](#mcp07-insufficient-authentication--authorization) Insufficient Authentication & Authorization | Strong | [OAuth with DCR, static bearer, delegated issuers](authentication.md), per-profile [backend OAuth](profiles.md#backend-oauth), token binding |
 | [MCP08](#mcp08-lack-of-audit-and-telemetry) Lack of Audit and Telemetry | Partial | [Audit log](audit-log.md) of every call, refusals included; `quarantine_stats` |
 | [MCP09](#mcp09-shadow-mcp-servers) Shadow MCP Servers | Partial | One gateway endpoint per profile, backend allowlist, [network isolation](network-isolation.md), [client egress](client-egress.md) |
-| [MCP10](#mcp10-context-injection--over-sharing) Context Injection & Over-Sharing | Partial | [Redact mode](defense-pipeline.md#pipeline-flow), [response guards](response-guards.md), per-profile scoping, [token savings](token-routing.md) |
+| [MCP10](#mcp10-context-injection--over-sharing) Context Injection & Over-Sharing | Partial | [Redact mode](defense-pipeline.md#pipeline-flow), [literal response guards](literal-response-guards.md), per-profile scoping, [token savings](token-routing.md) |
 
 ### MCP01 Token Mismanagement & Secret Exposure
 
@@ -48,14 +48,14 @@ agent sends without a tool call through the gateway.
 
 **Trentina.** Each profile lists the backends and tools it may reach
 ([tool filtering](tool-filtering.md)); anything else is not served and is
-refused as if it did not exist. [Request guards](request-guards.md) and
-[response guards](response-guards.md) are evaluated by the gateway, not the
+refused as if it did not exist. [Literal request guards](literal-request-guards.md) and
+[literal response guards](literal-response-guards.md) are evaluated by the gateway, not the
 agent. Roles separate the operator from agents, and an agent cannot reload a
 change to its own role or defense block.
 
-**Gap.** Gap 30: [intent guards](intent-guards.md) is a model and
+**Gap.** Gap 30: [semantic request guards](semantic-request-guards.md) is a model and
 judges one call at a time. Rules that can be stated exactly belong in a
-request guard.
+literal request guard.
 
 ### MCP03 Tool Poisoning
 
@@ -95,7 +95,7 @@ claim beyond that here.
 request.
 
 **Trentina.** Arguments are normalized against the tool's schema and held to
-parameter-guard patterns before the backend sees the call. The content tools
+literal-request-guard patterns before the backend sees the call. The content tools
 fetch through one egress guard (resolved address, pinned connection, checked
 redirects) and read files only within confined roots. Calls to listed tools
 can be judged against a rule in English before they run. The git transport
@@ -120,7 +120,7 @@ and images are unpacked and read. A flagged source is blocklisted.
 in the [benchmark](benchmark.md).
 
 **Gap.** Detection is not perfect: gap 12 (evasive attacks), gap 20 (a request
-that reads as an ordinary one passes every layer; intent guards limits
+that reads as an ordinary one passes every layer; semantic request guards limits
 what it can lead to), gaps 21 to 23 (encodings L2 cannot read), gap 1 (image
 text beyond OCR) and the `binary_unread` rows of Coverage.
 
@@ -180,10 +180,10 @@ admin tools are scoped to the calling profile, and a refusal names nothing in
 another profile. Held remainders of paged responses are bound to the profile.
 Tools and bytes the agent does not need are hidden, compacted or minified
 (52% fewer response bytes on production traffic), and `redact` mode returns
-only the answer to a stated question. Response guards validate results.
+only the answer to a stated question. Literal response guards validate results.
 
 **Gap.** Trentina does not know what is sensitive inside an allowed response:
-what an allowed tool returns reaches the agent whole unless a response guard
+what an allowed tool returns reaches the agent whole unless a literal response guard
 or `redact` narrows it. Gap 14: under `unjudged: annotate`, Matrix media and
 undecrypted events are forwarded unjudged by the operator's choice.
 
@@ -191,11 +191,11 @@ undecrypted events are forwarded unjudged by the operator's choice.
 
 | Risk | Rating | Trentina |
 |---|---|---|
-| ASI01 Agent Goal Hijack | Strong | Injection defense at every ingress; [intent guards](intent-guards.md) judges the call a hijack leads to (gaps 12, 20) |
-| ASI02 Tool Misuse & Exploitation | Strong | Allowlists, [request guards](request-guards.md), [response guards](response-guards.md), intent guards (gap 30) |
+| ASI01 Agent Goal Hijack | Strong | Injection defense at every ingress; [semantic request guards](semantic-request-guards.md) judges the call a hijack leads to (gaps 12, 20) |
+| ASI02 Tool Misuse & Exploitation | Strong | Allowlists, [literal request guards](literal-request-guards.md), [literal response guards](literal-response-guards.md), semantic request guards (gap 30) |
 | ASI03 Identity & Privilege Abuse | Strong | Per-profile identity, roles, token binding, per-profile backend grants ([authentication](authentication.md)) |
 | ASI04 Agentic Supply Chain Vulnerabilities | Partial | Tool descriptions judged on every `tools/list`; no pinning ([#469](https://github.com/crunchtools/trentina/issues/469)); backend code not verified |
-| ASI05 Unexpected Code Execution | Partial | No code runs in the gateway on an agent's behalf; parsers are sandboxed children; what a backend executes is guarded only by its request guards |
+| ASI05 Unexpected Code Execution | Partial | No code runs in the gateway on an agent's behalf; parsers are sandboxed children; what a backend executes is guarded only by its literal request guards |
 | ASI06 Memory & Context Poisoning | Partial | Content is judged before it enters context, and a flagged source stays refused ([blocklist](blocklist.md)); the agent's own memory store is outside the gateway |
 | ASI07 Insecure Inter-Agent Communication | Partial | [Matrix bridge](matrix-bridge.md) judges events in both directions and drops another bridged agent's events; agent-to-agent channels the gateway does not carry are not covered |
 | ASI08 Cascading Failures | Partial | Circuit breakers per backend, concurrency and rate limits, fail-closed layers ([when a layer errors](defense-pipeline.md#when-a-layer-errors-or-times-out)); no cross-agent blast-radius analysis |

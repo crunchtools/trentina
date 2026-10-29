@@ -262,7 +262,7 @@ class ModePolicy:
         """The mode this call runs in. Omission resolves BEFORE the check.
 
         Checking the requested value and then defaulting would let an omitted
-        mode skip the policy entirely — the parameter-guard trap, where a
+        mode skip the policy entirely — the literal-request-guard trap, where a
         missing argument is simply not checked.
         """
         name = self.default.value if requested is None else canonical_mode(str(requested))

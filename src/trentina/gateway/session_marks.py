@@ -1,7 +1,7 @@
 """Which sessions have been delivered content the layers flagged (#456).
 
 Under ``flag`` a flagged response reaches the agent with a warning attached,
-and the session that read it keeps every tool it had. Guarded execution asks
+and the session that read it keeps every tool it had. Semantic request guards ask
 whether that happened before it lets a guarded call leave, so the router
 marks a session here when it delivers a warning, and the gatekeeper reads it.
 

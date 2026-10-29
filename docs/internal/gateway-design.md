@@ -268,7 +268,7 @@ chcon etc_t per the crunchtools convention.
 
 ---
 
-## Request guards
+## Literal request guards
 
 Tool-name allowlists control *which* tools a consumer can call. Parameter
 guards extend this to *what values* can be passed in the arguments. A guarded
@@ -279,19 +279,19 @@ argument values instead of tool names.
 ### Motivation
 
 Behavioral enforcement ("the LLM should only send emails to self") is not
-reliable. Request guards provide deterministic, gateway-level enforcement:
+reliable. Literal request guards provide deterministic, gateway-level enforcement:
 the call is rejected before it reaches the backend MCP server.
 
 ### Configuration
 
-Request guards are configured per-backend, per-tool in the profile YAML:
+Literal request guards are configured per-backend, per-tool in the profile YAML:
 
 ```yaml
 backends:
   gws-personal:
     url: "http://gws-personal:8000/mcp"
     tools_allow: ["*"]
-    request_guards:
+    literal_request_guards:
       send_gmail_message:
         to:
           allow: ["you@example.com"]
@@ -315,7 +315,7 @@ allowed — values can contain `@`, `.`, `+`, `/`, and spaces.
 
 ### Semantics
 
-- **Missing guard**: no `request_guards` entry for a tool = all values allowed.
+- **Missing guard**: no `literal_request_guards` entry for a tool = all values allowed.
 - **Missing parameter**: if a guarded parameter is absent or `None` in the
   arguments dict, it passes (no value to validate).
 - **Deny wins**: a value matching any deny pattern is rejected even if it also
@@ -325,11 +325,11 @@ allowed — values can contain `@`, `.`, `+`, `/`, and spaces.
 
 ### Pipeline position
 
-Request guards run after the tool-name allowlist re-check and before the
+Literal request guards run after the tool-name allowlist re-check and before the
 backend call — the same defense-in-depth position:
 
 ```
-Parse tool name → Backend exists? → Tool in allowlist? → Request guards → Backend call
+Parse tool name → Backend exists? → Tool in allowlist? → Literal request guards → Backend call
 ```
 
 A call that fails parameter validation never reaches the backend. No tokens
