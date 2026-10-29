@@ -24,7 +24,7 @@ from ..config import get_config
 from ..core import Decision, Gated, Posture, identity, refusal_of
 from ..database import is_blocked, record_capture
 from ..dbus_interface import emit_request_event
-from ..defense import DefenseVerdict, Provenance, defend, layer_verdicts
+from ..defense import DefenseVerdict, Provenance, layer_verdicts
 from ..errors import BlockedSourceError
 from ..gateway import paging
 from ..gateway.context import current_call, get_current_parts
@@ -200,11 +200,12 @@ class _Call:
 class JudgeScan:
     """An internal tool's produced payload, judged but not yet disposed.
 
-    ``produce_judgement`` builds this (hold, defend); the orchestrator calls
-    ``gate`` on it and hands the result to ``dispose_judgement``. The split
-    keeps the one ``gate()`` call in the orchestration layer (Trentina 3.0
-    Phase 4) while the paging hold, the ``_Call`` accounting and the family
-    renderers stay here.
+    ``prepare_judgement`` does the pre-defend half (hold, the ``_Call``
+    accounting); the orchestrator runs the one ``defend`` call, builds this,
+    calls ``gate`` on it and hands the result to ``dispose_judgement``. That
+    keeps both the ``defend()`` and the ``gate()`` call in the orchestration
+    layer (Trentina 3.0 Phase 4/7) while the paging hold, the ``_Call``
+    accounting and the family renderers stay here.
     """
 
     call: _Call
@@ -216,7 +217,34 @@ class JudgeScan:
     redact_extras: Mapping[str, Any] | None
 
 
-async def produce_judgement(
+@dataclass(frozen=True)
+class PreparedJudgement:
+    """The pre-defend half of an internal tool's edge (Trentina 3.0 Phase 7).
+
+    ``prepare_judgement`` builds this — the paging hold, the ``_Call``
+    accounting, the ``Posture`` and the exact ``defend`` arguments that depend
+    on the calling profile (its ``defense`` policy and the detection-row
+    attribution). The orchestrator runs the one ``defend`` call from it and
+    assembles the ``JudgeScan``. Lifting the ``defend`` call out of this module
+    is what drops ``tools/judged.py`` from ``TestDefendOwnership.ALLOWED``: the
+    internal-tool scan primitive no longer reaches the layers itself; the
+    orchestration layer does.
+    """
+
+    document: str
+    call: _Call
+    posture: Posture
+    paged: paging.Paged | None
+    precomputed_l1: PipelineResult | None
+    l3_context: str | None
+    defense: DefenseConfig | None
+    attribution: dict[str, Any]
+    original: Any
+    extras: Mapping[str, Any] | None
+    redact_extras: Mapping[str, Any] | None
+
+
+async def prepare_judgement(
     document: str,
     *,
     mode: Mode,
@@ -235,14 +263,17 @@ async def produce_judgement(
     delivered: Any = None,
     extras: Mapping[str, Any] | None = None,
     redact_extras: Mapping[str, Any] | None = None,
-) -> JudgeScan:
-    """Judge ``document`` with all three layers — the pre-gate half of the edge.
+) -> PreparedJudgement:
+    """Build the pre-defend half of an internal tool's edge — everything but ``defend``.
 
     Holds an over-large payload (part 1 is judged, the rest held), builds the
-    ``_Call`` accounting and the ``Posture``, and runs ``defend``. Returns a
-    ``JudgeScan`` for the orchestrator to ``gate`` and hand to
-    ``dispose_judgement``; it makes no ``gate()`` call and raises nothing on a
-    detection.
+    ``_Call`` accounting and the ``Posture``, and resolves the ``defend``
+    arguments that depend on the calling profile — its ``defense`` policy and
+    the detection-row ``attribution``. Returns a ``PreparedJudgement`` the
+    orchestrator runs the one ``defend`` call from and then assembles the
+    ``JudgeScan`` (Trentina 3.0 Phase 7: the ``defend`` call moved up to the
+    orchestration layer). Makes no ``defend``/``gate`` call and raises nothing
+    on a detection.
 
     Args:
         document: The payload as produced — what every layer reads.
@@ -290,21 +321,16 @@ async def produce_judgement(
         asserted={"blocklisted": blocklisted},
     )
     posture = identity.posture(mode, current_policy(), allowlisted=allowlisted, prompt=prompt)
-    verdict = await defend(
-        document,
-        source=source,
-        source_type=source_type,
+    return PreparedJudgement(
+        document=document,
+        call=call,
+        posture=posture,
+        paged=paged,
+        precomputed_l1=precomputed_l1,
+        l3_context=l3_context,
         # The caller's own thresholds and judge, as every gateway path passes
         # them (#407): without it the tools were judged on built-in defaults.
         defense=_caller_defense(),
-        provenance=provenance,
-        domain=domain,
-        # flag delivers a partial scan with a warning, so it pays for the
-        # partial scan; block and redact would refuse it. The one definition
-        # of the rule lives on Posture.
-        stop_on_partial=posture.stop_on_partial,
-        precomputed_l1=precomputed_l1,
-        l3_context=l3_context,
         # `blocked` feeds the blocklist. Only a block refusal belongs there:
         # a flag row marked blocked made the NEXT flag of the same page raise.
         # `profile` keys the row (#263): only the caller that was refused is
@@ -315,12 +341,6 @@ async def produce_judgement(
             "blocked": posture.records_block(blocklists=not allowlisted),
             "call_ref": current_call.get() or None,
         },
-    )
-    return JudgeScan(
-        call=call,
-        verdict=verdict,
-        posture=posture,
-        paged=paged,
         original=document if delivered is None else delivered,
         extras=extras,
         redact_extras=redact_extras,

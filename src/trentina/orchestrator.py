@@ -837,13 +837,15 @@ async def judge_and_deliver(
 ) -> dict[str, Any]:
     """Judge an internal tool's produced ``document`` and deliver it — the edge.
 
-    The one place the gate runs on an internal tool's output: ``produce_judgement``
-    does the pre-gate work (hold, the ``_Call`` accounting, ``defend``), ``gate``
-    disposes of the verdict and runs redact's extraction, and ``dispose_judgement``
-    renders the tool-result dict (raising ``BlockedSourceError`` on a refusal).
-    Holding the order here is why ``core.gate`` is imported only by the
-    orchestration layer (Trentina 3.0 Phase 4); the tools ``fetch``/``read``/
-    ``dir``/``content``/``search`` call this, not the gateway internals.
+    The one place both ``defend`` and the gate run on an internal tool's output:
+    ``prepare_judgement`` does the pre-defend work (hold, the ``_Call``
+    accounting, the ``defend`` arguments), this runs the one ``defend`` call,
+    ``gate`` disposes of the verdict and runs redact's extraction, and
+    ``dispose_judgement`` renders the tool-result dict (raising
+    ``BlockedSourceError`` on a refusal). Holding the order here is why both
+    ``defend`` and ``core.gate`` are imported only by the orchestration layer
+    (Trentina 3.0 Phase 4/7); the tools ``fetch``/``read``/``dir``/``content``/
+    ``search`` call this, not the gateway internals.
 
     Raises:
         BlockedSourceError: block or redact refused. The message names the
@@ -853,9 +855,9 @@ async def judge_and_deliver(
     # (via tools.cache), and the orchestrator is imported during router's own
     # load — a module-level import would close that cycle. By call time both are
     # fully loaded.
-    from .tools.judged import dispose_judgement, produce_judgement
+    from .tools.judged import JudgeScan, dispose_judgement, prepare_judgement
 
-    scan = await produce_judgement(
+    prepared = await prepare_judgement(
         document,
         mode=mode,
         family=family,
@@ -873,6 +875,32 @@ async def judge_and_deliver(
         delivered=delivered,
         extras=extras,
         redact_extras=redact_extras,
+    )
+    # The internal tools' one defend() call lives here, in the orchestration layer
+    # (Trentina 3.0 Phase 7), not in tools/judged. When the payload was paged the
+    # document, L1 and briefing are part 1's, resolved by the prepare step. flag
+    # delivers a partial scan with a warning, so it pays for the partial scan while
+    # block and redact refuse it — the one definition of that rule lives on Posture.
+    verdict = await defend(
+        prepared.document,
+        source=source,
+        source_type=source_type,
+        defense=prepared.defense,
+        provenance=provenance,
+        domain=domain,
+        stop_on_partial=prepared.posture.stop_on_partial,
+        precomputed_l1=prepared.precomputed_l1,
+        l3_context=prepared.l3_context,
+        attribution=prepared.attribution,
+    )
+    scan = JudgeScan(
+        call=prepared.call,
+        verdict=verdict,
+        posture=prepared.posture,
+        paged=prepared.paged,
+        original=prepared.original,
+        extras=prepared.extras,
+        redact_extras=prepared.redact_extras,
     )
     gated = await gate(scan.verdict, scan.posture)
     return await dispose_judgement(scan, gated)

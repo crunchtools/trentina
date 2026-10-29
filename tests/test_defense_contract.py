@@ -20,7 +20,7 @@ packages. Three categories are allowed through, each for a stated reason:
   detection path; tools reach them only through tools/judged.py.
 
 If you are here because this test failed: you probably want `defend()`,
-`defend_json()`, or `tools.judged.judge_and_deliver()`.
+`defend_json()`, or `orchestrator.judge_and_deliver()`.
 """
 
 from __future__ import annotations
@@ -197,23 +197,26 @@ class TestDefendOwnership:
     — matrix proxy + bridge, alert, the gatekeeper argument guard, egress, llm,
     fetch's error bodies — onto an ``orchestrator.judge_*`` function, so a face
     now hands content to the orchestrator and never calls ``defend`` itself.
-    Three modules may import it, each reached only through the orchestrator:
+    Two modules may import it, each reached only through the orchestrator:
 
-    * ``orchestrator.py`` — the orchestration layer: every ``judge_*`` edge.
-    * ``gateway/ingress_defense.py`` — ``scan_response``, the proxied response-edge
-      scan primitive, called ONLY by ``orchestrator.scan_tool_response``.
-    * ``tools/judged.py`` — ``produce_judgement``, the internal-tool scan primitive,
-      called ONLY by ``orchestrator.judge_and_deliver``.
+    * ``orchestrator.py`` — the orchestration layer: every ``judge_*`` edge,
+      including ``judge_and_deliver``, which now runs the internal tools' one
+      ``defend`` call itself (Trentina 3.0 Phase 7; ``tools/judged.py`` does the
+      paging hold and the ``_Call`` accounting around it and no longer reaches
+      the layers).
+    * ``gateway/ingress_defense.py`` — ``scan_response`` and ``_judge_description``,
+      the proxied response-edge and tool-list scan primitives, called ONLY by
+      ``orchestrator.scan_tool_response`` and the tool-list build.
 
     A new direct importer is a face reaching past the orchestrator to the layers
-    — the regression this phase closed. (Folding the two scan primitives' own
-    ``defend`` into the orchestrator is the deferred internal-tools-as-transports
-    work; until then they are the two named exemptions, each verified above to be
-    unreachable except through the orchestrator.)
+    — the regression this phase closed. (Folding ``ingress_defense``'s own
+    ``defend`` into the orchestrator is the remaining deferred work — PR2b —
+    after which it too drops from ``ALLOWED``; until then it is the one named
+    exemption, verified above to be unreachable except through the orchestrator.)
     """
 
     ENTRIES = frozenset({"defend", "defend_json", "defend_selection"})
-    ALLOWED = frozenset({"orchestrator.py", "gateway/ingress_defense.py", "tools/judged.py"})
+    ALLOWED = frozenset({"orchestrator.py", "gateway/ingress_defense.py"})
 
     @classmethod
     def _imports_defend(cls, path: Path) -> bool:
