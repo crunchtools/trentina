@@ -130,7 +130,7 @@ class _Gateway:
 
     async def _send(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         with (
-            patch(f"{ROUTER}.call_backend_tool", self.backend),
+            patch(f"{MCP}.call_backend_tool", self.backend),
             patch(f"{PARTS}.scan_tool_response", self.perimeter),
             patch(f"{ORCH}.scan_tool_response", self.perimeter),
             patch(f"{AUDIT}._audit", self.audit),

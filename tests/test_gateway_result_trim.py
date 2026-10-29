@@ -58,7 +58,7 @@ async def _call(
     reply = BackendCall(content=blocks, is_error=False, structured_content=structured)
     scan = AsyncMock(return_value=IngressDecision(warning=None))
     with (
-        patch(f"{ROUTER}.call_backend_tool", AsyncMock(return_value=reply)),
+        patch(f"{MCP}.call_backend_tool", AsyncMock(return_value=reply)),
         patch(f"{PARTS}.scan_tool_response", scan),
         patch(f"{ORCH}.scan_tool_response", scan),
         patch(f"{AUDIT}._audit", MagicMock()),

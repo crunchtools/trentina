@@ -238,7 +238,7 @@ class TestProxiedCall:
         scan = AsyncMock(return_value=IngressDecision(warning=None))
         audit = MagicMock()
         with (
-            patch(f"{ROUTER}.call_backend_tool", side_effect=fake_call),
+            patch(f"{MCP}.call_backend_tool", side_effect=fake_call),
             patch(f"{PARTS}.scan_tool_response", scan),
             patch(f"{ORCH}.scan_tool_response", scan),
             patch(f"{AUDIT}._audit", audit),

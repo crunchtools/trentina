@@ -16,6 +16,7 @@ from trentina.gateway.profile import AuthConfig, Backend, Profile
 from trentina.gateway.router import reset_profile_tools_cache, route_jsonrpc
 
 ROUTER = "trentina.gateway.router"
+MCP = "trentina.transports.mcp"
 PARTS = "trentina.gateway.parts"
 AUDIT = "trentina.gateway.audit"
 
@@ -115,7 +116,7 @@ async def _call(profile: Profile, name: str) -> tuple[dict[str, Any], AsyncMock]
         )
     )
     with (
-        patch(f"{ROUTER}.call_backend_tool", backend),
+        patch(f"{MCP}.call_backend_tool", backend),
         patch(f"{PARTS}.scan_tool_response", AsyncMock(return_value=IngressDecision(warning=None))),
         patch(
             "trentina.orchestrator.scan_tool_response",

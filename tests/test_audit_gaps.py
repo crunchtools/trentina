@@ -23,11 +23,11 @@ from trentina.client import fetch_url
 from trentina.database import get_db, issue_tool_names
 from trentina.errors import QuarantineAgentError, SearchCanaryLeakedError
 from trentina.gateway import internal
-from trentina.gateway import router as router_mod
 from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, Profile
 from trentina.gateway.router import route_jsonrpc
 from trentina.logsafe import redact_source
+from trentina.transports import mcp as mcp_mod
 
 from .egress_harness import route
 from .mode_harness import layers
@@ -147,7 +147,7 @@ class TestCatchAll:
         # audited flag so the outer except does not count it a second time.
         with (
             patch.object(
-                router_mod,
+                mcp_mod,
                 "_dispatch",
                 return_value=SimpleNamespace(content=[], structured_content=None, is_error=False),
             ),

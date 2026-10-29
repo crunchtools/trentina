@@ -96,7 +96,7 @@ async def _run(
     verdict = decision if decision is not None else IngressDecision(warning=None)
     scan = AsyncMock(return_value=verdict)
     with (
-        patch(f"{ROUTER}.call_backend_tool", call),
+        patch(f"{MCP}.call_backend_tool", call),
         patch(f"{PARTS}.scan_tool_response", scan),
         patch(f"{ORCH}.scan_tool_response", scan),
         patch(f"{AUDIT}._audit", MagicMock()),
@@ -156,7 +156,7 @@ async def test_required_transform_failure() -> None:
     failed = TransformOutcome(content_blocks=_reply().content, failed="required processor failed")
     transform = AsyncMock(return_value=failed)
     with (
-        patch(f"{ROUTER}.call_backend_tool", AsyncMock(return_value=_reply())),
+        patch(f"{MCP}.call_backend_tool", AsyncMock(return_value=_reply())),
         patch(f"{MCP}.transform_response", transform),
         patch(f"{AUDIT}._audit", MagicMock()),
     ):
@@ -232,7 +232,7 @@ async def _run_capture(
     call = AsyncMock(return_value=reply)
     scan = AsyncMock(return_value=IngressDecision(warning=None))
     patches = [
-        patch(f"{ROUTER}.call_backend_tool", call),
+        patch(f"{MCP}.call_backend_tool", call),
         patch(f"{PARTS}.scan_tool_response", scan),
         patch(f"{ORCH}.scan_tool_response", scan),
         patch(f"{AUDIT}._audit", MagicMock()),

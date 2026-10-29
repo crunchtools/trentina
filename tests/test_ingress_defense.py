@@ -495,7 +495,7 @@ class TestRouterIntegration:
             )
 
         with patch(
-            "trentina.gateway.router.call_backend_tool",
+            "trentina.transports.mcp.call_backend_tool",
             side_effect=fake_call,
         ):
             resp = await route_jsonrpc(
@@ -530,7 +530,7 @@ class TestRouterIntegration:
         with (
             _l3_available_and_clean(),
             patch(
-                "trentina.gateway.router.call_backend_tool",
+                "trentina.transports.mcp.call_backend_tool",
                 side_effect=fake_call,
             ),
         ):
@@ -572,7 +572,7 @@ class TestRouterIntegration:
 
         with (
             patch(
-                "trentina.gateway.router.call_internal_tool",
+                "trentina.transports.mcp.call_internal_tool",
                 side_effect=fake_internal,
             ),
             patch(f"{_O}.defend", new_callable=AsyncMock) as mock_defend,
@@ -732,7 +732,7 @@ class TestEnforcement:
             )
 
         with patch(
-            "trentina.gateway.router.call_backend_tool",
+            "trentina.transports.mcp.call_backend_tool",
             side_effect=fake_call,
         ):
             resp = await route_jsonrpc(
@@ -903,7 +903,7 @@ class TestAdversarialReviewFixes:
             )
 
         with patch(
-            "trentina.gateway.router.call_backend_tool",
+            "trentina.transports.mcp.call_backend_tool",
             side_effect=fake_call,
         ):
             resp = await route_jsonrpc(

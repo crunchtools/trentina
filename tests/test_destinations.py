@@ -263,8 +263,8 @@ async def test_fetch_search_and_a_declared_tool_are_recorded() -> None:
     transform = AsyncMock(side_effect=_passthrough_transform)
     scan = AsyncMock(side_effect=_clean_scan)
     with (
-        patch("trentina.gateway.router.call_internal_tool", side_effect=internal),
-        patch("trentina.gateway.router.call_backend_tool", side_effect=remote),
+        patch("trentina.transports.mcp.call_internal_tool", side_effect=internal),
+        patch("trentina.transports.mcp.call_backend_tool", side_effect=remote),
         patch("trentina.transports.mcp.transform_response", transform),
         patch("trentina.gateway.parts.scan_tool_response", scan),
         patch("trentina.orchestrator.scan_tool_response", scan),

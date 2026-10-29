@@ -815,7 +815,7 @@ class TestRouter:
         audits: list[tuple[Any, ...]] = []
         with (
             _Judge({"decision": "refuse", "reason": "bulk_private_data"}),
-            patch("trentina.gateway.router.call_backend_tool", backend),
+            patch("trentina.transports.mcp.call_backend_tool", backend),
             patch("trentina.gateway.audit._audit", lambda *a, **k: audits.append((a, k))),
         ):
             resp = await route_jsonrpc(_profile(), _call("send_message"))
@@ -835,7 +835,7 @@ class TestRouter:
         )
         with (
             _Judge(),
-            patch("trentina.gateway.router.call_backend_tool", backend),
+            patch("trentina.transports.mcp.call_backend_tool", backend),
             patch("trentina.gateway.audit._audit"),
             patch(
                 "trentina.gateway.parts.scan_tool_response",
@@ -887,7 +887,7 @@ class TestRouter:
         token = current_session.set("fp-1")
         try:
             with (
-                patch("trentina.gateway.router.call_backend_tool", backend),
+                patch("trentina.transports.mcp.call_backend_tool", backend),
                 patch("trentina.gateway.audit._audit"),
                 patch("trentina.gateway.parts.scan_tool_response", AsyncMock(return_value=scanned)),
                 patch("trentina.orchestrator.scan_tool_response", AsyncMock(return_value=scanned)),

@@ -177,7 +177,7 @@ class TestBackendResponse:
         }
         with contextlib.ExitStack() as stack:
             stack.enter_context(
-                patch.object(router, "call_backend_tool", AsyncMock(return_value=call))
+                patch("trentina.transports.mcp.call_backend_tool", AsyncMock(return_value=call))
             )
             if normalized is not None:
                 stack.enter_context(

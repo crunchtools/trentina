@@ -89,7 +89,7 @@ async def _call(
     audit = MagicMock()
     scan = AsyncMock(return_value=decision or BLOCKED)
     with (
-        patch(f"{ROUTER}.call_backend_tool", backend_call),
+        patch(f"{MCP}.call_backend_tool", backend_call),
         patch(f"{PARTS}.scan_tool_response", scan),
         patch(f"{ORCH}.scan_tool_response", scan),
         patch(f"{AUDIT}._audit", audit),

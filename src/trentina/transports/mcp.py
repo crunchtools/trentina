@@ -13,7 +13,7 @@ The mapping to ``router._tools_call`` is one-to-one:
 * ``McpServerFace.parse``   — resolve the target, re-check the allowlist, answer
   a decoy or ``read_part`` here, resolve the mode and preprocess switch,
   normalize the arguments, and run the argument guards. The REQUEST edge.
-* ``McpClientCarrier.carry`` — ``router._dispatch`` (remote backend or internal
+* ``McpClientCarrier.carry`` — ``_dispatch`` (remote backend or internal
   tool), with the backend-error refusal.
 * ``McpServerFace.deliver`` — the response guards, then the RESPONSE edge as
   stages (``_assemble``: Arrived → Transformed → Judged → disposed), with the
@@ -48,18 +48,23 @@ from ..core.stages import Arrived, Assembled, Transformed
 from ..defense import Provenance
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
 from ..gateway import audit, gatekeeper, paging, parts, request_edge, results, router, session_marks
-from ..gateway.backend import loggable_tool
+from ..gateway.backend import call_backend_tool, loggable_tool
+from ..gateway.context import PartsOffer, profile_context
 from ..gateway.destination import Destination, destination_of
 from ..gateway.errors import BackendCallError
 from ..gateway.filter import filter_tools
 from ..gateway.guards import _response_text as _response_guard_text
 from ..gateway.guards import check_response_guards
-from ..gateway.modes_policy import policy_for, resolve_call, resolve_preprocess
+from ..gateway.internal import call_internal_tool
+from ..gateway.modes_policy import MODE_PARAM, policy_for, resolve_call, resolve_preprocess
+from ..gateway.names import served_name
+from ..gateway.parts import _part_reader
 from ..gateway.surface import wire_bytes, wire_digest
 from ..gateway.transform import transform_response
 from ..orchestrator import judge_response
 from ..outcomes import Outcome, classify_exception
 from ..reserved import REFUSAL_KEY, WARNING_KEY, with_stripped
+from ..transforms.policy import PREPROCESS_PARAM
 from .base import Carrier, Early, Face, Transport
 from .jsonrpc import (
     JSONRPC_INVALID_PARAMS,
@@ -586,7 +591,7 @@ class McpClientCarrier(Carrier):
     name = "mcp_client"
 
     async def carry(self, ctx: McpCrossing, parsed: McpParsed) -> McpCarried | Early:
-        """Forward the call — ``router._dispatch`` — with the backend-error refusal.
+        """Forward the call — ``_dispatch`` — with the backend-error refusal.
 
         ``t0`` is taken the instant before the dispatch, exactly as
         ``router._tools_call`` does, and travels on the ``McpCarried`` so the
@@ -595,7 +600,7 @@ class McpClientCarrier(Carrier):
         profile, req_id = ctx.profile, ctx.req_id
         t0 = time.monotonic()
         try:
-            call_result = await router._dispatch(
+            call_result = await _dispatch(
                 profile,
                 parsed.backend,
                 parsed.backend_name,
@@ -629,6 +634,54 @@ class McpClientCarrier(Carrier):
                 )
             )
         return McpCarried(call_result=call_result, t0=t0)
+
+
+async def _dispatch(
+    profile: Profile,
+    backend: Backend,
+    backend_name: str,
+    tool_name: str,
+    forwarded: dict[str, Any],
+    *,
+    policy: ModePolicy,
+    mode: Mode,
+    prompt: str | None,
+    preprocess: PreProcessPolicy | None = None,
+    requested: Any = None,
+) -> Any:
+    """Forward the call: in-process for internal://, streamable-http otherwise."""
+    if backend.is_decoy:
+        # ``_decoy_call`` answers every one. Reaching here is a bug, and a
+        # bug must not become a request to a URL that is not one.
+        raise BackendCallError(f"backend {backend_name!r} has nothing to call")
+    if not backend.is_internal:
+        return await call_backend_tool(backend_name, backend, tool_name, forwarded)
+
+    # The internal tools judge their own ingress, so they get the RESOLVED
+    # mode; the bound policy is what their refusals offer as alternatives.
+    # The transform request goes through as asked: its default depends on
+    # what arrives, so the tool resolves it under the bound policy.
+    # A profile that can read part 2 may be handed a part 1 (#446).
+    reader = _part_reader(profile)
+    parts = (
+        PartsOffer(
+            backend_name,
+            tool_name,
+            served_name(profile, backend_name, tool_name) or tool_name,
+            reader,
+        )
+        if reader is not None
+        else None
+    )
+    with profile_context(profile, policy, preprocess, parts):
+        return await call_internal_tool(
+            tool_name,
+            forwarded,
+            modal_arguments={
+                MODE_PARAM: {"redact": prompt} if mode.value == "redact" and prompt else mode.value,
+                PREPROCESS_PARAM: requested,
+            },
+        )
 
 
 async def _finish_delivery(

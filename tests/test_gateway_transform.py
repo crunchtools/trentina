@@ -208,7 +208,7 @@ class TestRouterOrdering:
             is_error = False
             structured_content = None
 
-        with patch.object(router, "call_backend_tool", AsyncMock(return_value=_Result())):
+        with patch("trentina.transports.mcp.call_backend_tool", AsyncMock(return_value=_Result())):
             resp = await router.route_jsonrpc(
                 profile,
                 {

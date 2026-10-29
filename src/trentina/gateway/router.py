@@ -38,7 +38,6 @@ from ..reserved import (
     reserved_sites,
     strip_reserved,
 )
-from ..transforms.policy import PREPROCESS_PARAM
 from ..transports.jsonrpc import (
     JSONRPC_INVALID_PARAMS,
     JSONRPC_METHOD_NOT_FOUND,
@@ -48,7 +47,6 @@ from ..transports.jsonrpc import (
 )
 from . import audit, discovery, paging, tool_pins
 from .backend import (
-    call_backend_tool,
     list_backend_tools,
     on_backend_cache_evict,
 )
@@ -58,13 +56,12 @@ from .compress import (
     maybe_trigger_compression,
     set_on_compressed,
 )
-from .context import PartsOffer, current_call, current_session, profile_context
+from .context import current_call, current_session, profile_context
 from .decoy import canned_result, keep_arguments, leaked_tokens, record_trip, served_tools
 from .destination import Destination, destination_of
-from .errors import BackendCallError
 from .filter import filter_tools
 from .ingress_defense import scan_tool_list
-from .internal import call_internal_tool, list_internal_tools
+from .internal import list_internal_tools
 from .modes_policy import (
     MODE_PARAM,
     insert_params,
@@ -80,9 +77,8 @@ from .names import (
     NAMESPACE_SEP,
     forget_issued_names,
     serve_short_names,
-    served_name,
 )
-from .parts import _part_reader, _read_part
+from .parts import _read_part
 from .request_edge import _resolve_target
 from .schema_compact import compact_tool
 from .sessions import session_registry
@@ -97,8 +93,6 @@ from .surface import (
 )
 
 if TYPE_CHECKING:
-    from ..modes import Mode, ModePolicy
-    from ..transforms.policy import PreProcessPolicy
     from .profile import Backend, Profile
 
 logger = logging.getLogger(__name__)
@@ -788,54 +782,6 @@ async def _discovery_call(
         bytes_delivered=wire_bytes(result),
     )
     return _ok(req_id, result)
-
-
-async def _dispatch(
-    profile: Profile,
-    backend: Backend,
-    backend_name: str,
-    tool_name: str,
-    forwarded: dict[str, Any],
-    *,
-    policy: ModePolicy,
-    mode: Mode,
-    prompt: str | None,
-    preprocess: PreProcessPolicy | None = None,
-    requested: Any = None,
-) -> Any:
-    """Forward the call: in-process for internal://, streamable-http otherwise."""
-    if backend.is_decoy:
-        # ``_decoy_call`` answers every one. Reaching here is a bug, and a
-        # bug must not become a request to a URL that is not one.
-        raise BackendCallError(f"backend {backend_name!r} has nothing to call")
-    if not backend.is_internal:
-        return await call_backend_tool(backend_name, backend, tool_name, forwarded)
-
-    # The internal tools judge their own ingress, so they get the RESOLVED
-    # mode; the bound policy is what their refusals offer as alternatives.
-    # The transform request goes through as asked: its default depends on
-    # what arrives, so the tool resolves it under the bound policy.
-    # A profile that can read part 2 may be handed a part 1 (#446).
-    reader = _part_reader(profile)
-    parts = (
-        PartsOffer(
-            backend_name,
-            tool_name,
-            served_name(profile, backend_name, tool_name) or tool_name,
-            reader,
-        )
-        if reader is not None
-        else None
-    )
-    with profile_context(profile, policy, preprocess, parts):
-        return await call_internal_tool(
-            tool_name,
-            forwarded,
-            modal_arguments={
-                MODE_PARAM: {"redact": prompt} if mode.value == "redact" and prompt else mode.value,
-                PREPROCESS_PARAM: requested,
-            },
-        )
 
 
 def _backend_tool_entry(tool: dict[str, Any], backend: Backend) -> dict[str, Any]:

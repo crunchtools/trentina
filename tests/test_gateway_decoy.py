@@ -25,6 +25,7 @@ from trentina.gateway.router import route_jsonrpc
 pytestmark = pytest.mark.usefixtures("env")
 
 ROUTER = "trentina.gateway.router"
+MCP = "trentina.transports.mcp"
 PLANTED = "AKIAQ7HONEYTOKEN4X2B"
 # Every audit row, oldest first, as the tests compare them.
 AUDITED = "SELECT backend, tool, outcome, error_message FROM gateway_calls ORDER BY id"
@@ -63,7 +64,7 @@ async def _rpc(method: str, params: Any = None) -> dict[str, Any]:
         patch(f"{ROUTER}.list_backend_tools", return_value=real),
         patch(f"{ROUTER}.scan_tool_list", side_effect=lambda *a: a[3]),
         patch(
-            f"{ROUTER}.call_backend_tool",
+            f"{MCP}.call_backend_tool",
             return_value=BackendCall([{"type": "text", "text": "ticket"}], False, None),
         ) as backend,
     ):
@@ -266,7 +267,7 @@ async def test_a_decoy_refuses_what_a_real_tool_refuses_and_trips_anyway(
 async def test_a_planted_credential_is_not_kept_as_a_destination() -> None:
     profile = _profile()
     profile.backends["tickets"].destination_params = {"comment": "to"}
-    with patch(f"{ROUTER}.call_backend_tool") as backend:
+    with patch(f"{MCP}.call_backend_tool") as backend:
         await route_jsonrpc(
             profile,
             {

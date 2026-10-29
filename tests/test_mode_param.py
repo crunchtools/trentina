@@ -336,7 +336,7 @@ class TestRouter:
 
         scan = AsyncMock(return_value=decision or IngressDecision(warning=None))
         with (
-            patch(f"{ROUTER}.call_backend_tool", side_effect=fake_call),
+            patch(f"{MCP}.call_backend_tool", side_effect=fake_call),
             patch(f"{PARTS}.scan_tool_response", scan),
             patch(f"{ORCH}.scan_tool_response", scan),
             patch(f"{AUDIT}._audit"),
@@ -417,7 +417,7 @@ class TestRouter:
             patch(f"{PARTS}.scan_tool_response", scan),
             patch(f"{ORCH}.scan_tool_response", scan),
             patch(
-                f"{ROUTER}.call_backend_tool",
+                f"{MCP}.call_backend_tool",
                 AsyncMock(
                     return_value=BackendCall(content=[], is_error=False, structured_content=None)
                 ),
@@ -581,7 +581,7 @@ async def test_a_mode_guard_refuses_at_call_even_when_the_mode_is_omitted() -> N
         },
     )
     call = AsyncMock()
-    with patch(f"{ROUTER}.call_backend_tool", call), patch(f"{AUDIT}._audit"):
+    with patch(f"{MCP}.call_backend_tool", call), patch(f"{AUDIT}._audit"):
         for arguments in ({"issue_key": "X-1"}, {"issue_key": "X-1", MODE_PARAM: "block"}):
             resp = await route_jsonrpc(
                 p,

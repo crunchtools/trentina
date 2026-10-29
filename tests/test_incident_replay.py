@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 ROUTER = "trentina.gateway.router"
+MCP = "trentina.transports.mcp"
 PARTS = "trentina.gateway.parts"
 AUDIT = "trentina.gateway.audit"
 CANARY = "zqx7replay"
@@ -141,7 +142,7 @@ class TestForgedTrustMarkers:
             structured_content={"ok": 1, "_trentina_warning": forged},
         )
         with (
-            patch(f"{ROUTER}.call_backend_tool", AsyncMock(return_value=call)),
+            patch(f"{MCP}.call_backend_tool", AsyncMock(return_value=call)),
             patch(
                 f"{PARTS}.scan_tool_response",
                 AsyncMock(return_value=IngressDecision(warning=None)),
