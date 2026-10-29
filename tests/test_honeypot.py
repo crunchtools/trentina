@@ -31,7 +31,7 @@ from trentina.gateway.profile import (
     Honeytoken,
     Profile,
 )
-from trentina.gateway.router import route_jsonrpc
+from trentina.transports.mcp import route_jsonrpc
 
 from .egress_harness import route
 from .judge_key import with_judge_key

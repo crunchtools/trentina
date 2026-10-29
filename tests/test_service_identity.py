@@ -20,7 +20,7 @@ import pytest
 
 from trentina import orchestrator as orch
 from trentina.config import get_config
-from trentina.gateway import aggregate, router
+from trentina.gateway import aggregate
 from trentina.gateway import ingress_defense as ing
 from trentina.gateway.compress import _call_compress_model
 from trentina.gateway.context import get_current_profile, profile_context
@@ -39,6 +39,7 @@ from trentina.gateway.service import (
 )
 from trentina.gateway.sessions import SessionRegistry
 from trentina.quarantine.providers.base import ProviderResult
+from trentina.transports import mcp
 
 _TENANT = """\
   tenant:
@@ -367,7 +368,7 @@ class TestPerProfileGeneration:
             patch.object(aggregate, "scan_tool_list", passthrough),
             patch.object(aggregate, "maybe_trigger_compression", AsyncMock()),
         ):
-            build = asyncio.create_task(router._route_tools_list(beta, 1))
+            build = asyncio.create_task(mcp._route_tools_list(beta, 1))
             await asyncio.sleep(0)
             aggregate.invalidate_profile_cache("alpha")
             gate.set()

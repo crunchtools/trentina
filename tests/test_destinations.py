@@ -30,16 +30,17 @@ from trentina.gateway.destination import (
 )
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.loader import load_profiles, register_active_config
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
     ParameterConstraint,
     Profile,
 )
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.outcomes import Outcome
 from trentina.tools.reload import _lost_destination_rules
 from trentina.tools.stats import get_trentina_stats
+from trentina.transports.mcp import route_jsonrpc
 
 CHECK = Path(__file__).resolve().parents[1] / "contrib" / "nagios" / "check_trentina_fanout"
 

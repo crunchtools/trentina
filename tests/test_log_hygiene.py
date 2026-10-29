@@ -40,6 +40,7 @@ from trentina.gateway import internal
 from trentina.gateway.app import gateway_app
 from trentina.gateway.errors import BackendCallError
 from trentina.gateway.loader import GatewayConfig
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -47,10 +48,10 @@ from trentina.gateway.profile import (
     ParameterConstraint,
     Profile,
 )
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.testing.hygiene import LogCapture, capture_logs, leaked
 from trentina.tools import cache as cache_tool
 from trentina.tools import reconnect as reconnect_tool
+from trentina.transports.mcp import route_jsonrpc
 
 from .mode_harness import MALICIOUS, layers
 

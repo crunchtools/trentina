@@ -485,7 +485,8 @@ class TestRouterIntegration:
 
     async def test_hostile_backend_response_is_annotated(self) -> None:
         from trentina.gateway.backend import BackendCall
-        from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
+        from trentina.gateway.names import NAMESPACE_SEP
+        from trentina.transports.mcp import route_jsonrpc
 
         async def fake_call(*_args: object, **_kwargs: object) -> BackendCall:
             return BackendCall(
@@ -518,7 +519,8 @@ class TestRouterIntegration:
 
     async def test_clean_backend_response_carries_no_warning(self) -> None:
         from trentina.gateway.backend import BackendCall
-        from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
+        from trentina.gateway.names import NAMESPACE_SEP
+        from trentina.transports.mcp import route_jsonrpc
 
         async def fake_call(*_args: object, **_kwargs: object) -> BackendCall:
             return BackendCall(
@@ -553,7 +555,8 @@ class TestRouterIntegration:
         """Internal tools defend at their own ingress; the gateway hook must
         not spend a second pass on them."""
         from trentina.gateway.backend import BackendCall
-        from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
+        from trentina.gateway.names import NAMESPACE_SEP
+        from trentina.transports.mcp import route_jsonrpc
 
         profile = Profile(
             short_names=False,  # calls below use <backend>__<tool>
@@ -722,7 +725,8 @@ class TestEnforcement:
         """End to end through the router: block mode swaps the content for
         the refusal notice."""
         from trentina.gateway.backend import BackendCall
-        from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
+        from trentina.gateway.names import NAMESPACE_SEP
+        from trentina.transports.mcp import route_jsonrpc
 
         async def fake_call(*_args: object, **_kwargs: object) -> BackendCall:
             return BackendCall(
@@ -893,7 +897,8 @@ class TestAdversarialReviewFixes:
         """A sibling key is what strict clients strip; the text block is the
         guaranteed channel."""
         from trentina.gateway.backend import BackendCall
-        from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
+        from trentina.gateway.names import NAMESPACE_SEP
+        from trentina.transports.mcp import route_jsonrpc
 
         async def fake_call(*_args: object, **_kwargs: object) -> BackendCall:
             return BackendCall(

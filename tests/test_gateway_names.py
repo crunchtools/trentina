@@ -14,7 +14,7 @@ from trentina.gateway.backend import BackendCall
 from trentina.gateway.ingress_defense import IngressDecision
 from trentina.gateway.names import _issued, assign, base_names
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import route_jsonrpc
+from trentina.transports.mcp import route_jsonrpc
 
 AGGREGATE = "trentina.gateway.aggregate"
 MCP = "trentina.transports.mcp"

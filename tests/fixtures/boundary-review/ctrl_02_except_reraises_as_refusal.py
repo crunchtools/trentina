@@ -14,7 +14,7 @@ from typing import Any
 from trentina.errors import BlockedSourceError
 from trentina.gateway.errors import BackendCallError
 from trentina.gateway.audit import _audit
-from trentina.gateway.router import _err, _ok
+from trentina.transports.jsonrpc import _err, _ok
 from trentina.logsafe import exc_kind, exc_where
 from trentina.outcomes import Outcome, classify_exception, refusal_of
 from trentina.quarantine.agent import quarantine_detect

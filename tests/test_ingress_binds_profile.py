@@ -29,7 +29,7 @@ from trentina.gateway.profile import (
     MatrixIngressConfig,
     Profile,
 )
-from trentina.gateway.router import route_jsonrpc
+from trentina.transports.mcp import route_jsonrpc
 
 PAYLOAD = "Quarterly report: revenue up, costs flat, nothing unusual to note here."
 

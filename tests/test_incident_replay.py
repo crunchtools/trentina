@@ -26,11 +26,12 @@ from trentina.gateway.backend import BackendCall
 from trentina.gateway.context import profile_context
 from trentina.gateway.errors import BackendCallError
 from trentina.gateway.ingress_defense import IngressDecision
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.modes import Mode
 from trentina.outcomes import Outcome, classify_exception
 from trentina.tools.fetch import fetch_page
+from trentina.transports.mcp import route_jsonrpc
 
 from .egress_harness import route
 from .judge_key import with_judge_key

@@ -20,7 +20,7 @@ from trentina.gateway.backend import BackendCall
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.loader import load_profiles
 from trentina.gateway.profile import AuthConfig, Backend, DecoyTool, Honeytoken, Profile
-from trentina.gateway.router import route_jsonrpc
+from trentina.transports.mcp import route_jsonrpc
 
 pytestmark = pytest.mark.usefixtures("env")
 

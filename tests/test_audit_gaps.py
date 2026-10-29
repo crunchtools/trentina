@@ -25,9 +25,9 @@ from trentina.errors import QuarantineAgentError, SearchCanaryLeakedError
 from trentina.gateway import internal
 from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import route_jsonrpc
 from trentina.logsafe import redact_source
 from trentina.transports import mcp as mcp_mod
+from trentina.transports.mcp import route_jsonrpc
 
 from .egress_harness import route
 from .mode_harness import layers

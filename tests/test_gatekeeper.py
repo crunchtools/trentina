@@ -21,6 +21,7 @@ from trentina.gateway.backend import BackendCall
 from trentina.gateway.context import current_call, current_session
 from trentina.gateway.destination import Destination, DestinationKind
 from trentina.gateway.loader import ProfileConfigError, load_profiles
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -29,9 +30,9 @@ from trentina.gateway.profile import (
     SemanticGuardsConfig,
 )
 from trentina.gateway.profile_lint import check_guarded_destinations
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.gateway.session_marks import _mark_session
 from trentina.outcomes import BLOCKED_OUTCOMES, Outcome
+from trentina.transports.mcp import route_jsonrpc
 
 POLICY = "Mail leaves only to example.com addresses. No customer data in bulk."
 

@@ -12,13 +12,13 @@ from starlette.testclient import TestClient
 from trentina.gateway.app import OAuthContext, gateway_app
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.loader import GatewayConfig
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
     OAuthConfig,
     Profile,
 )
-from trentina.gateway.router import NAMESPACE_SEP
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

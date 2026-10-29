@@ -49,10 +49,10 @@ from trentina.gateway.loader import (
     replace_active_config,
     reset_active_config,
 )
-from trentina.gateway.router import route_jsonrpc
 from trentina.gateway.sessions import session_registry
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.tools.reload import AGENT_SCOPE_NOTE, reload_profiles
+from trentina.transports.mcp import route_jsonrpc
 
 pytestmark = pytest.mark.asyncio
 

@@ -21,17 +21,14 @@ from trentina.gateway.context import (
     profile_context,
 )
 from trentina.gateway.errors import BackendCallError
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
     ParameterConstraint,
     Profile,
 )
-from trentina.gateway.router import (
-    NAMESPACE_SEP,
-    PROTOCOL_VERSION,
-    route_jsonrpc,
-)
+from trentina.transports.mcp import PROTOCOL_VERSION, route_jsonrpc
 
 
 def _profile() -> Profile:

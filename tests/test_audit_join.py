@@ -23,8 +23,8 @@ from trentina.gateway.app import gateway_app
 from trentina.gateway.context import current_session
 from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import route_jsonrpc
 from trentina.gateway.surface import wire_bytes, wire_digest
+from trentina.transports.mcp import route_jsonrpc
 
 from .mode_harness import MALICIOUS, layers
 

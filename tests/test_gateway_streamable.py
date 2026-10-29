@@ -23,12 +23,10 @@ from trentina.gateway.app import (
     gateway_app,
 )
 from trentina.gateway.circuit import CircuitBreaker, State
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import (
-    NAMESPACE_SEP,
-    _negotiate_protocol_version,
-)
 from trentina.gateway.sessions import SessionRegistry
+from trentina.transports.mcp import _negotiate_protocol_version
 
 TEST_TOKEN = "alice-token"
 

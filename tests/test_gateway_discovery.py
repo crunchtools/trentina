@@ -16,6 +16,7 @@ from trentina.database import get_gateway_call_stats
 from trentina.gateway import discovery
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.context import current_session, session_fingerprint
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -23,8 +24,8 @@ from trentina.gateway.profile import (
     Profile,
     ToolDiscoveryConfig,
 )
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.gateway.sessions import SessionRegistry, session_registry
+from trentina.transports.mcp import route_jsonrpc
 
 SEP = NAMESPACE_SEP
 PLANTED = "AKIAFAKEPLANTED00001"

@@ -1,14 +1,9 @@
-"""The MCP transport: a server face and a client carrier for ``tools/call``.
+"""The MCP transport and the gateway's JSON-RPC surface.
 
-This is the in-tree first transport (Trentina 3.0 Phase 4). Its halves do not
-reimplement the ``tools/call`` path — they COMPOSE the gateway's existing
-collaborators in ``gateway/router.py`` in the same order, so a crossing driven
-through them produces a byte-identical JSON-RPC response to the hand-rolled
-``router._tools_call``. That is the point of the first PR: prove the
-Face/Carrier seam carries the live path unchanged, under a per-profile flag,
-before any logic moves off the router and into the orchestrator.
-
-The mapping to ``router._tools_call`` is one-to-one:
+Trentina 3.0's one in-tree transport. ``route_jsonrpc`` dispatches a profile's
+JSON-RPC (``initialize`` / ``ping`` / ``tools/list`` / ``tools/call``), and a
+``tools/call`` runs through ``orchestrator.crossing`` driving this module's
+``McpServerFace`` + ``McpClientCarrier``:
 
 * ``McpServerFace.parse``   — resolve the target, re-check the allowlist, answer
   a decoy or ``read_part`` here, resolve the mode and preprocess switch,
@@ -17,18 +12,14 @@ The mapping to ``router._tools_call`` is one-to-one:
   tool), with the backend-error refusal.
 * ``McpServerFace.deliver`` — the response guards, then the RESPONSE edge as
   stages (``_assemble``: Arrived → Transformed → Judged → disposed), with the
-  one audit row written by the shared ``_finish_delivery``.
+  one audit row written by ``_finish_delivery``.
 * ``McpServerFace.wrap``    — the JSON-RPC success envelope.
 
-``_assemble`` reproduces ``router._assemble_call_result`` as the stage pipeline
-(``core.stages``), composing the same collaborators in the same order so the
-delivered bytes are byte-identical; the paged branch still delegates to
-``parts._hold_paged`` / ``_deliver_part`` until a later PR collapses the two
-paging holds into one Part mechanism.
-
-Because the coupling to the router's private helpers lives HERE and nowhere
-else, later Phase 4 PRs absorb those helpers into the orchestrator by editing
-this file and deleting the router copies, not by touching every call site.
+``_assemble`` runs the response edge over ``core.stages``; the paged branch
+delegates to ``parts._hold_paged`` / ``parts._deliver_part`` until a later PR
+collapses the two paging holds into one Part mechanism. The hand-rolled
+``gateway/router.py`` that owned this path was deleted in PR3b (Trentina 3.0
+Phase 7); the ``tools/list`` aggregate it held is in ``gateway/aggregate.py``.
 """
 
 from __future__ import annotations
@@ -41,10 +32,9 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-# ``router`` holds the private ``tools/call`` helpers this transport composes;
-# the shared collaborators are imported from their own modules (mypy does not
-# re-export a name through an importer). This is the one place the orchestrator
-# couples to the gateway's internals, so the later cutover edits only this file.
+# This transport owns the gateway's ``tools/call`` path; its collaborators are
+# imported from their own gateway modules. This is the one place the transport
+# layer couples to the gateway's internals.
 from mcp_types.version import (
     HANDSHAKE_PROTOCOL_VERSIONS,
     LATEST_HANDSHAKE_VERSION,
@@ -919,6 +909,7 @@ async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[
             return request_edge._leaked(profile, req_id, params, leaked)
         if not isinstance(params, dict):
             audit._audit(profile.name, "", "", Outcome.DENIED_GUARD, 0, "params must be an object")
+            # nosemgrep: trentina-return-before-audit -- row written on the preceding line
             return _err(req_id, JSONRPC_INVALID_PARAMS, "params must be an object")
         name = params.get("name")
         if isinstance(name, str) and name in discovery.meta_names(profile):

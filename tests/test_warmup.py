@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from trentina import orchestrator as orch
-from trentina.gateway import aggregate, router, warmup
+from trentina.gateway import aggregate, warmup
 from trentina.gateway import ingress_defense as ing
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
 from trentina.quarantine.limiter import (
@@ -23,6 +23,7 @@ from trentina.quarantine.limiter import (
     l3_priority,
     l3_throttle_budget,
 )
+from trentina.transports import mcp
 
 TOOLS = [{"name": f"t{n}", "description": f"Does thing number {n}."} for n in range(6)]
 
@@ -125,7 +126,7 @@ class TestWarmUp:
         ):
             warm = asyncio.create_task(warmup.warm_all())
             await _settle()
-            client = asyncio.create_task(router._route_tools_list(profile, 1))
+            client = asyncio.create_task(mcp._route_tools_list(profile, 1))
             await _settle()
             gate.set()
             await warm

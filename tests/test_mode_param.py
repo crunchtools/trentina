@@ -29,6 +29,7 @@ from trentina.gateway.modes_policy import (
     policy_for,
     strip_params,
 )
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -38,7 +39,6 @@ from trentina.gateway.profile import (
     ParameterConstraint,
     Profile,
 )
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.modes import (
     Gaps,
     Mode,
@@ -46,6 +46,7 @@ from trentina.modes import (
     parse_mode_arg,
     refusal_body,
 )
+from trentina.transports.mcp import route_jsonrpc
 
 AGGREGATE = "trentina.gateway.aggregate"
 PARTS = "trentina.gateway.parts"

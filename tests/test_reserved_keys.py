@@ -141,7 +141,8 @@ class TestBackendResponse:
     @pytest.fixture
     def router(self, monkeypatch: pytest.MonkeyPatch) -> Any:
         from trentina import orchestrator as orch_mod
-        from trentina.gateway import audit, parts, router
+        from trentina.gateway import audit, parts
+        from trentina.transports import mcp
 
         self.scanned: dict[str, Any] = {}
         self.decision = _Decision()
@@ -156,7 +157,7 @@ class TestBackendResponse:
         monkeypatch.setattr(parts, "scan_tool_response", fake_scan)
         monkeypatch.setattr(orch_mod, "scan_tool_response", fake_scan)
         monkeypatch.setattr(audit, "_audit", lambda *a, **k: None)
-        return router
+        return mcp
 
     async def _deliver(
         self, router: Any, call: Any, normalized: dict[str, str] | None = None
