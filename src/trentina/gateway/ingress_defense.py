@@ -55,7 +55,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..config import get_config
 from ..core import Decision, Gated, Posture, identity, refusal_from_warning, refusal_of
-from ..defense import Provenance, defend
+from ..defense import Provenance
 from ..l1.hidden import HiddenStats
 from ..l1.pipeline import run_l1
 from ..logsafe import exc_kind, exc_where, redact_source
@@ -71,7 +71,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
     from ..defense import DefenseVerdict
-    from .profile import Profile
+    from ..l1.pipeline import PipelineResult
+    from .profile import DefenseConfig, Profile
 
 logger = logging.getLogger(__name__)
 
@@ -130,10 +131,11 @@ class IngressDecision:
 class ResponseScan:
     """A judged-but-not-yet-disposed proxied response: the hand-off to the gate.
 
-    ``scan_response`` produces this on a cache miss with text to judge; the
-    orchestrator calls ``gate(verdict, posture, …)`` on it and hands the result
-    back to ``disposed_response``. The split keeps the one ``gate()`` call in the
-    orchestration layer (Trentina 3.0 Phase 4) while the verdict cache, the
+    ``finish_response_scan`` produces this from a ``PreparedResponseScan`` and
+    the verdict the orchestrator's ``defend`` call reached; the orchestrator then
+    calls ``gate(verdict, posture, …)`` on it and hands the result back to
+    ``disposed_response``. The split keeps the ``defend`` and ``gate()`` calls in
+    the orchestration layer (Trentina 3.0 Phase 4/7) while the verdict cache, the
     binary-only shortcut and the warning build stay here. ``profile_name`` /
     ``backend_name`` / ``tool_name`` are carried only for the flagged-response
     log line.
@@ -445,7 +447,39 @@ def _unread_warning(warning: dict[str, Any] | None, unread: set[str]) -> dict[st
     return {**(warning or {}), "binary_unread": True, "unread_kinds": kinds}
 
 
-async def scan_response(
+@dataclass(frozen=True)
+class PreparedResponseScan:
+    """The pre-defend half of the proxied response edge (Trentina 3.0 Phase 7).
+
+    ``prepare_response_scan`` builds this on a cache miss with text to judge:
+    the joined document, the precomputed L1, the ``Posture``, the verdict-cache
+    key and the exact ``defend`` arguments that depend on the profile (its
+    ``defense`` policy and the detection-row ``attribution``). The orchestrator
+    runs the one ``defend`` call from it and hands it to ``finish_response_scan``,
+    which builds the warning and the ``ResponseScan``. Lifting the ``defend``
+    call out of this module is what drops ``gateway/ingress_defense.py`` from
+    ``TestDefendOwnership.ALLOWED``.
+    """
+
+    document: str
+    source: str
+    source_type: str
+    pipeline: PipelineResult | None
+    defense: DefenseConfig
+    provenance: Provenance
+    domain: str | None
+    l3_context: str | None
+    posture: Posture
+    attribution: dict[str, Any]
+    key: str
+    unscannable: dict[str, int]
+    unread: set[str]
+    profile_name: str
+    backend_name: str
+    tool_name: str
+
+
+async def prepare_response_scan(
     *,
     profile: Profile,
     backend_name: str,
@@ -463,14 +497,16 @@ async def scan_response(
     source_type: str = "tool_response",
     domain: str | None = None,
     blocklists: bool = True,
-) -> IngressDecision | ResponseScan:
-    """Judge one tool response up to the gate — the pre-gate half of the edge.
+) -> IngressDecision | PreparedResponseScan:
+    """Judge one tool response up to — but not including — ``defend`` (Phase 7).
 
-    Returns an ``IngressDecision`` directly for the two no-gate exits (a binary-
-    only response, or a verdict-cache hit), else a ``ResponseScan`` for the
-    orchestrator to ``gate`` and hand to ``disposed_response``. The split keeps
-    the one ``gate()`` call in the orchestration layer while the cache, the
-    binary-only shortcut and the warning build stay here (Phase 4).
+    Returns an ``IngressDecision`` directly for the two no-defend exits (a binary-
+    only response, or a verdict-cache hit), else a ``PreparedResponseScan`` the
+    orchestrator runs the one ``defend`` call from, hands to
+    ``finish_response_scan`` for the warning, then ``gate`` and
+    ``disposed_response``. The split moves the ``defend`` call to the
+    orchestration layer (so ``ingress_defense`` no longer imports it) while the
+    cache, the binary-only shortcut and the warning build stay here (Phase 4/7).
 
     Judge one tool response and decide its fate under the call's mode.
 
@@ -551,16 +587,16 @@ async def scan_response(
         # L1 alone still sees hiding in structuredContent, which no processor
         # rewrites, and the original saw what conversion deleted.
         pipeline.stats.hidden = pipeline.stats.hidden.at_least(hidden)
-    verdict = await defend(
-        joined,
+    return PreparedResponseScan(
+        document=joined,
         source=source or f"{profile.name}:{backend_name}:{tool_name}",
         source_type=source_type,
-        precomputed_l1=pipeline,
+        pipeline=pipeline,
         defense=profile.defense,
         provenance=provenance,
         domain=domain,
         l3_context=l3_context,
-        stop_on_partial=posture.stop_on_partial,
+        posture=posture,
         attribution={
             "profile": profile.name,
             "backend": backend_name,
@@ -569,20 +605,34 @@ async def scan_response(
             "blocked": posture.records_block(blocklists=blocklists),
             "call_ref": current_call.get() or None,
         },
-    )
-    warning = build_warning(verdict, unscannable=unscannable)
-    if unread:
-        warning = _unread_warning(warning, unread)
-
-    return ResponseScan(
-        verdict=verdict,
-        posture=posture,
-        warning=warning,
         key=key,
-        extra_unread=bool(unread),
+        unscannable=unscannable,
+        unread=unread,
         profile_name=profile.name,
         backend_name=backend_name,
         tool_name=tool_name,
+    )
+
+
+def finish_response_scan(prepared: PreparedResponseScan, verdict: DefenseVerdict) -> ResponseScan:
+    """Build the warning and the ``ResponseScan`` from a prepared scan and its verdict.
+
+    The post-defend half of the pre-gate response edge: the orchestrator calls
+    this right after running the one ``defend`` over the ``PreparedResponseScan``,
+    then hands the ``ResponseScan`` to ``gate`` and ``disposed_response``.
+    """
+    warning = build_warning(verdict, unscannable=prepared.unscannable)
+    if prepared.unread:
+        warning = _unread_warning(warning, prepared.unread)
+    return ResponseScan(
+        verdict=verdict,
+        posture=prepared.posture,
+        warning=warning,
+        key=prepared.key,
+        extra_unread=bool(prepared.unread),
+        profile_name=prepared.profile_name,
+        backend_name=prepared.backend_name,
+        tool_name=prepared.tool_name,
     )
 
 
@@ -813,22 +863,22 @@ async def _judge_description(
     mode = effective_mode(profile)
     posture = identity.posture(mode, ModePolicy((mode,), mode))
     # A shared description is the gateway's own work, judged as the service
-    # identity (#138); the thresholds stay the requester's.
+    # identity (#138); the thresholds stay the requester's. The defend() call
+    # itself lives in the orchestration layer (Trentina 3.0 Phase 7) — the
+    # service identity bound here stays in force across the await, and this
+    # coroutine (the single-flight work) still owns the cache write and the
+    # journal line below. Deferred import: the orchestrator imports this module.
+    from ..orchestrator import judge_tool_description
+
     with service_context(operator):
-        verdict = await defend(
+        verdict = await judge_tool_description(
             surface,
-            source=f"{profile.name}:{backend_name}:{tool.get('name', '?')}",
-            source_type="tool_description",
-            defense=profile.defense,
+            profile=profile,
+            backend_name=backend_name,
+            tool_name=str(tool.get("name", "?")),
             provenance=provenance,
             l3_context=TOOL_BRIEFING,
-            attribution={
-                "profile": profile.name,
-                "backend": backend_name,
-                "tool": str(tool.get("name", "?")),
-                "direction": "tool_list",
-                "blocked": posture.records_block(),
-            },
+            records_block=posture.records_block(),
         )
     warning = build_warning(verdict)
     if warning is not None and warning.get("flagged_by") == "L3":

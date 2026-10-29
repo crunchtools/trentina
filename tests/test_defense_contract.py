@@ -197,26 +197,23 @@ class TestDefendOwnership:
     — matrix proxy + bridge, alert, the gatekeeper argument guard, egress, llm,
     fetch's error bodies — onto an ``orchestrator.judge_*`` function, so a face
     now hands content to the orchestrator and never calls ``defend`` itself.
-    Two modules may import it, each reached only through the orchestrator:
+    Only the orchestration layer imports it:
 
-    * ``orchestrator.py`` — the orchestration layer: every ``judge_*`` edge,
-      including ``judge_and_deliver``, which now runs the internal tools' one
-      ``defend`` call itself (Trentina 3.0 Phase 7; ``tools/judged.py`` does the
-      paging hold and the ``_Call`` accounting around it and no longer reaches
-      the layers).
-    * ``gateway/ingress_defense.py`` — ``scan_response`` and ``_judge_description``,
-      the proxied response-edge and tool-list scan primitives, called ONLY by
-      ``orchestrator.scan_tool_response`` and the tool-list build.
+    * ``orchestrator.py`` — every ``judge_*`` edge. ``judge_and_deliver`` runs
+      the internal tools' one ``defend`` call (``tools/judged`` does the paging
+      hold and the ``_Call`` accounting around it); ``scan_tool_response`` runs
+      the proxied response edge's ``defend`` (``ingress_defense`` keeps the
+      verdict cache, the binary-only shortcut and the warning build around it);
+      and ``judge_tool_description`` runs the tool-list edge's ``defend``
+      (``ingress_defense.scan_tool_list`` keeps the cache and single-flight).
+      Trentina 3.0 Phase 7 folded all of them in.
 
     A new direct importer is a face reaching past the orchestrator to the layers
-    — the regression this phase closed. (Folding ``ingress_defense``'s own
-    ``defend`` into the orchestrator is the remaining deferred work — PR2b —
-    after which it too drops from ``ALLOWED``; until then it is the one named
-    exemption, verified above to be unreachable except through the orchestrator.)
+    — the regression this phase closed.
     """
 
     ENTRIES = frozenset({"defend", "defend_json", "defend_selection"})
-    ALLOWED = frozenset({"orchestrator.py", "gateway/ingress_defense.py"})
+    ALLOWED = frozenset({"orchestrator.py"})
 
     @classmethod
     def _imports_defend(cls, path: Path) -> bool:

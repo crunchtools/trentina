@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from trentina import orchestrator as orch
 from trentina.gateway import ingress_defense as ing
 from trentina.gateway.profile import AuthConfig, DefenseConfig, Profile
 from trentina.gateway.service import judge_of
@@ -63,7 +64,7 @@ class TestCoalescing:
     async def test_two_profiles_listing_together_judge_each_description_once(self) -> None:
         defend = _GatedDefend()
         with (
-            patch.object(ing, "defend", defend),
+            patch.object(orch, "defend", defend),
             patch.object(ing, "build_warning", return_value=None),
         ):
             first = asyncio.create_task(ing.scan_tool_list(_profile("alpha"), "b", TOOLS, TOOLS))
@@ -81,7 +82,7 @@ class TestCoalescing:
         defend = _GatedDefend()
         defend.gate.set()
         with (
-            patch.object(ing, "defend", defend),
+            patch.object(orch, "defend", defend),
             patch.object(ing, "build_warning", return_value=None),
         ):
             await asyncio.gather(
@@ -99,7 +100,7 @@ class TestAFlagReachesEveryone:
         defend = _GatedDefend()
         flag = {"flagged_by": "L2", "risk_level": "high"}
         with (
-            patch.object(ing, "defend", defend),
+            patch.object(orch, "defend", defend),
             patch.object(ing, "build_warning", return_value=dict(flag)),
             patch.object(ing, "effective_mode", return_value=ing.Mode.FLAG),
         ):
@@ -128,7 +129,7 @@ class TestDifferentJudges:
         judge_b = _profile("ops").model_copy(update={"defense": DefenseConfig(model="judge-b")})
         with (
             patch.object(ing, "service_profile", side_effect=[judge_a, judge_b]),
-            patch.object(ing, "defend", defend),
+            patch.object(orch, "defend", defend),
             patch.object(ing, "build_warning", return_value=None),
         ):
             first = asyncio.create_task(
@@ -149,7 +150,7 @@ class TestTheWorkOutlivesTheCaller:
         defend = _GatedDefend()
         profile = _profile("alpha")
         with (
-            patch.object(ing, "defend", defend),
+            patch.object(orch, "defend", defend),
             patch.object(ing, "build_warning", return_value=None),
         ):
             caller = asyncio.create_task(ing.scan_tool_list(profile, "b", TOOLS[:1], TOOLS[:1]))
@@ -170,7 +171,7 @@ class TestFailure:
         defend = _GatedDefend(fail=True)
         profile = _profile("alpha")
         with (
-            patch.object(ing, "defend", defend),
+            patch.object(orch, "defend", defend),
             patch.object(ing, "build_warning", return_value=None),
         ):
             first = asyncio.create_task(ing.scan_tool_list(profile, "b", TOOLS[:1], TOOLS[:1]))
@@ -193,7 +194,7 @@ class TestFailure:
         defend = _GatedDefend(fail=True)
         profile = _profile("alpha")
         with (
-            patch.object(ing, "defend", defend),
+            patch.object(orch, "defend", defend),
             patch.object(ing, "build_warning", return_value=None),
         ):
             caller = asyncio.create_task(ing.scan_tool_list(profile, "b", TOOLS[:1], TOOLS[:1]))
@@ -217,7 +218,7 @@ class TestFailure:
             raise RuntimeError("HTTP 400 for https://x/?key=AIzaSECRET123")
 
         with (
-            patch.object(ing, "defend", leaky),
+            patch.object(orch, "defend", leaky),
             patch.object(ing, "build_warning", return_value=None),
             pytest.raises(RuntimeError),
         ):

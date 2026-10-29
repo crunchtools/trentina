@@ -69,7 +69,7 @@ class TestResponseVerdictCache:
             oversize=None,
         )
         with patch(
-            "trentina.gateway.ingress_defense.defend",
+            "trentina.orchestrator.defend",
             AsyncMock(return_value=verdict),
         ) as judged:
             for profile in (alpha, alpha, beta):

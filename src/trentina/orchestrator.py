@@ -30,7 +30,12 @@ from .core.dispose import Decision, dispose
 from .core.stages import _JUDGED_SEAL, Judged
 from .defense import Provenance, defend, defend_json, defend_selection
 from .gateway.context import profile_context
-from .gateway.ingress_defense import IngressDecision, disposed_response, scan_response
+from .gateway.ingress_defense import (
+    IngressDecision,
+    disposed_response,
+    finish_response_scan,
+    prepare_response_scan,
+)
 from .gateway.outbound import (
     REASON_CREDENTIAL,
     REASON_FLAGGED,
@@ -102,15 +107,17 @@ async def scan_tool_response(
 ) -> IngressDecision:
     """Judge one proxied tool response and decide its fate — the response edge.
 
-    The one place the gate runs on a proxied response: ``scan_response`` does the
-    pre-gate work (admission, the verdict cache, L1/L2/L3 via ``defend``, the
-    warning), ``gate`` disposes of the verdict and runs redact's extraction, and
-    ``disposed_response`` renders the ``IngressDecision`` and writes the cache.
-    Holding the order here, not in the gateway, is why ``core.gate`` is imported
-    only by the orchestration layer (Trentina 3.0 Phase 4). The two no-gate exits
-    (a binary-only response, a cache hit) come straight back from ``scan_response``.
+    The one place both ``defend`` and the gate run on a proxied response:
+    ``prepare_response_scan`` does the pre-defend work (admission, the verdict
+    cache, the L1 precompute), this runs the one ``defend`` call,
+    ``finish_response_scan`` builds the warning, ``gate`` disposes of the verdict
+    and runs redact's extraction, and ``disposed_response`` renders the
+    ``IngressDecision`` and writes the cache. Holding the order here, not in the
+    gateway, is why both ``defend`` and ``core.gate`` are imported only by the
+    orchestration layer (Trentina 3.0 Phase 4/7). The two no-defend exits (a
+    binary-only response, a cache hit) come straight back as an ``IngressDecision``.
     """
-    scanned = await scan_response(
+    prepared = await prepare_response_scan(
         profile=profile,
         backend_name=backend_name,
         tool_name=tool_name,
@@ -128,10 +135,61 @@ async def scan_tool_response(
         domain=domain,
         blocklists=blocklists,
     )
-    if isinstance(scanned, IngressDecision):
-        return scanned
-    gated = await gate(scanned.verdict, scanned.posture, extra_unread=scanned.extra_unread)
-    return await disposed_response(scanned, gated)
+    if isinstance(prepared, IngressDecision):
+        return prepared
+    verdict = await defend(
+        prepared.document,
+        source=prepared.source,
+        source_type=prepared.source_type,
+        precomputed_l1=prepared.pipeline,
+        defense=prepared.defense,
+        provenance=prepared.provenance,
+        domain=prepared.domain,
+        l3_context=prepared.l3_context,
+        stop_on_partial=prepared.posture.stop_on_partial,
+        attribution=prepared.attribution,
+    )
+    scan = finish_response_scan(prepared, verdict)
+    gated = await gate(scan.verdict, scan.posture, extra_unread=scan.extra_unread)
+    return await disposed_response(scan, gated)
+
+
+async def judge_tool_description(
+    surface: str,
+    *,
+    profile: Profile,
+    backend_name: str,
+    tool_name: str,
+    provenance: Provenance,
+    l3_context: str,
+    records_block: bool,
+) -> DefenseVerdict:
+    """Judge one tool definition — the tool-list ingress edge.
+
+    ``ingress_defense.scan_tool_list`` → ``_judge_description`` hands each tool's
+    surface text here to be judged for poisoning. The ``defend()`` call lives
+    here, in the orchestration layer (Trentina 3.0 Phase 7), so
+    ``gateway/ingress_defense.py`` no longer reaches the layers; the caller keeps
+    the verdict cache, the single-flight, the service-identity binding (active
+    across this await, so L3 runs as the operator) and the briefing it passes as
+    ``l3_context``. ``records_block`` is the caller's ``posture.records_block()``
+    — whether a flag here feeds the blocklist.
+    """
+    return await defend(
+        surface,
+        source=f"{profile.name}:{backend_name}:{tool_name}",
+        source_type="tool_description",
+        defense=profile.defense,
+        provenance=provenance,
+        l3_context=l3_context,
+        attribution={
+            "profile": profile.name,
+            "backend": backend_name,
+            "tool": tool_name,
+            "direction": "tool_list",
+            "blocked": records_block,
+        },
+    )
 
 
 async def judge_response(
