@@ -73,7 +73,7 @@ No payload text and no L3 prose appear in a refusal.
 
 ### A withheld response is not a failed call
 
-A proxied response is judged after the backend has answered, so by then a tool that writes has written. A refusal reads as a failed call, and an agent repeats a failed call: on 2026-10-10 a blocked one-line confirmation of a sent mail sent the mail a second time (#425). So when the response of a remote backend's tool that is not annotated `readOnlyHint` is withheld (by the defense pipeline, a [response guard](response-guards.md), the response byte cap or a required transform that failed), the agent gets a result, not a refusal that looks like an error:
+A proxied response is judged after the backend has answered, so by then a tool that writes has written. A refusal reads as a failed call, and an agent repeats a failed call: on 2026-10-10 a blocked one-line confirmation of a sent mail sent the mail a second time (#425). So when the response of a remote backend's tool that is not annotated `readOnlyHint` is withheld (by the defense pipeline, a [literal response guard](literal-response-guards.md), the response byte cap or a required transform that failed), the agent gets a result, not a refusal that looks like an error:
 
 ```json
 {

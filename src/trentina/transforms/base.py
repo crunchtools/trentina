@@ -6,7 +6,7 @@ They are served by two mechanisms in two places, deliberately:
 * Transforms (this package) TRANSFORM payloads. They run outside the
   perimeter, their output is exactly as untrusted as their input, and
   everything they emit crosses the defense pipeline on its way in.
-* The guards make verdicts. Parameter guards, response guards, and the
+* The guards make verdicts. Literal request guards, literal response guards, and the
   three-layer scanner (``defense.py``). Guards decide; nothing else does.
   They never transform what is delivered.
 

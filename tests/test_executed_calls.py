@@ -156,7 +156,7 @@ class TestOtherWithheldResponses:
     async def test_a_response_guard(self) -> None:
         guard = {"content": ParameterConstraint(deny=["*sent to*"])}
         guards = {SEND: guard, SEARCH: guard}
-        profile = _profile(response_guards=guards)
+        profile = _profile(literal_response_guards=guards)
         resp, _, audit = await _call(SEND, profile=profile)
         result = resp["result"]
         assert result["isError"] is False

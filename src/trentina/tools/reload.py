@@ -133,14 +133,22 @@ def _backend_delta(before: Backend, after: Backend) -> dict[str, Any]:
     candidate: dict[str, Any] = {
         "tools_allow": _glob_delta(before.tools_allow, after.tools_allow),
         "tools_deny": _glob_delta(before.tools_deny, after.tools_deny),
-        "request_guards": _guard_delta(before.request_guards, after.request_guards),
-        "response_guards": _guard_delta(
-            before.response_guards, after.response_guards, noun="fields"
+        "literal_request_guards": _guard_delta(
+            before.literal_request_guards, after.literal_request_guards
+        ),
+        "literal_response_guards": _guard_delta(
+            before.literal_response_guards, after.literal_response_guards, noun="fields"
         ),
         "fields_changed": sorted(
             name
             for name in type(before).model_fields
-            if name not in ("tools_allow", "tools_deny", "request_guards", "response_guards")
+            if name
+            not in (
+                "tools_allow",
+                "tools_deny",
+                "literal_request_guards",
+                "literal_response_guards",
+            )
             and getattr(before, name) != getattr(after, name)
         ),
     }
@@ -412,7 +420,13 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
     # judged before they leave (#456). llm_keys is not held and git/egress_http
     # are: a key buys model calls, while one more pattern is one more place a
     # talked-round agent can send to.
-    for block in ("matrix_bridge", "client_egress", "git", "egress_http", "intent_guards"):
+    for block in (
+        "matrix_bridge",
+        "client_egress",
+        "git",
+        "egress_http",
+        "semantic_request_guards",
+    ):
         if getattr(after, block) != getattr(before, block):
             setattr(after, block, getattr(before, block))
             held.append(block)

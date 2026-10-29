@@ -1,3 +1,3 @@
 # Moved
 
-Renamed to [Request Guards](request-guards.md) in 3.0.0.
+Renamed to [Literal Request Guards](literal-request-guards.md) in 3.0.0.

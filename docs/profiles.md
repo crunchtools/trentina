@@ -119,7 +119,7 @@ can talk an agent past its own warning is the attack it exists to survive.
 
 Two optional narrowings, neither needed for the base policy: `modes` on one
 backend overrides the profile's set for that backend (it must include the
-default), and a [request guard](request-guards.md) on `trentina_mode`
+default), and a [literal request guard](literal-request-guards.md) on `trentina_mode`
 narrows one tool.
 
 ## Minifying and exact text
@@ -419,9 +419,9 @@ check_trentina_fanout --db /data/trentina.db \
     --hosts-warn 20 --hosts-crit 50 --comms-warn 30 --comms-crit 100
 ```
 
-## Intent Guards
+## Semantic Request Guards
 
-`intent_guards` names the tools whose calls the profile's judge reads
+`semantic_request_guards` names the tools whose calls the profile's judge reads
 before they are forwarded, and the rule it reads them against, in plain
 English (#456). Anything but an explicit allow refuses the call.
 
@@ -433,7 +433,7 @@ English (#456). Anything but an explicit allow refuses the call.
         tools_allow: [search_gmail_messages, send_gmail_message]
         destination_params:
           send_gmail_message: to    # gives the gatekeeper its first-contact fact
-    intent_guards:
+    semantic_request_guards:
       policy: |
         Mail goes only to example.com addresses. No customer data in bulk.
       tools:
@@ -446,7 +446,7 @@ that backend's `tools_allow`, or the file does not load. Add
 outright once the session has been delivered flagged content (#457). The block is
 perimeter: an agent's own reload cannot change it, and a honeypot cannot
 have one. Scenarios, the policy-writing guide, refusal codes and what it
-cannot do are in [Intent Guards](intent-guards.md).
+cannot do are in [Semantic Request Guards](semantic-request-guards.md).
 
 ## Decoy Tools and Honeytokens
 
@@ -777,7 +777,7 @@ operator reload applies an edit to `git_remotes` or to a `git` block.
 
 - [MCP Gateway](gateway.md) — how the gateway routes calls to backends
 - [Tool Filtering](tool-filtering.md) — allowlist/denylist configuration
-- [Request Guards](request-guards.md) — argument-level restrictions
+- [Literal Request Guards](literal-request-guards.md) — argument-level restrictions
 - [Defense Pipeline](defense-pipeline.md) — L1/L2/L3 configuration details
 - [Client Egress](client-egress.md) — the `client_egress` block
 - [Git Transport](git-transport.md) — `git_remotes` and the `git` block

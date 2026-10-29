@@ -264,7 +264,7 @@ class TestProxiedTools:
         profile.backends["mcp-slack"] = Backend(
             url="http://mcp-slack:8000/mcp",
             destination_params={"send_message": "channel"},
-            request_guards={"send_message": {"text": ParameterConstraint(deny=["*"])}},
+            literal_request_guards={"send_message": {"text": ParameterConstraint(deny=["*"])}},
         )
         profile.backends["web"] = Backend(url="internal://web")
         backend_mod._tool_list_cache["http://mcp-slack:8000/mcp"] = [

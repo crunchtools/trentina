@@ -17,7 +17,7 @@ Scope, and why it stops where it does:
   the whole path an operator's file takes, env-var indirection included.
 * Blocks whose top level is ``backends:`` are validated per entry against
   ``Backend``. They are the other shape we publish enough of to get wrong.
-* Anything else — a bare ``tools_allow:`` list, a ``request_guards:``
+* Anything else — a bare ``tools_allow:`` list, a ``literal_request_guards:``
   fragment — is skipped and SAID SO in the test id. A fragment has no single
   model to check it against, and quietly passing over it would make this file
   look like it covers more than it does.

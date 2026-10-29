@@ -1,4 +1,4 @@
-"""Guarded execution (#456): a gatekeeper judges a profile's guarded calls."""
+"""Semantic request guards (#456): a gatekeeper judges a profile's guarded calls."""
 
 from __future__ import annotations
 
@@ -24,8 +24,8 @@ from trentina.gateway.profile import (
     AuthConfig,
     Backend,
     EgressGrant,
-    IntentGuardsConfig,
     Profile,
+    SemanticGuardsConfig,
 )
 from trentina.gateway.profile_lint import check_guarded_destinations
 from trentina.gateway.router import NAMESPACE_SEP, Assembled, _mark_session, route_jsonrpc
@@ -47,7 +47,7 @@ def _profile(**guarded: Any) -> Profile:
             ),
             "wiki": Backend(url="http://wiki:8000/mcp", tools_allow=["*"]),
         },
-        intent_guards=IntentGuardsConfig(
+        semantic_request_guards=SemanticGuardsConfig(
             policy=POLICY, tools={"mail": ["send_message"]}, **guarded
         ),
     )
@@ -136,7 +136,7 @@ class TestWhatIsJudged:
 
     async def test_a_profile_without_the_block_is_never_judged(self) -> None:
         p = _profile()
-        p.intent_guards = None
+        p.semantic_request_guards = None
         with _Judge() as judge:
             assert await _judge(p) is None
         judge.defend.assert_not_awaited()
@@ -179,7 +179,7 @@ class TestRefusals:
         with _Judge({"decision": "refuse", "reason": reason}):
             refusal = await _judge(_profile())
         assert refusal.reason == reason
-        assert refusal.message == f"Refused by intent guards: {reason}"
+        assert refusal.message == f"Refused by semantic request guards: {reason}"
 
     async def test_flagged_arguments_refuse_without_asking_the_judge(self) -> None:
         with _Judge(flagged=True) as judge:
@@ -280,8 +280,8 @@ class TestFailsClosed:
 
     async def test_a_slow_judge_refuses(self) -> None:
         p = _profile()
-        assert p.intent_guards is not None
-        p.intent_guards.timeout_seconds = 0.01
+        assert p.semantic_request_guards is not None
+        p.semantic_request_guards.timeout_seconds = 0.01
         with _Judge() as judge:
 
             async def slow(*_a: Any, **_k: Any) -> dict[str, Any]:
@@ -298,19 +298,19 @@ _EGRESS_DOC = 'POST /repos/x\ncontent-type: application/json\n{"title": "bug"}'
 
 
 def _egress_profile(**guarded: Any) -> Profile:
-    """A profile whose intent_guards guards the ``gh`` egress upstream (#511)."""
+    """A profile whose semantic_request_guards guards the ``gh`` egress upstream (#511)."""
     p = Profile(
         name="agent1",
         auth=AuthConfig(bearer_token_env="TEST"),
         egress_http={"gh": EgressGrant(methods=["GET", "POST"], paths=["/repos/*"])},
-        intent_guards=IntentGuardsConfig(policy=POLICY, egress_http=["gh"], **guarded),
+        semantic_request_guards=SemanticGuardsConfig(policy=POLICY, egress_http=["gh"], **guarded),
     )
     p.auth.bearer_token = SecretStr("x")
     return p
 
 
 async def _judge_egress(profile: Profile, *, document: str = _EGRESS_DOC) -> Any:
-    cfg = profile.intent_guards
+    cfg = profile.semantic_request_guards
     assert cfg is not None
     return await gatekeeper.judge_egress(
         profile,
@@ -370,28 +370,28 @@ class TestEgress:
 
 
 class TestGuardConfig:
-    """#511: a intent_guards block may guard tools, egress upstreams, or both."""
+    """#511: a semantic_request_guards block may guard tools, egress upstreams, or both."""
 
     def test_egress_only_is_valid(self) -> None:
-        cfg = IntentGuardsConfig(policy=POLICY, egress_http=["gh"])
+        cfg = SemanticGuardsConfig(policy=POLICY, egress_http=["gh"])
         assert cfg.guards_egress("gh") is True
         assert cfg.guards_egress("other") is False
         assert cfg.tools == {}
 
     def test_guarding_nothing_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="guards nothing"):
-            IntentGuardsConfig(policy=POLICY)
+            SemanticGuardsConfig(policy=POLICY)
 
     def test_a_duplicate_upstream_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="lists an upstream twice"):
-            IntentGuardsConfig(policy=POLICY, egress_http=["gh", "gh"])
+            SemanticGuardsConfig(policy=POLICY, egress_http=["gh", "gh"])
 
     def test_a_guarded_upstream_must_be_a_grant(self) -> None:
         with pytest.raises(ValidationError, match="not an egress_http grant"):
             Profile(
                 name="agent1",
                 auth=AuthConfig(bearer_token_env="TEST"),
-                intent_guards=IntentGuardsConfig(policy=POLICY, egress_http=["gh"]),
+                semantic_request_guards=SemanticGuardsConfig(policy=POLICY, egress_http=["gh"]),
             )
 
 
@@ -482,13 +482,13 @@ class TestSessionMarks:
         session_marks.mark_flagged("victim")
         session_marks.mark_flagged("flood")
         profile = _profile(refuse_when_flagged=True)
-        assert profile.intent_guards is not None
+        assert profile.semantic_request_guards is not None
         token = current_session.set("victim")
         try:
             facts = gatekeeper.gather_facts(profile, "mail", "send_message", None)
             with _Judge() as judge:
                 refusal = await gatekeeper.evaluate(
-                    profile, profile.intent_guards, facts, dict(_ARGS)
+                    profile, profile.semantic_request_guards, facts, dict(_ARGS)
                 )
         finally:
             current_session.reset(token)
@@ -573,7 +573,7 @@ class TestRouter:
             resp = await route_jsonrpc(_profile(), _call("send_message"))
         backend.assert_not_awaited()
         assert refused(resp)
-        assert refused_text(resp).endswith("Refused by intent guards: bulk_private_data")
+        assert refused_text(resp).endswith("Refused by semantic request guards: bulk_private_data")
         ((args, kwargs),) = audits
         assert args[3] is Outcome.DENIED_GATEKEEPER
         assert "first_contact=yes" in args[5]
@@ -613,7 +613,7 @@ class TestRouter:
         p = _profile()
         from trentina.gateway.profile import ParameterConstraint
 
-        p.backends["mail"].request_guards = {
+        p.backends["mail"].literal_request_guards = {
             "send_message": {"to": ParameterConstraint(allow=["*@example.com"])}
         }
         with (
@@ -671,7 +671,7 @@ class TestConfig:
     )
     def test_a_malformed_block_is_refused(self, fields: dict[str, Any], message: str) -> None:
         with pytest.raises(ValidationError, match=message):
-            IntentGuardsConfig(**fields)
+            SemanticGuardsConfig(**fields)
 
     def test_a_guarded_backend_must_exist_and_be_real(self) -> None:
         with pytest.raises(ValidationError, match="no such backend"):
@@ -679,7 +679,7 @@ class TestConfig:
                 name="p",
                 auth=AuthConfig(bearer_token_env="T"),
                 backends={"mail": Backend(url="http://mail:1/mcp", tools_allow=["*"])},
-                intent_guards={"policy": POLICY, "tools": {"post": ["send"]}},
+                semantic_request_guards={"policy": POLICY, "tools": {"post": ["send"]}},
             )
         with pytest.raises(ValidationError, match="decoy backend is not judged"):
             Profile(
@@ -692,7 +692,7 @@ class TestConfig:
                         decoys={"send": {"description": "sends", "result": "ok"}},
                     )
                 },
-                intent_guards={"policy": POLICY, "tools": {"trap": ["send"]}},
+                semantic_request_guards={"policy": POLICY, "tools": {"trap": ["send"]}},
             )
 
     def test_a_guarded_tool_the_allowlist_never_serves_fails_the_load(
@@ -706,7 +706,7 @@ class TestConfig:
             "    auth:\n      bearer_token_env: T\n"
             "    backends:\n"
             "      mail:\n        url: http://mail:1/mcp\n        tools_allow: [list_*]\n"
-            "    intent_guards:\n"
+            "    semantic_request_guards:\n"
             "      policy: mail stays inside\n"
             "      tools:\n        mail: [send_message]\n",
             encoding="utf-8",
@@ -714,15 +714,15 @@ class TestConfig:
         with pytest.raises(ProfileConfigError, match="send_message: the tool is not allowed"):
             load_profiles(path)
 
-    def test_a_honeypot_has_no_intent_guards(self) -> None:
-        with pytest.raises(ValidationError, match="intent_guards does not apply"):
+    def test_a_honeypot_has_no_semantic_request_guards(self) -> None:
+        with pytest.raises(ValidationError, match="semantic_request_guards does not apply"):
             Profile(
                 name="p",
                 honeypot=True,
                 auth=AuthConfig(bearer_token_env="T"),
                 defense={"enforcement": "flag"},
                 backends={"web": Backend(url="internal://web", tools_allow=["fetch_tool"])},
-                intent_guards={"policy": POLICY, "tools": {"web": ["fetch_tool"]}},
+                semantic_request_guards={"policy": POLICY, "tools": {"web": ["fetch_tool"]}},
             )
 
 
@@ -735,7 +735,7 @@ class TestLint:
                         "mail": {"destination_params": {"send_message": "to"}},
                         "chat": {},
                     },
-                    "intent_guards": {
+                    "semantic_request_guards": {
                         "policy": "x",
                         "tools": {"mail": ["send_message"], "chat": ["post_message"]},
                     },

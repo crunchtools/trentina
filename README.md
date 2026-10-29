@@ -21,7 +21,7 @@ ashore: commerce keeps flowing, and nothing dangerous gets in.
 
 1. **Security.** Untrusted content crosses three independent layers at every
    ingress: L1 deterministic checks, L2 a local classifier, L3 a quarantined
-   LLM with no tools. [Intent guards](docs/intent-guards.md) judges
+   LLM with no tools. [Semantic request guards](docs/semantic-request-guards.md) judge
    what goes out against a rule you write in English. What is and is not
    defended is in [Coverage](docs/defense-pipeline.md#coverage).
    [Defense Pipeline](docs/defense-pipeline.md) · [Benchmark](docs/benchmark.md) ·
@@ -32,11 +32,11 @@ ashore: commerce keeps flowing, and nothing dangerous gets in.
    production traffic. [Compression](docs/compression.md) ·
    [Tool Filtering](docs/tool-filtering.md)
 
-3. **Determinism.** Request guards, response guards and allowlists are
-   evaluated by the gateway, so an agent that ignores its instructions is
-   stopped before the backend sees the call.
-   [Request Guards](docs/request-guards.md) ·
-   [Response Guards](docs/response-guards.md)
+3. **Determinism.** Literal request guards, literal response guards and
+   allowlists are evaluated by the gateway, so an agent that ignores its
+   instructions is stopped before the backend sees the call.
+   [Literal Request Guards](docs/literal-request-guards.md) ·
+   [Literal Response Guards](docs/literal-response-guards.md)
 
 4. **Authentication.** Trentina is the OAuth authorization server for web
    clients such as claude.ai: dynamic client registration, a provisioned
@@ -119,9 +119,9 @@ Then point Claude Code at it:
 | [Tool Discovery](docs/tool-discovery.md) | Find/call or per-session loading for clients without tool search |
 | [Description Compression](docs/compression.md) | Description compression and schema compaction |
 | [Token Routing](docs/token-routing.md) | Response minifying (implemented); delegation (proposed) |
-| [Intent Guards](docs/intent-guards.md) | A judge reads calls to listed tools against a policy in plain English |
-| [Request Guards](docs/request-guards.md) | Per-tool argument validation |
-| [Response Guards](docs/response-guards.md) | Per-tool result validation |
+| [Semantic Request Guards](docs/semantic-request-guards.md) | A judge reads calls to listed tools against a policy in plain English |
+| [Literal Request Guards](docs/literal-request-guards.md) | Per-tool argument validation |
+| [Literal Response Guards](docs/literal-response-guards.md) | Per-tool result validation |
 | [Audit Log](docs/audit-log.md) | Call recording, stats, monitoring |
 | [LLM Key Proxying](docs/llm-proxying.md) | Provider keys kept inside the gateway |
 | [Matrix Bridge](docs/matrix-bridge.md) | E2EE termination and two-way judging |

@@ -438,7 +438,7 @@ class TestRouter:
                 "gws": Backend(
                     url="http://gws:8011/mcp",
                     tools_allow=["*"],
-                    request_guards={
+                    literal_request_guards={
                         "send_gmail_message": {
                             "to": ParameterConstraint(allow=["self@example.com"]),
                         }
@@ -503,7 +503,7 @@ class TestRouter:
                 "memory": Backend(
                     url="http://mcp-memory:8000/mcp",
                     tools_allow=["*"],
-                    response_guards={
+                    literal_response_guards={
                         "memory_search": {
                             "content": ParameterConstraint(deny=["*NIGHTJAR*"]),
                         }
@@ -571,7 +571,7 @@ class TestRouter:
                 "memory": Backend(
                     url="http://mcp-memory:8000/mcp",
                     tools_allow=["*"],
-                    response_guards={
+                    literal_response_guards={
                         "memory_search": {
                             "content": ParameterConstraint(deny=["*NIGHTJAR*"]),
                         }
@@ -648,7 +648,7 @@ class TestRouter:
         db_mod._db = None
 
     async def test_tools_call_rejects_guarded_parameter(self) -> None:
-        """Parameter guard blocks a call with a forbidden argument value."""
+        """Literal request guard blocks a call with a forbidden argument value."""
         p = Profile(
             short_names=False,
             name="guarded",
@@ -657,7 +657,7 @@ class TestRouter:
                 "gws": Backend(
                     url="http://gws:8011/mcp",
                     tools_allow=["*"],
-                    request_guards={
+                    literal_request_guards={
                         "send_gmail_message": {
                             "to": ParameterConstraint(allow=["self@example.com"]),
                         }
@@ -682,7 +682,7 @@ class TestRouter:
         assert "not in allow list" in refused_text(resp)
 
     async def test_tools_call_allowed_guarded_parameter_passes(self) -> None:
-        """Parameter guard allows a call with a permitted argument value."""
+        """Literal request guard allows a call with a permitted argument value."""
         called: dict[str, Any] = {}
 
         async def fake_call(
@@ -706,7 +706,7 @@ class TestRouter:
                 "gws": Backend(
                     url="http://gws:8011/mcp",
                     tools_allow=["*"],
-                    request_guards={
+                    literal_request_guards={
                         "send_gmail_message": {
                             "to": ParameterConstraint(allow=["self@example.com"]),
                         }
@@ -1489,7 +1489,7 @@ class TestArgumentHygiene:
         guarded = Backend(
             url="http://luna:8000/mcp",
             tools_allow=["*"],
-            request_guards={"save_output": {"priority": ParameterConstraint(deny=["0"])}},
+            literal_request_guards={"save_output": {"priority": ParameterConstraint(deny=["0"])}},
         )
 
         resp, seen, row = await self._call(
@@ -1504,7 +1504,9 @@ class TestArgumentHygiene:
         guarded = Backend(
             url="http://luna:8000/mcp",
             tools_allow=["*"],
-            request_guards={"send_message": {"cc": ParameterConstraint(allow=["*@ok.com"])}},
+            literal_request_guards={
+                "send_message": {"cc": ParameterConstraint(allow=["*@ok.com"])}
+            },
         )
 
         resp, seen, _row = await self._call(

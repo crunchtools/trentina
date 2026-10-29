@@ -16,11 +16,11 @@ from trentina.gateway.profile import (
     AuthConfig,
     Backend,
     DefenseConfig,
-    IntentGuardsConfig,
     LlmKeyOverride,
     OAuthConfig,
     ParameterConstraint,
     Profile,
+    SemanticGuardsConfig,
 )
 
 
@@ -185,19 +185,19 @@ class TestProfileModel:
         )
         assert "*" in b.tools_allow
 
-    def test_backend_with_request_guards(self) -> None:
+    def test_backend_with_literal_request_guards(self) -> None:
         b = Backend(
             url="http://x/mcp",
-            request_guards={
+            literal_request_guards={
                 "send_gmail_message": {
                     "to": ParameterConstraint(allow=["alice@example.com"]),
                     "cc": ParameterConstraint(allow=["alice@example.com"], deny=["banned@x.com"]),
                 }
             },
         )
-        assert "send_gmail_message" in b.request_guards
-        assert b.request_guards["send_gmail_message"]["to"].allow == ["alice@example.com"]
-        assert b.request_guards["send_gmail_message"]["cc"].deny == ["banned@x.com"]
+        assert "send_gmail_message" in b.literal_request_guards
+        assert b.literal_request_guards["send_gmail_message"]["to"].allow == ["alice@example.com"]
+        assert b.literal_request_guards["send_gmail_message"]["cc"].deny == ["banned@x.com"]
 
     def test_parameter_guard_invalid_value_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -900,13 +900,14 @@ class TestBackendAuth:
 
 
 class TestRenamedGuardKeys:
-    """3.0.0 renamed two guard keys (#571). The old keys fail with a specific
-    message, and the new keys load and enforce exactly as the old ones did."""
+    """3.0.0 settled the guard vocabulary on literal/semantic (#571). Every old
+    key — the shipped 2.x names and the #571 work-in-progress names — fails with
+    a specific message, and the new keys load and enforce exactly as before."""
 
     def test_old_parameter_guards_key_rejected(self) -> None:
         with pytest.raises(
             ValidationError,
-            match=re.escape("parameter_guards was renamed request_guards in 3.0.0"),
+            match=re.escape("parameter_guards was renamed literal_request_guards in 3.0.0"),
         ):
             Backend.model_validate(
                 {
@@ -915,10 +916,34 @@ class TestRenamedGuardKeys:
                 }
             )
 
+    def test_old_request_guards_key_rejected(self) -> None:
+        with pytest.raises(
+            ValidationError,
+            match=re.escape("request_guards was renamed literal_request_guards in 3.0.0"),
+        ):
+            Backend.model_validate(
+                {
+                    "url": "http://x/mcp",
+                    "request_guards": {"send_gmail_message": {"to": {"allow": ["ok@x.com"]}}},
+                }
+            )
+
+    def test_old_response_guards_key_rejected(self) -> None:
+        with pytest.raises(
+            ValidationError,
+            match=re.escape("response_guards was renamed literal_response_guards in 3.0.0"),
+        ):
+            Backend.model_validate(
+                {
+                    "url": "http://x/mcp",
+                    "response_guards": {"memory_search": {"content": {"deny": ["*secret*"]}}},
+                }
+            )
+
     def test_old_guarded_execution_key_rejected(self) -> None:
         with pytest.raises(
             ValidationError,
-            match=re.escape("guarded_execution was renamed intent_guards in 3.0.0"),
+            match=re.escape("guarded_execution was renamed semantic_request_guards in 3.0.0"),
         ):
             Profile.model_validate(
                 {
@@ -931,14 +956,32 @@ class TestRenamedGuardKeys:
                 }
             )
 
-    def test_new_request_guards_key_loads_and_enforces(self) -> None:
+    def test_old_intent_guards_key_rejected(self) -> None:
+        with pytest.raises(
+            ValidationError,
+            match=re.escape("intent_guards was renamed semantic_request_guards in 3.0.0"),
+        ):
+            Profile.model_validate(
+                {
+                    "name": "x",
+                    "auth": {"bearer_token_env": "T"},
+                    "intent_guards": {
+                        "policy": "Deny everything.",
+                        "tools": {"mail": ["send_gmail_message"]},
+                    },
+                }
+            )
+
+    def test_new_literal_request_guards_key_loads_and_enforces(self) -> None:
         backend = Backend.model_validate(
             {
                 "url": "http://x/mcp",
-                "request_guards": {"send_gmail_message": {"to": {"allow": ["ok@example.com"]}}},
+                "literal_request_guards": {
+                    "send_gmail_message": {"to": {"allow": ["ok@example.com"]}}
+                },
             }
         )
-        assert "send_gmail_message" in backend.request_guards
+        assert "send_gmail_message" in backend.literal_request_guards
         # Enforces identically: an allowed value passes, a denied one is refused.
         assert check_request_guards("send_gmail_message", {"to": "ok@example.com"}, backend) is None
         assert (
@@ -946,17 +989,17 @@ class TestRenamedGuardKeys:
             is not None
         )
 
-    def test_new_intent_guards_key_loads(self) -> None:
+    def test_new_semantic_request_guards_key_loads(self) -> None:
         profile = Profile.model_validate(
             {
                 "name": "x",
                 "auth": {"bearer_token_env": "T"},
                 "backends": {"mail": {"url": "http://mail/mcp"}},
-                "intent_guards": {
+                "semantic_request_guards": {
                     "policy": "Deny everything.",
                     "tools": {"mail": ["send_gmail_message"]},
                 },
             }
         )
-        assert isinstance(profile.intent_guards, IntentGuardsConfig)
-        assert profile.intent_guards.guards("mail", "send_gmail_message") is True
+        assert isinstance(profile.semantic_request_guards, SemanticGuardsConfig)
+        assert profile.semantic_request_guards.guards("mail", "send_gmail_message") is True

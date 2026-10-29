@@ -33,8 +33,8 @@ from trentina.gateway.profile import (
     AuthConfig,
     Backend,
     Honeytoken,
-    IntentGuardsConfig,
     Profile,
+    SemanticGuardsConfig,
 )
 from trentina.l1.pipeline import run_l1
 from trentina.unpack.scan import unpack
@@ -367,7 +367,7 @@ async def test_a_pack_and_a_ref_name_cross_the_git_transport_unjudged() -> None:
     assert "29. **No layer reads what the git transport carries**" in page
 
 
-async def test_intent_guards_forwards_what_its_judge_allows_one_call_at_a_time() -> None:
+async def test_semantic_request_guards_forwards_what_its_judge_allows_one_call_at_a_time() -> None:
     """Gap 30 (#456). The gatekeeper reads a guarded call's content only
     through its judge: an allow forwards it, whatever it carries. And each
     call is judged alone, so an export sent in halves is two allowed calls
@@ -376,11 +376,11 @@ async def test_intent_guards_forwards_what_its_judge_allows_one_call_at_a_time()
         name="agent1",
         auth=AuthConfig(bearer_token_env="TOK"),
         backends={"mail": Backend(url="http://mail:1/mcp", tools_allow=["*"])},
-        intent_guards=IntentGuardsConfig(
+        semantic_request_guards=SemanticGuardsConfig(
             policy="No customer data in bulk.", tools={"mail": ["send_message"]}
         ),
     )
-    assert profile.intent_guards is not None
+    assert profile.semantic_request_guards is not None
     facts = gatekeeper.CallFacts("mail", "send_message", "bob@example.net", "param", True, True)
     judge = AsyncMock(return_value={"decision": "allow", "reason": "within_policy"})
     halves = (
@@ -396,11 +396,14 @@ async def test_intent_guards_forwards_what_its_judge_allows_one_call_at_a_time()
         patch.object(gatekeeper, "llm_available", lambda: True),
     ):
         for half in halves:
-            assert await gatekeeper.evaluate(profile, profile.intent_guards, facts, half) is None
+            assert (
+                await gatekeeper.evaluate(profile, profile.semantic_request_guards, facts, half)
+                is None
+            )
     assert "records 1 to 120" not in judge.await_args.args[0]
 
     page = Path(__file__).parents[1].joinpath("docs/defense-pipeline.md").read_text()
-    assert "30. **Intent guards is a model, and judges one call at a time**" in page
+    assert "30. **The semantic request guard is a model, and judges one call at a time**" in page
 
 
 def test_a_binary_egress_response_is_read_by_no_layer() -> None:

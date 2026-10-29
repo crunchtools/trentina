@@ -20,7 +20,7 @@ is SAFE, in the ways the #90 audit and its successors found live:
   incident's shape in one profile.
 - ``require-default-open``: a ``TRENTINA_REQUIRE_*`` switch whose default is
   not fail-closed.
-- ``guarded-tool-no-destination``: a tool under ``intent_guards`` whose
+- ``guarded-tool-no-destination``: a tool under ``semantic_request_guards`` whose
   backend declares no ``destination_params`` entry for it (#456). The
   gatekeeper is then told the destination is unknown, so it cannot know
   whether the call is a first contact.
@@ -193,7 +193,7 @@ def _guarded(backend: dict[str, Any], pattern: str) -> bool:
     """A literal tool whose guard narrows it. A glob never is: guards key on exact names."""
     if any(c in pattern for c in "*?["):
         return False
-    return _constrains((backend.get("request_guards") or {}).get(pattern) or {})
+    return _constrains((backend.get("literal_request_guards") or {}).get(pattern) or {})
 
 
 def _endpoint(url: str) -> str:
@@ -285,7 +285,7 @@ def _open_fetch(body: dict[str, Any]) -> str | None:
             continue
         if not _admits(backend, FETCH_TOOL):
             continue
-        guard = (backend.get("request_guards") or {}).get(FETCH_TOOL) or {}
+        guard = (backend.get("literal_request_guards") or {}).get(FETCH_TOOL) or {}
         if not _constrains({"url": guard.get("url")}):
             return str(name)
     return None
@@ -334,7 +334,7 @@ def check_guarded_destinations(profiles_file: dict[str, Any]) -> list[Finding]:
     """A guarded tool whose destination the audit never records (#456)."""
     findings = []
     for profile, body in _profiles(profiles_file).items():
-        guarded = body.get("intent_guards")
+        guarded = body.get("semantic_request_guards")
         if not isinstance(guarded, dict):
             continue
         backends = body.get("backends") or {}
