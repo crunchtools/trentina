@@ -864,30 +864,6 @@ def _refuse_arguments(
     return None
 
 
-def _audit_assembly_failure(
-    profile_name: str,
-    backend_name: str,
-    tool_name: str,
-    t0: float,
-    exc: Exception,
-    destination: Destination | None,
-) -> None:
-    """The one audit row for a call whose assembly raised.
-
-    Assembly decides the outcome, so the row is written after it; a failure in
-    it would otherwise leave the call unaudited.
-    """
-    audit._audit(
-        profile_name,
-        backend_name,
-        tool_name,
-        Outcome.GATEWAY_ERROR,
-        int((time.monotonic() - t0) * 1000),
-        f"assembly failed: {exc_kind(exc)}",
-        destination=destination,
-    )
-
-
 async def _finish_delivery(
     profile: Profile,
     backend: Backend,

@@ -19,14 +19,15 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from ..database import record_gateway_call
 from ..logsafe import exc_kind
+from ..outcomes import Outcome
 from .context import current_call, current_session
 
 if TYPE_CHECKING:
-    from ..outcomes import Outcome
     from .destination import Destination
 
 logger = logging.getLogger(__name__)
@@ -79,3 +80,27 @@ def _audit(
         )
     except Exception as exc:
         logger.warning("gateway: audit row lost profile=%s err=%s", profile, exc_kind(exc))
+
+
+def _audit_assembly_failure(
+    profile_name: str,
+    backend_name: str,
+    tool_name: str,
+    t0: float,
+    exc: Exception,
+    destination: Destination | None,
+) -> None:
+    """The one audit row for a call whose assembly raised.
+
+    Assembly decides the outcome, so the row is written after it; a failure in
+    it would otherwise leave the call unaudited.
+    """
+    _audit(
+        profile_name,
+        backend_name,
+        tool_name,
+        Outcome.GATEWAY_ERROR,
+        int((time.monotonic() - t0) * 1000),
+        f"assembly failed: {exc_kind(exc)}",
+        destination=destination,
+    )

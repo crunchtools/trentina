@@ -143,7 +143,7 @@ class TestCatchAll:
         # Dispatch returns, then assembly raises: the response edge's
         # ``McpServerFace._assemble`` is the orchestrated equivalent of the old
         # ``router._assemble_call_result``. Its failure is audited gateway_error
-        # by ``router._audit_assembly_failure`` (deliver's except), which sets the
+        # by ``audit._audit_assembly_failure`` (deliver's except), which sets the
         # audited flag so the outer except does not count it a second time.
         with (
             patch.object(

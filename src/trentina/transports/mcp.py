@@ -413,7 +413,7 @@ class McpServerFace(Face):
         try:
             assembled = await self._assemble(ctx, parsed, carried)
         except Exception as exc:
-            router._audit_assembly_failure(
+            audit._audit_assembly_failure(
                 profile.name, parsed.backend_name, parsed.tool_name, t0, exc, parsed.dest
             )
             raise
