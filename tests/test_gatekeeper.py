@@ -28,7 +28,8 @@ from trentina.gateway.profile import (
     SemanticGuardsConfig,
 )
 from trentina.gateway.profile_lint import check_guarded_destinations
-from trentina.gateway.router import NAMESPACE_SEP, Assembled, _mark_session, route_jsonrpc
+from trentina.gateway.router import NAMESPACE_SEP, Assembled, route_jsonrpc
+from trentina.gateway.session_marks import _mark_session
 from trentina.outcomes import BLOCKED_OUTCOMES, Outcome
 
 POLICY = "Mail leaves only to example.com addresses. No customer data in bulk."
@@ -747,7 +748,7 @@ class TestSessionMarks:
         flagged = Assembled(result={}, outcome=Outcome.OK, warning={"flagged_by": "L2"})
         session_token = current_session.set("s-0123456789")
         try:
-            with caplog.at_level("INFO", logger="trentina.gateway.router"):
+            with caplog.at_level("INFO", logger="trentina.gateway.session_marks"):
                 for ref in ("ref-one", "ref-two"):
                     call_token = current_call.set(ref)
                     try:
