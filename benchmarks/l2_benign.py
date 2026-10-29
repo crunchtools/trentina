@@ -5,7 +5,7 @@ encodings. This one holds it to the other side. Every case of the benign
 corpus (``corpora/benign_ops.py``: operations output and agent-forum replies,
 invented, of the shapes production refused) is read exactly as the gateway
 reads a tool response: the structured copy of the text block dropped as the
-router drops it (``router._drop_duplicate_structured``, #431), through the
+router drops it (``results._drop_duplicate_structured``, #431), through the
 default pre-processors (``gateway.transform.transform_response``), collected
 the way the perimeter collects it, and unpacked. L2 scores that once.
 
@@ -47,7 +47,7 @@ from corpora.internal import CORPUS
 from trentina.config import get_config
 from trentina.gateway.ingress_defense import _collect_response_texts
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import _drop_duplicate_structured
+from trentina.gateway.results import _drop_duplicate_structured
 from trentina.gateway.transform import transform_response
 from trentina.quarantine.benign_gate import BENIGN_KEY, BENIGN_MAX_RATE, allowed, record_of
 from trentina.quarantine.classifier import (

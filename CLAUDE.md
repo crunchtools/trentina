@@ -340,7 +340,7 @@ Tools are served under short names (`gateway/names.py`), tagged with a backend
 only on collision, recorded in `tool_names` and never reassigned. Only
 tools/list and tools/call see them; everything behind the edge uses the real
 (backend, tool). A repeated `structuredContent` is dropped before the scan
-(`router._drop_duplicate_structured`).
+(`results._drop_duplicate_structured`).
 
 `tool_discovery` (#473, `gateway/discovery.py`, `docs/tool-discovery.md`)
 lists less for a client without its own tool search: `search` serves a core
@@ -369,7 +369,7 @@ its own posture and nothing enforced it. Now the policy does:
   Flagged → `redact` only, NEVER `flag`; gap-only → `flag`.
 - A response withheld AFTER the backend answered (defense block, response
   guard, byte cap, failed required transform) is not a refusal for a tool
-  that may write (#425): `router._executed` rewords it as "executed, response
+  that may write (#425): `results._executed` rewords it as "executed, response
   withheld", `isError` the backend's own (true at the byte cap, where it was
   never read), `_trentina_refusal.executed` true.
   `_may_have_acted` is the test: remote and not annotated `readOnlyHint`. A

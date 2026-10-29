@@ -36,6 +36,7 @@ from trentina.transports.base import Carrier, Early, Face, Transport
 ROUTER = "trentina.gateway.router"
 MCP = "trentina.transports.mcp"
 ORCH = "trentina.orchestrator"
+RESULTS = "trentina.gateway.results"
 
 
 def _profile(
@@ -146,7 +147,7 @@ async def test_block_refusal() -> None:
 @pytest.mark.asyncio
 async def test_required_transform_failure() -> None:
     # A required processor that cannot run: assembly delivers the preprocess
-    # refusal in place of the response (router._preprocess_refusal).
+    # refusal in place of the response (results._preprocess_refusal).
     from trentina.gateway.transform import TransformOutcome
 
     failed = TransformOutcome(content_blocks=_reply().content, failed="required processor failed")
@@ -222,8 +223,8 @@ async def _run_capture(
     ``scan_tool_response`` is patched as ``router.*`` (the paged path) and
     ``orchestrator.*`` (the non-paged edge, via ``judge_response``);
     ``check_response_guards`` is reached as ``transports.mcp.*``; ``_refuse_call``
-    and ``_may_have_acted`` are reached as ``router.*`` on the orchestrated path,
-    so one patch covers each.
+    is reached as ``router.*`` and ``_may_have_acted`` as ``results.*`` on the
+    orchestrated path, so one patch covers each.
     """
     call = AsyncMock(return_value=reply)
     scan = AsyncMock(return_value=IngressDecision(warning=None))
@@ -236,7 +237,7 @@ async def _run_capture(
     if guard_err is not None:
         patches.append(patch(f"{MCP}.check_response_guards", MagicMock(return_value=guard_err)))
     if may_act is not None:
-        patches.append(patch(f"{ROUTER}._may_have_acted", MagicMock(return_value=may_act)))
+        patches.append(patch(f"{RESULTS}._may_have_acted", MagicMock(return_value=may_act)))
     if refuse is not None:
         patches.append(patch(f"{ROUTER}._refuse_call", AsyncMock(return_value=refuse)))
     with contextlib.ExitStack() as stack:

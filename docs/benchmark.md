@@ -876,7 +876,7 @@ file or page an agent asked for, so such a value is left as it arrived.
 
 **The harness reads the response twice; the router does not.** A FastMCP
 tool's result arrives as a text block and the same object as
-`structuredContent`, and `router._drop_duplicate_structured` drops the copy
+`structuredContent`, and `results._drop_duplicate_structured` drops the copy
 on what arrived, before the transform: the layers read the text block
 alone. `as_read` joins the text block with every string of the payload,
 which the gateway does only for a backend whose structured content differs
@@ -897,7 +897,7 @@ named the wrong way round: `-08` is the held-out one, `-02` the tuning one.)
 
 ### The gate reads as the router reads (#431)
 
-Since 1.4.1 `as_read` calls `router._drop_duplicate_structured` before the
+Since 1.4.1 `as_read` calls `results._drop_duplicate_structured` before the
 transform, so the gate scores what production's layers read. Allowance (2%)
 and threshold (0.7) are unchanged. What that took, same model:
 

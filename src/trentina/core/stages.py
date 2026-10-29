@@ -38,7 +38,7 @@ class Arrived:
     """A backend result, stripped of the gateway's reserved keys, ready to judge.
 
     The reserved-key strip and the duplicate-``structuredContent`` drop have
-    already run (``router._arrived``). ``is_error`` is the backend's own flag,
+    already run (``results._arrived``). ``is_error`` is the backend's own flag,
     coerced to ``bool`` as the paging hold reads it; the delivered result keeps
     the raw value. ``acted`` is ``_may_have_acted``: the backend has answered,
     so a tool that may write has written (#425).

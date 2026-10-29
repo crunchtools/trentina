@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, Any
 from ..core.stages import Arrived, Transformed
 from ..defense import Provenance
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
-from ..gateway import gatekeeper, paging, router
+from ..gateway import gatekeeper, paging, results, router
 from ..gateway.destination import Destination, destination_of
 from ..gateway.errors import BackendCallError
 from ..gateway.filter import filter_tools
@@ -369,10 +369,10 @@ class McpServerFace(Face):
                 response_err,
                 destination=parsed.dest,
             )
-            if not router._may_have_acted(parsed.backend, parsed.tool_name):
+            if not results._may_have_acted(parsed.backend, parsed.tool_name):
                 return Early(_response_guard_refusal(req_id, response_err, parsed.mode))
             withheld = {REFUSAL_KEY: {"reason": response_err, "mode": parsed.mode.value}}
-            return router._executed(withheld, call_result.is_error)
+            return results._executed(withheld, call_result.is_error)
 
         # The semantic response guard: the judge reads the operator's policy
         # against the raw result the literal guard saw, before the perimeter
@@ -404,10 +404,10 @@ class McpServerFace(Face):
                     gated.audit,
                     destination=parsed.dest,
                 )
-                if not router._may_have_acted(parsed.backend, parsed.tool_name):
+                if not results._may_have_acted(parsed.backend, parsed.tool_name):
                     return Early(_response_guard_refusal(req_id, gated.message, parsed.mode))
                 withheld = {REFUSAL_KEY: {"reason": gated.message, "mode": parsed.mode.value}}
-                return router._executed(withheld, call_result.is_error)
+                return results._executed(withheld, call_result.is_error)
 
         t0 = carried.t0
         try:
@@ -449,7 +449,7 @@ class McpServerFace(Face):
 
         ok = Outcome.TOOL_ERROR if call_result.is_error else Outcome.OK
         content_blocks, structured, stripped = await asyncio.to_thread(
-            router._arrived, backend, call_result
+            results._arrived, backend, call_result
         )
         arrived = Arrived(
             content_blocks=content_blocks,
@@ -458,7 +458,7 @@ class McpServerFace(Face):
             # ``bool`` as the paging hold reads it; the result keeps the raw flag.
             is_error=bool(call_result.is_error),
             # The backend has answered, so a tool that may write has written (#425).
-            acted=router._may_have_acted(backend, tool_name),
+            acted=results._may_have_acted(backend, tool_name),
         )
 
         # Transform BEFORE the perimeter, never after: the scan reads the
@@ -477,9 +477,9 @@ class McpServerFace(Face):
                 minify=minify,
             )
             if reduced.failed is not None:
-                failed = router._preprocess_refusal(reduced.failed, mode)
+                failed = results._preprocess_refusal(reduced.failed, mode)
                 return router.Assembled(
-                    router._executed(failed, call_result.is_error) if arrived.acted else failed,
+                    results._executed(failed, call_result.is_error) if arrived.acted else failed,
                     Outcome.BLOCKED_DEFENSE,
                     reduced.failed,
                     stripped=stripped,
@@ -498,7 +498,7 @@ class McpServerFace(Face):
                 mode=mode,
                 prompt=prompt,
                 provenance=provenance,
-                l3_context=router._l3_context(backend, reduced),
+                l3_context=results._l3_context(backend, reduced),
                 hidden=reduced.hidden,
                 is_error=arrived.is_error,
                 acted=arrived.acted,
@@ -536,7 +536,7 @@ class McpServerFace(Face):
                 mode=mode,
                 prompt=prompt,
                 policy=policy,
-                l3_context=router._l3_context(backend, reduced)
+                l3_context=results._l3_context(backend, reduced)
                 if reduced is not None
                 else backend.l3_briefing,
                 hidden=reduced.hidden if reduced is not None else None,
@@ -547,9 +547,9 @@ class McpServerFace(Face):
                 # as a defense block so a misfiring threshold shows in the
                 # outcome column, not only in an agent's confusion.
                 risk = judged.decision.warning.get("risk_level") if judged.decision.warning else "?"
-                blocked = router._blocked_result(judged.decision)
+                blocked = results._blocked_result(judged.decision)
                 return router.Assembled(
-                    router._executed(blocked, call_result.is_error) if arrived.acted else blocked,
+                    results._executed(blocked, call_result.is_error) if arrived.acted else blocked,
                     Outcome.BLOCKED_DEFENSE,
                     f"response blocked by defense (risk={risk})",
                     warning=gateway_warning,
@@ -618,7 +618,7 @@ class McpClientCarrier(Carrier):
                 router._failed_call(
                     req_id,
                     exc,
-                    router._may_have_acted(parsed.backend, parsed.tool_name),
+                    results._may_have_acted(parsed.backend, parsed.tool_name),
                     parsed.mode,
                     parsed.policy,
                 )
