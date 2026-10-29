@@ -566,7 +566,7 @@ class McpServerFace(Face):
                 if judged.decision.warning is not None:
                     result[WARNING_KEY] = judged.decision.warning
                 return router.Assembled(result, ok, warning=gateway_warning, stripped=stripped)
-            router._attach_warning(result, judged.decision.warning)
+            results._attach_warning(result, judged.decision.warning)
 
         return router.Assembled(result, ok, warning=gateway_warning, stripped=stripped)
 
@@ -615,7 +615,7 @@ class McpClientCarrier(Carrier):
                 destination=parsed.dest,
             )
             return Early(
-                router._failed_call(
+                results._failed_call(
                     req_id,
                     exc,
                     results._may_have_acted(parsed.backend, parsed.tool_name),
