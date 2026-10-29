@@ -110,7 +110,7 @@ is relayed). That gives a 2×2 grid:
 | | Request (arguments) | Response (result) |
 |---|---|---|
 | **Literal** (per-tool glob) | [Literal request guards](literal-request-guards.md) — `literal_request_guards` | [Literal response guards](literal-response-guards.md) — `literal_response_guards` |
-| **Semantic** (policy a judge reads) | [Semantic request guards](semantic-request-guards.md) — `semantic_request_guards` | *(a semantic response guard is a later feature; no key yet)* |
+| **Semantic** (policy a judge reads) | [Semantic request guards](semantic-request-guards.md) — `semantic_request_guards` | [Semantic response guards](semantic-response-guards.md) — `semantic_response_guards` |
 
 Each guard only subtracts; none can widen what another allows. The
 [defense pipeline](defense-pipeline.md) (L1 ∥ L2 → L3) is a separate

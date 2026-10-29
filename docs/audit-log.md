@@ -113,6 +113,7 @@ blocked 34 hostile pages.
 | `denied_guard` | blocked | A deterministic request-side or egress denial: a literal request guard, a mode/transform policy, or an egress/proxy refusal. |
 | `denied_response_guard` | blocked | A literal response guard rejected the backend's result. |
 | `denied_gatekeeper` | blocked | [Semantic request guards](semantic-request-guards.md) refused the call before it was forwarded. The message is the reason code, then what the gatekeeper was told: `first_contact` and `session_flagged`. |
+| `denied_response_gatekeeper` | blocked | [Semantic response guards](semantic-response-guards.md) refused delivery of the backend's result. The backend was contacted and answered; the answer was withheld. Distinct from `denied_response_guard`, the deterministic literal response guard. |
 | `decoy_tripped` | tripped | A [decoy tool](profiles.md#decoy-tools-and-honeytokens) was called, or a planted credential was in a call's arguments. An alarm about the caller. |
 | `tool_error` | failed | Backend completed but reported `isError`. |
 | `backend_error` | failed | Upstream failed: network, timeout, auth, 4xx/5xx. |
@@ -223,8 +224,9 @@ defense got mistaken for a broken one.
 
 ### Denial Monitoring
 
-`denied_allowlist`, `denied_guard`, `denied_response_guard` and
-`denied_gatekeeper` rows record calls the gateway refused. A consumer repeatedly probing tools outside its
+`denied_allowlist`, `denied_guard`, `denied_response_guard`,
+`denied_gatekeeper` and `denied_response_gatekeeper` rows record calls the
+gateway refused. A consumer repeatedly probing tools outside its
 allowlist is a signal worth alerting on — it can indicate a misconfigured
 client or a hijacked agent. These were previously not recorded at all.
 
@@ -253,10 +255,14 @@ redirect to a binary) is a refusal and audits as `blocked_defense`; until
 provider failed is `backend_error`; one whose L0 leaked its canary is
 `blocked_defense`.
 
-`denied_response_guard` is the one denial that still costs an upstream call:
-the backend answered and the answer was withheld here. A rising rate on it
-means an agent keeps asking for material its profile forbids — see
-[Literal Response Guards](literal-response-guards.md).
+`denied_response_guard` and `denied_response_gatekeeper` are the denials that
+still cost an upstream call: the backend answered and the answer was withheld
+here. A rising rate on either means backend results are being withheld under
+the profile's policy — it reflects what the backend returned, not by itself
+what the agent intended, unlike the request-side `denied_guard` /
+`denied_gatekeeper`, where a rising rate can signal an agent probing. See
+[Literal Response Guards](literal-response-guards.md) and
+[Semantic Response Guards](semantic-response-guards.md).
 
 ### Usage Patterns
 

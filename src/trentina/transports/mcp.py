@@ -34,6 +34,7 @@ this file and deleting the router copies, not by touching every call site.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -45,10 +46,11 @@ from typing import TYPE_CHECKING, Any
 from ..core.stages import Arrived, Transformed
 from ..defense import Provenance
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
-from ..gateway import paging, router
+from ..gateway import gatekeeper, paging, router
 from ..gateway.destination import Destination, destination_of
 from ..gateway.errors import BackendCallError
 from ..gateway.filter import filter_tools
+from ..gateway.guards import _response_text as _response_guard_text
 from ..gateway.guards import check_response_guards
 from ..gateway.modes_policy import policy_for, resolve_call, resolve_preprocess
 from ..gateway.transform import transform_response
@@ -115,6 +117,81 @@ class McpCarried:
 
     call_result: Any
     t0: float
+
+
+def _result_document(call_result: Any) -> str:
+    """The raw result as one text blob for the semantic response guard.
+
+    The same text the literal response guard read (every text block joined, and
+    an embedded ``resource``'s ``text``), plus each resource's OTHER delivered
+    fields (``uri``, ``mimeType``) and the structured content, every piece
+    serialized — so the judge sees everything the agent would receive, not only
+    the joined text. ``_response_text`` reads only a resource's ``text``, but
+    the agent is handed the whole resource dict; a backend could hide
+    policy-restricted data (a credential in a resource ``uri``) in a field that
+    extractor drops, so those fields are judged too. Empty when the result
+    carries nothing to judge.
+    """
+    parts: list[str] = []
+    text = _response_guard_text(call_result.content)
+    if text:
+        parts.append(text)
+    for block in call_result.content or []:
+        if not isinstance(block, dict) or block.get("type") != "resource":
+            continue
+        resource = block.get("resource")
+        if not isinstance(resource, dict):
+            continue
+        # Everything delivered except the ``text`` already joined above — the
+        # ``uri`` and ``mimeType`` the agent also sees. ``_has_uninspectable_content``
+        # has already refused any resource carrying a binary ``blob``.
+        meta = {k: v for k, v in resource.items() if k != "text"}
+        if meta:
+            parts.append(json.dumps(meta, sort_keys=True, ensure_ascii=False, default=str))
+    structured = call_result.structured_content
+    if structured is not None:
+        parts.append(json.dumps(structured, sort_keys=True, ensure_ascii=False, default=str))
+    return "\n".join(parts)
+
+
+def _has_uninspectable_content(call_result: Any) -> bool:
+    """True when any content block carries something the judge cannot read as text.
+
+    The judge reads only text — a ``text`` block whose ``text`` is a string, or
+    a ``resource`` block that is a text resource we can read whole. Every other
+    block (an image, audio, a binary resource ``blob``, a ``resource_link``, an
+    unknown type, a non-dict shape, or a ``text``/``resource`` block too
+    malformed to read) is content the operator's policy cannot be checked
+    against, so a guarded response holding any is failed closed — refused —
+    rather than judged on the text around it. An allowlist, not a denylist: a
+    block we do not explicitly read as text fails closed, so neither a new MCP
+    block type nor a malformed block can open a hole here.
+    """
+    for block in call_result.content or []:
+        if not isinstance(block, dict):
+            return True
+        kind = block.get("type")
+        if kind == "text":
+            # Inspectable only when the text is actually a string: a missing or
+            # non-string ``text`` extracts to nothing, which would reach the
+            # judge as an empty document and pass the policy unchecked.
+            if isinstance(block.get("text"), str):
+                continue
+            return True
+        if kind == "resource":
+            resource = block.get("resource")
+            # A text resource we can read whole: a dict, a string ``text``, and
+            # no binary ``blob``. Its ``uri``/``mimeType`` are judged by
+            # ``_result_document``; a ``blob`` is binary the judge cannot read.
+            if (
+                isinstance(resource, dict)
+                and isinstance(resource.get("text"), str)
+                and "blob" not in resource
+            ):
+                continue
+            return True
+        return True
+    return False
 
 
 class McpServerFace(Face):
@@ -291,6 +368,41 @@ class McpServerFace(Face):
                 return Early(router._response_guard_refusal(req_id, response_err, parsed.mode))
             withheld = {REFUSAL_KEY: {"reason": response_err, "mode": parsed.mode.value}}
             return router._executed(withheld, call_result.is_error)
+
+        # The semantic response guard: the judge reads the operator's policy
+        # against the raw result the literal guard saw, before the perimeter
+        # (#456) — purely the policy judge; the perimeter scans next in
+        # ``_assemble``. The before-perimeter order is load-bearing: a refused
+        # response is never delivered (so the layer contract holds), and
+        # scanning first would risk redact mode delivering a redaction of a
+        # response the policy withholds. Guarded tools only; unguarded cost nothing.
+        guards = profile.semantic_response_guards
+        if guards is not None and guards.guards(parsed.backend_name, parsed.tool_name):
+            uninspectable = _has_uninspectable_content(call_result)
+            document = "" if uninspectable else _result_document(call_result)
+            gated = await gatekeeper.judge_response(
+                profile,
+                parsed.backend,
+                parsed.backend_name,
+                parsed.tool_name,
+                document,
+                dest=None,
+                uninspectable=uninspectable,
+            )
+            if gated is not None:
+                router._audit(
+                    profile.name,
+                    parsed.backend_name,
+                    parsed.tool_name,
+                    Outcome.DENIED_RESPONSE_GATEKEEPER,
+                    duration_ms,
+                    gated.audit,
+                    destination=parsed.dest,
+                )
+                if not router._may_have_acted(parsed.backend, parsed.tool_name):
+                    return Early(router._response_guard_refusal(req_id, gated.message, parsed.mode))
+                withheld = {REFUSAL_KEY: {"reason": gated.message, "mode": parsed.mode.value}}
+                return router._executed(withheld, call_result.is_error)
 
         t0 = carried.t0
         try:

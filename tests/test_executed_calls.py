@@ -167,6 +167,154 @@ class TestOtherWithheldResponses:
         resp, _, _ = await _call(SEARCH, profile=profile)
         assert refused(resp)
 
+    async def test_a_semantic_response_guard(self) -> None:
+        """#456: the policy judge refuses delivery, after the backend answered."""
+        from trentina.gateway.profile import SemanticGuardsConfig
+
+        profile = _profile()
+        profile.semantic_response_guards = SemanticGuardsConfig(
+            policy="no customer data leaves", tools={"mail": [SEND, SEARCH]}
+        )
+        refuse = AsyncMock(return_value={"decision": "refuse", "reason": "restricted_content"})
+        with (
+            patch("trentina.gateway.gatekeeper.llm_available", lambda: True),
+            patch("trentina.gateway.gatekeeper.quarantine_generate", refuse),
+        ):
+            resp, _, audit = await _call(SEND, profile=profile)
+            result = resp["result"]
+            assert result["isError"] is False
+            assert result["_trentina_refusal"]["executed"] is True
+            assert (
+                result["_trentina_refusal"]["reason"]
+                == "Refused by semantic response guards: restricted_content"
+            )
+            assert "bob@example.com" not in str(result)
+            assert audit.call_args.args[3] is Outcome.DENIED_RESPONSE_GATEKEEPER
+
+            # A read-only tool is refused outright, nothing delivered.
+            resp, _, _ = await _call(SEARCH, profile=profile)
+            assert refused(resp)
+            assert "semantic response guards: restricted_content" in refused_text(resp)
+
+    async def test_a_semantic_response_guard_fails_closed_on_binary(self) -> None:
+        """#456: a guarded response the judge cannot read is withheld unasked."""
+        from trentina.gateway.profile import SemanticGuardsConfig
+
+        profile = _profile()
+        profile.semantic_response_guards = SemanticGuardsConfig(
+            policy="no customer data leaves", tools={"mail": [SEND, SEARCH]}
+        )
+        image = BackendCall(
+            content=[{"type": "image", "data": "aGVsbG8=", "mimeType": "image/png"}],
+            is_error=False,
+            structured_content=None,
+        )
+        judge = AsyncMock(return_value={"decision": "allow", "reason": "within_policy"})
+        with (
+            patch("trentina.gateway.gatekeeper.llm_available", lambda: True),
+            patch("trentina.gateway.gatekeeper.quarantine_generate", judge),
+        ):
+            resp, _, audit = await _call(SEND, profile=profile, answer=image)
+        result = resp["result"]
+        assert result["_trentina_refusal"]["executed"] is True
+        assert (
+            result["_trentina_refusal"]["reason"]
+            == "Refused by semantic response guards: uninspectable_response"
+        )
+        assert audit.call_args.args[3] is Outcome.DENIED_RESPONSE_GATEKEEPER
+        # The judge was never asked — the policy cannot be checked against bytes.
+        judge.assert_not_awaited()
+
+    async def test_a_resource_uri_is_judged_not_only_its_text(self) -> None:
+        """Gatehouse #599 (HIGH): a text resource is judged WHOLE — a secret the
+        backend hides in the resource ``uri`` reaches the judge, not only the
+        ``text``."""
+        from trentina.gateway.profile import SemanticGuardsConfig
+
+        profile = _profile()
+        profile.semantic_response_guards = SemanticGuardsConfig(
+            policy="no credentials leave", tools={"mail": [SEND, SEARCH]}
+        )
+        leaky = BackendCall(
+            content=[
+                {
+                    "type": "resource",
+                    "resource": {"uri": "mem://sk-live-SECRET", "text": "ok"},
+                }
+            ],
+            is_error=False,
+            structured_content=None,
+        )
+        seen: dict[str, Any] = {}
+
+        async def _capture(_cfg: Any, _facts: Any, document: str) -> str | None:
+            seen["document"] = document
+            return None  # allow
+
+        with (
+            patch("trentina.gateway.gatekeeper.llm_available", lambda: True),
+            patch("trentina.gateway.gatekeeper._ask_response", _capture),
+        ):
+            await _call(SEND, profile=profile, answer=leaky)
+        # The judged document carries the uri, not merely the resource text.
+        assert "sk-live-SECRET" in seen["document"]
+        assert "ok" in seen["document"]
+
+    async def test_a_resource_blob_fails_closed(self) -> None:
+        """A resource carrying a binary ``blob`` is uninspectable — refused
+        unasked, like any binary block."""
+        from trentina.gateway.profile import SemanticGuardsConfig
+
+        profile = _profile()
+        profile.semantic_response_guards = SemanticGuardsConfig(
+            policy="no customer data leaves", tools={"mail": [SEND, SEARCH]}
+        )
+        blob = BackendCall(
+            content=[{"type": "resource", "resource": {"uri": "mem://x", "blob": "AAAA"}}],
+            is_error=False,
+            structured_content=None,
+        )
+        judge = AsyncMock(return_value={"decision": "allow", "reason": "within_policy"})
+        with (
+            patch("trentina.gateway.gatekeeper.llm_available", lambda: True),
+            patch("trentina.gateway.gatekeeper.quarantine_generate", judge),
+        ):
+            resp, _, audit = await _call(SEND, profile=profile, answer=blob)
+        assert (
+            resp["result"]["_trentina_refusal"]["reason"]
+            == "Refused by semantic response guards: uninspectable_response"
+        )
+        assert audit.call_args.args[3] is Outcome.DENIED_RESPONSE_GATEKEEPER
+        judge.assert_not_awaited()
+
+    async def test_a_malformed_text_block_fails_closed(self) -> None:
+        """Gatehouse #599 (bug): a ``text`` block with no string ``text`` field
+        extracts to nothing; it must be refused as uninspectable, not allowed on
+        an empty document without asking the judge."""
+        from trentina.gateway.profile import SemanticGuardsConfig
+
+        profile = _profile()
+        profile.semantic_response_guards = SemanticGuardsConfig(
+            policy="no customer data leaves", tools={"mail": [SEND, SEARCH]}
+        )
+        malformed = BackendCall(
+            content=[{"type": "text"}],  # no "text" key at all
+            is_error=False,
+            structured_content=None,
+        )
+        judge = AsyncMock(return_value={"decision": "allow", "reason": "within_policy"})
+        with (
+            patch("trentina.gateway.gatekeeper.llm_available", lambda: True),
+            patch("trentina.gateway.gatekeeper.quarantine_generate", judge),
+        ):
+            resp, _, audit = await _call(SEND, profile=profile, answer=malformed)
+        assert (
+            resp["result"]["_trentina_refusal"]["reason"]
+            == "Refused by semantic response guards: uninspectable_response"
+        )
+        assert audit.call_args.args[3] is Outcome.DENIED_RESPONSE_GATEKEEPER
+        judge.assert_not_awaited()
+
     async def test_a_response_over_the_byte_cap(self) -> None:
         too_big = BackendResponseTooLargeError("cut", cap_bytes=1024)
         resp, _, audit = await _call(SEND, answer=too_big)
@@ -196,3 +344,89 @@ class TestOtherWithheldResponses:
         assert result["_trentina_refusal"]["reason"] == "preprocess_failed"
         assert result["_trentina_refusal"]["executed"] is True
         assert audit.call_args.args[3] is Outcome.BLOCKED_DEFENSE
+
+
+class TestResponseDocumentInspection:
+    """The response-guard allowlist and the judged document, as units (#599).
+
+    ``_has_uninspectable_content`` is the fail-closed allowlist; ``_result_document``
+    is what the judge reads. Gatehouse #599 found a malformed ``text`` block
+    slipping through as inspectable, and a resource's ``uri``/metadata reaching
+    the agent unjudged.
+    """
+
+    @staticmethod
+    def _result(content: Any, structured: Any = None) -> BackendCall:
+        return BackendCall(content=content, is_error=False, structured_content=structured)
+
+    @pytest.mark.parametrize(
+        ("content", "inspectable"),
+        [
+            ([], True),  # genuinely empty: nothing uninspectable
+            ([{"type": "text", "text": "hi"}], True),
+            ([{"type": "text"}], False),  # missing text
+            ([{"type": "text", "text": 5}], False),  # non-string text
+            ([{"type": "resource", "resource": {"uri": "mem://x", "text": "t"}}], True),
+            ([{"type": "resource", "resource": {"uri": "mem://x", "blob": "AAA="}}], False),
+            ([{"type": "resource", "resource": {"uri": "x", "text": "t", "blob": "AA"}}], False),
+            ([{"type": "resource", "resource": "nope"}], False),  # resource not a dict
+            ([{"type": "image", "data": "AAA="}], False),
+            ([{"type": "audio", "data": "AAA="}], False),
+            ([{"type": "resource_link", "uri": "mem://x"}], False),
+            ([{"type": "weird-future-block"}], False),  # unknown type fails closed
+            (["not-a-dict"], False),
+            ([{"type": "text", "text": "hi"}, {"type": "image", "data": "AA"}], False),  # mixed
+        ],
+    )
+    def test_the_allowlist(self, content: Any, inspectable: bool) -> None:
+        from trentina.transports.mcp import _has_uninspectable_content
+
+        assert _has_uninspectable_content(self._result(content)) is (not inspectable)
+
+    def test_text_blocks_are_joined(self) -> None:
+        from trentina.transports.mcp import _result_document
+
+        doc = _result_document(
+            self._result([{"type": "text", "text": "one"}, {"type": "text", "text": "two"}])
+        )
+        assert "one" in doc and "two" in doc
+
+    def test_a_resource_uri_and_mime_are_in_the_document(self) -> None:
+        from trentina.transports.mcp import _result_document
+
+        doc = _result_document(
+            self._result(
+                [
+                    {
+                        "type": "resource",
+                        "resource": {
+                            "uri": "mem://sk-secret-123",
+                            "mimeType": "text/plain",
+                            "text": "body",
+                        },
+                    }
+                ]
+            )
+        )
+        assert "body" in doc  # the text
+        assert "sk-secret-123" in doc  # the uri — the HIGH finding
+        assert "text/plain" in doc  # and other metadata
+
+    def test_structured_only_is_serialized(self) -> None:
+        from trentina.transports.mcp import _result_document
+
+        doc = _result_document(self._result([], structured={"customer": "acme"}))
+        assert "acme" in doc
+
+    def test_text_and_structured_combined(self) -> None:
+        from trentina.transports.mcp import _result_document
+
+        doc = _result_document(
+            self._result([{"type": "text", "text": "visible"}], structured={"k": "v"})
+        )
+        assert "visible" in doc and "v" in doc
+
+    def test_an_empty_result_has_nothing_to_judge(self) -> None:
+        from trentina.transports.mcp import _result_document
+
+        assert _result_document(self._result([])) == ""

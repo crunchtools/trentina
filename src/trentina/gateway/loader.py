@@ -209,18 +209,23 @@ def _check_guarded_tools(name: str, profile: Profile) -> None:
 
     The same reasoning as ``destination_params``: a rule for a tool the agent
     can never call is a misspelling, and the call the operator meant to
-    guard is the one it fails to name.
+    guard is the one it fails to name. Both the request guards (the call) and
+    the response guards (the result) are held to it.
     """
-    if profile.semantic_request_guards is None:
-        return
-    for backend_name, tools in profile.semantic_request_guards.tools.items():
-        backend = profile.backends[backend_name]
-        for tool in tools:
-            if not filter_tools([{"name": tool}], backend):
-                raise ProfileConfigError(
-                    f"Profile {name!r}: semantic_request_guards.tools.{backend_name}."
-                    f"{tool}: the tool is not allowed on this backend"
-                )
+    for block, cfg in (
+        ("semantic_request_guards", profile.semantic_request_guards),
+        ("semantic_response_guards", profile.semantic_response_guards),
+    ):
+        if cfg is None:
+            continue
+        for backend_name, tools in cfg.tools.items():
+            backend = profile.backends[backend_name]
+            for tool in tools:
+                if not filter_tools([{"name": tool}], backend):
+                    raise ProfileConfigError(
+                        f"Profile {name!r}: {block}.tools.{backend_name}."
+                        f"{tool}: the tool is not allowed on this backend"
+                    )
 
 
 def _check_drivers(name: str, profile: Profile) -> None:

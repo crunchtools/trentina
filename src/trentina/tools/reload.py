@@ -413,11 +413,12 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
         if old != getattr(after.defense, field_name):
             setattr(after.defense, field_name, old)
             held.append(f"defense.{field_name}")
-    # Five blocks are perimeter end to end, so each is held whole: the bridge's
+    # Six blocks are perimeter end to end, so each is held whole: the bridge's
     # plaintext side (#162); where the agent's client may be tunnelled (#442);
     # which repositories and branches it may push to (#453); which HTTP
-    # destinations, methods and paths it may reach (#511); and which calls are
-    # judged before they leave (#456). llm_keys is not held and git/egress_http
+    # destinations, methods and paths it may reach (#511); which calls are
+    # judged before they leave, and which responses are judged before they are
+    # delivered (#456). llm_keys is not held and git/egress_http
     # are: a key buys model calls, while one more pattern is one more place a
     # talked-round agent can send to.
     for block in (
@@ -426,6 +427,7 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
         "git",
         "egress_http",
         "semantic_request_guards",
+        "semantic_response_guards",
     ):
         if getattr(after, block) != getattr(before, block):
             setattr(after, block, getattr(before, block))
