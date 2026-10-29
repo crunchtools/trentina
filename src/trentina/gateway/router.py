@@ -35,10 +35,8 @@ from ..logsafe import exc_kind, redact_source
 from ..outcomes import Outcome
 from ..quarantine.limiter import Priority, l3_priority
 from ..reserved import (
-    WARNING_KEY,
     reserved_sites,
     strip_reserved,
-    with_stripped,
 )
 from ..transforms.policy import PREPROCESS_PARAM
 from ..transports.jsonrpc import (
@@ -48,11 +46,10 @@ from ..transports.jsonrpc import (
     _ok,
     _refused,
 )
-from . import audit, discovery, paging, session_marks, tool_pins
+from . import audit, discovery, paging, tool_pins
 from .backend import (
     call_backend_tool,
     list_backend_tools,
-    loggable_tool,
     on_backend_cache_evict,
 )
 from .compress import (
@@ -100,7 +97,6 @@ from .surface import (
 )
 
 if TYPE_CHECKING:
-    from ..core.stages import Assembled
     from ..modes import Mode, ModePolicy
     from ..transforms.policy import PreProcessPolicy
     from .profile import Backend, Profile
@@ -573,7 +569,7 @@ async def _crossing_call(profile: Profile, req_id: Any, params: dict[str, Any]) 
     allowlist, answers a decoy or ``read_part``, resolves the mode and
     preprocess switch, normalizes and guards the arguments, dispatches, and
     judges and shapes the response — writing the one audit row through
-    ``_finish_delivery``. Reached from the ``tools/call`` route and from
+    ``transports.mcp._finish_delivery``. Reached from the ``tools/call`` route and from
     ``call_tool``'s re-entry; ``params`` is already a mapping and not a
     discovery meta name by the time it arrives.
     """
@@ -792,67 +788,6 @@ async def _discovery_call(
         bytes_delivered=wire_bytes(result),
     )
     return _ok(req_id, result)
-
-
-async def _finish_delivery(
-    profile: Profile,
-    backend: Backend,
-    backend_name: str,
-    tool_name: str,
-    call_result: Any,
-    t0: float,
-    assembled: Assembled,
-    *,
-    normalized: dict[str, str] | None = None,
-    destination: Destination | None = None,
-) -> dict[str, Any]:
-    """Finish an assembled result: the session mark, the warning, the one row.
-
-    The half of delivery below the orchestrator's response edge
-    (``transports.mcp.McpServerFace._assemble``): it hands the ``Assembled`` here
-    and the audit row is written exactly once, by this one function.
-    """
-    session_marks._mark_session(assembled, None if not backend.is_internal else call_result)
-    if normalized or assembled.stripped:
-        # REPLACED, never merged into what the result carries (#265): built
-        # from the perimeter's own verdict and the gateway's own notes only.
-        warning = with_stripped(assembled.warning, assembled.stripped) or {}
-        if normalized:
-            warning = {**warning, "normalized": normalized}
-        assembled.result[WARNING_KEY] = warning
-    if assembled.stripped:
-        logger.info(
-            "gateway: profile=%s %s/%s stripped %d reserved key(s) from the response",
-            profile.name,
-            backend_name,
-            loggable_tool(backend.url, tool_name),
-            assembled.stripped,
-        )
-    # An internal tool minifies inside itself, so what arrived here is
-    # already the delivered form: its arrived size stays NULL, not equal.
-    arrived = (
-        None
-        if backend.is_internal
-        else await asyncio.to_thread(
-            wire_bytes,
-            {"content": call_result.content, "structuredContent": call_result.structured_content},
-        )
-    )
-    delivered, digest = await asyncio.to_thread(wire_digest, assembled.result)
-    audit._audit(
-        profile.name,
-        backend_name,
-        tool_name,
-        assembled.outcome,
-        int((time.monotonic() - t0) * 1000),
-        assembled.error,
-        bytes_arrived=arrived,
-        bytes_delivered=delivered,
-        normalized=normalized or None,
-        destination=destination,
-        content_digest=digest,
-    )
-    return assembled.result
 
 
 async def _dispatch(

@@ -17,7 +17,7 @@ The mapping to ``router._tools_call`` is one-to-one:
   tool), with the backend-error refusal.
 * ``McpServerFace.deliver`` — the response guards, then the RESPONSE edge as
   stages (``_assemble``: Arrived → Transformed → Judged → disposed), with the
-  one audit row written by the shared ``router._finish_delivery``.
+  one audit row written by the shared ``_finish_delivery``.
 * ``McpServerFace.wrap``    — the JSON-RPC success envelope.
 
 ``_assemble`` reproduces ``router._assemble_call_result`` as the stage pipeline
@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -46,17 +47,19 @@ from typing import TYPE_CHECKING, Any
 from ..core.stages import Arrived, Assembled, Transformed
 from ..defense import Provenance
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
-from ..gateway import audit, gatekeeper, paging, parts, request_edge, results, router
+from ..gateway import audit, gatekeeper, paging, parts, request_edge, results, router, session_marks
+from ..gateway.backend import loggable_tool
 from ..gateway.destination import Destination, destination_of
 from ..gateway.errors import BackendCallError
 from ..gateway.filter import filter_tools
 from ..gateway.guards import _response_text as _response_guard_text
 from ..gateway.guards import check_response_guards
 from ..gateway.modes_policy import policy_for, resolve_call, resolve_preprocess
+from ..gateway.surface import wire_bytes, wire_digest
 from ..gateway.transform import transform_response
 from ..orchestrator import judge_response
 from ..outcomes import Outcome, classify_exception
-from ..reserved import REFUSAL_KEY, WARNING_KEY
+from ..reserved import REFUSAL_KEY, WARNING_KEY, with_stripped
 from .base import Carrier, Early, Face, Transport
 from .jsonrpc import (
     JSONRPC_INVALID_PARAMS,
@@ -72,6 +75,8 @@ if TYPE_CHECKING:
     from ..gateway.transform import TransformOutcome
     from ..modes import Mode, ModePolicy
     from ..transforms.policy import PreProcessPolicy
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -348,7 +353,7 @@ class McpServerFace(Face):
         (Arrived → Transformed → Judged → the disposed ``Assembled``), composing
         the same collaborators ``router._assemble_call_result`` does, in the same
         order, so the delivered bytes match. The one audit row and the session
-        mark are written by the shared ``router._finish_delivery`` — the same
+        mark are written by the shared ``_finish_delivery`` — the same
         function the hand-rolled path uses — so the row is written exactly once.
         """
         profile, req_id = ctx.profile, ctx.req_id
@@ -417,7 +422,7 @@ class McpServerFace(Face):
                 profile.name, parsed.backend_name, parsed.tool_name, t0, exc, parsed.dest
             )
             raise
-        return await router._finish_delivery(
+        return await _finish_delivery(
             profile,
             parsed.backend,
             parsed.backend_name,
@@ -624,6 +629,67 @@ class McpClientCarrier(Carrier):
                 )
             )
         return McpCarried(call_result=call_result, t0=t0)
+
+
+async def _finish_delivery(
+    profile: Profile,
+    backend: Backend,
+    backend_name: str,
+    tool_name: str,
+    call_result: Any,
+    t0: float,
+    assembled: Assembled,
+    *,
+    normalized: dict[str, str] | None = None,
+    destination: Destination | None = None,
+) -> dict[str, Any]:
+    """Finish an assembled result: the session mark, the warning, the one row.
+
+    The half of delivery below the orchestrator's response edge
+    (``transports.mcp.McpServerFace._assemble``): it hands the ``Assembled`` here
+    and the audit row is written exactly once, by this one function.
+    """
+    session_marks._mark_session(assembled, None if not backend.is_internal else call_result)
+    if normalized or assembled.stripped:
+        # REPLACED, never merged into what the result carries (#265): built
+        # from the perimeter's own verdict and the gateway's own notes only.
+        warning = with_stripped(assembled.warning, assembled.stripped) or {}
+        if normalized:
+            warning = {**warning, "normalized": normalized}
+        assembled.result[WARNING_KEY] = warning
+    if assembled.stripped:
+        logger.info(
+            "gateway: profile=%s %s/%s stripped %d reserved key(s) from the response",
+            profile.name,
+            backend_name,
+            loggable_tool(backend.url, tool_name),
+            assembled.stripped,
+        )
+    # An internal tool minifies inside itself, so what arrived here is
+    # already the delivered form: its arrived size stays NULL, not equal.
+    arrived = (
+        None
+        if backend.is_internal
+        else await asyncio.to_thread(
+            wire_bytes,
+            {"content": call_result.content, "structuredContent": call_result.structured_content},
+        )
+    )
+    delivered, digest = await asyncio.to_thread(wire_digest, assembled.result)
+    audit._audit(
+        profile.name,
+        backend_name,
+        tool_name,
+        assembled.outcome,
+        int((time.monotonic() - t0) * 1000),
+        assembled.error,
+        bytes_arrived=arrived,
+        bytes_delivered=delivered,
+        normalized=normalized or None,
+        destination=destination,
+        content_digest=digest,
+    )
+    return assembled.result
 
 
 #: The one MCP transport, wired into ``router._route_tools_call`` for a profile
