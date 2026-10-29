@@ -47,7 +47,7 @@ from typing import TYPE_CHECKING, Any
 from ..core.stages import Arrived, Assembled, Transformed
 from ..defense import Provenance
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
-from ..gateway import audit, gatekeeper, paging, parts, request_edge, results, router, session_marks
+from ..gateway import audit, gatekeeper, paging, parts, request_edge, results, session_marks
 from ..gateway.backend import call_backend_tool, loggable_tool
 from ..gateway.context import PartsOffer, profile_context
 from ..gateway.destination import Destination, destination_of
@@ -233,7 +233,7 @@ class McpServerFace(Face):
 
         target = request_edge._resolve_target(profile, served_name)
         if target is None:
-            return Early(router._unknown_tool(profile, req_id, served_name))
+            return Early(request_edge._unknown_tool(profile, req_id, served_name))
         backend_name, tool_name, backend = target
 
         # From the arguments as sent, so a call refused below still records
@@ -261,7 +261,9 @@ class McpServerFace(Face):
             return Early(_err(req_id, JSONRPC_INVALID_PARAMS, message))
 
         if backend.is_decoy or (backend.is_internal and tool_name == paging.READ_PART_TOOL):
-            answer = await router._answered_here(profile, req_id, served_name, target, arguments)
+            answer = await request_edge._answered_here(
+                profile, req_id, served_name, target, arguments
+            )
             return Early(answer)
 
         return backend_name, tool_name, backend, arguments, dest
@@ -651,7 +653,7 @@ async def _dispatch(
 ) -> Any:
     """Forward the call: in-process for internal://, streamable-http otherwise."""
     if backend.is_decoy:
-        # ``_decoy_call`` answers every one. Reaching here is a bug, and a
+        # ``request_edge._decoy_call`` answers every one. Reaching here is a bug, and a
         # bug must not become a request to a URL that is not one.
         raise BackendCallError(f"backend {backend_name!r} has nothing to call")
     if not backend.is_internal:
