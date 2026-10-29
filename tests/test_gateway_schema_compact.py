@@ -12,7 +12,7 @@ import jsonschema
 import pytest
 from pydantic import SecretStr
 
-from trentina.gateway.ingress_defense import _collect_strings
+from trentina.gateway.collect import _collect_strings
 from trentina.gateway.profile import AuthConfig, Backend, Profile
 from trentina.gateway.schema_compact import MAX_DEPTH, compact_tool
 from trentina.transports.mcp import route_jsonrpc

@@ -25,7 +25,7 @@ from corpora.benign_ops import BENIGN as BENIGN_SHAPES
 from corpora.disclosed import CORPUS as DISCLOSED
 from corpora.garak_encodings import ENCODINGS
 from corpora.internal import CORPUS as INTERNAL
-from trentina.gateway.ingress_defense import _collect_response_texts
+from trentina.gateway.collect import _collect_response_texts
 from trentina.gateway.profile import AuthConfig, Backend, Profile
 from trentina.gateway.results import _drop_duplicate_structured
 from trentina.gateway.transform import transform_response
