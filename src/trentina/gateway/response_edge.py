@@ -361,7 +361,7 @@ async def _redact_response(
     """redact on a proxied response: refuse on gaps, else extract and verify.
 
     A flag does not refuse redact — that is what redact is for — but a layer
-    that could not finish does, exactly as in ``tools/judged.py``. The gate
+    that could not finish does, exactly as in ``internal_edge.py``. The gate
     already decided which and, when it extracted, carries the result: a REFUSE
     disposition means a blocking gap; ``extraction_refusal`` means redact's own
     turn objected.

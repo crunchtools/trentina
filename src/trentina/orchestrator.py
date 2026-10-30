@@ -30,6 +30,7 @@ from .core.dispose import Decision, dispose
 from .core.stages import _JUDGED_SEAL, IngressDecision, Judged
 from .defense import Provenance, defend, defend_json, defend_selection
 from .gateway.context import profile_context
+from .gateway.internal_edge import JudgeScan, dispose_judgement, prepare_judgement
 from .gateway.outbound import (
     REASON_CREDENTIAL,
     REASON_FLAGGED,
@@ -908,12 +909,6 @@ async def judge_and_deliver(
         BlockedSourceError: block or redact refused. The message names the
             layer or gap, never the payload.
     """
-    # Imported here, not at module scope: tools/__init__ imports gateway.aggregate
-    # (via tools.cache), and the orchestrator is imported during the gateway's own
-    # load — a module-level import would close that cycle. By call time both are
-    # fully loaded.
-    from .tools.judged import JudgeScan, dispose_judgement, prepare_judgement
-
     prepared = await prepare_judgement(
         document,
         mode=mode,
@@ -934,7 +929,7 @@ async def judge_and_deliver(
         redact_extras=redact_extras,
     )
     # The internal tools' one defend() call lives here, in the orchestration layer
-    # (Trentina 3.0 Phase 7), not in tools/judged. When the payload was paged the
+    # (Trentina 3.0 Phase 7), not in internal_edge. When the payload was paged the
     # document, L1 and briefing are part 1's, resolved by the prepare step. flag
     # delivers a partial scan with a warning, so it pays for the partial scan while
     # block and redact refuse it — the one definition of that rule lives on Posture.

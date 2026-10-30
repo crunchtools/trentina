@@ -195,7 +195,7 @@ async def _deliver_part(
     marked_at, marked_by = paged.flagged_at, paged.flagged_by
     part = paged.parts[number - 1]
     if _source_blocklisted(profile, paged, mode):
-        # As the tool refuses a fresh call (``judged.check_blocklist``): block
+        # As the tool refuses a fresh call (``scope.check_blocklist``): block
         # and flag do not read a blocklisted source, redact does.
         refusal = refusal_body(BLOCKLIST_REASON, mode, flagged_by="blocklist", policy=policy)
         retry = _part_retry(refusal, reader, flagged=True)

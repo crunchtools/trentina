@@ -1,7 +1,7 @@
 """The internal tools' responses are delivered in parts too (#446).
 
 ``fetch``, ``read`` and ``content`` judge at their own ingress
-(``tools/judged.py``), so the router's paging never saw them: over the
+(``gateway/internal_edge.py``), so the router's paging never saw them: over the
 admission cap they were refused, or read head-only under flag. These drive the
 router end to end. Only the edges are faked, as in ``mode_harness``: the page,
 and the layers' model calls. The cut uses the stand-in tokenizer of

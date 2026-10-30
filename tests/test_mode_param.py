@@ -602,7 +602,7 @@ async def test_a_mode_guard_refuses_at_call_even_when_the_mode_is_omitted() -> N
 
 def test_a_blocklist_refusal_offers_redact_only_where_allowed() -> None:
     from trentina.gateway.context import profile_context
-    from trentina.tools.judged import blocklisted
+    from trentina.gateway.scope import blocklisted
 
     p = _profile(["block", "flag", "redact"])
     with profile_context(p, ModePolicy((Mode.BLOCK, Mode.FLAG, Mode.REDACT), Mode.BLOCK)):

@@ -57,9 +57,9 @@ classification = "by_design"
 
 [[exceptions]]
 check = "single_use_helpers"
-path = "src/trentina/tools/judged.py"
+path = "src/trentina/gateway/scope.py"
 pattern = "_caller"
-justification = "Not single-use: called from check_blocklist (the blocklist read) and from judge_and_deliver (the detection row's profile attribution), verified by grep. The second call sits inside a dict literal passed to an awaited call, which the check appears not to count. Both sites must answer 'whose blocklist is this' the same way (#263), which is why it is one function."
+justification = "Not single-use: called from check_blocklist (the blocklist read, same module) and from internal_edge.prepare_judgement (the detection row's profile attribution), verified by grep. The second call sits inside a dict literal passed to an awaited call, which the check appears not to count. Both sites must answer 'whose blocklist is this' the same way (#263), which is why it is one function."
 classification = "gourmand_bug"
 
 [[exceptions]]

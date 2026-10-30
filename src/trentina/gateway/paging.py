@@ -2,7 +2,7 @@
 
 L2's cost is linear in what it reads, and a client waits about a minute. So a
 response over ``Config.whole_tokens``, a backend's or an internal tool's
-(#446, cut in ``tools/judged.py``), is cut once, on L2 token
+(#446, cut in ``gateway/internal_edge.py``), is cut once, on L2 token
 boundaries, into near-equal parts of about ``Config.part_target_tokens``.
 The call that produced it returns part 1; the rest are read with the
 ``read_part`` tool, which serves from the store below and never reaches a

@@ -4,7 +4,7 @@
 is a second act — turns 2 and 3, the L3 extraction and its verification
 (``quarantine_redact``) — which can itself object. Before this the two response
 ingresses ran that sequence by hand: ``gateway/response_edge.py`` for a
-proxied tool response and ``tools/judged.py`` for an internal tool. The copies
+proxied tool response and ``gateway/internal_edge.py`` for an internal tool. The copies
 carried the SAME redact-refusal construction verbatim —
 
     Disposition(Decision.REFUSE, reason=f"redact refused: {refused_by}",

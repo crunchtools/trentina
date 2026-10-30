@@ -38,7 +38,7 @@ def posture(
     """Build the ``Posture`` for one judgement under the bound request identity.
 
     The sole constructor of the type. ``honeypot`` is read from the ambient
-    scope (the same source ``tools.judged.honeypot_caller`` uses), so a honeypot
+    scope (the same source ``gateway.scope.honeypot_caller`` uses), so a honeypot
     profile is judged as one wherever it calls, and no caller can claim or
     disclaim the flag.
     """
