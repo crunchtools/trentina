@@ -103,6 +103,15 @@ def test_verify_is_none_for_a_bad_public_key() -> None:
     assert vsa.verify_assertion(vsa.sign_assertion(_assertion(), priv), "not a pem") is None
 
 
+def test_verify_fails_closed_on_an_uncanonicalizable_assertion() -> None:
+    # JSON parses NaN/Infinity by default, and RFC 8785 has no form for them, so
+    # canonicalizing an attacker's assertion can raise — it must fail closed to
+    # None, never raise into the caller.
+    _, pub = _keypair()
+    envelope = {"assertion": {"ts": float("nan")}, "signature": "00"}
+    assert vsa.verify_assertion(envelope, pub) is None
+
+
 # --- verdict_summary: the closed verdict, shared by emit (D1) and trust (D2a) ---
 
 

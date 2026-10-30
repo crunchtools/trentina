@@ -121,8 +121,13 @@ def verify_assertion(envelope: Any, public_key_pem: str) -> dict[str, Any] | Non
         return None
     try:
         key = edge_key.load_public_key(public_key_pem)
-    except edge_key.EdgeKeyError:
+        # Canonicalizing an attacker-supplied assertion can raise — RFC 8785 has
+        # no form for a non-finite number, and JSON parses NaN/Infinity by
+        # default — so it is inside the guard: a malformed assertion fails
+        # closed to None, it does not raise into the caller.
+        payload = audit_chain.canonical(assertion)
+    except (edge_key.EdgeKeyError, ValueError, TypeError):
         return None
-    if not edge_key.verify(key, raw, audit_chain.canonical(assertion)):
+    if not edge_key.verify(key, raw, payload):
         return None
     return assertion
