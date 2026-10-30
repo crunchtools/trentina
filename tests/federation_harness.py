@@ -226,15 +226,6 @@ class MCPClient:
     async def __aexit__(self, *exc: object) -> None:
         await self.close()
 
-    @staticmethod
-    def _parse(resp: httpx.Response) -> dict[str, Any]:
-        if resp.headers.get("content-type", "").startswith("text/event-stream"):
-            for line in resp.text.splitlines():
-                if line.startswith("data:"):
-                    return dict(json.loads(line[len("data:") :].strip()))
-            raise AssertionError(f"no data frame in SSE response: {resp.text!r}")
-        return dict(resp.json())
-
     async def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         headers = dict(self._headers)
         if self.session_id is not None:
@@ -243,7 +234,14 @@ class MCPClient:
         if self.session_id is None:
             self.session_id = resp.headers.get(MCP_SESSION_ID_HEADER)
         resp.raise_for_status()
-        return self._parse(resp)
+        # Streamable HTTP may answer a POST as JSON or as SSE; when it is an
+        # event stream the JSON-RPC body is the first `data:` frame.
+        if resp.headers.get("content-type", "").startswith("text/event-stream"):
+            for line in resp.text.splitlines():
+                if line.startswith("data:"):
+                    return dict(json.loads(line[len("data:") :].strip()))
+            raise AssertionError(f"no data frame in SSE response: {resp.text!r}")
+        return dict(resp.json())
 
     async def initialize(self) -> dict[str, Any]:
         reply = await self._post(
