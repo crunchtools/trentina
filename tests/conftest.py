@@ -100,7 +100,9 @@ def _tools_not_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
     ``tests/test_tool_pins.py`` puts the real checks back."""
     from trentina.gateway import tool_pins
 
-    monkeypatch.setattr(tool_pins, "check_tools", lambda url, backend, tools: tools)
+    monkeypatch.setattr(
+        tool_pins, "check_tools", lambda url, backend, tools, *, federated=False: tools
+    )
     # The call gate too (#469): without this every remote-tool call in the suite
     # would be refused as unpinned. Patched as a module attr, which is why the
     # gate calls ``tool_pins.held`` rather than an imported name.

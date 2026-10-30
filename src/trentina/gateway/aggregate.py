@@ -214,7 +214,9 @@ def _without_held(
     """
     if backend.is_internal or backend.is_decoy:
         return tools
-    return tool_pins.check_tools(backend.url, backend_name, tools)
+    return tool_pins.check_tools(
+        backend.url, backend_name, tools, federated=backend.federated is not None
+    )
 
 
 def _held_in_allowed_slice(

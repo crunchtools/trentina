@@ -1225,7 +1225,7 @@ class TestSurfaceRecording:
         the backend offers: offered is what a direct client would pay for."""
         from trentina.gateway.surface import surface_report
 
-        with patch("trentina.gateway.aggregate.tool_pins.check_tools", lambda *_: []):
+        with patch("trentina.gateway.aggregate.tool_pins.check_tools", lambda *_, **__: []):
             await self._list(_profile())
         report = surface_report("testp")
 

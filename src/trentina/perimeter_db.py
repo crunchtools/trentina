@@ -162,6 +162,21 @@ def get_pin(backend_id: str, tool: str) -> sqlite3.Row | None:
     return row
 
 
+def has_pins(backend_id: str) -> bool:
+    """Whether any pin row exists for this backend yet (#592, E1b).
+
+    A federated backend's FIRST list (no rows) is auto-approved as a unit, so a
+    large peer does not trigger a per-tool approval storm; once it has rows, a
+    new or changed tool is held one at a time as usual.
+    """
+    row = (
+        get_perimeter_db()
+        .execute("SELECT 1 FROM tool_pins WHERE backend_id = ? LIMIT 1", (backend_id,))
+        .fetchone()
+    )
+    return row is not None
+
+
 def pin_hold_flags(backend_id: str, tool: str) -> tuple[bool, bool] | None:
     """``(pending, rejected)`` for a pin, or None when there is no row — the two
     flags the call gate needs, read WITHOUT the approved/pending JSON (#469)."""

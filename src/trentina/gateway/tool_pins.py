@@ -99,10 +99,20 @@ def _report(backend: str, tool: str, old_json: str | None, new_json: str) -> Non
     )
 
 
-def check_tools(url: str, backend: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Pin ``tools`` against ``url``'s approvals; return those not held."""
+def check_tools(
+    url: str, backend: str, tools: list[dict[str, Any]], *, federated: bool = False
+) -> list[dict[str, Any]]:
+    """Pin ``tools`` against ``url``'s approvals; return those not held.
+
+    A FEDERATED backend's first list (no pins yet) is auto-approved as a unit
+    (#592, E1b): declaring the edge accepts the peer's curation — its offered
+    set already passed the peer's own pin gate — so a large upstream does not
+    storm the operator with hundreds of per-tool approvals. ``has_pins`` is read
+    once, before the pass writes any row, so it reflects the state at the start:
+    once the backend has rows, a new or changed tool is held one at a time.
+    """
     bid = backend_id(url)
-    baseline = _baseline_open()
+    baseline = _baseline_open() or (federated and not perimeter_db.has_pins(bid))
     return [
         tool
         for tool in tools

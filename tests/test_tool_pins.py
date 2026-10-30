@@ -195,3 +195,36 @@ def test_decide_on_nothing_held_is_false() -> None:
 def test_pins_belong_to_the_backend_not_the_list() -> None:
     _approved(_tool())
     assert check_tools("http://other.invalid/mcp", "b", [_tool()]) == []
+
+
+# --- E1b: a federated upstream's first connect is approved as a unit (#592) ---
+
+
+def test_a_federated_backends_first_list_is_approved_as_a_unit() -> None:
+    tools = [_tool(name=f"t{i}") for i in range(5)]
+    served = check_tools(URL, "b", tools, federated=True)
+    assert len(served) == 5  # no per-tool approval storm
+    assert pending(URL) == []
+
+
+def test_a_new_federated_tool_after_first_connect_is_held_once() -> None:
+    first = [_tool(name="a"), _tool(name="b"), _tool(name="c")]
+    assert sorted(_names(check_tools(URL, "b", first, federated=True))) == ["a", "b", "c"]
+    assert pending(URL) == []
+    # A later list grows one tool: only the new one is held — "re-pins once".
+    second = [*first, _tool(name="d")]
+    served = check_tools(URL, "b", second, federated=True)
+    assert sorted(_names(served)) == ["a", "b", "c"]
+    assert [p["tool"] for p in pending(URL)] == ["d"]
+
+
+def test_a_non_federated_first_list_still_holds() -> None:
+    assert check_tools(URL, "b", [_tool()], federated=False) == []
+    assert [p["tool"] for p in pending(URL)] == ["send"]
+
+
+def test_has_pins_reflects_backend_rows() -> None:
+    bid = tool_pins.backend_id(URL)
+    assert perimeter_db.has_pins(bid) is False
+    check_tools(URL, "b", [_tool()], federated=True)
+    assert perimeter_db.has_pins(bid) is True
