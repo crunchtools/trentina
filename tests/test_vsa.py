@@ -165,3 +165,74 @@ def test_signing_key_env_accepts_an_env_name() -> None:
 def test_signing_key_env_rejects_a_non_env_name() -> None:
     with pytest.raises(ValueError, match="UPPERCASE env-var identifier"):
         FederationConfig(peers=_peers(), signing_key_env="lotor-key")
+
+
+# --- check_trust: the downstream's decision to trust (D2a) ---
+
+
+def _signed(priv: str, *, digest: str = "d", stamp: str = "v1", mode: str = "flag",
+            ts: int = 1_000_000) -> dict[str, Any]:
+    assertion = vsa.build_assertion(
+        verifier="lotor", content_sha256=digest,
+        verdict={"flagged_by": None, "mode": mode}, perimeter_stamp=stamp, judge="j1", ts=ts,
+    )
+    return vsa.sign_assertion(assertion, priv)
+
+
+def test_check_trust_accepts_a_matching_assertion() -> None:
+    priv, pub = _keypair()
+    env = _signed(priv)
+    got, reason = vsa.check_trust(
+        env, public_key=pub, content_sha256="d", perimeter_stamp="v1", judge="j1",
+        mode="flag", now=1_000_010,
+    )
+    assert reason == "trusted" and got is not None
+
+
+def test_check_trust_reasons() -> None:
+    priv, pub = _keypair()
+    _, other = _keypair()
+    env = _signed(priv)
+    base = {"public_key": pub, "content_sha256": "d", "perimeter_stamp": "v1", "judge": "j1",
+            "mode": "flag", "now": 1_000_010}
+
+    def why(**over: Any) -> str:
+        return vsa.check_trust(env, **{**base, **over})[1]
+
+    assert vsa.check_trust(None, **base)[1] == "absent"
+    assert why(public_key=other) == "bad_signature"
+    assert why(content_sha256="x") == "hash_mismatch"
+    assert why(perimeter_stamp="v2") == "stamp_mismatch"
+    assert why(judge="j2") == "judge_mismatch"
+    assert why(mode="block") == "mode_mismatch"
+    assert why(now=1_999_999) == "stale"
+
+
+def test_check_trust_reasons_are_all_declared() -> None:
+    # every reason check_trust returns is in the closed TRUST_REASONS set
+    priv, pub = _keypair()
+    env = _signed(priv)
+    base = {"public_key": pub, "content_sha256": "d", "perimeter_stamp": "v1", "judge": "j1",
+            "mode": "flag", "now": 1_000_010}
+    reasons = {
+        vsa.check_trust(None, **base)[1],
+        vsa.check_trust(env, **{**base, "public_key": _keypair()[1]})[1],
+        vsa.check_trust(env, **{**base, "content_sha256": "x"})[1],
+        vsa.check_trust(env, **{**base, "perimeter_stamp": "v2"})[1],
+        vsa.check_trust(env, **{**base, "judge": "j2"})[1],
+        vsa.check_trust(env, **{**base, "mode": "block"})[1],
+        vsa.check_trust(env, **{**base, "now": 1_999_999})[1],
+    }
+    assert reasons <= set(vsa.TRUST_REASONS)
+
+
+def test_check_trust_freshness_is_inclusive_at_the_boundary() -> None:
+    priv, pub = _keypair()
+    env = _signed(priv, ts=1_000_000)
+    base = {"public_key": pub, "content_sha256": "d", "perimeter_stamp": "v1", "judge": "j1",
+            "mode": "flag"}
+    at = 1_000_000 + vsa.MAX_AGE_SECONDS
+    assert vsa.check_trust(env, **base, now=at)[1] == "trusted"  # exactly MAX_AGE: inclusive
+    assert vsa.check_trust(env, **base, now=at + 1)[1] == "stale"  # one second past
+    future = 1_000_000 - vsa.MAX_AGE_SECONDS - 1
+    assert vsa.check_trust(env, **base, now=future)[1] == "stale"  # a future assertion, too far

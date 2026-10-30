@@ -41,7 +41,7 @@ from mcp_types.version import (
 )
 
 from .. import __version__
-from ..core.stages import Arrived, Assembled, Transformed
+from ..core.stages import Arrived, Assembled, IngressDecision, Transformed
 from ..defense import Provenance
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
 from ..gateway import (
@@ -76,13 +76,16 @@ from ..gateway.modes_policy import (
 )
 from ..gateway.names import NAMESPACE_SEP, served_name
 from ..gateway.parts import _part_reader
+from ..gateway.service import judge_of
 from ..gateway.sessions import session_registry
 from ..gateway.surface import wire_bytes, wire_digest
 from ..gateway.transform import transform_response
 from ..logsafe import exc_kind, redact_source
+from ..modes import refusal_body
 from ..orchestrator import crossing, judge_response
 from ..outcomes import Outcome, classify_exception
 from ..perimeter_db import perimeter_stamp
+from ..quarantine.packs import pack_for
 from ..reserved import REFUSAL_KEY, WARNING_KEY, with_stripped
 from ..transforms.policy import PREPROCESS_PARAM
 from .base import Carrier, Early, Face, Transport
@@ -289,6 +292,137 @@ def _federated_continuation(
     return paging.with_part_marker(result, marker, reader=reader)
 
 
+#: The untrusted reasons worth a log line (#592, D2a): the rest — absent, a
+#: hash/mode mismatch, a stale assertion — re-judge quietly.
+_LOGGED_UNTRUSTED = frozenset({"bad_signature", "stamp_mismatch"})
+#: (profile, backend, stamp) a stamp-mismatch was already warned for: a changed
+#: upstream stamp warns once, not on every call. A log-dedup; dropped and
+#: re-warned once if it ever grows past this many distinct stamps.
+_WARNED_STAMPS_MAX = 4096
+_warned_stamps: set[tuple[str, str, str]] = set()
+
+
+def _log_untrusted(profile: Profile, backend_name: str, reason: str, stamp: str) -> None:
+    """Note why a federated response was NOT trusted and will be re-judged (#592).
+
+    A bad signature (a peer whose key does not verify) and a stamp mismatch (the
+    upstream changed its policy and the operator has not re-pinned) are logged;
+    a stamp mismatch once per (profile, backend, stamp). Everything else is the
+    quiet common case. The backend name is config, not caller-chosen, so it is
+    loggable; the peer's own text never is.
+    """
+    if reason not in _LOGGED_UNTRUSTED:
+        return
+    key = (profile.name, backend_name, stamp)
+    if reason == "stamp_mismatch":
+        if key in _warned_stamps:
+            return
+        # A log-dedup, not state anything reads: if it grows past a sane bound
+        # (many distinct stamps over a long uptime) drop it and re-warn once,
+        # rather than leak memory.
+        if len(_warned_stamps) >= _WARNED_STAMPS_MAX:
+            _warned_stamps.clear()
+        _warned_stamps.add(key)
+    logger.info(
+        "gateway: federated verdict not trusted profile=%s backend=%s reason=%s",
+        profile.name, backend_name, reason,
+    )
+
+
+def _deliver_trusted(
+    arrived: Arrived,
+    call_result: BackendCall,
+    verdict: dict[str, Any],
+    *,
+    mode: Mode,
+    policy: ModePolicy | None,
+    stripped: int,
+    ok: Outcome,
+) -> Assembled:
+    """Deliver a response on the peer's TRUSTED verdict, the layers not re-run
+    (#592, D2a). Clean → delivered; flagged under block → refused as a defense
+    block would; flagged under flag → delivered with a DOWNSTREAM-authored
+    warning built from the verdict's closed fields (never the peer's text). The
+    transform is skipped too, so nothing unjudged is reshaped before delivery."""
+    flagged_by = verdict.get("flagged_by")
+    warning = {k: v for k, v in verdict.items() if k != "mode"} if flagged_by else None
+    result: dict[str, Any] = {"content": arrived.content_blocks, "isError": arrived.is_error}
+    if arrived.structured is not None:
+        result["structuredContent"] = arrived.structured
+    if flagged_by and mode.value == "block":
+        refusal = refusal_body(f"flagged by {flagged_by}", mode, flagged_by=str(flagged_by),
+                               policy=policy)
+        blocked = results._blocked_result(IngressDecision(warning=warning, blocked=True,
+                                                          refusal=refusal))
+        return Assembled(
+            results._executed(blocked, call_result.is_error) if arrived.acted else blocked,
+            Outcome.BLOCKED_DEFENSE,
+            f"trusted federated verdict: flagged by {flagged_by}",
+            warning=warning,
+            stripped=stripped,
+        )
+    results._attach_warning(result, warning)
+    return Assembled(result, ok, warning=warning, stripped=stripped)
+
+
+def _federated_trust(
+    profile: Profile,
+    backend: Backend,
+    backend_name: str,
+    arrived: Arrived,
+    call_result: BackendCall,
+    *,
+    mode: Mode,
+    policy: ModePolicy | None,
+    stripped: int,
+    ok: Outcome,
+) -> Assembled | None:
+    """Trust a federated peer's signed verdict and SKIP the downstream's L1/L2/L3
+    (#592, D2a), or None to re-judge locally (fail-closed).
+
+    Only for a federated backend whose ``trust_verdict`` pins the upstream's key
+    and perimeter stamp. The assertion (in ``call_result.meta`` — B2's channel)
+    must verify against that key, bind to the delivered bytes and the pinned
+    stamp, match the resolved mode and be fresh; any shortfall re-judges, with
+    the reason logged by kind. A trusted response skips the transform too:
+    transformed bytes nobody judged are what the layer contract forbids.
+    """
+    federated = backend.federated
+    if federated is None or federated.trust_verdict is None:
+        return None
+    tv = federated.trust_verdict
+    envelope = call_result.meta.get(vsa.VSA_KEY) if isinstance(call_result.meta, dict) else None
+    resolved = effective_mode(profile, mode)
+    assertion, reason = vsa.check_trust(
+        envelope,
+        public_key=tv.public_key,
+        content_sha256=vsa.content_digest(
+            arrived.content_blocks, arrived.structured, arrived.is_error
+        ),
+        perimeter_stamp=tv.perimeter_stamp,
+        judge=tv.judge,
+        mode=resolved.value,
+        now=int(time.time()),
+    )
+    if assertion is None:
+        _log_untrusted(profile, backend_name, reason, tv.perimeter_stamp)
+        return None
+    return _deliver_trusted(
+        arrived, call_result, assertion["verdict"],
+        mode=resolved, policy=policy, stripped=stripped, ok=ok,
+    )
+
+
+def _judge_stamp(profile: Profile) -> str:
+    """The L3 judge identity this profile scans under (#592, D2a): its
+    ``provider/model`` and L3 prompt-pack stamp — the same (provider, model) and
+    pack the verdict cache keys on. The ``perimeter_stamp`` covers L2 and the
+    version but not L3, so a federated verdict pins this separately."""
+    judge = judge_of(profile)
+    pack = pack_for(judge, profile.defense.l3_prompt_pack)
+    return f"{judge[0]}/{judge[1]}/{pack.stamp}"
+
+
 def _federated_vsa(
     profile: Profile,
     result: dict[str, Any],
@@ -320,6 +454,7 @@ def _federated_vsa(
         content_sha256=vsa.content_digest(blocks, structured, is_error),
         verdict=vsa.verdict_summary(warning, mode.value),
         perimeter_stamp=perimeter_stamp(),
+        judge=_judge_stamp(profile),
         ts=int(time.time()),
     )
     envelope = vsa.sign_assertion(assertion, federation.signing_key.get_secret_value())
@@ -588,6 +723,18 @@ class McpServerFace(Face):
             # The backend has answered, so a tool that may write has written (#425).
             acted=results._may_have_acted(backend, tool_name),
         )
+
+        # Scan-once at the trust boundary (#592, D2a): a federated peer that
+        # pins a trusted verdict may be delivered without re-running the layers.
+        # BEFORE the transform — a trusted response is delivered as it arrived,
+        # never reshaped unjudged — and fail-closed: a missing, forged, stale or
+        # mismatched assertion falls through to the full local pipeline below.
+        trusted = _federated_trust(
+            profile, backend, backend_name, arrived, call_result,
+            mode=mode, policy=policy, stripped=stripped, ok=ok,
+        )
+        if trusted is not None:
+            return trusted
 
         # Transform BEFORE the perimeter, never after: the scan reads the
         # transformed artifact and that artifact is delivered, so nothing a

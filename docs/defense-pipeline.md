@@ -277,6 +277,7 @@ gaps below.
 | A binary egress response | its content type | no layer reads it | the `binary_unread` gap: `block` withholds it, `flag` delivers it with the warning (gap 32) |
 | A pack carried by the [git transport](git-transport.md), in either direction: file contents, file names, commit messages | as the forge sent it; a push, as the agent sent it | nothing. The gateway reads the request line, a push's command list and ref listings, and decides on those | not judged; the route decides the repository and the branch and records the bytes (gap 29) |
 | A ref listing on the git transport: branch and tag names | each name that is one token of printable ASCII, at most 255 bytes, outside a hidden namespace | nothing. The gateway reads each line to drop the rest | not judged; names are bounded, not read for meaning (gap 29) |
+| A federated response carrying a valid signed verdict, from a backend whose `federated.trust_verdict` is pinned (#592, D2a) | as the peer delivered it | nothing locally | NOT re-judged here: the peer judged it under the pinned `perimeter_stamp` and `judge`, and the signature binds that verdict to these exact bytes. Fail-closed — a missing, forged, stale or mismatched assertion is re-judged locally (gap 33) |
 | A remote backend's tool that is new or whose definition (description, schema, annotations) changed | withheld from every profile until an operator approves it ([pinning](tool-pinning.md), #469) | the new definition, as any tool description | held, `*` allowlists and flag mode included |
 | Any of those three under `unjudged: annotate` | as it arrived, media with the warning header | nothing | forwarded unjudged, by the operator's choice |
 | A proxied response that is only text, or an internal tool's (`fetch`, `read`, `content`) behind the gateway, over 16K L2 tokens and within 16 parts (192K) | one part of about 12K tokens per call, the first from the call itself and the rest from `read_part` (#340, #446) | each part whole, behind the last 64 tokens of the part before | judged a part at a time; block withholds a flagged part and every later one |
@@ -607,6 +608,25 @@ one does; the rest name the benchmark that measured them.
     incompatible with judge-before-deliver and stays the tunnel's territory
     (gap 26); the semantic-request-guards hook on an egress call has landed (gap 30,
     `semantic_request_guards.egress_http`). Tested.
+
+33. **A trusted federated verdict does not bind the peer's defense block**
+    (#592, D2a). When a downstream pins a `federated.trust_verdict` (the peer's
+    key, its `perimeter_stamp` and its `judge`), a response carrying a valid
+    signed assertion is delivered without the downstream re-running L1/L2/L3 —
+    scan-once at the declared trust boundary. The pin binds the peer's L2 model,
+    its revision, threshold, polarity and gates (the `perimeter_stamp`) AND its
+    L3 judge — the provider, model and prompt pack (`judge`, pinned separately
+    because the stamp does not cover L3) — so a model or judge change upstream
+    stops matching and the downstream re-judges until the operator re-pins. It
+    does NOT bind the peer profile's `defense` block — its threshold overrides,
+    allowlists and which modes it runs — so a downstream trusts that the peer
+    scanned under the stamped model and judge, not that the peer's policy around
+    them is as strict as its own. Fail-closed: a missing, forged, stale, or
+    hash-, stamp-, judge- or mode-mismatched assertion is re-judged locally,
+    never trusted. The trust is a deliberate exception to rule 1 of the
+    [layer contract](#layer-contract), stated here so that rule is not read as
+    covering it. Tested (`tests/test_federation_trust.py`,
+    `tests/test_coverage_gaps.py`).
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 

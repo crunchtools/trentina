@@ -647,17 +647,61 @@ class BackendAuth(BaseModel):
         return self
 
 
+class TrustVerdict(BaseModel):
+    """What a downstream pins to trust a federated upstream's signed verdict
+    (#592, D2a): the upstream's Ed25519 PUBLIC key and the exact
+    ``perimeter_stamp`` it must have scanned under.
+
+    When set, a federated response carrying a valid assertion (signature, the
+    delivered-bytes hash, this stamp, and the resolved mode all matching) is
+    delivered WITHOUT the downstream re-running its own L1/L2/L3. A stamp change
+    upstream — a different model, threshold or gate — stops matching, and the
+    downstream re-judges until the operator re-pins. The stamp covers the model
+    and its gates, NOT the peer profile's ``defense`` block (its thresholds and
+    allowlists), which are trusted unpinned (Known gap).
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    public_key: str = Field(..., description="The upstream's Ed25519 public key, PEM SPKI")
+    perimeter_stamp: str = Field(
+        ...,
+        min_length=1,
+        description="The exact perimeter_stamp the upstream must have scanned under (L2 + version)",
+    )
+    judge: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "The exact L3 judge the upstream must have used (provider/model/pack). The "
+            "perimeter_stamp does not cover L3, so a peer that swapped to a weaker judge is "
+            "caught here and re-judged."
+        ),
+    )
+
+    @field_validator("public_key")
+    @classmethod
+    def public_key_is_ed25519_pem(cls, v: str) -> str:
+        from .edge_key import EdgeKeyError, load_public_key
+
+        try:
+            load_public_key(v)
+        except EdgeKeyError as exc:
+            raise ValueError(f"trust_verdict.public_key is not a valid Ed25519 PEM: {exc}") from exc
+        return v
+
+
 class FederatedConfig(BaseModel):
     """Marks a backend as a federated upstream Trentina — a peer gateway whose
     own perimeter already judged its responses, not a leaf MCP server (#592).
 
     The block's presence declares the trust boundary (B1). ``edge_key_env``
     (C1) makes the DOWNSTREAM side of the edge sign a short-lived JWT to the
-    upstream instead of presenting a static bearer. ``trust_verdict`` (D2a, not
-    yet) will let the downstream trust the upstream's signed verdict. A field
-    arrives with the code that acts on it — a declared option nothing honours is
-    a faked property — and ``extra="forbid"`` keeps a premature one from loading
-    quietly.
+    upstream instead of presenting a static bearer. ``trust_verdict`` (D2a) lets
+    the downstream trust the upstream's signed verdict and skip its own layers.
+    A field arrives with the code that acts on it — a declared option nothing
+    honours is a faked property — and ``extra="forbid"`` keeps a premature one
+    from loading quietly.
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
@@ -677,6 +721,14 @@ class FederatedConfig(BaseModel):
         default=None,
         exclude=True,
         description="Resolved edge private key PEM (load-time only, from edge_key_env)",
+    )
+    trust_verdict: TrustVerdict | None = Field(
+        default=None,
+        description=(
+            "Pin the upstream's public key + perimeter_stamp to TRUST its signed "
+            "verdict and skip the downstream's own L1/L2/L3 (#592, D2a). Unset: "
+            "every federated response is re-judged, as today."
+        ),
     )
 
     @field_validator("edge_key_env")
