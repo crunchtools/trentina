@@ -45,6 +45,36 @@ seen in the first ten minutes are pinned as approved so nothing goes dark. A
 store that is missing holds every tool until an operator releases it: that is
 the fail-safe direction.
 
+The store is a second database from the blocklist on purpose; losing it costs a
+slow restart AND every tool held for re-approval, which is dark rather than
+silently trusted. `cache_flush` and `reconnect_backend` rebuild a profile's
+aggregate from the in-memory config and do **not** touch pins — a pin is cleared
+only by `tool_pins reject`/`approve` or by losing the store. The held tools for
+a backend are the rows in `perimeter.db`'s `tool_pins` table with a non-null
+`pending_hash`, keyed by the backend's URL hash.
+
+## Federation: first connect, and held upstream
+
+When a backend is a **federated** peer (see [Federation](federation.md)),
+pinning behaves differently in two ways, both because the downstream trusts the
+declared edge:
+
+- **No first-connect storm.** A federated backend's **first** tools/list is
+  approved as a unit, not held tool by tool — a large upstream offering hundreds
+  of tools does not storm the operator, and its set already passed the peer's
+  own pin gate. "First" is a persisted marker (so an empty first list still
+  records the connect); after it, a newly added or changed upstream tool is held
+  one at a time, exactly as a non-federated backend's would be. A non-federated
+  remote backend still holds every new tool on first sight.
+- **Held state is visible downstream.** The upstream reports a count of the
+  tools it is withholding in the caller's slice (names never cross), surfaced per
+  federated backend. When the upstream's call gate refuses a held tool, the
+  downstream reads the closed `tool_held` reason and answers the agent with its
+  own `tool_held_upstream` — "held upstream, awaiting approval" — never the
+  peer's text. The unauthenticated `/health` probe carries a gateway-wide count
+  of tools pending approval, for monitoring. Approving a federated hold is done
+  on the **upstream** that holds it.
+
 ## The call gate: detection at list time, enforcement at call time (#469)
 
 A held tool is withheld from `tools/list` AND refused if called: a call to a
