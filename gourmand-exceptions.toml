@@ -1035,3 +1035,10 @@ path = "src/trentina/transports/mcp.py"
 pattern = "_federated_continuation"
 justification = "_federated_continuation (hold a federated peer's paging and mark part 1) shares only a guard-clauses-then-build control-flow shape with tool_pins, agent and scan helpers in unrelated domains; collapsing them is impossible and the resemblance is structural, not duplicated logic."
 classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/vsa.py"
+pattern = "verify_assertion"
+justification = "verify_assertion (fail-closed Ed25519 verdict-assertion check) shares only a guard-clauses-then-return control-flow shape with confine.open_confined (path confinement); unrelated domains, no shared logic to collapse."
+classification = "gourmand_bug"

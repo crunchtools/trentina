@@ -54,6 +54,7 @@ from ..gateway import (
     request_edge,
     results,
     session_marks,
+    vsa,
 )
 from ..gateway.backend import call_backend_tool, loggable_tool
 from ..gateway.context import PartsOffer, current_call, current_session, profile_context
@@ -81,6 +82,7 @@ from ..gateway.transform import transform_response
 from ..logsafe import exc_kind, redact_source
 from ..orchestrator import crossing, judge_response
 from ..outcomes import Outcome, classify_exception
+from ..perimeter_db import perimeter_stamp
 from ..reserved import REFUSAL_KEY, WARNING_KEY, with_stripped
 from ..transforms.policy import PREPROCESS_PARAM
 from .base import Carrier, Early, Face, Transport
@@ -285,6 +287,44 @@ def _federated_continuation(
     marker = paging.marker(paged, 1)
     marker[READ_NEXT_KEY] = paging.footer(paged, 1, reader)
     return paging.with_part_marker(result, marker, reader=reader)
+
+
+def _federated_vsa(
+    profile: Profile,
+    result: dict[str, Any],
+    *,
+    blocks: list[Any] | None,
+    structured: Any,
+    is_error: bool,
+    warning: dict[str, Any] | None,
+    mode: Mode,
+) -> dict[str, Any]:
+    """Attach the ingress's signed verdict assertion to a delivered federated
+    response (#592, D1), when this profile is a federation ingress with a
+    signing key.
+
+    The assertion binds the signature to the delivered bytes (``content_digest``
+    over the blocks, structured content and ``isError``, never the warning or
+    ``_meta``) and to the perimeter stamp, so a downstream that pins the public
+    key and the stamp can trust the scan instead of re-judging (D2a). Emitted
+    only here, on the clean-or-flagged DELIVERED path where the layers ran —
+    never on a blocked or redacted response, which returned earlier, and never
+    for an internal tool, which is judged at its own ingress. Returns ``result``
+    unchanged for a profile that is not a signing federation ingress.
+    """
+    federation = profile.federation
+    if federation is None or federation.signing_key is None:
+        return result
+    assertion = vsa.build_assertion(
+        verifier=profile.name,
+        content_sha256=vsa.content_digest(blocks, structured, is_error),
+        verdict=vsa.verdict_summary(warning, mode.value),
+        perimeter_stamp=perimeter_stamp(),
+        ts=int(time.time()),
+    )
+    envelope = vsa.sign_assertion(assertion, federation.signing_key.get_secret_value())
+    meta = {**(result.get("_meta") or {}), vsa.VSA_KEY: envelope}
+    return {**result, "_meta": meta}
 
 
 class McpServerFace(Face):
@@ -655,6 +695,19 @@ class McpServerFace(Face):
                     result[WARNING_KEY] = judged.decision.warning
                 return Assembled(result, ok, warning=gateway_warning, stripped=stripped)
             results._attach_warning(result, judged.decision.warning)
+            # The upstream vouches for this delivered response (#592, D1): a
+            # signed verdict beside it a downstream can trust instead of
+            # re-judging. Only here — the layers ran, nothing was blocked or
+            # redacted — and only for a signing federation ingress.
+            result = _federated_vsa(
+                profile,
+                result,
+                blocks=transformed.content_blocks,
+                structured=arrived.structured,
+                is_error=call_result.is_error,
+                warning=gateway_warning,
+                mode=effective_mode(profile, mode),
+            )
 
         result = _federated_continuation(
             profile,
