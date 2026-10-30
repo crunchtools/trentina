@@ -11,6 +11,7 @@ contract is frozen (#535).
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, cast, get_args
 
@@ -158,6 +159,35 @@ def test_registering_an_unrunnable_api_version_is_refused() -> None:
     transport.face.api_version = unsupported  # instance override of the class default
     with pytest.raises(ValueError, match="api_version this build does not run"):
         register_transport("v_next", transport)
+
+
+@pytest.mark.usefixtures("clean_registry")
+def test_concurrent_registration_of_one_name_has_a_single_winner() -> None:
+    """Two callers racing to register the same name: exactly one succeeds, the
+    other raises, and the registry keeps the winner — the lock's guarantee. A
+    barrier maximizes contention so a regression that drops the lock (check then
+    set, last-wins) would show up as two successes or a reassigned entry."""
+    start = threading.Barrier(2)
+    outcomes: dict[int, tuple[str, Transport]] = {}
+
+    def worker(key: int) -> None:
+        transport = _double()
+        start.wait()
+        try:
+            register_transport("rival", transport)
+            outcomes[key] = ("ok", transport)
+        except ValueError:
+            outcomes[key] = ("refused", transport)
+
+    threads = [threading.Thread(target=worker, args=(k,)) for k in (0, 1)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert sorted(o for o, _ in outcomes.values()) == ["ok", "refused"]
+    winner = next(tr for o, tr in outcomes.values() if o == "ok")
+    assert build_transport("rival") is winner
 
 
 @pytest.mark.usefixtures("clean_registry")
