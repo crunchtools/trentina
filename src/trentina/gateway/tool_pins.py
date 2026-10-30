@@ -155,6 +155,12 @@ def decide(url: str, tool: str, *, approve: bool) -> bool:
 #: words ("held upstream, awaiting approval"); it never relays peer text (#592).
 TOOL_HELD_REASON = "tool_held"
 
+#: The closed reason a federated DOWNSTREAM refuses with when its upstream peer
+#: answered a call with ``TOOL_HELD_REASON`` (#592, E1c). The downstream authors
+#: this itself — "held upstream, awaiting approval" — from the peer's closed
+#: reason code alone, never relaying the peer's ``detail`` text (#262).
+TOOL_HELD_UPSTREAM_REASON = "tool_held_upstream"
+
 
 def held(url: str, tool: str) -> bool:
     """Whether a CALL to ``tool`` on ``url`` must be refused by the pin gate (#469).

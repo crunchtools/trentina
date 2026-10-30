@@ -79,7 +79,7 @@ from ..gateway.names import NAMESPACE_SEP, served_name
 from ..gateway.parts import _part_reader
 from ..gateway.service import judge_of
 from ..gateway.sessions import session_registry
-from ..gateway.surface import wire_bytes, wire_digest
+from ..gateway.surface import held_total, wire_bytes, wire_digest
 from ..gateway.transform import transform_response
 from ..logsafe import exc_kind, redact_source
 from ..modes import refusal_body
@@ -87,7 +87,7 @@ from ..orchestrator import crossing, judge_response
 from ..outcomes import Outcome, classify_exception
 from ..perimeter_db import perimeter_stamp
 from ..quarantine.packs import pack_for
-from ..reserved import REFUSAL_KEY, WARNING_KEY, with_stripped
+from ..reserved import PINS_KEY, REFUSAL_KEY, WARNING_KEY, with_stripped
 from ..transforms.policy import PREPROCESS_PARAM
 from .base import Carrier, Early, Face, Transport
 from .jsonrpc import (
@@ -366,6 +366,70 @@ def _deliver_trusted(
     return Assembled(result, ok, warning=warning, stripped=stripped)
 
 
+def _federated_hold_refusal(
+    backend: Backend, call_result: BackendCall, *, stripped: int
+) -> Assembled | None:
+    """A federated peer refused the call with its pin CALL GATE (#592, E1c).
+
+    The upstream's gate (#469) returns ``tool_held`` as a result-shaped refusal;
+    its root ``_trentina_refusal`` does not survive the SDK, so the peer mirrors
+    the closed reason into ``_meta`` (``_mirror_refusal_meta``). Read it BEFORE
+    the transform — otherwise the peer's "[TRENTINA] Refused" text is judged as
+    content and relayed. Match the reason by its exact closed code, never the
+    ``detail``, and author our OWN refusal so the agent reads downstream words.
+    Only a federated backend; a non-federated one never sets ``backend.federated``.
+    """
+    if backend.federated is None:
+        return None
+    meta = call_result.meta if isinstance(call_result.meta, dict) else None
+    refusal = meta.get(REFUSAL_KEY) if meta else None
+    if not isinstance(refusal, dict) or refusal.get("reason") != tool_pins.TOOL_HELD_REASON:
+        return None
+    result = {
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "[TRENTINA] Refused (tool_held_upstream). The tool is held pending "
+                    "operator approval on the upstream gateway."
+                ),
+            }
+        ],
+        "isError": False,
+        REFUSAL_KEY: {
+            "reason": tool_pins.TOOL_HELD_UPSTREAM_REASON,
+            "detail": "held upstream, awaiting approval",
+            "alternatives": [],
+        },
+    }
+    return Assembled(result, Outcome.DENIED_GUARD, stripped=stripped)
+
+
+def _federated_early(
+    profile: Profile,
+    backend: Backend,
+    backend_name: str,
+    arrived: Arrived,
+    call_result: BackendCall,
+    *,
+    mode: Mode,
+    policy: ModePolicy,
+    stripped: int,
+    ok: Outcome,
+) -> Assembled | None:
+    """The two federated response-edge early exits, checked before the transform
+    (#592): the peer's pin-gate ``tool_held`` refusal mapped to our own words
+    (E1c), then the peer's trusted signed verdict (D2a). None when neither
+    applies and the local pipeline must run."""
+    held = _federated_hold_refusal(backend, call_result, stripped=stripped)
+    if held is not None:
+        return held
+    return _federated_trust(
+        profile, backend, backend_name, arrived, call_result,
+        mode=mode, policy=policy, stripped=stripped, ok=ok,
+    )
+
+
 def _federated_trust(
     profile: Profile,
     backend: Backend,
@@ -461,6 +525,28 @@ def _federated_vsa(
     envelope = vsa.sign_assertion(assertion, federation.signing_key.get_secret_value())
     meta = {**(result.get("_meta") or {}), vsa.VSA_KEY: envelope}
     return {**result, "_meta": meta}
+
+
+def _mirror_refusal_meta(profile: Profile, response: dict[str, Any]) -> dict[str, Any]:
+    """Mirror a refusal's closed reason into the result ``_meta`` for a federation
+    ingress caller (#592, E1c).
+
+    A policy refusal carries its reason in a root ``_trentina_refusal``, which a
+    federated downstream's MCP SDK drops in transit (``_meta`` survives). Copy
+    ONLY the closed reason code, never the ``detail`` text (#262), so the
+    downstream can author its own "held upstream" wording. A clean result has no
+    root refusal and is returned unchanged; no-op off a federation ingress.
+    """
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return response
+    refusal = result.get(REFUSAL_KEY)
+    if not isinstance(refusal, dict) or "reason" not in refusal:
+        return response
+    if profile.federation is None:
+        return response
+    result["_meta"] = {**(result.get("_meta") or {}), REFUSAL_KEY: {"reason": refusal["reason"]}}
+    return response
 
 
 class McpServerFace(Face):
@@ -755,17 +841,16 @@ class McpServerFace(Face):
             acted=results._may_have_acted(backend, tool_name),
         )
 
-        # Scan-once at the trust boundary (#592, D2a): a federated peer that
-        # pins a trusted verdict may be delivered without re-running the layers.
-        # BEFORE the transform — a trusted response is delivered as it arrived,
-        # never reshaped unjudged — and fail-closed: a missing, forged, stale or
-        # mismatched assertion falls through to the full local pipeline below.
-        trusted = _federated_trust(
+        # Before the transform, two federated early exits (#592): a peer's pin
+        # call gate refusal mapped to our own "held upstream" words (E1c), and a
+        # peer's trusted signed verdict served without re-judging (D2a). Both
+        # fail-closed — anything else falls through to the full local pipeline.
+        early = _federated_early(
             profile, backend, backend_name, arrived, call_result,
             mode=mode, policy=policy, stripped=stripped, ok=ok,
         )
-        if trusted is not None:
-            return trusted
+        if early is not None:
+            return early
 
         # Transform BEFORE the perimeter, never after: the scan reads the
         # transformed artifact and that artifact is delivered, so nothing a
@@ -1185,7 +1270,13 @@ async def _route_tools_list(profile: Profile, req_id: Any) -> dict[str, Any]:
     aggregated = aggregate._profile_tools_cache.get(profile.name)
     if aggregated is None:
         aggregated = await aggregate.ensure_profile_build(profile)
-    return _ok(req_id, {"tools": discovery.shape(profile, aggregated, current_session.get())})
+    result: dict[str, Any] = {"tools": discovery.shape(profile, aggregated, current_session.get())}
+    # Tell a federated downstream how many tools this ingress is holding, so it
+    # can report "N held upstream" without ever seeing their names (#592, E1c).
+    # A hint in ``_meta`` (the SDK-safe channel), scoped to this caller's slice.
+    if profile.federation is not None:
+        result["_meta"] = {PINS_KEY: {"held": held_total(profile.name)}}
+    return _ok(req_id, result)
 
 
 async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[str, Any]:
@@ -1262,7 +1353,7 @@ async def _crossing_call(profile: Profile, req_id: Any, params: dict[str, Any]) 
     discovery meta name by the time it arrives.
     """
     crossed: dict[str, Any] = await crossing(mcp_transport, McpCrossing(profile, req_id, params))
-    return crossed
+    return _mirror_refusal_meta(profile, crossed)
 
 
 async def _discovery_call(

@@ -31,6 +31,7 @@ from mcp_types import INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND
 
 from ..database import delete_all_tool_lists, delete_tool_list, save_tool_list
 from ..logsafe import exc_kind, redact_source, safe_url
+from ..reserved import PINS_KEY
 from . import edge_key
 from .circuit import breaker
 from .context import get_current_profile
@@ -274,6 +275,31 @@ class BackendCall:
 
 
 _tool_list_cache: dict[str, list[dict[str, Any]]] = {}
+
+# What a federated peer reported holding in its tools/list ``_meta`` (#592,
+# E1c), keyed by backend URL: the count of tools it is withholding from this
+# caller's slice. Read only for a federated backend; a non-federated backend
+# never sets it. A hint for the surface report, never a trust input.
+_federated_held_upstream: dict[str, int] = {}
+
+
+def _read_federated_held(backend: Backend, tools_result: Any) -> None:
+    """Record a federated peer's ``_meta._trentina_pins.held`` (#592, E1c).
+
+    Shape-checked hard: a non-int, a negative, or more holds than tools listed
+    is a peer bug or a probe, so it is ignored rather than surfaced. Only a
+    federated backend is read; the SDK keeps a list-level ``_meta`` where it
+    drops a per-tool one.
+    """
+    if backend.federated is None:
+        return
+    meta = getattr(tools_result, "meta", None)
+    pins = meta.get(PINS_KEY) if isinstance(meta, dict) else None
+    held = pins.get("held") if isinstance(pins, dict) else None
+    if isinstance(held, bool) or not isinstance(held, int):
+        return
+    if 0 <= held <= len(tools_result.tools):
+        _federated_held_upstream[backend.url] = held
 
 # JSON-RPC errors that mean "your request was wrong", said by a backend that
 # is up. Each is named in the refusal by our own words, never the backend's:
@@ -555,6 +581,7 @@ async def _fetch_and_cache(
         ) from exc
 
     breaker.record_success(backend.url)
+    _read_federated_held(backend, tools_result)
     tools = [_serialize_tool(tool) for tool in tools_result.tools]
     _tool_list_cache[backend.url] = tools
     save_tool_list(backend.url, tools)
