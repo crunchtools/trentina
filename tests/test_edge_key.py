@@ -189,3 +189,28 @@ def test_sign_verify_blob_primitives() -> None:
     sig = edge_key.sign(priv, b"verdict-bytes")
     assert edge_key.verify(pub, sig, b"verdict-bytes") is True
     assert edge_key.verify(pub, sig, b"other-bytes") is False
+
+
+def test_the_loaders_memoize_by_pem() -> None:
+    # The signing/verifying hot paths parse a key once, not per call: the same
+    # PEM returns the same object (functools.lru_cache). A different key is a
+    # different entry.
+    priv, _ = _keypair()
+    private_pem = priv.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    public_pem = priv.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    ).decode()
+    assert load_private_key(private_pem) is load_private_key(private_pem)
+    assert load_public_key(public_pem) is load_public_key(public_pem)
+
+    other = Ed25519PrivateKey.generate()
+    other_pem = other.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    assert load_private_key(other_pem) is not load_private_key(private_pem)
