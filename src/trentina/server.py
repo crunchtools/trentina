@@ -6,9 +6,13 @@ import contextlib
 from typing import TYPE_CHECKING, Any, Literal
 
 from fastmcp import FastMCP
+from fastmcp.tools import ToolResult
+from mcp.types import TextContent
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
+from .errors import BlockedSourceError, EgressRefusedError, FileReadError
+from .gateway.results import _refusal_text
 from .modes import current_policy, parse_mode_arg
 from .tools import (
     audit_verify,
@@ -28,7 +32,7 @@ from .tools import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable
 
 
 @contextlib.asynccontextmanager
@@ -98,12 +102,54 @@ def _as_arg(mode: str | RedactMode | None) -> str | dict[str, str] | None:
     return {"redact": mode.redact} if isinstance(mode, RedactMode) else mode
 
 
+def _refusal_result(refusal: dict[str, Any]) -> ToolResult:
+    """A policy refusal as an ordinary tool result, the way the gateway sends it
+    (#550): ``isError`` false, the one-line ``[TRENTINA] Refused (...)`` an agent
+    reads even if it strips structured fields, and ``_trentina_refusal`` for one
+    that reads them. The gateway path is unchanged; this is only the standalone
+    boundary, where a raised exception would otherwise become ``isError`` true
+    and a stock agent's strike-breaker would count the refusal against us."""
+    return ToolResult(
+        content=[TextContent(type="text", text=_refusal_text(refusal))],
+        structured_content={"_trentina_refusal": refusal},
+    )
+
+
+async def _delivered(coro: Awaitable[dict[str, Any]]) -> dict[str, Any] | ToolResult:
+    """Await a standalone tool's work, turning a REFUSAL into an ordinary result.
+
+    A ``BlockedSourceError`` carries its own ``refusal`` (a defense block, the
+    blocklist, a fetch advisory, a confinement denial); ``FileReadError`` and
+    ``EgressRefusedError`` carry a closed ``reason`` a refusal is built from.
+    Every other exception — a timeout, a provider failure, an oversize scan —
+    is a genuine failure and still raises, so it stays ``isError`` true.
+
+    Only STANDALONE converts: these same tools back the gateway's ``internal://``
+    backend, where the dispatcher binds a profile for the call and expects the
+    raise so it can shape the refusal and audit it ``blocked_defense`` (#550). A
+    bound profile is exactly that gateway dispatch; standalone binds none. Behind
+    a gateway the exception is re-raised and the gateway path is unchanged."""
+    try:
+        return await coro
+    except (BlockedSourceError, FileReadError, EgressRefusedError) as exc:
+        from .gateway.context import _current_profile
+
+        if _current_profile.get() is not None:
+            raise  # behind a gateway: the internal backend shapes and audits it
+        refusal = (
+            exc.refusal
+            if isinstance(exc, BlockedSourceError)
+            else {"reason": exc.reason, "alternatives": []}
+        )
+        return _refusal_result(refusal)
+
+
 @mcp.tool()
 async def fetch_tool(
     url: str,
     trentina_mode: str | RedactMode | None = None,
     trentina_preprocess: bool | list[str] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | ToolResult:
     """Fetch a URL through all three layers.
 
     IMPORTANT: If this returns a security_advisory, the URL is behaving like a
@@ -118,11 +164,13 @@ async def fetch_tool(
     """
     name, question = parse_mode_arg(_as_arg(trentina_mode))
     mode = current_policy().resolve(name)
-    return await fetch_page(
-        url,
-        mode,
-        question or "Extract the main content from this page.",
-        trentina_preprocess,
+    return await _delivered(
+        fetch_page(
+            url,
+            mode,
+            question or "Extract the main content from this page.",
+            trentina_preprocess,
+        )
     )
 
 
@@ -131,7 +179,7 @@ async def read_tool(
     path: str,
     trentina_mode: str | RedactMode | None = None,
     trentina_preprocess: bool | list[str] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | ToolResult:
     """Read a local text file through all three layers. Binary is rejected.
 
     Args:
@@ -141,11 +189,13 @@ async def read_tool(
     """
     name, question = parse_mode_arg(_as_arg(trentina_mode))
     mode = current_policy().resolve(name)
-    return await read_file(
-        path,
-        mode,
-        question or "Extract the main content from this file.",
-        trentina_preprocess,
+    return await _delivered(
+        read_file(
+            path,
+            mode,
+            question or "Extract the main content from this file.",
+            trentina_preprocess,
+        )
     )
 
 
@@ -153,7 +203,7 @@ async def read_tool(
 async def dir_tool(
     path: str,
     trentina_mode: str | RedactMode | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | ToolResult:
     """List a directory through all three layers.
 
     File names are judged like any other text. A directory where a .py file
@@ -167,7 +217,9 @@ async def dir_tool(
     """
     name, question = parse_mode_arg(_as_arg(trentina_mode))
     mode = current_policy().resolve(name)
-    return await list_dir(path, mode, question or "Summarize what this directory contains.")
+    return await _delivered(
+        list_dir(path, mode, question or "Summarize what this directory contains.")
+    )
 
 
 @mcp.tool()
@@ -176,7 +228,7 @@ async def content_tool(
     content_type: str = "text/plain",
     trentina_mode: str | RedactMode | None = None,
     trentina_preprocess: bool | list[str] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | ToolResult:
     """Judge inline text through all three layers. It is always untrusted.
 
     Args:
@@ -187,12 +239,14 @@ async def content_tool(
     """
     name, question = parse_mode_arg(_as_arg(trentina_mode))
     mode = current_policy().resolve(name)
-    return await judge_content(
-        content,
-        mode,
-        question or "Extract the main content.",
-        content_type=content_type,
-        preprocess=trentina_preprocess,
+    return await _delivered(
+        judge_content(
+            content,
+            mode,
+            question or "Extract the main content.",
+            content_type=content_type,
+            preprocess=trentina_preprocess,
+        )
     )
 
 
@@ -201,7 +255,7 @@ async def search_tool(
     query: str,
     num_results: int = 5,
     trentina_mode: str | RedactMode | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | ToolResult:
     """Search the web; the grounded answer, titles and URLs are judged as one.
 
     Returns the answer plus the sources, which can be followed up with
@@ -214,7 +268,9 @@ async def search_tool(
     """
     name, question = parse_mode_arg(_as_arg(trentina_mode))
     mode = current_policy().resolve(name)
-    return await web_search(query, num_results, mode, question or "Summarize the search results.")
+    return await _delivered(
+        web_search(query, num_results, mode, question or "Summarize the search results.")
+    )
 
 
 @mcp.tool()

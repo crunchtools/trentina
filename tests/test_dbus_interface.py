@@ -291,7 +291,7 @@ class TestEventDataShapes:
 def test_l3_status_follows_the_provider_not_the_gemini_key() -> None:
     from trentina.dbus_interface import l3_status
 
-    config = MagicMock(has_llm=True, has_api_key=False, provider="openrouter", model="m")
+    config = MagicMock(has_llm=True, provider="openrouter", model="m")
 
     status = l3_status(config)
 

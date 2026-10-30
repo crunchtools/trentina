@@ -371,7 +371,6 @@ class TestL3UniqueCatches:
             ),
         ):
             for cfg in (mock_config, mock_prov_config):
-                cfg.return_value.has_api_key = True
                 cfg.return_value.api_key.get_secret_value.return_value = "test-key"
                 cfg.return_value.model = "gemini-2.5-flash-lite"
                 cfg.return_value.provider = "gemini"
@@ -403,7 +402,6 @@ class TestL3BenignNoFalsePositives:
             ),
         ):
             for cfg in (mock_config, mock_prov_config):
-                cfg.return_value.has_api_key = True
                 cfg.return_value.api_key.get_secret_value.return_value = "test-key"
                 cfg.return_value.model = "gemini-2.5-flash-lite"
                 cfg.return_value.provider = "gemini"
@@ -454,7 +452,6 @@ class TestL3DetectorMetaAttacks:
             ),
         ):
             for cfg in (mock_config, mock_prov_config):
-                cfg.return_value.has_api_key = True
                 cfg.return_value.api_key.get_secret_value.return_value = "test-key"
                 cfg.return_value.model = "gemini-2.5-flash-lite"
                 cfg.return_value.provider = "gemini"

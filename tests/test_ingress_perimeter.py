@@ -102,7 +102,6 @@ def _l3_available_and_clean() -> Any:
             return_value={"injection_detected": False, "risk_level": "low"},
         ),
     ):
-        cfg.return_value.has_api_key = True
         cfg.return_value.admission_tokens = 32_768
         yield
 
@@ -844,7 +843,6 @@ class TestAdversarialReviewFixes:
                 },
             ),
         ):
-            cfg.return_value.has_api_key = True
             cfg.return_value.admission_tokens = 32_768
             decision = await scan_tool_response(
                 profile=self._block_profile(),
@@ -1223,7 +1221,6 @@ async def test_the_backend_briefing_reaches_l3_and_keys_the_cache() -> None:
         patch("trentina.defense.get_config") as cfg,
         patch("trentina.defense.quarantine_detect", detect),
     ):
-        cfg.return_value.has_api_key = True
         cfg.return_value.admission_tokens = 32_768
         for context in (briefing, None, briefing):
             await scan_tool_response(

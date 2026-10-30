@@ -191,7 +191,7 @@ async def reconnect_backend(backend: str) -> dict[str, Any]:
             url, cfg = resolve_backend(scope, backend)
             base = {"endpoint": _safe_endpoint(url), "scope": scope.label}
             name = _configured_name(scope.backends, backend)
-            holders = [scope.profile] if scope.profile is not None else []
+            holders = [scope.profile]
             results = [await _reset_one(name, url, cfg, base, scope, holders)]
             return {
                 "backend": backend,

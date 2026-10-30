@@ -10,6 +10,20 @@ under that name.
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-10-30
+
+### Added
+
+- **Standalone mode returns a policy refusal as an ordinary tool result** (#550), the way the gateway has since 2.0.0. A `block`-mode refusal, a blocklist hit, a fetch advisory, a confinement denial or an egress refusal now comes back with `isError` false, the `[TRENTINA] Refused (...)` line in `content`, and the structured body under `_trentina_refusal` — instead of a raised exception that a stock agent (hermes) counts against its 3-strike breaker. A genuine failure (a timeout, a provider error, an oversize scan) still raises. The gateway path is unchanged.
+
+### Fixed
+
+- `plugins/registry.py` accepted `api_version = True` as version 1 (`bool` subclasses `int`, `True == 1`); it now requires an exact `int` (`type(v) is int`), matching the fix made to the transport registry in 3.0.0. Regression test added.
+
+### Internal
+
+- Removed dead `scope.profile is not None` branches in `tools/stats.py` and `tools/reconnect.py` (the field is non-optional since 3.0.0) and the vestigial `config.has_api_key` property (no caller since the grounding search fallback was dropped). Renamed `tests/test_ingress_defense.py` to `tests/test_ingress_perimeter.py`, the module having been split into `response_edge`/`tool_list_edge`. Closes #607.
+
 ## [3.0.0] - 2026-10-30
 
 ### Breaking

@@ -38,7 +38,6 @@ def _cfg(openrouter: str = "", gemini: str = "", provider: str = "openrouter") -
     cfg = MagicMock()
     cfg.openrouter_api_key.get_secret_value.return_value = openrouter
     cfg.api_key.get_secret_value.return_value = gemini
-    cfg.has_api_key = bool(gemini)
     cfg.search_model = "google/gemini-2.5-flash"
     cfg.provider = provider
     return cfg
@@ -423,7 +422,6 @@ class TestConfigHasLLM:
         cfg = Config()
 
         assert cfg.has_llm is True
-        assert cfg.has_api_key is False
 
     def test_a_provider_with_no_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from trentina.config import Config

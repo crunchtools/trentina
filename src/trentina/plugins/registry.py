@@ -117,9 +117,11 @@ def resolve_transform(
         raise ProfileConfigError(
             f"Profile {profile_name!r}: plugin transform {ref!r} has no readable api_version"
         ) from exc
-    # `isinstance(int)` first: an unhashable api_version (a list, say) would
-    # raise TypeError on the set membership rather than refuse cleanly.
-    if not isinstance(api_version, int) or api_version not in SUPPORTED_TRANSFORM_API:
+    # `type(x) is int`, not `isinstance`: bool subclasses int and True == 1, so
+    # an isinstance check would admit api_version=True as version 1. The exact
+    # type also guards the set-membership test against an unhashable or non-int
+    # version (a list, say) raising rather than refusing cleanly.
+    if type(api_version) is not int or api_version not in SUPPORTED_TRANSFORM_API:
         raise ProfileConfigError(
             f"Profile {profile_name!r}: plugin transform {ref!r} declares api_version "
             f"{api_version!r}; this build supports {sorted(SUPPORTED_TRANSFORM_API)}"
