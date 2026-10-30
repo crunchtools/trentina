@@ -58,8 +58,6 @@ def _own_oauth_backend(
     _url, cfg = resolve_backend(scope, backend)
     if cfg.auth is None:
         raise ScopeError(f"{tool}: backend {backend!r} does not use auth: oauth")
-    if scope.profile is None:
-        raise ScopeError(f"{tool}: no calling profile")
     if needs_self_authorize and not (scope.is_operator or cfg.auth.self_authorize):
         raise ScopeError(f"{tool}: backend {backend!r} does not allow self_authorize")
     return scope, scope.profile
@@ -115,7 +113,7 @@ async def backend_auth_status(backend: str | None = None) -> dict[str, Any]:
     report = []
     for name in names:
         cfg = scope.backends[name]
-        if cfg.auth is None or scope.profile is None:
+        if cfg.auth is None:
             continue
         grant = await store.get_grant(scope.profile.name, name, cfg) if store else None
         report.append(
