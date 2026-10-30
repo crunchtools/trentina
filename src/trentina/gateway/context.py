@@ -115,6 +115,10 @@ def get_current_profile() -> Profile:
     read the same way a bound profile is. A live gateway with nothing bound is a
     path nobody designed, so the honest answer is to refuse (fail closed) rather
     than act gateway-wide.
+
+    Raises:
+        ScopeError: a live gateway is registered but no profile is bound to the
+            current call — an undesigned path, refused rather than served.
     """
     profile = _current_profile.get()
     if profile is not None:
