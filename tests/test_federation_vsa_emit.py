@@ -1,34 +1,18 @@
 """D1 emission: a federation ingress signs a verdict beside a delivered response (#592).
 
-End to end on the harness: a federation-ingress upstream with a signing key serves
-a tool (from a real remote backend, behind its perimeter) and attaches
-``_meta._trentina_vsa`` — a signature a downstream that pins the public key and
-the perimeter stamp verifies and binds to the exact delivered bytes (D2a trusts
-it). Observed by calling the upstream directly: a downstream strips ``_trentina_*``
-from a backend response, so the VSA is read off the upstream's own output.
+Drives ``_federated_vsa`` — the ``_assemble`` hook — directly: given a signing
+federation-ingress profile and a delivered result, it attaches a
+``_meta._trentina_vsa`` a downstream verifies with the pinned key and binds to
+the exact delivered bytes (D2a trusts it). Deterministic, no servers: the scan
+is upstream of this hook and the signature is pure.
 """
 
 from __future__ import annotations
 
-import contextlib
-from typing import Any
-
-import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import SecretStr
 
-from tests.federation_harness import (
-    INTERNAL_KEY,
-    UPSTREAM_PROFILE,
-    UPSTREAM_TOKEN,
-    MCPClient,
-    bound_internal_server,
-    internal_server,
-    serving,
-    serving_mcp_backend,
-)
-from trentina.gateway.app import gateway_app
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -36,10 +20,9 @@ from trentina.gateway.profile import (
     FederationPeer,
     Profile,
 )
-from trentina.gateway.sessions import SessionRegistry
 from trentina.gateway.vsa import VSA_KEY, content_digest, verify_assertion
-
-pytestmark = pytest.mark.asyncio
+from trentina.modes import Mode
+from trentina.transports.mcp import _federated_vsa
 
 _PEER_PUB = (
     "-----BEGIN PUBLIC KEY-----\n"
@@ -63,69 +46,111 @@ def _keypair() -> tuple[str, str]:
     return private_pem, public_pem
 
 
-def _ingress(demo_port: int, *, private_pem: str | None) -> Profile:
-    # A directed federation ingress that ALSO holds a bearer (C1's opt-in
-    # coexistence), so a test client reaches it directly. Its offered tools are a
-    # real remote backend; its internal surface is read_part only. With a
-    # private key it signs verdicts; without one it emits none.
+def _ingress(*, private_pem: str | None) -> Profile:
+    # A directed federation ingress: role agent (default), a remote offered
+    # backend, internal surface read_part only. With a key it signs verdicts.
     federation = FederationConfig(peers={"breetai": FederationPeer(public_key=_PEER_PUB)})
     if private_pem is not None:
         federation.signing_key = SecretStr(private_pem)
     profile = Profile(
-        name=UPSTREAM_PROFILE,
+        name="lotor",
         auth=AuthConfig(bearer_token_env="UP"),
         federation=federation,
         backends={
-            "demo": Backend(url=f"http://127.0.0.1:{demo_port}/mcp"),
-            INTERNAL_KEY: Backend(url="internal://web", tools_allow=["read_part_tool"]),
+            "demo": Backend(url="https://peer.invalid/mcp"),
+            "web": Backend(url="internal://web", tools_allow=["read_part_tool"]),
         },
     )
     assert profile.auth is not None
-    profile.auth.bearer_token = SecretStr(UPSTREAM_TOKEN)
+    profile.auth.bearer_token = SecretStr("t")
     return profile
 
 
-@contextlib.asynccontextmanager
-async def _serving_ingress(profile: Profile) -> Any:
-    with bound_internal_server(internal_server()):
-        app = gateway_app({profile.name: profile}, sessions=SessionRegistry())
-        async with serving(app) as port:
-            yield port
-
-
-async def test_a_delivered_response_carries_a_verifiable_signed_verdict() -> None:
-    private_pem, public_pem = _keypair()
-    async with (
-        serving_mcp_backend() as demo_port,
-        _serving_ingress(_ingress(demo_port, private_pem=private_pem)) as up_port,
-        MCPClient(f"http://127.0.0.1:{up_port}/{UPSTREAM_PROFILE}/mcp", UPSTREAM_TOKEN) as client,
-    ):
-        echo = next(t["name"] for t in (await client.list_tools()) if t["name"].endswith("echo"))
-        result = await client.call_tool(echo, {"text": "vouched-hello"})
-
-    envelope = result.get("_meta", {}).get(VSA_KEY)
-    assert envelope is not None, result
-    assertion = verify_assertion(envelope, public_pem)
-    assert assertion is not None  # signed by the ingress's key
-    assert assertion["verifier"] == UPSTREAM_PROFILE
-    assert assertion["content_sha256"] == content_digest(
-        result["content"], result.get("structuredContent"), result["isError"]
+def _deliver(profile: Profile, result: dict, *, warning=None, mode=Mode.FLAG):
+    return _federated_vsa(
+        profile,
+        result,
+        blocks=result.get("content"),
+        structured=result.get("structuredContent"),
+        is_error=result.get("isError", False),
+        warning=warning,
+        mode=mode,
     )
-    assert assertion["verdict"]["flagged_by"] is None  # a clean echo
-    assert assertion["perimeter_stamp"] and isinstance(assertion["ts"], int)
-    # A key the ingress did not sign with does not verify.
+
+
+def test_a_signing_ingress_attaches_a_verifiable_assertion() -> None:
+    private_pem, public_pem = _keypair()
+    result = {"content": [{"type": "text", "text": "hello"}], "isError": False}
+    out = _deliver(_ingress(private_pem=private_pem), result)
+    assertion = verify_assertion(out["_meta"][VSA_KEY], public_pem)
+    assert assertion is not None
+    assert assertion["verifier"] == "lotor"
+    assert assertion["content_sha256"] == content_digest(result["content"], None, False)
+    assert assertion["verdict"] == {
+        "flagged_by": None,
+        "risk_level": None,
+        "gaps": [],
+        "oversize": False,
+        "unread_kinds": [],
+        "mode": "flag",
+    }
+    assert isinstance(assertion["ts"], int) and assertion["perimeter_stamp"]
+    # a key the ingress did not sign with does not verify
     _, other_pub = _keypair()
-    assert verify_assertion(envelope, other_pub) is None
+    assert verify_assertion(out["_meta"][VSA_KEY], other_pub) is None
 
 
-async def test_no_signing_key_means_no_assertion() -> None:
-    # Same ingress shape but without a signing key: nothing is emitted, and a
-    # downstream re-judges exactly as today.
-    async with (
-        serving_mcp_backend() as demo_port,
-        _serving_ingress(_ingress(demo_port, private_pem=None)) as up_port,
-        MCPClient(f"http://127.0.0.1:{up_port}/{UPSTREAM_PROFILE}/mcp", UPSTREAM_TOKEN) as client,
-    ):
-        echo = next(t["name"] for t in (await client.list_tools()) if t["name"].endswith("echo"))
-        result = await client.call_tool(echo, {"text": "unsigned"})
-    assert VSA_KEY not in result.get("_meta", {})
+def test_the_digest_binds_to_the_delivered_bytes() -> None:
+    private_pem, public_pem = _keypair()
+    result = {
+        "content": [{"type": "text", "text": "A"}],
+        "isError": True,
+        "structuredContent": {"k": 1},
+    }
+    out = _deliver(_ingress(private_pem=private_pem), result)
+    assertion = verify_assertion(out["_meta"][VSA_KEY], public_pem)
+    assert assertion is not None
+    assert assertion["content_sha256"] == content_digest(result["content"], {"k": 1}, True)
+    # a different delivered body would not match the signed digest
+    assert assertion["content_sha256"] != content_digest(
+        [{"type": "text", "text": "B"}], {"k": 1}, True
+    )
+
+
+def test_a_flagged_warning_is_summarised_into_the_verdict() -> None:
+    private_pem, public_pem = _keypair()
+    warning = {"flagged_by": "l2", "risk_level": "high", "l3_truncated": True}
+    out = _deliver(
+        _ingress(private_pem=private_pem), {"content": [], "isError": False},
+        warning=warning, mode=Mode.BLOCK,
+    )
+    assertion = verify_assertion(out["_meta"][VSA_KEY], public_pem)
+    assert assertion is not None
+    assert assertion["verdict"]["flagged_by"] == "l2"
+    assert assertion["verdict"]["gaps"] == ["l3_truncated"]
+    assert assertion["verdict"]["mode"] == "block"
+
+
+def test_no_signing_key_emits_no_assertion() -> None:
+    result = {"content": [], "isError": False}
+    out = _deliver(_ingress(private_pem=None), result)
+    assert out is result  # untouched; a downstream re-judges as today
+
+
+def test_a_non_federation_profile_emits_no_assertion() -> None:
+    profile = Profile(
+        name="plain",
+        auth=AuthConfig(bearer_token_env="UP"),
+        backends={"web": Backend(url="internal://web", tools_allow=["*"])},
+    )
+    profile.auth.bearer_token = SecretStr("t")
+    result = {"content": [], "isError": False}
+    assert _deliver(profile, result) is result
+
+
+def test_an_existing_meta_is_preserved() -> None:
+    private_pem, _ = _keypair()
+    result = {"content": [], "isError": False, "_meta": {"other": 1}}
+    out = _deliver(_ingress(private_pem=private_pem), result)
+    assert out["_meta"]["other"] == 1  # the VSA rides alongside, not over
+    assert VSA_KEY in out["_meta"]
