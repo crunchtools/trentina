@@ -3,7 +3,7 @@
 It was keyed on the source alone and its refusal said ``on the blocklist
 since {detected_at}``. Profile A getting ``?slot=N`` flagged was then a bit
 profile B could read, with A's timestamp, before any network I/O. These run
-the real fetch producer, ``judged.py`` and the SQLite blocklist, with only the
+the real fetch producer, ``scope``/``internal_edge`` and the SQLite blocklist, with only the
 page and the model calls faked.
 """
 

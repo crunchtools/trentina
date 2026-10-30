@@ -18,9 +18,9 @@ import pytest
 from pydantic import SecretStr
 
 from trentina import config as config_mod
+from trentina.core.stages import IngressDecision
 from trentina.gateway import paging
 from trentina.gateway.backend import BackendCall, _tool_list_cache
-from trentina.gateway.ingress_defense import IngressDecision
 from trentina.gateway.modes_policy import MODE_PARAM, mode_instructions
 from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile

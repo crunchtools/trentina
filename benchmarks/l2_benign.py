@@ -45,7 +45,7 @@ if str(_REPO_ROOT) not in sys.path:
 from corpora.benign_ops import BENIGN, CATEGORIES, KNOWN_GAPS, Benign, in_tuning
 from corpora.internal import CORPUS
 from trentina.config import get_config
-from trentina.gateway.ingress_defense import _collect_response_texts
+from trentina.gateway.collect import _collect_response_texts
 from trentina.gateway.profile import AuthConfig, Backend, Profile
 from trentina.gateway.results import _drop_duplicate_structured
 from trentina.gateway.transform import transform_response

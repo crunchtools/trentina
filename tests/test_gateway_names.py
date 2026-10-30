@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
+from trentina.core.stages import IngressDecision
 from trentina.database import issued_tool_names
 from trentina.gateway.aggregate import reset_profile_tools_cache
 from trentina.gateway.backend import BackendCall
-from trentina.gateway.ingress_defense import IngressDecision
 from trentina.gateway.names import _issued, assign, base_names
 from trentina.gateway.profile import AuthConfig, Backend, Profile
 from trentina.transports.mcp import route_jsonrpc

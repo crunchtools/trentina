@@ -134,7 +134,7 @@ def _response_text(content_blocks: list[Any] | None) -> str:
     """Every text string in a result's content blocks, newline-joined.
 
     Mirrors the defense pipeline's own reading of a result (see
-    ``ingress_defense._collect_block``): ``text`` blocks and the text form of
+    ``collect._collect_block``): ``text`` blocks and the text form of
     an embedded ``resource``. Image and blob blocks carry no string to match,
     so a guard cannot speak about them — ``deny: ["*"]`` on a result that is
     purely binary still blocks, because the joined text is the empty string

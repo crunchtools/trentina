@@ -16,7 +16,7 @@ import pytest
 
 from trentina import orchestrator as orch
 from trentina.gateway import aggregate, warmup
-from trentina.gateway import ingress_defense as ing
+from trentina.gateway import tool_list_edge as ing
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
 from trentina.quarantine.limiter import (
     Priority,

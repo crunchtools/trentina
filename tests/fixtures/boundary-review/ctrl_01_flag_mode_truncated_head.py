@@ -34,7 +34,7 @@ async def judge_oversize(content: str, *, source: str, mode: Mode, cap: int) -> 
     #   on-failure: fail-closed for block and redact (refused, no inference);
     #     proceed-with-warning for flag, whose documented contract is to deliver
     #     the exact bytes with the partial read stated
-    #   owner: defense.defend / tools.judged
+    #   owner: defense.defend / gateway.internal_edge
     #   evidence: T3 CLAUDE.md "Layer 2 scanning limits"; T3 docs/defense-pipeline.md;
     #     T4 the mode branch below
     if mode is not Mode.FLAG:

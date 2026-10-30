@@ -31,7 +31,7 @@ from trentina import client as client_mod
 from trentina import config as config_mod
 from trentina import database, defense
 from trentina.errors import FetchError
-from trentina.gateway import ingress_defense
+from trentina.gateway import collect
 from trentina.gateway.context import get_current_profile, profile_context
 from trentina.gateway.profile import AuthConfig, Profile
 from trentina.httpbody import EncodedBodyError, TooLargeError, request_capped
@@ -73,7 +73,7 @@ async def _reduced_in_json(token: str) -> None:
 
 async def _arrived_as_a_block(token: str) -> None:
     block = {"type": "resource", "resource": {"mimeType": "application/pdf", "blob": token}}
-    await ingress_defense._read_response([block], None, None)
+    await collect._read_response([block], None, None)
 
 
 class TestWaitingForAWorker:

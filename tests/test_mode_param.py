@@ -18,9 +18,9 @@ from pydantic import SecretStr, ValidationError
 
 from tests.refusal_shape import refused, refused_text
 from trentina.config import get_config
+from trentina.core.stages import IngressDecision
 from trentina.errors import ConfigError, ModeNotPermittedError
 from trentina.gateway.backend import BackendCall
-from trentina.gateway.ingress_defense import IngressDecision
 from trentina.gateway.modes_policy import (
     MODE_PARAM,
     PROMPT_PARAM,
@@ -602,7 +602,7 @@ async def test_a_mode_guard_refuses_at_call_even_when_the_mode_is_omitted() -> N
 
 def test_a_blocklist_refusal_offers_redact_only_where_allowed() -> None:
     from trentina.gateway.context import profile_context
-    from trentina.tools.judged import blocklisted
+    from trentina.gateway.scope import blocklisted
 
     p = _profile(["block", "flag", "redact"])
     with profile_context(p, ModePolicy((Mode.BLOCK, Mode.FLAG, Mode.REDACT), Mode.BLOCK)):

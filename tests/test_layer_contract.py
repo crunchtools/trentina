@@ -24,7 +24,7 @@ from trentina.quarantine.classifier import ClassifierResult
 from trentina.unpack.scan import unpack
 
 _D = "trentina.defense"
-_INGRESS = "trentina.gateway.ingress_defense"
+_INGRESS = "trentina.gateway.response_edge"
 _SRC = Path(__file__).resolve().parents[1] / "src" / "trentina"
 _BENIGN = ClassifierResult(label="BENIGN", score=0.05, latency_ms=1.0)
 

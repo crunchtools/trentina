@@ -17,7 +17,7 @@ packages. Three categories are allowed through, each for a stated reason:
 * Types (`ClassifierResult`) — annotations, no behaviour.
 * `quarantine_redact` — redact mode's turns 2 and 3 (extract, verify), which
   run AFTER defend() has detected. They are the mode's delivery, not a second
-  detection path; tools reach them only through tools/judged.py.
+  detection path; tools reach them only through gateway/internal_edge.py.
 
 If you are here because this test failed: you probably want `defend()`,
 `defend_json()`, or `orchestrator.judge_and_deliver()`.
@@ -200,12 +200,12 @@ class TestDefendOwnership:
     Only the orchestration layer imports it:
 
     * ``orchestrator.py`` — every ``judge_*`` edge. ``judge_and_deliver`` runs
-      the internal tools' one ``defend`` call (``tools/judged`` does the paging
+      the internal tools' one ``defend`` call (``internal_edge`` does the paging
       hold and the ``_Call`` accounting around it); ``scan_tool_response`` runs
-      the proxied response edge's ``defend`` (``ingress_defense`` keeps the
+      the proxied response edge's ``defend`` (``response_edge`` keeps the
       verdict cache, the binary-only shortcut and the warning build around it);
       and ``judge_tool_description`` runs the tool-list edge's ``defend``
-      (``ingress_defense.scan_tool_list`` keeps the cache and single-flight).
+      (``tool_list_edge.scan_tool_list`` keeps the cache and single-flight).
       Trentina 3.0 Phase 7 folded all of them in.
 
     A new direct importer is a face reaching past the orchestrator to the layers

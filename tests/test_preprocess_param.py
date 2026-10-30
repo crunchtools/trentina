@@ -17,6 +17,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from tests.refusal_shape import refused_text
+from trentina.core.stages import IngressDecision
 from trentina.defense import Provenance
 from trentina.errors import (
     TransformFailedError,
@@ -28,7 +29,6 @@ from trentina.gateway.context import (
     profile_context,
 )
 from trentina.gateway.errors import ProfileConfigError
-from trentina.gateway.ingress_defense import IngressDecision
 from trentina.gateway.loader import _check_drivers
 from trentina.gateway.modes_policy import (
     mode_instructions,

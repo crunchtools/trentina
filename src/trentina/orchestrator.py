@@ -27,21 +27,21 @@ from typing import TYPE_CHECKING, Any
 
 from .core import gate, identity
 from .core.dispose import Decision, dispose
-from .core.stages import _JUDGED_SEAL, Judged
+from .core.stages import _JUDGED_SEAL, IngressDecision, Judged
 from .defense import Provenance, defend, defend_json, defend_selection
 from .gateway.context import profile_context
-from .gateway.ingress_defense import (
-    IngressDecision,
-    disposed_response,
-    finish_response_scan,
-    prepare_response_scan,
-)
+from .gateway.internal_edge import JudgeScan, dispose_judgement, prepare_judgement
 from .gateway.outbound import (
     REASON_CREDENTIAL,
     REASON_FLAGGED,
     REASON_UNJUDGED,
     detect_credentials,
     judge_input,
+)
+from .gateway.response_edge import (
+    disposed_response,
+    finish_response_scan,
+    prepare_response_scan,
 )
 from .logsafe import exc_kind, exc_where, redact_source
 from .modes import Mode, ModePolicy, gaps_of
@@ -166,10 +166,10 @@ async def judge_tool_description(
 ) -> DefenseVerdict:
     """Judge one tool definition — the tool-list ingress edge.
 
-    ``ingress_defense.scan_tool_list`` → ``_judge_description`` hands each tool's
+    ``tool_list_edge.scan_tool_list`` → ``_judge_description`` hands each tool's
     surface text here to be judged for poisoning. The ``defend()`` call lives
     here, in the orchestration layer (Trentina 3.0 Phase 7), so
-    ``gateway/ingress_defense.py`` no longer reaches the layers; the caller keeps
+    ``gateway/tool_list_edge.py`` no longer reaches the layers; the caller keeps
     the verdict cache, the single-flight, the service-identity binding (active
     across this await, so L3 runs as the operator) and the briefing it passes as
     ``l3_context``. ``records_block`` is the caller's ``posture.records_block()``
@@ -909,12 +909,6 @@ async def judge_and_deliver(
         BlockedSourceError: block or redact refused. The message names the
             layer or gap, never the payload.
     """
-    # Imported here, not at module scope: tools/__init__ imports gateway.aggregate
-    # (via tools.cache), and the orchestrator is imported during the gateway's own
-    # load — a module-level import would close that cycle. By call time both are
-    # fully loaded.
-    from .tools.judged import JudgeScan, dispose_judgement, prepare_judgement
-
     prepared = await prepare_judgement(
         document,
         mode=mode,
@@ -935,7 +929,7 @@ async def judge_and_deliver(
         redact_extras=redact_extras,
     )
     # The internal tools' one defend() call lives here, in the orchestration layer
-    # (Trentina 3.0 Phase 7), not in tools/judged. When the payload was paged the
+    # (Trentina 3.0 Phase 7), not in internal_edge. When the payload was paged the
     # document, L1 and briefing are part 1's, resolved by the prepare step. flag
     # delivers a partial scan with a warning, so it pays for the partial scan while
     # block and redact refuse it — the one definition of that rule lives on Posture.

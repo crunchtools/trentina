@@ -23,9 +23,9 @@ import pytest
 from pydantic import SecretStr
 
 from tests.refusal_shape import refused
+from trentina.core.stages import IngressDecision
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.errors import BackendCallError
-from trentina.gateway.ingress_defense import IngressDecision
 from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
 from trentina.orchestrator import crossing

@@ -16,9 +16,9 @@ import pytest
 from pydantic import SecretStr
 
 from tests.refusal_shape import refused, refused_text
+from trentina.core.stages import IngressDecision
 from trentina.gateway.backend import BackendCall, _tool_list_cache
 from trentina.gateway.errors import BackendResponseTooLargeError
-from trentina.gateway.ingress_defense import IngressDecision
 from trentina.gateway.modes_policy import MODE_PARAM
 from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (

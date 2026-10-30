@@ -33,12 +33,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..database import is_blocked
+from ..errors import BlockedSourceError
+from ..modes import BLOCKLIST_REASON, Mode, refusal_body
 from .context import get_current_profile
 from .errors import ScopeError
 from .loader import get_active_config
 
 if TYPE_CHECKING:
-    from .profile import Backend, Profile
+    from .profile import Backend, DefenseConfig, Profile
 
 
 @dataclass(frozen=True)
@@ -134,3 +137,75 @@ def resolve_backend(scope: CallerScope, name: str) -> tuple[str, Backend]:
     if backend is None:
         raise ScopeError(f"backend {name!r} is not in this profile")
     return backend.url, backend
+
+
+# The scope questions an internal tool (fetch/read/dir/content/search) asks
+# before and after it produces a payload: whose blocklist holds the source,
+# whose defense policy judges it, and whether the caller is a honeypot. They
+# live here, beside the one answer to "whose is this?", rather than in the
+# response edge that consumes them.
+
+
+def blocklisted(source: str, mode: Mode) -> BlockedSourceError:
+    """block and flag on a blocklisted source, refused before any bytes arrive.
+
+    Offers redact when the policy allows it, because redact is the mode that
+    proceeds on a blocklisted source. The body is constant (#263): it said
+    ``since {detected_at}`` until then, which handed a caller another
+    profile's timestamp. Nothing in it now depends on anything but the
+    caller's own source and mode policy.
+    """
+    return BlockedSourceError(
+        source,
+        BLOCKLIST_REASON,
+        refusal=refusal_body(BLOCKLIST_REASON, mode, flagged_by="blocklist"),
+    )
+
+
+def _caller() -> tuple[str | None, bool]:
+    """The calling profile's name, and whether it reads the gateway-wide blocklist.
+
+    Operator and standalone read every row; an agent reads its own. A live
+    gateway with no bound caller reads nothing and writes a NULL profile,
+    which only an operator sees: no path nobody designed can publish to an
+    agent's blocklist.
+    """
+    scope = current_scope()
+    if scope is None:
+        return None, False
+    return scope.name, scope.is_operator
+
+
+def _caller_defense() -> DefenseConfig | None:
+    """The calling profile's defense policy, or None standalone or unbound."""
+    scope = current_scope()
+    return scope.profile.defense if scope is not None and scope.profile is not None else None
+
+
+def honeypot_caller() -> str | None:
+    """The calling profile's name when it is a honeypot (#357), else None.
+
+    Every place a tool would tell its caller what the layers made of
+    something asks this first: a honeypot is told nothing, and what it was
+    sent is kept instead.
+    """
+    scope = current_scope()
+    if scope is None or scope.profile is None or not scope.profile.honeypot:
+        return None
+    return scope.profile.name
+
+
+def check_blocklist(source: str, mode: Mode) -> bool:
+    """Refuse block and flag on a source the caller's blocklist holds.
+
+    Returns:
+        Whether it is blocklisted, for redact, which proceeds and says so.
+
+    Raises:
+        BlockedSourceError: block or flag, and the source is on it.
+    """
+    profile, gateway_wide = _caller()
+    blocked = is_blocked(source, profile, gateway_wide=gateway_wide)
+    if blocked and mode is not Mode.REDACT:
+        raise blocklisted(source, mode)
+    return blocked

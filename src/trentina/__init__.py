@@ -236,7 +236,7 @@ def _run_with_gateway(mcp_server: FastMCP, *, host: str, port: int, log_level: s
     )
 
     from .gateway.backend import load_tool_list_cache
-    from .gateway.ingress_defense import load_verdict_cache
+    from .gateway.verdict_cache import load_verdict_cache
 
     compressions = load_compression_cache()
     tool_lists = load_tool_list_cache()

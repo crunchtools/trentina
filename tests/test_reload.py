@@ -1002,7 +1002,7 @@ class TestCacheBehaviour:
 
         # A working L3 matters here, not as scenery: a verdict reached while
         # L3 was unavailable is deliberately NOT cached (see
-        # ingress_defense._cache_put — an outage's "clean" must not outlive
+        # verdict_cache._cache_put — an outage's "clean" must not outlive
         # the outage), and this test is about the cache holding across a
         # reload. Without a judge there is nothing to cache and nothing to
         # measure.

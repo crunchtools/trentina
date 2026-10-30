@@ -26,7 +26,7 @@ Either setting may say ``generic`` instead of a path: no pack at all, for an
 operator who wants a shipped pack out of the way.
 
 A pack's id and a hash of its text are its ``stamp``. The stamp is in the
-verdict key (``gateway/ingress_defense._cache_key``), so editing a prompt
+verdict key (``gateway/verdict_cache._cache_key``), so editing a prompt
 sweeps the verdicts it reached, as switching the L2 model does.
 """
 
