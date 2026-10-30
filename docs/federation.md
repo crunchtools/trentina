@@ -47,6 +47,12 @@ Federation uses **two** Ed25519 keypairs with distinct jobs (see
 [Two keys, two jobs](#two-keys-two-jobs)):
 
 ```sh
+# A private key must be readable only by the gateway account. openssl writes
+# output files per the process umask, so set it tight BEFORE generating — a
+# default 022 umask would leave the key group- and world-readable, and a local
+# user who reads it can impersonate the peer or sign trusted verdicts:
+umask 077
+
 # Edge key — authenticates the downstream caller to the upstream.
 openssl genpkey -algorithm ed25519 -out breetai_edge_key.pem
 openssl pkey -in breetai_edge_key.pem -pubout -out breetai_edge_key.pub
@@ -59,10 +65,12 @@ openssl pkey -in lotor_fed_signing_key.pem -pubout -out lotor_fed_signing_key.pu
 The private keys (`*.pem`) are PKCS#8; the public keys (`*.pub`) are
 SubjectPublicKeyInfo — the two forms the validators require. The **private**
 keys are secrets: deliver each to its gateway as a file and reference it with
-the `_FILE` form of its env var (below), never inline in `profiles.yaml`. The
-**public** keys are not secret and go inline in the YAML. A PEM is multi-line,
-which is another reason the private side is always a `_FILE` secret, not an
-environment value.
+the `_FILE` form of its env var (below), never inline in `profiles.yaml`. On the
+gateway host confirm the file is mode `600` and owned by the gateway account
+(the container's runtime uid) — a copy does not preserve the creating umask, so
+`chmod 600` and `chown` it after placing it. The **public** keys are not secret
+and go inline in the YAML. A PEM is multi-line, which is another reason the
+private side is always a `_FILE` secret, not an environment value.
 
 Hold the private edge key on the **downstream** (`breetai`) and the private
 signing key on the **upstream** (`lotor`). The two public keys cross over: the
