@@ -30,7 +30,7 @@ class TestServerRegistration:
         ``backend_auth`` (#479) is one tool with an action for the same reason.
         """
         tools = await mcp.list_tools()
-        assert len(tools) == 13, f"Expected 13 tools, got {len(tools)}"
+        assert len(tools) == 14, f"Expected 14 tools, got {len(tools)}"
 
     async def test_every_family_takes_a_mode(self) -> None:
         """The mode is an argument the policy checks, not a name the agent picks."""
@@ -54,6 +54,7 @@ class TestServerRegistration:
             "reload_profiles_tool",
             "backend_auth_tool",
             "tool_pins_tool",
+            "tool_visibility_tool",
             "audit_verify_tool",
         }
         assert tool_names == families | admin | {"read_part_tool"}
