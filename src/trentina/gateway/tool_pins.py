@@ -167,10 +167,8 @@ def held(url: str, tool: str) -> bool:
     approval (or, under long names, one never approved) was callable unapproved;
     this is the gate that closes that (``transports/mcp`` on a remote backend).
     """
-    row = perimeter_db.get_pin(backend_id(url), tool)
-    if row is None:
-        return True
-    return bool(row["pending_hash"]) or bool(row["rejected"])
+    flags = perimeter_db.pin_hold_flags(backend_id(url), tool)
+    return flags is None or flags[0] or flags[1]  # no row = held, fail closed
 
 
 def pending(url: str) -> list[dict[str, Any]]:

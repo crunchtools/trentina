@@ -153,13 +153,27 @@ def get_pin(backend_id: str, tool: str) -> sqlite3.Row | None:
     row: sqlite3.Row | None = (
         get_perimeter_db()
         .execute(
-            "SELECT approved_hash, approved_json, pending_hash, pending_json, rejected "
+            "SELECT approved_hash, approved_json, pending_hash, pending_json "
             "FROM tool_pins WHERE backend_id = ? AND tool = ?",
             (backend_id, tool),
         )
         .fetchone()
     )
     return row
+
+
+def pin_hold_flags(backend_id: str, tool: str) -> tuple[bool, bool] | None:
+    """``(pending, rejected)`` for a pin, or None when there is no row — the two
+    flags the call gate needs, read WITHOUT the approved/pending JSON (#469)."""
+    row = (
+        get_perimeter_db()
+        .execute(
+            "SELECT pending_hash, rejected FROM tool_pins WHERE backend_id = ? AND tool = ?",
+            (backend_id, tool),
+        )
+        .fetchone()
+    )
+    return (bool(row["pending_hash"]), bool(row["rejected"])) if row is not None else None
 
 
 def put_pin(
