@@ -13,11 +13,13 @@ naming the stage that drops it, walking the real pipeline stages in order:
 5. the perimeter withheld its description (block mode, L3-flagged),
 6. otherwise it is served, under its short name.
 
-Read-only: it never writes a pin (``get_pin``, never ``check_tools``) and it
-rebuilds the aggregate fresh, so a stale cache cannot make it lie — if it says
-``served`` but a client does not see the tool, the client's cache is stale and
-``cache_flush`` is the fix. Reason codes are a closed set and name no
-caller-chosen text (#262).
+Read-only, and it leaves no trace: it never writes a pin (``get_pin``, never
+``check_tools``) and it reads the served list as a client would — respecting,
+never evicting, the shared aggregate cache, so a diagnostic cannot force every
+other caller to rebuild. ``description_withheld`` therefore means the tool
+passed every earlier stage but is not in the current served list: the perimeter
+withheld its description, or that list is stale (``cache_flush`` rebuilds).
+Reason codes are a closed set and name no caller-chosen text (#262).
 """
 
 from __future__ import annotations
@@ -87,7 +89,10 @@ async def diagnose_tool_visibility(
     # Rebuild fresh so a stale cache cannot mislead, then look for the tool
     # under the name it would be served as. Absent here, having passed every
     # earlier stage, means the perimeter withheld its description.
-    aggregate.invalidate_profile_cache(profile.name)
+    # The served list as a client would get it: the shared cache is respected,
+    # never evicted — a read-only diagnostic must not make every other caller
+    # rebuild. A tool missing here, having passed every earlier stage, was
+    # withheld by the perimeter (or the cache is stale; cache_flush rebuilds).
     served = await aggregate.ensure_profile_build(profile)
     serves_as = names.served_name(profile, backend_name, tool_name)
     visible = serves_as is not None and any(t.get("name") == serves_as for t in served)
