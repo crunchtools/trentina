@@ -198,6 +198,39 @@ async def _done(value: Any) -> Any:
     return value
 
 
+# --- the forwarded-part lead-in window (_joined_tail) ---
+
+N = parts._LEAD_IN_CHARS
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        [],
+        ["short"],
+        ["x" * (N - 1)],
+        ["x" * N],
+        ["x" * (N + 10)],  # one block larger than the window
+        ["a" * (N - 1), "b"],  # the separator makes this exactly N
+        ["a" * (N - 1), "b" * 2],  # crosses the window by one
+        ["head", "", "tail"],  # an empty block still contributes its separator
+        ["p" * 100, "q" * 100, "r" * 100],
+    ],
+)
+def test_joined_tail_is_exactly_the_last_window_chars(texts: list[str]) -> None:
+    blocks = [{"type": "text", "text": t} for t in texts]
+    # The contract: the same bytes a full-join-then-slice would yield, reached
+    # without ever materializing the whole join.
+    assert parts._joined_tail(blocks) == "\n".join(texts)[-N:]
+
+
+def test_joined_tail_skips_non_dict_blocks() -> None:
+    # A non-dict block is dropped; a dict with no text still joins as "" (and so
+    # contributes its separator), exactly as the naive join does.
+    blocks = [{"type": "image"}, {"type": "text", "text": "kept"}, "not-a-dict"]
+    assert parts._joined_tail(blocks) == "\nkept"
+
+
 # --- recognition at the response boundary (_assemble's federated branch) ---
 
 

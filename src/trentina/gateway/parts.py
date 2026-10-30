@@ -224,22 +224,29 @@ _LEAD_IN_CHARS = 2048
 
 
 def _joined_tail(blocks: list[dict[str, Any]]) -> str:
-    """The trailing ``_LEAD_IN_CHARS`` of delivered blocks, read in front of the
-    next forwarded part so an instruction split across the peer's cut is read
-    whole. Collected from the end and stopped once that many characters are in
-    hand, so the temporary is bounded by the retained tail, not the whole part.
+    """Exactly the trailing ``_LEAD_IN_CHARS`` characters of the delivered
+    blocks' text joined by newlines — the next forwarded part's lead-in, so an
+    instruction split across the peer's cut is read whole.
+
+    Built from the end: each block contributes the ``\\n`` that precedes it in
+    the join (every block but the first), and the block that crosses the budget
+    contributes only the suffix that survives, so no temporary is larger than
+    the retained tail even when one block is huge. The result equals
+    ``"\\n".join(texts)[-_LEAD_IN_CHARS:]``.
     """
-    tail: list[str] = []
+    texts = [block.get("text", "") for block in blocks if isinstance(block, dict)]
+    pieces: list[str] = []
     kept = 0
-    for block in reversed(blocks):
-        if not isinstance(block, dict):
-            continue
-        text = block.get("text", "")
-        tail.append(text)
-        kept += len(text) + 1  # the newline each join adds back
-        if kept >= _LEAD_IN_CHARS:
+    for i in range(len(texts) - 1, -1, -1):
+        segment = f"\n{texts[i]}" if i > 0 else texts[i]
+        remaining = _LEAD_IN_CHARS - kept
+        if len(segment) >= remaining:
+            pieces.append(segment[len(segment) - remaining :])
             break
-    return "\n".join(reversed(tail))[-_LEAD_IN_CHARS:]
+        pieces.append(segment)
+        kept += len(segment)
+    pieces.reverse()
+    return "".join(pieces)
 
 
 def _framed_blocks(
