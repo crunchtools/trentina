@@ -130,6 +130,7 @@ def _build_profile(name: str, body: Any) -> Profile:
     _check_destination_params(name, profile)
     _check_guarded_tools(name, profile)
     _check_interim_federation(name, profile)
+    _check_federation_topology(name, profile)
     _resolve_bridge_secrets(name, profile)
     if profile.alert_ingress is not None:
         _resolve_alert_ingress_secrets(name, profile.alert_ingress)
@@ -218,6 +219,46 @@ def _check_interim_federation(name: str, profile: Profile) -> None:
                 name,
                 backend_name,
             )
+
+
+def _check_federation_topology(name: str, profile: Profile) -> None:
+    """Hold the federation topology at load (#592): loop-free, and a secure edge.
+
+    - A profile that is a federation INGRESS (``federation.peers``) must not also
+      CONSUME a federated upstream (a backend with ``federated``). A gateway
+      consumes, it does not route, so one profile is one role; a two-way pair is
+      two profiles. One profile that is both would have its single-flight
+      aggregate build wait on a peer whose build waits back — a deadlock.
+    - A federated backend must be reached over https. The 60 s edge JWT carries
+      no replay nonce, so over plain http an on-path peer could replay it within
+      the window. ``TRENTINA_FEDERATION_ALLOW_INSECURE=1`` lifts this for a
+      trusted local network (warned), as fetch's private-address rule is lifted.
+    """
+    federated = {bn: b for bn, b in profile.backends.items() if b.federated is not None}
+    if profile.federation is not None and federated:
+        raise ProfileConfigError(
+            f"Profile {name!r} is a federation ingress and also mounts federated "
+            f"backend(s) {sorted(federated)!r}: one profile is one role (ingress or "
+            f"consumer); a two-way pair uses two profiles."
+        )
+    from ..config import get_config
+
+    allow_insecure = get_config().federation_allow_insecure
+    for backend_name, backend in federated.items():
+        if urlsplit(backend.url).scheme == "https":
+            continue
+        if not allow_insecure:
+            raise ProfileConfigError(
+                f"Profile {name!r} backend {backend_name!r}: a federated backend must "
+                f"use https (the edge JWT is replayable over http); set "
+                f"TRENTINA_FEDERATION_ALLOW_INSECURE=1 for a trusted local network"
+            )
+        logger.warning(
+            "gateway: profile=%s backend=%s federated over insecure http "
+            "(TRENTINA_FEDERATION_ALLOW_INSECURE) — the edge JWT is replayable",
+            name,
+            backend_name,
+        )
 
 
 def _check_destination_params(name: str, profile: Profile) -> None:

@@ -10,6 +10,29 @@ under that name.
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-30
+
+### Added
+
+- **Gateway-to-gateway federation** (#592): a downstream gateway can mount a second Trentina's *offered* tools over a directed, profile-declared, authenticated edge and **trust the upstream's scan instead of re-judging** — killing the double L1/L2/L3 cost of the interim static-bearer arrangement while keeping the perimeter honest. New config: a `federated:` backend block (downstream) and a `federation:` ingress block (upstream). See [docs/federation.md](docs/federation.md).
+  - **Stateless edge auth:** a per-edge Ed25519 key signs a 60 s RFC 8693 act-chain JWT (real caller as `sub`, downstream as `act.sub`); no shared bearer, no grant store. The upstream audit records the real caller (`caller_peer`) and the downstream as actor; the peer-asserted caller subject (`caller_sub`) is kept in the audit and never logged (#262).
+  - **Scan-once at the trust boundary:** the upstream signs an SLSA-VSA-shaped verdict beside each response; the downstream delivers on it only when the signature, the content hash, the perimeter stamp **and** the L3 judge all match **and** the verdict is fully clean, and fails closed to a full local re-judge otherwise (an incomplete verdict — a gap, oversize or unread binary — is re-judged under the downstream's own policy). A stamp or judge change auto-invalidates the pin. `PERIMETER_VERSION` is unchanged; the carve-out lives in the response edge, never in a layer (Coverage + Known gap 33 in [docs/defense-pipeline.md](docs/defense-pipeline.md)).
+  - **Directed, loop-free:** the upstream can never enumerate or call a downstream-local tool; a mounted tool is never re-exported onward; one profile is one role (a two-way pair is two profiles); a federated backend must be reached over https (the edge JWT is replay-bounded, not nonce-protected) unless `TRENTINA_FEDERATION_ALLOW_INSECURE`.
+  - **Operability:** federated tools keep their short names (origin in the audit + the "why can't profile X see tool Y?" diagnostic); an already-paged response is forwarded via `read_part` rather than re-paged; a federated upstream's first tools/list is approved as a unit (no first-connect pin storm), its held count is surfaced downstream and on `/health`, and a held upstream tool reads "held upstream, awaiting approval" rather than leaking the peer's refusal text.
+- **Pin call gate** (#469/#618): a held or changed remote tool is now refused at call time, not only filtered from `tools/list`.
+
+### Changed
+
+- The prompt-injection promise now reads "stops prompt injection at every ingress — **or at a trusted boundary you declare**" (README + constitution Layer Contract, constitution 2.10.0), reflecting federation's scan-once trust boundary.
+
+### Deprecated
+
+- The interim static-bearer federation path (one gateway mounting another as a plain MCP backend) is deprecated in favour of a first-class `federated:` block; the gateway warns at startup when it sees the pattern. Removal is planned for 3.2.0.
+
+### Security
+
+- Bumped `joserfc` to 1.7.7 for CVE-2026-119284.
+
 ## [3.0.1] - 2026-10-30
 
 ### Added

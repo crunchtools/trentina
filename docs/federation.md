@@ -53,13 +53,15 @@ is read once from its `_FILE`-capable env var at startup and scrubbed from the
 environment.
 
 Because the token carries the **real caller** (not just "the downstream"), the
-upstream's audit, request guards and response guards all evaluate the actual
-actor. The upstream's `gateway_calls` rows carry two columns: `caller_peer`,
-the authenticated downstream, and `caller_sub`, the real caller the downstream
-asserts. Both are written to the **audit database**; `caller_sub` is peer-chosen
-rather than independently verified, so it is recorded there and nowhere else —
-never emitted to the journal (the logging rule, #262, keeps caller-chosen text
-out of the logs other agents can read). This is what the single shared static
+upstream's **audit** records who the request was really for. The
+`gateway_calls` rows carry two columns: `caller_peer`, the authenticated
+downstream, and `caller_sub`, the real caller the downstream asserts. Both are
+written to the **audit database**; `caller_sub` is peer-chosen rather than
+independently verified, so it is recorded there and nowhere else — never
+emitted to the journal (the logging rule, #262, keeps caller-chosen text out of
+the logs other agents can read), and, being unverified, it is not an input to
+the request or response guards (those evaluate the call itself, as they do for
+any caller). This is what the single shared static
 bearer of the interim arrangement could not do — every call looked like one
 identity.
 
@@ -81,9 +83,11 @@ delivered **without re-running the downstream's L1/L2/L3**.
 verdict assertion beside each federated response, SLSA-VSA-shaped:
 `{verifier, content_sha256, verdict, perimeter_stamp, judge, ts}`, signed with
 its own key and carried in the response `_meta` (the channel the MCP SDK
-preserves). It also signs its `tools/list` descriptions the same way. The
-upstream signs with its **own** key — distinct from the downstream's edge key:
-the edge key authenticates a caller, the signing key vouches for a response.
+preserves). The upstream signs with its **own** key — distinct from the
+downstream's edge key: the edge key authenticates a caller, the signing key
+vouches for a response. (Signing `tools/list` descriptions so a downstream can
+trust them too, rather than re-judging each, is a planned follow-on; today the
+assertion covers a tool-call response, and descriptions are re-judged.)
 
 **The downstream trusts, or re-judges.** A `federated.trust_verdict` block pins
 the upstream's `public_key`, the `perimeter_stamp` it expects, and the `judge`

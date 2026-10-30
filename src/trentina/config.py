@@ -145,6 +145,18 @@ def bool_env(name: str, default: bool) -> bool:
     return default
 
 
+def insecure_opt_in(name: str, warning: str) -> bool:
+    """Read a security escape-hatch flag (default off) and WARN when it is on.
+
+    The shape shared by the egress and federation opt-outs: a hatch left open
+    is a standing risk, so its being on is said at startup, once, by name.
+    """
+    on = bool_env(name, False)
+    if on:
+        logger.warning(warning)
+    return on
+
+
 def part_settings() -> tuple[int, int, int]:
     """``TRENTINA_PART_TOKENS``, ``TRENTINA_MAX_PARTS`` and
     ``TRENTINA_PART_TTL_SECONDS`` (#340): the part size a paged response aims
@@ -345,13 +357,20 @@ class Config:
                 )
         # The egress guard's one escape hatch (#260): lets fetch reach a
         # non-global address. Scheme, port and redirect rules still hold.
-        self.fetch_allow_private: bool = bool_env("TRENTINA_FETCH_ALLOW_PRIVATE", False)
-        if self.fetch_allow_private:
-            logger.warning(
-                "[WARNING] TRENTINA_FETCH_ALLOW_PRIVATE is on: fetch can reach loopback, "
-                "private and link-local addresses, including this host's other services. "
-                "Unset it unless a trusted internal site must be fetched."
-            )
+        self.fetch_allow_private: bool = insecure_opt_in(
+            "TRENTINA_FETCH_ALLOW_PRIVATE",
+            "[WARNING] TRENTINA_FETCH_ALLOW_PRIVATE is on: fetch can reach loopback, "
+            "private and link-local addresses, including this host's other services. "
+            "Unset it unless a trusted internal site must be fetched.",
+        )
+        # Federation's escape hatch (#592): lets a `federated:` backend be reached
+        # over plain http, where its 60 s edge JWT is replayable by an on-path peer.
+        self.federation_allow_insecure: bool = insecure_opt_in(
+            "TRENTINA_FEDERATION_ALLOW_INSECURE",
+            "[WARNING] TRENTINA_FEDERATION_ALLOW_INSECURE is on: a federated edge may "
+            "run over http, where its 60 s edge JWT is replayable by an on-path peer. "
+            "Unset it unless the upstream is on a trusted local network.",
+        )
         # The mode policy when no gateway profile is bound (#193): the agent of
         # a standalone server may pass trentina_mode, but only from this set,
         # and an omitted one is TRENTINA_MODE. Both default to block, so an
