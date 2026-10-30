@@ -15,6 +15,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from .. import logsafe
 from ..core.stages import Assembled
 from ..database import is_blocked
 from ..errors import ModeNotPermittedError
@@ -197,7 +198,17 @@ async def _part_blocks(
         call = await call_backend_tool(
             up.backend, backend, up.reader, {"handle": up.handle, "part": number}
         )
-    except BackendCallError:
+    except BackendCallError as exc:
+        # A transport or tool failure, distinct from an expired handle (which
+        # answers with no part marker, below): logged by kind so the two are
+        # told apart in the journal, never the peer's own error text (O8/#262).
+        logger.info(
+            "gateway: federated part fetch failed profile=%s %s/%s [%s]",
+            profile.name,
+            up.backend,
+            loggable_tool(backend.url, up.reader),
+            logsafe.exc_kind(exc),
+        )
         return None
     marker = call.meta.get(paging.PART_KEY) if isinstance(call.meta, dict) else None
     if not isinstance(marker, dict):
@@ -209,9 +220,22 @@ async def _part_blocks(
 
 def _joined_tail(blocks: list[dict[str, Any]]) -> str:
     """The trailing text of delivered blocks, read in front of the next
-    forwarded part so an instruction split across the peer's cut is read whole."""
-    text = "\n".join(b.get("text", "") for b in blocks if isinstance(b, dict))
-    return text[-2048:]
+    forwarded part so an instruction split across the peer's cut is read whole.
+
+    Collected from the end and stopped once 2048 characters are in hand, so the
+    temporary is bounded by the retained tail rather than the whole part.
+    """
+    tail: list[str] = []
+    kept = 0
+    for block in reversed(blocks):
+        if not isinstance(block, dict):
+            continue
+        text = block.get("text", "")
+        tail.append(text)
+        kept += len(text) + 1  # the newline each join adds back
+        if kept >= 2048:
+            break
+    return "\n".join(reversed(tail))[-2048:]
 
 
 def _framed_blocks(
