@@ -54,10 +54,14 @@ environment.
 
 Because the token carries the **real caller** (not just "the downstream"), the
 upstream's audit, request guards and response guards all evaluate the actual
-actor: the upstream's `gateway_calls` rows record the caller and the downstream
-as actor in two columns (the peer-asserted caller subject is never logged). This
-is what the single shared static bearer of the interim arrangement could not do
-— every call looked like one identity.
+actor. The upstream's `gateway_calls` rows carry two columns: `caller_peer`,
+the authenticated downstream, and `caller_sub`, the real caller the downstream
+asserts. Both are written to the **audit database**; `caller_sub` is peer-chosen
+rather than independently verified, so it is recorded there and nowhere else —
+never emitted to the journal (the logging rule, #262, keeps caller-chosen text
+out of the logs other agents can read). This is what the single shared static
+bearer of the interim arrangement could not do — every call looked like one
+identity.
 
 ## Provenance, not renaming
 
