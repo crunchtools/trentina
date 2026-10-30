@@ -18,16 +18,18 @@ import pytest
 from pydantic import SecretStr
 
 from trentina import config as config_mod
+from trentina.core.stages import IngressDecision
 from trentina.gateway import paging
 from trentina.gateway.backend import BackendCall, _tool_list_cache
-from trentina.gateway.ingress_defense import IngressDecision
 from trentina.gateway.modes_policy import MODE_PARAM, mode_instructions
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.outcomes import Outcome
 from trentina.quarantine.classifier import GUARD_TOKENS
+from trentina.transports.mcp import route_jsonrpc
 
-ROUTER = "trentina.gateway.router"
+PARTS = "trentina.gateway.parts"
+AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"
 ORCH = "trentina.orchestrator"
 URL = "http://docs:8000/mcp"
@@ -128,10 +130,10 @@ class _Gateway:
 
     async def _send(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         with (
-            patch(f"{ROUTER}.call_backend_tool", self.backend),
-            patch(f"{ROUTER}.scan_tool_response", self.perimeter),
+            patch(f"{MCP}.call_backend_tool", self.backend),
+            patch(f"{PARTS}.scan_tool_response", self.perimeter),
             patch(f"{ORCH}.scan_tool_response", self.perimeter),
-            patch(f"{ROUTER}._audit", self.audit),
+            patch(f"{AUDIT}._audit", self.audit),
         ):
             return await route_jsonrpc(
                 self.profile,

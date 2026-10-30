@@ -12,10 +12,10 @@ import jsonschema
 import pytest
 from pydantic import SecretStr
 
-from trentina.gateway.ingress_defense import _collect_strings
+from trentina.gateway.collect import _collect_strings
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import route_jsonrpc
 from trentina.gateway.schema_compact import MAX_DEPTH, compact_tool
+from trentina.transports.mcp import route_jsonrpc
 
 # Shapes taken from the lotor tool_list_cache: FastMCP (gw), jira, memory.
 GW_SCHEMA: dict[str, Any] = {
@@ -239,10 +239,10 @@ class TestRouter:
 
         with (
             patch(
-                "trentina.gateway.router.list_backend_tools",
+                "trentina.gateway.aggregate.list_backend_tools",
                 side_effect=fake_list,
             ),
-            patch("trentina.gateway.router.scan_tool_list", side_effect=fake_scan),
+            patch("trentina.gateway.aggregate.scan_tool_list", side_effect=fake_scan),
         ):
             resp = await route_jsonrpc(
                 _profile(compact), {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}

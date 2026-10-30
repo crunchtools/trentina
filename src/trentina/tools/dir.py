@@ -23,12 +23,12 @@ from typing import Any
 
 from ..config import get_config
 from ..errors import FileReadError
+from ..gateway.scope import check_blocklist
 from ..l1.pipeline import run_l1
 from ..l1.shadows import ShadowScanResult, ShadowStats, scan_shadows
 from ..modes import Mode
 from ..orchestrator import judge_and_deliver
 from .confine import REFUSAL_REASONS, open_confined, refused
-from .judged import check_blocklist
 
 MAX_DIR_ENTRIES = 500
 

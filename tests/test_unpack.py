@@ -297,8 +297,20 @@ class TestShape:
             lambda n: "data:a/b;x=1" * (n // 12),
             lambda n: "A=" * (n // 2),
             lambda n: "cm0gLXJmIH4= " * (n // 13),
+            lambda n: "!" * n,  # uuencode bait: a line that never ends (#546)
+            lambda n: ". " * (n // 2),  # Morse bait: groups that never close
+            lambda n: "⠁" * n,  # a wall of Braille cells
         ],
-        ids=["long-run", "data-prefix", "data-params", "padding", "many-tokens"],
+        ids=[
+            "long-run",
+            "data-prefix",
+            "data-params",
+            "padding",
+            "many-tokens",
+            "uu-bait",
+            "morse-bait",
+            "braille-wall",
+        ],
     )
     def test_linear(self, make: Callable[[int], str]) -> None:
         """Twice the input must not take much more than twice the time."""

@@ -107,5 +107,5 @@ Combined with [description compression](compression.md), the total context reduc
 ## Related
 
 - [Per-Agent Profiles](profiles.md) — where allow/deny lists are configured
-- [Parameter Guards](parameter-guards.md) — restricting argument *values*, not just tool access
+- [Literal Request Guards](literal-request-guards.md) — restricting argument *values*, not just tool access
 - [Description Compression](compression.md) — reducing context for the tools that pass filtering

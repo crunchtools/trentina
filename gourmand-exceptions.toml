@@ -57,9 +57,9 @@ classification = "by_design"
 
 [[exceptions]]
 check = "single_use_helpers"
-path = "src/trentina/tools/judged.py"
+path = "src/trentina/gateway/scope.py"
 pattern = "_caller"
-justification = "Not single-use: called from check_blocklist (the blocklist read) and from judge_and_deliver (the detection row's profile attribution), verified by grep. The second call sits inside a dict literal passed to an awaited call, which the check appears not to count. Both sites must answer 'whose blocklist is this' the same way (#263), which is why it is one function."
+justification = "Not single-use: called from check_blocklist (the blocklist read, same module) and from internal_edge.prepare_judgement (the detection row's profile attribution), verified by grep. The second call sits inside a dict literal passed to an awaited call, which the check appears not to count. Both sites must answer 'whose blocklist is this' the same way (#263), which is why it is one function."
 classification = "gourmand_bug"
 
 [[exceptions]]
@@ -203,6 +203,12 @@ classification = "by_design"
 check = "copy_paste_detection"
 path = "src/trentina/plugins/registry.py"
 justification = "resolve_transform (resolve a plugin entry point) and tools/confine.open_confined (open a confined file descriptor) are unrelated — one touches importlib.metadata, the other os.open under O_NOFOLLOW. They share only the shape every fail-closed validator in this gateway has: do a step, raise a named ProfileConfigError/FileReadError on failure, return the proven value. That shape is the idiom, not a copy; collapsing them would couple plugin resolution to filesystem confinement."
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/context.py"
+justification = "get_current_profile, service.service_profile and transforms/policy.current_preprocess_policy are three unrelated scope-resolution questions — the bound profile, the gateway's service identity, the bound preprocess policy — that share only the contextvar/active-config read-or-synthesize shape every unbound fallback in this gateway has. The synthesis itself lives in ONE place (standalone.environment_operator); collapsing the three readers through one helper would couple three independent policies (one of which raises, one returns a declared operator, one returns a default dataclass). The shape is the idiom, not a copy."
 classification = "by_design"
 
 [[exceptions]]
@@ -723,9 +729,9 @@ classification = "gourmand_bug"
 
 [[exceptions]]
 check = "redundant_error_handling"
-path = "src/trentina/gateway/router.py"
+path = "src/trentina/gateway/audit.py"
 pattern = "_audit"
-justification = "The audit row must never fail the tools/call it records, and a write can raise more than sqlite3.Error (thread-affinity ProgrammingError, OSError on a full disk). Logging profile and exception class is the handling: a silently lost audit row was itself a finding on #281."
+justification = "The audit row must never fail the tools/call it records, and a write can raise more than sqlite3.Error (thread-affinity ProgrammingError, OSError on a full disk). Logging profile and exception class is the handling: a silently lost audit row was itself a finding on #281. Lifted from gateway/router.py to gateway/audit.py in PR3a (#579)."
 classification = "by_design"
 
 [[exceptions]]

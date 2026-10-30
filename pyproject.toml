@@ -1,6 +1,6 @@
 [project]
 name = "trentina"
-version = "2.1.0"
+version = "3.0.0"
 description = "MCP gateway for AI agents — prompt-injection defense, token savings, deterministic policy, OAuth, per-agent profiles"
 requires-python = ">=3.11"
 license = "AGPL-3.0-or-later"
@@ -204,7 +204,7 @@ max-complexity = 10
 # allowed, parameter guard, backend error, response guard -- and each one returns
 # its own refusal. Collapsing them into a single exit would hide which gate fired,
 # which is the one thing an operator reading an audit row needs.
-"src/trentina/gateway/router.py" = ["PLR0911"]
+"src/trentina/transports/mcp.py" = ["PLR0911"]
 # E402: the benchmark inserts the repo root on sys.path before importing the
 # corpus and package, so those imports intentionally follow that setup.
 # PLR0915: render_markdown is a linear report builder — many append statements,
@@ -215,6 +215,7 @@ max-complexity = 10
 "benchmarks/l2_encodings.py" = ["E402"]
 # S106: `bearer_token_env` names an environment variable; it holds no token.
 "benchmarks/l2_benign.py" = ["E402", "S106"]
+"benchmarks/gatekeeper.py" = ["E402", "S106"]
 "benchmarks/l1_briefing.py" = ["E402"]
 # E402 and S106 as l2_benign above; S311: envelope texts are drawn from a fixed seed.
 "benchmarks/l2_envelopes.py" = ["E402", "S106", "S311"]

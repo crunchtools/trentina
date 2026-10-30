@@ -15,16 +15,20 @@ uv run trentina
 ## Environment Variables
 
 - `TRENTINA_MODEL_PROVIDER` + that provider's key (`OPENROUTER_API_KEY`,
-  `ANTHROPIC_API_KEY`, ...) — L3 when no gateway profile is bound. Behind the
-  gateway each profile's `llm_keys` is used instead. `config.has_llm` and
-  `agent.llm_available()` answer "is there an LLM"; `has_api_key` is Gemini's
-  key only. Since 0.41.0 it no longer gates L3 or summarize; it only picks
-  Gemini grounding as the standalone search fallback.
-- `GEMINI_API_KEY` — optional since 0.41.0: Gemini as an L3 provider, and
-  search grounding ONLY standalone (no profile bound) with no
-  `OPENROUTER_API_KEY`; a bound profile searches on its own OpenRouter key or
-  is refused. The lotor gateway
-  holds none, so it never calls Google directly.
+  `ANTHROPIC_API_KEY`, ...) — the standalone server's L3 provider. Standalone is
+  a synthesized operator profile since 3.0.0 (#579) whose `llm_keys` mirror
+  these env keys, so L3 resolves exactly as a bound profile's does; behind the
+  gateway each profile's own `llm_keys` is used instead. `config.has_llm` and
+  `agent.llm_available()` answer "is there an LLM". `has_api_key` (Gemini's key
+  only) no longer selects anything now that grounding search is dropped (below)
+  and is vestigial.
+- `GEMINI_API_KEY` — Gemini as an L3 provider (standalone through the
+  synthesized operator's `llm_keys`, behind the gateway through a profile's
+  `llm_keys`). Since 3.0.0 it no longer enables search: the Gemini grounding
+  standalone-only fallback was dropped (#579), so web search is OpenRouter's
+  `web` plugin on every path and a standalone server needs `OPENROUTER_API_KEY`
+  for `search`. The lotor gateway holds no Gemini key, so it never calls
+  Google directly.
 - `OPENROUTER_API_KEY` — standalone key for `TRENTINA_MODEL_PROVIDER=openrouter`;
   a gateway profile uses `llm_keys.openrouter`. Model ids are OpenRouter's
   (`google/gemini-3.5-flash-lite`).
@@ -32,8 +36,8 @@ uv run trentina
   supported judge: its pack passed the briefed pack gate, #397)
 - `QUARANTINE_SEARCH_MODEL` — L0 web search model, an OpenRouter id (default
   `google/gemini-2.5-flash`). L0 is OpenRouter's `web` plugin and nothing else
-  (`_enforce_openrouter_search_quarantine`); the Gemini grounding route strips
-  the `google/` prefix.
+  (`_enforce_openrouter_search_quarantine`). The Gemini grounding search route
+  was removed in 3.0.0 (#579); `search` needs an OpenRouter key on every path.
 - `TRENTINA_REQUIRE_L2` / `TRENTINA_REQUIRE_L3` — default true: block and redact
   refuse when that layer is ABSENT. `false` turns absence into a warning; a
   partial read is never excused. `QUARANTINE_FALLBACK` was removed in 0.31.0
@@ -195,7 +199,7 @@ either alone prevents the crash.
 ## Boot warm-up and L3 pacing (#216)
 
 `gateway/warmup.py` runs from the FastMCP lifespan and builds every profile's
-aggregate through `router.ensure_profile_build`, the same single-flight task a
+aggregate through `aggregate.ensure_profile_build`, the same single-flight task a
 client's `tools/list` joins. Descriptions within a backend are judged
 concurrently (`scan_tool_list`); what paces them is the per-judge
 `AdaptiveLimiter` wrapped around every `provider.generate` call via
@@ -274,7 +278,7 @@ reliably faster and 4096 and 8192 far slower. One cap bounds the scan (#225):
 
 A text response over `Config.whole_tokens` (16K) is not judged in one
 call (#340): `gateway/paging.py` cuts it once into parts of about
-`TRENTINA_PART_TOKENS` (12000; 0 is off), the router delivers part 1
+`TRENTINA_PART_TOKENS` (12000; 0 is off), `gateway/parts.py` delivers part 1
 (`_hold_paged`, `_deliver_part`) and answers the `read_part` tool itself
 (`_read_part`), never forwarding it. Each part crosses `scan_tool_response`
 with the previous part's last 64 tokens as `lead_in`. The remainder is held
@@ -282,7 +286,7 @@ in memory only, by a handle bound to the profile. Wording an agent reads is
 in `paging.py`; say "part", never "page" (wiki and PDF pages own that word).
 A profile without `read_part_tool` on its internal backend is not paged.
 `fetch`, `read` and `content` are paged too (#446), from the other side:
-`router._dispatch` binds a `context.PartsOffer`, `judged.judge_and_deliver`
+`transports.mcp._dispatch` binds a `context.PartsOffer`, `judged.judge_and_deliver`
 cuts and holds, judges part 1 and returns it in the tool's shape under
 `_trentina_part`; parts 2 on take `_read_part` like any other, judged as the
 tool's own source (`Paged.source`), so a late flag blocklists the URL.
@@ -340,7 +344,7 @@ Tools are served under short names (`gateway/names.py`), tagged with a backend
 only on collision, recorded in `tool_names` and never reassigned. Only
 tools/list and tools/call see them; everything behind the edge uses the real
 (backend, tool). A repeated `structuredContent` is dropped before the scan
-(`router._drop_duplicate_structured`).
+(`results._drop_duplicate_structured`).
 
 `tool_discovery` (#473, `gateway/discovery.py`, `docs/tool-discovery.md`)
 lists less for a client without its own tool search: `search` serves a core
@@ -369,7 +373,7 @@ its own posture and nothing enforced it. Now the policy does:
   Flagged → `redact` only, NEVER `flag`; gap-only → `flag`.
 - A response withheld AFTER the backend answered (defense block, response
   guard, byte cap, failed required transform) is not a refusal for a tool
-  that may write (#425): `router._executed` rewords it as "executed, response
+  that may write (#425): `results._executed` rewords it as "executed, response
   withheld", `isError` the backend's own (true at the byte cap, where it was
   never read), `_trentina_refusal.executed` true.
   `_may_have_acted` is the test: remote and not annotated `readOnlyHint`. A
@@ -724,7 +728,7 @@ replaced.
   crosses; the bytes ride base64 (event `media`, bridge `POST /upload`) and are
   judged WITH the event (`scanned["attachment"]`), read by signature first
   (`media.read_attachment`), capped at `ocr.MAX_IMAGE_BYTES`, thumbnails dropped.
-- `gateway/` — Per-consumer MCP gateway proxy with tool allowlists, parameter guards, and defense pipeline
+- `gateway/` — Per-consumer MCP gateway proxy with tool allowlists, request guards, and defense pipeline
   - `args.py` — schema-driven argument normalization (#241): drops an
     optional that is `""` or `null`, never one equal to its `default`, which
     is only an annotation. An optional that provably fails its schema is

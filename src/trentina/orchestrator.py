@@ -27,16 +27,21 @@ from typing import TYPE_CHECKING, Any
 
 from .core import gate, identity
 from .core.dispose import Decision, dispose
-from .core.stages import _JUDGED_SEAL, Judged
+from .core.stages import _JUDGED_SEAL, IngressDecision, Judged
 from .defense import Provenance, defend, defend_json, defend_selection
 from .gateway.context import profile_context
-from .gateway.ingress_defense import IngressDecision, disposed_response, scan_response
+from .gateway.internal_edge import JudgeScan, dispose_judgement, prepare_judgement
 from .gateway.outbound import (
     REASON_CREDENTIAL,
     REASON_FLAGGED,
     REASON_UNJUDGED,
     detect_credentials,
     judge_input,
+)
+from .gateway.response_edge import (
+    disposed_response,
+    finish_response_scan,
+    prepare_response_scan,
 )
 from .logsafe import exc_kind, exc_where, redact_source
 from .modes import Mode, ModePolicy, gaps_of
@@ -102,15 +107,17 @@ async def scan_tool_response(
 ) -> IngressDecision:
     """Judge one proxied tool response and decide its fate — the response edge.
 
-    The one place the gate runs on a proxied response: ``scan_response`` does the
-    pre-gate work (admission, the verdict cache, L1/L2/L3 via ``defend``, the
-    warning), ``gate`` disposes of the verdict and runs redact's extraction, and
-    ``disposed_response`` renders the ``IngressDecision`` and writes the cache.
-    Holding the order here, not in the gateway, is why ``core.gate`` is imported
-    only by the orchestration layer (Trentina 3.0 Phase 4). The two no-gate exits
-    (a binary-only response, a cache hit) come straight back from ``scan_response``.
+    The one place both ``defend`` and the gate run on a proxied response:
+    ``prepare_response_scan`` does the pre-defend work (admission, the verdict
+    cache, the L1 precompute), this runs the one ``defend`` call,
+    ``finish_response_scan`` builds the warning, ``gate`` disposes of the verdict
+    and runs redact's extraction, and ``disposed_response`` renders the
+    ``IngressDecision`` and writes the cache. Holding the order here, not in the
+    gateway, is why both ``defend`` and ``core.gate`` are imported only by the
+    orchestration layer (Trentina 3.0 Phase 4/7). The two no-defend exits (a
+    binary-only response, a cache hit) come straight back as an ``IngressDecision``.
     """
-    scanned = await scan_response(
+    prepared = await prepare_response_scan(
         profile=profile,
         backend_name=backend_name,
         tool_name=tool_name,
@@ -128,10 +135,61 @@ async def scan_tool_response(
         domain=domain,
         blocklists=blocklists,
     )
-    if isinstance(scanned, IngressDecision):
-        return scanned
-    gated = await gate(scanned.verdict, scanned.posture, extra_unread=scanned.extra_unread)
-    return await disposed_response(scanned, gated)
+    if isinstance(prepared, IngressDecision):
+        return prepared
+    verdict = await defend(
+        prepared.document,
+        source=prepared.source,
+        source_type=prepared.source_type,
+        precomputed_l1=prepared.pipeline,
+        defense=prepared.defense,
+        provenance=prepared.provenance,
+        domain=prepared.domain,
+        l3_context=prepared.l3_context,
+        stop_on_partial=prepared.posture.stop_on_partial,
+        attribution=prepared.attribution,
+    )
+    scan = finish_response_scan(prepared, verdict)
+    gated = await gate(scan.verdict, scan.posture, extra_unread=scan.extra_unread)
+    return await disposed_response(scan, gated)
+
+
+async def judge_tool_description(
+    surface: str,
+    *,
+    profile: Profile,
+    backend_name: str,
+    tool_name: str,
+    provenance: Provenance,
+    l3_context: str,
+    records_block: bool,
+) -> DefenseVerdict:
+    """Judge one tool definition — the tool-list ingress edge.
+
+    ``tool_list_edge.scan_tool_list`` → ``_judge_description`` hands each tool's
+    surface text here to be judged for poisoning. The ``defend()`` call lives
+    here, in the orchestration layer (Trentina 3.0 Phase 7), so
+    ``gateway/tool_list_edge.py`` no longer reaches the layers; the caller keeps
+    the verdict cache, the single-flight, the service-identity binding (active
+    across this await, so L3 runs as the operator) and the briefing it passes as
+    ``l3_context``. ``records_block`` is the caller's ``posture.records_block()``
+    — whether a flag here feeds the blocklist.
+    """
+    return await defend(
+        surface,
+        source=f"{profile.name}:{backend_name}:{tool_name}",
+        source_type="tool_description",
+        defense=profile.defense,
+        provenance=provenance,
+        l3_context=l3_context,
+        attribution={
+            "profile": profile.name,
+            "backend": backend_name,
+            "tool": tool_name,
+            "direction": "tool_list",
+            "blocked": records_block,
+        },
+    )
 
 
 async def judge_response(
@@ -250,9 +308,12 @@ async def judge_egress_response(
         ``flagged``/``unjudged``/``risk`` facts the route words its wire from.
     """
     mode = Mode.BLOCK if blocking else Mode.FLAG
-    posture = identity.posture(mode, ModePolicy((mode,), mode))
-    try:
-        with profile_context(profile):
+    # posture() reads the honeypot flag from the bound scope, so it is built
+    # inside profile_context (Trentina 3.0 P7.3): current_scope refuses an unbound
+    # call, and this path binds the profile here rather than up the stack.
+    with profile_context(profile):
+        posture = identity.posture(mode, ModePolicy((mode,), mode))
+        try:
             async with asyncio.timeout(deadline):
                 verdict = await defend(
                     document,
@@ -263,27 +324,27 @@ async def judge_egress_response(
                     stop_on_partial=posture.stop_on_partial,
                     domain=domain,
                 )
-    except Exception as exc:  # TimeoutError too: no verdict was reached
-        logger.error(
-            "egress: response scan failed profile=%s: %s at %s",
-            profile.name,
-            exc_kind(exc),
-            exc_where(exc),
+        except Exception as exc:  # TimeoutError too: no verdict was reached
+            logger.error(
+                "egress: response scan failed profile=%s: %s at %s",
+                profile.name,
+                exc_kind(exc),
+                exc_where(exc),
+            )
+            # Fail closed: no verdict is an unjudged response. block withholds it,
+            # flag warns — the same the route did when it owned the scan.
+            return ResponseJudgement(refuse=blocking, flagged=False, unjudged=True, risk="unknown")
+        # The one gate policy decides whether to refuse — ``dispose()``, never a
+        # second copy here — so the response edge cannot drift from it. The route
+        # then words its own deny marker (block) or warning header (flag) from the
+        # facts below, because egress's wire is not ``core.render``'s.
+        refuse = dispose(verdict, posture).decision is Decision.REFUSE
+        return ResponseJudgement(
+            refuse=refuse,
+            flagged=verdict.flagged,
+            unjudged=gaps_of(verdict).blocking(),
+            risk=verdict.risk_level,
         )
-        # Fail closed: no verdict is an unjudged response. block withholds it,
-        # flag warns — the same the route did when it owned the scan.
-        return ResponseJudgement(refuse=blocking, flagged=False, unjudged=True, risk="unknown")
-    # The one gate policy decides whether to refuse — ``dispose()``, never a
-    # second copy here — so the response edge cannot drift from it. The route
-    # then words its own deny marker (block) or warning header (flag) from the
-    # facts below, because egress's wire is not ``core.render``'s.
-    refuse = dispose(verdict, posture).decision is Decision.REFUSE
-    return ResponseJudgement(
-        refuse=refuse,
-        flagged=verdict.flagged,
-        unjudged=gaps_of(verdict).blocking(),
-        risk=verdict.risk_level,
-    )
 
 
 @dataclass(frozen=True)
@@ -380,11 +441,12 @@ async def judge_outbound(
     # The partial-scan and blocklist rules live in Posture, so this path fails
     # closed for any future mode exactly as the tools do. Was `mode is Mode.BLOCK`
     # here -- a fail-open for a later non-BLOCK mode, masked only because redact is
-    # not an enforcement mode on this path.
-    posture = identity.posture(mode, ModePolicy((mode,), mode))
+    # not an enforcement mode on this path. posture() reads the bound scope's
+    # honeypot flag, so it is built inside profile_context (Trentina 3.0 P7.3).
     layer_refuses = False
     try:
         with profile_context(profile):
+            posture = identity.posture(mode, ModePolicy((mode,), mode))
             async with asyncio.timeout(deadline):
                 verdict = await defend(
                     judge_input(document),
@@ -837,25 +899,21 @@ async def judge_and_deliver(
 ) -> dict[str, Any]:
     """Judge an internal tool's produced ``document`` and deliver it — the edge.
 
-    The one place the gate runs on an internal tool's output: ``produce_judgement``
-    does the pre-gate work (hold, the ``_Call`` accounting, ``defend``), ``gate``
-    disposes of the verdict and runs redact's extraction, and ``dispose_judgement``
-    renders the tool-result dict (raising ``BlockedSourceError`` on a refusal).
-    Holding the order here is why ``core.gate`` is imported only by the
-    orchestration layer (Trentina 3.0 Phase 4); the tools ``fetch``/``read``/
-    ``dir``/``content``/``search`` call this, not the gateway internals.
+    The one place both ``defend`` and the gate run on an internal tool's output:
+    ``prepare_judgement`` does the pre-defend work (hold, the ``_Call``
+    accounting, the ``defend`` arguments), this runs the one ``defend`` call,
+    ``gate`` disposes of the verdict and runs redact's extraction, and
+    ``dispose_judgement`` renders the tool-result dict (raising
+    ``BlockedSourceError`` on a refusal). Holding the order here is why both
+    ``defend`` and ``core.gate`` are imported only by the orchestration layer
+    (Trentina 3.0 Phase 4/7); the tools ``fetch``/``read``/``dir``/``content``/
+    ``search`` call this, not the gateway internals.
 
     Raises:
         BlockedSourceError: block or redact refused. The message names the
             layer or gap, never the payload.
     """
-    # Imported here, not at module scope: tools/__init__ imports gateway.router
-    # (via tools.cache), and the orchestrator is imported during router's own
-    # load — a module-level import would close that cycle. By call time both are
-    # fully loaded.
-    from .tools.judged import dispose_judgement, produce_judgement
-
-    scan = await produce_judgement(
+    prepared = await prepare_judgement(
         document,
         mode=mode,
         family=family,
@@ -873,6 +931,32 @@ async def judge_and_deliver(
         delivered=delivered,
         extras=extras,
         redact_extras=redact_extras,
+    )
+    # The internal tools' one defend() call lives here, in the orchestration layer
+    # (Trentina 3.0 Phase 7), not in internal_edge. When the payload was paged the
+    # document, L1 and briefing are part 1's, resolved by the prepare step. flag
+    # delivers a partial scan with a warning, so it pays for the partial scan while
+    # block and redact refuse it — the one definition of that rule lives on Posture.
+    verdict = await defend(
+        prepared.document,
+        source=source,
+        source_type=source_type,
+        defense=prepared.defense,
+        provenance=provenance,
+        domain=domain,
+        stop_on_partial=prepared.posture.stop_on_partial,
+        precomputed_l1=prepared.precomputed_l1,
+        l3_context=prepared.l3_context,
+        attribution=prepared.attribution,
+    )
+    scan = JudgeScan(
+        call=prepared.call,
+        verdict=verdict,
+        posture=prepared.posture,
+        paged=prepared.paged,
+        original=prepared.original,
+        extras=prepared.extras,
+        redact_extras=prepared.redact_extras,
     )
     gated = await gate(scan.verdict, scan.posture)
     return await dispose_judgement(scan, gated)

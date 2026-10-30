@@ -25,6 +25,8 @@ from corpora.internal import CORPUS, Case
 from trentina.l1.pipeline import run_l1
 from trentina.quarantine.agent import quarantine_detect
 
+pytestmark = pytest.mark.usefixtures("standalone_l3")
+
 _DETECTOR_META_CASES = [c for c in CORPUS if c.category == "detector_meta"]
 
 _FIXTURE_RESPONSES: dict[str, dict[str, Any]] = {

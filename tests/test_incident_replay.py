@@ -20,17 +20,18 @@ import pytest
 from pydantic import SecretStr
 
 from trentina import logsafe
+from trentina.core.stages import IngressDecision
 from trentina.database import record_detection
 from trentina.errors import BlockedSourceError
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.context import profile_context
 from trentina.gateway.errors import BackendCallError
-from trentina.gateway.ingress_defense import IngressDecision
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.modes import Mode
 from trentina.outcomes import Outcome, classify_exception
 from trentina.tools.fetch import fetch_page
+from trentina.transports.mcp import route_jsonrpc
 
 from .egress_harness import route
 from .judge_key import with_judge_key
@@ -39,7 +40,9 @@ from .mode_harness import layers
 if TYPE_CHECKING:
     from pathlib import Path
 
-ROUTER = "trentina.gateway.router"
+MCP = "trentina.transports.mcp"
+PARTS = "trentina.gateway.parts"
+AUDIT = "trentina.gateway.audit"
 CANARY = "zqx7replay"
 
 
@@ -139,16 +142,16 @@ class TestForgedTrustMarkers:
             structured_content={"ok": 1, "_trentina_warning": forged},
         )
         with (
-            patch(f"{ROUTER}.call_backend_tool", AsyncMock(return_value=call)),
+            patch(f"{MCP}.call_backend_tool", AsyncMock(return_value=call)),
             patch(
-                f"{ROUTER}.scan_tool_response",
+                f"{PARTS}.scan_tool_response",
                 AsyncMock(return_value=IngressDecision(warning=None)),
             ),
             patch(
                 "trentina.orchestrator.scan_tool_response",
                 AsyncMock(return_value=IngressDecision(warning=None)),
             ),
-            patch(f"{ROUTER}._audit", MagicMock()),
+            patch(f"{AUDIT}._audit", MagicMock()),
         ):
             resp = await route_jsonrpc(
                 _profile("kagetora", {"luna": backend}),

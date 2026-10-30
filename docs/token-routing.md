@@ -14,7 +14,7 @@ Most of what a coding agent does isn't reasoning — it's I/O. Reading five file
 
 Spotify's implementation is client-side — a Claude Code plugin that intercepts Read calls via hooks and delegates through their Portal backend. The routing rules are advisory: the agent can ignore them. Every project needs its own configuration.
 
-Trentina's implementation is server-side. The gateway already intercepts every tool call for every agent profile. Delegation is enforced — the agent can't bypass it. Configuration lives in `profiles.yaml` alongside the existing tool allowlists, parameter guards, and defense settings. Every agent that connects through the gateway gets routing automatically.
+Trentina's implementation is server-side. The gateway already intercepts every tool call for every agent profile. Delegation is enforced — the agent can't bypass it. Configuration lives in `profiles.yaml` alongside the existing tool allowlists, literal request guards, and defense settings. Every agent that connects through the gateway gets routing automatically.
 
 ### Cost Context
 
@@ -24,10 +24,10 @@ By 2028, AI coding costs are [projected to exceed average developer salaries](ht
 
 ### Interception Point
 
-Token routing sits in the gateway call pipeline between parameter guards and the backend call:
+Token routing sits in the gateway call pipeline between literal request guards and the backend call:
 
 ```
-Parse tool → Backend exists? → Tool in allowlist? → Parameter guards → Token routing → Backend call
+Parse tool → Backend exists? → Tool in allowlist? → Literal request guards → Token routing → Backend call
 ```
 
 When a tool call matches a routing rule, the gateway short-circuits the normal backend call. Instead:
@@ -123,7 +123,7 @@ profiles:
             enabled: false              # pre-aggregated; nothing to collapse
 ```
 
-The per-tool override lives on the **backend**, next to `parameter_guards`, because whether
+The per-tool override lives on the **backend**, next to `literal_request_guards`, because whether
 reduction helps is a property of the tool's output shape rather than of who called it —
 `syslog_tail_tool` is log-shaped for every profile, and a second copy per profile would drift.
 
@@ -257,7 +257,7 @@ async def maybe_delegate(
     """
 ```
 
-Called from `router.py` after parameter guards pass but before the backend call. If it returns `None`, the normal call proceeds. If it returns a dict, that becomes the tool result.
+Called from `router.py` after literal request guards pass but before the backend call. If it returns `None`, the normal call proceeds. If it returns a dict, that becomes the tool result.
 
 #### File Size Check
 
@@ -332,7 +332,7 @@ Invariant 1 is directional, and it is easy to misread as "transforms must not to
 
 What is forbidden is the other direction. A transform never marks content clean, never shortens or skips `defend()`, and never lets its output be trusted more than its input. It may subtract; it may not absolve.
 
-One consequence is worth knowing before you build on it. A per-record **filtering** processor — one that drops the records a policy names and delivers the rest — is permitted by that invariant and is a better fit than a whole-response guard wherever partial results beat no results. It is not safe on this framework yet: composition fails **open** by design (`compose.py` swallows a processor's exception and passes the original through), so a filter that raised would deliver exactly what it exists to remove. Fail-closed handling has to come first.
+One consequence is worth knowing before you build on it. A per-record **filtering** processor — one that drops the records a policy names and delivers the rest — is permitted by that invariant and is a better fit than a whole-literal response guard wherever partial results beat no results. It is not safe on this framework yet: composition fails **open** by design (`compose.py` swallows a processor's exception and passes the original through), so a filter that raised would deliver exactly what it exists to remove. Fail-closed handling has to come first.
 
 ##### Listing, not deleting (0.43.0)
 
@@ -428,7 +428,7 @@ Taken from Spotify's experience and adapted:
 | Feature | Relationship |
 |---------|-------------|
 | [LLM Proxy](llm-proxying.md) | Delegation uses the proxy for worker model calls — same key management, same provider support |
-| [Parameter Guards](parameter-guards.md) | Guards run before delegation — a rejected call is never delegated |
+| [Literal Request Guards](literal-request-guards.md) | Guards run before delegation — a rejected call is never delegated |
 | [Defense Pipeline](defense-pipeline.md) | Defense runs on backend responses, not delegated responses (see Security) |
 | [Per-Agent Profiles](profiles.md) | Delegation is profile-level config — different agents get different routing |
 | [Tool Filtering](tool-filtering.md) | `delegate_codegen` tool visibility follows normal allowlist rules |

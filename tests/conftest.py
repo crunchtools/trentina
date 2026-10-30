@@ -15,12 +15,12 @@ from trentina import config as config_mod
 from trentina import database as database_mod
 from trentina import logsafe
 from trentina import perimeter_db as perimeter_db_mod
+from trentina.gateway.aggregate import reset_profile_tools_cache
 from trentina.gateway.backend import reset_tool_list_cache
 from trentina.gateway.circuit import breaker
-from trentina.gateway.ingress_defense import reset_verdict_cache
 from trentina.gateway.loader import reset_active_config
 from trentina.gateway.matrix_proxy import reset_extractors
-from trentina.gateway.router import reset_profile_tools_cache
+from trentina.gateway.verdict_cache import reset_verdict_cache
 from trentina.quarantine.limiter import reset_limiters
 from trentina.quarantine.providers import reset_provider
 
@@ -98,9 +98,9 @@ def _isolated_fastmcp_home(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPat
 def _tools_not_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests that are not about pinning (#469) see every tool served.
     ``tests/test_tool_pins.py`` puts the real check back."""
-    from trentina.gateway import router
+    from trentina.gateway import tool_pins
 
-    monkeypatch.setattr(router.tool_pins, "check_tools", lambda url, backend, tools: tools)
+    monkeypatch.setattr(tool_pins, "check_tools", lambda url, backend, tools: tools)
 
 
 @pytest.fixture(autouse=True)
@@ -132,11 +132,13 @@ def _no_startup_scrub(monkeypatch: pytest.MonkeyPatch) -> None:
 def _no_ambient_gemini_key(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Unit tests must not inherit the shell's GEMINI_API_KEY.
 
-    The defense pipeline gates L3 on ``get_config().has_api_key``. With a key
-    in the environment, a test that forgot to patch ``defense.get_config``
-    passes on one machine and fails on another — and worse, one that forgot to
-    mock ``quarantine_detect`` makes a live Gemini call from a unit test.
-    Tests that need a key patch ``defense.get_config`` and say so.
+    L3 resolves its provider through the calling profile's ``llm_keys`` — which
+    standalone are the synthesized operator's, mirroring the environment. With a
+    key in the environment, a test that forgot to patch the provider passes on
+    one machine and fails on another — and worse, one that forgot to mock
+    ``quarantine_detect`` makes a live Gemini call from a unit test. Tests that
+    exercise L3 use the ``standalone_l3`` fixture, which provides a test key and
+    a network tripwire.
 
     The provider integration suite is the one deliberate exception: it exists
     to make live calls and reads the key from the environment at call time.
@@ -166,6 +168,32 @@ def env(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[pat
     database_mod._db = None
 
 
+@pytest.fixture
+def standalone_l3(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Standalone L3: a resolvable Gemini key, plus a network tripwire.
+
+    Since 3.0.0 the standalone server is a synthesized operator profile, so L3
+    resolves its provider through that profile's ``llm_keys`` (which mirror the
+    environment). A unit test exercising L3 therefore needs a key present so
+    ``resolve_profile_llm`` passes and the ``get_provider`` mock runs. The
+    tripwire makes a forgotten mock fail loudly instead of reaching the network
+    or producing a silent ``l3_unavailable`` the test might accept — a stronger
+    safety property than the bare key-strip it layers on.
+    """
+
+    async def _refuse(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("unit test reached the network (httpx.AsyncClient.send)")
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", "gemini")
+    monkeypatch.setattr("httpx.AsyncClient.send", _refuse)
+    config_mod._config = None
+    reset_provider()
+    yield
+    config_mod._config = None
+    reset_provider()
+
+
 @pytest.fixture(autouse=True)
 def _no_ocr_process(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Images are left unread unless a test asks for OCR (``@pytest.mark.ocr``).
@@ -188,8 +216,16 @@ def read_only_tools(monkeypatch: pytest.MonkeyPatch) -> None:
 
     A test whose backend never listed its tools gets an unannotated one, and
     the router treats that as a tool that may write (#425).
+
+    ``cached_tool_read_only`` is bound as a module-local name wherever it is
+    used, so each caller is patched where it resolves it: argument
+    normalization in ``gateway/request_edge.py`` and the acted-vs-refused
+    helper in ``gateway/results.py`` (both lifted out of the router in PR3a).
     """
-    monkeypatch.setattr("trentina.gateway.router.cached_tool_read_only", lambda _url, _tool: True)
+    monkeypatch.setattr(
+        "trentina.gateway.request_edge.cached_tool_read_only", lambda _url, _tool: True
+    )
+    monkeypatch.setattr("trentina.gateway.results.cached_tool_read_only", lambda _url, _tool: True)
 
 
 # ------------------------------------------------- backend OAuth (#479)

@@ -177,7 +177,8 @@ class TestRouterOrdering:
         never saw, so this pins the order rather than trusting it.
         """
         from trentina import orchestrator as orch_mod
-        from trentina.gateway import router
+        from trentina.gateway import parts
+        from trentina.transports import mcp
 
         seen: dict[str, Any] = {}
 
@@ -195,9 +196,9 @@ class TestRouterOrdering:
 
         # The non-paged response edge reaches the scan as
         # ``orchestrator.scan_tool_response`` (via ``judge_response``), the paged
-        # path as ``router.scan_tool_response`` — patch both with the same fake so
+        # path as ``parts.scan_tool_response`` — patch both with the same fake so
         # ``seen`` is populated however the call is routed.
-        monkeypatch.setattr(router, "scan_tool_response", fake_scan)
+        monkeypatch.setattr(parts, "scan_tool_response", fake_scan)
         monkeypatch.setattr(orch_mod, "scan_tool_response", fake_scan)
 
         profile = _profile(PreProcessConfig(enabled=True))
@@ -208,8 +209,8 @@ class TestRouterOrdering:
             is_error = False
             structured_content = None
 
-        with patch.object(router, "call_backend_tool", AsyncMock(return_value=_Result())):
-            resp = await router.route_jsonrpc(
+        with patch("trentina.transports.mcp.call_backend_tool", AsyncMock(return_value=_Result())):
+            resp = await mcp.route_jsonrpc(
                 profile,
                 {
                     "jsonrpc": "2.0",

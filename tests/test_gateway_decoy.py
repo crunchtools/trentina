@@ -20,11 +20,12 @@ from trentina.gateway.backend import BackendCall
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.loader import load_profiles
 from trentina.gateway.profile import AuthConfig, Backend, DecoyTool, Honeytoken, Profile
-from trentina.gateway.router import route_jsonrpc
+from trentina.transports.mcp import route_jsonrpc
 
 pytestmark = pytest.mark.usefixtures("env")
 
-ROUTER = "trentina.gateway.router"
+AGGREGATE = "trentina.gateway.aggregate"
+MCP = "trentina.transports.mcp"
 PLANTED = "AKIAQ7HONEYTOKEN4X2B"
 # Every audit row, oldest first, as the tests compare them.
 AUDITED = "SELECT backend, tool, outcome, error_message FROM gateway_calls ORDER BY id"
@@ -60,10 +61,10 @@ def _profile() -> Profile:
 async def _rpc(method: str, params: Any = None) -> dict[str, Any]:
     real = [{"name": "comment", "description": "Comment on a ticket.", "inputSchema": SCHEMA}]
     with (
-        patch(f"{ROUTER}.list_backend_tools", return_value=real),
-        patch(f"{ROUTER}.scan_tool_list", side_effect=lambda *a: a[3]),
+        patch(f"{AGGREGATE}.list_backend_tools", return_value=real),
+        patch(f"{AGGREGATE}.scan_tool_list", side_effect=lambda *a: a[3]),
         patch(
-            f"{ROUTER}.call_backend_tool",
+            f"{MCP}.call_backend_tool",
             return_value=BackendCall([{"type": "text", "text": "ticket"}], False, None),
         ) as backend,
     ):
@@ -266,7 +267,7 @@ async def test_a_decoy_refuses_what_a_real_tool_refuses_and_trips_anyway(
 async def test_a_planted_credential_is_not_kept_as_a_destination() -> None:
     profile = _profile()
     profile.backends["tickets"].destination_params = {"comment": "to"}
-    with patch(f"{ROUTER}.call_backend_tool") as backend:
+    with patch(f"{MCP}.call_backend_tool") as backend:
         await route_jsonrpc(
             profile,
             {

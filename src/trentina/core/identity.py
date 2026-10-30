@@ -38,21 +38,22 @@ def posture(
     """Build the ``Posture`` for one judgement under the bound request identity.
 
     The sole constructor of the type. ``honeypot`` is read from the ambient
-    scope (the same source ``tools.judged.honeypot_caller`` uses), so a honeypot
+    scope (the same source ``gateway.scope.honeypot_caller`` uses), so a honeypot
     profile is judged as one wherever it calls, and no caller can claim or
     disclaim the flag.
     """
     # Lazy: core resolves the gateway scope at call time, as ``modes.current_policy``
-    # does, so ``core`` keeps no import-time dependency on ``gateway``.
+    # does, so ``core`` keeps no import-time dependency on ``gateway``. ``posture``
+    # is only built with a profile bound (a live gateway binds one per dispatch;
+    # the gateway's own work binds the operator via ``service_context``), so
+    # ``current_scope`` always answers here — never on a path it would refuse.
     from ..gateway.scope import current_scope
 
-    scope = current_scope()
-    honeypot = scope is not None and scope.profile is not None and scope.profile.honeypot
     return Posture(
         mode=mode,
         policy=policy,
         allowlisted=allowlisted,
-        honeypot=honeypot,
+        honeypot=current_scope().profile.honeypot,
         prompt=prompt,
         _seal=_POSTURE_SEAL,
     )

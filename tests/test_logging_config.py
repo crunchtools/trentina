@@ -213,7 +213,7 @@ class TestStartupCacheVisibility:
                 return_value=26,
             ),
             patch(
-                "trentina.gateway.ingress_defense.load_verdict_cache",
+                "trentina.gateway.verdict_cache.load_verdict_cache",
                 return_value=verdicts,
             ),
             caplog.at_level(logging.WARNING, logger="trentina"),

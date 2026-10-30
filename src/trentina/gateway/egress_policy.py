@@ -38,7 +38,7 @@ REASONS = frozenset(
         "credential_in_request",
         "flagged",
         "not_fully_judged",
-        "gatekeeper",  # the guarded-execution judge refused the request's intent (#511)
+        "gatekeeper",  # the semantic-request-guards judge refused the request's intent (#511)
         "busy",  # the profile's in-flight slots are all taken
         "resolver_busy",
         "denied_guard",  # the address rail refused before a byte left (SSRF/

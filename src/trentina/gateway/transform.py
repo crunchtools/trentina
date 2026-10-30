@@ -27,7 +27,7 @@ Two-level resolution, profile then tool:
 Tool wins field-by-field; anything it leaves unset inherits. Whether petit
 helps is a property of the tool's output shape rather than of its caller —
 ``syslog_tail_tool`` is log-shaped for everybody — which is why the override
-lives on the backend next to ``parameter_guards`` and not in a second copy
+lives on the backend next to ``literal_request_guards`` and not in a second copy
 per profile.
 """
 
@@ -363,7 +363,7 @@ def _account(
 
     # Every candidate is logged, applied or not, at WARNING: the gateway runs
     # at TRENTINA_LOG_LEVEL=WARNING so INFO goes nowhere, and this is the same
-    # operational-notice shape as ingress_defense's "tool response flagged
+    # operational-notice shape as response_edge's "tool response flagged
     # ... blocked=False".
     #
     # Declines are the valuable half — a large payload that every processor

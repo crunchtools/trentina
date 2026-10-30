@@ -45,7 +45,7 @@ profiles:
           - get_gmail_message_content
           - draft_gmail_message
           - send_gmail_message
-        parameter_guards:
+        literal_request_guards:
           send_gmail_message:
             to: {allow: ["me@example.com"]}
             cc: {allow: ["me@example.com"]}

@@ -205,7 +205,7 @@ rules:
       obligation: O3 AUDIT-EVERY-EXIT
     paths:
       include:
-        - "**/trentina/gateway/router.py"
+        - "**/trentina/transports/mcp.py"
         - "**/.semgrep/tests/**"
     patterns:
       - pattern-inside: |

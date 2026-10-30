@@ -54,6 +54,7 @@ these variables control the process itself. Profile tokens
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TRENTINA_LOG_LEVEL` | `INFO` | Application log level, sent to stderr. Any standard Python level name. No level prints a secret: a configured key appears as `[REDACTED:<VARIABLE>]`, and credential-shaped text as `[REDACTED]`. |
+| `TRENTINA_LOG_FORMAT` | `text` | `json` additionally writes one compact JSON object per gateway call to stderr (profile, backend, resolved tool, outcome, duration, byte counts, session and call fingerprints, detections digest), for a structured-log collector to pick up. The record carries only this server-controlled metadata — never a caller-chosen string, so no URL, argument or error text. |
 | `TRENTINA_GATEWAY_ENABLED` | unset (disabled) | Turns on the MCP gateway (profiles, auth, allowlists, audit). See [MCP Gateway](gateway.md). |
 | `TRENTINA_PROFILES_PATH` | `/etc/trentina/profiles.yaml` | Path to the gateway's profile YAML file. See [Per-Agent Profiles](profiles.md). |
 | `TRENTINA_LEGACY_MCP` | unset (disabled) | Restores the pre-gateway unguarded `/mcp` endpoint. **Bypasses auth, allowlists and audit** — migration aid only. See [MCP Gateway](gateway.md). |
@@ -64,7 +65,7 @@ these variables control the process itself. Profile tokens
 | `QUARANTINE_MODEL` | `gemini-3.5-flash-lite` | Model used for quarantine agent (L3) extraction/detection calls. See [Supported judges](#supported-judges). |
 | `QUARANTINE_REASONING_EFFORT` | unset | `minimal`, `low`, `medium` or `high`: how long a reasoning judge thinks, sent as OpenRouter's `reasoning.effort`. Unset leaves the model's default. Set `minimal` for Gemini 3.8 Flash, which otherwise takes 6 to 17 s a call. Changing it re-judges cached verdicts. |
 | `TRENTINA_L3_PROMPT_PACK` | unset | Path to an L3 prompt pack: the judge's three system prompts and Layer 2 caveat for one exact (provider, model), for every profile that does not set `defense.l3_prompt_pack`. `generic` turns shipped packs off. See [L3 prompt tuning](l3-prompt-tuning.md). |
-| `QUARANTINE_SEARCH_MODEL` | `google/gemini-3.5-flash-lite` | L0 web search model, an OpenRouter id. Search runs through OpenRouter's `web` plugin; standalone with no OpenRouter key it falls back to Gemini grounding. |
+| `QUARANTINE_SEARCH_MODEL` | `google/gemini-3.5-flash-lite` | L0 web search model, an OpenRouter id. Search runs through OpenRouter's `web` plugin on every path; the standalone-only Gemini grounding fallback was removed in 3.0.0 (#579), so `search` needs an OpenRouter key standalone too. |
 | `TRENTINA_REQUIRE_L2` | `true` | `false` lets `block`/`redact` deliver with a warning when the L2 model is absent, instead of refusing. Never excuses a partial scan. See [Defense Pipeline](defense-pipeline.md). |
 | `TRENTINA_REQUIRE_L3` | `true` | The same for an absent L3 provider. Replaces `QUARANTINE_FALLBACK` (removed in 0.31.0; setting it now fails startup). |
 | `TRENTINA_MODE` | `block` | Standalone only: the mode an omitted `trentina_mode` resolves to. `flag` or `block`. Under the gateway the profile's `defense.enforcement` decides. |

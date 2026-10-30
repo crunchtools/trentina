@@ -1,7 +1,7 @@
 """The internal tools' responses are delivered in parts too (#446).
 
 ``fetch``, ``read`` and ``content`` judge at their own ingress
-(``tools/judged.py``), so the router's paging never saw them: over the
+(``gateway/internal_edge.py``), so the router's paging never saw them: over the
 admission cap they were refused, or read head-only under flag. These drive the
 router end to end. Only the edges are faked, as in ``mode_harness``: the page,
 and the layers' model calls. The cut uses the stand-in tokenizer of
@@ -23,12 +23,13 @@ from trentina import database
 from trentina.errors import ContentSizeError
 from trentina.gateway import internal, paging
 from trentina.gateway.context import PartsOffer, profile_context
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.modes import Mode
 from trentina.outcomes import Outcome
 from trentina.tools.content import judge_content
 from trentina.tools.fetch import fetch_page
+from trentina.transports.mcp import route_jsonrpc
 
 from .judge_key import with_judge_key
 from .mode_harness import BENIGN, EXTRACTION, MALICIOUS, Layers, allowlist, layers
@@ -99,7 +100,7 @@ class _Gateway:
         self.audit = MagicMock()
 
     async def send(self, name: str, **arguments: Any) -> dict[str, Any]:
-        with patch("trentina.gateway.router._audit", self.audit):
+        with patch("trentina.gateway.audit._audit", self.audit):
             return await route_jsonrpc(
                 self.profile,
                 {

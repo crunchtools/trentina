@@ -2,7 +2,7 @@
 
 Only the edges are faked: the producers' I/O (HTTP, L0 search), and the three
 layers' model calls (L2's classifier, L3's detect/extract/verify). Everything
-between — L1, defend(), modes.py, judged.py, warning.py, report.py, the
+between — L1, defend(), modes.py, internal_edge.py, warning.py, report.py, the
 blocklist database — is the real code, so a test that passes here is
 exercising the path production runs.
 """
@@ -179,11 +179,6 @@ def layers(
             ),
             payload=payload,
             workdir=workdir,
-        )
-        p(
-            "trentina.tools.search.resolve_grounding_urls",
-            new_callable=AsyncMock,
-            side_effect=lambda sources: sources,
         )
         yield fakes
 

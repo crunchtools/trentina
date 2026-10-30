@@ -23,12 +23,10 @@ from trentina.gateway.app import (
     gateway_app,
 )
 from trentina.gateway.circuit import CircuitBreaker, State
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import (
-    NAMESPACE_SEP,
-    _negotiate_protocol_version,
-)
 from trentina.gateway.sessions import SessionRegistry
+from trentina.transports.mcp import _negotiate_protocol_version
 
 TEST_TOKEN = "alice-token"
 
@@ -637,7 +635,7 @@ class TestCircuitInvalidatesOnlyHolders:
 
     @pytest.mark.asyncio
     async def test_unaffected_profiles_aggregate_survives(self) -> None:
-        from trentina.gateway import router
+        from trentina.gateway import aggregate
 
         holder = _make_profile()  # backend http://mcp-slack:8000/mcp
         bystander = holder.model_copy(update={"name": "bob", "backends": {}})
@@ -645,11 +643,11 @@ class TestCircuitInvalidatesOnlyHolders:
         sessions = SessionRegistry(session_ttl=300.0, max_sessions_per_profile=10)
         cb = CircuitBreaker(failure_threshold=2, cooldown_seconds=0.01)
         _wire_circuit_notifications(cb, sessions, profiles)
-        router._profile_tools_cache["alice"] = []
-        router._profile_tools_cache["bob"] = []
+        aggregate._profile_tools_cache["alice"] = []
+        aggregate._profile_tools_cache["bob"] = []
 
         cb.record_failure("http://mcp-slack:8000/mcp")
         cb.record_failure("http://mcp-slack:8000/mcp")
 
-        assert "alice" not in router._profile_tools_cache
-        assert "bob" in router._profile_tools_cache
+        assert "alice" not in aggregate._profile_tools_cache
+        assert "bob" in aggregate._profile_tools_cache

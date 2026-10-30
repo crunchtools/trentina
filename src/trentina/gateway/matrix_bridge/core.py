@@ -345,7 +345,7 @@ class ProfileBridge:
     # -------------------------------------------------------------- verdict
 
     async def _judge(self, scanned: dict[str, Any], *, room: str, direction: str) -> Any:
-        # Lazy: tools/__init__ -> gateway.router -> orchestrator is loaded during
+        # Lazy: tools/__init__ -> tools.cache -> gateway.aggregate -> orchestrator is
         # this package's own import, so a module-level import would close the cycle.
         from ...orchestrator import judge_matrix_bridge_event
 

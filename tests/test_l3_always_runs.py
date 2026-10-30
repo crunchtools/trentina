@@ -31,6 +31,8 @@ from trentina.defense import (
 from trentina.gateway.profile import DefenseConfig
 from trentina.quarantine.classifier import ClassifierResult
 
+pytestmark = pytest.mark.usefixtures("standalone_l3")
+
 _D = "trentina.defense"
 
 BENIGN_ZERO = ClassifierResult(label="BENIGN", score=0.0, latency_ms=1.0)
@@ -177,8 +179,17 @@ class TestL3RunsRegardlessOfOtherLayers:
 class TestTheOnlyPermittedSkips:
     """Two, both named, both visible. Any third is a regression."""
 
-    async def test_no_provider_skips_but_is_reported(self) -> None:
-        """Unable to run is a DEGRADED state, never a clean one."""
+    async def test_no_provider_skips_but_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Unable to run is a DEGRADED state, never a clean one.
+
+        No key anywhere: the synthesized standalone operator resolves no
+        provider, so L3 cannot run (``standalone_l3``'s key is removed here).
+        """
+        import trentina.config as _config_mod
+
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("TRENTINA_MODEL_PROVIDER", raising=False)
+        _config_mod._config = None
         verdict, mocks = await _defend(has_api_key=False, defense=None)
         mocks["quarantine_detect"].assert_not_called()
         assert verdict.l3_assessment is not None, (

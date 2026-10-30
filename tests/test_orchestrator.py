@@ -23,19 +23,26 @@ import pytest
 from pydantic import SecretStr
 
 from tests.refusal_shape import refused
+from trentina.core.stages import IngressDecision
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.errors import BackendCallError
-from trentina.gateway.ingress_defense import IngressDecision
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.orchestrator import crossing
 from trentina.outcomes import Outcome
 from trentina.reserved import REFUSAL_KEY, WARNING_KEY
-from trentina.transports.base import Carrier, Early, Face, Transport
+from trentina.transports.base import Early, Transport
+from trentina.transports.mcp import route_jsonrpc
 
-ROUTER = "trentina.gateway.router"
+from .transport_doubles import RecordingCarrier as _RecordingCarrier
+from .transport_doubles import RecordingFace as _RecordingFace
+
+PARTS = "trentina.gateway.parts"
+REQUEST_EDGE = "trentina.gateway.request_edge"
+AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"
 ORCH = "trentina.orchestrator"
+RESULTS = "trentina.gateway.results"
 
 
 def _profile(
@@ -86,16 +93,16 @@ async def _run(
     ``scan_tool_response`` is patched in BOTH the router and the orchestrator
     namespace — the non-paged response edge reaches it as
     ``orchestrator.scan_tool_response`` (via ``judge_response``) and the paged
-    path as ``router.scan_tool_response`` (which imported the name).
+    path as ``parts.scan_tool_response`` (which imported the name).
     """
     call = AsyncMock(side_effect=exc) if exc is not None else AsyncMock(return_value=reply)
     verdict = decision if decision is not None else IngressDecision(warning=None)
     scan = AsyncMock(return_value=verdict)
     with (
-        patch(f"{ROUTER}.call_backend_tool", call),
-        patch(f"{ROUTER}.scan_tool_response", scan),
+        patch(f"{MCP}.call_backend_tool", call),
+        patch(f"{PARTS}.scan_tool_response", scan),
         patch(f"{ORCH}.scan_tool_response", scan),
-        patch(f"{ROUTER}._audit", MagicMock()),
+        patch(f"{AUDIT}._audit", MagicMock()),
     ):
         return await route_jsonrpc(profile, request)
 
@@ -146,15 +153,15 @@ async def test_block_refusal() -> None:
 @pytest.mark.asyncio
 async def test_required_transform_failure() -> None:
     # A required processor that cannot run: assembly delivers the preprocess
-    # refusal in place of the response (router._preprocess_refusal).
+    # refusal in place of the response (results._preprocess_refusal).
     from trentina.gateway.transform import TransformOutcome
 
     failed = TransformOutcome(content_blocks=_reply().content, failed="required processor failed")
     transform = AsyncMock(return_value=failed)
     with (
-        patch(f"{ROUTER}.call_backend_tool", AsyncMock(return_value=_reply())),
+        patch(f"{MCP}.call_backend_tool", AsyncMock(return_value=_reply())),
         patch(f"{MCP}.transform_response", transform),
-        patch(f"{ROUTER}._audit", MagicMock()),
+        patch(f"{AUDIT}._audit", MagicMock()),
     ):
         resp = await route_jsonrpc(_profile(), _request())
     assert resp["result"][REFUSAL_KEY]["reason"] == "preprocess_failed"
@@ -219,26 +226,26 @@ async def _run_capture(
     """Route one request, returning the backend mock so a test can assert it was
     (not) dispatched. Patches the shared collaborators a guard branch rides.
 
-    ``scan_tool_response`` is patched as ``router.*`` (the paged path) and
+    ``scan_tool_response`` is patched as ``parts.*`` (the paged path) and
     ``orchestrator.*`` (the non-paged edge, via ``judge_response``);
     ``check_response_guards`` is reached as ``transports.mcp.*``; ``_refuse_call``
-    and ``_may_have_acted`` are reached as ``router.*`` on the orchestrated path,
-    so one patch covers each.
+    is reached as ``request_edge.*`` and ``_may_have_acted`` as ``results.*`` on
+    the orchestrated path, so one patch covers each.
     """
     call = AsyncMock(return_value=reply)
     scan = AsyncMock(return_value=IngressDecision(warning=None))
     patches = [
-        patch(f"{ROUTER}.call_backend_tool", call),
-        patch(f"{ROUTER}.scan_tool_response", scan),
+        patch(f"{MCP}.call_backend_tool", call),
+        patch(f"{PARTS}.scan_tool_response", scan),
         patch(f"{ORCH}.scan_tool_response", scan),
-        patch(f"{ROUTER}._audit", MagicMock()),
+        patch(f"{AUDIT}._audit", MagicMock()),
     ]
     if guard_err is not None:
         patches.append(patch(f"{MCP}.check_response_guards", MagicMock(return_value=guard_err)))
     if may_act is not None:
-        patches.append(patch(f"{ROUTER}._may_have_acted", MagicMock(return_value=may_act)))
+        patches.append(patch(f"{RESULTS}._may_have_acted", MagicMock(return_value=may_act)))
     if refuse is not None:
-        patches.append(patch(f"{ROUTER}._refuse_call", AsyncMock(return_value=refuse)))
+        patches.append(patch(f"{REQUEST_EDGE}._refuse_call", AsyncMock(return_value=refuse)))
     with contextlib.ExitStack() as stack:
         for p in patches:
             stack.enter_context(p)
@@ -287,38 +294,6 @@ async def test_response_guard_may_have_acted_withheld() -> None:
 
 
 # --- The crossing driver itself ---------------------------------------------
-
-
-class _RecordingFace(Face):
-    name = "test_face"
-
-    def __init__(self, *, parse_result: Any) -> None:
-        self._parse_result = parse_result
-        self.delivered: Any = None
-        self.wrapped: Any = None
-
-    async def parse(self, ctx: Any) -> Any:
-        return self._parse_result
-
-    async def deliver(self, ctx: Any, parsed: Any, carried: Any) -> Any:
-        self.delivered = (parsed, carried)
-        return {"delivered": carried}
-
-    def wrap(self, ctx: Any, result: Any) -> Any:
-        self.wrapped = result
-        return {"wrapped": result}
-
-
-class _RecordingCarrier(Carrier):
-    name = "test_carrier"
-
-    def __init__(self, *, carry_result: Any) -> None:
-        self._carry_result = carry_result
-        self.carried: Any = None
-
-    async def carry(self, ctx: Any, parsed: Any) -> Any:
-        self.carried = parsed
-        return self._carry_result
 
 
 @pytest.mark.asyncio

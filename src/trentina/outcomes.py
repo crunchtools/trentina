@@ -63,13 +63,15 @@ class Outcome(str, Enum):
     """
 
     DENIED_GUARD = "denied_guard"
-    """A parameter guard rejected the arguments.
+    """A deterministic request-side or egress denial rejected the call before
+    the backend answered: a literal request guard on the arguments, a
+    mode/transform policy, or an egress/proxy refusal.
 
     Previously not recorded at all — the router returned before auditing.
     """
 
     DENIED_RESPONSE_GUARD = "denied_response_guard"
-    """A response guard rejected the backend's result.
+    """A literal response guard rejected the backend's result.
 
     The backend was contacted and answered; the answer was withheld at the
     gateway. Distinct from ``DENIED_GUARD`` because the cost profile differs —
@@ -78,11 +80,19 @@ class Outcome(str, Enum):
     """
 
     DENIED_GATEKEEPER = "denied_gatekeeper"
-    """Guarded execution refused the call before it was forwarded (#456).
+    """The semantic request guard / policy judge refused the call before it was
+    forwarded (#456).
 
     The judge read the call against the profile's written policy and did not
     allow it, or could not be asked. Distinct from ``DENIED_GUARD``: that is
     a pattern the operator wrote, this is a model's reading of a rule.
+    """
+
+    DENIED_RESPONSE_GATEKEEPER = "denied_response_gatekeeper"
+    """The semantic response guard / policy judge refused delivery of the
+    backend's result. The backend was contacted and answered; the answer was
+    withheld at the gateway. Distinct from ``DENIED_RESPONSE_GUARD``, which is
+    the deterministic literal response guard.
     """
 
     DECOY_TRIPPED = "decoy_tripped"
@@ -114,6 +124,7 @@ BLOCKED_OUTCOMES: frozenset[Outcome] = frozenset(
         Outcome.DENIED_GUARD,
         Outcome.DENIED_RESPONSE_GUARD,
         Outcome.DENIED_GATEKEEPER,
+        Outcome.DENIED_RESPONSE_GATEKEEPER,
     }
 )
 """Policy outcomes. The gateway did its job; nothing is broken."""

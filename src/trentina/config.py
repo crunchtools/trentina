@@ -279,6 +279,17 @@ class Config:
     gateway. L1 and L2 work without one.
     """
 
+    @functools.cached_property
+    def log_format(self) -> str:
+        """``TRENTINA_LOG_FORMAT``: ``text`` (default) or ``json`` (one JSON
+        object per call on stderr, #556), read once per process. An unknown
+        value warns and falls back to text."""
+        fmt = (os.environ.get("TRENTINA_LOG_FORMAT") or "text").lower()
+        if fmt not in ("text", "json"):
+            logger.warning("TRENTINA_LOG_FORMAT is not text|json; using text")
+            return "text"
+        return fmt
+
     def __init__(self) -> None:
         self.provider: str = os.environ.get(
             "TRENTINA_MODEL_PROVIDER",

@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from .gateway.profile import Profile
     from .gateway.sessions import SessionRegistry
 
-__version__ = "2.1.0"
+__version__ = "3.0.0"
 
 DEFAULT_PORT = 8019
 DEFAULT_EGRESS_PORT = 8021
@@ -39,6 +39,10 @@ if TYPE_CHECKING:
 def main() -> None:
     """Entry point for trentina."""
     log_level = logsafe.configure("TRENTINA_LOG_LEVEL")
+    from . import telemetry
+    from .config import get_config
+
+    telemetry.install(get_config().log_format)
     parser = argparse.ArgumentParser(
         prog="trentina",
         description="MCP gateway: injection defense, token savings, policy and auth for AI agents",
@@ -232,7 +236,7 @@ def _run_with_gateway(mcp_server: FastMCP, *, host: str, port: int, log_level: s
     )
 
     from .gateway.backend import load_tool_list_cache
-    from .gateway.ingress_defense import load_verdict_cache
+    from .gateway.verdict_cache import load_verdict_cache
 
     compressions = load_compression_cache()
     tool_lists = load_tool_list_cache()
@@ -1265,8 +1269,8 @@ def _wire_login_notifications(session_registry: Any) -> None:
     profile has no grant; once the human signs in, the client must hear that
     the list changed or it keeps the old one until it reconnects (#479).
     """
+    from .gateway.aggregate import invalidate_profile_cache
     from .gateway.backend_oauth import on_grant_stored
-    from .gateway.router import invalidate_profile_cache
 
     async def _after_login(profile_name: str) -> None:
         invalidate_profile_cache(profile_name)
@@ -1286,8 +1290,8 @@ def _wire_circuit_notifications(
     affected backend URL and broadcasts ``tools/list_changed`` to all
     active sessions for those profiles.
     """
+    from .gateway.aggregate import invalidate_profile_cache
     from .gateway.circuit import State
-    from .gateway.router import invalidate_profile_cache
 
     pending_tasks: set[asyncio.Task[int]] = set()
 

@@ -549,12 +549,16 @@ What the rows say, in the order of the table:
   unpack stage decodes all 44, upper case or lower, so the pipeline's
   numbers are plain's: 41 attacks and no benign text. Alone, the model
   flags every one of the 130 blobs.
-- **base32, Ascii85, base85, UU, Braille, Morse and variant selectors are
-  flagged for what they are.** Between 37 and 44 attacks, and between 79
-  and 86 of the 86 benign texts. Nothing decodes the first six, so that is
-  the pipeline's answer as well; L1 counts variant selectors as hiding, on
-  every text. None is read: an attack rate with the same benign rate
-  beside it measures the encoding.
+- **base32, Ascii85, base85, UU, Braille and Morse are now decoded; variant
+  selectors are flagged for what they are.** The *alone* columns above
+  measure the model on the raw blob (between 37 and 44 attacks, and most of
+  the 86 benign texts flagged): read nothing, recoil from the shape. Since
+  #546 the unpack stage decodes all six (base32/UU/Braille/Morse at any
+  length, Ascii85/base85 between 16 and 20000 characters), so the *pipeline*
+  columns now read like plain's — the attack inside is caught and the benign
+  text is not. The pre-#546 pipeline figures for these six rows are refreshed
+  by the CI `benchmarks/l2_encodings.py` run against the shipped model. Variant
+  selectors are not an encoding: L1 counts them as hiding, on every text.
 - **Quoted-printable and MIME are read.** They are one routine and one
   row. ASCII passes through them unchanged except for a soft line break
   every 76 characters, which is why garak ships both probes switched off.
@@ -641,7 +645,7 @@ a part) three ways: **whole**, inside one part; **adjacent**, cut at 25, 50
 and 75% with the pieces ending one part and opening the next; and **apart**,
 cut in half with the pieces in parts 2 and 6 of 6. Every part goes through
 `defend()` with the part briefing, behind its lead-in, as
-`router._deliver_part` sends it. An arrangement is caught when L3 flags a
+`parts._deliver_part` sends it. An arrangement is caught when L3 flags a
 part that holds a piece, by majority of three votes. The split rows count
 only the attacks L3 catches whole, and six parts with no attack in them give
 the false-positive floor.
@@ -872,7 +876,7 @@ file or page an agent asked for, so such a value is left as it arrived.
 
 **The harness reads the response twice; the router does not.** A FastMCP
 tool's result arrives as a text block and the same object as
-`structuredContent`, and `router._drop_duplicate_structured` drops the copy
+`structuredContent`, and `results._drop_duplicate_structured` drops the copy
 on what arrived, before the transform: the layers read the text block
 alone. `as_read` joins the text block with every string of the payload,
 which the gateway does only for a backend whose structured content differs
@@ -893,7 +897,7 @@ named the wrong way round: `-08` is the held-out one, `-02` the tuning one.)
 
 ### The gate reads as the router reads (#431)
 
-Since 1.4.1 `as_read` calls `router._drop_duplicate_structured` before the
+Since 1.4.1 `as_read` calls `results._drop_duplicate_structured` before the
 transform, so the gate scores what production's layers read. Allowance (2%)
 and threshold (0.7) are unchanged. What that took, same model:
 
@@ -1289,18 +1293,18 @@ narrows to 3 of 43, and gap 21 inverts. Horizon flagged anything in
 base32, Ascii85, base85, UU, Braille or Morse; the fine-tune reads none
 of them, so benign encoded text passes and so do most attacks in them
 (1, 5, 2, 16, 2 and 21 of 44, against 43 plain). Base64, hex and base16
-are decoded before L2 and unaffected. Shipped with that gap open by
-decision; the fix is decoders in the unpack stage.
+are decoded before L2 and unaffected. Gap 21 was then closed by #546: the
+unpack stage decodes all six before L2, so it reads their plain text.
 
 A blend that passes the gates is chosen on production shapes by
 constraint, not by best number: no shape may flag more often than under
 Horizon. The envelope gate is built from the same makers as the training
 set, so it is a necessary check, not the deciding one.
 
-## Guarded execution (#456)
+## Semantic request guards (#456)
 
 The gatekeeper on the 36 calls of `corpora/gatekeeper.py`: six scenarios,
-each with its policy from [Guarded Execution](guarded-execution.md#where-to-use-it),
+each with its policy from [Semantic Request Guards](semantic-request-guards.md#where-to-use-it),
 12 calls to refuse and 24 routine. Three votes per call, run inside the
 built image so the arguments step is L1, L2 and L3 as in production (#462;
 L2 `prompt-injection-guard-small@3215a27edd62`), run 38902648617 on 1.12.0:

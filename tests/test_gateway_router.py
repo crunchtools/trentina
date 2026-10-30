@@ -13,6 +13,7 @@ from pydantic import SecretStr
 
 from tests.refusal_shape import refused, refused_text
 from trentina.database import get_gateway_call_stats
+from trentina.gateway.aggregate import _profile_tools_cache
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.circuit import breaker
 from trentina.gateway.context import (
@@ -20,18 +21,14 @@ from trentina.gateway.context import (
     profile_context,
 )
 from trentina.gateway.errors import BackendCallError
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
     ParameterConstraint,
     Profile,
 )
-from trentina.gateway.router import (
-    NAMESPACE_SEP,
-    PROTOCOL_VERSION,
-    _profile_tools_cache,
-    route_jsonrpc,
-)
+from trentina.transports.mcp import PROTOCOL_VERSION, route_jsonrpc
 
 
 def _profile() -> Profile:
@@ -103,7 +100,7 @@ class TestRouter:
             return [{"name": "jira_search", "description": "", "inputSchema": {}}]
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=fake_list,
         ):
             resp = await route_jsonrpc(
@@ -123,7 +120,7 @@ class TestRouter:
             return [{"name": "jira_search", "description": "", "inputSchema": {}}]
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=fake_list,
         ):
             resp = await route_jsonrpc(
@@ -151,7 +148,7 @@ class TestRouter:
             )
 
         with patch(
-            "trentina.gateway.router.call_backend_tool",
+            "trentina.transports.mcp.call_backend_tool",
             side_effect=fake_call,
         ):
             resp = await route_jsonrpc(
@@ -218,11 +215,11 @@ class TestRouter:
 
         with (
             patch(
-                "trentina.gateway.router.list_backend_tools",
+                "trentina.gateway.aggregate.list_backend_tools",
                 side_effect=fake_list,
             ),
             patch(
-                "trentina.gateway.router.list_internal_tools",
+                "trentina.gateway.aggregate.list_internal_tools",
                 side_effect=fake_internal_list,
             ),
         ):
@@ -257,11 +254,11 @@ class TestRouter:
 
         with (
             patch(
-                "trentina.gateway.router.call_internal_tool",
+                "trentina.transports.mcp.call_internal_tool",
                 side_effect=fake_internal_call,
             ),
             patch(
-                "trentina.gateway.router.call_backend_tool",
+                "trentina.transports.mcp.call_backend_tool",
                 side_effect=fail_http,
             ),
         ):
@@ -322,7 +319,7 @@ class TestRouter:
         tool_name = f"mcp-slack{NAMESPACE_SEP}slack_list_channels"
         with (
             patch(
-                "trentina.gateway.router.call_backend_tool",
+                "trentina.transports.mcp.call_backend_tool",
                 side_effect=fake_call,
             ),
             patch("trentina.database.get_config") as mock_cfg,
@@ -365,7 +362,7 @@ class TestRouter:
         tool_name = f"mcp-slack{NAMESPACE_SEP}slack_list_channels"
         with (
             patch(
-                "trentina.gateway.router.call_backend_tool",
+                "trentina.transports.mcp.call_backend_tool",
                 side_effect=fail_call,
             ),
             patch("trentina.database.get_config") as mock_cfg,
@@ -438,7 +435,7 @@ class TestRouter:
                 "gws": Backend(
                     url="http://gws:8011/mcp",
                     tools_allow=["*"],
-                    parameter_guards={
+                    literal_request_guards={
                         "send_gmail_message": {
                             "to": ParameterConstraint(allow=["self@example.com"]),
                         }
@@ -503,7 +500,7 @@ class TestRouter:
                 "memory": Backend(
                     url="http://mcp-memory:8000/mcp",
                     tools_allow=["*"],
-                    response_guards={
+                    literal_response_guards={
                         "memory_search": {
                             "content": ParameterConstraint(deny=["*NIGHTJAR*"]),
                         }
@@ -515,11 +512,11 @@ class TestRouter:
 
         with (
             patch(
-                "trentina.gateway.router.call_backend_tool",
+                "trentina.transports.mcp.call_backend_tool",
                 side_effect=memory_call,
             ),
             patch("trentina.transports.mcp.transform_response") as mock_transform,
-            patch("trentina.gateway.router.scan_tool_response") as mock_scan,
+            patch("trentina.gateway.parts.scan_tool_response") as mock_scan,
             patch("trentina.orchestrator.scan_tool_response", mock_scan),
             patch("trentina.database.get_config") as mock_cfg,
         ):
@@ -571,7 +568,7 @@ class TestRouter:
                 "memory": Backend(
                     url="http://mcp-memory:8000/mcp",
                     tools_allow=["*"],
-                    response_guards={
+                    literal_response_guards={
                         "memory_search": {
                             "content": ParameterConstraint(deny=["*NIGHTJAR*"]),
                         }
@@ -582,7 +579,7 @@ class TestRouter:
         p.auth.bearer_token = SecretStr("x")
 
         with patch(
-            "trentina.gateway.router.call_backend_tool",
+            "trentina.transports.mcp.call_backend_tool",
             side_effect=memory_call,
         ):
             resp = await route_jsonrpc(
@@ -621,7 +618,7 @@ class TestRouter:
 
         with (
             patch(
-                "trentina.gateway.router.call_backend_tool",
+                "trentina.transports.mcp.call_backend_tool",
                 side_effect=error_call,
             ),
             patch("trentina.database.get_config") as mock_cfg,
@@ -648,7 +645,7 @@ class TestRouter:
         db_mod._db = None
 
     async def test_tools_call_rejects_guarded_parameter(self) -> None:
-        """Parameter guard blocks a call with a forbidden argument value."""
+        """Literal request guard blocks a call with a forbidden argument value."""
         p = Profile(
             short_names=False,
             name="guarded",
@@ -657,7 +654,7 @@ class TestRouter:
                 "gws": Backend(
                     url="http://gws:8011/mcp",
                     tools_allow=["*"],
-                    parameter_guards={
+                    literal_request_guards={
                         "send_gmail_message": {
                             "to": ParameterConstraint(allow=["self@example.com"]),
                         }
@@ -682,7 +679,7 @@ class TestRouter:
         assert "not in allow list" in refused_text(resp)
 
     async def test_tools_call_allowed_guarded_parameter_passes(self) -> None:
-        """Parameter guard allows a call with a permitted argument value."""
+        """Literal request guard allows a call with a permitted argument value."""
         called: dict[str, Any] = {}
 
         async def fake_call(
@@ -706,7 +703,7 @@ class TestRouter:
                 "gws": Backend(
                     url="http://gws:8011/mcp",
                     tools_allow=["*"],
-                    parameter_guards={
+                    literal_request_guards={
                         "send_gmail_message": {
                             "to": ParameterConstraint(allow=["self@example.com"]),
                         }
@@ -716,7 +713,7 @@ class TestRouter:
         )
         p.auth.bearer_token = SecretStr("x")
         with patch(
-            "trentina.gateway.router.call_backend_tool",
+            "trentina.transports.mcp.call_backend_tool",
             side_effect=fake_call,
         ):
             resp = await route_jsonrpc(
@@ -754,7 +751,7 @@ class TestRouter:
             return [{"name": f"{backend_name}_tool", "description": "", "inputSchema": {}}]
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=slow_list,
         ):
             resp = await route_jsonrpc(
@@ -844,7 +841,7 @@ class TestProfileToolsCache:
             return [{"name": "tool_a", "description": "", "inputSchema": {}}]
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=counting_list,
         ):
             await route_jsonrpc(
@@ -881,7 +878,7 @@ class TestProfileToolsCache:
         p2.auth.bearer_token = SecretStr("x")
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=fake_list,
         ):
             await route_jsonrpc(
@@ -915,7 +912,7 @@ class TestProfileToolsCache:
             return [{"name": f"{backend_name}_tool", "description": "", "inputSchema": {}}]
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=flaky_list,
         ):
             resp1 = await route_jsonrpc(
@@ -958,7 +955,7 @@ class TestProfileToolsCache:
             return [{"name": f"{backend_name}_tool", "description": "", "inputSchema": {}}]
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=slow_list,
         ):
             calls = [
@@ -988,29 +985,32 @@ class TestProfileContext:
 
     def test_profile_visible_inside_block(self) -> None:
         profile = _mixed_profile()
-        assert get_current_profile() is None
+        before = get_current_profile()  # the synthesized standalone operator
         with profile_context(profile):
             assert get_current_profile() is profile
-        assert get_current_profile() is None
+        assert get_current_profile() is before
 
     def test_profile_reset_when_body_raises(self) -> None:
         """A failing internal tool call must not leak its profile."""
         profile = _mixed_profile()
+        before = get_current_profile()
         with pytest.raises(RuntimeError), profile_context(profile):
             raise RuntimeError("tool blew up")
-        assert get_current_profile() is None
+        assert get_current_profile() is before
 
     def test_nested_contexts_restore_outer(self) -> None:
         outer = _mixed_profile()
         inner = _profile()
+        before = get_current_profile()
         with profile_context(outer):
             with profile_context(inner):
                 assert get_current_profile() is inner
             assert get_current_profile() is outer
-        assert get_current_profile() is None
+        assert get_current_profile() is before
 
     async def test_internal_dispatch_resets_profile_after_call(self) -> None:
         """End-to-end: routing an internal:// call leaves no residual context."""
+        before = get_current_profile()  # the synthesized standalone operator
         seen: dict[str, Any] = {}
 
         async def fake_internal_call(
@@ -1024,7 +1024,7 @@ class TestProfileContext:
             )
 
         with patch(
-            "trentina.gateway.router.call_internal_tool",
+            "trentina.transports.mcp.call_internal_tool",
             side_effect=fake_internal_call,
         ):
             await route_jsonrpc(
@@ -1041,7 +1041,7 @@ class TestProfileContext:
             )
 
         assert seen["profile_during_call"] is not None
-        assert get_current_profile() is None
+        assert get_current_profile() is before
 
 
 class TestOneAuditRowPerCall:
@@ -1067,11 +1067,11 @@ class TestOneAuditRowPerCall:
 
         with (
             patch(
-                "trentina.gateway.router.call_backend_tool",
+                "trentina.transports.mcp.call_backend_tool",
                 side_effect=fake_call,
             ),
             patch(
-                "trentina.gateway.router.scan_tool_response",
+                "trentina.gateway.parts.scan_tool_response",
                 side_effect=scan or fake_scan,
             ) as mock_scan,
             patch("trentina.orchestrator.scan_tool_response", mock_scan),
@@ -1151,7 +1151,7 @@ class TestOneAuditRowPerCall:
 
         with (
             patch(
-                "trentina.gateway.router.call_internal_tool",
+                "trentina.transports.mcp.call_internal_tool",
                 side_effect=fake_internal,
             ),
             patch("trentina.database.get_config") as mock_cfg,
@@ -1202,7 +1202,7 @@ class TestSurfaceRecording:
             return [{"name": "jira_search", "description": "d" * 50, "inputSchema": {}}]
 
         with patch(
-            "trentina.gateway.router.list_backend_tools",
+            "trentina.gateway.aggregate.list_backend_tools",
             side_effect=fake_list,
         ):
             return await route_jsonrpc(profile, {"jsonrpc": "2.0", "id": 5, "method": "tools/list"})
@@ -1225,7 +1225,7 @@ class TestSurfaceRecording:
         the backend offers: offered is what a direct client would pay for."""
         from trentina.gateway.surface import surface_report
 
-        with patch("trentina.gateway.router.tool_pins.check_tools", lambda *_: []):
+        with patch("trentina.gateway.aggregate.tool_pins.check_tools", lambda *_: []):
             await self._list(_profile())
         report = surface_report("testp")
 
@@ -1234,7 +1234,7 @@ class TestSurfaceRecording:
         assert report["served"]["tools"] == 0
 
     async def test_invalidation_drops_the_surface(self) -> None:
-        from trentina.gateway.router import invalidate_profile_cache
+        from trentina.gateway.aggregate import invalidate_profile_cache
         from trentina.gateway.surface import surface_report
 
         await self._list(_profile())
@@ -1330,11 +1330,11 @@ class TestArgumentHygiene:
         try:
             with (
                 patch(
-                    "trentina.gateway.router.call_backend_tool",
+                    "trentina.transports.mcp.call_backend_tool",
                     side_effect=fake_call,
                 ),
                 patch(
-                    "trentina.gateway.router.scan_tool_response",
+                    "trentina.gateway.parts.scan_tool_response",
                     side_effect=fake_scan,
                 ) as mock_scan,
                 patch("trentina.orchestrator.scan_tool_response", mock_scan),
@@ -1489,7 +1489,7 @@ class TestArgumentHygiene:
         guarded = Backend(
             url="http://luna:8000/mcp",
             tools_allow=["*"],
-            parameter_guards={"save_output": {"priority": ParameterConstraint(deny=["0"])}},
+            literal_request_guards={"save_output": {"priority": ParameterConstraint(deny=["0"])}},
         )
 
         resp, seen, row = await self._call(
@@ -1504,7 +1504,9 @@ class TestArgumentHygiene:
         guarded = Backend(
             url="http://luna:8000/mcp",
             tools_allow=["*"],
-            parameter_guards={"send_message": {"cc": ParameterConstraint(allow=["*@ok.com"])}},
+            literal_request_guards={
+                "send_message": {"cc": ParameterConstraint(allow=["*@ok.com"])}
+            },
         )
 
         resp, seen, _row = await self._call(

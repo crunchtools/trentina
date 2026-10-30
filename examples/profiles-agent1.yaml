@@ -57,23 +57,23 @@ profiles:
         headers:
           Authorization: "Bearer ${MCP_MEMORY_API_KEY}"
         tools_allow: ["*"]
-        # Response guards — the egress half of parameter_guards. The memory
+        # Literal response guards — the egress half of literal_request_guards. The memory
         # server is shared with supervised profiles, and recall is semantic:
         # this agent can ask for "the codename project's roadmap" without
-        # naming it, so nothing in the REQUEST is matchable and a parameter
+        # naming it, so nothing in the REQUEST is matchable and a literal request
         # guard has nothing to bite on. The restricted record arrives in the
         # response, which is where this check reads.
         #
         # A match rejects the whole response (never a scrubbed subset — that
         # would make the guard a leak oracle) and audits as
-        # denied_response_guard. See docs/response-guards.md.
+        # denied_response_guard. See docs/literal-response-guards.md.
         #
         # This is a LITERAL, case-sensitive filter: a paraphrase of a denied
         # term passes, which is why each casing is listed. When the whole
         # backend is off-limits for an agent, prefer cutting the read tools
         # from tools_allow, or `content: {deny: ["*"]}` — neither depends on
         # predicting vocabulary.
-        response_guards:
+        literal_response_guards:
           memory_search:
             content:
               deny: ["*NIGHTJAR*", "*Nightjar*", "*nightjar*"]
@@ -106,7 +106,7 @@ profiles:
           - create_issue_comment_tool
           - search_code_tool
 
-      # ── Write-capable backend — parameter guards on sends ───────
+      # ── Write-capable backend — literal request guards on sends ───────
       mail:
         url: "http://mcp-mail:8000/mcp"
         # Short tool names carry this tag only where they collide with
@@ -118,7 +118,7 @@ profiles:
           - get_gmail_thread_content
           - draft_gmail_message
           - send_gmail_message
-        parameter_guards:
+        literal_request_guards:
           send_gmail_message:
             to:
               allow: ["alice@example.com"]

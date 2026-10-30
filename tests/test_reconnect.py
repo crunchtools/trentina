@@ -21,6 +21,10 @@ import pytest
 from mcp.types import ListToolsResult, Tool
 
 from trentina.gateway import compress
+from trentina.gateway.aggregate import (
+    _profile_backend_urls,
+    _profile_tools_cache,
+)
 from trentina.gateway.backend import _tool_list_cache
 from trentina.gateway.circuit import State, breaker
 from trentina.gateway.compress import set_profiles
@@ -30,10 +34,6 @@ from trentina.gateway.loader import (
     register_active_config,
 )
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import (
-    _profile_backend_urls,
-    _profile_tools_cache,
-)
 from trentina.tools.reconnect import _safe_endpoint, reconnect_backend
 
 POSTIZ_URL = "http://mcp-postiz:5000/api/mcp/token-a"

@@ -80,8 +80,8 @@ DECOY_RESULT_MAX_CHARS = 4096
 _REMOTE_ONLY_FIELDS = (
     "headers",
     "auth",
-    "parameter_guards",
-    "response_guards",
+    "literal_request_guards",
+    "literal_response_guards",
     "destination_params",
     "l3_briefing",
     "preprocess_tools",
@@ -179,10 +179,12 @@ ProcessorName = Literal[
 PluginRef = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*:[a-z0-9_]+$")]
 ProcessorRef = ProcessorName | PluginRef
 
-# The wire protocols a backend may be reached by. Mirrors
-# ``transports.registry.TRANSPORTS``; the parity test in
-# ``tests/test_transport_registry.py`` holds the two in step. A ``dist:name``
-# ``PluginRef`` passes this shape but is refused at load until 3.0.0.
+# The wire protocols a backend may be DISPATCHED over. Mirrors
+# ``transports.registry.BUILTIN_TRANSPORTS`` (what the dispatcher wires), not the
+# whole ``TRANSPORTS`` table, which a registered transport may extend without
+# becoming dispatchable; the parity test in ``tests/test_transport_registry.py``
+# holds the Literal and the built-ins in step. A ``dist:name`` ``PluginRef``
+# passes this shape but is refused at load until #535 freezes the contract.
 TransportName = Literal["mcp"]
 
 # FREE only. `detect` (0.38.0) looks at the payload and runs the minifiers
@@ -640,6 +642,19 @@ class Backend(BaseModel):
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _guard_fields_renamed(cls, block: Any) -> Any:
+        if isinstance(block, dict):
+            for old, new in (
+                ("parameter_guards", "literal_request_guards"),
+                ("request_guards", "literal_request_guards"),
+                ("response_guards", "literal_response_guards"),
+            ):
+                if old in block:
+                    raise ValueError(f"{old} was renamed {new} in 3.0.0")
+        return block
+
     url: str = Field(
         ...,
         description=(
@@ -652,8 +667,8 @@ class Backend(BaseModel):
         default="mcp",
         description=(
             "The wire protocol used to reach this backend. 'mcp' (the only "
-            "built-in) today; a 'dist:name' transport plugin is refused at load "
-            "until the Face/Carrier contract is frozen in 3.0.0."
+            "dispatchable built-in) today; a 'dist:name' transport plugin is "
+            "refused at load until the Face/Carrier contract is frozen (#535)."
         ),
     )
     decoys: dict[str, DecoyTool] = Field(
@@ -696,14 +711,14 @@ class Backend(BaseModel):
             "Timeout for tools/list metadata fetch (streamable-HTTP handshake needs headroom)"
         ),
     )
-    parameter_guards: dict[str, dict[str, ParameterConstraint]] = Field(
+    literal_request_guards: dict[str, dict[str, ParameterConstraint]] = Field(
         default_factory=dict,
         description=(
             "Tool name -> parameter name -> value constraint. "
             "Validated at call time before the backend is contacted."
         ),
     )
-    response_guards: dict[str, dict[str, ParameterConstraint]] = Field(
+    literal_response_guards: dict[str, dict[str, ParameterConstraint]] = Field(
         default_factory=dict,
         description=(
             "Tool name -> response field -> value constraint. Validated on "
@@ -777,14 +792,14 @@ class Backend(BaseModel):
         default_factory=dict,
         description=(
             "Per-tool response-reduction overrides, keyed by tool name "
-            "(same shape as parameter_guards). Whether reduction helps is a "
+            "(same shape as literal_request_guards). Whether reduction helps is a "
             "property of the tool's OUTPUT SHAPE, not of who called it: "
             "syslog_tail_tool is log-shaped for every profile. Unset tools "
             "use the profile default."
         ),
     )
 
-    @field_validator("parameter_guards")
+    @field_validator("literal_request_guards")
     @classmethod
     def mode_guards_name_real_modes(
         cls, v: dict[str, dict[str, ParameterConstraint]]
@@ -803,7 +818,7 @@ class Backend(BaseModel):
             for value in (*guard.allow, *guard.deny):
                 if not any(fnmatchcase(mode, value) for mode in MODE_NAMES):
                     raise ValueError(
-                        f"parameter_guards.{tool}.trentina_mode: {value!r} matches no mode; "
+                        f"literal_request_guards.{tool}.trentina_mode: {value!r} matches no mode; "
                         f"use {', '.join(MODE_NAMES)} or a glob over them"
                     )
         return v
@@ -1492,7 +1507,7 @@ GUARDED_TIMEOUT_MIN = 5.0
 GUARDED_TIMEOUT_MAX = 120.0
 
 
-class GuardedExecutionConfig(BaseModel):
+class SemanticGuardsConfig(BaseModel):
     """Calls to the tools named here are judged before they are forwarded (#456).
 
     The inbound layers judge what an agent reads. A request that reads like a
@@ -1556,7 +1571,7 @@ class GuardedExecutionConfig(BaseModel):
     @classmethod
     def _policy_has_text(cls, policy: str) -> str:
         if not policy.strip():
-            raise ValueError("guarded_execution.policy is empty")
+            raise ValueError("semantic_request_guards.policy is empty")
         return policy
 
     @field_validator("tools")
@@ -1564,13 +1579,13 @@ class GuardedExecutionConfig(BaseModel):
     def _tools_are_exact_names(cls, tools: dict[str, list[str]]) -> dict[str, list[str]]:
         for backend, names in tools.items():
             if not names:
-                raise ValueError(f"guarded_execution.tools.{backend} names no tool")
+                raise ValueError(f"semantic_request_guards.tools.{backend} names no tool")
             if len(set(names)) != len(names):
-                raise ValueError(f"guarded_execution.tools.{backend} lists a tool twice")
+                raise ValueError(f"semantic_request_guards.tools.{backend} lists a tool twice")
             bad = sum(1 for name in names if not DESTINATION_NAME_RE.fullmatch(name))
             if bad:
                 raise ValueError(
-                    f"guarded_execution.tools.{backend}: {bad} entries are not exact "
+                    f"semantic_request_guards.tools.{backend}: {bad} entries are not exact "
                     "tool names (no globs)"
                 )
         return tools
@@ -1579,20 +1594,20 @@ class GuardedExecutionConfig(BaseModel):
     @classmethod
     def _egress_names_are_exact(cls, names: list[str]) -> list[str]:
         if len(set(names)) != len(names):
-            raise ValueError("guarded_execution.egress_http lists an upstream twice")
+            raise ValueError("semantic_request_guards.egress_http lists an upstream twice")
         bad = sum(1 for name in names if not DESTINATION_NAME_RE.fullmatch(name))
         if bad:
             raise ValueError(
-                f"guarded_execution.egress_http: {bad} entries are not exact "
+                f"semantic_request_guards.egress_http: {bad} entries are not exact "
                 "upstream names (no globs)"
             )
         return names
 
     @model_validator(mode="after")
-    def _guards_something(self) -> GuardedExecutionConfig:
+    def _guards_something(self) -> SemanticGuardsConfig:
         """A block that guards nothing is a configuration mistake, not a no-op."""
         if not self.tools and not self.egress_http:
-            raise ValueError("guarded_execution guards nothing: set tools or egress_http")
+            raise ValueError("semantic_request_guards guards nothing: set tools or egress_http")
         return self
 
     def guards(self, backend: str, tool: str) -> bool:
@@ -2628,6 +2643,18 @@ class Profile(BaseModel):
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _guard_fields_renamed(cls, block: Any) -> Any:
+        if isinstance(block, dict):
+            for old, new in (
+                ("guarded_execution", "semantic_request_guards"),
+                ("intent_guards", "semantic_request_guards"),
+            ):
+                if old in block:
+                    raise ValueError(f"{old} was renamed {new} in 3.0.0")
+        return block
+
     name: str = Field(..., description="Profile name (URL-safe slug)")
     auth: AuthConfig | None = Field(
         default=None,
@@ -2733,11 +2760,20 @@ class Profile(BaseModel):
             "egress route, keyed by an egress_upstreams name (optional, #511)"
         ),
     )
-    guarded_execution: GuardedExecutionConfig | None = Field(
+    semantic_request_guards: SemanticGuardsConfig | None = Field(
         default=None,
         description=(
             "Tools whose calls a gatekeeper judges against a written policy "
             "before they are forwarded (optional, #456)"
+        ),
+    )
+    semantic_response_guards: SemanticGuardsConfig | None = Field(
+        default=None,
+        description=(
+            "Tools whose RESPONSES a gatekeeper judges against a written policy "
+            "before the agent receives them — the semantic twin of the literal "
+            "response guard. ``tools`` scopes which tools' responses are judged "
+            "(optional, #456)"
         ),
     )
     oauth: OAuthConfig | None = Field(
@@ -2812,7 +2848,8 @@ class Profile(BaseModel):
             "bridges": bool(self.bridges),
             "git": bool(self.git),
             "egress_http": bool(self.egress_http),
-            "guarded_execution": self.guarded_execution is not None,
+            "semantic_request_guards": self.semantic_request_guards is not None,
+            "semantic_response_guards": self.semantic_response_guards is not None,
             # Gateway tools it does not name, and categories that could
             # say which backends are decoys (#473).
             "tool_discovery": self.tool_discovery != ToolDiscoveryConfig(),
@@ -2891,21 +2928,45 @@ class Profile(BaseModel):
         typo the operator should hear about at load. A decoy is answered by
         nothing, so there is no call to judge.
         """
-        if self.guarded_execution is None:
+        if self.semantic_request_guards is None:
             return self
-        for name in self.guarded_execution.tools:
+        for name in self.semantic_request_guards.tools:
             backend = self.backends.get(name)
             if backend is None:
-                raise ValueError(f"guarded_execution.tools.{name}: no such backend")
+                raise ValueError(f"semantic_request_guards.tools.{name}: no such backend")
             if backend.is_decoy:
-                raise ValueError(f"guarded_execution.tools.{name}: a decoy backend is not judged")
-        for name in self.guarded_execution.egress_http:
+                raise ValueError(
+                    f"semantic_request_guards.tools.{name}: a decoy backend is not judged"
+                )
+        for name in self.semantic_request_guards.egress_http:
             # Guard only a destination this profile may actually reach: a name
             # that is not a grant is a rule that never fires (#511).
             if name not in self.egress_http:
                 raise ValueError(
-                    f"guarded_execution.egress_http.{name}: not an egress_http "
-                    "grant of this profile"
+                    f"semantic_request_guards.egress_http.{name}: "
+                    "not an egress_http grant of this profile"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def guarded_responses_name_real_backends(self) -> Profile:
+        """Every guarded response is on a backend this profile has, and a real one.
+
+        The response twin of ``guarded_tools_name_real_backends`` (#456): a
+        name that matches no backend never fires, and a decoy's response is
+        canned, so there is nothing to judge. ``egress_http`` has no meaning on
+        a response — there is no outbound request to judge the result of — so
+        only ``tools`` is checked.
+        """
+        if self.semantic_response_guards is None:
+            return self
+        for name in self.semantic_response_guards.tools:
+            backend = self.backends.get(name)
+            if backend is None:
+                raise ValueError(f"semantic_response_guards.tools.{name}: no such backend")
+            if backend.is_decoy:
+                raise ValueError(
+                    f"semantic_response_guards.tools.{name}: a decoy backend is not judged"
                 )
         return self
 

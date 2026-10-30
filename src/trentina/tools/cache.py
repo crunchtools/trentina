@@ -18,10 +18,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..gateway.aggregate import _profile_tools_cache, invalidate_profile_cache
 from ..gateway.backend import evict_backend_cache_url, flush_all_caches
 from ..gateway.compress import get_profiles
 from ..gateway.errors import ScopeError
-from ..gateway.router import _profile_tools_cache, invalidate_profile_cache
 from ..gateway.scope import CallerScope, require_caller, resolve_backend
 from ..logsafe import exc_kind
 

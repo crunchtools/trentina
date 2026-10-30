@@ -25,9 +25,9 @@ from corpora.benign_ops import BENIGN as BENIGN_SHAPES
 from corpora.disclosed import CORPUS as DISCLOSED
 from corpora.garak_encodings import ENCODINGS
 from corpora.internal import CORPUS as INTERNAL
-from trentina.gateway.ingress_defense import _collect_response_texts
+from trentina.gateway.collect import _collect_response_texts
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import _drop_duplicate_structured
+from trentina.gateway.results import _drop_duplicate_structured
 from trentina.gateway.transform import transform_response
 from trentina.l1.pipeline import run_l1
 from trentina.quarantine.classifier import (
@@ -326,19 +326,18 @@ class TestKnownGaps:
         assert result is not None
         assert result.label != "MALICIOUS", f"{case_id}: gap 20 may have closed"
 
-    def test_an_attack_in_an_encoding_unpack_does_not_decode_passes_l2(self) -> None:
-        """Known gap 21 (#423), inverted by the fine-tuned model (#17). Horizon
-        flagged anything in these encodings, benign text too; the shipped model
-        reads neither, and nothing ahead of it decodes them, so the attacks
-        reach L3 alone. When a decoder lands (or a model reads them) this fails
-        on purpose: re-run ``benchmarks/l2_encodings.py`` and close the gap."""
+    def test_the_unpacked_attack_is_read_through_the_pipeline(self) -> None:
+        """Gap 21 closed (#546): unpack decodes base32, Ascii85, base85, UU,
+        Braille and Morse, so the pipeline reads the attack inside and does not
+        lose more than the gate allows against the plain text. Should a decoder
+        regress, this fails: re-run ``benchmarks/l2_encodings.py``."""
         if _MODEL is None or _MODEL.id != SHIPPED:
             pytest.skip(f"measured on {SHIPPED}")
         attacks = [c.payload for c in INTERNAL if c.expect_injection]
         plain = _detected(attacks)
         for name in ("base32", "Ascii85", "base85", "UU", "Braille", "Morse"):
-            lost = plain - _detected(ENCODINGS[name](a) for a in attacks)
-            assert lost > GATE_MAX_DROP, f"{name} loses {lost}: gap 21 may have closed"
+            through = _detected(unpack(ENCODINGS[name](a)).text for a in attacks)
+            assert plain - through <= GATE_MAX_DROP, f"{name} loses {plain - through}"
 
     def test_a_letter_cipher_costs_detections(self) -> None:
         """Known gap 22 (#423): more attacks are lost than the gate allows.

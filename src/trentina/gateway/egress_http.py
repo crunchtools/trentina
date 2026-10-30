@@ -20,7 +20,7 @@ What it decides, in order, each one deterministic:
   blocking gap refuses before anything is sent — nothing executed. Under
   ``flag`` it is forwarded with the verdict on ``x-trentina-warning``.
 - **its intent** (optional, ``block`` only): when the profile's
-  ``guarded_execution`` names this upstream, the request — already past the
+  ``semantic_request_guards`` names this upstream, the request — already past the
   layers — is handed to the profile's judge, with the gateway's own facts (the
   destination, whether the profile has reached it before, whether the session
   was flagged), and anything but an explicit allow refuses before it is sent
@@ -68,8 +68,8 @@ from .egress_policy import (
     response_headers,
 )
 from .gatekeeper import judge_egress
-from .ingress_defense import effective_mode
 from .loader import get_active_config
+from .modes_policy import effective_mode
 from .outbound import (
     REASON_CREDENTIAL,
     REASON_FLAGGED,
@@ -327,7 +327,7 @@ async def _carry(request: Request, op: Operation) -> Response:
 
     document, warning = await _judge_request(op, request, upstream, name, path, body, fwd, mode)
 
-    # The guarded-execution hook (#511): under block, a profile may ask its
+    # The semantic-request-guards hook (#511): under block, a profile may ask its
     # judge to decide the request's intent — destination, first contact, flagged
     # session — before anything is sent. flag is the researcher grant; it never
     # reaches here. The request has not been sent, so a refusal is a plain denial.
@@ -361,7 +361,7 @@ async def _judge_request(
     """Judge the outbound request; raise to refuse under block, return a flag warning.
 
     Returns ``(document, warning)``: the request document the layers read (for
-    the guarded-execution hook, ``None`` when there is no judgeable document)
+    the semantic-request-guards hook, ``None`` when there is no judgeable document)
     and the flag-mode warning (``None`` under block, which refuses instead).
 
     A non-UTF-8 verbatim body is a binary request no layer can read as the
@@ -421,16 +421,16 @@ async def _judge_request(
 
 
 async def _gatekeep(op: Operation, name: str, method: str, document: str) -> None:
-    """The guarded-execution hook on a terminating-egress request (#511).
+    """The semantic-request-guards hook on a terminating-egress request (#511).
 
-    Only the upstreams the profile's ``guarded_execution`` names are judged; a
+    Only the upstreams the profile's ``semantic_request_guards`` names are judged; a
     request to any other upstream costs nothing here. The request already
     passed the layers, so the judge decides its intent (``gatekeeper.py``), and
     anything but an explicit allow raises ``gatekeeper`` — a plain denial,
     nothing sent. The judge reads a credential-redacted, decoded copy, so no
     secret and no raw escaping reaches it.
     """
-    cfg = op.profile.guarded_execution
+    cfg = op.profile.semantic_request_guards
     if cfg is None or not cfg.guards_egress(name) or op.destination is None:
         return
     refusal = await judge_egress(

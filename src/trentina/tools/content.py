@@ -7,9 +7,10 @@ from typing import Any
 
 from ..defense import admission
 from ..errors import ContentSizeError
+from ..gateway.internal_edge import pageable
+from ..gateway.scope import check_blocklist
 from ..modes import Mode
 from ..orchestrator import judge_and_deliver
-from .judged import check_blocklist, pageable
 from .preprocess import prepare
 
 

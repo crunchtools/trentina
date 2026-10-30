@@ -18,9 +18,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from trentina import orchestrator as orch
 from trentina.config import get_config
-from trentina.gateway import ingress_defense as ing
-from trentina.gateway import router
+from trentina.gateway import aggregate
+from trentina.gateway import tool_list_edge as ing
+from trentina.gateway import verdict_cache as vc
 from trentina.gateway.compress import _call_compress_model
 from trentina.gateway.context import get_current_profile, profile_context
 from trentina.gateway.errors import ProfileConfigError
@@ -38,6 +40,7 @@ from trentina.gateway.service import (
 )
 from trentina.gateway.sessions import SessionRegistry
 from trentina.quarantine.providers.base import ProviderResult
+from trentina.transports import mcp
 
 _TENANT = """\
   tenant:
@@ -147,13 +150,14 @@ class TestServiceContext:
     def test_a_tenant_bound_above_does_not_leak_in(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """No operator: the gateway's work runs env-global, never as the caller."""
+        """No operator: the gateway's work runs as the synthesized operator, never as the caller."""
         profiles = _live(tmp_path, monkeypatch, _TENANT)
 
         with profile_context(profiles["tenant"]):
             with service_context() as bound:
-                assert bound is None
-                assert get_current_profile() is None
+                assert bound.name == "standalone"
+                assert get_current_profile() is bound
+                assert get_current_profile() is not profiles["tenant"]
             assert get_current_profile() is profiles["tenant"]
 
     def test_an_explicit_operator_is_bound_without_resolving_again(
@@ -170,17 +174,9 @@ class TestServiceContext:
             assert get_current_profile() is chosen
         resolve.assert_not_called()
 
-    def test_an_explicit_none_binds_nothing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        profiles = _live(tmp_path, monkeypatch, _TENANT, _OPERATOR)
-
-        with profile_context(profiles["tenant"]), service_context(None) as bound:
-            assert bound is None
-            assert get_current_profile() is None
-
-    def test_standalone_has_no_service_profile(self) -> None:
-        assert service_profile() is None
+    def test_standalone_has_a_synthesized_operator_service_profile(self) -> None:
+        assert service_profile().name == "standalone"
+        assert service_profile().role == "operator"
 
 
 class TestPerimeterRunsAsTheOperator:
@@ -196,7 +192,7 @@ class TestPerimeterRunsAsTheOperator:
             return MagicMock(flagged=False)
 
         with (
-            patch.object(ing, "defend", fake_defend),
+            patch.object(orch, "defend", fake_defend),
             patch.object(ing, "build_warning", return_value=None),
             profile_context(profiles["tenant"]),
         ):
@@ -220,7 +216,7 @@ class TestPerimeterRunsAsTheOperator:
 
         with (
             patch.object(ing, "service_profile", side_effect=[first, second, second]),
-            patch.object(ing, "defend", fake_defend),
+            patch.object(orch, "defend", fake_defend),
             patch.object(ing, "build_warning", return_value=None),
         ):
             tools = [
@@ -234,7 +230,7 @@ class TestPerimeterRunsAsTheOperator:
         for tool in tools:
             surface = ing._tool_surface_text(tool)
             filed = ing._cache_key(profiles["tenant"], "tool:external", surface, judge_of(first))
-            assert filed in ing._verdicts
+            assert filed in vc._verdicts
 
     def test_description_verdicts_are_keyed_by_the_operators_model(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -328,9 +324,10 @@ class TestCompressionRunsAsTheOperator:
         assert kwargs["model"] == "ops-model"
         assert kwargs["api_key"].get_secret_value() == "ops-key"
 
-    async def test_no_operator_uses_the_env_global_provider(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    async def test_no_operator_uses_the_synthesized_operator(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, standalone_l3: None
     ) -> None:
+        """No file operator: compression runs as the operator synthesized from the environment."""
         _live(tmp_path, monkeypatch, _TENANT)
 
         with patch(
@@ -339,7 +336,8 @@ class TestCompressionRunsAsTheOperator:
         ) as get:
             await _call_compress_model([("h", "A long description.")])
 
-        get.assert_called_with()
+        get.assert_called_once()
+        assert get.call_args.args[0] == "gemini"
 
 
 class TestPerProfileGeneration:
@@ -362,24 +360,24 @@ class TestPerProfileGeneration:
 
         beta = self._profile("beta")
         with (
-            patch.object(router, "list_backend_tools", slow_list),
-            patch.object(router, "scan_tool_list", passthrough),
-            patch.object(router, "maybe_trigger_compression", AsyncMock()),
+            patch.object(aggregate, "list_backend_tools", slow_list),
+            patch.object(aggregate, "scan_tool_list", passthrough),
+            patch.object(aggregate, "maybe_trigger_compression", AsyncMock()),
         ):
-            build = asyncio.create_task(router._route_tools_list(beta, 1))
+            build = asyncio.create_task(mcp._route_tools_list(beta, 1))
             await asyncio.sleep(0)
-            router.invalidate_profile_cache("alpha")
+            aggregate.invalidate_profile_cache("alpha")
             gate.set()
             await build
 
-        assert "beta" in router._profile_tools_cache
+        assert "beta" in aggregate._profile_tools_cache
 
     def test_invalidating_one_profile_leaves_the_others_generation(self) -> None:
-        before = router._cache_generation.get("beta", 0)
+        before = aggregate._cache_generation.get("beta", 0)
 
-        router.invalidate_profile_cache("alpha")
+        aggregate.invalidate_profile_cache("alpha")
 
-        assert router._cache_generation.get("beta", 0) == before
+        assert aggregate._cache_generation.get("beta", 0) == before
 
 
 class TestExplainMissing:

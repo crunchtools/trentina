@@ -26,12 +26,12 @@ from tests.egress_harness import route
 from trentina.client import fetch_url
 from trentina.errors import EgressRefusedError, QuarantineAgentError
 from trentina.gateway import compress
+from trentina.gateway.aggregate import _profile_backend_urls, _profile_tools_cache
 from trentina.gateway.app import MCP_SESSION_ID_HEADER, gateway_app
 from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
 from trentina.gateway.loader import GatewayConfig, register_active_config
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import _profile_backend_urls, _profile_tools_cache
 from trentina.gateway.sessions import SessionRegistry
 from trentina.orchestrator import scan_tool_response
 from trentina.quarantine import classifier
@@ -69,7 +69,7 @@ class TestResponseVerdictCache:
             oversize=None,
         )
         with patch(
-            "trentina.gateway.ingress_defense.defend",
+            "trentina.orchestrator.defend",
             AsyncMock(return_value=verdict),
         ) as judged:
             for profile in (alpha, alpha, beta):

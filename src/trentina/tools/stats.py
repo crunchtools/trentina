@@ -42,7 +42,7 @@ COLUMN_MEANINGS = {
     "ok": "Call returned content.",
     "blocked": (
         "Policy stopped the call: defense pipeline block, allowlist denial, "
-        "or parameter guard. Working as designed — a security metric, not an "
+        "or request guard. Working as designed — a security metric, not an "
         "error rate."
     ),
     "tripped": (

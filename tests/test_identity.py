@@ -26,14 +26,6 @@ def _scope(profile: object) -> SimpleNamespace:
 
 
 class TestHoneypotFromScope:
-    def test_no_bound_scope_is_not_a_honeypot(self) -> None:
-        with patch(_SCOPE, return_value=None):
-            assert posture(Mode.FLAG, POLICY).honeypot is False
-
-    def test_scope_without_a_profile_is_not_a_honeypot(self) -> None:
-        with patch(_SCOPE, return_value=_scope(None)):
-            assert posture(Mode.FLAG, POLICY).honeypot is False
-
     def test_a_non_honeypot_profile_is_not_a_honeypot(self) -> None:
         with patch(_SCOPE, return_value=_scope(SimpleNamespace(honeypot=False))):
             assert posture(Mode.FLAG, POLICY).honeypot is False
@@ -45,7 +37,7 @@ class TestHoneypotFromScope:
 
 class TestEverythingElseIsPassedThrough:
     def test_mode_policy_allowlisted_and_prompt_are_preserved(self) -> None:
-        with patch(_SCOPE, return_value=None):
+        with patch(_SCOPE, return_value=_scope(SimpleNamespace(honeypot=False))):
             p = posture(Mode.REDACT, POLICY, allowlisted=True, prompt="just the title")
         assert p.mode is Mode.REDACT
         assert p.policy is POLICY
@@ -53,7 +45,7 @@ class TestEverythingElseIsPassedThrough:
         assert p.prompt == "just the title"
 
     def test_allowlisted_and_prompt_default_off(self) -> None:
-        with patch(_SCOPE, return_value=None):
+        with patch(_SCOPE, return_value=_scope(SimpleNamespace(honeypot=False))):
             p = posture(Mode.BLOCK, POLICY)
         assert p.allowlisted is False
         assert p.prompt is None

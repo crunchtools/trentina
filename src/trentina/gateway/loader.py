@@ -175,8 +175,9 @@ def _check_plugin_imports(name: str, profile: Profile) -> None:
 
 
 def _check_transports(name: str, profile: Profile) -> None:
-    """Validate every backend's transport at load. 'mcp' resolves; a 'dist:name'
-    transport plugin is refused by name until the contract is frozen in 3.0.0
+    """Validate every backend's transport at load. A registered name ('mcp',
+    plus anything ``register_transport`` added) resolves; a 'dist:name' external
+    transport plugin is refused by name until the contract is frozen (#535)
     (``transports.registry.build_transport``). Lazy import avoids the
     transports→gateway import cycle at module load."""
     from ..transports.registry import build_transport
@@ -209,18 +210,23 @@ def _check_guarded_tools(name: str, profile: Profile) -> None:
 
     The same reasoning as ``destination_params``: a rule for a tool the agent
     can never call is a misspelling, and the call the operator meant to
-    guard is the one it fails to name.
+    guard is the one it fails to name. Both the request guards (the call) and
+    the response guards (the result) are held to it.
     """
-    if profile.guarded_execution is None:
-        return
-    for backend_name, tools in profile.guarded_execution.tools.items():
-        backend = profile.backends[backend_name]
-        for tool in tools:
-            if not filter_tools([{"name": tool}], backend):
-                raise ProfileConfigError(
-                    f"Profile {name!r}: guarded_execution.tools.{backend_name}."
-                    f"{tool}: the tool is not allowed on this backend"
-                )
+    for block, cfg in (
+        ("semantic_request_guards", profile.semantic_request_guards),
+        ("semantic_response_guards", profile.semantic_response_guards),
+    ):
+        if cfg is None:
+            continue
+        for backend_name, tools in cfg.tools.items():
+            backend = profile.backends[backend_name]
+            for tool in tools:
+                if not filter_tools([{"name": tool}], backend):
+                    raise ProfileConfigError(
+                        f"Profile {name!r}: {block}.tools.{backend_name}."
+                        f"{tool}: the tool is not allowed on this backend"
+                    )
 
 
 def _check_drivers(name: str, profile: Profile) -> None:

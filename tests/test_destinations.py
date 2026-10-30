@@ -30,16 +30,17 @@ from trentina.gateway.destination import (
 )
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.loader import load_profiles, register_active_config
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
     ParameterConstraint,
     Profile,
 )
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.outcomes import Outcome
 from trentina.tools.reload import _lost_destination_rules
 from trentina.tools.stats import get_trentina_stats
+from trentina.transports.mcp import route_jsonrpc
 
 CHECK = Path(__file__).resolve().parents[1] / "contrib" / "nagios" / "check_trentina_fanout"
 
@@ -263,10 +264,10 @@ async def test_fetch_search_and_a_declared_tool_are_recorded() -> None:
     transform = AsyncMock(side_effect=_passthrough_transform)
     scan = AsyncMock(side_effect=_clean_scan)
     with (
-        patch("trentina.gateway.router.call_internal_tool", side_effect=internal),
-        patch("trentina.gateway.router.call_backend_tool", side_effect=remote),
+        patch("trentina.transports.mcp.call_internal_tool", side_effect=internal),
+        patch("trentina.transports.mcp.call_backend_tool", side_effect=remote),
         patch("trentina.transports.mcp.transform_response", transform),
-        patch("trentina.gateway.router.scan_tool_response", scan),
+        patch("trentina.gateway.parts.scan_tool_response", scan),
         patch("trentina.orchestrator.scan_tool_response", scan),
     ):
         await _call(_slack_and_web(), f"web{NAMESPACE_SEP}fetch_tool", {"url": url})
@@ -297,7 +298,7 @@ async def test_a_refused_call_still_records_where_it_pointed() -> None:
     profile.backends["slack"] = Backend(
         url="http://mcp-slack:8000/mcp",
         destination_params={"send_message": "channel"},
-        parameter_guards={"send_message": {"channel": ParameterConstraint(allow=["C0OPS"])}},
+        literal_request_guards={"send_message": {"channel": ParameterConstraint(allow=["C0OPS"])}},
     )
     await _call(profile, f"slack{NAMESPACE_SEP}send_message", {"channel": "C0EXFIL"})
 
@@ -492,10 +493,10 @@ class TestFanoutCheck:
 
 def test_a_lost_audit_row_is_logged_not_raised(caplog: pytest.LogCaptureFixture) -> None:
     """The audit never fails the call, and never loses a row silently (#281)."""
-    from trentina.gateway import router
+    from trentina.gateway import audit
 
-    with patch.object(router, "record_gateway_call", side_effect=OSError("disk full C0SECRET")):
-        router._audit("kage", "slack", "send_message", Outcome.OK, 1)
+    with patch.object(audit, "record_gateway_call", side_effect=OSError("disk full C0SECRET")):
+        audit._audit("kage", "slack", "send_message", Outcome.OK, 1)
 
     lost = [r for r in caplog.records if "audit row lost" in r.getMessage()]
     assert len(lost) == 1

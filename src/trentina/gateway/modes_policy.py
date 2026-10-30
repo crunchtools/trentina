@@ -15,10 +15,10 @@ where the agent can make it, and nowhere else:
   sends one.
 * **tools/call** — `resolve_call` pops the arguments, resolves an omitted mode
   to the default, and only then checks the policy. Checking first would let an
-  omitted mode skip the check, the way a parameter guard skips an argument
+  omitted mode skip the check, the way a request guard skips an argument
   that is absent. Remote backends never see either argument.
 
-`Backend.modes` and a `parameter_guards` entry on `trentina_mode` narrow the
+`Backend.modes` and a `literal_request_guards` entry on `trentina_mode` narrow the
 policy for one backend or one tool. Neither is needed for the base policy.
 
 `trentina_preprocess` (#183; a switch since 0.38.0) rides the same three
@@ -32,10 +32,13 @@ cost a 376-tool profile ~15 KB for a switch the instructions already describe.
 from __future__ import annotations
 
 import copy
+import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 from ..config import get_config
 from ..errors import PromptParamGoneError
+from ..logsafe import redact_source
 from ..modes import Mode, ModePolicy, parse_mode_arg
 from ..transforms.policy import (
     INTERNAL_CHAIN,
@@ -50,8 +53,42 @@ from .transform import resolve as resolve_preprocess_config
 if TYPE_CHECKING:
     from .profile import Backend, Profile
 
+logger = logging.getLogger(__name__)
+
+#: Kill switch (owner requirement, ahead of any enforcement flip): setting
+#: TRENTINA_ENFORCEMENT_OVERRIDE=flag forces every profile to flag, for the
+#: night `block` misfires at 3am. Any other value is ignored loudly.
+#:
+#: `warn` (before 0.35.0) and `annotate` (before 0.25.0) are still accepted,
+#: because the one moment this variable is reached for is the moment nobody
+#: wants to discover it was renamed.
+_OVERRIDE_ENV = "TRENTINA_ENFORCEMENT_OVERRIDE"
+_OVERRIDE_VALUES = {"flag": "flag", "warn": "flag", "annotate": "flag"}
+
+
+def effective_mode(profile: Profile, mode: Mode | None = None) -> Mode:
+    """The call's resolved mode, or the profile default; the kill switch
+    wins over both, including a call that asked for block or redact."""
+    override = os.environ.get(_OVERRIDE_ENV, "").strip().lower()
+    if override in _OVERRIDE_VALUES:
+        if override != "flag":
+            logger.warning(
+                "%s (%s) is an old spelling of 'flag'; honouring it",
+                _OVERRIDE_ENV,
+                redact_source(override),
+            )
+        return Mode(_OVERRIDE_VALUES[override])
+    if override:
+        logger.error(
+            "%s (%s) is not a valid override (only 'flag' is); ignoring",
+            _OVERRIDE_ENV,
+            redact_source(override),
+        )
+    return mode if mode is not None else Mode(profile.defense.enforcement)
+
+
 MODE_PARAM = "trentina_mode"
-# The redact question, as parameter guards address it. No longer an argument
+# The redact question, as request guards address it. No longer an argument
 # (0.43.0): a call carrying one is refused.
 PROMPT_PARAM = "trentina_prompt"
 INSERTED_PARAMS = (MODE_PARAM, PROMPT_PARAM, PREPROCESS_PARAM)
@@ -69,7 +106,7 @@ _MODE_TEXT = {
 def policy_for(profile: Profile, backend: Backend, tool_name: str) -> ModePolicy:
     """The modes this profile may use on this tool, and its default."""
     names = backend.modes if backend.modes is not None else (profile.defense.modes or [])
-    guard = backend.parameter_guards.get(tool_name, {}).get(MODE_PARAM)
+    guard = backend.literal_request_guards.get(tool_name, {}).get(MODE_PARAM)
     allowed = [n for n in names if guard is None or evaluate_constraint(n, guard) is None]
     return ModePolicy.of(allowed, profile.defense.enforcement)
 

@@ -34,6 +34,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from trentina.gateway import compress
+from trentina.gateway.aggregate import (
+    _profile_tools_cache,
+    invalidate_profile_cache,
+    invalidate_profile_cache_for_backend,
+)
 from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
 from trentina.gateway.filter import filter_tools
@@ -44,20 +49,14 @@ from trentina.gateway.loader import (
     replace_active_config,
     reset_active_config,
 )
-from trentina.gateway.router import (
-    _profile_tools_cache,
-    invalidate_profile_cache,
-    invalidate_profile_cache_for_backend,
-    route_jsonrpc,
-)
 from trentina.gateway.sessions import session_registry
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.tools.reload import AGENT_SCOPE_NOTE, reload_profiles
+from trentina.transports.mcp import route_jsonrpc
 
 pytestmark = pytest.mark.asyncio
 
-_ROUTER = "trentina.gateway.router"
-_INGRESS = "trentina.gateway.ingress_defense"
+_AGGREGATE = "trentina.gateway.aggregate"
 
 _BENIGN = ClassifierResult(label="BENIGN", score=0.01, latency_ms=1.0)
 
@@ -143,7 +142,7 @@ SWAPPED_BACKEND_YAML = DENIED_YAML.replace(
 BETA_GUARDED_YAML = BASE_YAML.replace(
     '      wiki:\n        url: http://wiki:1/mcp\n        tools_allow: ["*"]\n',
     '      wiki:\n        url: http://wiki:1/mcp\n        tools_allow: ["*"]\n'
-    "        parameter_guards:\n"
+    "        literal_request_guards:\n"
     "          wiki_delete_page_tool:\n"
     "            title:\n"
     '              deny: ["Runbook*"]\n',
@@ -297,12 +296,12 @@ class TestAppliedReload:
     async def test_diff_names_guard_parameters_without_echoing_patterns(
         self, profiles_path: Path
     ) -> None:
-        """The motivating edit: a destructive tool gets a parameter guard."""
+        """The motivating edit: a destructive tool gets a request guard."""
         profiles_path.write_text(
             BASE_YAML.replace(
                 "        tools_deny: []\n",
                 "        tools_deny: []\n"
-                "        parameter_guards:\n"
+                "        literal_request_guards:\n"
                 "          jira_delete_issue:\n"
                 "            key:\n"
                 '              deny: ["PROD-*"]\n',
@@ -311,7 +310,7 @@ class TestAppliedReload:
         )
         result = await _reload_as("alpha")
 
-        guards = result["changes"]["alpha"]["backends_changed"]["jira"]["parameter_guards"]
+        guards = result["changes"]["alpha"]["backends_changed"]["jira"]["literal_request_guards"]
         assert guards == {"jira_delete_issue": {"parameters_added": ["key"]}}
         assert "PROD-" not in str(result)
 
@@ -323,7 +322,7 @@ class TestAppliedReload:
             BASE_YAML.replace(
                 "        tools_deny: []\n",
                 "        tools_deny: []\n"
-                "        response_guards:\n"
+                "        literal_response_guards:\n"
                 "          jira_get_issue:\n"
                 "            content:\n"
                 '              deny: ["*NIGHTJAR*"]\n',
@@ -332,7 +331,7 @@ class TestAppliedReload:
         )
         result = await _reload_as("alpha")
 
-        guards = result["changes"]["alpha"]["backends_changed"]["jira"]["response_guards"]
+        guards = result["changes"]["alpha"]["backends_changed"]["jira"]["literal_response_guards"]
         assert guards == {"jira_get_issue": {"fields_added": ["content"]}}
         assert "NIGHTJAR" not in str(result)
 
@@ -966,7 +965,7 @@ class TestCacheBehaviour:
         """Only the edited profile's aggregate is thrown away."""
         with (
             patch(
-                f"{_ROUTER}.list_backend_tools",
+                f"{_AGGREGATE}.list_backend_tools",
                 AsyncMock(return_value=_tools_result(["jira_get_issue"])),
             ),
             patch(
@@ -992,10 +991,10 @@ class TestCacheBehaviour:
         key is (kind, thresholds, text) — none of which a tools_deny edit
         touches — so the rebuilt aggregate is a pure cache read.
         """
-        from trentina.gateway import ingress_defense
+        from trentina import orchestrator
 
         judged: list[str] = []
-        real_defend = ingress_defense.defend
+        real_defend = orchestrator.defend
 
         async def counting_defend(*args: Any, **kwargs: Any) -> Any:
             judged.append(str(kwargs.get("source")))
@@ -1003,13 +1002,13 @@ class TestCacheBehaviour:
 
         # A working L3 matters here, not as scenery: a verdict reached while
         # L3 was unavailable is deliberately NOT cached (see
-        # ingress_defense._cache_put — an outage's "clean" must not outlive
+        # verdict_cache._cache_put — an outage's "clean" must not outlive
         # the outage), and this test is about the cache holding across a
         # reload. Without a judge there is nothing to cache and nothing to
         # measure.
         with (
             patch(
-                f"{_ROUTER}.list_backend_tools",
+                f"{_AGGREGATE}.list_backend_tools",
                 AsyncMock(return_value=_tools_result(["jira_get_issue", "jira_delete_issue"])),
             ),
             patch(
@@ -1021,7 +1020,7 @@ class TestCacheBehaviour:
                 "trentina.defense.quarantine_detect",
                 AsyncMock(return_value={"injection_detected": False, "risk_level": "low"}),
             ),
-            patch(f"{_INGRESS}.defend", counting_defend),
+            patch("trentina.orchestrator.defend", counting_defend),
         ):
             _cfg.return_value.has_api_key = True
             _cfg.return_value.admission_tokens = 32_768
@@ -1077,7 +1076,7 @@ class TestCacheBehaviour:
             # The eviction cascade only knows a profile's backend URLs once an
             # aggregate has been cached, so warm one first — with a fast list.
             with patch(
-                f"{_ROUTER}.list_backend_tools",
+                f"{_AGGREGATE}.list_backend_tools",
                 AsyncMock(return_value=_tools_result(["jira_get_issue"])),
             ):
                 await _list_tools("alpha")
@@ -1085,7 +1084,7 @@ class TestCacheBehaviour:
             # What cache_flush leaves behind: the aggregate gone, the
             # backend-URL map still mapping alpha to jira.
             _profile_tools_cache.pop("alpha")
-            with patch(f"{_ROUTER}.list_backend_tools", slow_list):
+            with patch(f"{_AGGREGATE}.list_backend_tools", slow_list):
                 build = asyncio.create_task(_list_tools("alpha"))
                 await asyncio.sleep(0)
                 invalidate_profile_cache_for_backend("http://jira:1/mcp")
@@ -1110,7 +1109,7 @@ class TestCacheBehaviour:
             return _tools_result(["jira_delete_issue"])
 
         with (
-            patch(f"{_ROUTER}.list_backend_tools", slow_list),
+            patch(f"{_AGGREGATE}.list_backend_tools", slow_list),
             patch(
                 "trentina.defense.classify_async",
                 AsyncMock(return_value=_BENIGN),
@@ -1181,7 +1180,7 @@ class TestServiceIdentityMoves:
 BETA_GUARDED_EXECUTION_YAML = BASE_YAML.replace(
     "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n",
     "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n"
-    "    guarded_execution:\n"
+    "    semantic_request_guards:\n"
     "      policy: Edits stay on our own pages.\n"
     "      tools:\n"
     "        wiki: [edit_page]\n",
@@ -1198,10 +1197,10 @@ class TestGuardedExecutionIsOperatorOnly:
         profiles_path.write_text(BASE_YAML, encoding="utf-8")
         result = await _reload_as("beta")
 
-        guarded = _registry()["beta"].guarded_execution
+        guarded = _registry()["beta"].semantic_request_guards
         assert guarded is not None
         assert guarded.guards("wiki", "edit_page")
-        assert "guarded_execution" in result["not_applied"]["operator_only"]
+        assert "semantic_request_guards" in result["not_applied"]["operator_only"]
 
     async def test_agent_cannot_rewrite_the_policy(self, profiles_path: Path) -> None:
         profiles_path.write_text(BETA_GUARDED_EXECUTION_YAML, encoding="utf-8")
@@ -1215,7 +1214,7 @@ class TestGuardedExecutionIsOperatorOnly:
         )
         await _reload_as("beta")
 
-        guarded = _registry()["beta"].guarded_execution
+        guarded = _registry()["beta"].semantic_request_guards
         assert guarded is not None
         assert guarded.policy == "Edits stay on our own pages."
 
@@ -1224,4 +1223,37 @@ class TestGuardedExecutionIsOperatorOnly:
         result = await _reload_as("alpha")
 
         assert result["reloaded"] is True
-        assert _registry()["beta"].guarded_execution is not None
+        assert _registry()["beta"].semantic_request_guards is not None
+
+
+BETA_RESPONSE_GUARD_YAML = BASE_YAML.replace(
+    "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n",
+    "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n"
+    "    semantic_response_guards:\n"
+    "      policy: Nothing about other customers reaches this agent.\n"
+    "      tools:\n"
+    "        wiki: [edit_page]\n",
+)
+
+
+class TestResponseGuardIsOperatorOnly:
+    """#456: which responses are judged, and by what rule, is not the agent's to reload."""
+
+    async def test_agent_cannot_drop_its_own_response_guard(self, profiles_path: Path) -> None:
+        profiles_path.write_text(BETA_RESPONSE_GUARD_YAML, encoding="utf-8")
+        await _reload_as("alpha")
+
+        profiles_path.write_text(BASE_YAML, encoding="utf-8")
+        result = await _reload_as("beta")
+
+        guarded = _registry()["beta"].semantic_response_guards
+        assert guarded is not None
+        assert guarded.guards("wiki", "edit_page")
+        assert "semantic_response_guards" in result["not_applied"]["operator_only"]
+
+    async def test_operator_reload_applies_it(self, profiles_path: Path) -> None:
+        profiles_path.write_text(BETA_RESPONSE_GUARD_YAML, encoding="utf-8")
+        result = await _reload_as("alpha")
+
+        assert result["reloaded"] is True
+        assert _registry()["beta"].semantic_response_guards is not None

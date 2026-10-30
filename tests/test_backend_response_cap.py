@@ -297,8 +297,9 @@ class TestDeliveredAsTheOversizeRefusal:
 
         import trentina.database as db_mod
         from trentina.database import get_gateway_call_stats
+        from trentina.gateway.names import NAMESPACE_SEP
         from trentina.gateway.profile import AuthConfig, Profile
-        from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
+        from trentina.transports.mcp import route_jsonrpc
 
         profile = Profile(
             short_names=False,
@@ -313,7 +314,7 @@ class TestDeliveredAsTheOversizeRefusal:
 
         db_mod._db = None
         with (
-            patch("trentina.gateway.router.call_backend_tool", side_effect=too_big),
+            patch("trentina.transports.mcp.call_backend_tool", side_effect=too_big),
             patch("trentina.database.get_config") as mock_cfg,
         ):
             mock_cfg.return_value.db_path = str(tmp_path / "audit.db")

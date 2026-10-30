@@ -72,9 +72,8 @@ class TestStandalone:
     def test_unbound_caller_gets_full_scope(self) -> None:
         scope = current_scope()
 
-        assert scope is not None
         assert scope.is_operator
-        assert scope.name is None
+        assert scope.name == "standalone"
         assert scope.label == "standalone"
         assert scope.backends == {}
 
@@ -85,7 +84,8 @@ class TestStandalone:
 class TestLiveGateway:
     def test_unbound_caller_is_refused(self, live_gateway: None) -> None:
         """The refusal that keeps a future ingress from becoming a hole."""
-        assert current_scope() is None
+        with pytest.raises(ScopeError, match="no calling profile bound"):
+            current_scope()
 
         with pytest.raises(ScopeError, match="no calling profile bound"):
             require_caller("quarantine_stats")

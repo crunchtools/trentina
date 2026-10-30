@@ -21,12 +21,12 @@ _SRC = pathlib.Path(__file__).resolve().parent.parent / "src" / "trentina"
 #: lifecycle, NOT a perimeter reverse proxy (which must finish a
 #: ``relay.Operation``). Today they are:
 #:   gateway/relay.py              — the ONE perimeter-proxy lifecycle (Operation.finish)
-#:   gateway/router.py             — the MCP tool-call path
+#:   gateway/audit.py              — the MCP tool-call path (``_audit``, lifted from router in PR3a)
 #:   gateway/matrix_bridge/core.py — the Matrix bridge appservice (bridged events, not the proxy)
 #:   gateway/backend_oauth.py      — a backend OAuth token exchange
 _ALLOWED = {
     "gateway/relay.py",
-    "gateway/router.py",
+    "gateway/audit.py",
     "gateway/matrix_bridge/core.py",
     "gateway/backend_oauth.py",
 }

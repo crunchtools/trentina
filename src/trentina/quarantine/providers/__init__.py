@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
-
-from pydantic import SecretStr
+from typing import TYPE_CHECKING
 
 from ...config import get_config
 from ...errors import QuarantineAgentError
 from .base import Provider, ProviderResult
+
+if TYPE_CHECKING:
+    from pydantic import SecretStr
+
+    from ...gateway.profile import Profile
 
 logger = logging.getLogger(__name__)
 
@@ -154,17 +158,16 @@ def get_provider(
     return provider
 
 
-def get_fallback_providers(profile: object = None) -> list[tuple[str, SecretStr | None]]:
+def get_fallback_providers(profile: Profile) -> list[tuple[str, SecretStr | None]]:
     """Resolve the configured fallback chain to (provider_name, api_key) pairs.
 
-    Skips providers that have no API key in the current context — a warning
-    is logged so operators know the chain is shorter than configured.
-
-    Gateway mode requires a per-profile key and skips a provider without one.
-    Standalone mode falls back to the matching global config key.
+    Skips a provider the calling profile has no key for — a warning says the
+    chain is shorter than configured — except ollama, which is keyless.
+    Standalone the profile is the synthesized operator, whose ``llm_keys``
+    mirror the environment, so the chain is the global one it always was.
 
     Args:
-        profile: Gateway profile object (has .llm_keys dict). None in standalone mode.
+        profile: The calling profile (its ``llm_keys`` dict holds the keys).
 
     Returns:
         List of (provider_name, api_key_or_none) tuples ready for _call_gemini().
@@ -176,25 +179,14 @@ def get_fallback_providers(profile: object = None) -> list[tuple[str, SecretStr 
         if name == "ollama":
             chain.append((name, None))
             continue
-
-        if profile is not None:
-            llm_keys = getattr(profile, "llm_keys", {})
-            if name not in llm_keys:
-                logger.warning(
-                    "provider fallback: skipping %r — no key in profile %r",
-                    name,
-                    getattr(profile, "name", "?"),
-                )
-                continue
-            chain.append((name, llm_keys[name].api_key))
-        else:
-            key_str = config.provider_key(name)
-            if not key_str:
-                logger.warning(
-                    "provider fallback: skipping %r — no global API key configured", name
-                )
-                continue
-            chain.append((name, SecretStr(key_str)))
+        if name not in profile.llm_keys:
+            logger.warning(
+                "provider fallback: skipping %r — no key in profile %r",
+                name,
+                profile.name,
+            )
+            continue
+        chain.append((name, profile.llm_keys[name].api_key))
 
     return chain
 

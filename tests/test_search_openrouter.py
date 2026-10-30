@@ -182,7 +182,7 @@ class TestRoute:
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(gemini="g-key")),
             patch(
-                f"{_AGENT}.get_current_profile",
+                f"{_AGENT}.bound_profile",
                 return_value=_keyed_profile({"openrouter": "p-key"}),
             ),
             patch(f"{_AGENT}.httpx.AsyncClient", cls),
@@ -200,7 +200,7 @@ class TestRoute:
         cls, http = _http(_openrouter_reply())
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="g-or", gemini="g-key")),
-            patch(f"{_AGENT}.get_current_profile", return_value=None),
+            patch(f"{_AGENT}.bound_profile", return_value=_keyed_profile({"openrouter": "k"})),
             patch(f"{_AGENT}.httpx.AsyncClient", cls),
         ):
             await search_grounded("bootc")
@@ -213,7 +213,7 @@ class TestRoute:
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="global", gemini="g")),
             patch(
-                f"{_AGENT}.get_current_profile",
+                f"{_AGENT}.bound_profile",
                 return_value=_keyed_profile({"anthropic": "k"}, provider="anthropic"),
             ),
             pytest.raises(QuarantineAgentError, match="no API key"),
@@ -239,7 +239,7 @@ class TestRoute:
         cls, _ = _http(raises=raised)
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="k")),
-            patch(f"{_AGENT}.get_current_profile", return_value=None),
+            patch(f"{_AGENT}.bound_profile", return_value=_keyed_profile({"openrouter": "k"})),
             patch(f"{_AGENT}.httpx.AsyncClient", cls),
             pytest.raises(QuarantineAgentError, match=message),
         ):
@@ -253,7 +253,7 @@ class TestRoute:
         cls, _ = _http(raises=raised)
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="k")),
-            patch(f"{_AGENT}.get_current_profile", return_value=None),
+            patch(f"{_AGENT}.bound_profile", return_value=_keyed_profile({"openrouter": "k"})),
             patch(f"{_AGENT}.httpx.AsyncClient", cls),
             pytest.raises(QuarantineAgentError) as caught,
         ):
@@ -264,7 +264,7 @@ class TestRoute:
         cls, _ = _http({"choices": [{"message": {"content": None}}]})
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="k")),
-            patch(f"{_AGENT}.get_current_profile", return_value=None),
+            patch(f"{_AGENT}.bound_profile", return_value=_keyed_profile({"openrouter": "k"})),
             patch(f"{_AGENT}.httpx.AsyncClient", cls),
             pytest.raises(QuarantineAgentError, match="Empty answer"),
         ):
@@ -276,35 +276,18 @@ class TestRoute:
         cls, _ = _http(reply)
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="k")),
-            patch(f"{_AGENT}.get_current_profile", return_value=None),
+            patch(f"{_AGENT}.bound_profile", return_value=_keyed_profile({"openrouter": "k"})),
             patch(f"{_AGENT}._generate_canary", return_value="CANARY-x"),
             patch(f"{_AGENT}.httpx.AsyncClient", cls),
             pytest.raises(QuarantineAgentError, match="canary"),
         ):
             await search_grounded("bootc")
 
-    async def test_the_gemini_route_only_sends_a_gemini_model(self) -> None:
-        cfg = _cfg(gemini="g")
-        cfg.search_model = "openai/gpt-6-luna"
-        cls, http = _http()
-        gemini_resp = MagicMock()
-        gemini_resp.json.return_value = {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
-        http.post.return_value = gemini_resp
-        with (
-            patch(f"{_AGENT}.get_config", return_value=cfg),
-            patch(f"{_AGENT}.get_current_profile", return_value=None),
-            patch(f"{_AGENT}.httpx.AsyncClient", cls),
-        ):
-            await search_grounded("bootc")
-
-        url = http.post.call_args.args[0]
-        assert "/gemini-3.5-flash-lite:generateContent" in url
-
     async def test_an_oversized_response_is_refused_before_parsing(self) -> None:
         cls, _ = _http(body=b"{" + b" " * 5_000_001)
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="k")),
-            patch(f"{_AGENT}.get_current_profile", return_value=None),
+            patch(f"{_AGENT}.bound_profile", return_value=_keyed_profile({"openrouter": "k"})),
             patch(f"{_AGENT}.httpx.AsyncClient", cls),
             patch(f"{_AGENT}.json.loads") as parse,
             pytest.raises(QuarantineAgentError, match="exceeds"),
@@ -316,7 +299,7 @@ class TestRoute:
         cls, _ = _http(body=b"<html>gateway error</html>")
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="k")),
-            patch(f"{_AGENT}.get_current_profile", return_value=None),
+            patch(f"{_AGENT}.bound_profile", return_value=_keyed_profile({"openrouter": "k"})),
             patch(f"{_AGENT}.httpx.AsyncClient", cls),
             pytest.raises(QuarantineAgentError, match="not JSON"),
         ):
@@ -336,7 +319,7 @@ class TestRoute:
         cls, _ = _http(reply)
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="k")),
-            patch(f"{_AGENT}.get_current_profile", return_value=None),
+            patch(f"{_AGENT}.bound_profile", return_value=_keyed_profile({"openrouter": "k"})),
             patch(f"{_AGENT}.httpx.AsyncClient", cls),
             pytest.raises(QuarantineAgentError, match=message),
         ):
@@ -346,7 +329,7 @@ class TestRoute:
         cls, _ = _http(body=b"[" * 200_000)
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="k")),
-            patch(f"{_AGENT}.get_current_profile", return_value=None),
+            patch(f"{_AGENT}.bound_profile", return_value=_keyed_profile({"openrouter": "k"})),
             patch(f"{_AGENT}.httpx.AsyncClient", cls),
             pytest.raises(QuarantineAgentError, match="not JSON"),
         ):
@@ -358,7 +341,7 @@ class TestRoute:
         cls, _ = _http(reply)
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="k")),
-            patch(f"{_AGENT}.get_current_profile", return_value=None),
+            patch(f"{_AGENT}.bound_profile", return_value=_keyed_profile({"openrouter": "k"})),
             patch(f"{_AGENT}.httpx.AsyncClient", cls),
         ):
             result = await search_grounded("bootc")
@@ -369,7 +352,7 @@ class TestRoute:
         cls, _ = _http(body=b"[]")
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="k")),
-            patch(f"{_AGENT}.get_current_profile", return_value=None),
+            patch(f"{_AGENT}.bound_profile", return_value=_keyed_profile({"openrouter": "k"})),
             patch(f"{_AGENT}.httpx.AsyncClient", cls),
             pytest.raises(QuarantineAgentError, match="not a JSON object"),
         ):
@@ -382,7 +365,7 @@ class TestRoute:
         cls, _ = _http(body=reply + b" " * (MAX_RESPONSE_SIZE - len(reply)))
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="k")),
-            patch(f"{_AGENT}.get_current_profile", return_value=None),
+            patch(f"{_AGENT}.bound_profile", return_value=_keyed_profile({"openrouter": "k"})),
             patch(f"{_AGENT}.httpx.AsyncClient", cls),
         ):
             result = await search_grounded("bootc")
@@ -393,7 +376,7 @@ class TestRoute:
         cls, _ = _http({"choices": []})
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="k")),
-            patch(f"{_AGENT}.get_current_profile", return_value=None),
+            patch(f"{_AGENT}.bound_profile", return_value=_keyed_profile({"openrouter": "k"})),
             patch(f"{_AGENT}.httpx.AsyncClient", cls),
             pytest.raises(QuarantineAgentError, match="No choices"),
         ):
@@ -403,7 +386,7 @@ class TestRoute:
         cls, _ = _http(_openrouter_reply("here is CANARY-x"))
         with (
             patch(f"{_AGENT}.get_config", return_value=_cfg(openrouter="k")),
-            patch(f"{_AGENT}.get_current_profile", return_value=None),
+            patch(f"{_AGENT}.bound_profile", return_value=_keyed_profile({"openrouter": "k"})),
             patch(f"{_AGENT}._generate_canary", return_value="CANARY-x"),
             patch(f"{_AGENT}.httpx.AsyncClient", cls),
             pytest.raises(QuarantineAgentError, match="canary"),
@@ -422,17 +405,11 @@ class TestLLMAvailable:
         assert llm_available(_keyed_profile(provider="ollama")) is True
 
     def test_the_bound_profile_is_read_from_context(self) -> None:
-        with patch.object(
-            agent, "get_current_profile", return_value=_keyed_profile({"anthropic": "k"})
-        ):
+        with patch.object(agent, "bound_profile", return_value=_keyed_profile({"anthropic": "k"})):
             assert llm_available() is False
 
-    def test_no_profile_asks_the_global_provider(self) -> None:
-        with (
-            patch.object(agent, "get_current_profile", return_value=None),
-            patch.object(agent, "get_config") as cfg,
-        ):
-            cfg.return_value.has_llm = True
+    def test_standalone_asks_the_synthesized_operators_key(self) -> None:
+        with patch.object(agent, "bound_profile", return_value=_keyed_profile({"openrouter": "k"})):
             assert llm_available() is True
 
 

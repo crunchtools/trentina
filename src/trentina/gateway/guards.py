@@ -2,10 +2,10 @@
 
 Two symmetric applications of one evaluator:
 
-- **Parameter guards** inspect the *arguments* of a ``tools/call``, after the
-  tool-name allowlist and before the backend is contacted.
-- **Response guards** inspect the backend's *result*, after the call returns
-  and before anything is reduced, scanned or relayed to the agent.
+- **Literal request guards** inspect the *arguments* of a ``tools/call``, after
+  the tool-name allowlist and before the backend is contacted.
+- **Literal response guards** inspect the backend's *result*, after the call
+  returns and before anything is reduced, scanned or relayed to the agent.
 
 Both express the same constraint — a value must match at least one ``allow``
 pattern and must not match any ``deny`` pattern, the same semantics as
@@ -52,23 +52,23 @@ def evaluate_constraint(value: str, constraint: ParameterConstraint) -> str | No
     return None
 
 
-def check_parameter_guards(
+def check_request_guards(
     tool_name: str,
     arguments: dict[str, Any],
     backend: Backend,
 ) -> str | None:
-    """Validate tool arguments against the backend's parameter guards.
+    """Validate tool arguments against the backend's request guards.
 
     Args:
         tool_name: The un-namespaced tool name (e.g. ``send_gmail_message``).
         arguments: The arguments dict from the JSON-RPC ``tools/call`` params.
-        backend: Backend config carrying ``parameter_guards``.
+        backend: Backend config carrying ``literal_request_guards``.
 
     Returns:
         ``None`` if all checks pass, or a terse error message on the first
         violation. Error messages never include the rejected value.
     """
-    tool_guards = backend.parameter_guards.get(tool_name)
+    tool_guards = backend.literal_request_guards.get(tool_name)
     if not tool_guards:
         return None
 
@@ -96,7 +96,7 @@ def check_response_guards(
         tool_name: The un-namespaced tool name.
         content_blocks: The result's content blocks, as returned by the backend.
         structured_content: The result's ``structuredContent``, if any.
-        backend: Backend config carrying ``response_guards``.
+        backend: Backend config carrying ``literal_response_guards``.
 
     Returns:
         ``None`` if all checks pass, or a terse error message on the first
@@ -104,7 +104,7 @@ def check_response_guards(
         an agent that could read back what tripped the guard could binary-search
         the material the guard exists to withhold.
     """
-    tool_guards = backend.response_guards.get(tool_name)
+    tool_guards = backend.literal_response_guards.get(tool_name)
     if not tool_guards:
         return None
 
@@ -134,7 +134,7 @@ def _response_text(content_blocks: list[Any] | None) -> str:
     """Every text string in a result's content blocks, newline-joined.
 
     Mirrors the defense pipeline's own reading of a result (see
-    ``ingress_defense._collect_block``): ``text`` blocks and the text form of
+    ``collect._collect_block``): ``text`` blocks and the text form of
     an embedded ``resource``. Image and blob blocks carry no string to match,
     so a guard cannot speak about them — ``deny: ["*"]`` on a result that is
     purely binary still blocks, because the joined text is the empty string

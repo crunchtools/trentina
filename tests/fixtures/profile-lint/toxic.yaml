@@ -22,7 +22,7 @@ profiles:
       slack:
         url: "http://mcp-slack-c:8000/mcp"
         tools_allow: ["send_message"]
-        parameter_guards:
+        literal_request_guards:
           send_message:
             channel: {allow: ["*"]}
   guarded:
@@ -32,7 +32,7 @@ profiles:
       web:
         url: "internal://web"
         tools_allow: ["*"]
-        parameter_guards:
+        literal_request_guards:
           fetch_tool:
             url: {allow: ["https://docs.example.com/*"]}
       gmail:

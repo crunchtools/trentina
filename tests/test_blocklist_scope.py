@@ -3,7 +3,7 @@
 It was keyed on the source alone and its refusal said ``on the blocklist
 since {detected_at}``. Profile A getting ``?slot=N`` flagged was then a bit
 profile B could read, with A's timestamp, before any network I/O. These run
-the real fetch producer, ``judged.py`` and the SQLite blocklist, with only the
+the real fetch producer, ``scope``/``internal_edge`` and the SQLite blocklist, with only the
 page and the model calls faked.
 """
 
@@ -21,6 +21,7 @@ from pydantic import SecretStr
 from trentina import database
 from trentina.errors import BlockedSourceError
 from trentina.gateway.context import profile_context
+from trentina.gateway.errors import ScopeError
 from trentina.gateway.loader import load_profiles, register_active_config
 from trentina.gateway.profile import AuthConfig, DefenseConfig, Profile
 from trentina.modes import Mode
@@ -118,10 +119,10 @@ async def _fetch_standalone(env: Path, *, hostile: bool) -> Any:
 
 
 async def test_standalone_reads_its_own_null_profile_rows(env: Path) -> None:
-    """No gateway registered: ``current_scope`` is the standalone operator, not None."""
+    """No gateway registered: ``current_scope`` is the standalone operator profile."""
     await _fetch_standalone(env, hostile=True)
     row = database.get_db().execute("SELECT profile FROM detections").fetchone()
-    assert row["profile"] is None
+    assert row["profile"] == "standalone"
     assert await _fetch_standalone(env, hostile=False) == "on the blocklist"
 
 
@@ -132,10 +133,15 @@ async def test_the_operator_reads_every_profiles_rows(env: Path) -> None:
     assert "on the blocklist" in await _fetch(env, operator, Mode.BLOCK, hostile=False)
 
 
-async def test_an_unbound_caller_on_a_live_gateway_reads_nothing_and_writes_null(
+async def test_an_unbound_caller_on_a_live_gateway_is_refused(
     env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A path nobody designed neither reads a profile's blocklist nor writes to one."""
+    """A path nobody designed is refused outright (fail closed), not served.
+
+    Before 3.0.0 an unbound caller under a live gateway read nothing and wrote a
+    NULL-profile row; now ``current_scope`` refuses it, so it never reaches the
+    blocklist at all — a stronger answer to "whose is this?".
+    """
     await _fetch(env, ALPHA, Mode.BLOCK, hostile=True)
     monkeypatch.setenv("TEST_ALPHA_TOKEN", "x")
     config = env / "profiles.yaml"
@@ -146,9 +152,8 @@ async def test_an_unbound_caller_on_a_live_gateway_reads_nothing_and_writes_null
     )
     register_active_config(config, load_profiles(config), {})
 
-    assert isinstance(await _fetch_standalone(env, hostile=False), dict)
-    await _fetch_standalone(env, hostile=True)
-    rows = database.get_db().execute("SELECT profile FROM detections ORDER BY id").fetchall()
-    assert [r["profile"] for r in rows] == ["alpha", None]
-    assert not database.is_blocked(URL, "beta")
-    assert database.is_blocked(URL, None, gateway_wide=True)
+    with (
+        layers(env, classification=BENIGN),
+        pytest.raises(ScopeError, match="no calling profile bound"),
+    ):
+        await fetch_page(URL, Mode.BLOCK)

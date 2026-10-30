@@ -54,6 +54,7 @@ from collections import Counter
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from ..gateway.aggregate import invalidate_profile_cache
 from ..gateway.compress import retrigger_compression
 from ..gateway.errors import ScopeError
 from ..gateway.llm_proxy import validate_profile_llm_keys
@@ -63,7 +64,6 @@ from ..gateway.loader import (
     replace_active_config,
 )
 from ..gateway.profile import PREPROCESS_AGENT_FIELDS
-from ..gateway.router import invalidate_profile_cache
 from ..gateway.scope import CallerScope, require_caller
 from ..gateway.service import find_operator, judge_of, log_service_identity
 from ..gateway.sessions import session_registry
@@ -109,7 +109,7 @@ def _guard_delta(
     the fact, and the file is the authority on what it changed to.
 
     ``noun`` names what a guard is keyed by, since both guard maps have this
-    shape but not the same subject: parameter guards key on a request
+    shape but not the same subject: request guards key on a request
     parameter, response guards on a result field.
     """
     delta: dict[str, dict[str, list[str]]] = {}
@@ -133,14 +133,22 @@ def _backend_delta(before: Backend, after: Backend) -> dict[str, Any]:
     candidate: dict[str, Any] = {
         "tools_allow": _glob_delta(before.tools_allow, after.tools_allow),
         "tools_deny": _glob_delta(before.tools_deny, after.tools_deny),
-        "parameter_guards": _guard_delta(before.parameter_guards, after.parameter_guards),
-        "response_guards": _guard_delta(
-            before.response_guards, after.response_guards, noun="fields"
+        "literal_request_guards": _guard_delta(
+            before.literal_request_guards, after.literal_request_guards
+        ),
+        "literal_response_guards": _guard_delta(
+            before.literal_response_guards, after.literal_response_guards, noun="fields"
         ),
         "fields_changed": sorted(
             name
             for name in type(before).model_fields
-            if name not in ("tools_allow", "tools_deny", "parameter_guards", "response_guards")
+            if name
+            not in (
+                "tools_allow",
+                "tools_deny",
+                "literal_request_guards",
+                "literal_response_guards",
+            )
             and getattr(before, name) != getattr(after, name)
         ),
     }
@@ -405,14 +413,22 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
         if old != getattr(after.defense, field_name):
             setattr(after.defense, field_name, old)
             held.append(f"defense.{field_name}")
-    # Five blocks are perimeter end to end, so each is held whole: the bridge's
+    # Six blocks are perimeter end to end, so each is held whole: the bridge's
     # plaintext side (#162); where the agent's client may be tunnelled (#442);
     # which repositories and branches it may push to (#453); which HTTP
-    # destinations, methods and paths it may reach (#511); and which calls are
-    # judged before they leave (#456). llm_keys is not held and git/egress_http
+    # destinations, methods and paths it may reach (#511); which calls are
+    # judged before they leave, and which responses are judged before they are
+    # delivered (#456). llm_keys is not held and git/egress_http
     # are: a key buys model calls, while one more pattern is one more place a
     # talked-round agent can send to.
-    for block in ("matrix_bridge", "client_egress", "git", "egress_http", "guarded_execution"):
+    for block in (
+        "matrix_bridge",
+        "client_egress",
+        "git",
+        "egress_http",
+        "semantic_request_guards",
+        "semantic_response_guards",
+    ):
         if getattr(after, block) != getattr(before, block):
             setattr(after, block, getattr(before, block))
             held.append(block)

@@ -252,7 +252,7 @@ async def read_part_tool(
         ``expires_in_seconds``.
     """
     # Behind the gateway the router answers this call itself and it never
-    # arrives here (``router._read_part``, #340). Standalone nothing is cut
+    # arrives here (``parts._read_part``, #340). Standalone nothing is cut
     # and nothing is held, so there is never a part to read.
     del handle, part, trentina_mode
     return {"held": [], "note": "Responses are delivered in parts only behind the gateway."}
@@ -380,7 +380,7 @@ async def reload_profiles_tool() -> dict[str, Any]:
     loaded at startup. Validates the whole file first: if it does not parse,
     the running config is kept and the error is returned.
 
-    Applies live: backends, tools_allow/tools_deny, parameter guards, defense
+    Applies live: backends, tools_allow/tools_deny, request guards, defense
     settings, per-profile llm_keys, bearer tokens, and session limits. Needs a
     restart: the llm_providers and matrix sections, and adding an alert or
     matrix ingress where no route was registered at startup — the result names

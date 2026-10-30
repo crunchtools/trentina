@@ -1,16 +1,18 @@
 """One path from a produced payload to a tool response, for every family and mode.
 
-Until 0.31.0 each family carried its own copy: ``_fetch_judged``,
+Until 0.31.0 each internal-tool family carried its own copy: ``_fetch_judged``,
 ``_read_judged``, ``_content_judged``, ``_search_judged``, and four separate
 ``clean_*`` bodies (redact was named clean until 0.35.0). The copies drifted
 in exactly the way copies do. redact ran a different pipeline from block and
-flag; search built its own recipe,
-blocked on a private ``total_l1 >= 3`` rule, and never called L3 at all.
+flag; search built its own recipe, blocked on a private ``total_l1 >= 3`` rule,
+and never called L3 at all.
 
-A producer now does only what only it can: fetch the URL, read the file,
-list the directory, hash the inline text, run the grounded search — and the
-checks that need what it knows (the blocklist, the allowlist, HTTP status
-advisories). Everything after the payload exists is here, once.
+A producer now does only what only it can: fetch the URL, read the file, list
+the directory, hash the inline text, run the grounded search — and the checks
+that need what it knows (the blocklist, the allowlist, HTTP status advisories).
+Everything after the payload exists is here, once. The scope questions a
+producer asks first (the blocklist, the honeypot) live beside the rest of the
+scope logic in ``scope``; this module is the internal-tool response edge.
 """
 
 from __future__ import annotations
@@ -22,24 +24,24 @@ from typing import TYPE_CHECKING, Any, assert_never
 
 from ..config import get_config
 from ..core import Decision, Gated, Posture, identity, refusal_of
-from ..database import is_blocked, record_capture
+from ..database import record_capture
 from ..dbus_interface import emit_request_event
-from ..defense import DefenseVerdict, Provenance, defend, layer_verdicts
+from ..defense import DefenseVerdict, Provenance, layer_verdicts
 from ..errors import BlockedSourceError
-from ..gateway import paging
-from ..gateway.context import current_call, get_current_parts
-from ..gateway.scope import current_scope
 from ..l1.pipeline import run_l1
-from ..modes import BLOCKLIST_REASON, Mode, current_policy, refusal_body
+from ..modes import Mode, current_policy
 from ..report import Disposition, LayerState, build_report
 from ..warning import build_warning
+from . import paging
+from .context import current_call, get_current_parts
+from .scope import _caller, _caller_defense, honeypot_caller
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from ..core.dispose import Disposition as Disposed
-    from ..gateway.profile import DefenseConfig
     from ..l1.pipeline import PipelineResult
+    from .profile import DefenseConfig
 
 
 PAGED_FAMILIES = frozenset({"fetch", "read", "content"})
@@ -48,71 +50,6 @@ is delivered in parts when it is too large to judge in one call (#446). A
 directory listing and a search answer are not: neither comes near the size."""
 
 READ_NEXT_KEY = "read_next"
-
-
-def blocklisted(source: str, mode: Mode) -> BlockedSourceError:
-    """block and flag on a blocklisted source, refused before any bytes arrive.
-
-    Offers redact when the policy allows it, because redact is the mode that
-    proceeds on a blocklisted source. The body is constant (#263): it said
-    ``since {detected_at}`` until then, which handed a caller another
-    profile's timestamp. Nothing in it now depends on anything but the
-    caller's own source and mode policy.
-    """
-    return BlockedSourceError(
-        source,
-        BLOCKLIST_REASON,
-        refusal=refusal_body(BLOCKLIST_REASON, mode, flagged_by="blocklist"),
-    )
-
-
-def _caller() -> tuple[str | None, bool]:
-    """The calling profile's name, and whether it reads the gateway-wide blocklist.
-
-    Operator and standalone read every row; an agent reads its own. A live
-    gateway with no bound caller reads nothing and writes a NULL profile,
-    which only an operator sees: no path nobody designed can publish to an
-    agent's blocklist.
-    """
-    scope = current_scope()
-    if scope is None:
-        return None, False
-    return scope.name, scope.is_operator
-
-
-def _caller_defense() -> DefenseConfig | None:
-    """The calling profile's defense policy, or None standalone or unbound."""
-    scope = current_scope()
-    return scope.profile.defense if scope is not None and scope.profile is not None else None
-
-
-def honeypot_caller() -> str | None:
-    """The calling profile's name when it is a honeypot (#357), else None.
-
-    Every place a tool would tell its caller what the layers made of
-    something asks this first: a honeypot is told nothing, and what it was
-    sent is kept instead.
-    """
-    scope = current_scope()
-    if scope is None or scope.profile is None or not scope.profile.honeypot:
-        return None
-    return scope.profile.name
-
-
-def check_blocklist(source: str, mode: Mode) -> bool:
-    """Refuse block and flag on a source the caller's blocklist holds.
-
-    Returns:
-        Whether it is blocklisted, for redact, which proceeds and says so.
-
-    Raises:
-        BlockedSourceError: block or flag, and the source is on it.
-    """
-    profile, gateway_wide = _caller()
-    blocked = is_blocked(source, profile, gateway_wide=gateway_wide)
-    if blocked and mode is not Mode.REDACT:
-        raise blocklisted(source, mode)
-    return blocked
 
 
 def l1_metadata(pipeline: PipelineResult) -> dict[str, Any]:
@@ -200,11 +137,12 @@ class _Call:
 class JudgeScan:
     """An internal tool's produced payload, judged but not yet disposed.
 
-    ``produce_judgement`` builds this (hold, defend); the orchestrator calls
-    ``gate`` on it and hands the result to ``dispose_judgement``. The split
-    keeps the one ``gate()`` call in the orchestration layer (Trentina 3.0
-    Phase 4) while the paging hold, the ``_Call`` accounting and the family
-    renderers stay here.
+    ``prepare_judgement`` does the pre-defend half (hold, the ``_Call``
+    accounting); the orchestrator runs the one ``defend`` call, builds this,
+    calls ``gate`` on it and hands the result to ``dispose_judgement``. That
+    keeps both the ``defend()`` and the ``gate()`` call in the orchestration
+    layer (Trentina 3.0 Phase 4/7) while the paging hold, the ``_Call``
+    accounting and the family renderers stay here.
     """
 
     call: _Call
@@ -216,7 +154,34 @@ class JudgeScan:
     redact_extras: Mapping[str, Any] | None
 
 
-async def produce_judgement(
+@dataclass(frozen=True)
+class PreparedJudgement:
+    """The pre-defend half of an internal tool's edge (Trentina 3.0 Phase 7).
+
+    ``prepare_judgement`` builds this — the paging hold, the ``_Call``
+    accounting, the ``Posture`` and the exact ``defend`` arguments that depend
+    on the calling profile (its ``defense`` policy and the detection-row
+    attribution). The orchestrator runs the one ``defend`` call from it and
+    assembles the ``JudgeScan``. Lifting the ``defend`` call out of this module
+    is what drops ``gateway/internal_edge.py`` from ``TestDefendOwnership.ALLOWED``:
+    the internal-tool scan primitive no longer reaches the layers itself; the
+    orchestration layer does.
+    """
+
+    document: str
+    call: _Call
+    posture: Posture
+    paged: paging.Paged | None
+    precomputed_l1: PipelineResult | None
+    l3_context: str | None
+    defense: DefenseConfig | None
+    attribution: dict[str, Any]
+    original: Any
+    extras: Mapping[str, Any] | None
+    redact_extras: Mapping[str, Any] | None
+
+
+async def prepare_judgement(
     document: str,
     *,
     mode: Mode,
@@ -235,14 +200,17 @@ async def produce_judgement(
     delivered: Any = None,
     extras: Mapping[str, Any] | None = None,
     redact_extras: Mapping[str, Any] | None = None,
-) -> JudgeScan:
-    """Judge ``document`` with all three layers — the pre-gate half of the edge.
+) -> PreparedJudgement:
+    """Build the pre-defend half of an internal tool's edge — everything but ``defend``.
 
     Holds an over-large payload (part 1 is judged, the rest held), builds the
-    ``_Call`` accounting and the ``Posture``, and runs ``defend``. Returns a
-    ``JudgeScan`` for the orchestrator to ``gate`` and hand to
-    ``dispose_judgement``; it makes no ``gate()`` call and raises nothing on a
-    detection.
+    ``_Call`` accounting and the ``Posture``, and resolves the ``defend``
+    arguments that depend on the calling profile — its ``defense`` policy and
+    the detection-row ``attribution``. Returns a ``PreparedJudgement`` the
+    orchestrator runs the one ``defend`` call from and then assembles the
+    ``JudgeScan`` (Trentina 3.0 Phase 7: the ``defend`` call moved up to the
+    orchestration layer). Makes no ``defend``/``gate`` call and raises nothing
+    on a detection.
 
     Args:
         document: The payload as produced — what every layer reads.
@@ -290,21 +258,16 @@ async def produce_judgement(
         asserted={"blocklisted": blocklisted},
     )
     posture = identity.posture(mode, current_policy(), allowlisted=allowlisted, prompt=prompt)
-    verdict = await defend(
-        document,
-        source=source,
-        source_type=source_type,
+    return PreparedJudgement(
+        document=document,
+        call=call,
+        posture=posture,
+        paged=paged,
+        precomputed_l1=precomputed_l1,
+        l3_context=l3_context,
         # The caller's own thresholds and judge, as every gateway path passes
         # them (#407): without it the tools were judged on built-in defaults.
         defense=_caller_defense(),
-        provenance=provenance,
-        domain=domain,
-        # flag delivers a partial scan with a warning, so it pays for the
-        # partial scan; block and redact would refuse it. The one definition
-        # of the rule lives on Posture.
-        stop_on_partial=posture.stop_on_partial,
-        precomputed_l1=precomputed_l1,
-        l3_context=l3_context,
         # `blocked` feeds the blocklist. Only a block refusal belongs there:
         # a flag row marked blocked made the NEXT flag of the same page raise.
         # `profile` keys the row (#263): only the caller that was refused is
@@ -315,12 +278,6 @@ async def produce_judgement(
             "blocked": posture.records_block(blocklists=not allowlisted),
             "call_ref": current_call.get() or None,
         },
-    )
-    return JudgeScan(
-        call=call,
-        verdict=verdict,
-        posture=posture,
-        paged=paged,
         original=document if delivered is None else delivered,
         extras=extras,
         redact_extras=redact_extras,
@@ -540,7 +497,7 @@ async def _redact(
         raise call.refuse(verdict, gated.extraction_refusal, posture)
     result = gated.extraction
     if result is None:  # a non-refused redact disposition always carries an extraction
-        raise RuntimeError("judged: redact disposition carried no extraction")
+        raise RuntimeError("internal_edge: redact disposition carried no extraction")
     extraction = result.content
     if "nothing_to_extract" in extraction and _scripted(redact_extras):
         extraction["nothing_to_extract"] += (

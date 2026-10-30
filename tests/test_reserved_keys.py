@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import SecretStr
 
+from trentina.gateway import aggregate
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.reserved import (
@@ -140,7 +141,8 @@ class TestBackendResponse:
     @pytest.fixture
     def router(self, monkeypatch: pytest.MonkeyPatch) -> Any:
         from trentina import orchestrator as orch_mod
-        from trentina.gateway import router
+        from trentina.gateway import audit, parts
+        from trentina.transports import mcp
 
         self.scanned: dict[str, Any] = {}
         self.decision = _Decision()
@@ -151,11 +153,11 @@ class TestBackendResponse:
 
         # The non-paged response edge reaches the scan as
         # ``orchestrator.scan_tool_response`` (via ``judge_response``); the paged
-        # path as ``router.scan_tool_response`` — patch both (each imported the name).
-        monkeypatch.setattr(router, "scan_tool_response", fake_scan)
+        # path as ``parts.scan_tool_response`` — patch both (each imported the name).
+        monkeypatch.setattr(parts, "scan_tool_response", fake_scan)
         monkeypatch.setattr(orch_mod, "scan_tool_response", fake_scan)
-        monkeypatch.setattr(router, "_audit", lambda *a, **k: None)
-        return router
+        monkeypatch.setattr(audit, "_audit", lambda *a, **k: None)
+        return mcp
 
     async def _deliver(
         self, router: Any, call: Any, normalized: dict[str, str] | None = None
@@ -165,6 +167,7 @@ class TestBackendResponse:
         # router._deliver exercised, end to end. When ``normalized`` is given, the
         # request-edge normalization is patched to report those dropped args, so
         # the delivered warning carries them (as a real dropped optional would).
+        from trentina.gateway import request_edge
         from trentina.gateway.args import Normalized
 
         profile = _profile()
@@ -176,12 +179,12 @@ class TestBackendResponse:
         }
         with contextlib.ExitStack() as stack:
             stack.enter_context(
-                patch.object(router, "call_backend_tool", AsyncMock(return_value=call))
+                patch("trentina.transports.mcp.call_backend_tool", AsyncMock(return_value=call))
             )
             if normalized is not None:
                 stack.enter_context(
                     patch.object(
-                        router,
+                        request_edge,
                         "_normalize_arguments",
                         lambda *a, **k: Normalized(arguments={}, dropped=dict(normalized)),
                     )
@@ -242,7 +245,7 @@ class TestBackendResponse:
             "inputSchema": {"type": "object"},
             "annotations": {WARNING_KEY: FORGED},
         }
-        out = router._backend_tool_entry(tool, profile.backends["remote"])
+        out = aggregate._backend_tool_entry(tool, profile.backends["remote"])
         assert out["annotations"] == {}
         assert tool["annotations"] == {WARNING_KEY: FORGED}, "the cached entry is untouched"
 

@@ -17,10 +17,10 @@ packages. Three categories are allowed through, each for a stated reason:
 * Types (`ClassifierResult`) — annotations, no behaviour.
 * `quarantine_redact` — redact mode's turns 2 and 3 (extract, verify), which
   run AFTER defend() has detected. They are the mode's delivery, not a second
-  detection path; tools reach them only through tools/judged.py.
+  detection path; tools reach them only through gateway/internal_edge.py.
 
 If you are here because this test failed: you probably want `defend()`,
-`defend_json()`, or `tools.judged.judge_and_deliver()`.
+`defend_json()`, or `orchestrator.judge_and_deliver()`.
 """
 
 from __future__ import annotations
@@ -197,23 +197,23 @@ class TestDefendOwnership:
     — matrix proxy + bridge, alert, the gatekeeper argument guard, egress, llm,
     fetch's error bodies — onto an ``orchestrator.judge_*`` function, so a face
     now hands content to the orchestrator and never calls ``defend`` itself.
-    Three modules may import it, each reached only through the orchestrator:
+    Only the orchestration layer imports it:
 
-    * ``orchestrator.py`` — the orchestration layer: every ``judge_*`` edge.
-    * ``gateway/ingress_defense.py`` — ``scan_response``, the proxied response-edge
-      scan primitive, called ONLY by ``orchestrator.scan_tool_response``.
-    * ``tools/judged.py`` — ``produce_judgement``, the internal-tool scan primitive,
-      called ONLY by ``orchestrator.judge_and_deliver``.
+    * ``orchestrator.py`` — every ``judge_*`` edge. ``judge_and_deliver`` runs
+      the internal tools' one ``defend`` call (``internal_edge`` does the paging
+      hold and the ``_Call`` accounting around it); ``scan_tool_response`` runs
+      the proxied response edge's ``defend`` (``response_edge`` keeps the
+      verdict cache, the binary-only shortcut and the warning build around it);
+      and ``judge_tool_description`` runs the tool-list edge's ``defend``
+      (``tool_list_edge.scan_tool_list`` keeps the cache and single-flight).
+      Trentina 3.0 Phase 7 folded all of them in.
 
     A new direct importer is a face reaching past the orchestrator to the layers
-    — the regression this phase closed. (Folding the two scan primitives' own
-    ``defend`` into the orchestrator is the deferred internal-tools-as-transports
-    work; until then they are the two named exemptions, each verified above to be
-    unreachable except through the orchestrator.)
+    — the regression this phase closed.
     """
 
     ENTRIES = frozenset({"defend", "defend_json", "defend_selection"})
-    ALLOWED = frozenset({"orchestrator.py", "gateway/ingress_defense.py", "tools/judged.py"})
+    ALLOWED = frozenset({"orchestrator.py"})
 
     @classmethod
     def _imports_defend(cls, path: Path) -> bool:

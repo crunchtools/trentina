@@ -18,9 +18,9 @@ from pydantic import SecretStr, ValidationError
 
 from tests.refusal_shape import refused, refused_text
 from trentina.config import get_config
+from trentina.core.stages import IngressDecision
 from trentina.errors import ConfigError, ModeNotPermittedError
 from trentina.gateway.backend import BackendCall
-from trentina.gateway.ingress_defense import IngressDecision
 from trentina.gateway.modes_policy import (
     MODE_PARAM,
     PROMPT_PARAM,
@@ -29,6 +29,7 @@ from trentina.gateway.modes_policy import (
     policy_for,
     strip_params,
 )
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -38,7 +39,6 @@ from trentina.gateway.profile import (
     ParameterConstraint,
     Profile,
 )
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.modes import (
     Gaps,
     Mode,
@@ -46,8 +46,11 @@ from trentina.modes import (
     parse_mode_arg,
     refusal_body,
 )
+from trentina.transports.mcp import route_jsonrpc
 
-ROUTER = "trentina.gateway.router"
+AGGREGATE = "trentina.gateway.aggregate"
+PARTS = "trentina.gateway.parts"
+AUDIT = "trentina.gateway.audit"
 MCP = "trentina.transports.mcp"
 ORCH = "trentina.orchestrator"
 TOOL = {
@@ -136,7 +139,7 @@ class TestResolution:
         p = _profile(
             ["block", "redact"],
             backend={
-                "parameter_guards": {
+                "literal_request_guards": {
                     "jira_get_issue": {MODE_PARAM: ParameterConstraint(allow=["redact"])}
                 }
             },
@@ -309,8 +312,8 @@ class TestRouter:
             },
         }
         with (
-            patch(f"{ROUTER}.list_backend_tools", AsyncMock(return_value=[declared])),
-            patch(f"{ROUTER}.scan_tool_list", side_effect=fake_scan),
+            patch(f"{AGGREGATE}.list_backend_tools", AsyncMock(return_value=[declared])),
+            patch(f"{AGGREGATE}.scan_tool_list", side_effect=fake_scan),
         ):
             resp = await route_jsonrpc(
                 _profile(["block", "redact"]), {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
@@ -334,10 +337,10 @@ class TestRouter:
 
         scan = AsyncMock(return_value=decision or IngressDecision(warning=None))
         with (
-            patch(f"{ROUTER}.call_backend_tool", side_effect=fake_call),
-            patch(f"{ROUTER}.scan_tool_response", scan),
+            patch(f"{MCP}.call_backend_tool", side_effect=fake_call),
+            patch(f"{PARTS}.scan_tool_response", scan),
             patch(f"{ORCH}.scan_tool_response", scan),
-            patch(f"{ROUTER}._audit"),
+            patch(f"{AUDIT}._audit"),
         ):
             resp = await route_jsonrpc(
                 profile,
@@ -412,15 +415,15 @@ class TestRouter:
     async def test_the_question_rides_inside_the_mode(self) -> None:
         scan = AsyncMock(return_value=IngressDecision(warning=None, extraction="x"))
         with (
-            patch(f"{ROUTER}.scan_tool_response", scan),
+            patch(f"{PARTS}.scan_tool_response", scan),
             patch(f"{ORCH}.scan_tool_response", scan),
             patch(
-                f"{ROUTER}.call_backend_tool",
+                f"{MCP}.call_backend_tool",
                 AsyncMock(
                     return_value=BackendCall(content=[], is_error=False, structured_content=None)
                 ),
             ) as backend,
-            patch(f"{ROUTER}._audit"),
+            patch(f"{AUDIT}._audit"),
         ):
             await route_jsonrpc(
                 _profile(["block", "redact"]),
@@ -481,13 +484,13 @@ class TestInternalBackend:
         saved = internal._server
         internal.register_internal_server(mcp)
         try:
-            with patch(f"{ROUTER}._audit"):
+            with patch(f"{AUDIT}._audit"):
                 return await route_jsonrpc(profile, request)
         finally:
             internal._server = saved
 
     async def test_admin_tools_get_no_mode(self) -> None:
-        with patch(f"{ROUTER}.scan_tool_list", new=_identity):
+        with patch(f"{AGGREGATE}.scan_tool_list", new=_identity):
             resp = await self._route(
                 self._profile(["block", "flag", "redact"]),
                 {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
@@ -499,7 +502,7 @@ class TestInternalBackend:
         assert MODE_PARAM not in (stats.get("properties") or {})
 
     async def test_block_only_seat_sees_no_parameter(self) -> None:
-        with patch(f"{ROUTER}.scan_tool_list", new=_identity):
+        with patch(f"{AGGREGATE}.scan_tool_list", new=_identity):
             resp = await self._route(
                 self._profile(["block"]), {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
             )
@@ -573,13 +576,13 @@ async def test_a_mode_guard_refuses_at_call_even_when_the_mode_is_omitted() -> N
     p = _profile(
         ["block", "redact"],
         backend={
-            "parameter_guards": {
+            "literal_request_guards": {
                 "jira_get_issue": {MODE_PARAM: ParameterConstraint(allow=["redact"])}
             }
         },
     )
     call = AsyncMock()
-    with patch(f"{ROUTER}.call_backend_tool", call), patch(f"{ROUTER}._audit"):
+    with patch(f"{MCP}.call_backend_tool", call), patch(f"{AUDIT}._audit"):
         for arguments in ({"issue_key": "X-1"}, {"issue_key": "X-1", MODE_PARAM: "block"}):
             resp = await route_jsonrpc(
                 p,
@@ -599,7 +602,7 @@ async def test_a_mode_guard_refuses_at_call_even_when_the_mode_is_omitted() -> N
 
 def test_a_blocklist_refusal_offers_redact_only_where_allowed() -> None:
     from trentina.gateway.context import profile_context
-    from trentina.tools.judged import blocklisted
+    from trentina.gateway.scope import blocklisted
 
     p = _profile(["block", "flag", "redact"])
     with profile_context(p, ModePolicy((Mode.BLOCK, Mode.FLAG, Mode.REDACT), Mode.BLOCK)):
@@ -720,7 +723,7 @@ class TestInternalModes:
         try:
             with (
                 patch(f"trentina.server.{family_fn}", fake),
-                patch(f"{ROUTER}._audit"),
+                patch(f"{AUDIT}._audit"),
             ):
                 resp = await route_jsonrpc(
                     self._profile(),
@@ -778,7 +781,7 @@ class TestPre035SpellingsAreGone:
             _profile(
                 ["block", "flag", "redact"],
                 backend={
-                    "parameter_guards": {
+                    "literal_request_guards": {
                         "jira_get_issue": {
                             MODE_PARAM: ParameterConstraint(allow=["*"], deny=[value])
                         }
