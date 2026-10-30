@@ -258,11 +258,19 @@ def _field(obj: Any, snake: str, camel: str, default: Any = None) -> Any:
 
 @dataclass(frozen=True)
 class BackendCall:
-    """Outcome of a backend tool invocation."""
+    """Outcome of a backend tool invocation.
+
+    ``meta`` is the response's ``_meta`` object, carried ONLY for a federated
+    backend (#592, B2): a federated upstream Trentina puts its paging marker at
+    ``_meta._trentina_part`` because the SDK drops a root-level ``_trentina_part``
+    before we see it. For every other backend it is None, and the consumer reads
+    only the one key it expects, shape-checked.
+    """
 
     content: list[dict[str, Any]]
     is_error: bool
     structured_content: dict[str, Any] | None
+    meta: dict[str, Any] | None = None
 
 
 _tool_list_cache: dict[str, list[dict[str, Any]]] = {}
@@ -765,10 +773,14 @@ async def call_backend_tool(
         )
     content: list[dict[str, Any]] = [_serialize_content_block(b) for b in raw_content]
     structured = _field(result, "structured_content", "structuredContent")
+    # _meta is carried only for a federated peer (B2): it is where an upstream
+    # Trentina leaves its paging marker, since the SDK drops a root-level one.
+    meta = _field(result, "meta", "_meta") if backend.federated is not None else None
     return BackendCall(
         content=content,
         is_error=bool(_field(result, "is_error", "isError", False)),
         structured_content=structured if isinstance(structured, dict) else None,
+        meta=meta if isinstance(meta, dict) else None,
     )
 
 

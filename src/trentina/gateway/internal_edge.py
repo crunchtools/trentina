@@ -406,11 +406,10 @@ def _first_part(
     if verdict.flagged_by is not None:
         paged.flagged_at, paged.flagged_by = 1, verdict.flagged_by.value
     paged.delivered.add(1)
+    reader = offer.reader if offer is not None else paging.READ_PART_TOOL
     marker = paging.marker(paged, 1)
-    marker[READ_NEXT_KEY] = paging.footer(
-        paged, 1, offer.reader if offer is not None else paging.READ_PART_TOOL
-    )
-    return {paging.PART_KEY: marker, **response}
+    marker[READ_NEXT_KEY] = paging.footer(paged, 1, reader)
+    return paging.with_part_marker(response, marker, reader=reader)
 
 
 def _deliver(

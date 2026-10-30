@@ -1028,3 +1028,10 @@ path = "src/trentina/gateway/discovery.py"
 pattern = "load"
 justification = "discovery.load (per-session tool loading) and edge_key.verify_edge_jwt (JWT verification) share a guard-clause control-flow shape and nothing else; they are unrelated domains and must stay separate."
 classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/transports/mcp.py"
+pattern = "_federated_continuation"
+justification = "_federated_continuation (hold a federated peer's paging and mark part 1) shares only a guard-clauses-then-build control-flow shape with tool_pins, agent and scan helpers in unrelated domains; collapsing them is impossible and the resemblance is structural, not duplicated logic."
+classification = "gourmand_bug"
