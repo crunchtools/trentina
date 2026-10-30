@@ -177,6 +177,31 @@ def test_a_caller_commits_in_the_hash() -> None:
     )
 
 
+class _RowLike:
+    """A stand-in for ``sqlite3.Row``: ``in`` tests the VALUES, ``keys()`` the
+    columns — the exact trap that made ``name in row`` drop the caller."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._d = dict(data)
+
+    def __getitem__(self, key: str) -> Any:
+        return self._d[key]
+
+    def keys(self) -> list[str]:
+        return list(self._d)
+
+    def __contains__(self, value: object) -> bool:
+        return value in self._d.values()
+
+
+def test_row_hash_reads_caller_columns_by_name_not_value() -> None:
+    # A federated row read back as a sqlite3.Row must still commit to its caller;
+    # row_hash finds the columns via keys(), so the _RowLike (which, like a Row,
+    # answers `in` by value) hashes the same as the plain mapping.
+    full = {**dict.fromkeys(audit_chain.CHAIN_FIELDS, "x"), "caller_peer": "p", "caller_sub": "s"}
+    assert audit_chain.row_hash(_RowLike(full)) == audit_chain.row_hash(full)
+
+
 # --- _authorize captures the caller onto request.state (the one hop) ---
 
 
