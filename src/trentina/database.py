@@ -90,6 +90,8 @@ CREATE TABLE IF NOT EXISTS gateway_calls (
     session TEXT,
     call_ref TEXT,
     content_digest TEXT,
+    caller_peer TEXT,
+    caller_sub TEXT,
     detections_digest TEXT,
     prev_hash TEXT,
     row_hash TEXT
@@ -233,6 +235,12 @@ _CALL_COLUMNS = (
     ("session", "TEXT"),
     ("call_ref", "TEXT"),
     ("content_digest", "TEXT"),
+    # The real caller behind a federated request (#592, C2): the peer whose
+    # edge key VERIFIED (the actor) and the sub it ASSERTS. NULL for older rows
+    # and every non-federated call; they enter row_hash only when non-NULL, so
+    # an old row still verifies (audit_chain.row_hash).
+    ("caller_peer", "TEXT"),
+    ("caller_sub", "TEXT"),
     # The hash chain (#472): a digest of the call's detection rows, the
     # previous row's hash, and this row's.
     ("detections_digest", "TEXT"),
@@ -349,11 +357,11 @@ _SWEEP_CAPTURES = (
 _INSERT_CALL = (
     "INSERT INTO gateway_calls (id, timestamp, profile, backend, tool, success, duration_ms, "
     "error_message, outcome, bytes_arrived, bytes_delivered, normalized, destination, "
-    "destination_kind, session, call_ref, content_digest, detections_digest, prev_hash, "
-    "row_hash) VALUES (:id, :timestamp, :profile, :backend, :tool, :success, :duration_ms, "
-    ":error_message, :outcome, :bytes_arrived, :bytes_delivered, :normalized, :destination, "
-    ":destination_kind, :session, :call_ref, :content_digest, :detections_digest, "
-    ":prev_hash, :row_hash)"
+    "destination_kind, session, call_ref, content_digest, caller_peer, caller_sub, "
+    "detections_digest, prev_hash, row_hash) VALUES (:id, :timestamp, :profile, :backend, "
+    ":tool, :success, :duration_ms, :error_message, :outcome, :bytes_arrived, "
+    ":bytes_delivered, :normalized, :destination, :destination_kind, :session, :call_ref, "
+    ":content_digest, :caller_peer, :caller_sub, :detections_digest, :prev_hash, :row_hash)"
 )
 
 
@@ -683,6 +691,8 @@ def record_gateway_call(
     session: str | None = None,
     call_ref: str | None = None,
     content_digest: str | None = None,
+    caller_peer: str | None = None,
+    caller_sub: str | None = None,
 ) -> None:
     """Record a gateway tools/call invocation.
 
@@ -727,6 +737,8 @@ def record_gateway_call(
             "session": session,
             "call_ref": call_ref,
             "content_digest": content_digest,
+            "caller_peer": caller_peer,
+            "caller_sub": caller_sub,
             "detections_digest": audit_chain.detections_digest(db, call_ref),
             "prev_hash": audit_chain.tail_hash(db),
         }

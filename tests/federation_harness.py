@@ -165,17 +165,19 @@ def downstream_profile(
 
 
 @contextlib.asynccontextmanager
-async def serving(app: Starlette) -> AsyncIterator[int]:
+async def serving(app: Starlette, *, lifespan: str = "off") -> AsyncIterator[int]:
     """Serve ``app`` with uvicorn on a free loopback port; yield the port.
 
-    ``lifespan="off"`` keeps warmup from running, and ``log_config=None`` leaves
-    the process's uvicorn loggers as the log-hygiene tests expect them — the same
-    choices ``tests/git_harness.py`` makes.
+    ``lifespan="off"`` keeps a gateway's warmup from running, and
+    ``log_config=None`` leaves the process's uvicorn loggers as the log-hygiene
+    tests expect them — the same choices ``tests/git_harness.py`` makes. A
+    FastMCP backend served here needs ``lifespan="auto"``: its session manager
+    starts in the app's lifespan.
     """
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     port = int(listener.getsockname()[1])
-    config = uvicorn.Config(app, log_config=None, lifespan="off")
+    config = uvicorn.Config(app, log_config=None, lifespan=lifespan)
     server = uvicorn.Server(config)
     task = asyncio.create_task(server.serve(sockets=[listener]))
     try:
@@ -186,6 +188,23 @@ async def serving(app: Starlette) -> AsyncIterator[int]:
         server.should_exit = True
         await task
         listener.close()
+
+
+@contextlib.asynccontextmanager
+async def serving_mcp_backend(
+    tools: list[Callable[..., Any]] | None = None,
+) -> AsyncIterator[int]:
+    """Serve demo tools as a REAL remote MCP backend over loopback (#592, C2).
+
+    A federation ingress offers its own REMOTE backends to a peer, never the
+    gateway's internal surface (that is the directed edge: a peer reaches
+    nothing of the gateway but a paging continuation). So a federated tool is a
+    remote tool behind the upstream's perimeter — this is that backend, which
+    an upstream profile mounts at ``http://127.0.0.1:<port>/mcp``.
+    """
+    app = internal_server(tools).http_app(path="/mcp")
+    async with serving(app, lifespan="auto") as port:
+        yield port
 
 
 @contextlib.contextmanager

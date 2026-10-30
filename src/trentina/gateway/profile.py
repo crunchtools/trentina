@@ -73,6 +73,15 @@ HONEYTOKEN_MIN_CHARS = 16
 #: outside. Named one by one: an admin tool, or one that reads the gateway's
 #: own disk, is not something to hand an agent meant to be hijacked.
 HONEYPOT_READS = frozenset({"fetch_tool", "search_tool", "content_tool"})
+
+# The only internal tool a federation ingress may offer a peer (#592, C2).
+# ``internal://<label>`` is one FastMCP server that serves the whole native
+# surface — the reading tools AND the admin tools (quarantine_stats, cache_flush,
+# reload_profiles, tool_pins, reconnect_backend) — so the rule is an exact-name
+# ALLOWLIST, not a denylist of today's egress tools: a denylist would offer a
+# peer cache_flush, and would federate every internal tool added later. A peer
+# reaches nothing of this gateway but a paging continuation.
+FEDERATION_INTERNAL_ALLOW = frozenset({"read_part_tool"})
 #: Characters: the longest description and canned result a decoy tool may carry.
 DECOY_DESCRIPTION_MAX_CHARS = 1024
 DECOY_RESULT_MAX_CHARS = 4096
@@ -3011,6 +3020,35 @@ class Profile(BaseModel):
         problems += [f"{field} does not apply" for field, is_set in set_anyway.items() if is_set]
         if problems:
             raise ValueError(f"honeypot profile: {'; '.join(problems)}")
+        return self
+
+    @model_validator(mode="after")
+    def a_federation_ingress_is_directed(self) -> Profile:
+        """Refuse a federation ingress that is not a directed edge (#592, C2).
+
+        A profile with ``federation.peers`` offers a declared set to a downstream
+        peer and can never reach past it. The rule is structural, like a
+        honeypot's: the profile is ``role: agent`` — an operator ingress would
+        offer the gateway's admin tools to a peer — and its internal backend's
+        ``tools_allow`` is an exact subset of ``FEDERATION_INTERNAL_ALLOW``
+        (``read_part_tool`` only). A glob such as ``read_*`` or ``*`` is refused
+        as written, before it can match the whole native surface. The offered
+        set itself is the profile's own remote backends; no second list.
+        """
+        if self.federation is None or not self.federation.peers:
+            return self
+        problems: list[str] = []
+        if self.role != "agent":
+            problems.append("role must be agent")
+        for name, backend in self.backends.items():
+            extra = sorted(set(backend.tools_allow) - FEDERATION_INTERNAL_ALLOW)
+            if backend.is_internal and extra:
+                problems.append(
+                    f"internal backend {name!r} may offer a peer only "
+                    f"{sorted(FEDERATION_INTERNAL_ALLOW)}, not {extra}"
+                )
+        if problems:
+            raise ValueError(f"federation ingress: {'; '.join(problems)}")
         return self
 
     def channel_bridges(self) -> dict[str, MatrixBridgeConfig]:
