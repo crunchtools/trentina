@@ -44,11 +44,17 @@ def _keypair() -> tuple[str, str]:
 
 
 def _upstream(public_pem: str) -> Profile:
-    # A federation ingress: peers only, NO static bearer (peers-only authenticates).
+    # A federation ingress: peers only, NO static bearer (peers-only
+    # authenticates). Its offered set is declared (#592, C2's directed edge):
+    # the demo tools and read_part, never the gateway's egress/disk tools.
     return Profile(
         name=UPSTREAM_PROFILE,
         federation=FederationConfig(peers={"breetai": FederationPeer(public_key=public_pem)}),
-        backends={INTERNAL_KEY: Backend(url="internal://web")},
+        backends={
+            INTERNAL_KEY: Backend(
+                url="internal://web", tools_allow=["echo", "emit", "lines", "read_part_tool"]
+            )
+        },
     )
 
 
@@ -136,14 +142,14 @@ class TestReloadHolds:
         before = Profile(
             name="up",
             federation=None,
-            backends={"x": Backend(url="internal://web")},
+            backends={"x": Backend(url="internal://web", tools_allow=["read_part_tool"])},
             auth=AuthConfig(bearer_token_env="A"),
         )
         before.auth.bearer_token = SecretStr("t")
         after = Profile(
             name="up",
             federation=FederationConfig(peers={"breetai": FederationPeer(public_key=pub)}),
-            backends={"x": Backend(url="internal://web")},
+            backends={"x": Backend(url="internal://web", tools_allow=["read_part_tool"])},
             auth=AuthConfig(bearer_token_env="A"),
         )
         after.auth.bearer_token = SecretStr("t")

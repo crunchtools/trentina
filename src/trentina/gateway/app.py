@@ -32,7 +32,7 @@ from ..quarantine.classifier import classifier_status
 from ..transports.jsonrpc import JSONRPC_INTERNAL_ERROR
 from ..transports.mcp import route_jsonrpc
 from .auth import verify_bearer, verify_edge_jwt_header, verify_oauth
-from .context import current_session, session_fingerprint
+from .context import current_caller, current_session, session_fingerprint
 from .errors import (
     AuthError,
     BackendCallError,
@@ -181,7 +181,12 @@ async def _authorize(
     # Only engages when the profile has federation.peers; a bad edge token is
     # fail-closed (401), never a fall-through.
     try:
-        if verify_edge_jwt_header(auth_header, profile) is not None:
+        caller = verify_edge_jwt_header(auth_header, profile)
+        if caller is not None:
+            # The real caller (peer, sub), carried one hop on request.state and
+            # bound to current_caller beside current_session (#592, C2), so the
+            # audit records who really called through the federation profile.
+            request.state.federation_caller = caller
             return None
     except AuthError:
         # The reason is always the fixed literal "invalid edge token", so there
@@ -697,6 +702,10 @@ async def _handle_post(
     # Each request is its own task, so the binding ends with it. The id is a
     # bearer of the session: only its fingerprint reaches the audit.
     current_session.set(session_fingerprint(session_id))
+    # Unconditionally, from this request's own state (#592, C2): a federated
+    # request carries (peer, sub); every other — including a static-bearer call
+    # to a federation profile — lands None, never a value left by a reused task.
+    current_caller.set(getattr(request.state, "federation_caller", None))
     try:
         response = await route_jsonrpc(profile, body)
     except ProfileNotFoundError:

@@ -133,9 +133,21 @@ def digest(value: Any) -> str:
     return hashlib.sha256(canonical(value)).hexdigest()
 
 
+#: Audited fields added after the chain shipped (#592, C2). They enter the
+#: digest ONLY when present and non-NULL, so a pre-C2 row and every
+#: non-federated row hash exactly as they did before and still verify, while a
+#: federated row commits to its caller. Appending them to ``CHAIN_FIELDS``
+#: instead would change every earlier row's hash and need a version flag.
+_OPTIONAL_CHAIN_FIELDS = ("caller_peer", "caller_sub")
+
+
 def row_hash(row: Any) -> str:
     """The ``row_hash`` of an audit row (or a mapping of its ``CHAIN_FIELDS``)."""
-    return digest({name: row[name] for name in CHAIN_FIELDS})
+    fields = {name: row[name] for name in CHAIN_FIELDS}
+    for name in _OPTIONAL_CHAIN_FIELDS:
+        if name in row and row[name] is not None:
+            fields[name] = row[name]
+    return digest(fields)
 
 
 def detections_digest(db: sqlite3.Connection, call_ref: str | None) -> str | None:

@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 from ..database import record_gateway_call
 from ..logsafe import exc_kind
 from ..outcomes import Outcome
-from .context import current_call, current_session
+from .context import current_call, current_caller, current_session
 
 if TYPE_CHECKING:
     from .destination import Destination
@@ -56,6 +56,11 @@ def _audit(
     content_digest: str | None = None,
 ) -> None:
     _call_audited.set(True)
+    # The real caller behind a federated request (#592, C2), read the same way
+    # as the session: None for a non-federated call. ``caller_sub`` is
+    # peer-chosen and is written to the audit and nowhere else — never logged.
+    caller = current_caller.get()
+    caller_peer, caller_sub = caller if caller is not None else (None, None)
     # The audit must never fail the call it records, and sqlite3.Error is not
     # all a write can raise (a closed connection, a thread-affinity
     # ProgrammingError, a full disk surfacing as OSError). A lost row is
@@ -77,6 +82,8 @@ def _audit(
             session=current_session.get() or None,
             call_ref=current_call.get() or None,
             content_digest=content_digest,
+            caller_peer=caller_peer,
+            caller_sub=caller_sub,
         )
     except Exception as exc:
         logger.warning("gateway: audit row lost profile=%s err=%s", profile, exc_kind(exc))

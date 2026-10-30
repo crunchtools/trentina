@@ -53,6 +53,13 @@ _current_parts: ContextVar[PartsOffer | None] = ContextVar("current_parts_offer"
 # sends no session header.
 current_session: ContextVar[str] = ContextVar("current_session", default="")
 current_call: ContextVar[str] = ContextVar("current_call", default="")
+# The real caller behind a federated request (#592, C2): the (peer, sub) an
+# edge JWT carried — the downstream peer whose key VERIFIED (the actor) and the
+# caller it ASSERTS. None for every non-federated request. Set beside
+# ``current_session`` from one request's ``request.state`` and read by the audit;
+# ``caller_sub`` is peer-chosen and is an audit fact only, never an input to
+# scope, role, policy or a guard (cto ruling, #592 C2).
+current_caller: ContextVar[tuple[str, str] | None] = ContextVar("current_caller", default=None)
 
 
 def session_fingerprint(session_id: str) -> str:
