@@ -27,6 +27,8 @@ from trentina.gateway.profile import DefenseConfig
 from trentina.modes import gaps_of
 from trentina.quarantine.classifier import ClassifierResult
 
+pytestmark = pytest.mark.usefixtures("standalone_l3")
+
 _D = "trentina.defense"
 
 MALICIOUS = ClassifierResult(label="MALICIOUS", score=0.95, latency_ms=1.0)
@@ -157,7 +159,16 @@ class TestTheRowCarriesEveryLayer:
         )
         assert mocks["record_detection"].call_args.kwargs["verdicts"]["l3_risk"] is None
 
-    async def test_an_absent_l3_is_recorded_as_unavailable(self) -> None:
+    async def test_an_absent_l3_is_recorded_as_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No key anywhere: the synthesized operator resolves no provider, so L3
+        # cannot run (standalone_l3's key is removed here).
+        import trentina.config as _config_mod
+
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("TRENTINA_MODEL_PROVIDER", raising=False)
+        _config_mod._config = None
         _, mocks = await _defend(content=L1_HOSTILE, classification=MALICIOUS, has_api_key=False)
         assert mocks["record_detection"].call_args.kwargs["verdicts"]["l3_verdict"] == "unavailable"
 

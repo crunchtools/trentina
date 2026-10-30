@@ -101,7 +101,7 @@ def _judged_before_briefing(warning: dict[str, Any] | None) -> bool:
 async def _judge_description(
     key: str,
     profile: Profile,
-    operator: Profile | None,
+    operator: Profile,
     backend_name: str,
     tool: dict[str, Any],
     surface: str,
@@ -114,7 +114,6 @@ async def _judge_description(
     """
     perimeter_counts["judged"] += 1
     mode = effective_mode(profile)
-    posture = identity.posture(mode, ModePolicy((mode,), mode))
     # A shared description is the gateway's own work, judged as the service
     # identity (#138); the thresholds stay the requester's. The defend() call
     # itself lives in the orchestration layer (Trentina 3.0 Phase 7) — the
@@ -123,7 +122,11 @@ async def _judge_description(
     # journal line below. Deferred import: the orchestrator imports this module.
     from ..orchestrator import judge_tool_description
 
+    # posture() reads the honeypot flag from the bound scope, so it is built
+    # inside service_context — warm-up and the tools/list path bind the operator
+    # only here, and current_scope would otherwise refuse an unbound call.
     with service_context(operator):
+        posture = identity.posture(mode, ModePolicy((mode,), mode))
         verdict = await judge_tool_description(
             surface,
             profile=profile,

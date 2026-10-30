@@ -38,7 +38,6 @@ from ..errors import BlockedSourceError
 from ..modes import BLOCKLIST_REASON, Mode, refusal_body
 from .context import get_current_profile
 from .errors import ScopeError
-from .loader import get_active_config
 
 if TYPE_CHECKING:
     from .profile import Backend, DefenseConfig, Profile
@@ -48,59 +47,53 @@ if TYPE_CHECKING:
 class CallerScope:
     """What one caller may reach.
 
-    ``profile`` is None only in standalone mode, where ``is_operator`` is True
-    and there is nothing to insulate.
+    ``profile`` is always present: a profile behind a live gateway, or the
+    operator profile synthesized from the environment standalone (#P7.3).
     """
 
-    profile: Profile | None
+    profile: Profile
     is_operator: bool
 
     @property
-    def name(self) -> str | None:
-        """The calling profile's name, or None in standalone mode."""
-        return self.profile.name if self.profile is not None else None
+    def name(self) -> str:
+        """The calling profile's name (``standalone`` for the env operator)."""
+        return self.profile.name
 
     @property
     def label(self) -> str:
-        """A name for logs and result payloads that is never None."""
-        return self.name or "standalone"
+        """A name for logs and result payloads."""
+        return self.profile.name
 
     @property
     def backends(self) -> dict[str, Backend]:
-        """The backends this caller may name. Empty in standalone mode."""
-        return self.profile.backends if self.profile is not None else {}
+        """The backends this caller may name."""
+        return self.profile.backends
 
 
-_STANDALONE = CallerScope(profile=None, is_operator=True)
+def current_scope() -> CallerScope:
+    """The calling profile's scope.
 
-
-def current_scope() -> CallerScope | None:
-    """The calling profile's scope, or None when a live gateway bound no caller.
-
-    Returns the standalone scope — full access, no profile — when the gateway
-    was never initialized.
+    Reads the bound profile from ``get_current_profile``: a profile behind a
+    live gateway, the operator synthesized from the environment standalone, or a
+    ``ScopeError`` when a live gateway bound no caller — a path nobody designed,
+    which fails closed rather than acting gateway-wide.
     """
     profile = get_current_profile()
-    if profile is not None:
-        return CallerScope(profile=profile, is_operator=profile.role == "operator")
-    if get_active_config() is None:
-        return _STANDALONE
-    return None
+    return CallerScope(profile=profile, is_operator=profile.role == "operator")
 
 
 def require_caller(tool: str) -> CallerScope:
-    """The calling scope, or raise.
-
-    Args:
-        tool: Tool name, for the log line and the returned message.
+    """The calling scope, or raise with the tool named.
 
     Raises:
         ScopeError: the gateway is live and no profile is bound to this call.
     """
-    scope = current_scope()
-    if scope is None:
-        raise ScopeError(f"{tool}: no calling profile bound — refusing to act gateway-wide")
-    return scope
+    try:
+        return current_scope()
+    except ScopeError:
+        raise ScopeError(
+            f"{tool}: no calling profile bound — refusing to act gateway-wide"
+        ) from None
 
 
 def require_operator(scope: CallerScope, action: str) -> None:
@@ -162,24 +155,20 @@ def blocklisted(source: str, mode: Mode) -> BlockedSourceError:
     )
 
 
-def _caller() -> tuple[str | None, bool]:
+def _caller() -> tuple[str, bool]:
     """The calling profile's name, and whether it reads the gateway-wide blocklist.
 
     Operator and standalone read every row; an agent reads its own. A live
-    gateway with no bound caller reads nothing and writes a NULL profile,
-    which only an operator sees: no path nobody designed can publish to an
-    agent's blocklist.
+    gateway with no bound caller never reaches here — ``current_scope`` raises
+    rather than answer "whose is this?" as nobody.
     """
     scope = current_scope()
-    if scope is None:
-        return None, False
     return scope.name, scope.is_operator
 
 
-def _caller_defense() -> DefenseConfig | None:
-    """The calling profile's defense policy, or None standalone or unbound."""
-    scope = current_scope()
-    return scope.profile.defense if scope is not None and scope.profile is not None else None
+def _caller_defense() -> DefenseConfig:
+    """The calling profile's defense policy."""
+    return current_scope().profile.defense
 
 
 def honeypot_caller() -> str | None:
@@ -189,10 +178,8 @@ def honeypot_caller() -> str | None:
     something asks this first: a honeypot is told nothing, and what it was
     sent is kept instead.
     """
-    scope = current_scope()
-    if scope is None or scope.profile is None or not scope.profile.honeypot:
-        return None
-    return scope.profile.name
+    profile = current_scope().profile
+    return profile.name if profile.honeypot else None
 
 
 def check_blocklist(source: str, mode: Mode) -> bool:

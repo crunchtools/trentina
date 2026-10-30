@@ -203,13 +203,17 @@ async def reconnect_backend(backend: str) -> dict[str, Any]:
         # The caller's OWN backend names, which turns a typo into a usable
         # correction. Listing the gateway's, which is what this used to do,
         # turned every typo into a directory of every other agent's backends.
-        refused = current_scope()
+        # An unbound caller has no scope to list — current_scope() refuses it.
+        try:
+            available = sorted(current_scope().backends)
+        except ScopeError:
+            available = []
         logger.warning("reconnect_backend refused: %s", exc_kind(exc))
         return {
             "backend": backend,
             "reconnected": False,
             "error": str(exc),
-            "available": sorted(refused.backends) if refused else [],
+            "available": available,
         }
 
     profiles = get_profiles()

@@ -180,11 +180,6 @@ def layers(
             payload=payload,
             workdir=workdir,
         )
-        p(
-            "trentina.tools.search.resolve_grounding_urls",
-            new_callable=AsyncMock,
-            side_effect=lambda sources: sources,
-        )
         yield fakes
 
 

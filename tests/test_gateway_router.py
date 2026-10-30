@@ -985,29 +985,32 @@ class TestProfileContext:
 
     def test_profile_visible_inside_block(self) -> None:
         profile = _mixed_profile()
-        assert get_current_profile() is None
+        before = get_current_profile()  # the synthesized standalone operator
         with profile_context(profile):
             assert get_current_profile() is profile
-        assert get_current_profile() is None
+        assert get_current_profile() is before
 
     def test_profile_reset_when_body_raises(self) -> None:
         """A failing internal tool call must not leak its profile."""
         profile = _mixed_profile()
+        before = get_current_profile()
         with pytest.raises(RuntimeError), profile_context(profile):
             raise RuntimeError("tool blew up")
-        assert get_current_profile() is None
+        assert get_current_profile() is before
 
     def test_nested_contexts_restore_outer(self) -> None:
         outer = _mixed_profile()
         inner = _profile()
+        before = get_current_profile()
         with profile_context(outer):
             with profile_context(inner):
                 assert get_current_profile() is inner
             assert get_current_profile() is outer
-        assert get_current_profile() is None
+        assert get_current_profile() is before
 
     async def test_internal_dispatch_resets_profile_after_call(self) -> None:
         """End-to-end: routing an internal:// call leaves no residual context."""
+        before = get_current_profile()  # the synthesized standalone operator
         seen: dict[str, Any] = {}
 
         async def fake_internal_call(
@@ -1038,7 +1041,7 @@ class TestProfileContext:
             )
 
         assert seen["profile_during_call"] is not None
-        assert get_current_profile() is None
+        assert get_current_profile() is before
 
 
 class TestOneAuditRowPerCall:

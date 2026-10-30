@@ -308,9 +308,12 @@ async def judge_egress_response(
         ``flagged``/``unjudged``/``risk`` facts the route words its wire from.
     """
     mode = Mode.BLOCK if blocking else Mode.FLAG
-    posture = identity.posture(mode, ModePolicy((mode,), mode))
-    try:
-        with profile_context(profile):
+    # posture() reads the honeypot flag from the bound scope, so it is built
+    # inside profile_context (Trentina 3.0 P7.3): current_scope refuses an unbound
+    # call, and this path binds the profile here rather than up the stack.
+    with profile_context(profile):
+        posture = identity.posture(mode, ModePolicy((mode,), mode))
+        try:
             async with asyncio.timeout(deadline):
                 verdict = await defend(
                     document,
@@ -321,27 +324,27 @@ async def judge_egress_response(
                     stop_on_partial=posture.stop_on_partial,
                     domain=domain,
                 )
-    except Exception as exc:  # TimeoutError too: no verdict was reached
-        logger.error(
-            "egress: response scan failed profile=%s: %s at %s",
-            profile.name,
-            exc_kind(exc),
-            exc_where(exc),
+        except Exception as exc:  # TimeoutError too: no verdict was reached
+            logger.error(
+                "egress: response scan failed profile=%s: %s at %s",
+                profile.name,
+                exc_kind(exc),
+                exc_where(exc),
+            )
+            # Fail closed: no verdict is an unjudged response. block withholds it,
+            # flag warns — the same the route did when it owned the scan.
+            return ResponseJudgement(refuse=blocking, flagged=False, unjudged=True, risk="unknown")
+        # The one gate policy decides whether to refuse — ``dispose()``, never a
+        # second copy here — so the response edge cannot drift from it. The route
+        # then words its own deny marker (block) or warning header (flag) from the
+        # facts below, because egress's wire is not ``core.render``'s.
+        refuse = dispose(verdict, posture).decision is Decision.REFUSE
+        return ResponseJudgement(
+            refuse=refuse,
+            flagged=verdict.flagged,
+            unjudged=gaps_of(verdict).blocking(),
+            risk=verdict.risk_level,
         )
-        # Fail closed: no verdict is an unjudged response. block withholds it,
-        # flag warns — the same the route did when it owned the scan.
-        return ResponseJudgement(refuse=blocking, flagged=False, unjudged=True, risk="unknown")
-    # The one gate policy decides whether to refuse — ``dispose()``, never a
-    # second copy here — so the response edge cannot drift from it. The route
-    # then words its own deny marker (block) or warning header (flag) from the
-    # facts below, because egress's wire is not ``core.render``'s.
-    refuse = dispose(verdict, posture).decision is Decision.REFUSE
-    return ResponseJudgement(
-        refuse=refuse,
-        flagged=verdict.flagged,
-        unjudged=gaps_of(verdict).blocking(),
-        risk=verdict.risk_level,
-    )
 
 
 @dataclass(frozen=True)
@@ -438,11 +441,12 @@ async def judge_outbound(
     # The partial-scan and blocklist rules live in Posture, so this path fails
     # closed for any future mode exactly as the tools do. Was `mode is Mode.BLOCK`
     # here -- a fail-open for a later non-BLOCK mode, masked only because redact is
-    # not an enforcement mode on this path.
-    posture = identity.posture(mode, ModePolicy((mode,), mode))
+    # not an enforcement mode on this path. posture() reads the bound scope's
+    # honeypot flag, so it is built inside profile_context (Trentina 3.0 P7.3).
     layer_refuses = False
     try:
         with profile_context(profile):
+            posture = identity.posture(mode, ModePolicy((mode,), mode))
             async with asyncio.timeout(deadline):
                 verdict = await defend(
                     judge_input(document),

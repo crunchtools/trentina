@@ -413,10 +413,13 @@ async def _compress_batch_with_fallback(
 
 
 def _service_provider() -> Provider:
-    """The provider the service identity runs on, or the env-global one."""
+    """The provider the service identity runs on.
+
+    ``service_profile`` is never None — a declared operator, else the operator
+    synthesized from the environment — so compression always resolves through a
+    profile's own key, standalone included.
+    """
     operator = service_profile()
-    if operator is None:
-        return get_provider()
     name, api_key, model = resolve_profile_llm(operator)
     return get_provider(name, api_key=api_key, model=model)
 

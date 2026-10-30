@@ -23,9 +23,8 @@ from urllib.parse import urlparse
 import httpx
 
 from ..client import MAX_RESPONSE_SIZE
-from ..config import DEFAULT_SEARCH_MODEL, get_config
+from ..config import get_config
 from ..errors import (
-    EgressRefusedError,
     MalformedResponseError,
     QuarantineAgentError,
     SearchCanaryLeakedError,
@@ -33,7 +32,6 @@ from ..errors import (
 )
 from ..l1.pipeline import run_l1
 from ..logsafe import exc_kind
-from ..reach.egress import open_guarded
 from ..unpack.child import run_unpacking
 from ..unpack.scan import unpack
 from .limiter import THROTTLE_STATUS, limited_generate, throttle_budget
@@ -59,26 +57,12 @@ if TYPE_CHECKING:
 
     from ..gateway.profile import Profile
 
-try:
-    from ..gateway.context import get_current_profile
-except ImportError:
-
-    def get_current_profile() -> Profile | None:
-        """Standalone mode: no gateway, so there is never a profile context."""
-        return None
-
-
 logger = logging.getLogger(__name__)
 
 _CANARY_PREFIX = "CANARY-"
 
-GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
-GEMINI_TIMEOUT = 60.0
-#: L0 web search, either route.
+#: L0 web search through OpenRouter's web plugin.
 L0_SEARCH_TIMEOUT = 60.0
-#: Re-exported from the provider so both call sites carry the credential the
-#: same way. See the note there for why it is never a query parameter.
-GEMINI_API_KEY_HEADER = "x-goog-api-key"
 MAX_OUTPUT_TOKENS = 4096
 MAX_EXTRACTED_TEXT = 50_000
 
@@ -158,25 +142,31 @@ def resolve_profile_llm(
     return resolved, llm_keys[resolved].api_key, profile.defense.model
 
 
-def bound_profile() -> Profile | None:
-    """The profile this call is bound to, or None standalone or unbound.
+def bound_profile() -> Profile:
+    """The profile this call is bound to — a live gateway's, or the operator
+    synthesized from the environment standalone. Never None.
 
     For callers outside the gateway package (``defense.py``), which must not
     import it: this module already carries the standalone fallback.
     """
+    # Lazy: importing gateway.context at module scope closes the
+    # agent -> gateway.context -> core.gate -> agent cycle when agent is the
+    # first module imported (e.g. an isolated plugin subprocess). By call time
+    # everything is loaded.
+    from ..gateway.context import get_current_profile
+
     return get_current_profile()
 
 
 def llm_available(profile: Profile | None = None) -> bool:
     """Whether a model call made now would have a provider to go to.
 
-    The bound profile when there is one (its provider, and its own key for
-    it), the global provider otherwise. The one answer to "is there an LLM",
-    so no gate asks the narrower "is there a Gemini key" by mistake.
+    The bound profile's provider and its own key for it (ollama keyless). The
+    one answer to "is there an LLM", so no gate asks the narrower "is there a
+    Gemini key" by mistake. Standalone the profile is the synthesized operator,
+    whose ``llm_keys`` mirror the environment.
     """
-    profile = profile if profile is not None else get_current_profile()
-    if profile is None:
-        return get_config().has_llm
+    profile = profile if profile is not None else bound_profile()
     try:
         resolve_profile_llm(profile)
     except QuarantineAgentError:
@@ -196,14 +186,8 @@ async def _call_with_fallback(
     Builds an ordered list: [primary] + fallback_chain. Iterates until one
     succeeds, a non-retryable error is raised, or all providers are exhausted.
     """
-    profile = get_current_profile()
-
-    if profile is not None:
-        primary_name, primary_key, _model = resolve_profile_llm(profile)
-    else:
-        primary_name = get_config().provider
-        primary_key = None  # get_provider() resolves global key
-
+    profile = bound_profile()
+    primary_name, primary_key, _model = resolve_profile_llm(profile)
     chain = [(primary_name, primary_key), *get_fallback_providers(profile)]
 
     last_exc: QuarantineAgentError | None = None
@@ -370,7 +354,7 @@ async def _call_gemini(
             is not used; ``user_prompt`` gets that pack's Layer 2 caveat.
     """
     if _bypass_profile:
-        profile = get_current_profile()
+        profile = bound_profile()
         model = getattr(getattr(profile, "defense", None), "model", None) if profile else None
         provider = get_provider(
             provider_name=provider_name,
@@ -378,26 +362,19 @@ async def _call_gemini(
             model=model,
         )
     else:
-        profile = get_current_profile()
-        api_key: SecretStr | None = None
-        model = None
-
-        if profile is not None:
-            resolved_provider, api_key, model = resolve_profile_llm(profile, provider_name)
-            logger.info(
-                "quarantine: profile=%s using dedicated key for provider=%s model=%s",
-                profile.name,
-                resolved_provider,
-                model or "(default)",
-            )
-
-            provider = get_provider(
-                provider_name=resolved_provider,
-                api_key=api_key,
-                model=model,
-            )
-        else:
-            provider = get_provider(provider_name)
+        profile = bound_profile()
+        resolved_provider, api_key, model = resolve_profile_llm(profile, provider_name)
+        logger.info(
+            "quarantine: profile=%s using dedicated key for provider=%s model=%s",
+            profile.name,
+            resolved_provider,
+            model or "(default)",
+        )
+        provider = get_provider(
+            provider_name=resolved_provider,
+            api_key=api_key,
+            model=model,
+        )
 
     if turn is not None:
         system_prompt, user_prompt = _from_pack(provider.judge, profile, turn, user_prompt)
@@ -795,132 +772,24 @@ async def quarantine_generate(
     return parsed
 
 
-SEARCH_GROUNDING_TOOL: dict[str, Any] = {"google_search": {}}
-
-REDIRECT_TIMEOUT = 5.0
-# Wall clock for one redirect's HEAD, all hops (#295).
-REDIRECT_DEADLINE = 10.0
-GROUNDING_REDIRECT_HOSTS = frozenset({"vertexaisearch.cloud.google.com"})
-"""Where grounding citations redirect from, matched on the exact hostname.
-
-It was a substring test over the whole URI, so
-``http://10.89.0.1/?vertexaisearch.cloud.google.com`` qualified (#260)."""
-
-
-def _enforce_search_quarantine(request_body: dict[str, Any]) -> None:
-    """Enforce L0 search constraints.
-
-    ONLY google_search grounding is permitted. No functionDeclarations,
-    no other tools. This is the ONLY place in trentina where any agent
-    has tool access.
-    """
-    if "functionDeclarations" in request_body:
-        raise QuarantineAgentError("SECURITY: functionDeclarations in L0 search request")
-    tools = request_body.get("tools", [])
-    if len(tools) != 1:
-        raise QuarantineAgentError(
-            f"SECURITY: L0 search must have exactly 1 tool, got {len(tools)}"
-        )
-    if "google_search" not in tools[0]:
-        raise QuarantineAgentError("SECURITY: L0 search tool must be google_search")
-
-
-def _build_search_request_body(
-    query: str,
-    system_prompt: str,
-    num_results: int = 5,
-) -> dict[str, Any]:
-    """Build a Gemini request with google_search grounding.
-
-    NO structured output (responseMimeType/responseSchema) — incompatible
-    with google_search on Gemini 2.x. L0 returns plain text.
-    """
-    return {
-        "system_instruction": {
-            "parts": [{"text": system_prompt}],
-        },
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "text": (
-                            f"Search the web for: {query}\n\n"
-                            f"Return approximately {num_results} results. "
-                            "For each result, include the page title, a brief "
-                            "factual summary, and the source URL if visible."
-                        )
-                    }
-                ],
-            },
-        ],
-        "tools": [SEARCH_GROUNDING_TOOL],
-        "generationConfig": {
-            "temperature": 0.1,
-            "maxOutputTokens": MAX_OUTPUT_TOKENS,
-        },
-    }
-
-
-def _extract_grounding_sources(
-    grounding_metadata: dict[str, Any],
-) -> list[dict[str, str]]:
-    """Extract source URLs and titles from groundingMetadata."""
-    chunks = grounding_metadata.get("groundingChunks", [])
-    sources = []
-    for chunk in chunks:
-        web = chunk.get("web", {})
-        uri = web.get("uri", "")
-        title = web.get("title", "")
-        if uri:
-            sources.append({"uri": uri, "title": title})
-    return sources
-
-
-def _extract_grounding_supports(
-    grounding_metadata: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Extract citation supports from groundingMetadata."""
-    supports = grounding_metadata.get("groundingSupports", [])
-    return [
-        {
-            "text": s.get("segment", {}).get("text", ""),
-            "chunk_indices": s.get("groundingChunkIndices", []),
-            "confidence": s.get("confidenceScores", []),
-        }
-        for s in supports
-    ]
-
-
 #: OpenRouter's web plugin. The one capability L0 is given on this route.
 WEB_SEARCH_PLUGIN_ID = "web"
 
 
 def _search_route() -> tuple[str, str]:
-    """Which backend L0 searches with, and the key it uses.
+    """The OpenRouter key L0 searches with, from the calling profile.
 
-    A bound profile searches on its OWN OpenRouter key or not at all: the
+    The bound profile searches on its OWN OpenRouter key or not at all: the
     same isolation rule as ``resolve_profile_llm``, so one profile can never
-    bill against the global key or another provider. With no profile bound
-    (standalone), the global OpenRouter key, then Gemini grounding as the
-    pre-0.41.0 fallback. A gateway never reaches Google for search.
+    bill against another's. Standalone, the profile is the synthesized operator,
+    whose OpenRouter key is the environment's. A gateway never reaches Google
+    for search; Gemini grounding was dropped in 3.0.0 (needs OPENROUTER_API_KEY).
     """
-    config = get_config()
-    profile = get_current_profile()
-    if profile is not None:
-        _name, key, _model = resolve_profile_llm(profile, "openrouter")
-        if key is None or not key.get_secret_value():
-            raise QuarantineAgentError(
-                f"Profile {profile.name!r} has no OpenRouter key for web search"
-            )
-        return "openrouter", key.get_secret_value()
-    if config.openrouter_api_key.get_secret_value():
-        return "openrouter", config.openrouter_api_key.get_secret_value()
-    if config.has_api_key:
-        return "gemini", config.api_key.get_secret_value()
-    raise QuarantineAgentError(
-        "no search provider: set OPENROUTER_API_KEY, or GEMINI_API_KEY for grounding"
-    )
+    profile = bound_profile()
+    _name, key, _model = resolve_profile_llm(profile, "openrouter")
+    if key is None or not key.get_secret_value():
+        raise QuarantineAgentError(f"Profile {profile.name!r} has no OpenRouter key for web search")
+    return "openrouter", key.get_secret_value()
 
 
 def _enforce_openrouter_search_quarantine(request_body: dict[str, Any]) -> None:
@@ -1088,9 +957,9 @@ async def search_grounded(
 ) -> dict[str, Any]:
     """Run L0: a model with web search, and nothing else.
 
-    OpenRouter's web plugin, or Gemini google_search grounding when that is
-    the only key there is (``_search_route``). The caller MUST run this
-    output through L1, L2 and L3 before downstream use.
+    OpenRouter's web plugin, on the calling profile's own OpenRouter key
+    (``_search_route``). The caller MUST run this output through L1, L2 and L3
+    before downstream use.
 
     Args:
         query: What to search the web for.
@@ -1098,122 +967,13 @@ async def search_grounded(
 
     Returns:
         ``text``: L0's synthesized answer. ``sources``: ``[{uri, title}]``.
-        ``supports``: Gemini citation spans (empty on OpenRouter).
+        ``supports``: empty (OpenRouter carries no citation spans).
         ``usage``: ``{input_tokens, output_tokens}``.
 
     Raises:
-        QuarantineAgentError: no key for the route (a bound profile without
-            its own OpenRouter key included), a transport or HTTP failure, an
-            empty response, a leaked canary, or a request that breaks the
-            one-capability rule.
+        QuarantineAgentError: the calling profile has no OpenRouter key, a
+            transport or HTTP failure, an empty response, a leaked canary, or a
+            request that breaks the one-capability rule.
     """
-    route, api_key = _search_route()
-    if route == "openrouter":
-        return await _search_openrouter(query, num_results, api_key)
-    config = get_config()
-
-    canary = _generate_canary()
-    system_prompt = _inject_canary(SEARCH_L0_SYSTEM_PROMPT, canary)
-
-    request_body = _build_search_request_body(query, system_prompt, num_results)
-    _enforce_search_quarantine(request_body)
-
-    # The default is an OpenRouter id; Google's own API takes the bare name,
-    # and only a Gemini model. Anything else falls back to the known default.
-    model = config.search_model.removeprefix("google/")
-    if "/" in model or not model.startswith("gemini"):
-        model = DEFAULT_SEARCH_MODEL.removeprefix("google/")
-    url = f"{GEMINI_API_BASE}/{model}:generateContent"
-
-    try:
-        # nosemgrep: trentina-httpx-client-outside-egress -- fixed API URL
-        async with httpx.AsyncClient(timeout=httpx.Timeout(GEMINI_TIMEOUT)) as http_client:
-            resp = await http_client.post(
-                url,
-                json=request_body,
-                headers={
-                    "Content-Type": "application/json",
-                    # In the header, never `?key=` — httpx logs full URLs at
-                    # INFO. See GEMINI_API_KEY_HEADER in providers/gemini.py.
-                    GEMINI_API_KEY_HEADER: api_key,
-                },
-            )
-            resp.raise_for_status()
-            resp_json = resp.json()
-
-            candidates = resp_json.get("candidates", [])
-            if not candidates:
-                raise QuarantineAgentError("No candidates in Gemini response")
-
-            parts = candidates[0].get("content", {}).get("parts", [])
-            if not parts:
-                raise QuarantineAgentError("No parts in Gemini response")
-
-            text = parts[0].get("text", "")
-
-            if canary in text:
-                raise SearchCanaryLeakedError()
-
-            grounding = candidates[0].get("groundingMetadata", {})
-            sources = _extract_grounding_sources(grounding)
-            supports = _extract_grounding_supports(grounding)
-
-            usage = resp_json.get("usageMetadata", {})
-
-            return {
-                "text": text,
-                "sources": sources,
-                "supports": supports,
-                "usage": {
-                    "input_tokens": usage.get("promptTokenCount", 0),
-                    "output_tokens": usage.get("candidatesTokenCount", 0),
-                },
-            }
-
-    except httpx.HTTPStatusError as exc:
-        raise QuarantineAgentError(
-            f"HTTP {exc.response.status_code}", status_code=exc.response.status_code
-        ) from exc
-    except httpx.TimeoutException as exc:
-        raise QuarantineAgentError("Request timed out") from exc
-    except httpx.RequestError as exc:
-        raise QuarantineAgentError(str(exc)) from exc
-
-
-def _is_grounding_redirect(uri: str) -> bool:
-    try:
-        return httpx.URL(uri).host in GROUNDING_REDIRECT_HOSTS
-    except (httpx.InvalidURL, TypeError):
-        return False
-
-
-async def resolve_grounding_urls(
-    sources: list[dict[str, str]],
-) -> list[dict[str, str]]:
-    """Resolve grounding redirect URLs to final destinations.
-
-    Each source is ``{"uri", "title"}``. One whose host is not exactly a
-    grounding redirect host is returned unchanged and never requested. A
-    redirect that resolves becomes ``{"uri": <final URL>, "title",
-    "original_redirect": <the redirect URI>}``. One that fails keeps its
-    fields and gains ``"redirect_failed": "true"``, whether it timed out or
-    the egress guard refused a hop. Order is preserved.
-    """
-    resolved: list[dict[str, str]] = []
-    for source in sources:
-        uri = source.get("uri", "")
-        if not _is_grounding_redirect(uri):
-            resolved.append(source)
-            continue
-        try:
-            async with open_guarded(
-                "HEAD", uri, timeout=REDIRECT_TIMEOUT, deadline=REDIRECT_DEADLINE
-            ) as resp:
-                final_url = str(resp.url)
-        except (httpx.HTTPError, EgressRefusedError, TimeoutError):
-            resolved.append({**source, "redirect_failed": "true"})
-            continue
-        resolved.append(
-            {"uri": final_url, "title": source.get("title", ""), "original_redirect": uri}
-        )
-    return resolved
+    _route, api_key = _search_route()
+    return await _search_openrouter(query, num_results, api_key)

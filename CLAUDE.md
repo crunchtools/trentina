@@ -15,16 +15,20 @@ uv run trentina
 ## Environment Variables
 
 - `TRENTINA_MODEL_PROVIDER` + that provider's key (`OPENROUTER_API_KEY`,
-  `ANTHROPIC_API_KEY`, ...) — L3 when no gateway profile is bound. Behind the
-  gateway each profile's `llm_keys` is used instead. `config.has_llm` and
-  `agent.llm_available()` answer "is there an LLM"; `has_api_key` is Gemini's
-  key only. Since 0.41.0 it no longer gates L3 or summarize; it only picks
-  Gemini grounding as the standalone search fallback.
-- `GEMINI_API_KEY` — optional since 0.41.0: Gemini as an L3 provider, and
-  search grounding ONLY standalone (no profile bound) with no
-  `OPENROUTER_API_KEY`; a bound profile searches on its own OpenRouter key or
-  is refused. The lotor gateway
-  holds none, so it never calls Google directly.
+  `ANTHROPIC_API_KEY`, ...) — the standalone server's L3 provider. Standalone is
+  a synthesized operator profile since 3.0.0 (#579) whose `llm_keys` mirror
+  these env keys, so L3 resolves exactly as a bound profile's does; behind the
+  gateway each profile's own `llm_keys` is used instead. `config.has_llm` and
+  `agent.llm_available()` answer "is there an LLM". `has_api_key` (Gemini's key
+  only) no longer selects anything now that grounding search is dropped (below)
+  and is vestigial.
+- `GEMINI_API_KEY` — Gemini as an L3 provider (standalone through the
+  synthesized operator's `llm_keys`, behind the gateway through a profile's
+  `llm_keys`). Since 3.0.0 it no longer enables search: the Gemini grounding
+  standalone-only fallback was dropped (#579), so web search is OpenRouter's
+  `web` plugin on every path and a standalone server needs `OPENROUTER_API_KEY`
+  for `search`. The lotor gateway holds no Gemini key, so it never calls
+  Google directly.
 - `OPENROUTER_API_KEY` — standalone key for `TRENTINA_MODEL_PROVIDER=openrouter`;
   a gateway profile uses `llm_keys.openrouter`. Model ids are OpenRouter's
   (`google/gemini-3.5-flash-lite`).
@@ -32,8 +36,8 @@ uv run trentina
   supported judge: its pack passed the briefed pack gate, #397)
 - `QUARANTINE_SEARCH_MODEL` — L0 web search model, an OpenRouter id (default
   `google/gemini-2.5-flash`). L0 is OpenRouter's `web` plugin and nothing else
-  (`_enforce_openrouter_search_quarantine`); the Gemini grounding route strips
-  the `google/` prefix.
+  (`_enforce_openrouter_search_quarantine`). The Gemini grounding search route
+  was removed in 3.0.0 (#579); `search` needs an OpenRouter key on every path.
 - `TRENTINA_REQUIRE_L2` / `TRENTINA_REQUIRE_L3` — default true: block and redact
   refuse when that layer is ABSENT. `false` turns absence into a warning; a
   partial read is never excused. `QUARANTINE_FALLBACK` was removed in 0.31.0

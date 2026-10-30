@@ -31,6 +31,8 @@ def _tool(name: str, description: str, schema: dict | None = None) -> dict[str, 
     }
 
 
+pytestmark = pytest.mark.usefixtures("standalone_l3")
+
 SUMMARIZE = {"processors": ["summarize"]}
 
 

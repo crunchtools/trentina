@@ -142,7 +142,7 @@ class TestTheGrantIsSent:
         fake: _Backend,
         profiles: dict[str, Profile],
     ) -> None:
-        with pytest.raises(Exception, match="needs a calling profile"):
+        with pytest.raises(Exception, match="no calling profile"):
             await call_backend_tool("era", profiles["josui"].backends["era"], "spend", {})
 
 

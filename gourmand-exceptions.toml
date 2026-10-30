@@ -206,6 +206,12 @@ justification = "resolve_transform (resolve a plugin entry point) and tools/conf
 classification = "by_design"
 
 [[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/context.py"
+justification = "get_current_profile, service.service_profile and transforms/policy.current_preprocess_policy are three unrelated scope-resolution questions — the bound profile, the gateway's service identity, the bound preprocess policy — that share only the contextvar/active-config read-or-synthesize shape every unbound fallback in this gateway has. The synthesis itself lives in ONE place (standalone.environment_operator); collapsing the three readers through one helper would couple three independent policies (one of which raises, one returns a declared operator, one returns a default dataclass). The shape is the idiom, not a copy."
+classification = "by_design"
+
+[[exceptions]]
 check = "primitive_obsession"
 path = "src/trentina/defense.py"
 pattern = "_should_run_l3"

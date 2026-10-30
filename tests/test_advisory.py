@@ -269,7 +269,7 @@ class TestScanErrorBody:
             assert result["l2_label"] == "MALICIOUS"
 
     @pytest.mark.asyncio
-    async def test_l3_detected_is_suspicious(self) -> None:
+    async def test_l3_detected_is_suspicious(self, standalone_l3: None) -> None:
         with (
             patch(
                 "trentina.defense.classify_async",

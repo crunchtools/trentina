@@ -53,17 +53,29 @@ def find_operator(profiles: Mapping[str, Profile]) -> Profile | None:
     return next((p for p in profiles.values() if p.role == "operator"), None)
 
 
-def service_profile() -> Profile | None:
-    """The running gateway's operator, or None (no operator, or no gateway).
+def service_profile() -> Profile:
+    """The identity the gateway's own model calls run as. Never None.
+
+    A declared ``role: operator`` profile when the file names one; otherwise the
+    environment operator (``standalone.standalone_profile``) — the whole identity
+    for a standalone server, and the env-global fallback for a live gateway that
+    declares no operator. Centralized work always has a seat, so nothing is ever
+    bound as None and ``get_current_profile`` never has to answer "unknown" on a
+    gateway's own call.
 
     Read from the active config on every call rather than cached: a reload
     refills that dict in place, and a promoted or demoted operator has to take
     effect on the next centralized call, not the next restart.
     """
     from .loader import get_active_config
+    from .standalone import environment_operator
 
     active = get_active_config()
-    return find_operator(active.config.profiles) if active is not None else None
+    if active is not None:
+        operator = find_operator(active.config.profiles)
+        if operator is not None:
+            return operator
+    return environment_operator()
 
 
 class _Unresolved(Enum):
@@ -74,13 +86,14 @@ class _Unresolved(Enum):
 
 @contextmanager
 def service_context(
-    operator: Profile | _Unresolved | None = _Unresolved.TOKEN,
-) -> Iterator[Profile | None]:
+    operator: Profile | _Unresolved = _Unresolved.TOKEN,
+) -> Iterator[Profile]:
     """Run the enclosed model calls as the service identity.
 
-    Binds the operator profile for the block and yields it. With no operator
-    it binds NOTHING — explicitly None, so a tenant bound further up the stack
-    cannot leak into the gateway's own work — and the env-global path applies.
+    Binds the operator profile for the block and yields it. ``service_profile``
+    is never None — a declared operator, else the environment operator — so a
+    tenant bound further up the stack cannot leak into the gateway's own work:
+    the operator always replaces it for the block.
 
     A caller that already resolved the operator passes it in. That caller has
     usually keyed something on ``judge_of(operator)``, and resolving again here

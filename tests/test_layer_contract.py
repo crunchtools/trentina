@@ -17,11 +17,15 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from trentina.defense import DefenseVerdict, build_l3_briefing, defend
 from trentina.l1.pipeline import FINDING_NAMES, PipelineStats, run_l1
 from trentina.quarantine import agent
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.unpack.scan import unpack
+
+pytestmark = pytest.mark.usefixtures("standalone_l3")
 
 _D = "trentina.defense"
 _INGRESS = "trentina.gateway.response_edge"
