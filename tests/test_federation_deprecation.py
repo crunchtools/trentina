@@ -51,3 +51,12 @@ def test_a_plain_mcp_backend_does_not_warn(caplog: pytest.LogCaptureFixture) -> 
     with caplog.at_level(logging.WARNING):
         _check_interim_federation("breetai", profile)
     assert not caplog.records
+
+
+def test_gateway_elsewhere_in_the_path_does_not_warn(caplog: pytest.LogCaptureFixture) -> None:
+    # "gateway" present but NOT the antepenultimate segment: not the
+    # .../gateway/<profile>/mcp shape, so no warning (the detection is exact).
+    profile = _profile(Backend(url="https://api.example/gateway/a/b/mcp", tools_allow=["*"]))
+    with caplog.at_level(logging.WARNING):
+        _check_interim_federation("breetai", profile)
+    assert not caplog.records

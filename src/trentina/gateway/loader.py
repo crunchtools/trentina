@@ -206,7 +206,11 @@ def _check_interim_federation(name: str, profile: Profile) -> None:
         if backend.federated is not None or not backend.is_remote:
             continue
         parts = [p for p in urlsplit(backend.url).path.split("/") if p]
-        if "gateway" in parts and parts[-1:] == ["mcp"]:
+        # The exact production federation shape `.../gateway/<profile>/mcp` —
+        # "gateway" as the antepenultimate segment — not merely any path that
+        # mentions "gateway" and ends /mcp, so an ordinary MCP server is not
+        # mistaken for the interim path.
+        if len(parts) >= 3 and parts[-1] == "mcp" and parts[-3] == "gateway":
             logger.warning(
                 "gateway: profile=%s backend=%s uses the interim static-bearer "
                 "federation path; migrate to a federated: block "
