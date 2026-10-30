@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -104,23 +105,49 @@ async def test_every_family_extracts_what_the_dict_form_asks(
     assert "What ships?" in (*call.args, *call.kwargs.values())
 
 
+# (tool name, patched underlying fn, call kwargs) for all five wrapped tools.
+_STANDALONE_TOOLS = [
+    ("fetch_tool", "fetch_page", {"url": "https://example.com"}),
+    ("read_tool", "read_file", {"path": "/tmp/x"}),
+    ("dir_tool", "list_dir", {"path": "/tmp"}),
+    ("content_tool", "judge_content", {"content": "x"}),
+    ("search_tool", "web_search", {"query": "x"}),
+]
+
+
+def _bound_profile() -> Any:
+    """A profile to bind so ``_delivered`` sees the gateway dispatch path."""
+    from pydantic import SecretStr
+
+    from trentina.gateway.profile import AuthConfig, Profile
+
+    p = Profile(name="p", auth=AuthConfig(bearer_token_env="TEST"), backends={})
+    assert p.auth is not None
+    p.auth.bearer_token = SecretStr("x")
+    return p
+
+
 class TestStandaloneRefusalsAreResults:
     """#550: a standalone tool returns a policy REFUSAL as an ordinary result
     (``isError`` false), not a raised exception, so a stock agent's strike
     breaker does not count the refusal against the server. A genuine failure
-    (a timeout, a provider error) still raises. The gateway path is untouched.
+    (a timeout, a provider error) still raises, and behind a gateway (a profile
+    bound) the exception is re-raised so the gateway shapes and audits it.
     """
 
-    async def test_a_blocked_source_is_a_result_not_an_error(self) -> None:
+    @pytest.mark.parametrize(("tool", "fn", "kwargs"), _STANDALONE_TOOLS)
+    async def test_a_blocked_source_is_a_result_for_every_tool(
+        self, tool: str, fn: str, kwargs: dict[str, str]
+    ) -> None:
+        from trentina import server
         from trentina.errors import BlockedSourceError
-        from trentina.server import fetch_tool
 
         refusal = {"reason": "on the blocklist", "alternatives": []}
         with patch(
-            "trentina.server.fetch_page",
+            f"trentina.server.{fn}",
             AsyncMock(side_effect=BlockedSourceError("src", "on the blocklist", refusal=refusal)),
         ):
-            result = await fetch_tool(url="https://example.com")
+            result = await getattr(server, tool)(**kwargs)
         assert isinstance(result, ToolResult)
         assert result.is_error is False
         assert result.structured_content == {"_trentina_refusal": refusal}
@@ -137,6 +164,44 @@ class TestStandaloneRefusalsAreResults:
         assert result.structured_content == {
             "_trentina_refusal": {"reason": "binary", "alternatives": []}
         }
+
+    async def test_an_egress_refusal_is_a_result(self) -> None:
+        from trentina.errors import EgressRefusedError
+        from trentina.server import fetch_tool
+
+        with patch(
+            "trentina.server.fetch_page",
+            AsyncMock(side_effect=EgressRefusedError("non_global_address")),
+        ):
+            result = await fetch_tool(url="https://example.com")
+        assert isinstance(result, ToolResult)
+        assert result.is_error is False
+        assert result.structured_content == {
+            "_trentina_refusal": {"reason": "non_global_address", "alternatives": []}
+        }
+
+    @pytest.mark.parametrize(("tool", "fn", "kwargs"), _STANDALONE_TOOLS)
+    async def test_a_bound_profile_re_raises_the_refusal(
+        self, tool: str, fn: str, kwargs: dict[str, str]
+    ) -> None:
+        """Behind a gateway a profile is bound; the tool must still RAISE so the
+        internal backend shapes the refusal and audits it blocked_defense."""
+        from trentina import server
+        from trentina.errors import BlockedSourceError
+        from trentina.gateway.context import profile_context
+
+        refusal = {"reason": "on the blocklist", "alternatives": []}
+        with (
+            patch(
+                f"trentina.server.{fn}",
+                AsyncMock(
+                    side_effect=BlockedSourceError("src", "on the blocklist", refusal=refusal)
+                ),
+            ),
+            profile_context(_bound_profile()),
+            pytest.raises(BlockedSourceError),
+        ):
+            await getattr(server, tool)(**kwargs)
 
     async def test_a_genuine_failure_still_raises(self) -> None:
         from trentina.server import fetch_tool
