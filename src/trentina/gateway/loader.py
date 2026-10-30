@@ -129,6 +129,7 @@ def _build_profile(name: str, body: Any) -> Profile:
     _check_transports(name, profile)
     _check_destination_params(name, profile)
     _check_guarded_tools(name, profile)
+    _check_interim_federation(name, profile)
     _resolve_bridge_secrets(name, profile)
     if profile.alert_ingress is not None:
         _resolve_alert_ingress_secrets(name, profile.alert_ingress)
@@ -188,6 +189,31 @@ def _check_transports(name: str, profile: Profile) -> None:
             build_transport(backend.transport)
         except ProfileConfigError as exc:
             raise ProfileConfigError(f"Profile {name!r} backend {backend_name!r}: {exc}") from exc
+
+
+def _check_interim_federation(name: str, profile: Profile) -> None:
+    """Warn on the interim static-bearer federation path (#592, D2b).
+
+    A backend that points at a Trentina gateway's federation endpoint
+    (``.../gateway/<profile>/mcp``) without a ``federated:`` block is the
+    pre-3.1 arrangement: it mounts another gateway over a shared static bearer
+    and re-judges everything. First-class federation (edge-key auth +
+    scan-once trust) supersedes it; the interim path still works but is
+    deprecated and removed in 3.2.0. Warned by profile and backend name only,
+    never the URL (#262).
+    """
+    for backend_name, backend in profile.backends.items():
+        if backend.federated is not None or not backend.is_remote:
+            continue
+        parts = [p for p in urlsplit(backend.url).path.split("/") if p]
+        if "gateway" in parts and parts[-1:] == ["mcp"]:
+            logger.warning(
+                "gateway: profile=%s backend=%s uses the interim static-bearer "
+                "federation path; migrate to a federated: block "
+                "(deprecated, removed in 3.2.0) — see docs/federation.md",
+                name,
+                backend_name,
+            )
 
 
 def _check_destination_params(name: str, profile: Profile) -> None:
