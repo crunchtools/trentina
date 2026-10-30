@@ -28,6 +28,11 @@ from trentina.gateway.profile import (
     ParameterConstraint,
     Profile,
 )
+
+# The real pin check, captured at module load before conftest's autouse fixture
+# replaces the module attribute with a passthrough — so the gateway-level E1b
+# test below can exercise the actual first-connect behaviour (#592).
+from trentina.gateway.tool_pins import check_tools as _real_check_tools
 from trentina.transports.mcp import PROTOCOL_VERSION, route_jsonrpc
 
 
@@ -1520,3 +1525,42 @@ class TestArgumentHygiene:
         )
         assert seen is None
         assert row["outcome"] == "denied_guard"
+
+
+async def test_a_federated_backends_first_list_is_served_through_the_router(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """E1b wiring (#592): aggregate passes ``backend.federated`` into the pin
+    check, so a federated backend's first tools/list is served as a unit while a
+    non-federated backend still holds a newly seen tool. Guards the integration
+    point the unit tests on ``check_tools`` cannot reach."""
+    from trentina.gateway import aggregate, tool_pins
+    from trentina.gateway.profile import FederatedConfig
+
+    monkeypatch.setattr(aggregate.tool_pins, "check_tools", _real_check_tools)
+
+    profile = Profile(
+        short_names=False,
+        name="fedp",
+        auth=AuthConfig(bearer_token_env="T"),
+        backends={
+            "fed": Backend(
+                url="http://up:9000/mcp", tools_allow=["*"], federated=FederatedConfig()
+            ),
+            "plain": Backend(url="http://other:9000/mcp", tools_allow=["*"]),
+        },
+    )
+    assert profile.auth is not None
+    profile.auth.bearer_token = SecretStr("x")
+
+    async def fake_list(backend_name: str, _backend: Backend, *_: Any) -> list[dict[str, Any]]:
+        return [{"name": f"{backend_name}_tool", "description": "d" * 50, "inputSchema": {}}]
+
+    with patch("trentina.gateway.aggregate.list_backend_tools", side_effect=fake_list):
+        resp = await route_jsonrpc(profile, {"jsonrpc": "2.0", "id": 7, "method": "tools/list"})
+
+    served = {t["name"] for t in resp["result"]["tools"]}
+    assert any("fed_tool" in n for n in served)  # federated first connect: no storm
+    assert not any("plain_tool" in n for n in served)  # non-federated: held on first sight
+    assert tool_pins.pending("http://up:9000/mcp") == []
+    assert [x["tool"] for x in tool_pins.pending("http://other:9000/mcp")] == ["plain_tool"]
