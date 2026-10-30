@@ -10,10 +10,12 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from trentina.gateway import vsa
+from trentina.gateway.profile import FederationConfig, FederationPeer
 
 
 def _keypair() -> tuple[str, str]:
@@ -99,3 +101,58 @@ def test_verify_is_none_for_malformed_envelopes() -> None:
 def test_verify_is_none_for_a_bad_public_key() -> None:
     priv, _ = _keypair()
     assert vsa.verify_assertion(vsa.sign_assertion(_assertion(), priv), "not a pem") is None
+
+
+# --- verdict_summary: the closed verdict, shared by emit (D1) and trust (D2a) ---
+
+
+def test_verdict_summary_of_a_clean_response() -> None:
+    assert vsa.verdict_summary(None, "flag") == {
+        "flagged_by": None,
+        "risk_level": None,
+        "gaps": [],
+        "oversize": False,
+        "unread_kinds": [],
+        "mode": "flag",
+    }
+
+
+def test_verdict_summary_carries_the_closed_warning_facts() -> None:
+    warning = {
+        "flagged_by": "l2",
+        "risk_level": "high",
+        "l3_truncated": True,
+        "l2_unavailable": True,
+        "oversize": True,
+        "unread_kinds": ["image/png"],
+        # free-ish fields a warning also carries must NOT leak into the summary
+        "l2_label": "INJECTION",
+        "l2_score": 0.99,
+    }
+    summary = vsa.verdict_summary(warning, "block")
+    assert summary == {
+        "flagged_by": "l2",
+        "risk_level": "high",
+        "gaps": ["l2_unavailable", "l3_truncated"],
+        "oversize": True,
+        "unread_kinds": ["image/png"],
+        "mode": "block",
+    }
+
+
+# --- the signing-key config (D1) ---
+
+
+def _peers() -> dict[str, FederationPeer]:
+    return {"breetai": FederationPeer(public_key=_keypair()[1])}
+
+
+def test_signing_key_env_accepts_an_env_name() -> None:
+    cfg = FederationConfig(peers=_peers(), signing_key_env="LOTOR_SIGNING_KEY")
+    assert cfg.signing_key_env == "LOTOR_SIGNING_KEY"
+    assert cfg.signing_key is None  # resolved at load, not here
+
+
+def test_signing_key_env_rejects_a_non_env_name() -> None:
+    with pytest.raises(ValueError, match="UPPERCASE env-var identifier"):
+        FederationConfig(peers=_peers(), signing_key_env="lotor-key")

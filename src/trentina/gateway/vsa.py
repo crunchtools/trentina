@@ -45,6 +45,39 @@ def content_digest(blocks: list[Any] | None, structured: Any, is_error: bool) ->
     return hashlib.sha256(audit_chain.canonical(payload)).hexdigest()
 
 
+#: The gap/truncation flags a warning carries (warning.py), all closed-set
+#: booleans — the part of a verdict a downstream must see to apply its own mode.
+_GAP_FLAGS = (
+    "l2_unavailable",
+    "l3_unavailable",
+    "binary_unread",
+    "l2_truncated",
+    "l3_truncated",
+)
+
+
+def verdict_summary(warning: dict[str, Any] | None, mode: str) -> dict[str, Any]:
+    """The closed verdict an assertion carries, from a gateway warning + mode.
+
+    ONE definition shared by the emit side (#592, D1) and the trust side (D2a),
+    so the downstream reconstructs exactly what the upstream concluded. Only
+    closed-set facts: the flagging layer, the risk level, the gap/truncation
+    flags, oversize, and the unread binary kinds — never any free text an L3
+    assessment or a backend wrote (``warning.py`` keeps those out of these
+    fields; finding types are a closed enum). ``warning`` is None for a clean
+    delivered response, which summarises as not-flagged, no gaps.
+    """
+    w = warning or {}
+    return {
+        "flagged_by": w.get("flagged_by"),
+        "risk_level": w.get("risk_level"),
+        "gaps": sorted(flag for flag in _GAP_FLAGS if w.get(flag)),
+        "oversize": bool(w.get("oversize")),
+        "unread_kinds": sorted(w.get("unread_kinds") or []),
+        "mode": mode,
+    }
+
+
 def build_assertion(
     *, verifier: str, content_sha256: str, verdict: dict[str, Any], perimeter_stamp: str, ts: int
 ) -> dict[str, Any]:
