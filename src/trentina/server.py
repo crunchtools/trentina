@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
 from .errors import BlockedSourceError, EgressRefusedError, FileReadError
+from .gateway.diagnose import diagnose_visibility
 from .gateway.results import _refusal_text
 from .modes import current_policy, parse_mode_arg
 from .tools import (
@@ -393,6 +394,27 @@ async def tool_pins_tool(
         tool: The held tool's name, for approve and reject.
     """
     return await manage_tool_pins(action, backend, tool)
+
+
+@mcp.tool()
+async def tool_visibility_tool(
+    backend: str, tool: str, profile: str | None = None
+) -> dict[str, Any]:
+    """Explain why a tool is, or is not, in a profile's served tool list.
+
+    Names the stage that drops it — the backend does not offer it, a pin hold
+    is withholding it, the allowlist or denylist excludes it, or the perimeter
+    withheld its description — so you stop guessing between reconnect, flush and
+    reload. Rebuilds fresh, so a ``served`` answer the client cannot see means
+    the client's cache is stale (run ``cache_flush``).
+
+    Args:
+        backend: The backend's name in the profile.
+        tool: The tool's name AS THE BACKEND OFFERS IT (the real name, not the
+            short name a client sees).
+        profile: Another profile to inspect; operator only. Omit for your own.
+    """
+    return await diagnose_visibility(backend, tool, profile)
 
 
 @mcp.tool()
