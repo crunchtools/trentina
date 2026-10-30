@@ -79,16 +79,25 @@ def verdict_summary(warning: dict[str, Any] | None, mode: str) -> dict[str, Any]
 
 
 def build_assertion(
-    *, verifier: str, content_sha256: str, verdict: dict[str, Any], perimeter_stamp: str, ts: int
+    *,
+    verifier: str,
+    content_sha256: str,
+    verdict: dict[str, Any],
+    perimeter_stamp: str,
+    ts: int,
+    judge: str = "",
 ) -> dict[str, Any]:
     """The unsigned assertion. ``verdict`` is the closed DefenseVerdict summary
     (flagged_by, risk_level, gaps, oversize, unread, truncated, mode); ``verifier``
-    names the signing ingress; ``perimeter_stamp`` is its policy identity."""
+    names the signing ingress; ``perimeter_stamp`` is its L2 policy identity and
+    ``judge`` its L3 one (provider/model/pack) — the stamp does not cover L3, so
+    the two are pinned separately downstream."""
     return {
         "verifier": verifier,
         "content_sha256": content_sha256,
         "verdict": verdict,
         "perimeter_stamp": perimeter_stamp,
+        "judge": judge,
         "ts": int(ts),
     }
 
@@ -102,6 +111,62 @@ def sign_assertion(assertion: dict[str, Any], signing_key_pem: str) -> dict[str,
     key = edge_key.load_private_key(signing_key_pem)
     signature = edge_key.sign(key, audit_chain.canonical(assertion))
     return {"assertion": assertion, "signature": signature.hex()}
+
+
+#: Why a federated response was NOT trusted (#592, D2a) — the caller re-judges
+#: and maps the reason to a degradation. ``absent``/``bad_signature`` and the
+#: rest are a closed set; ``trusted`` is the one success value.
+TRUST_REASONS = (
+    "absent",
+    "bad_signature",
+    "hash_mismatch",
+    "stamp_mismatch",
+    "judge_mismatch",
+    "mode_mismatch",
+    "stale",
+)
+
+
+def check_trust(
+    envelope: Any,
+    *,
+    public_key: str,
+    content_sha256: str,
+    perimeter_stamp: str,
+    judge: str,
+    mode: str,
+    now: int,
+) -> tuple[dict[str, Any] | None, str]:
+    """Decide whether a federated response's assertion may be trusted (#592, D2a).
+
+    Returns ``(assertion, "trusted")`` iff the envelope verifies against the
+    pinned ``public_key`` AND binds to the delivered bytes (``content_sha256``),
+    the pinned ``perimeter_stamp`` (the peer's L2 model and gates) and ``judge``
+    (its L3 provider/model/pack — the stamp does NOT cover L3, so a peer that
+    swapped to a weaker judge must be caught here), the resolved ``mode``, and is
+    no older than ``MAX_AGE_SECONDS``; otherwise ``(None, reason)`` with a closed
+    reason (``TRUST_REASONS``) so the downstream re-judges and audits WHY it did
+    not trust. Pure and fail-closed: any shortfall is a re-judge, never a trust.
+    """
+    if envelope is None:
+        return None, "absent"
+    assertion = verify_assertion(envelope, public_key)
+    if assertion is None:
+        return None, "bad_signature"
+    verdict = assertion.get("verdict")
+    ts = assertion.get("ts")
+    fresh = isinstance(ts, int) and not isinstance(ts, bool) and abs(now - ts) <= MAX_AGE_SECONDS
+    bindings = (
+        (assertion.get("content_sha256") == content_sha256, "hash_mismatch"),
+        (assertion.get("perimeter_stamp") == perimeter_stamp, "stamp_mismatch"),
+        (assertion.get("judge") == judge, "judge_mismatch"),
+        (isinstance(verdict, dict) and verdict.get("mode") == mode, "mode_mismatch"),
+        (fresh, "stale"),
+    )
+    for bound, reason in bindings:
+        if not bound:
+            return None, reason
+    return assertion, "trusted"
 
 
 def verify_assertion(envelope: Any, public_key_pem: str) -> dict[str, Any] | None:

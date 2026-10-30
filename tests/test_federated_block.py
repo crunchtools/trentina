@@ -25,15 +25,15 @@ class TestSchema:
         assert backend.is_remote
 
     def test_the_block_carries_only_what_is_wired(self) -> None:
-        # C1 added edge_key_env (the downstream signer key); trust_verdict is
-        # D2a's and must not exist before it is honoured.
+        # C1 added edge_key_env (the downstream signer key); D2a added
+        # trust_verdict (the downstream's pin to trust a peer's verdict).
         assert "edge_key_env" in FederatedConfig.model_fields
-        assert "trust_verdict" not in FederatedConfig.model_fields
+        assert "trust_verdict" in FederatedConfig.model_fields
 
-    def test_a_premature_field_is_refused(self) -> None:
-        # trust_verdict arrives with D2a — not before.
+    def test_an_unknown_field_is_refused(self) -> None:
+        # extra="forbid": a field nothing wires does not load quietly.
         with pytest.raises(ValidationError):
-            FederatedConfig(trust_verdict=True)
+            FederatedConfig(not_a_real_field=True)
 
     def test_absent_by_default(self) -> None:
         assert Backend(url=UP).federated is None
