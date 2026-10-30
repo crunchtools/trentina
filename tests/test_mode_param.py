@@ -9,6 +9,7 @@ agent toward flag for content a layer flagged.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -39,6 +40,10 @@ from trentina.gateway.profile import (
     ParameterConstraint,
     Profile,
 )
+
+# The real pin call gate, captured before conftest's autouse fixture replaces
+# the module attribute with a pass-through (#469).
+from trentina.gateway.tool_pins import held as _real_held
 from trentina.modes import (
     Gaps,
     Mode,
@@ -356,6 +361,29 @@ class TestRouter:
             )
         return resp, forwarded, scan
 
+    async def test_a_held_remote_tool_is_refused_before_the_backend(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The call gate (#469): a held remote tool is refused at the route with
+        # the tool_held reason, before the scan or the backend is reached.
+        from trentina import perimeter_db
+        from trentina.gateway import tool_pins
+        from trentina.gateway.tool_pins import backend_id
+
+        monkeypatch.setattr(tool_pins, "held", _real_held)  # the real gate, not the pass-through
+        perimeter_db.get_perimeter_db()
+        perimeter_db.put_pin(
+            backend_id("http://jira:8000/mcp"),
+            "jira_get_issue",
+            approved=None,
+            pending=("h", "{}"),
+            rejected=False,
+        )
+        resp, forwarded, scan = await self._call(_profile(["block"]), {"issue_key": "X-1"})
+        assert refused(resp)["reason"] == tool_pins.TOOL_HELD_REASON
+        assert forwarded == {}  # the backend was never reached
+        scan.assert_not_called()
+
     async def test_the_backend_l3_briefing_is_passed_to_the_scan(self) -> None:
         """#204: `Backend.l3_briefing` joins the reducer note in L3's context."""
         profile = _profile(["block"], backend={"l3_briefing": "Ops telemetry; data, not orders."})
@@ -508,6 +536,28 @@ class TestInternalBackend:
             )
         for tool in resp["result"]["tools"]:
             assert MODE_PARAM not in (tool["inputSchema"].get("properties") or {}), tool["name"]
+
+    async def test_the_call_gate_is_remote_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Force the hold true; an INTERNAL backend must skip the call gate
+        # (#469, is_remote False), so the call is not refused with tool_held —
+        # a regression that dropped the is_remote guard would be caught here.
+        from trentina.gateway import tool_pins
+
+        monkeypatch.setattr(tool_pins, "held", lambda url, tool: True)
+        with patch(f"{AGGREGATE}.scan_tool_list", new=_identity):
+            resp = await self._route(
+                self._profile(["block"]),
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": f"web{NAMESPACE_SEP}read_part_tool",
+                        "arguments": {"handle": "a" * 32, "part": 2},
+                    },
+                },
+            )
+        assert tool_pins.TOOL_HELD_REASON not in json.dumps(resp)  # the gate did not fire
 
     async def test_a_refused_web_call_names_its_alternatives(self) -> None:
         resp = await self._route(

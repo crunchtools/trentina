@@ -12,7 +12,7 @@ from trentina import perimeter_db
 from trentina.gateway import tool_pins
 
 # Imported at module load, before conftest's autouse fixture replaces it on the module.
-from trentina.gateway.tool_pins import check_tools, decide, pending
+from trentina.gateway.tool_pins import check_tools, decide, held, pending
 
 if TYPE_CHECKING:
     import pytest
@@ -52,6 +52,35 @@ def test_a_new_tool_is_held_until_approved() -> None:
     assert decide(URL, "send", approve=True)
     assert _names(check_tools(URL, "b", [_tool()])) == ["send"]
     assert pending(URL) == []
+
+
+def test_held_is_true_until_a_tool_is_approved() -> None:
+    # The call gate (#469): fail closed on a missing row, held while pending,
+    # false once approved.
+    assert held(URL, "send") is True  # no pin row yet
+    check_tools(URL, "b", [_tool()])  # creates the pending hold
+    assert held(URL, "send") is True
+    assert decide(URL, "send", approve=True)
+    assert held(URL, "send") is False  # approved
+
+
+def test_held_is_true_for_a_rejected_tool() -> None:
+    check_tools(URL, "b", [_tool(name="x")])
+    assert decide(URL, "x", approve=False)  # rejected
+    assert held(URL, "x") is True
+
+
+def test_pin_hold_flags_reports_each_state() -> None:
+    # The DB helper the call gate reads (#469): None when no row (fail closed),
+    # (pending, rejected) otherwise — never the approved/pending JSON.
+    bid = tool_pins.backend_id(URL)
+    assert perimeter_db.pin_hold_flags(bid, "send") is None  # no row
+    check_tools(URL, "b", [_tool()])  # creates the pending hold
+    assert perimeter_db.pin_hold_flags(bid, "send") == (True, False)
+    assert decide(URL, "send", approve=False)  # rejected; the pending def stays
+    assert perimeter_db.pin_hold_flags(bid, "send") == (True, True)
+    assert decide(URL, "send", approve=True)  # approved clean
+    assert perimeter_db.pin_hold_flags(bid, "send") == (False, False)
 
 
 def test_first_boot_of_the_upgrade_pins_current_tools_as_approved() -> None:

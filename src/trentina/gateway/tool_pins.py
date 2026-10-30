@@ -150,6 +150,27 @@ def decide(url: str, tool: str, *, approve: bool) -> bool:
     return True
 
 
+#: The closed reason code the call gate refuses a held tool with (#469), in the
+#: JSON-RPC error's ``data.reason``. A federated downstream maps it to its own
+#: words ("held upstream, awaiting approval"); it never relays peer text (#592).
+TOOL_HELD_REASON = "tool_held"
+
+
+def held(url: str, tool: str) -> bool:
+    """Whether a CALL to ``tool`` on ``url`` must be refused by the pin gate (#469).
+
+    True when the tool is not an approved pin: its row is missing (not yet
+    pinned — fail closed; warmup pins every listed tool as approved, and a call
+    that beats the first list waits one list), is held pending approval, or was
+    rejected. False only for a cleanly approved tool. Pinning was a tools/list
+    filter and never a call gate, so a tool whose description changed after
+    approval (or, under long names, one never approved) was callable unapproved;
+    this is the gate that closes that (``transports/mcp`` on a remote backend).
+    """
+    flags = perimeter_db.pin_hold_flags(backend_id(url), tool)
+    return flags is None or flags[0] or flags[1]  # no row = held, fail closed
+
+
 def pending(url: str) -> list[dict[str, Any]]:
     """What is held under ``url``: tool, changed fields, whether rejected."""
     out: list[dict[str, Any]] = []
