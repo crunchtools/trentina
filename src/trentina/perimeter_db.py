@@ -223,6 +223,19 @@ def list_pending_pins(backend_id: str) -> list[sqlite3.Row]:
     return rows
 
 
+def count_pending_pins() -> int:
+    """How many tools are held pending approval, gateway-wide (#592, E1c).
+
+    Across every backend, so the unauthenticated ``/health`` probe can surface a
+    number for Nagios without naming a profile — which backend holds what is in
+    the ``tool_pins`` operator tool, not here.
+    """
+    row = get_perimeter_db().execute(
+        "SELECT COUNT(*) FROM tool_pins WHERE pending_hash IS NOT NULL"
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def get_all_verdicts(perimeter_version: str) -> dict[str, dict[str, Any] | None]:
     """Load the verdicts this perimeter version reached.
 

@@ -28,6 +28,7 @@ from starlette.routing import Route
 
 from ..httpbody import STATUS_TOO_LARGE, RequestBodyCap, TooLargeError
 from ..logsafe import exc_kind, exc_where, redact_source, safe_address
+from ..perimeter_db import count_pending_pins
 from ..quarantine.classifier import classifier_status
 from ..transports.jsonrpc import JSONRPC_INTERNAL_ERROR
 from ..transports.mcp import route_jsonrpc
@@ -434,6 +435,11 @@ def _health_payload(registry: dict[str, Profile]) -> Response:
         "status": "ok",
         "classifier": classifier_status(),
         "profiles": len(registry),
+        # Tools held pending operator approval, gateway-wide (#592, E1c): a
+        # number Nagios can alert on. Summed like the fields below, so the
+        # unauthenticated probe names no profile; which backend holds what is in
+        # the tool_pins operator tool.
+        "pending_pins": count_pending_pins(),
     }
     # Summed, so the unauthenticated probe names no profile; which one is
     # in quarantine_stats' gateway_audit (backend matrix_bridge, #317).
