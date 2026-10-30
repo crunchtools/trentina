@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-30
+
 ### Breaking
 
 - **The guard config keys are renamed to the literal/semantic × request/response vocabulary (#571, #598).** A backend's `parameter_guards` is now `literal_request_guards` and its `response_guards` is now `literal_response_guards`; a profile's `guarded_execution` is now `semantic_request_guards` (the config class `GuardedExecutionConfig` is `SemanticGuardsConfig`). The old keys are removed, and the interim `request_guards` / `intent_guards` names are not adopted — a profile still using any of them fails to load with a specific message, e.g. `parameter_guards was renamed literal_request_guards in 3.0.0` or `guarded_execution was renamed semantic_request_guards in 3.0.0`, rather than Pydantic's generic extra-key error. `tools_allow` / `tools_deny` (the tool guards) keep their names. Behaviour is unchanged, and the audit outcome values (`denied_guard`, `denied_gatekeeper`, …) are unchanged. The agent-facing refusal prefix is now `Refused by semantic request guards:`. See [docs/literal-request-guards.md](docs/literal-request-guards.md), [docs/semantic-request-guards.md](docs/semantic-request-guards.md), [docs/literal-response-guards.md](docs/literal-response-guards.md) and the guard grid in [docs/gateway.md](docs/gateway.md).
