@@ -218,3 +218,24 @@ Publish your plugin repository on GitHub. A good one can be proposed as a PR int
 Trentina's own in-tree transforms — the in-tree transforms implement this *same*
 public contract (core code gets no privileged hook between transform and gate),
 so there is nothing to rewrite.
+
+## Transports — registration is open, external plugins are not
+
+The transport registry is the second of the two registries, and it is only
+partway open. A transport is a `Face` (wire in and out) plus a `Carrier` (to the
+backend); `orchestrator.crossing` runs the two halves in the one order it owns —
+parse, carry, deliver, wrap — which is the security property a transport cannot
+reorder. In-tree code may `transports.registry.register_transport(name,
+transport)` to add a transport the crossing resolves by name, and the
+conformance suite exercises a second, non-`mcp` transport through that path.
+
+What is **not** accepted yet is an EXTERNAL `dist:name` transport plugin. Unlike
+the transform contract, the `Face`/`Carrier` signatures in
+`transports/base.py` are still typed `Any`, and `api_version` is the only frozen
+part of them — so there is no entry-point group to discover against, and
+publishing one now would announce an ABI that #535 (the typed transport
+framework and the face/carrier split) will change. `build_transport` refuses a
+`dist:name` transport by name until then. Registration is also not dispatch: the
+only transport a profile's backend is dispatched over is the built-in `mcp`
+(`TransportName` mirrors what is dispatchable), and wiring a registered transport
+into per-backend dispatch is the first piece of #535, not this door.
