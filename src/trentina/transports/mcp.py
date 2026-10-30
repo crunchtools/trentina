@@ -472,8 +472,18 @@ def _federated_trust(
     if assertion is None:
         _log_untrusted(profile, backend_name, reason, tv.perimeter_stamp)
         return None
+    verdict = assertion["verdict"]
+    # An INCOMPLETE upstream judgment is never trust-delivered (#592): a gap, an
+    # oversize refusal or unread binary means the upstream could not fully read
+    # the content, and whether that is acceptable is THIS downstream's policy
+    # (TRENTINA_REQUIRE_L2/L3, the mode's handling of gaps) — which the trust
+    # path does not consult. Re-judge locally so the downstream's own policy
+    # decides, instead of delivering clean on the peer's weaker gap handling.
+    if verdict.get("gaps") or verdict.get("oversize") or verdict.get("unread_kinds"):
+        _log_untrusted(profile, backend_name, "incomplete_verdict", tv.perimeter_stamp)
+        return None
     return _deliver_trusted(
-        arrived, call_result, assertion["verdict"],
+        arrived, call_result, verdict,
         mode=resolved, policy=policy, stripped=stripped, ok=ok,
     )
 

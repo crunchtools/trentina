@@ -59,7 +59,10 @@ uv run trentina
   blocklist (default: `perimeter.db` beside `QUARANTINE_DB`). See `perimeter_db.py`
   for why it is its own file. It also holds `tool_pins` (#469, `gateway/tool_pins.py`):
   deleting it costs a slow restart AND every remote tool held for re-approval
-  (`tool_pins` operator tool) — dark, not silently trusted.
+  (`tool_pins` operator tool) — dark, not silently trusted. One exception
+  (#592): a `federated:` backend's first reconnect after the store is lost is a
+  first connect, so its offered set is auto-approved as a unit (the trust is the
+  declared edge, not the store).
 - `QUARANTINE_TRUST_CONFIG` — Trust allowlist JSON path
 - `TRENTINA_READ_ROOTS` — `os.pathsep`-separated absolute directories that
   `read_tool` and `dir_tool` may reach (#261); a relative entry fails startup.

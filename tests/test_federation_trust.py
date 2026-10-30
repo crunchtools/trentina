@@ -247,3 +247,21 @@ async def test_the_transport_re_judges_an_untrusted_response() -> None:
             },
         )
     scan.assert_called()  # fell through to the local pipeline, fail-closed
+
+
+@pytest.mark.parametrize(
+    "warning",
+    [
+        pytest.param({"binary_unread": True}, id="gap"),
+        pytest.param({"oversize": True}, id="oversize"),
+        pytest.param({"unread_kinds": ["image/png"]}, id="unread"),
+    ],
+)
+def test_an_incomplete_verdict_re_judges(warning: dict[str, Any]) -> None:
+    # A valid, bound assertion whose verdict carries a gap/oversize/unread is
+    # NOT trust-delivered (#592): the downstream re-judges so its own policy
+    # (REQUIRE_L2/L3, the mode) decides, instead of inheriting the peer's
+    # weaker gap handling. check_trust still passes; the gap bail returns None.
+    priv, pub = _keypair()
+    verdict = vsa.verdict_summary(warning, "flag")
+    assert _decide(_downstream(pub), {vsa.VSA_KEY: _envelope(priv, verdict=verdict)}) is None

@@ -46,8 +46,11 @@ store that is missing holds every tool until an operator releases it: that is
 the fail-safe direction.
 
 The store is a second database from the blocklist on purpose; losing it costs a
-slow restart AND every tool held for re-approval, which is dark rather than
-silently trusted. `cache_flush` and `reconnect_backend` rebuild a profile's
+slow restart AND every **non-federated** tool held for re-approval, which is
+dark rather than silently trusted. A **federated** backend is the one exception
+(see below): with its pins gone, its first reconnect is a first connect, so its
+whole offered set is auto-approved as a unit rather than held — the trust there
+is in the declared edge, not the store. `cache_flush` and `reconnect_backend` rebuild a profile's
 aggregate from the in-memory config and do **not** touch pins — a pin is cleared
 only by `tool_pins reject`/`approve` or by losing the store. The held tools for
 a backend are the rows in `perimeter.db`'s `tool_pins` table with a non-null
