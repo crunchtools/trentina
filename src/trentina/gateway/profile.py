@@ -80,6 +80,7 @@ DECOY_RESULT_MAX_CHARS = 4096
 _REMOTE_ONLY_FIELDS = (
     "headers",
     "auth",
+    "federated",
     "literal_request_guards",
     "literal_response_guards",
     "destination_params",
@@ -637,6 +638,22 @@ class BackendAuth(BaseModel):
         return self
 
 
+class FederatedConfig(BaseModel):
+    """Marks a backend as a federated upstream Trentina — a peer gateway whose
+    own perimeter already judged its responses, not a leaf MCP server (#592).
+
+    Empty today, and deliberately so: in B1 the block's PRESENCE is the whole
+    signal — it declares the trust boundary — and nothing reads its contents
+    yet. A declared option nothing honours is a faked property, so the fields
+    arrive with the code that acts on them: ``edge_key_env`` with the edge-key
+    auth (C1), ``trust_verdict`` with verdict trust (D2a), each earning its
+    validation the day it works. ``extra="forbid"`` keeps a premature option
+    from loading quietly, and the block stays a block so its shape never churns.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+
 class Backend(BaseModel):
     """Per-profile backend MCP server config."""
 
@@ -695,6 +712,18 @@ class Backend(BaseModel):
         description=(
             "Authenticate to this backend with a per-profile grant (#479). "
             "Exclusive with a credential header or a ${VAR} in the URL."
+        ),
+    )
+    federated: FederatedConfig | None = Field(
+        default=None,
+        description=(
+            "Mark this backend as a federated upstream Trentina — a peer gateway "
+            "whose own perimeter already judged its responses (#592). Inert in "
+            "itself today: the link still runs as a plain MCP backend, so the "
+            "interim static-bearer edge keeps working unchanged. Its presence is "
+            "a trust-boundary declaration later items build on (edge-key auth, "
+            "verdict trust). Remote backends only; held across an agent reload "
+            "like the defense block, since it names a trust boundary."
         ),
     )
     timeout_seconds: float = Field(
@@ -880,6 +909,18 @@ class Backend(BaseModel):
         named = [k for k, _ in parse_qsl(parts.query, keep_blank_values=True)]
         if any(_CREDENTIAL_PARAM_RE.search(k) for k in named):
             raise ValueError("auth cannot be combined with a credential query parameter in the url")
+        return self
+
+    @model_validator(mode="after")
+    def federated_is_a_remote_peer(self) -> Backend:
+        """Federation is a relationship with another gateway reached over HTTP.
+
+        An ``internal://`` backend is this gateway's own tool surface, not a
+        peer, so it cannot be federated. A ``decoy://`` backend has no server
+        at all — the ``_REMOTE_ONLY_FIELDS`` check refuses ``federated`` there.
+        """
+        if self.federated is not None and self.is_internal:
+            raise ValueError("federated does not apply to an internal:// backend")
         return self
 
     @field_validator("url")
