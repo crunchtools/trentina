@@ -19,6 +19,7 @@ sign D1's verdict assertions, which are not JWTs.
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import re
 import time
@@ -67,8 +68,14 @@ _CLAIMS = frozenset({"sub", "aud", "iat", "exp"})
 _SUB_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 
+@functools.lru_cache(maxsize=256)
 def load_private_key(pem: str) -> Ed25519PrivateKey:
-    """Load a PEM PKCS#8 Ed25519 private key, or raise ``EdgeKeyError``."""
+    """Load a PEM PKCS#8 Ed25519 private key, or raise ``EdgeKeyError``.
+
+    Memoized by the PEM so the signing hot path parses a key once, not per call
+    (a raised error is not cached). A rotated key is a new PEM, so a new entry;
+    the process already holds the key, so the cache is no new exposure.
+    """
     try:
         key = serialization.load_pem_private_key(pem.encode(), password=None)
     except (ValueError, TypeError) as exc:
@@ -78,8 +85,13 @@ def load_private_key(pem: str) -> Ed25519PrivateKey:
     return key
 
 
+@functools.lru_cache(maxsize=256)
 def load_public_key(pem: str) -> Ed25519PublicKey:
-    """Load a PEM SubjectPublicKeyInfo Ed25519 public key, or raise ``EdgeKeyError``."""
+    """Load a PEM SubjectPublicKeyInfo Ed25519 public key, or raise ``EdgeKeyError``.
+
+    Memoized by the PEM so a federation ingress parses its peers' keys once, not
+    once per authentication attempt (a raised error is not cached).
+    """
     try:
         key = serialization.load_pem_public_key(pem.encode())
     except (ValueError, TypeError) as exc:

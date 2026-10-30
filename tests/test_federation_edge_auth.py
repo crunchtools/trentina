@@ -59,7 +59,8 @@ def _downstream_factory(private_pem: str):
             federated=FederatedConfig(edge_key_env="BREETAI_EDGE_KEY"),
         )
         # The loader would resolve edge_key_env -> edge_key; set it directly here.
-        backend.federated.edge_key = SecretStr(private_pem)  # type: ignore[union-attr]
+        assert backend.federated is not None
+        backend.federated.edge_key = SecretStr(private_pem)
         profile = Profile(
             name="downstream", auth=AuthConfig(bearer_token_env="D"), backends={"fed": backend}
         )
@@ -106,7 +107,8 @@ async def test_a_wrong_edge_key_is_refused() -> None:
 
 def _fed_backend(url: str) -> Backend:
     backend = Backend(url=url, federated=FederatedConfig(edge_key_env="K"))
-    backend.federated.edge_key = SecretStr("pem")  # type: ignore[union-attr]
+    assert backend.federated is not None
+    backend.federated.edge_key = SecretStr("pem")
     return backend
 
 

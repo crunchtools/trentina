@@ -183,12 +183,11 @@ async def _authorize(
     try:
         if verify_edge_jwt_header(auth_header, profile) is not None:
             return None
-    except AuthError as exc:
-        logger.info(  # logsafe: ours — auth.py raises only fixed literals
-            "gateway: edge auth failed profile=%s reason=%s [%s]",
-            profile.name,
-            exc,
-            _client_desc(request),
+    except AuthError:
+        # The reason is always the fixed literal "invalid edge token", so there
+        # is nothing to log beyond that it failed (no exc text — O8/#262).
+        logger.info(
+            "gateway: edge auth failed profile=%s [%s]", profile.name, _client_desc(request)
         )
         return _plain(401, "Unauthorized")
 
