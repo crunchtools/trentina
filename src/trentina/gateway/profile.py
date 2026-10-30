@@ -720,7 +720,12 @@ class FederationConfig(BaseModel):
     A profile with ``federation.peers`` is a federation ingress — a downstream
     peer authenticates to it with an edge JWT signed by one of these keys
     (#592, C1), which is a way to authenticate, so the profile needs no static
-    bearer. C2 extends this block (the offered tool set, trust posture).
+    bearer. ``signing_key_env`` (D1) holds the ingress's OWN Ed25519 private key,
+    with which it signs a verdict assertion beside each federated response so a
+    downstream that pins the matching public key can trust the scan instead of
+    re-judging (#592, D2a trusts it). The upstream's signing key is distinct
+    from a peer's edge key: the edge key is the DOWNSTREAM's (it authenticates a
+    caller), this one is the UPSTREAM's (it vouches for a response).
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
@@ -728,6 +733,20 @@ class FederationConfig(BaseModel):
     peers: dict[str, FederationPeer] = Field(
         default_factory=dict,
         description="Downstream peers that may authenticate with an edge JWT, by name",
+    )
+    signing_key_env: str | None = Field(
+        default=None,
+        description=(
+            "Env var (or its _FILE form) holding this ingress's Ed25519 PRIVATE "
+            "key (PEM PKCS#8), with which it signs the verdict assertion beside a "
+            "federated response (#592, D1). Unset: no assertion is emitted and a "
+            "downstream re-judges, exactly as today."
+        ),
+    )
+    signing_key: SecretStr | None = Field(
+        default=None,
+        exclude=True,
+        description="Resolved signing private key PEM (load-time only, from signing_key_env)",
     )
 
     @field_validator("peers")
@@ -738,6 +757,14 @@ class FederationConfig(BaseModel):
         for name in v:
             if not BACKEND_NAME_RE.match(name):
                 raise ValueError(f"federation peer name {name!r} is not a valid name")
+        return v
+
+    @field_validator("signing_key_env")
+    @classmethod
+    def signing_key_env_is_an_env_name(cls, v: str | None) -> str | None:
+        """Reject lowercase, leading digits, or non-identifier characters."""
+        if v is not None and not ENV_NAME_RE.match(v):
+            raise ValueError(f"signing_key_env {v!r} must be an UPPERCASE env-var identifier")
         return v
 
 

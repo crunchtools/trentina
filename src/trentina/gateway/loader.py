@@ -320,6 +320,14 @@ def _resolve_federation_edge_keys(name: str, profile: Profile) -> None:
         fed.edge_key = _require_env(
             name, fed.edge_key_env, f"federation edge key for backend {backend_name!r}"
         )
+    # The ingress's OWN signing key (#592, D1): the upstream signs a verdict
+    # assertion with it. On the profile, not a backend — it vouches for every
+    # federated response this ingress serves, whatever backend produced it.
+    federation = profile.federation
+    if federation is not None and federation.signing_key_env is not None:
+        federation.signing_key = _require_env(
+            name, federation.signing_key_env, f"federation signing key for profile {name!r}"
+        )
 
 
 def _resolve_bearer_token(name: str, profile: Profile) -> None:
