@@ -44,3 +44,23 @@ never expire. On the first start after upgrading an existing store, the tools
 seen in the first ten minutes are pinned as approved so nothing goes dark. A
 store that is missing holds every tool until an operator releases it: that is
 the fail-safe direction.
+
+## The call gate: detection at list time, enforcement at call time (#469)
+
+A held tool is withheld from `tools/list` AND refused if called: a call to a
+held remote tool is refused before the backend, as an ordinary result (not a
+JSON-RPC error) carrying `reason: tool_held`. A federated downstream maps that
+reason to its own words ("held upstream, awaiting approval"). Internal and
+decoy backends are not gated — only remote ones.
+
+Detection of a changed tool stays at `tools/list` time (the aggregate build);
+enforcement is at call time. There is deliberately no per-call re-validation of
+a tool's current definition against its approved hash. A pin binds the
+definition the AGENT READS — tool poisoning works through the description and
+schema the model is shown, and the agent only ever sees the gateway's served
+(approved) list. A backend that changed its definition after approval but
+before the next `tools/list` has changed something no agent has read, and the
+call the agent makes was composed against the approved text, so that window
+holds no exposure the pin exists to close. What a backend DOES on a call can
+change at any time with no definition change at all; the response perimeter,
+which runs on every call, is the defence there, not the pin.

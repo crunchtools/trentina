@@ -9,6 +9,7 @@ agent toward flag for content a layer flagged.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -535,6 +536,28 @@ class TestInternalBackend:
             )
         for tool in resp["result"]["tools"]:
             assert MODE_PARAM not in (tool["inputSchema"].get("properties") or {}), tool["name"]
+
+    async def test_the_call_gate_is_remote_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Force the hold true; an INTERNAL backend must skip the call gate
+        # (#469, is_remote False), so the call is not refused with tool_held —
+        # a regression that dropped the is_remote guard would be caught here.
+        from trentina.gateway import tool_pins
+
+        monkeypatch.setattr(tool_pins, "held", lambda url, tool: True)
+        with patch(f"{AGGREGATE}.scan_tool_list", new=_identity):
+            resp = await self._route(
+                self._profile(["block"]),
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": f"web{NAMESPACE_SEP}read_part_tool",
+                        "arguments": {"handle": "a" * 32, "part": 2},
+                    },
+                },
+            )
+        assert tool_pins.TOOL_HELD_REASON not in json.dumps(resp)  # the gate did not fire
 
     async def test_a_refused_web_call_names_its_alternatives(self) -> None:
         resp = await self._route(
