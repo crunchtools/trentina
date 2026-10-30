@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import bisect
 import itertools
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -67,6 +68,13 @@ MAX_BYTES = 128 * 1024 * 1024
 response is content nobody has judged yet, kept for a caller that may never
 come back for it, so it is bounded before anything else is."""
 
+#: A handle is ``secrets.token_hex(16)`` — 32 lowercase hex. A federated peer's
+#: handle is shape-checked to this before we reuse it (#592, B2).
+_HANDLE_RE = re.compile(r"^[0-9a-f]{32}$")
+MAX_PARTS = 10_000
+"""An upper bound on a peer's declared part count, so a hostile ``_meta`` cannot
+name an unbounded number of parts."""
+
 
 @dataclass(frozen=True)
 class Part:
@@ -74,6 +82,32 @@ class Part:
 
     text: str
     lead_in: str = ""
+
+
+@dataclass
+class Upstream:
+    """A federated peer's already-paged response the downstream proxies (#592, B2).
+
+    When a federated backend returns a part marker at ``_meta._trentina_part``,
+    the downstream holds THIS instead of a local ``parts`` tuple: it never cut
+    the response, so it forwards ``read_part`` to the peer rather than serving
+    from memory. ``handle`` is the UPSTREAM's handle, reused verbatim.
+
+    Attributes:
+        backend: the downstream's federated backend name, to address the peer.
+        reader: the tool name the peer serves ``read_part`` under, called
+            directly by the proxy (hidden from this profile's own tool list).
+        handle: the upstream's handle for this response.
+        count: the number of parts the upstream declared.
+        tail: the last delivered part's trailing tokens, read in front of the
+            next part as its lead-in (the margin the layers keep).
+    """
+
+    backend: str
+    reader: str
+    handle: str
+    count: int
+    tail: str = ""
 
 
 @dataclass
@@ -132,10 +166,13 @@ class Paged:
     source_type: str | None = None
     domain: str | None = None
     blocklists: bool = True
+    #: Set when this is a federated peer's paging we proxy (#592, B2): ``parts``
+    #: is then empty and the parts are fetched from the peer via ``read_part``.
+    upstream: Upstream | None = None
 
     @property
     def count(self) -> int:
-        return len(self.parts)
+        return self.upstream.count if self.upstream is not None else len(self.parts)
 
 
 def cut(text: str) -> tuple[Part, ...] | None:
@@ -303,6 +340,64 @@ def hold(
         source_type=source_type,
         domain=domain,
         blocklists=blocklists,
+    )
+    _store[paged.handle] = paged
+    return paged
+
+
+def federated_upstream(backend_name: str, meta: dict[str, Any] | None) -> Upstream | None:
+    """Read a federated peer's part marker from a response's ``_meta`` (#592, B2).
+
+    None when the response is not a peer's paged part. Takes ONLY the keys it
+    needs — the handle (32 hex), the declared part count (an int, 2..MAX_PARTS),
+    and the reader (the peer's ``read_part`` tool name) — each shape-checked, and
+    ignores the rest, since ``_meta`` is the peer's data.
+    """
+    body = (meta or {}).get(PART_KEY)
+    if not isinstance(body, dict):
+        return None
+    handle, parts, reader = body.get("handle"), body.get("parts"), body.get("reader")
+    if (
+        not isinstance(handle, str)
+        or not _HANDLE_RE.match(handle)
+        or isinstance(parts, bool)
+        or not isinstance(parts, int)
+        or not 2 <= parts <= MAX_PARTS
+        or not isinstance(reader, str)
+        or not reader
+    ):
+        return None
+    return Upstream(backend=backend_name, reader=reader, handle=handle, count=parts)
+
+
+def hold_federated(origin: Origin, upstream: Upstream, **judged: Any) -> Paged | None:
+    """Hold a federated peer's paging as a proxy, under the peer's own handle.
+
+    ``parts`` is empty: the response lives on the peer, reached through
+    ``read_part``. None on a store collision — two responses cannot share a
+    handle, and a 128-bit handle does not collide by chance, so it is refused
+    rather than overwritten. ``judged`` carries the scan context every part is
+    judged with (``mode``, ``prompt``, ``provenance``, ``l3_context``,
+    ``hidden``, and the ``source`` keys), the same keyword set ``hold`` takes.
+    """
+    now = time.monotonic()
+    expire(now)
+    if upstream.handle in _store:
+        return None
+    _evict(origin.profile, 0)
+    paged = Paged(
+        handle=upstream.handle,
+        profile=origin.profile,
+        backend=origin.backend,
+        tool=origin.tool,
+        label=origin.label,
+        parts=(),
+        is_error=origin.is_error,
+        acted=origin.acted,
+        size=0,
+        used=now,
+        upstream=upstream,
+        **judged,
     )
     _store[paged.handle] = paged
     return paged
@@ -478,6 +573,27 @@ def marker(paged: Paged, number: int) -> dict[str, Any]:
     if paged.flagged_at is not None:
         body["flagged_at"] = paged.flagged_at
     return body
+
+
+def with_part_marker(
+    result: dict[str, Any], body: dict[str, Any], *, reader: str | None = None
+) -> dict[str, Any]:
+    """Attach a part marker at the root AND under ``_meta`` (#592, B2).
+
+    The root ``_trentina_part`` is for an agent client. The copy under ``_meta``
+    is for a federated downstream Trentina: the MCP SDK drops a root-level
+    ``_trentina_part`` before the downstream reads the result, but ``_meta``
+    survives, so a paging proxy can see that the upstream already paged and
+    forward ``read_part`` to it instead of orphaning the rest. ``reader`` — the
+    name this gateway serves ``read_part`` under — rides the ``_meta`` copy only,
+    so the downstream calls the right tool without parsing footer text. Harmless
+    to a non-Trentina client, which ignores an unknown ``_meta`` key.
+    """
+    # PART_KEY stays FIRST, read before the content as a header is; the _meta
+    # copy (self-describing for a federated downstream) rides alongside.
+    meta_body = {**body, "reader": reader} if reader is not None else body
+    meta = {**(result.get("_meta") or {}), PART_KEY: meta_body}
+    return {PART_KEY: body, **result, "_meta": meta}
 
 
 def listing(profile: str) -> list[dict[str, Any]]:

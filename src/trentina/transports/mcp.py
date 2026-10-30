@@ -64,8 +64,10 @@ from ..gateway.filter import filter_tools
 from ..gateway.guards import _response_text as _response_guard_text
 from ..gateway.guards import check_response_guards
 from ..gateway.internal import call_internal_tool
+from ..gateway.internal_edge import READ_NEXT_KEY
 from ..gateway.modes_policy import (
     MODE_PARAM,
+    effective_mode,
     mode_instructions,
     policy_for,
     resolve_call,
@@ -93,6 +95,7 @@ from .jsonrpc import (
 
 if TYPE_CHECKING:
     from ..gateway.args import Normalized
+    from ..gateway.backend import BackendCall
     from ..gateway.profile import Backend, Profile
     from ..gateway.transform import TransformOutcome
     from ..modes import Mode, ModePolicy
@@ -226,6 +229,62 @@ def _has_uninspectable_content(call_result: Any) -> bool:
             return True
         return True
     return False
+
+
+def _federated_continuation(
+    profile: Profile,
+    backend: Backend,
+    backend_name: str,
+    tool_name: str,
+    call_result: BackendCall,
+    result: dict[str, Any],
+    *,
+    mode: Mode,
+    prompt: str | None,
+    provenance: Provenance,
+    reduced: TransformOutcome | None,
+    arrived: Arrived,
+) -> dict[str, Any]:
+    """Hold a federated peer's remaining parts and mark the delivered part 1 (#592, B2).
+
+    A federated peer delivered part 1 (judged by the caller) and holds the rest
+    under its own handle, named in ``call_result.meta._trentina_part``. Hold a
+    proxy under that handle and attach OUR continuation marker to ``result``, so
+    the agent's ``read_part`` forwards to the peer rather than the rest being
+    orphaned. Part 1 was under ``whole_tokens``, so it was never re-paged — no
+    double paging. Returns ``result`` unchanged when the response is not a
+    federated peer's paged part, or when this profile cannot read a part 2.
+    """
+    if backend.federated is None:
+        return result
+    upstream = paging.federated_upstream(backend_name, call_result.meta)
+    reader = _part_reader(profile)
+    if upstream is None or reader is None:
+        return result
+    paged = paging.hold_federated(
+        paging.Origin(
+            profile=profile.name,
+            backend=backend_name,
+            tool=tool_name,
+            label=served_name(profile, backend_name, tool_name) or tool_name,
+            is_error=arrived.is_error,
+            acted=arrived.acted,
+        ),
+        upstream,
+        mode=effective_mode(profile, mode),
+        prompt=prompt,
+        provenance=provenance,
+        l3_context=results._l3_context(backend, reduced)
+        if reduced is not None
+        else backend.l3_briefing,
+        hidden=reduced.hidden if reduced is not None else None,
+    )
+    if paged is None:
+        return result
+    paged.delivered.add(1)
+    marker = paging.marker(paged, 1)
+    marker[READ_NEXT_KEY] = paging.footer(paged, 1, reader)
+    return paging.with_part_marker(result, marker, reader=reader)
 
 
 class McpServerFace(Face):
@@ -597,6 +656,19 @@ class McpServerFace(Face):
                 return Assembled(result, ok, warning=gateway_warning, stripped=stripped)
             results._attach_warning(result, judged.decision.warning)
 
+        result = _federated_continuation(
+            profile,
+            backend,
+            backend_name,
+            tool_name,
+            call_result,
+            result,
+            mode=mode,
+            prompt=prompt,
+            provenance=provenance,
+            reduced=reduced,
+            arrived=arrived,
+        )
         return Assembled(result, ok, warning=gateway_warning, stripped=stripped)
 
     def wrap(self, ctx: McpCrossing, result: dict[str, Any]) -> dict[str, Any]:
