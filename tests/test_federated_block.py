@@ -24,12 +24,14 @@ class TestSchema:
         assert backend.federated is not None
         assert backend.is_remote
 
-    def test_the_block_is_empty(self) -> None:
-        # B1: the block's presence is the whole signal; no field is read yet.
-        assert set(FederatedConfig.model_fields) == set()
+    def test_the_block_carries_only_what_is_wired(self) -> None:
+        # C1 added edge_key_env (the downstream signer key); trust_verdict is
+        # D2a's and must not exist before it is honoured.
+        assert "edge_key_env" in FederatedConfig.model_fields
+        assert "trust_verdict" not in FederatedConfig.model_fields
 
     def test_a_premature_field_is_refused(self) -> None:
-        # trust_verdict arrives with D2a, edge_key_env with C1 — not before.
+        # trust_verdict arrives with D2a — not before.
         with pytest.raises(ValidationError):
             FederatedConfig(trust_verdict=True)
 

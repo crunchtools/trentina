@@ -642,16 +642,107 @@ class FederatedConfig(BaseModel):
     """Marks a backend as a federated upstream Trentina — a peer gateway whose
     own perimeter already judged its responses, not a leaf MCP server (#592).
 
-    Empty today, and deliberately so: in B1 the block's PRESENCE is the whole
-    signal — it declares the trust boundary — and nothing reads its contents
-    yet. A declared option nothing honours is a faked property, so the fields
-    arrive with the code that acts on them: ``edge_key_env`` with the edge-key
-    auth (C1), ``trust_verdict`` with verdict trust (D2a), each earning its
-    validation the day it works. ``extra="forbid"`` keeps a premature option
-    from loading quietly, and the block stays a block so its shape never churns.
+    The block's presence declares the trust boundary (B1). ``edge_key_env``
+    (C1) makes the DOWNSTREAM side of the edge sign a short-lived JWT to the
+    upstream instead of presenting a static bearer. ``trust_verdict`` (D2a, not
+    yet) will let the downstream trust the upstream's signed verdict. A field
+    arrives with the code that acts on it — a declared option nothing honours is
+    a faked property — and ``extra="forbid"`` keeps a premature one from loading
+    quietly.
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    edge_key_env: str | None = Field(
+        default=None,
+        description=(
+            "Env var (or its _FILE form) holding this edge's Ed25519 PRIVATE key "
+            "(PEM PKCS#8). With it, the downstream signs a 60s JWT to the upstream "
+            "(audience = the upstream profile named in this backend's URL) rather "
+            "than a static bearer (#592, C1). Unset: the link uses its "
+            "headers/auth unchanged, so the interim static-bearer edge keeps "
+            "working."
+        ),
+    )
+    edge_key: SecretStr | None = Field(
+        default=None,
+        exclude=True,
+        description="Resolved edge private key PEM (load-time only, from edge_key_env)",
+    )
+
+    @field_validator("edge_key_env")
+    @classmethod
+    def edge_key_env_is_an_env_name(cls, v: str | None) -> str | None:
+        """Reject lowercase, leading digits, or non-identifier characters."""
+        if v is not None and not ENV_NAME_RE.match(v):
+            raise ValueError(f"edge_key_env {v!r} must be an UPPERCASE env-var identifier")
+        return v
+
+
+class FederationPeer(BaseModel):
+    """One downstream peer the upstream federation profile trusts (#592, C1).
+
+    ``public_key`` is the peer's Ed25519 public key (PEM SubjectPublicKeyInfo).
+    The upstream verifies an edge JWT against each peer's key; the name of the
+    key that verifies is the acting peer (C2 reads the caller from the token).
+    A public key is not a secret, so it is inline, not an env reference.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    public_key: str = Field(..., description="The peer's Ed25519 public key, PEM SPKI")
+
+    @field_validator("public_key")
+    @classmethod
+    def public_key_is_ed25519_pem(cls, v: str) -> str:
+        """Fail at load, not at first call, if the PEM is not an Ed25519 key."""
+        from .edge_key import EdgeKeyError, load_public_key
+
+        try:
+            load_public_key(v)
+        except EdgeKeyError as exc:
+            raise ValueError(f"public_key is not a valid Ed25519 PEM: {exc}") from exc
+        return v
+
+
+class FederationConfig(BaseModel):
+    """The upstream (offering) side of federation: the peers this profile trusts.
+
+    A profile with ``federation.peers`` is a federation ingress — a downstream
+    peer authenticates to it with an edge JWT signed by one of these keys
+    (#592, C1), which is a way to authenticate, so the profile needs no static
+    bearer. C2 extends this block (the offered tool set, trust posture).
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    peers: dict[str, FederationPeer] = Field(
+        default_factory=dict,
+        description="Downstream peers that may authenticate with an edge JWT, by name",
+    )
+
+    @field_validator("peers")
+    @classmethod
+    def peers_names_are_well_formed(cls, v: dict[str, FederationPeer]) -> dict[str, FederationPeer]:
+        if not v:
+            raise ValueError("federation.peers, when set, must name at least one peer")
+        for name in v:
+            if not BACKEND_NAME_RE.match(name):
+                raise ValueError(f"federation peer name {name!r} is not a valid name")
+        return v
+
+
+def federation_audience(url: str) -> str | None:
+    """The upstream profile name an edge JWT is audience-pinned to (#592).
+
+    It is the path segment before ``/mcp`` in a federated backend's gateway URL
+    (``…/gateway/<profile>/mcp`` or the test shape ``…/<profile>/mcp``), or None
+    when the URL is not a gateway MCP endpoint.
+    """
+    parts = [p for p in urlsplit(url).path.split("/") if p]
+    if len(parts) >= 2 and parts[-1] == "mcp":
+        return parts[-2]
+    return None
 
 
 class Backend(BaseModel):
@@ -918,9 +1009,22 @@ class Backend(BaseModel):
         An ``internal://`` backend is this gateway's own tool surface, not a
         peer, so it cannot be federated. A ``decoy://`` backend has no server
         at all — the ``_REMOTE_ONLY_FIELDS`` check refuses ``federated`` there.
+
+        When ``edge_key_env`` is set the backend signs a JWT whose audience is
+        the upstream profile named in the URL, so the URL must be a gateway MCP
+        endpoint (``…/<profile>/mcp``) from which that name is derivable.
         """
         if self.federated is not None and self.is_internal:
             raise ValueError("federated does not apply to an internal:// backend")
+        if (
+            self.federated is not None
+            and self.federated.edge_key_env is not None
+            and federation_audience(self.url) is None
+        ):
+            raise ValueError(
+                "a federated backend with edge_key_env must point at a gateway MCP "
+                "endpoint (.../<profile>/mcp), from which the token audience is taken"
+            )
         return self
 
     @field_validator("url")
@@ -2821,6 +2925,15 @@ class Profile(BaseModel):
         default=None,
         description="Google-backed OAuth access for this profile (optional)",
     )
+    federation: FederationConfig | None = Field(
+        default=None,
+        description=(
+            "The upstream side of federation (#592): downstream peers that may "
+            "authenticate to this profile with an edge JWT. A profile with "
+            "federation.peers is a federation ingress and needs no other "
+            "credential (optional)"
+        ),
+    )
     tool_discovery: ToolDiscoveryConfig = Field(
         default_factory=ToolDiscoveryConfig,
         description=(
@@ -3119,8 +3232,13 @@ class Profile(BaseModel):
             return self
         if self.oauth is not None and self.oauth.enabled:
             return self
+        if self.federation is not None and self.federation.peers:
+            # A federation ingress: a downstream peer authenticates with an edge
+            # JWT signed by one of these keys (#592), which is authentication.
+            return self
         raise ValueError(
             f"profile {self.name!r} has no authentication: set auth.bearer_token_env, "
-            "or oauth.enabled with allowed_emails, or both. A profile with "
-            "neither would serve its backends to anyone who found the URL"
+            "or oauth.enabled with allowed_emails, or federation.peers, or a "
+            "combination. A profile with none would serve its backends to anyone "
+            "who found the URL"
         )

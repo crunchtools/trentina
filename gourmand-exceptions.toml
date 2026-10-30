@@ -993,3 +993,38 @@ check = "absolute_paths"
 path = "scripts/runpod_train.py"
 justification = "Paths on the training pod, not on this machine: RunPod's workspace directory, the ssh directory where the pod's sshd reads the host key the runner pins, and the pinned image's own entrypoint and start script, which the boot command hands over to (#17)."
 classification = "by_design"
+
+# --- Federation edge-key auth (#592, C1): structural-similarity false positives ---
+# The closed-shape JWT verifier and the Ed25519 PEM/verify wrappers are guard-clause
+# validators and try/except->bool codecs — the house idiom. They share control-flow
+# SHAPE with unrelated code in other files, never logic; collapsing across these trust
+# boundaries (auth vs tool discovery vs pin detection vs JSON parsing vs crypto) would
+# be wrong, and the detector itself forbids contorting code to dodge the match.
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/edge_key.py"
+pattern = "verify_edge_jwt"
+justification = "A closed-shape JWT verifier is a sequence of fail-closed guard clauses over a parsed object; it shares that SHAPE with tool_pins._pin_one (pin-change detection) but no logic. Both are deliberately literal, auditable guard sequences — the security idiom — and merging JWT verification with pin detection would be nonsense."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/edge_key.py"
+pattern = "load_public_key"
+justification = "load/isinstance/raise is the idiom for loading a typed key from untrusted PEM; it resembles providers/base.json_object (typed JSON parse) in shape only. Unrelated domains (Ed25519 key loading vs JSON object parsing)."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/app.py"
+pattern = "_static_bearer_ok"
+justification = "Both _static_bearer_ok and edge_key.verify answer a credential-check as a bool via try/except, but one is a constant-time static-bearer compare and the other an Ed25519 signature verification — different credentials, no shared logic, just the try/except->bool idiom a security gateway uses everywhere."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/discovery.py"
+pattern = "load"
+justification = "discovery.load (per-session tool loading) and edge_key.verify_edge_jwt (JWT verification) share a guard-clause control-flow shape and nothing else; they are unrelated domains and must stay separate."
+classification = "gourmand_bug"
