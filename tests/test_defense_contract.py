@@ -205,7 +205,7 @@ class TestDefendOwnership:
       the proxied response edge's ``defend`` (``ingress_defense`` keeps the
       verdict cache, the binary-only shortcut and the warning build around it);
       and ``judge_tool_description`` runs the tool-list edge's ``defend``
-      (``ingress_defense.scan_tool_list`` keeps the cache and single-flight).
+      (``tool_list_edge.scan_tool_list`` keeps the cache and single-flight).
       Trentina 3.0 Phase 7 folded all of them in.
 
     A new direct importer is a face reaching past the orchestrator to the layers

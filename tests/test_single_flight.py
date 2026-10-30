@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from trentina import orchestrator as orch
-from trentina.gateway import ingress_defense as ing
+from trentina.gateway import tool_list_edge as ing
 from trentina.gateway import verdict_cache as vc
 from trentina.gateway.profile import AuthConfig, DefenseConfig, Profile
 from trentina.gateway.service import judge_of

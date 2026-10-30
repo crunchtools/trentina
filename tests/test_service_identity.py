@@ -21,7 +21,7 @@ import pytest
 from trentina import orchestrator as orch
 from trentina.config import get_config
 from trentina.gateway import aggregate
-from trentina.gateway import ingress_defense as ing
+from trentina.gateway import tool_list_edge as ing
 from trentina.gateway import verdict_cache as vc
 from trentina.gateway.compress import _call_compress_model
 from trentina.gateway.context import get_current_profile, profile_context

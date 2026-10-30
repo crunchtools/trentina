@@ -34,7 +34,6 @@ from .compress import (
 )
 from .decoy import served_tools
 from .filter import filter_tools
-from .ingress_defense import scan_tool_list
 from .internal import list_internal_tools
 from .modes_policy import (
     MODE_PARAM,
@@ -58,6 +57,7 @@ from .surface import (
     forget_surface,
     record_surface,
 )
+from .tool_list_edge import scan_tool_list
 
 if TYPE_CHECKING:
     from .profile import Backend, Profile
