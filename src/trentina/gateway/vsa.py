@@ -26,7 +26,10 @@ from . import edge_key
 VSA_KEY = "_trentina_vsa"
 
 #: An assertion older than this is not trusted (clock skew + flight time); the
-#: downstream re-judges instead (#592, D2a). Matches the edge JWT's horizon.
+#: downstream re-judges instead (#592, D2a). Wider than the 60 s edge JWT: this
+#: must survive the upstream's own tool-call latency plus the return hop, where
+#: the edge JWT covers only a single outbound request. Bound to content_sha256,
+#: so a replayed assertion only validates the identical bytes it was signed for.
 MAX_AGE_SECONDS = 300
 
 
