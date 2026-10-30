@@ -55,8 +55,9 @@ class Face(ABC):
 
     name: str
     #: The transport contract version this face was written against — the compat
-    #: anchor for when transport plugins unlock (3.0.0). Not yet enforced; the
-    #: built-in ``mcp`` face is version 1.
+    #: anchor for transport registration. ``registry.register_transport`` refuses
+    #: a face whose version this build does not run; the built-in ``mcp`` face is
+    #: version 1.
     api_version: int = 1
 
     @abstractmethod

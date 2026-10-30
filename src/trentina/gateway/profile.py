@@ -179,10 +179,12 @@ ProcessorName = Literal[
 PluginRef = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*:[a-z0-9_]+$")]
 ProcessorRef = ProcessorName | PluginRef
 
-# The wire protocols a backend may be reached by. Mirrors
-# ``transports.registry.TRANSPORTS``; the parity test in
-# ``tests/test_transport_registry.py`` holds the two in step. A ``dist:name``
-# ``PluginRef`` passes this shape but is refused at load until 3.0.0.
+# The wire protocols a backend may be DISPATCHED over. Mirrors
+# ``transports.registry.BUILTIN_TRANSPORTS`` (what the dispatcher wires), not the
+# whole ``TRANSPORTS`` table, which a registered transport may extend without
+# becoming dispatchable; the parity test in ``tests/test_transport_registry.py``
+# holds the Literal and the built-ins in step. A ``dist:name`` ``PluginRef``
+# passes this shape but is refused at load until #535 freezes the contract.
 TransportName = Literal["mcp"]
 
 # FREE only. `detect` (0.38.0) looks at the payload and runs the minifiers
@@ -665,8 +667,8 @@ class Backend(BaseModel):
         default="mcp",
         description=(
             "The wire protocol used to reach this backend. 'mcp' (the only "
-            "built-in) today; a 'dist:name' transport plugin is refused at load "
-            "until the Face/Carrier contract is frozen in 3.0.0."
+            "dispatchable built-in) today; a 'dist:name' transport plugin is "
+            "refused at load until the Face/Carrier contract is frozen (#535)."
         ),
     )
     decoys: dict[str, DecoyTool] = Field(

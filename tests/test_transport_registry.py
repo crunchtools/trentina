@@ -31,8 +31,8 @@ def test_mcp_resolves_to_the_shared_transport() -> None:
     assert build_transport("mcp") is mcp_transport
 
 
-def test_a_transport_plugin_is_refused_until_3_0_0() -> None:
-    with pytest.raises(ProfileConfigError, match="transport plugins are accepted from"):
+def test_a_transport_plugin_is_refused_until_the_contract_is_frozen() -> None:
+    with pytest.raises(ProfileConfigError, match="no entry-point group yet"):
         build_transport("acme-mcp:sse")
 
 

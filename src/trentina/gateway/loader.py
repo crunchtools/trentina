@@ -175,8 +175,9 @@ def _check_plugin_imports(name: str, profile: Profile) -> None:
 
 
 def _check_transports(name: str, profile: Profile) -> None:
-    """Validate every backend's transport at load. 'mcp' resolves; a 'dist:name'
-    transport plugin is refused by name until the contract is frozen in 3.0.0
+    """Validate every backend's transport at load. A registered name ('mcp',
+    plus anything ``register_transport`` added) resolves; a 'dist:name' external
+    transport plugin is refused by name until the contract is frozen (#535)
     (``transports.registry.build_transport``). Lazy import avoids the
     transports→gateway import cycle at module load."""
     from ..transports.registry import build_transport
