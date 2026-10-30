@@ -87,15 +87,15 @@ def _agent_stats(scope: CallerScope) -> dict[str, Any]:
     process defaults, which is both narrower and more accurate: a profile with
     its own provider, model or thresholds was never described by the globals.
     """
-    defense = scope.profile.defense if scope.profile is not None else None
+    defense = scope.profile.defense
     return {
         "scope": scope.label,
         "config": {
-            "provider": defense.provider if defense else None,
-            "model": defense.model if defense else None,
-            "l2_threshold": defense.l2_threshold if defense else None,
-            "enforcement": defense.enforcement if defense else None,
-            "modes": defense.modes if defense else None,
+            "provider": defense.provider,
+            "model": defense.model,
+            "l2_threshold": defense.l2_threshold,
+            "enforcement": defense.enforcement,
+            "modes": defense.modes,
         },
         "classifier": _classifier(),
         "blocklist": get_blocklist_stats(profile=scope.name),

@@ -503,11 +503,6 @@ class Config:
         """
         return max(self.part_target_tokens * self.max_parts, self.admission_tokens)
 
-    @property
-    def has_api_key(self) -> bool:
-        """Whether a Gemini key is set. Only Gemini's; see ``has_llm``."""
-        return bool(self.api_key.get_secret_value())
-
     def provider_key(self, provider: str) -> str:
         """The global env key for *provider*; empty when unset or keyless."""
         keys = {
@@ -523,9 +518,9 @@ class Config:
         """Whether a standalone model call has somewhere to go.
 
         The global provider or any configured fallback, each either ollama
-        (keyless) or holding its key: the same chain the calls walk.
-        ``has_api_key`` answered this until 0.41.0 and only ever knew about
-        Gemini, so a gateway judging on OpenRouter looked like it had no L3.
+        (keyless) or holding its key: the same chain the calls walk. A
+        Gemini-only predicate answered this until 0.41.0, so a gateway judging
+        on OpenRouter looked like it had no L3; that predicate is gone (3.0.1).
         """
         return any(
             name == "ollama" or bool(self.provider_key(name))

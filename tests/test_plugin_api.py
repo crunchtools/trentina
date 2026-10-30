@@ -122,6 +122,25 @@ def test_plugin_with_unsupported_api_version_is_refused(monkeypatch: pytest.Monk
         resolve_transform("x:future", {}, profile_name="p")
 
 
+def test_plugin_with_bool_api_version_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``bool`` subclasses ``int`` and ``True == 1``; an ``isinstance`` check
+    would admit ``api_version = True`` as version 1. The exact-``int`` check
+    refuses it by name."""
+
+    class Boolish(Transform):
+        name = "boolish"
+        api_version = True
+
+        async def run(self, payload: str, _ctx: TransformContext, /) -> TransformResult:
+            return Applied(payload)
+
+    monkeypatch.setattr(
+        registry, "discover", lambda _group: {"x:boolish": _FakeEntryPoint(lambda _c: Boolish())}
+    )
+    with pytest.raises(ProfileConfigError, match="api_version"):
+        resolve_transform("x:boolish", {}, profile_name="p")
+
+
 def test_plugin_that_raises_on_build_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     """A factory that throws yields a clean config refusal, not an opaque
     traceback that aborts the whole load."""

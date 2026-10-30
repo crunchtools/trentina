@@ -414,7 +414,6 @@ class TestStatsReportsClassifier:
         ):
             mock_config.return_value.model = "gemini-2.5-flash-lite"
             mock_config.return_value.admission_tokens = 32_768
-            mock_config.return_value.has_api_key = True
             mock_config.return_value.classifier_threshold = 0.5
             mock_config.return_value.classifier_model = "prompt-guard-2-86m"
             mock_config.return_value.classifier_model_path = "/models/prompt-guard-2-86m"

@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastmcp.tools import ToolResult
 
 from trentina.modes import Mode
 from trentina.server import mcp
@@ -101,3 +102,54 @@ async def test_every_family_extracts_what_the_dict_form_asks(
     call = fake.call_args
     assert Mode.REDACT in (*call.args, *call.kwargs.values())
     assert "What ships?" in (*call.args, *call.kwargs.values())
+
+
+class TestStandaloneRefusalsAreResults:
+    """#550: a standalone tool returns a policy REFUSAL as an ordinary result
+    (``isError`` false), not a raised exception, so a stock agent's strike
+    breaker does not count the refusal against the server. A genuine failure
+    (a timeout, a provider error) still raises. The gateway path is untouched.
+    """
+
+    async def test_a_blocked_source_is_a_result_not_an_error(self) -> None:
+        from trentina.errors import BlockedSourceError
+        from trentina.server import fetch_tool
+
+        refusal = {"reason": "on the blocklist", "alternatives": []}
+        with patch(
+            "trentina.server.fetch_page",
+            AsyncMock(side_effect=BlockedSourceError("src", "on the blocklist", refusal=refusal)),
+        ):
+            result = await fetch_tool(url="https://example.com")
+        assert isinstance(result, ToolResult)
+        assert result.is_error is False
+        assert result.structured_content == {"_trentina_refusal": refusal}
+        assert "[TRENTINA] Refused" in result.content[0].text
+
+    async def test_a_file_read_refusal_is_a_result(self) -> None:
+        from trentina.errors import FileReadError
+        from trentina.server import read_tool
+
+        with patch("trentina.server.read_file", AsyncMock(side_effect=FileReadError("binary"))):
+            result = await read_tool(path="/tmp/x")
+        assert isinstance(result, ToolResult)
+        assert result.is_error is False
+        assert result.structured_content == {
+            "_trentina_refusal": {"reason": "binary", "alternatives": []}
+        }
+
+    async def test_a_genuine_failure_still_raises(self) -> None:
+        from trentina.server import fetch_tool
+
+        with (
+            patch("trentina.server.fetch_page", AsyncMock(side_effect=TimeoutError("slow"))),
+            pytest.raises(TimeoutError),
+        ):
+            await fetch_tool(url="https://example.com")
+
+    async def test_a_clean_result_passes_through_unchanged(self) -> None:
+        from trentina.server import fetch_tool
+
+        with patch("trentina.server.fetch_page", AsyncMock(return_value={"content": "ok"})):
+            result = await fetch_tool(url="https://example.com")
+        assert result == {"content": "ok"}

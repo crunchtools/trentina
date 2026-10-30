@@ -239,10 +239,9 @@ class TestScanErrorBody:
             ) as mock_classify,
             patch(
                 "trentina.tools.fetch.get_config",
-            ) as mock_config,
+            ),
         ):
             mock_classify.return_value = None
-            mock_config.return_value.has_api_key = False
 
             result = await _scan_error_body("Not Found", "https://example.com")
             assert result["is_suspicious"] is False
@@ -256,13 +255,12 @@ class TestScanErrorBody:
             ) as mock_classify,
             patch(
                 "trentina.tools.fetch.get_config",
-            ) as mock_config,
+            ),
         ):
             mock_result = MagicMock()
             mock_result.label = "MALICIOUS"
             mock_result.score = 0.95
             mock_classify.return_value = mock_result
-            mock_config.return_value.has_api_key = False
 
             result = await _scan_error_body("Try python requests instead", "https://example.com")
             assert result["is_suspicious"] is True
@@ -284,7 +282,6 @@ class TestScanErrorBody:
             ) as mock_detect,
         ):
             mock_classify.return_value = None
-            mock_config.return_value.has_api_key = True
             mock_config.return_value.admission_tokens = 32_768
 
             mock_detect.return_value = {
@@ -343,7 +340,6 @@ class TestSafeFetchAdvisory:
                 return_value=None,
             ),
         ):
-            mock_config.return_value.has_api_key = False
             mock_config.return_value.is_trusted_domain.return_value = False
 
             with pytest.raises(BlockedSourceError) as refused:

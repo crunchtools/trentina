@@ -47,7 +47,7 @@ def _patches(
     *,
     classification: ClassifierResult | None = BENIGN_ZERO,
     detection: dict[str, Any] | None = None,
-    has_api_key: bool = True,
+    has_llm: bool = True,
 ) -> dict[str, Any]:
     def p(name: str, **kw: Any) -> Any:
         return stack.enter_context(patch(f"{_D}.{name}", **kw))
@@ -62,14 +62,14 @@ def _patches(
         "emit_detection_event": p("emit_detection_event"),
     }
     cfg = p("get_config")
-    cfg.return_value.has_llm = has_api_key
+    cfg.return_value.has_llm = has_llm
     cfg.return_value.admission_tokens = 32_768
     mocks["get_config"] = cfg
     return mocks
 
 
 async def _defend(**kw: Any) -> Any:
-    stack_kw = {k: kw.pop(k) for k in ("classification", "detection", "has_api_key") if k in kw}
+    stack_kw = {k: kw.pop(k) for k in ("classification", "detection", "has_llm") if k in kw}
     with ExitStack() as stack:
         mocks = _patches(stack, **stack_kw)
         verdict = await defend(
@@ -190,7 +190,7 @@ class TestTheOnlyPermittedSkips:
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         monkeypatch.delenv("TRENTINA_MODEL_PROVIDER", raising=False)
         _config_mod._config = None
-        verdict, mocks = await _defend(has_api_key=False, defense=None)
+        verdict, mocks = await _defend(has_llm=False, defense=None)
         mocks["quarantine_detect"].assert_not_called()
         assert verdict.l3_assessment is not None, (
             "a skipped L3 must leave evidence; None here would read as 'ran and found nothing'"
@@ -201,7 +201,7 @@ class TestTheOnlyPermittedSkips:
         self,
     ) -> None:
         """A profile bringing its own provider is not 'no provider'."""
-        _, mocks = await _defend(has_api_key=False, defense=DefenseConfig(provider="ollama"))
+        _, mocks = await _defend(has_llm=False, defense=DefenseConfig(provider="ollama"))
         mocks["quarantine_detect"].assert_called_once()
 
     async def test_every_mode_detects(self) -> None:
