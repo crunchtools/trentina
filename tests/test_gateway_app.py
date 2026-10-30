@@ -200,6 +200,7 @@ class TestHealthEndpoint:
         assert body["status"] == "ok"
         assert body["profiles"] == 1
         assert body["classifier"] in {"loaded", "not-loaded", "failed"}
+        assert body["pending_pins"] == 0  # a Nagios-pollable count (#592, E1c)
 
     def test_health_needs_no_auth(self, client: TestClient) -> None:
         """A probe that requires a per-profile token is useless to a monitor."""

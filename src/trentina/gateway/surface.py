@@ -79,6 +79,12 @@ class BackendSurface:
     offered: Stage
     allowed: Stage
     shaped: Stage
+    # Tools a pin hold withholds from this caller's allowed slice (#592, E1c).
+    # ``held`` is what THIS gateway holds; ``held_upstream`` is what a federated
+    # peer reported holding (its tools/list ``_meta._trentina_pins.held``), None
+    # for a non-federated backend or a peer that reported nothing.
+    held: int = 0
+    held_upstream: int | None = None
 
 
 @dataclass
@@ -108,6 +114,7 @@ class Surface:
             "offered": offered.as_dict(),
             "allowed": allowed.as_dict(),
             "served": self.served.as_dict(),
+            "held": sum(b.held for b in self.backends.values()),
             "saved": {
                 "by_allowlist": saved(offered.bytes, allowed.bytes),
                 # Compression and compaction, net of the params the gateway
@@ -126,6 +133,8 @@ class Surface:
                     "offered": b.offered.as_dict(),
                     "allowed": b.allowed.as_dict(),
                     "shaped": b.shaped.as_dict(),
+                    "held": b.held,
+                    **({"held_upstream": b.held_upstream} if b.held_upstream is not None else {}),
                 }
                 for name, b in sorted(
                     self.backends.items(), key=lambda kv: kv[1].offered.bytes, reverse=True
@@ -157,3 +166,15 @@ def surface_report(profile_name: str) -> dict[str, Any] | None:
 def surface_profiles() -> list[str]:
     """Names of the profiles with a surface recorded, sorted."""
     return sorted(_surfaces)
+
+
+def held_total(profile_name: str) -> int:
+    """Tools this profile is withholding under a pin hold, summed (#592, E1c).
+
+    0 when the aggregate is not built yet, so a federation ingress that
+    reports it never claims a hold it cannot substantiate.
+    """
+    surface = _surfaces.get(profile_name)
+    if surface is None:
+        return 0
+    return sum(b.held for b in surface.backends.values())

@@ -83,6 +83,16 @@ def test_pin_hold_flags_reports_each_state() -> None:
     assert perimeter_db.pin_hold_flags(bid, "send") == (False, False)
 
 
+def test_count_pending_pins_is_gateway_wide() -> None:
+    # Held tools on two different backends; the count sums across both (#592,
+    # E1c), and approving one decrements it.
+    check_tools(URL, "b", [_tool(name="send")])
+    check_tools("http://other.invalid/mcp", "c", [_tool(name="fetch")])
+    assert perimeter_db.count_pending_pins() == 2
+    assert decide(URL, "send", approve=True)
+    assert perimeter_db.count_pending_pins() == 1
+
+
 def test_first_boot_of_the_upgrade_pins_current_tools_as_approved() -> None:
     _upgraded()
     assert _names(check_tools(URL, "b", [_tool()])) == ["send"]

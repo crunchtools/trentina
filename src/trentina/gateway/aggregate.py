@@ -23,6 +23,7 @@ from ..reserved import (
 )
 from . import discovery, tool_pins
 from .backend import (
+    _federated_held_upstream,
     list_backend_tools,
     on_backend_cache_evict,
 )
@@ -216,6 +217,27 @@ def _without_held(
     return tool_pins.check_tools(backend.url, backend_name, tools)
 
 
+def _held_in_allowed_slice(
+    backend: Backend, offered: list[dict[str, Any]], unheld: list[dict[str, Any]]
+) -> int:
+    """How many HELD tools would otherwise be in this profile's allowed slice (#592, E1c).
+
+    The surface's ``allowed`` is measured after both the hold filter and the
+    allowlist, so it cannot tell a hold from an allowlist drop. This counts the
+    held tools (offered minus unheld) that also pass the allowlist — the number
+    a federation ingress reports to a downstream as "held upstream", scoped to
+    the caller's own slice so no hold from another profile leaks.
+    """
+    if backend.is_internal or backend.is_decoy:
+        return 0
+    unheld_names = {t.get("name") for t in unheld}
+    held = [t for t in offered if t.get("name") not in unheld_names]
+    if not held:
+        return 0
+    entries = [_backend_tool_entry(t, backend) for t in held]
+    return len(filter_tools(entries, backend))
+
+
 async def _build_profile_tools(
     profile: Profile, generation: int | None = None
 ) -> list[dict[str, Any]]:
@@ -249,7 +271,9 @@ async def _build_profile_tools(
         """
         raw_tools = await _offered_tools(backend_name, backend, profile)
         offered = await asyncio.to_thread(Stage.of, raw_tools)
-        raw_tools = _without_held(backend_name, backend, raw_tools)
+        unheld = _without_held(backend_name, backend, raw_tools)
+        held_count = _held_in_allowed_slice(backend, raw_tools, unheld)
+        raw_tools = unheld
         # An internal tool takes a mode only if it declares one: the admin
         # tools return gateway-authored data that no mode applies to. Every
         # REMOTE tool takes one, because its response crosses the perimeter.
@@ -303,7 +327,15 @@ async def _build_profile_tools(
             namespaced_tool["name"] = f"{backend_name}{NAMESPACE_SEP}{tool['name']}"
             namespaced.append(namespaced_tool)
         shaped = await asyncio.to_thread(Stage.of, namespaced)
-        return namespaced, BackendSurface(offered, allowed, shaped)
+        return namespaced, BackendSurface(
+            offered,
+            allowed,
+            shaped,
+            held=held_count,
+            held_upstream=(
+                _federated_held_upstream.get(backend.url) if backend.federated else None
+            ),
+        )
 
     tasks = [_fetch_one(name, backend) for name, backend in profile.backends.items()]
     results = await asyncio.gather(*tasks, return_exceptions=True)
