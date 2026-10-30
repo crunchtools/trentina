@@ -122,6 +122,7 @@ def _build_profile(name: str, body: Any) -> Profile:
     _resolve_oauth_audience(name, profile)
     _resolve_llm_key_secrets(name, profile)
     _resolve_grant_tokens(name, profile)
+    _resolve_federation_edge_keys(name, profile)
     _expand_backend_env_refs(name, profile)
     _check_drivers(name, profile)
     _check_plugin_imports(name, profile)
@@ -303,6 +304,22 @@ def _resolve_grant_tokens(name: str, profile: Profile) -> None:
     for upstream, egress in profile.egress_http.items():
         if egress.token_env is not None:
             egress.token = _require_env(name, egress.token_env, f"egress_http.{upstream} token")
+
+
+def _resolve_federation_edge_keys(name: str, profile: Profile) -> None:
+    """Resolve each federated backend's edge private key from the environment (#592).
+
+    The key signs the downstream's JWT to the upstream. Fails closed on an unset
+    var, like every other credential: a federated edge that names a key env must
+    have it, or the link is misconfigured.
+    """
+    for backend_name, backend in profile.backends.items():
+        fed = backend.federated
+        if fed is None or fed.edge_key_env is None:
+            continue
+        fed.edge_key = _require_env(
+            name, fed.edge_key_env, f"federation edge key for backend {backend_name!r}"
+        )
 
 
 def _resolve_bearer_token(name: str, profile: Profile) -> None:

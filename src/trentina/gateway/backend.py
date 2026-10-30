@@ -31,6 +31,7 @@ from mcp_types import INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND
 
 from ..database import delete_all_tool_lists, delete_tool_list, save_tool_list
 from ..logsafe import exc_kind, redact_source, safe_url
+from . import edge_key
 from .circuit import breaker
 from .context import get_current_profile
 from .errors import (
@@ -40,6 +41,7 @@ from .errors import (
     BackendResponseTooLargeError,
     GatewayError,
 )
+from .profile import federation_audience
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -562,6 +564,17 @@ def _cooldown_key(profile: Profile | None, backend_name: str) -> str:
     return f"{profile.name if profile else ''}:{backend_name}"
 
 
+def _edge_jwt(url: str, private_key_pem: str, caller: str) -> str:
+    """Sign the downstream's 60s JWT to a federated upstream (#592, C1).
+
+    The audience is the upstream profile named in the backend URL (the Backend
+    validator guarantees it is derivable whenever an edge key is set); the
+    subject is the calling profile.
+    """
+    key = edge_key.load_private_key(private_key_pem)
+    return edge_key.sign_edge_jwt(key, sub=caller, aud=federation_audience(url) or "")
+
+
 async def _credentials(
     backend_name: str, backend: Backend, profile: Profile | None
 ) -> tuple[dict[str, str] | None, BackendGrant | None]:
@@ -571,6 +584,15 @@ async def _credentials(
     reached the backend, and must neither count against the circuit nor
     hold its half-open probe.
     """
+    if (
+        backend.federated is not None
+        and backend.federated.edge_key is not None
+        and profile is not None
+    ):
+        # Federated edge (#592): sign a short-lived JWT to the upstream instead
+        # of a static bearer. Takes precedence over any header credential.
+        jwt = _edge_jwt(backend.url, backend.federated.edge_key.get_secret_value(), profile.name)
+        return {**backend.headers, "Authorization": f"Bearer {jwt}"}, None
     if backend.auth is None:
         return backend.headers or None, None
     from .backend_oauth import fresh_grant

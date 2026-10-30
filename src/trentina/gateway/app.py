@@ -31,7 +31,7 @@ from ..logsafe import exc_kind, exc_where, redact_source, safe_address
 from ..quarantine.classifier import classifier_status
 from ..transports.jsonrpc import JSONRPC_INTERNAL_ERROR
 from ..transports.mcp import route_jsonrpc
-from .auth import verify_bearer, verify_oauth
+from .auth import verify_bearer, verify_edge_jwt_header, verify_oauth
 from .context import current_session, session_fingerprint
 from .errors import (
     AuthError,
@@ -176,6 +176,21 @@ async def _authorize(
     auth_header = request.headers.get("authorization")
     if _static_bearer_ok(auth_header, profile):
         return None
+
+    # A federated peer's edge JWT (#592, C1), for a federation-ingress profile.
+    # Only engages when the profile has federation.peers; a bad edge token is
+    # fail-closed (401), never a fall-through.
+    try:
+        if verify_edge_jwt_header(auth_header, profile) is not None:
+            return None
+    except AuthError as exc:
+        logger.info(  # logsafe: ours — auth.py raises only fixed literals
+            "gateway: edge auth failed profile=%s reason=%s [%s]",
+            profile.name,
+            exc,
+            _client_desc(request),
+        )
+        return _plain(401, "Unauthorized")
 
     if profile.oauth is not None and profile.oauth.enabled:
         # A bearer was presented if the header parses as one, whether or not it

@@ -413,14 +413,13 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
         if old != getattr(after.defense, field_name):
             setattr(after.defense, field_name, old)
             held.append(f"defense.{field_name}")
-    # Six blocks are perimeter end to end, so each is held whole: the bridge's
-    # plaintext side (#162); where the agent's client may be tunnelled (#442);
-    # which repositories and branches it may push to (#453); which HTTP
-    # destinations, methods and paths it may reach (#511); which calls are
-    # judged before they leave, and which responses are judged before they are
-    # delivered (#456). llm_keys is not held and git/egress_http
-    # are: a key buys model calls, while one more pattern is one more place a
-    # talked-round agent can send to.
+    # Seven blocks are perimeter end to end, held whole: the bridge's plaintext
+    # side (#162), where the client may be tunnelled (#442), which repos it may
+    # push to (#453), which HTTP destinations it may reach (#511), which calls
+    # and responses a gatekeeper judges (#456), and which federated peers may
+    # authenticate — a key an agent adds could mint any caller (#592). llm_keys
+    # is not held and git/egress_http are: a key buys model calls, one more
+    # pattern is one more place a talked-round agent can send to.
     for block in (
         "matrix_bridge",
         "client_egress",
@@ -428,6 +427,7 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
         "egress_http",
         "semantic_request_guards",
         "semantic_response_guards",
+        "federation",
     ):
         if getattr(after, block) != getattr(before, block):
             setattr(after, block, getattr(before, block))
@@ -470,6 +470,15 @@ def _hold_federated(before: Profile, after: Profile) -> list[str]:
         if after_backend.federated != before_fed:
             after_backend.federated = before_fed
             held.append(f"backends.{name}.federated")
+        # The url of a backend that was federated is held too (#592, C1):
+        # repointing it would send the edge key to a different host.
+        if (
+            before_backend is not None
+            and before_fed is not None
+            and after_backend.url != before_backend.url
+        ):
+            after_backend.url = before_backend.url
+            held.append(f"backends.{name}.url")
     return held
 
 
