@@ -218,12 +218,16 @@ async def _part_blocks(
     return list(call.content), up.tail
 
 
-def _joined_tail(blocks: list[dict[str, Any]]) -> str:
-    """The trailing text of delivered blocks, read in front of the next
-    forwarded part so an instruction split across the peer's cut is read whole.
+#: Characters of a forwarded part's end kept as the next part's lead-in, so an
+#: instruction split across the peer's cut is read whole by the layers (#592, B2).
+_LEAD_IN_CHARS = 2048
 
-    Collected from the end and stopped once 2048 characters are in hand, so the
-    temporary is bounded by the retained tail rather than the whole part.
+
+def _joined_tail(blocks: list[dict[str, Any]]) -> str:
+    """The trailing ``_LEAD_IN_CHARS`` of delivered blocks, read in front of the
+    next forwarded part so an instruction split across the peer's cut is read
+    whole. Collected from the end and stopped once that many characters are in
+    hand, so the temporary is bounded by the retained tail, not the whole part.
     """
     tail: list[str] = []
     kept = 0
@@ -233,9 +237,9 @@ def _joined_tail(blocks: list[dict[str, Any]]) -> str:
         text = block.get("text", "")
         tail.append(text)
         kept += len(text) + 1  # the newline each join adds back
-        if kept >= 2048:
+        if kept >= _LEAD_IN_CHARS:
             break
-    return "\n".join(reversed(tail))[-2048:]
+    return "\n".join(reversed(tail))[-_LEAD_IN_CHARS:]
 
 
 def _framed_blocks(
