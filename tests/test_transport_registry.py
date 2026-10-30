@@ -161,6 +161,17 @@ def test_registering_an_unrunnable_api_version_is_refused() -> None:
 
 
 @pytest.mark.usefixtures("clean_registry")
+def test_a_bool_api_version_is_not_mistaken_for_version_one() -> None:
+    """``bool`` is an ``int`` subclass and ``True == 1``; an ``isinstance`` check
+    would admit ``api_version = True`` as version 1. The exact-``int`` check
+    refuses it."""
+    transport = _double()
+    transport.face.api_version = True
+    with pytest.raises(ValueError, match="api_version this build does not run"):
+        register_transport("boolish", transport)
+
+
+@pytest.mark.usefixtures("clean_registry")
 def test_a_registered_transport_does_not_become_a_dispatchable_name() -> None:
     """Registration is not dispatch: the ``TransportName`` Literal is unchanged,
     so a profile still cannot name the registered transport for a backend."""

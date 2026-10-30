@@ -21,6 +21,7 @@ dispatchable (``mcp``), not what is registered.
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING
 
 from .base import Carrier, Face
@@ -28,6 +29,12 @@ from .mcp import mcp_transport
 
 if TYPE_CHECKING:
     from .base import Transport
+
+#: Guards the duplicate-name check and the insertion in ``register_transport`` as
+#: one critical section, so "a name is never reassigned" holds even if two
+#: callers register at once. Registration is import/startup-time today, but the
+#: guarantee is the ``names.py`` rule and it costs one lock to make it real.
+_REGISTER_LOCK = threading.Lock()
 
 #: The ``api_version`` values this build's crossing can run. A registered
 #: transport declaring anything else is refused: its contract is not this one.
@@ -49,11 +56,13 @@ TRANSPORTS: dict[str, Transport] = {"mcp": mcp_transport}
 def _supported_api(half: Face | Carrier) -> bool:
     """Whether ``half`` declares an ``api_version`` this build runs.
 
-    ``isinstance(int)`` first, as ``plugins/registry.py`` does: an unhashable or
-    non-int version would raise on the ``in`` test otherwise.
+    ``type(version) is int`` rather than ``isinstance``: ``bool`` is an ``int``
+    subclass and ``True == 1``, so an ``isinstance`` check would admit
+    ``api_version = True`` as version 1. An exact ``int`` also guards the ``in``
+    test against an unhashable or non-int version.
     """
     version = getattr(half, "api_version", None)
-    return isinstance(version, int) and version in SUPPORTED_TRANSPORT_API
+    return type(version) is int and version in SUPPORTED_TRANSPORT_API
 
 
 def register_transport(name: str, transport: Transport) -> None:
@@ -80,8 +89,6 @@ def register_transport(name: str, transport: Transport) -> None:
             f"refused until #535 freezes the Face/Carrier contract; register an "
             f"in-process transport under a plain name"
         )
-    if name in TRANSPORTS:
-        raise ValueError(f"transport {name!r} is already registered; names are never reassigned")
     if not isinstance(transport.face, Face):
         raise TypeError(f"transport {name!r}: face is not a Face")
     if not isinstance(transport.carrier, Carrier):
@@ -91,7 +98,14 @@ def register_transport(name: str, transport: Transport) -> None:
             f"transport {name!r}: declares an api_version this build does not run; "
             f"supported: {sorted(SUPPORTED_TRANSPORT_API)}"
         )
-    TRANSPORTS[name] = transport
+    # The duplicate check and the insertion are one critical section: two
+    # callers must not both pass the check and then overwrite each other.
+    with _REGISTER_LOCK:
+        if name in TRANSPORTS:
+            raise ValueError(
+                f"transport {name!r} is already registered; names are never reassigned"
+            )
+        TRANSPORTS[name] = transport
 
 
 def build_transport(name: str) -> Transport:
