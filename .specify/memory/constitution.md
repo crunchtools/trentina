@@ -1,8 +1,8 @@
 # trentina Constitution
 
-> **Version:** 2.9.0
+> **Version:** 2.10.0
 > **Ratified:** 2026-09-22
-> **Amended:** 2026-10-14
+> **Amended:** 2026-10-30
 > **Status:** Active
 > **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.27.0
 > **Profile:** Security Gateway
@@ -86,6 +86,19 @@ unread and each layer reads once; layers share findings, never inputs; a
 layer's weakness is fixed inside that layer or at model selection; read time
 is linear) are written in `docs/defense-pipeline.md` under the same heading,
 and `tests/test_layer_contract.py` enforces the first two.
+
+The one boundary at which a payload may be delivered without this gateway
+running its three layers is a **declared federation trust boundary** (#592):
+where an operator has pinned a federated upstream's key, perimeter stamp and
+judge, a response the upstream already scanned is delivered on its signed
+verdict instead of being re-judged. This is not an off switch — the layers ran
+once, at the upstream's ingress, and the downstream serves exactly that
+conclusion, the same "each layer reads once" rule carried over a signed
+channel. It is bound to the exact delivered bytes, the upstream's perimeter
+stamp and its judge, and it is fail-closed: an absent, forged, stale or
+mismatched verdict falls through to the full local pipeline. The carve-out
+lives in the response edge, never in a layer, so the four rules above still
+hold for every other ingress. See `docs/federation.md` and known gap 33.
 
 - **L1 (deterministic):** `l1/` counts obfuscation, hidden markup, encoded
   blobs, exfiltration URLs, delimiters and directives, by type; its counts
@@ -326,3 +339,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.7.0 | 2026-10-11 | The internal tools' responses are delivered in judged parts too (#446), each part judged as the tool's source. L1 counts a line written to look like the gateway's own (#447). Known gap 28: L2 flags machine-written meeting notes that end in bare links (#450) |
 | 2.8.0 | 2026-10-12 | Git transport (#453): a route carries git's smart HTTP to the repositories a profile lists, with the forge token injected by the gateway. The gateway terminates the connection, so it reads and enforces everything that is deterministic text (the path, the service, the protocol, a fetch request, a push's command list, ref listings) and hands none of it to the three layers: a pack is passed on unread and ref names are bounded but not judged, which is known gap 29 and a stated exception to the first rule of the layer contract. The block is perimeter: held on an agent reload, refused on a honeypot. `PERIMETER_VERSION` does not move: the route reaches no verdict a cache holds |
 | 2.9.0 | 2026-10-14 | Guarded execution (#456): a profile names tools whose calls its judge reads against an operator's plain-language policy before they are forwarded. It only subtracts, fails closed, judges the arguments with the three layers before the judge reads them, and returns a closed reason code. The block is perimeter: held on an agent reload, refused on a honeypot. Known gap 30: the gatekeeper is a model and judges one call at a time |
+| 2.10.0 | 2026-10-30 | Gateway-to-gateway federation (#592): a declared trust boundary added to the Layer Contract. Where an operator pins a federated upstream's key, perimeter stamp and judge, a response the upstream already scanned is delivered on its signed verdict instead of being re-judged — bound to the exact bytes, stamp and judge, fail-closed, carved out in the response edge not a layer. The promise reads "at every ingress — or at a trusted boundary you declare". Known gap 33: the stamp binds the upstream's model, gates and judge, not its defense-policy block. `PERIMETER_VERSION` does not move: the local pipeline's conclusions are unchanged |
