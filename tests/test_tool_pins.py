@@ -228,3 +228,14 @@ def test_has_pins_reflects_backend_rows() -> None:
     assert perimeter_db.has_pins(bid) is False
     check_tools(URL, "b", [_tool()], federated=True)
     assert perimeter_db.has_pins(bid) is True
+
+
+def test_an_empty_federated_first_list_still_records_the_connect() -> None:
+    # An empty first list writes no tool rows; the connect must still be marked
+    # so a tool the peer adds later is held, not auto-approved (#592, E1b).
+    bid = tool_pins.backend_id(URL)
+    assert check_tools(URL, "b", [], federated=True) == []
+    assert perimeter_db.has_pins(bid) is True
+    served = check_tools(URL, "b", [_tool(name="late")], federated=True)
+    assert served == []
+    assert [p["tool"] for p in pending(URL)] == ["late"]
