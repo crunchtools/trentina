@@ -432,6 +432,7 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
         if getattr(after, block) != getattr(before, block):
             setattr(after, block, getattr(before, block))
             held.append(block)
+    held.extend(_hold_federated(before, after))
     held.extend(_hold_matrix_networks(before, after))
     b = before.matrix_ingress
     a = after.matrix_ingress
@@ -444,6 +445,24 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
         if old != getattr(a.preprocess, field_name):
             setattr(a.preprocess, field_name, old)
             held.append(f"matrix_ingress.preprocess.{field_name}")
+    return held
+
+
+def _hold_federated(before: Profile, after: Profile) -> list[str]:
+    """Hold a per-backend ``federated`` block across an AGENT reload (#592).
+
+    ``federated`` names a trust boundary, perimeter in the same sense as the
+    ``defense`` block: an agent-triggered reload may neither apply one nor drop
+    one — only an operator reload may. Absent is the safe direction, so a
+    backend new to this reload cannot bring federation in.
+    """
+    held: list[str] = []
+    for name, after_backend in after.backends.items():
+        before_backend = before.backends.get(name)
+        before_fed = before_backend.federated if before_backend is not None else None
+        if after_backend.federated != before_fed:
+            after_backend.federated = before_fed
+            held.append(f"backends.{name}.federated")
     return held
 
 
