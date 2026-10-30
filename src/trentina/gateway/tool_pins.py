@@ -99,15 +99,41 @@ def _report(backend: str, tool: str, old_json: str | None, new_json: str) -> Non
     )
 
 
-def check_tools(url: str, backend: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Pin ``tools`` against ``url``'s approvals; return those not held."""
+#: A reserved pin key marking that a federated backend's first list was
+#: processed (#592, E1b). NUL is not a legal MCP tool name, so this never
+#: matches, is served, or is listed as a tool. It is written even when the
+#: first list was EMPTY, so a tool the peer adds later is held normally rather
+#: than read as another first connect and auto-approved.
+FIRST_SEEN_SENTINEL = "\x00first-seen"
+
+
+def check_tools(
+    url: str, backend: str, tools: list[dict[str, Any]], *, federated: bool = False
+) -> list[dict[str, Any]]:
+    """Pin ``tools`` against ``url``'s approvals; return those not held.
+
+    A FEDERATED backend's first list is auto-approved as a unit (#592, E1b):
+    declaring the edge accepts the peer's curation — its offered set already
+    passed the peer's own pin gate — so a large upstream does not storm the
+    operator with hundreds of per-tool approvals. "First" is decided by a
+    persisted marker (``FIRST_SEEN_SENTINEL``), not by whether any tool row
+    exists, so an empty first list still records the connect and a later-added
+    tool is held one at a time. The marker is read once, before the pass writes.
+    """
     bid = backend_id(url)
-    baseline = _baseline_open()
-    return [
+    first_connect = federated and not perimeter_db.has_pins(bid)
+    baseline = _baseline_open() or first_connect
+    served = [
         tool
         for tool in tools
         if isinstance(tool.get("name"), str) and _pin_one(bid, backend, tool, baseline)
     ]
+    if first_connect:
+        sentinel = (digest(FIRST_SEEN_SENTINEL), FIRST_SEEN_SENTINEL)
+        perimeter_db.put_pin(
+            bid, FIRST_SEEN_SENTINEL, approved=sentinel, pending=None, rejected=False
+        )
+    return served
 
 
 def _pin_one(bid: str, backend: str, tool: dict[str, Any], baseline: bool) -> bool:
