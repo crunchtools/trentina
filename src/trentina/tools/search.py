@@ -19,7 +19,7 @@ from ..defense import Provenance
 from ..errors import BlockedSourceError, QuarantineAgentError, SearchCanaryLeakedError
 from ..modes import Mode
 from ..orchestrator import judge_and_deliver
-from ..quarantine.agent import resolve_grounding_urls, search_grounded
+from ..quarantine.agent import search_grounded
 
 L0_CANARY_REASON = "L0 canary leaked"
 SEARCH_UNAVAILABLE = "search provider unavailable"
@@ -62,14 +62,8 @@ async def web_search(
             SEARCH_UNAVAILABLE, status_code=exc.status_code, retry_after=exc.retry_after
         ) from None
 
-    resolved = await resolve_grounding_urls(raw.get("sources", []))
     sources = [
-        {
-            "uri": s.get("uri", ""),
-            "title": s.get("title", ""),
-            "redirect_failed": bool(s.get("redirect_failed")),
-        }
-        for s in resolved
+        {"uri": s.get("uri", ""), "title": s.get("title", "")} for s in raw.get("sources", [])
     ]
     text = raw.get("text", "")
     family_fields = {"sources": sources, "query": query, "l0_usage": raw.get("usage", {})}

@@ -132,11 +132,13 @@ def _no_startup_scrub(monkeypatch: pytest.MonkeyPatch) -> None:
 def _no_ambient_gemini_key(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Unit tests must not inherit the shell's GEMINI_API_KEY.
 
-    The defense pipeline gates L3 on ``get_config().has_api_key``. With a key
-    in the environment, a test that forgot to patch ``defense.get_config``
-    passes on one machine and fails on another — and worse, one that forgot to
-    mock ``quarantine_detect`` makes a live Gemini call from a unit test.
-    Tests that need a key patch ``defense.get_config`` and say so.
+    L3 resolves its provider through the calling profile's ``llm_keys`` — which
+    standalone are the synthesized operator's, mirroring the environment. With a
+    key in the environment, a test that forgot to patch the provider passes on
+    one machine and fails on another — and worse, one that forgot to mock
+    ``quarantine_detect`` makes a live Gemini call from a unit test. Tests that
+    exercise L3 use the ``standalone_l3`` fixture, which provides a test key and
+    a network tripwire.
 
     The provider integration suite is the one deliberate exception: it exists
     to make live calls and reads the key from the environment at call time.
@@ -164,6 +166,32 @@ def env(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[pat
     yield tmp_path
     config_mod._config = None
     database_mod._db = None
+
+
+@pytest.fixture
+def standalone_l3(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Standalone L3: a resolvable Gemini key, plus a network tripwire.
+
+    Since 3.0.0 the standalone server is a synthesized operator profile, so L3
+    resolves its provider through that profile's ``llm_keys`` (which mirror the
+    environment). A unit test exercising L3 therefore needs a key present so
+    ``resolve_profile_llm`` passes and the ``get_provider`` mock runs. The
+    tripwire makes a forgotten mock fail loudly instead of reaching the network
+    or producing a silent ``l3_unavailable`` the test might accept — a stronger
+    safety property than the bare key-strip it layers on.
+    """
+
+    async def _refuse(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("unit test reached the network (httpx.AsyncClient.send)")
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", "gemini")
+    monkeypatch.setattr("httpx.AsyncClient.send", _refuse)
+    config_mod._config = None
+    reset_provider()
+    yield
+    config_mod._config = None
+    reset_provider()
 
 
 @pytest.fixture(autouse=True)

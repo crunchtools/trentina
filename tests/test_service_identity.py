@@ -150,13 +150,14 @@ class TestServiceContext:
     def test_a_tenant_bound_above_does_not_leak_in(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """No operator: the gateway's work runs env-global, never as the caller."""
+        """No operator: the gateway's work runs as the synthesized operator, never as the caller."""
         profiles = _live(tmp_path, monkeypatch, _TENANT)
 
         with profile_context(profiles["tenant"]):
             with service_context() as bound:
-                assert bound is None
-                assert get_current_profile() is None
+                assert bound.name == "standalone"
+                assert get_current_profile() is bound
+                assert get_current_profile() is not profiles["tenant"]
             assert get_current_profile() is profiles["tenant"]
 
     def test_an_explicit_operator_is_bound_without_resolving_again(
@@ -173,17 +174,9 @@ class TestServiceContext:
             assert get_current_profile() is chosen
         resolve.assert_not_called()
 
-    def test_an_explicit_none_binds_nothing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        profiles = _live(tmp_path, monkeypatch, _TENANT, _OPERATOR)
-
-        with profile_context(profiles["tenant"]), service_context(None) as bound:
-            assert bound is None
-            assert get_current_profile() is None
-
-    def test_standalone_has_no_service_profile(self) -> None:
-        assert service_profile() is None
+    def test_standalone_has_a_synthesized_operator_service_profile(self) -> None:
+        assert service_profile().name == "standalone"
+        assert service_profile().role == "operator"
 
 
 class TestPerimeterRunsAsTheOperator:
@@ -331,9 +324,10 @@ class TestCompressionRunsAsTheOperator:
         assert kwargs["model"] == "ops-model"
         assert kwargs["api_key"].get_secret_value() == "ops-key"
 
-    async def test_no_operator_uses_the_env_global_provider(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    async def test_no_operator_uses_the_synthesized_operator(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, standalone_l3: None
     ) -> None:
+        """No file operator: compression runs as the operator synthesized from the environment."""
         _live(tmp_path, monkeypatch, _TENANT)
 
         with patch(
@@ -342,7 +336,8 @@ class TestCompressionRunsAsTheOperator:
         ) as get:
             await _call_compress_model([("h", "A long description.")])
 
-        get.assert_called_with()
+        get.assert_called_once()
+        assert get.call_args.args[0] == "gemini"
 
 
 class TestPerProfileGeneration:

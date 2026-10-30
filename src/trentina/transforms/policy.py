@@ -114,20 +114,23 @@ class PreProcessPolicy:
         return self.required + (self.chain if self.minifies(requested) else ())
 
 
-def standalone_policy(tool_name: str = "") -> PreProcessPolicy:
-    """No gateway: the internal chain, no floor, the tool's own default and the default budget."""
+def current_preprocess_policy(tool_name: str = "") -> PreProcessPolicy:
+    """The policy the gateway bound for this call, else the internal default.
+
+    Behind the gateway each profile's preprocess config is resolved and bound
+    around the internal dispatch. Without a bound policy the call is standalone:
+    the internal chain, no floor, the tool's own default and the default budget —
+    the synthesized operator's default preprocess config, which is what the
+    gateway would bind for an internal backend with a default ``PreProcessConfig``.
+    """
+    from ..gateway.context import get_current_preprocess_policy
     from ..gateway.profile import DEFAULT_TARGET_BYTES
 
+    bound = get_current_preprocess_policy()
+    if bound is not None:
+        return bound
     return PreProcessPolicy(
         INTERNAL_CHAIN,
         default=INTERNAL_DEFAULTS.get(tool_name, True),
         target_bytes=DEFAULT_TARGET_BYTES,
     )
-
-
-def current_preprocess_policy(tool_name: str = "") -> PreProcessPolicy:
-    """The policy the gateway bound for this call, else the standalone one."""
-    from ..gateway.context import get_current_preprocess_policy
-
-    bound = get_current_preprocess_policy()
-    return bound if bound is not None else standalone_policy(tool_name)

@@ -11,6 +11,7 @@ import pytest
 
 from trentina.config import get_config
 from trentina.errors import ConfigError, QuarantineAgentError
+from trentina.gateway.standalone import standalone_profile
 from trentina.quarantine.agent import (
     _call_with_fallback,
     _is_retryable,
@@ -117,15 +118,13 @@ class TestGetFallbackProvidersStandalone:
     def test_empty_chain_returns_empty(self, monkeypatch):
         monkeypatch.delenv("TRENTINA_PROVIDER_FALLBACK", raising=False)
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-        get_config()
-        assert get_fallback_providers() == []
+        assert get_fallback_providers(standalone_profile(get_config())) == []
 
     def test_openai_with_key(self, monkeypatch):
         monkeypatch.setenv("TRENTINA_PROVIDER_FALLBACK", "openai")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-        get_config()
-        chain = get_fallback_providers()
+        chain = get_fallback_providers(standalone_profile(get_config()))
         assert len(chain) == 1
         name, key = chain[0]
         assert name == "openai"
@@ -136,16 +135,14 @@ class TestGetFallbackProvidersStandalone:
         monkeypatch.setenv("TRENTINA_PROVIDER_FALLBACK", "openai")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-        get_config()
-        chain = get_fallback_providers()
+        chain = get_fallback_providers(standalone_profile(get_config()))
         assert chain == []
         assert "skipping" in caplog.text
 
     def test_ollama_has_none_key(self, monkeypatch):
         monkeypatch.setenv("TRENTINA_PROVIDER_FALLBACK", "ollama")
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-        get_config()
-        chain = get_fallback_providers()
+        chain = get_fallback_providers(standalone_profile(get_config()))
         assert len(chain) == 1
         name, key = chain[0]
         assert name == "ollama"

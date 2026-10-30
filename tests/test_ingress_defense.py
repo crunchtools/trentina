@@ -254,7 +254,9 @@ class TestScanToolResponse:
             "unread_kinds": ["image"],
         }
 
-    async def test_a_tracking_pixel_image_block_is_read_by_its_type(self) -> None:
+    async def test_a_tracking_pixel_image_block_is_read_by_its_type(
+        self, standalone_l3: None
+    ) -> None:
         pixel = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
         with _l3_available_and_clean():
             decision = await scan_tool_response(
@@ -283,7 +285,7 @@ class TestScanToolResponse:
         assert "no layer can read" in decision.refusal["reason"]
         assert decision.refusal["alternatives"] == ["flag"]
 
-    async def test_a_key_in_a_resource_blob_is_not_a_gap(self) -> None:
+    async def test_a_key_in_a_resource_blob_is_not_a_gap(self, standalone_l3: None) -> None:
         """Binary nobody could pull text out of is read by its type."""
         der = base64.b64encode(b"\x30\x82\x01\x0a" + hashlib.sha512(b"k").digest() * 4).decode()
         with _l3_available_and_clean():
@@ -621,7 +623,7 @@ class TestEnforcement:
         assert decision.warning is not None
         assert decision.warning["blocked"] is True
 
-    async def test_block_mode_delivers_clean_content(self) -> None:
+    async def test_block_mode_delivers_clean_content(self, standalone_l3: None) -> None:
         """All three layers run and all three find nothing: content flows."""
         with _l3_available_and_clean():
             decision = await scan_tool_response(
@@ -855,7 +857,7 @@ class TestAdversarialReviewFixes:
         assert decision.warning is not None
         assert decision.warning["l3_unavailable"] is True
 
-    async def test_m1_poisoned_description_withheld_under_block(self) -> None:
+    async def test_m1_poisoned_description_withheld_under_block(self, standalone_l3: None) -> None:
         tools = [
             {"name": "good_tool", "description": "Reads a ticket."},
             {"name": "bad_tool", "description": HOSTILE},
@@ -1018,7 +1020,9 @@ class TestPerCallMode:
         assert decision.refusal is not None
         assert decision.refusal["alternatives"] == ["redact"], "flagged must never offer flag"
 
-    async def test_redact_extracts_flagged_content_instead_of_refusing(self) -> None:
+    async def test_redact_extracts_flagged_content_instead_of_refusing(
+        self, standalone_l3: None
+    ) -> None:
         from trentina.modes import Mode
         from trentina.quarantine.agent import CleanResult
 
@@ -1187,6 +1191,7 @@ class TestToolDescriptionBriefing:
         assert mock_defend.called is judged
 
 
+@pytest.mark.usefixtures("standalone_l3")
 async def test_redact_is_never_served_from_the_verdict_cache() -> None:
     """redact's extraction is per prompt: a second identical call extracts again."""
     from trentina.modes import Mode
@@ -1208,6 +1213,7 @@ async def test_redact_is_never_served_from_the_verdict_cache() -> None:
     assert [c.args[1] for c in extract.call_args_list] == ["first", "second"]
 
 
+@pytest.mark.usefixtures("standalone_l3")
 async def test_the_backend_briefing_reaches_l3_and_keys_the_cache() -> None:
     """#204: an operator's context for L3 is part of the verdict, so it is part
     of the cache key — the same bytes briefed differently are judged again."""

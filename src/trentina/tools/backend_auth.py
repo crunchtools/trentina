@@ -39,8 +39,10 @@ _starts: dict[str, deque[float]] = {}
 
 def _refusal(backend: str, exc: Exception) -> dict[str, Any]:
     """A refusal naming only the caller's own backends, so a miss maps nothing."""
-    scope = current_scope()
-    own = scope.backends if scope else {}
+    try:
+        own = current_scope().backends
+    except ScopeError:
+        own = {}
     return {
         "backend": backend,
         "error": str(exc),

@@ -14,6 +14,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .errors import ScopeError
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -104,10 +106,24 @@ def get_current_parts() -> PartsOffer | None:
     return _current_parts.get()
 
 
-def get_current_profile() -> Profile | None:
-    """Get the profile for the current async context.
+def get_current_profile() -> Profile:
+    """The profile bound to the current call.
 
-    Returns None when called outside gateway context (e.g., standalone
-    MCP server mode, tests).
+    Behind a live gateway the router binds one around every internal dispatch.
+    With no gateway registered the process is standalone — a single operator
+    profile synthesized from the environment (``standalone.standalone_profile``),
+    read the same way a bound profile is. A live gateway with nothing bound is a
+    path nobody designed, so the honest answer is to refuse (fail closed) rather
+    than act gateway-wide.
     """
-    return _current_profile.get()
+    profile = _current_profile.get()
+    if profile is not None:
+        return profile
+    # Lazy: ``loader`` is mid-import when ``context`` is first reached on some
+    # import orders (database → modes → context), so a top-level import cycles.
+    from .loader import get_active_config
+    from .standalone import environment_operator
+
+    if get_active_config() is None:
+        return environment_operator()
+    raise ScopeError("no calling profile bound — refusing to act gateway-wide")
