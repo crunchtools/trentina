@@ -202,7 +202,7 @@ class TestDefendOwnership:
     * ``orchestrator.py`` — every ``judge_*`` edge. ``judge_and_deliver`` runs
       the internal tools' one ``defend`` call (``tools/judged`` does the paging
       hold and the ``_Call`` accounting around it); ``scan_tool_response`` runs
-      the proxied response edge's ``defend`` (``ingress_defense`` keeps the
+      the proxied response edge's ``defend`` (``response_edge`` keeps the
       verdict cache, the binary-only shortcut and the warning build around it);
       and ``judge_tool_description`` runs the tool-list edge's ``defend``
       (``tool_list_edge.scan_tool_list`` keeps the cache and single-flight).

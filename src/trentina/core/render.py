@@ -3,7 +3,7 @@
 A refusal is gateway-authored: it names the layer or the gap, the mode, and the
 modes the caller may try next, and it carries no payload and no L3 prose
 (security-gateway profile III). Before Trentina 3.0 several ingresses built this
-dict themselves — ``tools/judged.py``, ``ingress_defense.py``, the proxies — each
+dict themselves — ``tools/judged.py``, ``response_edge.py``, the proxies — each
 spelling the ``Mode`` and the alternatives in its own words. ``refusal_of`` is the
 one composer now, so a face never spells a refusal and a new mode's wording lands
 in a single place.

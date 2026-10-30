@@ -30,17 +30,17 @@ from .core.dispose import Decision, dispose
 from .core.stages import _JUDGED_SEAL, IngressDecision, Judged
 from .defense import Provenance, defend, defend_json, defend_selection
 from .gateway.context import profile_context
-from .gateway.ingress_defense import (
-    disposed_response,
-    finish_response_scan,
-    prepare_response_scan,
-)
 from .gateway.outbound import (
     REASON_CREDENTIAL,
     REASON_FLAGGED,
     REASON_UNJUDGED,
     detect_credentials,
     judge_input,
+)
+from .gateway.response_edge import (
+    disposed_response,
+    finish_response_scan,
+    prepare_response_scan,
 )
 from .logsafe import exc_kind, exc_where, redact_source
 from .modes import Mode, ModePolicy, gaps_of

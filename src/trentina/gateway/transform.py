@@ -363,7 +363,7 @@ def _account(
 
     # Every candidate is logged, applied or not, at WARNING: the gateway runs
     # at TRENTINA_LOG_LEVEL=WARNING so INFO goes nowhere, and this is the same
-    # operational-notice shape as ingress_defense's "tool response flagged
+    # operational-notice shape as response_edge's "tool response flagged
     # ... blocked=False".
     #
     # Declines are the valuable half — a large payload that every processor

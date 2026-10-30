@@ -1,43 +1,25 @@
-"""The perimeter at the MCP proxy ingress — flag mode (plan step 5).
+"""The perimeter at the proxied-response edge — judging a tools/call result.
 
-Before this module, proxied tool responses and tool descriptions crossed
-into the agent verbatim, and the three-layer pipeline ran only for the web
-tools and the alert ingress. These two functions close that gap:
+Every ``tools/call`` result from a REMOTE backend crosses here: text content
+blocks, resource text, and every string leaf of ``structuredContent``, judged
+as one document. Internal backends are deliberately exempt — their tools
+(fetch_tool and friends) run the pipeline at their own ingress, and scanning
+the same bytes twice on the way through is cost, not defense.
 
-* ``scan_tool_response`` — every ``tools/call`` result from a REMOTE
-  backend: text content blocks, resource text, and every string leaf of
-  ``structuredContent``, judged as one document. Internal backends are
-  deliberately exempt: their tools (fetch_tool and friends) run the
-  pipeline at their own ingress — the firewall filters where content
-  ENTERS, and scanning the same bytes twice on the way through is cost,
-  not defense.
+``prepare_response_scan`` judges one response up to — but not including — the
+``defend`` call (which runs in the orchestration layer), returning either an
+``IngressDecision`` directly (the binary-only and verdict-cache-hit exits) or a
+``PreparedResponseScan`` the orchestrator runs ``defend`` from.
+``finish_response_scan`` builds the warning and the ``ResponseScan`` from the
+verdict, and ``disposed_response`` renders the ``IngressDecision`` the transport
+acts on: deliver intact with a ``_trentina_warning`` under flag, refuse under
+block, or replace with a verified extraction under redact. Content is never
+modified (an L1-owner's rule), and every flag lands in the detections table as
+``source_type="tool_response"``.
 
-* ``scan_tool_list`` — every tool's name, title, description, inputSchema
-  and annotations: the classic MCP tool-poisoning channel. Runs on the
-  post-compression text, because compressed descriptions are LLM output
-  and it is the OUTPUT that reaches the agent; a description the
-  compressor rewrote carries MODEL_OUTPUT provenance and earns
-  unconditional L3. This hook sits on the build path for every tools/list,
-  so entries replayed from the persisted SQLite caches (written before the
-  perimeter existed) are scanned exactly like live ones — the poisoned-
-  cache ingress closes structurally rather than by a deploy-time flush.
-
-Enforcement here was hardwired to what is now flag: content is never modified (L1 is a
-owner's rule), a flagged payload gets a ``_trentina_warning``
-sibling field, and every flag lands in the detections table as
-``source_type="tool_response"`` / ``"tool_description"`` — the score
-distribution that step 7's calibration needs before anything fails closed.
-
-A content-hash verdict cache keeps the cost sane: ~210 descriptions are
-rebuilt on every circuit-breaker flap, and agents re-read the same tickets
-all day. Verdicts are cached per (defense-config, content) pair; a cache
-hit re-records nothing.
-
-Tool-description verdicts also OUTLIVE the process, in ``perimeter_db`` —
-a store of its own, not a table beside the blocklist. Judging them from
-cold took over five minutes, which every MCP client reports as a timeout
-rather than as a warm-up. Responses stay in memory: unbounded, mostly seen
-once, and not what a restart pays for.
+The verdict cache and its single-flight live in ``verdict_cache``; pulling the
+judgeable text out of the MCP result lives in ``collect``. The tool-list edge is
+its sibling, ``tool_list_edge``.
 """
 
 from __future__ import annotations
@@ -130,7 +112,7 @@ class PreparedResponseScan:
     ``defense`` policy and the detection-row ``attribution``). The orchestrator
     runs the one ``defend`` call from it and hands it to ``finish_response_scan``,
     which builds the warning and the ``ResponseScan``. Lifting the ``defend``
-    call out of this module is what drops ``gateway/ingress_defense.py`` from
+    call out of this module is what drops ``gateway/response_edge.py`` from
     ``TestDefendOwnership.ALLOWED``.
     """
 
@@ -178,7 +160,7 @@ async def prepare_response_scan(
     orchestrator runs the one ``defend`` call from, hands to
     ``finish_response_scan`` for the warning, then ``gate`` and
     ``disposed_response``. The split moves the ``defend`` call to the
-    orchestration layer (so ``ingress_defense`` no longer imports it) while the
+    orchestration layer (so ``response_edge`` no longer imports it) while the
     cache, the binary-only shortcut and the warning build stay here (Phase 4/7).
 
     Judge one tool response and decide its fate under the call's mode.
@@ -340,7 +322,7 @@ async def disposed_response(scan: ResponseScan, gated: Gated) -> IngressDecision
             # invariant broke. Failing loudly beats silently skipping the block
             # under python -O.
             raise RuntimeError(
-                "ingress_defense: warning is None while blocking -- invariant violated"
+                "response_edge: warning is None while blocking -- invariant violated"
             )
         if disposition.flagged_by is None:
             logger.warning(
@@ -394,7 +376,7 @@ async def _redact_response(
         )
     result = gated.extraction
     if result is None:  # a non-REFUSE redact disposition always carries an extraction
-        raise RuntimeError("ingress_defense: redact disposition carried no extraction")
+        raise RuntimeError("response_edge: redact disposition carried no extraction")
     if gated.extraction_refusal is not None:
         # redact's own turn objecting: nothing is suggested (no flag, no gap).
         return IngressDecision(

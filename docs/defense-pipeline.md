@@ -753,7 +753,7 @@ The gateway is what most deployments run, so for them the default is `flag`: unj
 | Alert ingress: `block` | Refused (403), the same `Gaps.blocking()` rule | Forwarded |
 | Alert ingress: `flag` | Forwarded, with the warning when flagged | Same |
 
-Two things hold in every row. A layer that ran but read only part of the payload (`l2_truncated`, `l3_truncated`), an over-cap payload and unread binary are never excused by `TRENTINA_REQUIRE_*`: `block` and `redact` refuse them. And `flag` is the only mode that delivers through a gap, so a mode added later fails closed until someone implements it (`ingress_defense.py`).
+Two things hold in every row. A layer that ran but read only part of the payload (`l2_truncated`, `l3_truncated`), an over-cap payload and unread binary are never excused by `TRENTINA_REQUIRE_*`: `block` and `redact` refuse them. And `flag` is the only mode that delivers through a gap, so a mode added later fails closed until someone implements it (`response_edge.py`).
 
 ## Related
 
