@@ -286,20 +286,22 @@ _federated_held_upstream: dict[str, int] = {}
 def _read_federated_held(backend: Backend, tools_result: Any) -> None:
     """Record a federated peer's ``_meta._trentina_pins.held`` (#592, E1c).
 
-    Shape-checked hard: a non-int, a negative, or more holds than tools listed
-    is a peer bug or a probe, so it is ignored rather than surfaced. Only a
-    federated backend is read; the SDK keeps a list-level ``_meta`` where it
-    drops a per-tool one.
+    A fresh report replaces the last, and a missing or invalid one CLEARS it, so
+    the surface never shows a stale count after a peer stops reporting. The count
+    includes tools the peer WITHHOLDS, which are absent from the list it sends,
+    so it can exceed the listed count — only a nonnegative int is required (a
+    bool, which is an int subclass, is not one). Only a federated backend is
+    read; the SDK keeps a list-level ``_meta`` where it drops a per-tool one.
     """
     if backend.federated is None:
         return
+    _federated_held_upstream.pop(backend.url, None)
     meta = getattr(tools_result, "meta", None)
     pins = meta.get(PINS_KEY) if isinstance(meta, dict) else None
     held = pins.get("held") if isinstance(pins, dict) else None
-    if isinstance(held, bool) or not isinstance(held, int):
+    if isinstance(held, bool) or not isinstance(held, int) or held < 0:
         return
-    if 0 <= held <= len(tools_result.tools):
-        _federated_held_upstream[backend.url] = held
+    _federated_held_upstream[backend.url] = held
 
 # JSON-RPC errors that mean "your request was wrong", said by a backend that
 # is up. Each is named in the refusal by our own words, never the backend's:
@@ -385,6 +387,7 @@ def on_backend_cache_evict(callback: Any) -> None:
 def _evict_backend_cache(url: str) -> None:
     """Remove a backend's cached tool list and notify listeners."""
     if _tool_list_cache.pop(url, None) is not None:
+        _federated_held_upstream.pop(url, None)
         delete_tool_list(url)
         for cb in _on_evict_callbacks:
             cb(url)
@@ -412,6 +415,7 @@ def flush_all_caches() -> int:
     urls = list(_tool_list_cache.keys())
     for url in urls:
         _tool_list_cache.pop(url, None)
+        _federated_held_upstream.pop(url, None)
         for cb in _on_evict_callbacks:
             cb(url)
     delete_all_tool_lists()

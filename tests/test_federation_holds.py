@@ -157,6 +157,15 @@ def test_a_federated_peer_held_count_is_recorded() -> None:
     assert backend_mod._federated_held_upstream.get(UP_URL) == 3
 
 
+def test_held_may_exceed_the_listed_count() -> None:
+    # A withheld tool is absent from the list, so a peer holding its only tool
+    # reports held=1 and lists 0 — the count must NOT be bounded by the listing.
+    backend_mod._federated_held_upstream.pop(UP_URL, None)
+    result = _tools_result({PINS_KEY: {"held": 1}}, n_tools=0)
+    backend_mod._read_federated_held(_federated_backend(), result)
+    assert backend_mod._federated_held_upstream.get(UP_URL) == 1
+
+
 @pytest.mark.parametrize(
     "meta",
     [
@@ -164,12 +173,19 @@ def test_a_federated_peer_held_count_is_recorded() -> None:
         pytest.param({PINS_KEY: {"held": -1}}, id="negative"),
         pytest.param({PINS_KEY: {"held": True}}, id="bool"),
         pytest.param({PINS_KEY: {"held": "3"}}, id="string"),
-        pytest.param({PINS_KEY: {"held": 99}}, id="more-than-listed"),
     ],
 )
 def test_a_bad_held_count_is_ignored(meta: Any) -> None:
     backend_mod._federated_held_upstream.pop(UP_URL, None)
     backend_mod._read_federated_held(_federated_backend(), _tools_result(meta, n_tools=5))
+    assert backend_mod._federated_held_upstream.get(UP_URL) is None
+
+
+def test_a_missing_report_clears_a_stale_held_count() -> None:
+    # A peer that reported a count and then stops must not leave the downstream
+    # showing the old number forever.
+    backend_mod._federated_held_upstream[UP_URL] = 4
+    backend_mod._read_federated_held(_federated_backend(), _tools_result(None))
     assert backend_mod._federated_held_upstream.get(UP_URL) is None
 
 
