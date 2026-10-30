@@ -74,9 +74,18 @@ def test_an_operator_federation_ingress_is_refused() -> None:
         Profile(**_ingress(role="operator"))
 
 
-@pytest.mark.parametrize("allow", [["*"], ["fetch_tool"], ["read_tool", "read_part_tool"]])
-def test_offering_an_egress_tool_to_a_peer_is_refused(allow: list[str]) -> None:
-    with pytest.raises(ValueError, match="may not offer a peer"):
+@pytest.mark.parametrize(
+    "allow",
+    [
+        ["*"],  # the whole native surface, including admin tools
+        ["read_*"],  # a glob is refused as written, before it can match
+        ["fetch_tool"],
+        ["cache_flush"],  # an admin tool: a denylist of egress tools would miss this
+        ["read_part_tool", "cache_flush"],
+    ],
+)
+def test_offering_any_other_internal_tool_to_a_peer_is_refused(allow: list[str]) -> None:
+    with pytest.raises(ValueError, match="may offer a peer only"):
         Profile(**_ingress(backends={"web": Backend(url="internal://web", tools_allow=allow)}))
 
 

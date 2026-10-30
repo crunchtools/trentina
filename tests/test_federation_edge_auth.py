@@ -14,7 +14,12 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import SecretStr
 
-from tests.federation_harness import INTERNAL_KEY, UPSTREAM_PROFILE, federated_pair
+from tests.federation_harness import (
+    INTERNAL_KEY,
+    UPSTREAM_PROFILE,
+    federated_pair,
+    serving_mcp_backend,
+)
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -43,17 +48,18 @@ def _keypair() -> tuple[str, str]:
     return private_pem, public_pem
 
 
-def _upstream(public_pem: str) -> Profile:
+def _upstream(public_pem: str, demo_port: int) -> Profile:
     # A federation ingress: peers only, NO static bearer (peers-only
-    # authenticates). Its offered set is declared (#592, C2's directed edge):
-    # the demo tools and read_part, never the gateway's egress/disk tools.
+    # authenticates). The directed edge (#592, C2): its OFFERED tools are a real
+    # REMOTE backend (the demo server, behind the upstream's perimeter), and its
+    # internal surface is limited to read_part_tool — never the gateway's own
+    # fetch/search/admin tools.
     return Profile(
         name=UPSTREAM_PROFILE,
         federation=FederationConfig(peers={"breetai": FederationPeer(public_key=public_pem)}),
         backends={
-            INTERNAL_KEY: Backend(
-                url="internal://web", tools_allow=["echo", "emit", "lines", "read_part_tool"]
-            )
+            "demo": Backend(url=f"http://127.0.0.1:{demo_port}/mcp"),
+            INTERNAL_KEY: Backend(url="internal://web", tools_allow=["read_part_tool"]),
         },
     )
 
@@ -79,8 +85,9 @@ def _downstream_factory(private_pem: str):
 async def test_a_federated_call_authenticates_with_an_edge_jwt() -> None:
     private_pem, public_pem = _keypair()
     async with (
+        serving_mcp_backend() as demo_port,
         federated_pair(
-            upstream=_upstream(public_pem), downstream=_downstream_factory(private_pem)
+            upstream=_upstream(public_pem, demo_port), downstream=_downstream_factory(private_pem)
         ) as fed,
         fed.downstream_client() as client,
     ):
@@ -98,8 +105,9 @@ async def test_a_wrong_edge_key_is_refused() -> None:
     _, trusted_pub = _keypair()
     wrong_priv, _ = _keypair()
     async with (
+        serving_mcp_backend() as demo_port,
         federated_pair(
-            upstream=_upstream(trusted_pub), downstream=_downstream_factory(wrong_priv)
+            upstream=_upstream(trusted_pub, demo_port), downstream=_downstream_factory(wrong_priv)
         ) as fed,
         fed.downstream_client() as client,
     ):
