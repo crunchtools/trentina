@@ -153,7 +153,7 @@ def get_pin(backend_id: str, tool: str) -> sqlite3.Row | None:
     row: sqlite3.Row | None = (
         get_perimeter_db()
         .execute(
-            "SELECT approved_hash, approved_json, pending_hash, pending_json "
+            "SELECT approved_hash, approved_json, pending_hash, pending_json, rejected "
             "FROM tool_pins WHERE backend_id = ? AND tool = ?",
             (backend_id, tool),
         )

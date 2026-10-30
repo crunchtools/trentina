@@ -54,6 +54,7 @@ from ..gateway import (
     request_edge,
     results,
     session_marks,
+    tool_pins,
     vsa,
 )
 from ..gateway.backend import call_backend_tool, loggable_tool
@@ -370,6 +371,36 @@ class McpServerFace(Face):
                 destination=dest,
             )
             return Early(_err(req_id, JSONRPC_INVALID_PARAMS, message))
+
+        # The pinning CALL GATE (#469): pinning was only ever a tools/list
+        # filter, so a remote tool whose description changed after approval (or,
+        # under long names, one never approved) was still callable unapproved.
+        # A held remote tool is refused here, fail-closed, before the backend is
+        # reached; internal and decoy skip, as the list filter does.
+        if backend.is_remote and tool_pins.held(backend.url, tool_name):
+            message = f"Tool {tool_name!r} is held pending operator approval"
+            audit._audit(
+                profile.name,
+                backend_name,
+                tool_name,
+                Outcome.DENIED_GUARD,
+                0,
+                message,
+                destination=dest,
+            )
+            # A policy refusal, delivered as an ordinary result (not a JSON-RPC
+            # error), carrying the closed tool_held reason a federated downstream
+            # maps to its own words (#592, E1c).
+            return Early(
+                _refused(
+                    req_id,
+                    {
+                        "reason": tool_pins.TOOL_HELD_REASON,
+                        "detail": message,
+                        "alternatives": [],
+                    },
+                )
+            )
 
         if not isinstance(arguments, dict):
             message = "arguments must be an object"

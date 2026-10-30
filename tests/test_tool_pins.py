@@ -12,7 +12,7 @@ from trentina import perimeter_db
 from trentina.gateway import tool_pins
 
 # Imported at module load, before conftest's autouse fixture replaces it on the module.
-from trentina.gateway.tool_pins import check_tools, decide, pending
+from trentina.gateway.tool_pins import check_tools, decide, held, pending
 
 if TYPE_CHECKING:
     import pytest
@@ -52,6 +52,22 @@ def test_a_new_tool_is_held_until_approved() -> None:
     assert decide(URL, "send", approve=True)
     assert _names(check_tools(URL, "b", [_tool()])) == ["send"]
     assert pending(URL) == []
+
+
+def test_held_is_true_until_a_tool_is_approved() -> None:
+    # The call gate (#469): fail closed on a missing row, held while pending,
+    # false once approved.
+    assert held(URL, "send") is True  # no pin row yet
+    check_tools(URL, "b", [_tool()])  # creates the pending hold
+    assert held(URL, "send") is True
+    assert decide(URL, "send", approve=True)
+    assert held(URL, "send") is False  # approved
+
+
+def test_held_is_true_for_a_rejected_tool() -> None:
+    check_tools(URL, "b", [_tool(name="x")])
+    assert decide(URL, "x", approve=False)  # rejected
+    assert held(URL, "x") is True
 
 
 def test_first_boot_of_the_upgrade_pins_current_tools_as_approved() -> None:

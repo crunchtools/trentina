@@ -96,11 +96,15 @@ def _isolated_fastmcp_home(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPat
 
 @pytest.fixture(autouse=True)
 def _tools_not_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Tests that are not about pinning (#469) see every tool served.
-    ``tests/test_tool_pins.py`` puts the real check back."""
+    """Tests that are not about pinning (#469) see every tool served and called.
+    ``tests/test_tool_pins.py`` puts the real checks back."""
     from trentina.gateway import tool_pins
 
     monkeypatch.setattr(tool_pins, "check_tools", lambda url, backend, tools: tools)
+    # The call gate too (#469): without this every remote-tool call in the suite
+    # would be refused as unpinned. Patched as a module attr, which is why the
+    # gate calls ``tool_pins.held`` rather than an imported name.
+    monkeypatch.setattr(tool_pins, "held", lambda url, tool: False)
 
 
 @pytest.fixture(autouse=True)

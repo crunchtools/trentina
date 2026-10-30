@@ -39,6 +39,10 @@ from trentina.gateway.profile import (
     ParameterConstraint,
     Profile,
 )
+
+# The real pin call gate, captured before conftest's autouse fixture replaces
+# the module attribute with a pass-through (#469).
+from trentina.gateway.tool_pins import held as _real_held
 from trentina.modes import (
     Gaps,
     Mode,
@@ -355,6 +359,29 @@ class TestRouter:
                 },
             )
         return resp, forwarded, scan
+
+    async def test_a_held_remote_tool_is_refused_before_the_backend(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The call gate (#469): a held remote tool is refused at the route with
+        # the tool_held reason, before the scan or the backend is reached.
+        from trentina import perimeter_db
+        from trentina.gateway import tool_pins
+        from trentina.gateway.tool_pins import backend_id
+
+        monkeypatch.setattr(tool_pins, "held", _real_held)  # the real gate, not the pass-through
+        perimeter_db.get_perimeter_db()
+        perimeter_db.put_pin(
+            backend_id("http://jira:8000/mcp"),
+            "jira_get_issue",
+            approved=None,
+            pending=("h", "{}"),
+            rejected=False,
+        )
+        resp, forwarded, scan = await self._call(_profile(["block"]), {"issue_key": "X-1"})
+        assert refused(resp)["reason"] == tool_pins.TOOL_HELD_REASON
+        assert forwarded == {}  # the backend was never reached
+        scan.assert_not_called()
 
     async def test_the_backend_l3_briefing_is_passed_to_the_scan(self) -> None:
         """#204: `Backend.l3_briefing` joins the reducer note in L3's context."""
