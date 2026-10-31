@@ -32,7 +32,7 @@ One key says who's talking; the other says what was decided. Leaking one can't f
 
 Three moves (the exact field names, key formats, and env vars live in the config schema and code):
 
-1. **Generate two keypairs** — an edge key for the downstream, a signing key for the upstream. Each private half stays on its own gateway; the public halves cross over and are pinned on the opposite side.
+1. **Generate two keypairs** — an edge key for the downstream, a signing key for the upstream. Each private half stays on its own gateway, in a file only that gateway can read, referenced by path rather than pasted into config: a private key in YAML is a private key in every backup and every config repo. The public halves cross over and are pinned on the opposite side. See [Deployment Hardening](deployment-hardening.md) for how secrets are held.
 2. **Declare the edge in two profiles** — an *ingress* profile on the upstream that lists the tools it offers and names its peers, and a *federated backend* on the downstream pointing at that ingress. At this stage the link is authenticated but still double-scans. Prove it works here first.
 3. **Turn on trust** — on the downstream, pin the upstream's signing key plus a *fingerprint of its scanner*. Now the downstream trusts verdicts that match and scans locally anything that doesn't.
 
