@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [4.1.1] - 2026-10-31
+
 ### Fixed
 
 - `contrib/quadlet/trentina-config-commit.path` allowed five triggers in
