@@ -10,6 +10,26 @@ under that name.
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-10-31
+
+### Added
+
+- **API-driven configuration** (#633): an operator agent can provision and run a gateway — including a federated edge — without editing files and without a restart. `docs/operator.md` already described this loop ("none of this needs a shell"); the product shipped half of it. Two things still need a person: turning on scan-once federation trust (below), and a new profile that authenticates by a bearer token, since the token is an environment variable and a new one of those needs the container restarted.
+  - **`config_tool`** reads and writes `profiles.yaml` itself, then applies the change the same way `reload_profiles` does. The file stays the source of truth: it is not a view over a database and not generated, and a hand edit still wins. `expect_hash` is required, so a write carries the hash of the version it was composed against and a file that moved underneath refuses the write instead of overwriting the other writer. Every successful write returns the next hash. A candidate is validated by loading it before anything is replaced, the previous version is kept under `<data>/config-backups/`, and the replace is atomic.
+  - **`federation_keygen`** mints an Ed25519 keypair inside the gateway and returns only the public half — the half a peer pins. The private half is written under the gateway's own data directory, which the file tools already refuse, and is never returned.
+  - **Keys by name:** `federated.edge_key_name` and `federation.signing_key_name` refer to a minted key instead of an environment variable. They are re-read on every load, and a reload is a load, so a key minted after startup takes effect without a restart. The `_env` forms remain, for podman and Kubernetes secret mounts; exactly one source per key.
+  - Two things are not writable through the API, and not as a privilege boundary — the operator is root on the gateway. They exist because the operator is a model. It cannot create, move or remove the operator seat or change how a caller becomes one. And it cannot set `trust_verdict`, which makes this gateway serve another gateway's response without running its own layers: the constitution keeps trust decisions administrator-set and says trust never changes *whether* a layer runs. Everything else about federation is the operator's, `federation.peers` included — that decides who may authenticate, which is an access grant and not a decision to believe someone's scan.
+
+### Changed
+
+- `contrib/quadlet/trentina-config-commit.{path,service}` commit `profiles.yaml` on the host whenever the gateway writes it, which is the "version controlled" part of logged-backed-up-version-controlled. The gateway cannot commit for itself — its image ships no `git`, and the git transport is a proxy for a caller's client rather than a way to author a commit — and without this every write leaves the config repository dirty for a drift check to find.
+- The reference Quadlet unit gives `profiles.yaml` a **directory of its own**, bound writable, with the existing config directory still read-only. An atomic replace renames over the file and a rename needs the directory — and a real config directory also holds the trust allowlist and a federation signing key, which must not sit somewhere the gateway can write. The writable surface is one directory holding one file. `TRENTINA_REQUIRE_HARDENED` still passes: its checks are `statvfs("/")` and the import path, and a bind mount at the config path is neither. Deployments that want the file hand-edited only can keep the single-file `:ro` bind, and `config_tool` reports that it cannot write.
+- Adds `ruamel.yaml`. Reading config stays pyyaml's job; writing it needs round-trip mode, because `yaml.safe_load` discards the comments and formatting of a file a person maintains.
+
+### Fixed
+
+- A federated backend's "an edge key needs a gateway MCP URL" check tested `edge_key_env` specifically, so the same configuration spelled with a key name would have skipped it. It now asks whether the edge has a key at all, by either source.
+
 ## [3.2.0] - 2026-10-31
 
 ### Added

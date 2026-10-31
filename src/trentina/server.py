@@ -21,10 +21,12 @@ from .tools import (
     backend_auth_start,
     backend_auth_status,
     cache_flush,
+    federation_keygen,
     fetch_page,
     get_trentina_stats,
     judge_content,
     list_dir,
+    manage_config,
     manage_tool_pins,
     read_file,
     reconnect_backend,
@@ -375,6 +377,79 @@ async def reconnect_backend_tool(backend: str) -> dict[str, Any]:
         backend: Backend name to reconnect (e.g. "postiz", "slack", "jira").
     """
     return await reconnect_backend(backend)
+
+
+@mcp.tool()
+async def config_tool(
+    action: Literal["get", "set", "unset"],
+    path: str | None = None,
+    value: str | bool | int | float | list[Any] | dict[str, Any] | None = None,
+    expect_hash: str | None = None,
+) -> dict[str, Any]:
+    """Read and change this gateway's own configuration. Operator profile only.
+
+    The configuration is a YAML file that a person also maintains by hand and
+    keeps in version control, so a write must not be composed blind: read the
+    part you intend to change, then send the `hash` that `get` returned back as
+    `expect_hash`. If the file moved in between, the write is refused rather
+    than overwriting whatever else was done to it. Every successful write
+    returns the new hash, so a run of changes needs one read at the start.
+
+    A change is validated by loading it before anything is replaced, so a
+    refusal has changed nothing, and the previous version is kept inside the
+    gateway. The change is applied the same way `reload_profiles` applies one;
+    whatever needs a restart to take effect is reported in the result.
+
+    Two things are refused. The operator seat itself — who holds `role:
+    operator`, and how a caller becomes one — stays a human edit of the file.
+    So does `trust_verdict`, which makes this gateway serve another gateway's
+    response without scanning it. Everything else about federation is yours,
+    including `federation.peers`.
+
+    Args:
+        action: `get` reads, `set` writes a value, `unset` removes a key.
+        path: Dotted config keys, e.g.
+            "profiles.myagent.backends.lotor.federated.edge_key_name". Omit on
+            `get` for the whole file.
+        value: What to set. A scalar, a list or a mapping. It REPLACES whatever
+            is at that path: setting a mapping removes any keys already there
+            that your mapping does not include, so write the deepest path that
+            covers your change rather than a parent.
+        expect_hash: The `hash` from a previous `get` or write. Required to set
+            or unset.
+
+    Returns:
+        `get`: `hash` (of the whole file, whatever `path` you asked for) and
+        `value`. A successful write: `applied`, `hash_before`, `hash_after`,
+        `backup` (where the previous version was kept), and `reload` — read
+        `reload.not_applied` for anything that needs a restart. A refusal:
+        `error`, plus `hash` when the file had moved on.
+    """
+    return await manage_config(action, path, value, expect_hash)
+
+
+@mcp.tool()
+async def federation_keygen_tool(name: str) -> dict[str, Any]:
+    """Mint an Ed25519 keypair for a federated edge and return its public key.
+
+    Operator profile only. Setting up federation needs a keypair on each side:
+    an edge key the downstream signs its requests with, and a signing key the
+    upstream vouches for responses with. This creates one without a shell.
+
+    The private half is written inside the gateway, where no file tool can
+    reach it, and is never returned. What comes back is the PUBLIC key, which
+    is what the other gateway pins for this peer — copy it into that side's
+    config. Refer to the key here by the name you gave it, as
+    ``edge_key_name`` or ``signing_key_name``.
+
+    A name is written once. To rotate, mint a new name and point the config at
+    it, so a key in use is never replaced underneath a live edge.
+
+    Args:
+        name: What to call the key: lowercase letters, digits and hyphens
+            (e.g. "edge-to-lotor", "ingress-signing").
+    """
+    return await federation_keygen(name)
 
 
 @mcp.tool()

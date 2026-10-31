@@ -30,8 +30,29 @@ from pydantic import (
 )
 
 from ..config import MODE_NAMES, SUPPORTED_PROVIDERS, canonical_mode
+from .key_store import KEY_NAME_RE
 
 logger = logging.getLogger(__name__)
+
+
+def _one_key_source(env: str | None, name: str | None, field: str) -> None:
+    """Hold a private key to exactly one source (#633).
+
+    Both set is a configuration the operator cannot have meant, and picking one
+    silently would make which key signs depend on resolution order rather than
+    on the file.
+    """
+    if env is not None and name is not None:
+        raise ValueError(f"{field}_env and {field}_name are both set; use one")
+
+
+def _is_key_name(v: str | None, field: str) -> str | None:
+    """A key name is joined to the key store's own directory, so its shape is
+    what keeps it a filename rather than a path."""
+    if v is not None and not KEY_NAME_RE.match(v):
+        raise ValueError(f"{field} {v!r} must be lowercase letters, digits and hyphens")
+    return v
+
 
 PROFILE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 BACKEND_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
@@ -723,10 +744,21 @@ class FederatedConfig(BaseModel):
             "working."
         ),
     )
+    edge_key_name: str | None = Field(
+        default=None,
+        description=(
+            "A key minted by `federation_keygen`, by name (#633). The same thing "
+            "as `edge_key_env` and the preferred form: a key named here is "
+            "re-read on every reload, so one minted after startup takes effect "
+            "without a restart. Exactly one of the two per key."
+        ),
+    )
     edge_key: SecretStr | None = Field(
         default=None,
         exclude=True,
-        description="Resolved edge private key PEM (load-time only, from edge_key_env)",
+        description=(
+            "Resolved edge private key PEM (load-time only, from edge_key_env or edge_key_name)"
+        ),
     )
     trust_verdict: TrustVerdict | None = Field(
         default=None,
@@ -746,6 +778,16 @@ class FederatedConfig(BaseModel):
         ),
     )
 
+    @property
+    def has_edge_key(self) -> bool:
+        """Whether this edge signs its requests, by either key source.
+
+        Asked before the key is resolved, so it reads the declaration rather
+        than ``edge_key`` — the two sources must never diverge in behaviour,
+        and a check that named only one is how #633 found a gap.
+        """
+        return self.edge_key_env is not None or self.edge_key_name is not None
+
     @field_validator("edge_key_env")
     @classmethod
     def edge_key_env_is_an_env_name(cls, v: str | None) -> str | None:
@@ -753,6 +795,16 @@ class FederatedConfig(BaseModel):
         if v is not None and not ENV_NAME_RE.match(v):
             raise ValueError(f"edge_key_env {v!r} must be an UPPERCASE env-var identifier")
         return v
+
+    @field_validator("edge_key_name")
+    @classmethod
+    def edge_key_name_is_a_key_name(cls, v: str | None) -> str | None:
+        return _is_key_name(v, "edge_key_name")
+
+    @model_validator(mode="after")
+    def one_edge_key_source(self) -> FederatedConfig:
+        _one_key_source(self.edge_key_env, self.edge_key_name, "edge_key")
+        return self
 
     @field_validator("poll_seconds")
     @classmethod
@@ -820,10 +872,22 @@ class FederationConfig(BaseModel):
             "downstream re-judges, exactly as today."
         ),
     )
+    signing_key_name: str | None = Field(
+        default=None,
+        description=(
+            "A key minted by `federation_keygen`, by name (#633). The same thing "
+            "as `signing_key_env` and the preferred form: a key named here is "
+            "re-read on every reload, so one minted after startup takes effect "
+            "without a restart. Exactly one of the two per key."
+        ),
+    )
     signing_key: SecretStr | None = Field(
         default=None,
         exclude=True,
-        description="Resolved signing private key PEM (load-time only, from signing_key_env)",
+        description=(
+            "Resolved signing private key PEM (load-time only, from "
+            "signing_key_env or signing_key_name)"
+        ),
     )
 
     @field_validator("peers")
@@ -843,6 +907,16 @@ class FederationConfig(BaseModel):
         if v is not None and not ENV_NAME_RE.match(v):
             raise ValueError(f"signing_key_env {v!r} must be an UPPERCASE env-var identifier")
         return v
+
+    @field_validator("signing_key_name")
+    @classmethod
+    def signing_key_name_is_a_key_name(cls, v: str | None) -> str | None:
+        return _is_key_name(v, "signing_key_name")
+
+    @model_validator(mode="after")
+    def one_signing_key_source(self) -> FederationConfig:
+        _one_key_source(self.signing_key_env, self.signing_key_name, "signing_key")
+        return self
 
 
 def federation_audience(url: str) -> str | None:
@@ -1123,26 +1197,23 @@ class Backend(BaseModel):
         peer, so it cannot be federated. A ``decoy://`` backend has no server
         at all — the ``_REMOTE_ONLY_FIELDS`` check refuses ``federated`` there.
 
-        When ``edge_key_env`` is set the backend signs a JWT whose audience is
-        the upstream profile named in the URL, so the URL must be a gateway MCP
-        endpoint (``…/<profile>/mcp``) from which that name is derivable.
+        When an edge key is set, by either source, the backend signs a JWT whose
+        audience is the upstream profile named in the URL, so the URL must be a
+        gateway MCP endpoint (``…/<profile>/mcp``) from which that name is
+        derivable.
         """
         if self.federated is not None and self.is_internal:
             raise ValueError("federated does not apply to an internal:// backend")
         if (
             self.federated is not None
-            and self.federated.edge_key_env is not None
+            and self.federated.has_edge_key
             and federation_audience(self.url) is None
         ):
             raise ValueError(
-                "a federated backend with edge_key_env must point at a gateway MCP "
+                "a federated backend with an edge key must point at a gateway MCP "
                 "endpoint (.../<profile>/mcp), from which the token audience is taken"
             )
-        if (
-            self.federated is not None
-            and self.federated.poll_seconds > 0
-            and self.auth is not None
-        ):
+        if self.federated is not None and self.federated.poll_seconds > 0 and self.auth is not None:
             raise ValueError(
                 "a federated backend with poll_seconds cannot also use auth: "
                 "background revalidation skips auth backends, so the poll would "

@@ -34,6 +34,8 @@ from trentina.gateway.loader import (
 )
 from trentina.outcomes import Outcome
 from trentina.tools.cache import cache_flush
+from trentina.tools.config import manage_config
+from trentina.tools.keygen import federation_keygen
 from trentina.tools.reconnect import reconnect_backend
 from trentina.tools.reload import reload_profiles
 from trentina.tools.stats import get_trentina_stats
@@ -133,6 +135,14 @@ async def _reload() -> dict[str, Any]:
     return await reload_profiles()
 
 
+async def _keygen() -> dict[str, Any]:
+    return await federation_keygen("alpha")
+
+
+async def _config_read_alphas_profile() -> dict[str, Any]:
+    return await manage_config("get", "profiles.alpha")
+
+
 # (label, call, the argument the caller passed in). A refusal quotes the name
 # it was given, which is the caller's own string and not a disclosure — so it
 # is removed from the answer before the check, and nothing else is forgiven.
@@ -147,6 +157,12 @@ ADMIN_CALLS: list[tuple[str, Callable[[], Any], str | None]] = [
     ),
     ("reconnect_backend (own)", _reconnect_own, None),
     ("reload_profiles", _reload, None),
+    # The name is the caller's own string, and here it is deliberately a
+    # profile name: an agent must not learn that "alpha" means anything.
+    ("federation_keygen (a profile's name as the key name)", _keygen, "alpha"),
+    # The whole config is the operator's to read; an agent asking for another
+    # profile's section must learn nothing, not even that it exists.
+    ("config get (another profile's section)", _config_read_alphas_profile, "alpha"),
 ]
 
 

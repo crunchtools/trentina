@@ -25,13 +25,60 @@ seat:
 | `cache_flush` | Every cache, by exact name |
 | `reconnect_backend` | Any backend, wherever it is configured, and which profiles share it |
 | `reload_profiles` | Applies the whole `profiles.yaml`, gateway-wide settings included |
+| `config_tool` | Reads and edits `profiles.yaml` itself, then applies it |
+| `federation_keygen` | Mints an Ed25519 keypair for a federated edge, returning only its public half |
 
-These are what an Operator agent's loop needs. It edits `profiles.yaml`,
-applies the edit with `reload_profiles`, and reads back what applied and what
-needs a restart. It watches `quarantine_stats` for false positives and
-calibration drift, and heals a backend with `reconnect_backend` after a
-redeploy. None of this needs a shell. See [Roles](profiles.md#roles) for how
-each tool narrows for a tenant.
+These are what an Operator agent's loop needs. It reads a section of
+`profiles.yaml` with `config_tool`, writes the change back with the `hash` that
+read returned, and gets told what applied and what needs a restart. It watches
+`quarantine_stats` for false positives and calibration drift, and heals a
+backend with `reconnect_backend` after a redeploy. None of this needs a shell.
+See [Roles](profiles.md#roles) for how each tool narrows for a tenant.
+
+Writing config is deliberately read-before-write. `expect_hash` is required, so
+a change carries the hash of the version it was composed against: if a person
+hand-edited the file in between, the write is refused instead of overwriting
+them. The file is the source of truth, not a view over anything, and it stays a
+file a person can read, diff and keep in git. Every successful write returns
+the next hash, so a run of changes needs one read at the start.
+
+Two things the operator cannot write, and they are not about authority — the
+operator *is* root on this gateway. They exist because the operator is a model,
+so what matters is not whether it may but whether it can be talked into it.
+
+The first is the operator seat: who holds `role: operator`, and how a caller
+becomes one. That stays a human edit of the file, because minting a second root
+is the one change whose blast radius is unbounded and permanent.
+
+The second is `trust_verdict`, which makes this gateway serve another
+gateway's response *without* running its own three layers over it. The
+constitution's rule is that trust decisions are administrator-set rather than
+agent-controlled, and that trust changes what a finding costs and never
+whether a layer runs — and scan-once changes exactly whether a layer runs.
+Everything else about federation is the operator's, including
+`federation.peers`, which decides who may authenticate: that is an access
+grant like any other, not a decision to believe someone else's scan.
+
+One thing still needs a restart, and it is worth knowing before you plan a
+change: a profile that authenticates by `auth.bearer_token_env` needs that
+environment variable to exist in the container, so a brand-new profile of that
+kind is a deployment change rather than a config change. Everything about an
+existing profile, and a new profile that authenticates by federation peers, is
+live on the reload. The result's `reload.not_applied` names anything that
+needs a restart, so read it rather than assuming.
+
+Keeping the history is the host's job, not the gateway's: the image ships no
+`git`, and the git transport carries a caller's client rather than authoring
+commits. `contrib/quadlet/trentina-config-commit.{path,service}` commit the
+file whenever it changes, which is what turns "the file is the record of what
+is running" into a history of how it got there.
+
+Setting up a federated edge needs no shell either: `federation_keygen` mints
+the keypair and keeps the private half where no tool can read it, the public
+half goes into the peer's config with `config_tool`, and a key referred to by
+name is re-read on every reload, so a key minted after startup takes effect
+without a restart. A writable config directory is what `config_tool` needs from
+the deployment; see [Deployment Hardening](deployment-hardening.md#a-writable-config-directory).
 
 **Service identity.** Some model calls belong to no tenant. Compressing a
 shared tool description, and judging it at the perimeter before any profile
