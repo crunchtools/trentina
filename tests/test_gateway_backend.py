@@ -8,10 +8,12 @@ timeout wrapping, caching, and success/failure recording.
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import patch
 
+import httpx
 import pytest
 from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
@@ -27,6 +29,7 @@ from trentina.gateway.backend import (
 from trentina.gateway.circuit import State, breaker
 from trentina.gateway.errors import BackendCallError
 from trentina.gateway.profile import Backend
+from trentina.logsafe import exc_kind
 
 
 def _backend(
@@ -466,6 +469,59 @@ def test_a_rejection_is_found_in_a_nested_group_and_through_a_cause() -> None:
 
     assert _rejection(nested) == "invalid arguments"
     assert _rejection(ExceptionGroup("tg", [MCPError(-32603, "x")])) is None
+
+
+def test_exc_kind_unwraps_a_task_group_to_the_real_leaf() -> None:
+    """A federated backend's failure arrives as the SDK's task-group
+    ExceptionGroup; the kind must name the leaf, not the wrapper (F1)."""
+    group = ExceptionGroup("unhandled errors in a TaskGroup", [httpx.ConnectError("boom")])
+    assert exc_kind(group) == "ConnectError"
+
+
+def test_exc_kind_unwraps_a_nested_group_and_a_cause_group() -> None:
+    inner = ExceptionGroup("inner", [httpx.ConnectError("boom")])
+    assert exc_kind(ExceptionGroup("outer", [inner])) == "ConnectError"
+    wrapper = RuntimeError("wrapper")
+    wrapper.__cause__ = ExceptionGroup("caused", [TimeoutError("slow")])
+    assert exc_kind(wrapper) == "TimeoutError"
+
+
+def test_exc_kind_leaves_a_plain_exception_unchanged() -> None:
+    assert exc_kind(ConnectionRefusedError("refused")) == "ConnectionRefusedError"
+
+
+@pytest.mark.asyncio
+class TestFederatedErrorKindIsLegible:
+    """F1: a failed federated probe names the real leaf, not 'ExceptionGroup'.
+
+    Picking up a redeployed federated tool on breetai failed with an opaque
+    ``list_tools failed: ExceptionGroup`` because the reporter read
+    ``type(exc).__name__`` on the SDK's task-group wrapper. The operator-visible
+    error and the log line must both name the leaf an operator can act on.
+    """
+
+    async def test_list_tools_failure_names_the_leaf_kind(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def grouped_connect_error(_url: str, _headers: Any, *_: Any) -> Any:
+            raise ExceptionGroup(
+                "unhandled errors in a TaskGroup", [httpx.ConnectError("boom")]
+            )
+
+        with (
+            patch(
+                "trentina.gateway.backend._do_list_tools",
+                side_effect=grouped_connect_error,
+            ),
+            caplog.at_level(logging.WARNING, logger="trentina.gateway.backend"),
+            pytest.raises(BackendCallError) as info,
+        ):
+            await list_backend_tools("rotv", _backend())
+
+        assert "ConnectError" in str(info.value)
+        assert "ExceptionGroup" not in str(info.value)
+        assert "ConnectError" in caplog.text
+        assert "ExceptionGroup" not in caplog.text
 
 
 @pytest.mark.asyncio

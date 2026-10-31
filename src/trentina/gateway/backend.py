@@ -581,7 +581,7 @@ async def _fetch_and_cache(
             exc_kind(exc),
         )
         raise BackendCallError(
-            f"backend {backend_name!r} list_tools failed: {type(exc).__name__}"
+            f"backend {backend_name!r} list_tools failed: {exc_kind(exc)}"
         ) from exc
 
     breaker.record_success(backend.url)
@@ -786,7 +786,7 @@ async def call_backend_tool(
             exc_kind(exc),
         )
         raise BackendCallError(
-            f"backend {backend_name!r} call_tool failed: {type(exc).__name__}"
+            f"backend {backend_name!r} call_tool failed: {exc_kind(exc)}"
         ) from exc
 
     breaker.record_success(backend.url)
