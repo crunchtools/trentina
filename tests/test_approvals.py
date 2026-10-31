@@ -700,11 +700,6 @@ class TestPasswordWorkIsBounded:
 
 
 class TestCompetingPasswordChanges:
-    @pytest.fixture(autouse=True)
-    async def _fresh_semaphore(self) -> None:
-        """Bound to this test's own running loop, not a previous one's."""
-        approval_routes._PASSWORD_WORK = asyncio.Semaphore(1)
-
     """The invariant the critical section exists for, exercised by actually
     overlapping two requests rather than by pre-holding the lock.
 
@@ -712,6 +707,11 @@ class TestCompetingPasswordChanges:
     the moment they are submitted. Only one may win, and the window must not
     still be open for the loser to ride in on.
     """
+
+    @pytest.fixture(autouse=True)
+    async def _fresh_semaphore(self) -> None:
+        """Bound to this test's own running loop, not a previous one's."""
+        approval_routes._PASSWORD_WORK = asyncio.Semaphore(1)
 
     async def test_two_enrolments_from_one_window_leave_one_password(
         self, unset: Any
