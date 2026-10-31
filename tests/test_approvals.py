@@ -548,6 +548,34 @@ class TestHowLongTheWindowStands:
         refused over this would strand every other change in the file."""
         assert approver.clamped_enrol_window(configured) == used
 
+    @pytest.mark.parametrize(
+        ("setting", "loaded"),
+        [("", 300.0), ("  approval_enrol_window_seconds: 900", 900.0)]
+        + [(f"  approval_enrol_window_seconds: {v}", c) for v, c in ((5, 60.0), (99999, 3600.0))],
+    )
+    def test_it_comes_off_the_yaml(
+        self,
+        unset: Any,
+        tmp_path: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        setting: str,
+        loaded: float,
+    ) -> None:
+        """Through load_profiles, not a hand-built GatewayConfig: the default,
+        the conversion and the clamp all live on that path."""
+        from trentina.gateway.loader import load_profiles
+
+        del unset
+        monkeypatch.setenv("TEST_WINDOW_TOKEN", "t")
+        path = tmp_path / "profiles.yaml"
+        path.write_text(
+            f"gateway:\n{setting}\nprofiles:\n  a:\n    auth:\n"
+            "      bearer_token_env: TEST_WINDOW_TOKEN\n    backends: {}\n",
+            encoding="utf-8",
+        )
+
+        assert load_profiles(path).approval_enrol_window_seconds == loaded
+
     def test_a_config_change_cannot_extend_a_window_already_open(self, window_of: Any) -> None:
         """The length is taken when the window opens. An operator can write
         this file, so reading it at every check would let a staged-for-seconds

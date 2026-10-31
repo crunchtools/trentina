@@ -387,6 +387,28 @@ class TestPages:
         assert reply.status_code == 400
         assert CANARY not in reply.text
 
+    async def test_these_pages_wear_the_same_sheet_as_the_approval_page(
+        self, pages: TestClient, profiles: dict[str, Profile]
+    ) -> None:
+        """A person meets one gateway, so they should meet one page (#637).
+        Checked at the route rather than on `page.render`, because what makes
+        it true here is that the handlers pass their request down."""
+        link = await start(profiles["josui"], "era", authorized_by="self")
+        signing_in = pages.get(urlsplit(link).path + "?" + urlsplit(link).query)
+        refused = pages.get(START_PATH, params={"flow": "nope"})
+
+        for reply in (signing_in, refused):
+            assert "data:image/png;base64," in reply.text
+            assert "gw.example" in reply.text
+            assert "img-src data:" in reply.headers["content-security-policy"]
+            assert reply.headers["referrer-policy"] == "no-referrer"
+            assert reply.headers["x-content-type-options"] == "nosniff"
+
+    def test_a_host_that_is_not_a_hostname_shows_no_host_line(self, pages: TestClient) -> None:
+        reply = pages.get(START_PATH, params={"flow": "nope"}, headers={"host": "a b c"})
+        assert reply.status_code == 400
+        assert "a b c" not in reply.text
+
     def test_the_pages_are_rate_limited(
         self, monkeypatch: pytest.MonkeyPatch, server: FakeServer
     ) -> None:

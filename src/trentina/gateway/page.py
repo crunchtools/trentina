@@ -82,9 +82,11 @@ _BASE_HEADERS = {
 }
 
 #: A hostname and nothing else: letters, digits, dots and hyphens, starting
-#: and ending on an alphanumeric, within DNS's 253. Anything else -- a port
-#: that did not split off, a bracketed IPv6 literal, an absent header, a
-#: header somebody filled with prose -- fails and the line is simply omitted.
+#: and ending on an alphanumeric, within DNS's 253. Anything else -- a
+#: bracketed IPv6 literal, an absent header, a header somebody filled with
+#: prose -- fails and the line is simply omitted. A port is taken off at the
+#: FIRST colon and must itself be decimal: splitting at the last one instead
+#: would quietly accept `gw.example:anything` as `gw.example`.
 _HOSTNAME = re.compile(r"\A[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?\Z")
 
 
@@ -98,7 +100,9 @@ _HOSTNAME = re.compile(r"\A[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?\Z")
 #   evidence: T1 \A..\Z anchors it; T4 never logged, stored or routed on
 def served_as(request: Request) -> str | None:
     """The hostname this request asked for, when it is one, else ``None``."""
-    host = (request.headers.get("host") or "").rsplit(":", 1)[0]
+    host, colon, port = (request.headers.get("host") or "").partition(":")
+    if colon and not (port.isascii() and port.isdigit()):
+        return None
     return host.lower() if _HOSTNAME.match(host) else None
 
 

@@ -53,6 +53,13 @@ class TestTheHostIsReadBack:
             "[::1]",
             "[::1]:8019",
             "x" * 300,
+            # The port is taken at the FIRST colon and must be decimal. Split
+            # at the last one instead and each of these shows as gw.example.
+            "gw.example:abc",
+            "gw.example:80<script>",
+            "gw.example:8019:8019",
+            "gw.example:",
+            "gw.example:٨٠",
         ],
     )
     def test_anything_that_is_not_a_hostname_shows_nothing(self, hostile: str) -> None:
