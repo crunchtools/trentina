@@ -36,7 +36,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from corpora.benign_ops import BENIGN
-from corpora.garak_encodings import ENCODINGS
+from corpora.garak_encodings import ENCODINGS, carries
 from corpora.internal import CORPUS
 from trentina.defense import _decide
 from trentina.l1.pipeline import run_l1
@@ -106,9 +106,16 @@ def read(text: str) -> Reading:
 
 
 def measure() -> dict[str, dict[str, list[Reading]]]:
-    """A reading for every text of every set under every transform."""
+    """A reading for every text of every set under every transform.
+
+    A Latin-only encoder (Braille, Morse) is scored only over the texts it can
+    carry (``carries``), the same scoping the gate test applies, so a payload
+    garak drops at encode time is not counted as a loss here either."""
     return {
-        name: {group: [read(change(text)) for text in texts] for group, texts in SETS.items()}
+        name: {
+            group: [read(change(text)) for text in texts if carries(name, text)]
+            for group, texts in SETS.items()
+        }
         for name, change in ROWS.items()
     }
 
