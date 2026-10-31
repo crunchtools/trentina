@@ -652,6 +652,19 @@ class TestTheBodyCap:
         assert answer.status_code == 200
 
 
+class _AlwaysBusy:
+    """A stand-in for the password semaphore that reports itself taken.
+
+    The route only asks ``locked()`` before deciding to refuse, so this
+    exercises that branch without holding a real semaphore — which, held across
+    event loops, leaves the module-level one bound to a loop the next test does
+    not have.
+    """
+
+    def locked(self) -> bool:
+        return True
+
+
 class TestPasswordWorkIsBounded:
     """Found in review, as a consequence of moving scrypt to a worker: a KDF is
     expensive by design, so an unbounded queue of them is the attack rather
@@ -659,39 +672,99 @@ class TestPasswordWorkIsBounded:
     tokenizer use."""
 
     def test_only_one_password_operation_runs_at_a_time(self, page: TestClient) -> None:
+        del page
         assert isinstance(approval_routes._PASSWORD_WORK, asyncio.Semaphore)
         assert approval_routes._PASSWORD_WORK._value == 1
 
-    def test_a_second_attempt_is_refused_rather_than_queued(self, page: TestClient) -> None:
+    def test_a_second_attempt_is_refused_rather_than_queued(
+        self, page: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Busy says so with 503. Queueing would let guesses arrive faster than
         workers finish them and pile up as request state."""
-        loop = asyncio.new_event_loop()
-        try:
-            held = loop.run_until_complete(_hold(approval_routes._PASSWORD_WORK))
-            del held
-            answer = page.post(approval_routes.PATH, data={"password": PASSWORD})
-            assert answer.status_code == 503
-            assert "in flight" in answer.text
-        finally:
-            approval_routes._PASSWORD_WORK = asyncio.Semaphore(1)
-            loop.close()
+        monkeypatch.setattr(approval_routes, "_PASSWORD_WORK", _AlwaysBusy())
+        answer = page.post(approval_routes.PATH, data={"password": PASSWORD})
+        assert answer.status_code == 503
+        assert "in flight" in answer.text
 
-    def test_setting_a_password_is_refused_while_busy(self, pages: TestClient) -> None:
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(_hold(approval_routes._PASSWORD_WORK))
-            _, code = approver.open_enrolment()
-            answer = pages.post(
-                approval_routes.ENROL_PATH,
-                data={"code": code, "new": PASSWORD, "again": PASSWORD},
-            )
-            assert answer.status_code == 503
-            assert approver.configured() is False
-        finally:
-            approval_routes._PASSWORD_WORK = asyncio.Semaphore(1)
-            loop.close()
+    def test_setting_a_password_is_refused_while_busy(
+        self, pages: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, code = approver.open_enrolment()
+        monkeypatch.setattr(approval_routes, "_PASSWORD_WORK", _AlwaysBusy())
+        answer = pages.post(
+            approval_routes.ENROL_PATH,
+            data={"code": code, "new": PASSWORD, "again": PASSWORD},
+        )
+        assert answer.status_code == 503
+        assert approver.configured() is False
 
 
-async def _hold(semaphore: Any) -> None:
-    """Take the only slot and never give it back, so the route sees it busy."""
-    await semaphore.acquire()
+class TestCompetingPasswordChanges:
+    @pytest.fixture(autouse=True)
+    async def _fresh_semaphore(self) -> None:
+        """Bound to this test's own running loop, not a previous one's."""
+        approval_routes._PASSWORD_WORK = asyncio.Semaphore(1)
+
+    """The invariant the critical section exists for, exercised by actually
+    overlapping two requests rather than by pre-holding the lock.
+
+    Both start from the same open enrolment window, so both are authorised at
+    the moment they are submitted. Only one may win, and the window must not
+    still be open for the loser to ride in on.
+    """
+
+    async def test_two_enrolments_from_one_window_leave_one_password(
+        self, unset: Any
+    ) -> None:
+        del unset
+        _, code = approver.open_enrolment()
+        first, second = "password-one-here", "password-two-here"
+
+        results = await asyncio.gather(
+            approval_routes._authorised_set(code, "", first),
+            approval_routes._authorised_set(code, "", second),
+        )
+
+        # Exactly one set a password; the other was refused.
+        assert sorted(r is None for r in results) == [False, True]
+        refused = next(r for r in results if r is not None)
+        assert refused.status_code == 404
+
+        # And the winner's password is the one that stands — not silently
+        # replaced by whichever finished second.
+        won = first if approver.verify(first) else second
+        lost = second if won == first else first
+        assert approver.verify(won) is True
+        assert approver.verify(lost) is False
+
+    async def test_the_window_is_closed_for_the_loser(self, unset: Any) -> None:
+        """Stale authorisation must not survive the write: once a password is
+        set, the code that authorised it is spent."""
+        del unset
+        _, code = approver.open_enrolment()
+
+        await asyncio.gather(
+            approval_routes._authorised_set(code, "", "password-one-here"),
+            approval_routes._authorised_set(code, "", "password-two-here"),
+        )
+
+        assert approver.enrolling(code) is False
+        assert approver.configured() is True
+
+    async def test_a_change_cannot_be_overtaken_by_an_unauthorised_one(
+        self, unset: Any
+    ) -> None:
+        """One caller knows the current password and one does not. The one that
+        does not must lose regardless of ordering."""
+        del unset
+        approver.set_password(PASSWORD)
+        wanted = "the-authorised-change"
+
+        results = await asyncio.gather(
+            approval_routes._authorised_set("", PASSWORD, wanted),
+            approval_routes._authorised_set("", "wrong-current-password", "the-other-one"),
+        )
+
+        assert sorted(r is None for r in results) == [False, True]
+        assert approver.verify(wanted) is True
+        assert approver.verify("the-other-one") is False
