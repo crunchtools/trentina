@@ -36,7 +36,6 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from ..gateway import approver, config_guard, config_patch, config_store, pending
-from ..gateway.approval_routes import PATH
 from ..gateway.audit import _audit
 from ..gateway.config_guard import ConfigWriteError
 from ..gateway.errors import ProfileConfigError, ScopeError
@@ -410,9 +409,9 @@ async def _write(
             # something this caller holds, and the whole point is that it does
             # not hold the approval.
             "note": (
-                f"Nothing has changed. Ask a person to open {PATH} on this gateway and "
-                "approve it with the approval password. It expires on its own if nobody "
-                "does."
+                "Nothing has changed. Ask a person to open "
+                f"{pending.PAGE_PATH} on this gateway and approve it with the approval "
+                "password. It expires on its own if nobody does."
             ),
         }
     return await _apply(live, current, candidate_text, current_hash, reshaped)

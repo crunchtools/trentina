@@ -612,3 +612,40 @@ class TestTheEnrolTool:
             result = await approval_enrol()
         assert "operator" in result["error"]
         assert approver.enrolling() is False
+
+
+class TestTheBodyCap:
+    """Found in review: the cap was applied only when rate limiting was on, so
+    `TRENTINA_RATE_LIMIT=off` — an incident escape hatch for the limiter —
+    silently took the body cap with it and handed a form parser whatever
+    arrived."""
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, limiting: str) -> TestClient:
+        from fastmcp import FastMCP
+
+        monkeypatch.setenv("TRENTINA_RATE_LIMIT", limiting)
+        monkeypatch.setenv(
+            "TRENTINA_APPROVAL_PASSWORD_HASH", approver.make_verifier(PASSWORD)
+        )
+        mcp = FastMCP("t")
+        approval_routes.register_approval_routes(mcp)
+        return TestClient(
+            Starlette(routes=mcp._additional_http_routes), base_url="https://gw.example"
+        )
+
+    @pytest.mark.parametrize("limiting", ["on", "off"])
+    def test_an_oversized_body_is_refused_either_way(
+        self, monkeypatch: pytest.MonkeyPatch, limiting: str
+    ) -> None:
+        client = self._client(monkeypatch, limiting)
+        oversized = "x" * (approval_routes.MAX_BODY_BYTES * 2)
+        answer = client.post(approval_routes.PATH, data={"password": oversized})
+        assert answer.status_code == 413
+
+    def test_an_ordinary_body_still_works_with_limiting_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = self._client(monkeypatch, "off")
+        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied([]))
+        answer = client.post(approval_routes.PATH, data={"password": PASSWORD})
+        assert answer.status_code == 200

@@ -28,6 +28,7 @@ external reference, and no form action but its own path.
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 from http import HTTPStatus
@@ -43,8 +44,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-PATH = "/approve"
-ENROL_PATH = "/approve/password"
+#: Defined in ``pending``, so a tool can name the page without importing a
+#: route module. Re-exported under the names this module reads best with.
+PATH = pending.PAGE_PATH
+ENROL_PATH = pending.ENROL_PATH
 
 #: Tighter than the OAuth pages'. A person approves a handful of things ever,
 #: and this route gates who holds root, so the limit is also what bounds a
@@ -173,7 +176,10 @@ async def _act(kind: pending.Kind, decision: str) -> Response:
 async def _decide(request: Request) -> Response:
     form = await request.form()
     password = str(form.get("password") or "")
-    if not approver.verify(password):
+    # scrypt is deliberately expensive — ~16 MiB and tens of milliseconds — so
+    # it runs in a worker. On the loop it would stall every other profile's
+    # request for the duration of a stranger's password guess.
+    if not await asyncio.to_thread(approver.verify, password):
         # A wrong password and a right one with nothing staged answer the same.
         logger.info("approval: a visitor did not present a valid approval password")
         return _nothing()
@@ -197,7 +203,10 @@ def register_approval_routes(mcp_server: Any) -> None:
         logger.warning(
             "gateway: no approval password is set, so the operator seat and federation "
             "trust stay unwritable. An operator agent can ask for one with "
-            "approval_enrol, which opens %s for a person to set it",
+            "approval_enrol, which opens %s for a person to set it. Until it is set, an "
+            "operator profile holding a backend that can make arbitrary HTTP requests "
+            "could enrol itself — set it promptly, and keep such a backend off the "
+            "operator seat (docs/deployment-hardening.md)",
             ENROL_PATH,
         )
 
@@ -205,7 +214,9 @@ def register_approval_routes(mcp_server: Any) -> None:
 
     from .ratelimit import RateLimiter, UnauthenticatedWriteGuard, enabled
 
-    limiter = RateLimiter(*PAGE_LIMIT, name=PATH)
+    # The body cap holds whether or not limiting does: a form parser must never
+    # be handed an unbounded body, and the limiter is an incident escape hatch.
+    limiter = RateLimiter(*PAGE_LIMIT, name=PATH) if enabled() else None
     routes = (
         (PATH, ["GET"], _show),
         (PATH, ["POST"], _decide),
@@ -213,11 +224,12 @@ def register_approval_routes(mcp_server: Any) -> None:
         (ENROL_PATH, ["POST"], _set_password),
     )
     for path, methods, handler in routes:
-        app: Any = handler
-        if enabled():
-            app = UnauthenticatedWriteGuard(
-                request_response(handler), limiter=limiter, max_body_bytes=MAX_BODY_BYTES
-            )
+        app: Any = UnauthenticatedWriteGuard(
+            request_response(handler),
+            limiter=limiter,
+            max_body_bytes=MAX_BODY_BYTES,
+            name=path,
+        )
         mcp_server.custom_route(path, methods=methods)(app)
     logger.info("gateway: the approval pages are mounted at %s", PATH)
 
@@ -293,11 +305,14 @@ async def _set_password(request: Request) -> Response:
     # existing password needs the current one. A wrong code, a wrong current
     # password and a closed window all answer the same: none says which it was.
     enrolling = approver.enrolling(str(form.get("code") or ""))
-    if not enrolling and not approver.verify(str(form.get("password") or "")):
+    if not enrolling and not await asyncio.to_thread(
+        approver.verify, str(form.get("password") or "")
+    ):
         logger.info("approval: a password change was not authorised")
         return _page("Not set", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
     try:
-        approver.set_password(new)
+        # Deriving the verifier is the same cost as checking one, plus a write.
+        await asyncio.to_thread(approver.set_password, new)
     except ValueError as exc:
         # Its own message names the rule, never the password.
         return _page("Not set", f"<p>{html.escape(str(exc))}</p>", 400)

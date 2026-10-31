@@ -21,8 +21,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..gateway import approver
-from ..gateway.approval_routes import ENROL_PATH
+from ..gateway import approver, pending
 from ..gateway.errors import ScopeError
 from ..gateway.scope import require_caller, require_operator
 from ..logsafe import exc_kind
@@ -48,7 +47,7 @@ async def approval_enrol() -> dict[str, Any]:
     if approver.configured():
         return {
             "already_set": True,
-            "url": ENROL_PATH,
+            "url": pending.ENROL_PATH,
             "note": (
                 "An approval password is already set. A person can change it at that "
                 "URL by entering the current one; nothing here can replace it."
@@ -58,7 +57,7 @@ async def approval_enrol() -> dict[str, Any]:
     seconds, code = approver.open_enrolment()
     return {
         "opened": True,
-        "url": ENROL_PATH,
+        "url": pending.ENROL_PATH,
         "code": code,
         "open_for_seconds": seconds,
         "note": (

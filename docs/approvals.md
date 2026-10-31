@@ -76,6 +76,22 @@ The window is opened only on request, it is short, the code changes each time
 it opens, and it closes the moment a password is set. It can never replace a
 working password — changing an existing one takes the current one.
 
+**The limit of this, stated plainly.** An operator profile that holds a backend
+able to make arbitrary HTTP requests — anything that runs code, shells out, or
+fetches a URL of its choosing with a method of its choosing — has the code and
+can submit the form, so it could enrol itself before a person does. That is not
+a flaw this mechanism can close: such a profile can already read the gateway's
+own configuration and rewrite `profiles.yaml` directly, so no in-gateway
+control binds it. The guarantee here is scoped to an operator whose tools are
+Trentina's own.
+
+Two things follow. Set the password promptly on a new gateway — the window is
+the exposure, and it closes. And treat the operator seat's backend list as part
+of this boundary: a seat that needs arbitrary code execution is a seat that
+cannot be held to any of this. A deployment that wants the guarantee
+unconditionally should pin the verifier in its configuration instead, where the
+gateway cannot set it at all.
+
 A deployment can pin a verifier in the gateway's configuration instead
 (`TRENTINA_APPROVAL_PASSWORD_HASH`, or better its `_FILE` form in the read-only
 config mount). That wins over anything set in a browser, and the page says so
