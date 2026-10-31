@@ -34,11 +34,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from ..gateway.aggregate import invalidate_profile_cache, invalidate_profile_cache_for_backend
-from ..gateway.backend import (
-    evict_backend_cache_url,
-    list_backend_tools,
-    refresh_backend_tools,
-)
+from ..gateway.backend import refresh_backend_tools
 from ..gateway.circuit import breaker
 from ..gateway.compress import get_profiles
 from ..gateway.decoy import served_tools
@@ -77,7 +73,7 @@ def _safe_endpoint(url: str) -> str:
 def _configured_name(backends: Mapping[str, Any], name: str) -> str:
     """The configured key equal to ``name``, once resolution has matched it.
 
-    ``list_backend_tools`` logs the name it is given. Handing it the key from
+    ``refresh_backend_tools`` logs the name it is given. Handing it the key from
     the configuration rather than the caller's argument makes what reaches the
     log the gateway's own string by construction (#262), which is what the
     CodeQL pack's tool-arg-to-log query checks (#269).
@@ -139,13 +135,21 @@ async def _reset_one(
                 "error": 'needs a grant: authorize with backend_auth (action="start") first',
                 "circuit": breaker.get_state(url).value,
             }
+    elif cfg.federated is not None and holders:
+        # A federated edge authenticates with a per-request JWT whose caller is
+        # the downstream profile (#592 C1/C2); _credentials mints it only when a
+        # profile is passed. The operator path otherwise passed none, so the
+        # probe went out unauthenticated and the upstream rejected it with an
+        # opaque ExceptionGroup. Hand it an owning profile so the edge re-auths.
+        holder = holders[0]
     breaker.reset(url)
     try:
-        if scope.is_operator and holder is None:
-            evict_backend_cache_url(url)
-            tools = await list_backend_tools(backend, cfg)
-        else:
-            tools = await refresh_backend_tools(backend, cfg, holder)
+        # Refresh in place — never evict first. Evicting before the fetch
+        # stranded the downstream with no tools when the fetch then failed
+        # (the list was already gone from memory and SQLite). refresh fetches
+        # fresh, replaces on success, and leaves the last-good list untouched
+        # on failure; the aggregate is invalidated below only after a success.
+        tools = await refresh_backend_tools(backend, cfg, holder)
     except BackendCallError as exc:
         return {
             **base,

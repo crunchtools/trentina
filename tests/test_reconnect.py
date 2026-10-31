@@ -127,6 +127,65 @@ class TestReconnectBackend:
         assert "error" in result["targets"][0]
         assert POSTIZ_URL not in _tool_list_cache
 
+    async def test_failed_operator_reconnect_keeps_the_last_good_list(self) -> None:
+        """A failed operator reconnect must not strand the downstream: the
+        last-good list survives in memory and SQLite, and the error names the
+        real leaf, not the SDK task group (F1 + F2)."""
+        import httpx
+
+        from trentina.database import save_tool_list
+        from trentina.gateway.backend import load_tool_list_cache
+
+        set_profiles({"agent2": _profile("agent2", {"postiz": Backend(url=POSTIZ_URL)})})
+        good = [{"name": "integrationList"}, {"name": "listPostsTool"}]
+        _tool_list_cache[POSTIZ_URL] = good
+        save_tool_list(POSTIZ_URL, good)
+
+        async def grouped_connect_error(_url: str, _headers: Any, *_: Any) -> Any:
+            raise ExceptionGroup(
+                "unhandled errors in a TaskGroup", [httpx.ConnectError("boom")]
+            )
+
+        with patch(
+            "trentina.gateway.backend._do_list_tools", side_effect=grouped_connect_error
+        ):
+            result = await reconnect_backend("postiz")
+
+        assert result["reconnected"] is False
+        error = str(result["targets"][0]["error"])
+        assert "ConnectError" in error
+        assert "ExceptionGroup" not in error
+        # Untouched in memory ...
+        assert _tool_list_cache[POSTIZ_URL] == good
+        # ... and still on disk: reload from SQLite and confirm it returns.
+        _tool_list_cache.clear()
+        load_tool_list_cache()
+        assert _tool_list_cache.get(POSTIZ_URL) == good
+
+    async def test_operator_reconnect_of_a_federated_backend_passes_the_profile(self) -> None:
+        """A federated edge mints its JWT from the caller profile (#592 C1/C2);
+        the operator reconnect must pass one, or the probe goes out with no auth
+        and the upstream rejects it (surfacing as an opaque ExceptionGroup)."""
+        from trentina.gateway.profile import FederatedConfig
+
+        fed = Backend(
+            url="https://up.example/gateway/fed-x/mcp",
+            federated=FederatedConfig(edge_key_env="X_EDGE_KEY"),
+        )
+        set_profiles({"josui": _profile("josui", {"up": fed})})
+        captured: dict[str, Any] = {}
+
+        async def spy_refresh(_name: str, _backend: Backend, profile: Any = None) -> Any:
+            captured["profile"] = profile
+            return [{"name": "t"}]
+
+        with patch("trentina.tools.reconnect.refresh_backend_tools", side_effect=spy_refresh):
+            result = await reconnect_backend("up")
+
+        assert result["reconnected"] is True
+        assert captured["profile"] is not None
+        assert captured["profile"].name == "josui"
+
     async def test_internal_backend_is_noop(self) -> None:
         """An internal:// backend needs no transport reconnect."""
         set_profiles({"agent2": _profile("agent2", {"web": Backend(url="internal://web")})})
