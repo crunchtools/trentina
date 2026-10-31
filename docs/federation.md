@@ -20,7 +20,7 @@ the rationale behind each piece.
 
 An edge is **directed**. The upstream *offers* a declared set of tools; the
 downstream *consumes* them. The upstream can never enumerate or call the
-downstream's local tools — a downstream's Red Hat stack stays local even when it
+downstream's local tools — a downstream's private stack stays local even when it
 mounts a public upstream.
 
 An edge lives in **two profiles**, one on each gateway: a consuming profile on
