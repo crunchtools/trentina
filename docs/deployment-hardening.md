@@ -14,7 +14,7 @@ is a reference unit with all of it applied.
 
 | Flag | Why |
 |------|-----|
-| `--read-only` (`ReadOnly=true`) | No file write can plant code. Only `/data` and a tmpfs `/tmp` are writable. |
+| `--read-only` (`ReadOnly=true`) | No file write can plant code. Only `/data`, a tmpfs `/tmp` and — if you want API-driven config — the config directory are writable. |
 | `--security-opt no-new-privileges` | No setuid escalation from a spawned process. |
 | `--cap-drop=all` | The gateway needs no capability. |
 | `--user 65532` | Never root, in or out of a user namespace. |
@@ -24,6 +24,29 @@ The image sets `PYTHONSAFEPATH=1`, so the working directory is not on
 `sys.path`, and `PYTHONDONTWRITEBYTECODE=1`. Before 0.49.0 a writable `/app`
 was `sys.path[0]`, and onnxruntime and transformers are imported lazily, so a
 file write there became code execution at the next import.
+
+## A writable config directory
+
+`config_tool` edits `profiles.yaml`, which means the gateway needs to rename a
+file over it, which means the *directory* has to be writable and bound as a
+directory rather than as the single file. That is a real write surface, and it
+is worth being plain about what it is and is not.
+
+It is one directory, holding config the gateway already reads. The rootfs stays
+read-only, the config directory is not on `sys.path`, and nothing there is
+imported, so a write cannot become code execution. `TRENTINA_REQUIRE_HARDENED`
+still passes: `rootfs_writable` tests `statvfs("/")` and `import_path_writable`
+tests `sys.path` entries, and a bind mount at the config path is neither.
+
+Keep secrets out of that directory. They belong in the read-only secrets mount,
+by their `_FILE` form, exactly as before — the one field in the schema that can
+hold a credential value rather than the name of one is `llm_keys.*.api_key`,
+and `config_tool` masks it on the way out.
+
+If you do not want this, bind the single file `:ro` as before. `config_tool`
+reads fine and reports that it cannot write, and `profiles.yaml` stays
+hand-edited-only. Federation keys are unaffected either way: they live in
+`/data`, not in the config directory.
 
 ## The startup check
 

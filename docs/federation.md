@@ -30,9 +30,9 @@ One key says who's talking; the other says what was decided. Leaking one can't f
 
 ## Setting one up, in concept
 
-Three moves (the exact field names, key formats, and env vars live in the config schema and code):
+Three moves, all of which an operator agent can make itself — no shell, no file editing, no restart. The exact field names and formats live in the config schema and the code.
 
-1. **Two keypairs exist** — an edge key for the downstream, a signing key for the upstream. A private half never appears in a config file; the config says where its gateway should find it, and only that gateway ever holds it. The public halves cross over and are pinned on the opposite side.
+1. **Two keypairs exist** — an edge key for the downstream, a signing key for the upstream. Each gateway mints its own: ask it for a key and it keeps the private half somewhere no tool can read, and hands back the public half. A private key is never in a config file; the config refers to it by name. The public halves cross over and are pinned on the opposite side.
 2. **Declare the edge in two profiles** — an *ingress* profile on the upstream that lists the tools it offers and names its peers, and a *federated backend* on the downstream pointing at that ingress. At this stage the link is authenticated but still double-scans. Prove it works here first.
 3. **Turn on trust** — on the downstream, pin the upstream's signing key plus a *fingerprint of its scanner*. Now the downstream trusts verdicts that match and scans locally anything that doesn't.
 

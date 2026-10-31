@@ -46,7 +46,8 @@ ashore: commerce keeps flowing, and nothing dangerous gets in.
 
 5. **Architectural flexibility.** A personal assistant, a coding agent and a
    swarm each get their own profile, with their own backends, defense mode and
-   credentials. [Profiles](docs/profiles.md) · [Operator](docs/operator.md)
+   credentials — and an operator agent configures all of it through tools,
+   with no shell. [Profiles](docs/profiles.md) · [Operator](docs/operator.md)
 
 ## Quick Start
 

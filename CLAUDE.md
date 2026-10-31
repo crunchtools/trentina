@@ -424,12 +424,14 @@ which keeps the pre-#137 spelling so persisted verdicts stay reachable.
 
 ### Gateway admin
 
-All four are scoped by the calling profile's `role` (`gateway/scope.py`, and
+Scoped by the calling profile's `role` (`gateway/scope.py`, and
 the Roles table in `docs/profiles.md`). `role: agent` — the default — sees and
 acts on its own slice; `role: operator` holds the gateway. Refusals name
 nothing, so a backend in another profile is refused exactly like one that does
 not exist. Standalone (no gateway registered) is single-tenant and therefore
-operator; a live gateway with no bound caller is refused.
+operator; a live gateway with no bound caller is refused. The four below
+narrow for an agent; `config_tool`, `federation_keygen`, `tool_pins` and
+`audit_verify` refuse one outright (`scope.require_operator`).
 
 - cache_flush — flush tool-list caches. Agent: its own aggregate ONLY, with a
   constant body; the per-URL cache is shared, so an agent flushing it and
@@ -455,6 +457,45 @@ operator; a live gateway with no bound caller is refused.
   `matrix`, ingress routes and proxy-mode `oauth` clients/redirects bind at
   startup. An agent reload also holds its own `git` block (#453);
   `llm_keys` is not held.
+
+## API-driven configuration (#633)
+
+`config_tool` (`tools/config.py`) reads and WRITES `profiles.yaml`; operator
+only. The file stays the source of truth — not a view over a database, not
+generated — so a hand edit still wins: `expect_hash` is REQUIRED and a file
+that moved since that hash refuses the write. `get` returns the hash, and so
+does every successful write.
+
+Order, and it is the point: render the candidate (`gateway/config_patch.py`,
+ruamel round-trip so comments and formatting survive), refuse a trust decision
+riding along inside it, validate by LOADING it from a real temp file through
+`load_profiles` (the one schema authority), compare the operator seat before
+and after, re-read the live file, keep the previous text under
+`<data>/config-backups/`, `os.replace`, then apply through `reload_profiles`.
+Every refusal before the replace has touched nothing; the one after it restores
+the file, because a file ahead of the running gateway lies to the next reader.
+One `asyncio.Lock`: two writes validating against the same text would both
+satisfy their own `expect_hash`.
+
+`gateway/config_guard.py` holds the rules, pure: the operator seat (compared
+semantically, since a path check is evaded by writing a parent key — `auth`,
+`oauth`, and the `source_networks` of `matrix_ingress`/`client_egress`, because
+the peer address picks the profile there, #330), trust isolation (the VALUE is
+walked, not the config diffed), and masking `llm_keys.*.api_key`, the one field
+in the schema that holds a credential value rather than the name of one. These
+are not a privilege boundary: the operator is root. They exist because the
+operator is a model, so the question is "can it be talked into it".
+
+`federation_keygen` (`tools/keygen.py`, store in `gateway/key_store.py`) mints
+an Ed25519 pair into `<data>/keys/<name>.pem` (`O_EXCL`, 0600) and returns only
+the public PEM. `edge_key_name`/`signing_key_name` refer to one by NAME, not
+path, resolved on every load — which is what removes the restart, since a
+reload is a load. Keep `has_edge_key` in mind over testing `edge_key_env`: a
+check naming one source only is how #633 found a gap.
+
+The deployment needs the config DIRECTORY bound writable (a rename needs the
+directory). `TRENTINA_REQUIRE_HARDENED` still passes: its checks are
+`statvfs("/")` and `sys.path`.
 
 ## OAuth token binding (#298)
 

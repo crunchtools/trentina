@@ -26,9 +26,21 @@ Environment=TRENTINA_REQUIRE_HARDENED=true
 # State: the only writable path besides /tmp.
 Volume=/srv/trentina/data:/data:Z
 
-# Config and secrets read-only. Every secret by its _FILE form, never inline:
+# Config: the DIRECTORY, writable, so the operator can edit profiles.yaml
+# through config_tool (#633). It is bound as a directory rather than the single
+# file because replacing a file atomically means renaming over it, and a rename
+# needs the directory. The gateway is the only writer, the rootfs stays
+# read-only, and TRENTINA_REQUIRE_HARDENED still passes: its checks are
+# statvfs("/") and the import path, neither of which a bind mount here touches.
+#
+# Drop the `:ro` only if you want API-driven config. Leaving the single-file
+# `:ro` bind below instead keeps the file hand-edited-only, and config_tool
+# then reports that it cannot write.
+Volume=/srv/trentina/config:/etc/trentina:Z
+#Volume=/srv/trentina/config/profiles.yaml:/etc/trentina/profiles.yaml:ro,Z
+
+# Secrets stay read-only. Every secret by its _FILE form, never inline:
 # an environment value stays readable at /proc/self/environ.
-Volume=/srv/trentina/config/profiles.yaml:/etc/trentina/profiles.yaml:ro,Z
 Volume=/srv/trentina/secrets:/run/secrets:ro,Z
 Environment=TRENTINA_GATEWAY_ENABLED=true
 Environment=TRENTINA_OAUTH_JWT_SIGNING_KEY_FILE=/run/secrets/oauth-jwt-signing-key

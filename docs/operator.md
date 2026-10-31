@@ -25,13 +25,37 @@ seat:
 | `cache_flush` | Every cache, by exact name |
 | `reconnect_backend` | Any backend, wherever it is configured, and which profiles share it |
 | `reload_profiles` | Applies the whole `profiles.yaml`, gateway-wide settings included |
+| `config_tool` | Reads and edits `profiles.yaml` itself, then applies it |
+| `federation_keygen` | Mints an Ed25519 keypair for a federated edge, returning only its public half |
 
-These are what an Operator agent's loop needs. It edits `profiles.yaml`,
-applies the edit with `reload_profiles`, and reads back what applied and what
-needs a restart. It watches `quarantine_stats` for false positives and
-calibration drift, and heals a backend with `reconnect_backend` after a
-redeploy. None of this needs a shell. See [Roles](profiles.md#roles) for how
-each tool narrows for a tenant.
+These are what an Operator agent's loop needs. It reads a section of
+`profiles.yaml` with `config_tool`, writes the change back with the `hash` that
+read returned, and gets told what applied and what needs a restart. It watches
+`quarantine_stats` for false positives and calibration drift, and heals a
+backend with `reconnect_backend` after a redeploy. None of this needs a shell.
+See [Roles](profiles.md#roles) for how each tool narrows for a tenant.
+
+Writing config is deliberately read-before-write. `expect_hash` is required, so
+a change carries the hash of the version it was composed against: if a person
+hand-edited the file in between, the write is refused instead of overwriting
+them. The file is the source of truth, not a view over anything, and it stays a
+file a person can read, diff and keep in git. Every successful write returns
+the next hash, so a run of changes needs one read at the start.
+
+Two things the operator cannot do, and they are not about authority — the
+operator *is* root on this gateway. They exist because the operator is a model,
+so what matters is not whether it may but whether it can be talked into it. It
+cannot create, move or remove the operator seat, or change how a caller becomes
+one; that stays a human edit of the file. And a change to federation trust or
+peers has to be written on its own, inside the federation block it belongs to,
+rather than carried along inside some larger value.
+
+Setting up a federated edge needs no shell either: `federation_keygen` mints
+the keypair and keeps the private half where no tool can read it, the public
+half goes into the peer's config with `config_tool`, and a key referred to by
+name is re-read on every reload, so a key minted after startup takes effect
+without a restart. A writable config directory is what `config_tool` needs from
+the deployment; see [Deployment Hardening](deployment-hardening.md#a-writable-config-directory).
 
 **Service identity.** Some model calls belong to no tenant. Compressing a
 shared tool description, and judging it at the perimeter before any profile
