@@ -78,7 +78,7 @@ def dump(document: Any) -> str:
     return stream.getvalue()
 
 
-def _checked(path: tuple[str, ...]) -> tuple[str, ...]:
+def checked_path(path: tuple[str, ...]) -> tuple[str, ...]:
     if not path:
         raise ConfigPatchError("a path must name at least one key")
     for key in path:
@@ -109,7 +109,7 @@ def _walk(document: Any, path: tuple[str, ...]) -> Any:
 def get_at(text: str, path: tuple[str, ...]) -> Any:
     """The value at ``path``, or raise ``ConfigPatchError`` if it is not there."""
     node = load(text)
-    for key in _checked(path):
+    for key in checked_path(path):
         if not isinstance(node, CommentedMap) or key not in node:
             raise ConfigPatchError(f"{key!r} is not set")
         node = node[key]
@@ -119,7 +119,7 @@ def get_at(text: str, path: tuple[str, ...]) -> Any:
 def set_at(text: str, path: tuple[str, ...], value: Any) -> str:
     """``text`` with ``path`` set to ``value``, everything else untouched."""
     document = load(text)
-    holder = _walk(document, _checked(path))
+    holder = _walk(document, checked_path(path))
     holder[path[-1]] = value
     return dump(document)
 
@@ -128,7 +128,7 @@ def unset_at(text: str, path: tuple[str, ...]) -> str:
     """``text`` with ``path`` removed. Removing what is not there is an error,
     so a typo in a path cannot read as a successful no-op."""
     document = load(text)
-    holder = _walk(document, _checked(path))
+    holder = _walk(document, checked_path(path))
     if path[-1] not in holder:
         raise ConfigPatchError(f"{path[-1]!r} is not set")
     del holder[path[-1]]
