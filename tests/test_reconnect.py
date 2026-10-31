@@ -127,6 +127,41 @@ class TestReconnectBackend:
         assert "error" in result["targets"][0]
         assert POSTIZ_URL not in _tool_list_cache
 
+    async def test_failed_operator_reconnect_keeps_the_last_good_list(self) -> None:
+        """A failed operator reconnect must not strand the downstream: the
+        last-good list survives in memory and SQLite, and the error names the
+        real leaf, not the SDK task group (F1 + F2)."""
+        import httpx
+
+        from trentina.database import save_tool_list
+        from trentina.gateway.backend import load_tool_list_cache
+
+        set_profiles({"agent2": _profile("agent2", {"postiz": Backend(url=POSTIZ_URL)})})
+        good = [{"name": "integrationList"}, {"name": "listPostsTool"}]
+        _tool_list_cache[POSTIZ_URL] = good
+        save_tool_list(POSTIZ_URL, good)
+
+        async def grouped_connect_error(_url: str, _headers: Any, *_: Any) -> Any:
+            raise ExceptionGroup(
+                "unhandled errors in a TaskGroup", [httpx.ConnectError("boom")]
+            )
+
+        with patch(
+            "trentina.gateway.backend._do_list_tools", side_effect=grouped_connect_error
+        ):
+            result = await reconnect_backend("postiz")
+
+        assert result["reconnected"] is False
+        error = str(result["targets"][0]["error"])
+        assert "ConnectError" in error
+        assert "ExceptionGroup" not in error
+        # Untouched in memory ...
+        assert _tool_list_cache[POSTIZ_URL] == good
+        # ... and still on disk: reload from SQLite and confirm it returns.
+        _tool_list_cache.clear()
+        load_tool_list_cache()
+        assert _tool_list_cache.get(POSTIZ_URL) == good
+
     async def test_internal_backend_is_noop(self) -> None:
         """An internal:// backend needs no transport reconnect."""
         set_profiles({"agent2": _profile("agent2", {"web": Backend(url="internal://web")})})
