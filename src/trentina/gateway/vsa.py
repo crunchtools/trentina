@@ -129,6 +129,20 @@ TRUST_REASONS = (
     "stale",
 )
 
+#: A response delivered on the secondary's verdict, this gateway's own layers
+#: not run over it.
+TRUSTED = "trusted"
+
+#: Verifiable, but the secondary could not fully read the content (a gap, an
+#: oversize refusal, unread binary), so the primary re-judged under its OWN gap
+#: policy. Not one of ``TRUST_REASONS`` because nothing was wrong with the
+#: assertion — the shortfall is in what it attests.
+INCOMPLETE = "incomplete"
+
+#: Every value the audit's ``federated_verdict`` column may hold. Closed, so a
+#: reader can count them, and never the peer's own text (#262).
+AUDITED_VERDICTS = (TRUSTED, INCOMPLETE, *TRUST_REASONS)
+
 
 def check_trust(
     envelope: Any,

@@ -29,6 +29,27 @@ Each gateway call writes one row to the `gateway_calls` table:
 | `session` | text | `3f9a…`: a fingerprint of the MCP session the call arrived on. NULL for a client that sends no session header |
 | `call_ref` | text | `8c1d…`: a random reference for this call. A `detections` row raised by the call carries the same one |
 | `content_digest` | text | `b27e…`: a fingerprint of the delivered result. NULL when nothing was delivered |
+| `federated_verdict` | text | `trusted` when the response was served on a secondary's signed verdict without this gateway's own layers running; otherwise why it was re-judged (`absent`, `bad_signature`, `stamp_mismatch`, `judge_mismatch`, `hash_mismatch`, `mode_mismatch`, `stale`, `incomplete`). A closed set, never the peer's text. NULL for every non-federated call |
+
+### How much of a federated link runs on the peer's scan
+
+`federated_verdict` is the answer, and it is the column to read before deciding
+whether a trust pin is earning anything:
+
+```sql
+-- Of this link's calls, how many were served on the secondary's verdict?
+SELECT federated_verdict, COUNT(*)
+FROM gateway_calls
+WHERE profile = 'myagent' AND backend = 'lotor' AND federated_verdict IS NOT NULL
+GROUP BY federated_verdict;
+```
+
+`trusted` is the saving the pin was for. Anything else means the primary scanned
+it anyway: `stamp_mismatch` or `judge_mismatch` says the secondary changed what
+it scans with and nobody re-pinned, so the pin is now costing a round trip and
+buying nothing. `incomplete` is not a failure — the assertion verified, but the
+secondary could not fully read the content, so the primary applied its own gap
+policy instead.
 
 ### Joining rows
 

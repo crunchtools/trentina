@@ -58,7 +58,13 @@ from ..gateway import (
     vsa,
 )
 from ..gateway.backend import call_backend_tool, loggable_tool
-from ..gateway.context import PartsOffer, current_call, current_session, profile_context
+from ..gateway.context import (
+    PartsOffer,
+    current_call,
+    current_federated_verdict,
+    current_session,
+    profile_context,
+)
 from ..gateway.decoy import leaked_tokens
 from ..gateway.destination import Destination, destination_of
 from ..gateway.errors import BackendCallError
@@ -470,6 +476,7 @@ def _federated_trust(
         now=int(time.time()),
     )
     if assertion is None:
+        current_federated_verdict.set(reason)
         _log_untrusted(profile, backend_name, reason, tv.perimeter_stamp)
         return None
     verdict = assertion["verdict"]
@@ -480,8 +487,10 @@ def _federated_trust(
     # path does not consult. Re-judge locally so the primary's own policy
     # decides, instead of delivering clean on the peer's weaker gap handling.
     if verdict.get("gaps") or verdict.get("oversize") or verdict.get("unread_kinds"):
+        current_federated_verdict.set(vsa.INCOMPLETE)
         _log_untrusted(profile, backend_name, "incomplete_verdict", tv.perimeter_stamp)
         return None
+    current_federated_verdict.set(vsa.TRUSTED)
     return _deliver_trusted(
         arrived, call_result, verdict,
         mode=resolved, policy=policy, stripped=stripped, ok=ok,

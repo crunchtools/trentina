@@ -48,7 +48,7 @@ Pinning the scanner's fingerprint, not just the key, is what makes trust safe: a
 - **Fail-closed.** A missing, forged, stale, or mismatched verdict never means "trust it" — it means "scan it locally." Trust only ever *removes* a redundant scan; it never lets something through unscanned.
 - **Staying fresh.** The primary re-checks the secondary's tool list on an interval, so a newly approved or changed tool shows up on its own, without a manual reconnect.
 - **Approvals happen on the secondary.** A new or changed tool on the secondary is held for approval by the *secondary's* operator — that's who owns the tool. The primary only reports that something is held there, and exposes a pending-approval count for monitoring.
-- **Verifying it works.** The secondary's audit shows the real caller on every request; the primary's audit shows whether each response was trusted or re-scanned. Those are the signals to watch.
+- **Verifying it works.** The secondary's audit shows the real caller on every request; the primary's audit shows whether each response was trusted or re-scanned, and when it was re-scanned, why. Those are the signals to watch — and the second one is how you find out that a pin has quietly stopped matching and is buying nothing.
 
 ## Out of scope
 

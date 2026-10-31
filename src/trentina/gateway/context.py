@@ -60,6 +60,15 @@ current_call: ContextVar[str] = ContextVar("current_call", default="")
 # ``caller_sub`` is peer-chosen and is an audit fact only, never an input to
 # scope, role, policy or a guard (cto ruling, #592 C2).
 current_caller: ContextVar[tuple[str, str] | None] = ContextVar("current_caller", default=None)
+# Whether a federated response was served on the secondary's verdict or
+# re-judged here, and if re-judged, why (``vsa.AUDITED_VERDICTS``). Decided deep
+# in the response path rather than at the edge, so it is set there and read by
+# the audit — the same channel ``current_caller`` uses. None for every
+# non-federated call. docs/federation.md promises an operator can see which
+# responses were trusted; this is what makes that true.
+current_federated_verdict: ContextVar[str | None] = ContextVar(
+    "current_federated_verdict", default=None
+)
 
 
 def session_fingerprint(session_id: str) -> str:
