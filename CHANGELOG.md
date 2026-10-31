@@ -10,6 +10,46 @@ under that name.
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-10-31
+
+### Changed
+
+- **BREAKING: federation's two gateway roles are renamed.** **Primary** is the
+  gateway that uses the tools; **secondary** is the one that offers them. This
+  replaces downstream/upstream, which was doing two jobs — "upstream" also means
+  the HTTP origin the gateway dials, in `egress_http`, the LLM proxy, the git
+  transport, the Matrix bridge and the `egress_upstreams` config field. Those
+  keep the word, so after this release "upstream" means only a network origin.
+- **BREAKING: four `profiles.yaml` field names change**, with no deprecation
+  shim. A gateway will not start on a config that still uses one: the load
+  refuses it by name and says what to rename it to, which is the whole migration
+  aid there is. Rename them in the same change as the image:
+
+  | old | new |
+  |---|---|
+  | `federated.edge_key_env` | `federated.primary_key_env` |
+  | `federated.edge_key_name` | `federated.primary_key_name` |
+  | `federation.signing_key_env` | `federation.secondary_key_env` |
+  | `federation.signing_key_name` | `federation.secondary_key_name` |
+
+- **BREAKING: two agent- and operator-visible names change.** The refusal reason
+  `tool_held_upstream` becomes `tool_held_secondary`, and `quarantine_stats`
+  reports `held_secondary` where it reported `held_upstream`.
+- `gateway/edge_key.py` is now `gateway/federation_keys.py`: it holds the crypto
+  for both keys, so neither role belongs in the module name. `EdgeKeyError` is
+  `FederationKeyError` and `sign_edge_jwt`/`verify_edge_jwt` are
+  `sign_primary_jwt`/`verify_primary_jwt`.
+- The `federated:` and `federation:` config blocks keep their names. They name
+  the feature, not a role, so they stay accurate.
+
+### Compatibility
+
+The signed-assertion wire format is deliberately unchanged — the envelope's
+`verifier`, `perimeter_stamp` and `judge` keys and `PERIMETER_VERSION` all stay
+as they were. A 4.0.0 primary federates with a 3.3.x secondary and vice versa,
+so the two gateways can be migrated one at a time instead of together. A
+`trust_verdict` pinned before this release keeps matching.
+
 ## [3.3.1] - 2026-10-31
 
 ### Fixed

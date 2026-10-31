@@ -236,7 +236,7 @@ _CALL_COLUMNS = (
     ("call_ref", "TEXT"),
     ("content_digest", "TEXT"),
     # The real caller behind a federated request (#592, C2): the peer whose
-    # edge key VERIFIED (the actor) and the sub it ASSERTS. NULL for older rows
+    # primary key VERIFIED (the actor) and the sub it ASSERTS. NULL for older rows
     # and every non-federated call; they enter row_hash only when non-NULL, so
     # an old row still verifies (audit_chain.row_hash).
     ("caller_peer", "TEXT"),

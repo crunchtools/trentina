@@ -1,6 +1,6 @@
-"""Downstream federation poll (#592, F3).
+"""Primary federation poll (#592, F3).
 
-A federated upstream's newly approved or changed tool should appear downstream
+A federated secondary's newly approved or changed tool should appear primary
 without a hand-run reconnect. ``warmup._poll_once`` re-probes the federated
 backends whose interval has elapsed and rebuilds the profiles that share a
 changed one, under background L3 priority. These drive ``_poll_once`` directly
@@ -73,7 +73,7 @@ class TestPollOnce:
 
         # Exactly the two profiles sharing the changed URL are rebuilt; "c" is not.
         assert rebuilt == [["a", "b"]]
-        # The owning profile is passed so a federated backend can mint its edge JWT.
+        # The owning profile is passed so a federated backend can mint its primary JWT.
         assert got_profiles and got_profiles[0].name == "a"
         assert warmup._next_due[UP] == 130.0  # re-seeded now + poll_seconds
         assert sleep_for == pytest.approx(30.0)

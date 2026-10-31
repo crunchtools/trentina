@@ -99,6 +99,7 @@ def _build_profile(name: str, body: Any) -> Profile:
         raise ProfileConfigError(
             f"Profile {name!r}: body must be a mapping, got {type(body).__name__}"
         )
+    _check_renamed_federation_keys(name, body)
     try:
         profile = Profile(name=name, **body)
     except ValidationError as exc:
@@ -123,7 +124,7 @@ def _build_profile(name: str, body: Any) -> Profile:
     _resolve_oauth_audience(name, profile)
     _resolve_llm_key_secrets(name, profile)
     _resolve_grant_tokens(name, profile)
-    _resolve_federation_edge_keys(name, profile)
+    _resolve_federation_primary_keys(name, profile)
     _expand_backend_env_refs(name, profile)
     _check_drivers(name, profile)
     _check_plugin_imports(name, profile)
@@ -193,13 +194,53 @@ def _check_transports(name: str, profile: Profile) -> None:
             raise ProfileConfigError(f"Profile {name!r} backend {backend_name!r}: {exc}") from exc
 
 
+#: The 4.0.0 rename (#637), old spelling to new. ``extra="forbid"`` already
+#: refuses the old name, but pydantic's own message is "Extra inputs are not
+#: permitted" against the key that is gone — true and useless. There is no
+#: deprecation shim by decision, so a clear error is the whole migration aid an
+#: operator gets, and it has to name the replacement.
+_RENAMED_FEDERATION_KEYS = {
+    "edge_key_env": "primary_key_env",
+    "edge_key_name": "primary_key_name",
+    "signing_key_env": "secondary_key_env",
+    "signing_key_name": "secondary_key_name",
+}
+
+
+def _check_renamed_federation_keys(name: str, body: dict[str, Any]) -> None:
+    """Refuse a pre-4.0.0 federation key name, naming what it is called now.
+
+    Read off the RAW body, before the model is built, because the model's
+    ``extra="forbid"`` would otherwise get there first with a worse message.
+    Only the two places the schema ever accepted these are checked, so a
+    profile that merely has a string of the same name somewhere is not caught
+    by accident. The key is a schema name, not a value, so it is safe to print.
+    """
+    blocks: list[Any] = [body.get("federation")]
+    backends = body.get("backends")
+    if isinstance(backends, dict):
+        blocks.extend(
+            backend.get("federated") for backend in backends.values() if isinstance(backend, dict)
+        )
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        for old, new in _RENAMED_FEDERATION_KEYS.items():
+            if old in block:
+                raise ProfileConfigError(
+                    f"Profile {name!r}: {old!r} was renamed to {new!r} in 4.0.0, when "
+                    "federation's roles became primary (uses the tools) and secondary "
+                    "(offers them). Rename the field; the value is unchanged."
+                )
+
+
 def _check_interim_federation(name: str, profile: Profile) -> None:
     """Warn on the interim static-bearer federation path (#592, D2b).
 
     A backend that points at a Trentina gateway's federation endpoint
     (``.../gateway/<profile>/mcp``) without a ``federated:`` block is the
     pre-3.1 arrangement: it mounts another gateway over a shared static bearer
-    and re-judges everything. First-class federation (edge-key auth +
+    and re-judges everything. First-class federation (primary-key auth +
     scan-once trust) supersedes it; the interim path still works but is
     deprecated; it is superseded by the first-class ``federated:`` block and
     will be removed in a future release. Warned by profile and backend name only,
@@ -224,14 +265,14 @@ def _check_interim_federation(name: str, profile: Profile) -> None:
 
 
 def _check_federation_topology(name: str, profile: Profile) -> None:
-    """Hold the federation topology at load (#592): loop-free, and a secure edge.
+    """Hold the federation topology at load (#592): loop-free, and a secure link.
 
     - A profile that is a federation INGRESS (``federation.peers``) must not also
-      CONSUME a federated upstream (a backend with ``federated``). A gateway
+      CONSUME a federated secondary (a backend with ``federated``). A gateway
       consumes, it does not route, so one profile is one role; a two-way pair is
       two profiles. One profile that is both would have its single-flight
       aggregate build wait on a peer whose build waits back — a deadlock.
-    - A federated backend must be reached over https. The 60 s edge JWT carries
+    - A federated backend must be reached over https. The 60 s primary JWT carries
       no replay nonce, so over plain http an on-path peer could replay it within
       the window. ``TRENTINA_FEDERATION_ALLOW_INSECURE=1`` lifts this for a
       trusted local network (warned), as fetch's private-address rule is lifted.
@@ -252,12 +293,12 @@ def _check_federation_topology(name: str, profile: Profile) -> None:
         if not allow_insecure:
             raise ProfileConfigError(
                 f"Profile {name!r} backend {backend_name!r}: a federated backend must "
-                f"use https (the edge JWT is replayable over http); set "
+                f"use https (the primary JWT is replayable over http); set "
                 f"TRENTINA_FEDERATION_ALLOW_INSECURE=1 for a trusted local network"
             )
         logger.warning(
             "gateway: profile=%s backend=%s federated over insecure http "
-            "(TRENTINA_FEDERATION_ALLOW_INSECURE) — the edge JWT is replayable",
+            "(TRENTINA_FEDERATION_ALLOW_INSECURE) — the primary JWT is replayable",
             name,
             backend_name,
         )
@@ -399,11 +440,11 @@ def _require_key(name: str, key_name: str, what: str) -> SecretStr:
     return SecretStr(pem)
 
 
-def _resolve_federation_edge_keys(name: str, profile: Profile) -> None:
-    """Resolve each federated backend's edge private key (#592, #633).
+def _resolve_federation_primary_keys(name: str, profile: Profile) -> None:
+    """Resolve each federated backend's primary private key (#592, #633).
 
-    The key signs the downstream's JWT to the upstream. Either source fails
-    closed, like every other credential: a federated edge that names a key must
+    The key signs the primary's JWT to the secondary. Either source fails
+    closed, like every other credential: a federated link that names a key must
     have it, or the link is misconfigured. The model has already refused naming
     both sources for one key.
     """
@@ -411,22 +452,22 @@ def _resolve_federation_edge_keys(name: str, profile: Profile) -> None:
         fed = backend.federated
         if fed is None:
             continue
-        what = f"federation edge key for backend {backend_name!r}"
-        if fed.edge_key_env is not None:
-            fed.edge_key = _require_env(name, fed.edge_key_env, what)
-        elif fed.edge_key_name is not None:
-            fed.edge_key = _require_key(name, fed.edge_key_name, what)
-    # The ingress's OWN signing key (#592, D1): the upstream signs a verdict
+        what = f"federation primary key for backend {backend_name!r}"
+        if fed.primary_key_env is not None:
+            fed.primary_key = _require_env(name, fed.primary_key_env, what)
+        elif fed.primary_key_name is not None:
+            fed.primary_key = _require_key(name, fed.primary_key_name, what)
+    # The ingress's OWN secondary key (#592, D1): the secondary signs a verdict
     # assertion with it. On the profile, not a backend — it vouches for every
     # federated response this ingress serves, whatever backend produced it.
     federation = profile.federation
     if federation is None:
         return
     what = f"federation signing key for profile {name!r}"
-    if federation.signing_key_env is not None:
-        federation.signing_key = _require_env(name, federation.signing_key_env, what)
-    elif federation.signing_key_name is not None:
-        federation.signing_key = _require_key(name, federation.signing_key_name, what)
+    if federation.secondary_key_env is not None:
+        federation.secondary_key = _require_env(name, federation.secondary_key_env, what)
+    elif federation.secondary_key_name is not None:
+        federation.secondary_key = _require_key(name, federation.secondary_key_name, what)
 
 
 def _resolve_bearer_token(name: str, profile: Profile) -> None:

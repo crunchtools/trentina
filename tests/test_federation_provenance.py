@@ -1,4 +1,4 @@
-"""A1: a federated tool's upstream origin is visible; its name stays short (#592).
+"""A1: a federated tool's secondary origin is visible; its name stays short (#592).
 
 Provenance is Trentina's job internally and in the audit/diagnostic, not a cost
 the agent pays in every tool name — so a federated tool keeps the same short,
@@ -53,7 +53,7 @@ async def test_the_diagnostic_marks_a_federated_tools_origin(
     result = await diagnose_tool_visibility(_profile(federated=True), "up", "list_reports")
     assert result["visible"] is True
     assert result["backend"] == "up"  # origin: which backend
-    assert result["federated"] is True  # ...and that it is a federated upstream
+    assert result["federated"] is True  # ...and that it is a federated secondary
 
 
 async def test_a_leaf_backend_is_not_marked_federated(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -66,14 +66,14 @@ async def test_a_federated_tool_keeps_a_short_token_cheap_name() -> None:
     # No agent-facing prefix: the federated backend's tools get the same short
     # names a leaf backend's would (short-naming already strips a backend-name
     # prefix), so the agent pays nothing for provenance.
-    from tests.federation_harness import downstream_profile, federated_pair
+    from tests.federation_harness import federated_pair, primary_profile
 
     def down(up_port: int) -> Profile:
-        profile = downstream_profile(upstream_port=up_port)
+        profile = primary_profile(secondary_port=up_port)
         next(iter(profile.backends.values())).federated = FederatedConfig()
         return profile
 
-    async with federated_pair(downstream=down) as fed, fed.downstream_client() as client:
+    async with federated_pair(primary=down) as fed, fed.primary_client() as client:
         names = {t["name"] for t in await client.list_tools()}
     assert "echo" in names, names
     # Not prefixed with the backend key ("fed") or any federation tag.

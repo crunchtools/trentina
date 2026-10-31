@@ -73,12 +73,12 @@ class TestSetting:
     def test_it_creates_intermediate_mappings(self) -> None:
         out = cp.set_at(
             COMMENTED,
-            ("profiles", "myagent", "backends", "lotor", "federated", "edge_key_name"),
+            ("profiles", "myagent", "backends", "lotor", "federated", "primary_key_name"),
             "edge-to-lotor",
         )
         assert (
             cp.get_at(
-                out, ("profiles", "myagent", "backends", "lotor", "federated", "edge_key_name")
+                out, ("profiles", "myagent", "backends", "lotor", "federated", "primary_key_name")
             )
             == "edge-to-lotor"
         )

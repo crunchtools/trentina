@@ -2,9 +2,9 @@
 
 Drives ``_federated_vsa`` — the ``_assemble`` hook — directly: given a signing
 federation-ingress profile and a delivered result, it attaches a
-``_meta._trentina_vsa`` a downstream verifies with the pinned key and binds to
+``_meta._trentina_vsa`` a primary verifies with the pinned key and binds to
 the exact delivered bytes (D2a trusts it). Deterministic, no servers: the scan
-is upstream of this hook and the signature is pure.
+is secondary of this hook and the signature is pure.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def _ingress(*, private_pem: str | None) -> Profile:
     # backend, internal surface read_part only. With a key it signs verdicts.
     federation = FederationConfig(peers={"breetai": FederationPeer(public_key=_PEER_PUB)})
     if private_pem is not None:
-        federation.signing_key = SecretStr(private_pem)
+        federation.secondary_key = SecretStr(private_pem)
     profile = Profile(
         name="lotor",
         auth=AuthConfig(bearer_token_env="UP"),
@@ -138,10 +138,10 @@ def test_a_flagged_warning_is_summarised_into_the_verdict() -> None:
     assert assertion["verdict"]["mode"] == "block"
 
 
-def test_no_signing_key_emits_no_assertion() -> None:
+def test_no_secondary_key_emits_no_assertion() -> None:
     result = {"content": [], "isError": False}
     out = _deliver(_ingress(private_pem=None), result)
-    assert out is result  # untouched; a downstream re-judges as today
+    assert out is result  # untouched; a primary re-judges as today
 
 
 def test_a_non_federation_profile_emits_no_assertion() -> None:
@@ -170,7 +170,7 @@ def _served_ingress(private_pem: str) -> Profile:
     # short_names off so `remote__echo` resolves without a name registry; a real
     # remote backend so the response is judged (an internal tool would not be).
     federation = FederationConfig(peers={"breetai": FederationPeer(public_key=_PEER_PUB)})
-    federation.signing_key = SecretStr(private_pem)
+    federation.secondary_key = SecretStr(private_pem)
     profile = Profile(
         name="lotor",
         short_names=False,

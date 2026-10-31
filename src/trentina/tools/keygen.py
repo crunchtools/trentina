@@ -1,6 +1,6 @@
 """Federation keypair generation (#633): operator only.
 
-A federated edge needs an Ed25519 keypair on each side. Until now the only way
+A federated link needs an Ed25519 keypair on each side. Until now the only way
 to get one was ``openssl`` on the host, which is the manual step the operator
 seat exists to remove: ``docs/operator.md`` promises a loop where "none of this
 needs a shell", and generating a key was one of the places that was not true.
@@ -31,7 +31,7 @@ async def federation_keygen(name: str) -> dict[str, Any]:
 
     Args:
         name: What to call the key, lowercase letters, digits and hyphens. It
-            is what a profile's ``edge_key_name`` or ``signing_key_name`` refers
+            is what a profile's ``primary_key_name`` or ``secondary_key_name`` refers
             to later, and it is written once.
     """
     try:

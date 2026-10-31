@@ -1,13 +1,13 @@
-"""E1c: pass a federated peer's pin-hold state to the downstream (#592).
+"""E1c: pass a federated peer's pin-hold state to the primary (#592).
 
 Two additive ``_meta`` signals, both read only for a federated backend and
 designed per the cto ruling:
 
-* a tools/list held COUNT — the upstream tells a downstream how many tools it
+* a tools/list held COUNT — the secondary tells a primary how many tools it
   is withholding in that caller's slice, without their names;
-* a call-refusal MAPPING — the upstream's pin call gate answers ``tool_held``,
-  which the downstream re-authors as its own ``tool_held_upstream`` ("held
-  upstream, awaiting approval"), never relaying the peer's text.
+* a call-refusal MAPPING — the secondary's pin call gate answers ``tool_held``,
+  which the primary re-authors as its own ``tool_held_secondary`` ("held
+  secondary, awaiting approval"), never relaying the peer's text.
 
 Driven directly (no server, no model): the helpers are pure.
 """
@@ -57,18 +57,18 @@ def _call(meta: dict[str, Any] | None, text: str = "ordinary peer content") -> B
     )
 
 
-# --- Signal 2: the downstream maps a peer's tool_held to its own words ---
+# --- Signal 2: the primary maps a peer's tool_held to its own words ---
 
 
-def test_a_peer_tool_held_becomes_tool_held_upstream() -> None:
+def test_a_peer_tool_held_becomes_tool_held_secondary() -> None:
     call = _call({REFUSAL_KEY: {"reason": tool_pins.TOOL_HELD_REASON}}, text="SECRET peer wording")
     assembled = _federated_hold_refusal(_federated_backend(), call, stripped=0)
     assert assembled is not None
     assert assembled.outcome is Outcome.DENIED_GUARD
-    assert assembled.result[REFUSAL_KEY]["reason"] == tool_pins.TOOL_HELD_UPSTREAM_REASON
+    assert assembled.result[REFUSAL_KEY]["reason"] == tool_pins.TOOL_HELD_SECONDARY_REASON
     # The peer's content is discarded unread, not relayed.
     assert "SECRET" not in assembled.result["content"][0]["text"]
-    assert "held upstream" in assembled.result[REFUSAL_KEY]["detail"]
+    assert "held on the secondary" in assembled.result[REFUSAL_KEY]["detail"]
 
 
 def test_a_non_federated_backend_is_never_hold_mapped() -> None:
@@ -90,7 +90,7 @@ def test_only_the_exact_tool_held_reason_maps(meta: dict[str, Any] | None) -> No
     assert _federated_hold_refusal(_federated_backend(), _call(meta), stripped=0) is None
 
 
-# --- Signal 2 emit: the upstream mirrors a root refusal reason into _meta ---
+# --- Signal 2 emit: the secondary mirrors a root refusal reason into _meta ---
 
 
 def _ingress() -> Profile:
@@ -144,7 +144,7 @@ def test_mirror_leaves_a_clean_result_alone() -> None:
     assert "_meta" not in out["result"]
 
 
-# --- Signal 1 read: the downstream records a peer's reported held count ---
+# --- Signal 1 read: the primary records a peer's reported held count ---
 
 
 def _tools_result(meta: Any, n_tools: int = 5) -> SimpleNamespace:
@@ -152,18 +152,18 @@ def _tools_result(meta: Any, n_tools: int = 5) -> SimpleNamespace:
 
 
 def test_a_federated_peer_held_count_is_recorded() -> None:
-    backend_mod._federated_held_upstream.pop(UP_URL, None)
+    backend_mod._federated_held_secondary.pop(UP_URL, None)
     backend_mod._read_federated_held(_federated_backend(), _tools_result({PINS_KEY: {"held": 3}}))
-    assert backend_mod._federated_held_upstream.get(UP_URL) == 3
+    assert backend_mod._federated_held_secondary.get(UP_URL) == 3
 
 
 def test_held_may_exceed_the_listed_count() -> None:
     # A withheld tool is absent from the list, so a peer holding its only tool
     # reports held=1 and lists 0 — the count must NOT be bounded by the listing.
-    backend_mod._federated_held_upstream.pop(UP_URL, None)
+    backend_mod._federated_held_secondary.pop(UP_URL, None)
     result = _tools_result({PINS_KEY: {"held": 1}}, n_tools=0)
     backend_mod._read_federated_held(_federated_backend(), result)
-    assert backend_mod._federated_held_upstream.get(UP_URL) == 1
+    assert backend_mod._federated_held_secondary.get(UP_URL) == 1
 
 
 @pytest.mark.parametrize(
@@ -176,24 +176,24 @@ def test_held_may_exceed_the_listed_count() -> None:
     ],
 )
 def test_a_bad_held_count_is_ignored(meta: Any) -> None:
-    backend_mod._federated_held_upstream.pop(UP_URL, None)
+    backend_mod._federated_held_secondary.pop(UP_URL, None)
     backend_mod._read_federated_held(_federated_backend(), _tools_result(meta, n_tools=5))
-    assert backend_mod._federated_held_upstream.get(UP_URL) is None
+    assert backend_mod._federated_held_secondary.get(UP_URL) is None
 
 
 def test_a_missing_report_clears_a_stale_held_count() -> None:
-    # A peer that reported a count and then stops must not leave the downstream
+    # A peer that reported a count and then stops must not leave the primary
     # showing the old number forever.
-    backend_mod._federated_held_upstream[UP_URL] = 4
+    backend_mod._federated_held_secondary[UP_URL] = 4
     backend_mod._read_federated_held(_federated_backend(), _tools_result(None))
-    assert backend_mod._federated_held_upstream.get(UP_URL) is None
+    assert backend_mod._federated_held_secondary.get(UP_URL) is None
 
 
-def test_a_non_federated_backend_reports_no_upstream_held() -> None:
+def test_a_non_federated_backend_reports_no_secondary_held() -> None:
     plain = Backend(url="http://other:9000/mcp", tools_allow=["*"])
-    backend_mod._federated_held_upstream.pop(plain.url, None)
+    backend_mod._federated_held_secondary.pop(plain.url, None)
     backend_mod._read_federated_held(plain, _tools_result({PINS_KEY: {"held": 2}}))
-    assert backend_mod._federated_held_upstream.get(plain.url) is None
+    assert backend_mod._federated_held_secondary.get(plain.url) is None
 
 
 # --- held accounting: local count scoped to the allowed slice ---

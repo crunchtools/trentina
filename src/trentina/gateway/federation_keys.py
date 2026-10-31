@@ -1,7 +1,7 @@
-"""Per-edge Ed25519 signing for gateway federation (#592, C1).
+"""Ed25519 signing for gateway federation (#592, C1).
 
-A downstream gateway signs a short-lived JWT with its per-edge Ed25519 private
-key; the upstream verifies it against the public key it holds for that peer and
+A primary gateway signs a short-lived JWT with its Ed25519 private
+key; the secondary verifies it against the public key it holds for that peer and
 learns which peer signed (the matching key's name is the actor) plus the real
 caller (``sub``). No shared static bearer, no token-exchange round-trip, no
 stored state.
@@ -32,14 +32,14 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 MAX_TTL_SECONDS = 60
-"""A token may not claim a longer life than this; a downstream bug cannot mint a
+"""A token may not claim a longer life than this; a primary's bug cannot mint a
 long-lived credential."""
 
 CLOCK_SKEW_SECONDS = 10
 
 
-class EdgeKeyError(ValueError):
-    """An edge key failed to load, or a token failed to verify. The message is a
+class FederationKeyError(ValueError):
+    """A federation key failed to load, or a token failed to verify. The message is a
     fixed reason code, never the token or a claim value."""
 
 
@@ -52,7 +52,7 @@ def _b64url_decode(text: str) -> bytes:
     try:
         return base64.urlsafe_b64decode(text + pad)
     except (ValueError, TypeError) as exc:
-        raise EdgeKeyError("malformed") from exc
+        raise FederationKeyError("malformed") from exc
 
 
 #: The one header we issue and the only one we accept. Canonical, compact,
@@ -63,14 +63,14 @@ _HEADER_B64 = _b64url(json.dumps(_HEADER, separators=(",", ":"), sort_keys=True)
 
 _CLAIMS = frozenset({"sub", "aud", "iat", "exp"})
 
-#: `sub` is a profile name the upstream has not resolved yet (C2 does); bound its
+#: `sub` is a profile name the secondary has not resolved yet (C2 does); bound its
 #: shape here and never log it raw (#262).
 _SUB_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 
 @functools.lru_cache(maxsize=256)
 def load_private_key(pem: str) -> Ed25519PrivateKey:
-    """Load a PEM PKCS#8 Ed25519 private key, or raise ``EdgeKeyError``.
+    """Load a PEM PKCS#8 Ed25519 private key, or raise ``FederationKeyError``.
 
     Memoized by the PEM so the signing hot path parses a key once, not per call
     (a raised error is not cached). A rotated key is a new PEM, so a new entry;
@@ -79,15 +79,15 @@ def load_private_key(pem: str) -> Ed25519PrivateKey:
     try:
         key = serialization.load_pem_private_key(pem.encode(), password=None)
     except (ValueError, TypeError) as exc:
-        raise EdgeKeyError("private key not valid PEM") from exc
+        raise FederationKeyError("private key not valid PEM") from exc
     if not isinstance(key, Ed25519PrivateKey):
-        raise EdgeKeyError("private key is not Ed25519")
+        raise FederationKeyError("private key is not Ed25519")
     return key
 
 
 @functools.lru_cache(maxsize=256)
 def load_public_key(pem: str) -> Ed25519PublicKey:
-    """Load a PEM SubjectPublicKeyInfo Ed25519 public key, or raise ``EdgeKeyError``.
+    """Load a PEM SubjectPublicKeyInfo Ed25519 public key, or raise ``FederationKeyError``.
 
     Memoized by the PEM so a federation ingress parses its peers' keys once, not
     once per authentication attempt (a raised error is not cached).
@@ -95,9 +95,9 @@ def load_public_key(pem: str) -> Ed25519PublicKey:
     try:
         key = serialization.load_pem_public_key(pem.encode())
     except (ValueError, TypeError) as exc:
-        raise EdgeKeyError("public key not valid PEM") from exc
+        raise FederationKeyError("public key not valid PEM") from exc
     if not isinstance(key, Ed25519PublicKey):
-        raise EdgeKeyError("public key is not Ed25519")
+        raise FederationKeyError("public key is not Ed25519")
     return key
 
 
@@ -115,7 +115,7 @@ def verify(public_key: Ed25519PublicKey, signature: bytes, payload: bytes) -> bo
     return True
 
 
-def sign_edge_jwt(key: Ed25519PrivateKey, *, sub: str, aud: str, now: int | None = None) -> str:
+def sign_primary_jwt(key: Ed25519PrivateKey, *, sub: str, aud: str, now: int | None = None) -> str:
     """A 60-second EdDSA JWT carrying the real caller (``sub``) for ``aud``."""
     issued = int(time.time()) if now is None else now
     payload = {"sub": sub, "aud": aud, "iat": issued, "exp": issued + MAX_TTL_SECONDS}
@@ -134,47 +134,47 @@ def _checked_claims(payload_b64: str, *, aud: str, now: int | None) -> str:
     try:
         claims = json.loads(_b64url_decode(payload_b64))
     except ValueError as exc:
-        raise EdgeKeyError("payload not json") from exc
+        raise FederationKeyError("payload not json") from exc
     if not isinstance(claims, dict) or frozenset(claims) != _CLAIMS:
-        raise EdgeKeyError("claim set")
+        raise FederationKeyError("claim set")
     if claims["aud"] != aud:
-        raise EdgeKeyError("audience")
+        raise FederationKeyError("audience")
     iat, exp = claims["iat"], claims["exp"]
     if not all(isinstance(x, int) and not isinstance(x, bool) for x in (iat, exp)):
-        raise EdgeKeyError("iat/exp not integers")
+        raise FederationKeyError("iat/exp not integers")
     if exp - iat > MAX_TTL_SECONDS:
-        raise EdgeKeyError("ttl too long")
+        raise FederationKeyError("ttl too long")
     moment = int(time.time()) if now is None else now
     if not iat - CLOCK_SKEW_SECONDS <= moment <= exp + CLOCK_SKEW_SECONDS:
-        raise EdgeKeyError("expired or not yet valid")
+        raise FederationKeyError("expired or not yet valid")
     sub = claims["sub"]
     if not isinstance(sub, str) or not _SUB_RE.match(sub):
-        raise EdgeKeyError("sub shape")
+        raise FederationKeyError("sub shape")
     return sub
 
 
-def verify_edge_jwt(
+def verify_primary_jwt(
     token: str,
     peers: dict[str, Ed25519PublicKey],
     *,
     aud: str,
     now: int | None = None,
 ) -> tuple[str, str]:
-    """Verify an edge JWT against the peers' public keys.
+    """Verify a primary JWT against the peers' public keys.
 
     Returns ``(peer_name, sub)`` — the name of the peer whose key verified the
     signature (the actor) and the real caller. Fail-closed: any malformation,
     unknown header, unverifiable signature, wrong audience, over-long TTL, or
-    expiry raises ``EdgeKeyError`` with a fixed reason.
+    expiry raises ``FederationKeyError`` with a fixed reason.
     """
     segments = token.split(".")
     if len(segments) != 3:
-        raise EdgeKeyError("not three segments")
+        raise FederationKeyError("not three segments")
     header_b64, payload_b64, sig_b64 = segments
     # Equality against the one header we issue: the algorithm is ours, never the
     # token's, so alg:none / jwk / jku confusion cannot arise.
     if header_b64 != _HEADER_B64:
-        raise EdgeKeyError("unexpected header")
+        raise FederationKeyError("unexpected header")
 
     signing_input = f"{header_b64}.{payload_b64}".encode()
     signature = _b64url_decode(sig_b64)
@@ -182,5 +182,5 @@ def verify_edge_jwt(
         (name for name, pub in peers.items() if verify(pub, signature, signing_input)), None
     )
     if actor is None:
-        raise EdgeKeyError("no peer key verifies the signature")
+        raise FederationKeyError("no peer key verifies the signature")
     return actor, _checked_claims(payload_b64, aud=aud, now=now)

@@ -101,8 +101,8 @@ async def diagnose_tool_visibility(
         "reason": SERVED if visible else DESCRIPTION_WITHHELD,
         "served_as": serves_as if visible else None,
         "backend": backend_name,
-        # Upstream provenance (#592 A1): the origin is the backend, and whether
-        # that backend is a federated upstream Trentina is part of knowing where
+        # Secondary provenance (#592 A1): the origin is the backend, and whether
+        # that backend is a federated secondary Trentina is part of knowing where
         # a tool came from — surfaced here, never in the agent-facing name.
         "federated": backend.federated is not None,
     }

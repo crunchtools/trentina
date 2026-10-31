@@ -197,7 +197,7 @@ def test_pins_belong_to_the_backend_not_the_list() -> None:
     assert check_tools("http://other.invalid/mcp", "b", [_tool()]) == []
 
 
-# --- E1b: a federated upstream's first connect is approved as a unit (#592) ---
+# --- E1b: a federated secondary's first connect is approved as a unit (#592) ---
 
 
 def test_a_federated_backends_first_list_is_approved_as_a_unit() -> None:

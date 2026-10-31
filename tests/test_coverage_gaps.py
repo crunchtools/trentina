@@ -426,10 +426,10 @@ def test_a_binary_egress_response_is_read_by_no_layer() -> None:
 
 
 def test_a_trusted_federated_verdict_does_not_bind_the_peer_defense_block() -> None:
-    """Gap 33 (#592, D2a). A downstream that pins a federated peer's verdict
+    """Gap 33 (#592, D2a). A primary that pins a federated peer's verdict
     trusts it was scanned under the pinned perimeter stamp (the L2 model and its
     gates), NOT that the peer judged under the same thresholds and allowlists:
-    the verdict a downstream trusts carries only the closed model-facts, no
+    the verdict a primary trusts carries only the closed model-facts, no
     representation of the peer's ``defense`` block. Binding the defense block
     (closing the gap) would change this closed field set."""
     from trentina.gateway import vsa

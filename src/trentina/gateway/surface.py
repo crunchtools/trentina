@@ -80,11 +80,11 @@ class BackendSurface:
     allowed: Stage
     shaped: Stage
     # Tools a pin hold withholds from this caller's allowed slice (#592, E1c).
-    # ``held`` is what THIS gateway holds; ``held_upstream`` is what a federated
+    # ``held`` is what THIS gateway holds; ``held_secondary`` is what a federated
     # peer reported holding (its tools/list ``_meta._trentina_pins.held``), None
     # for a non-federated backend or a peer that reported nothing.
     held: int = 0
-    held_upstream: int | None = None
+    held_secondary: int | None = None
 
 
 @dataclass
@@ -134,7 +134,11 @@ class Surface:
                     "allowed": b.allowed.as_dict(),
                     "shaped": b.shaped.as_dict(),
                     "held": b.held,
-                    **({"held_upstream": b.held_upstream} if b.held_upstream is not None else {}),
+                    **(
+                        {"held_secondary": b.held_secondary}
+                        if b.held_secondary is not None
+                        else {}
+                    ),
                 }
                 for name, b in sorted(
                     self.backends.items(), key=lambda kv: kv[1].offered.bytes, reverse=True

@@ -143,7 +143,7 @@ def trust_stays_human(action: str, keys: tuple[str, ...], value: Any) -> bool:
     and this is the setting where being talked into it costs the most.
 
     Everything else about federation IS the operator's: minting keys, declaring
-    the edge, and ``federation.peers``, which decides who may authenticate —
+    the link, and ``federation.peers``, which decides who may authenticate —
     an access grant like any other, not a decision to believe someone's scan.
 
     Removing trust only makes this gateway scan more, so ``unset`` is allowed.

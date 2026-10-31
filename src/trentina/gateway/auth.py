@@ -61,10 +61,10 @@ def verify_bearer(authorization_header: str | None, profile: Profile) -> None:
         raise AuthError("invalid token")
 
 
-def verify_edge_jwt_header(
+def verify_primary_jwt_header(
     authorization_header: str | None, profile: Profile
 ) -> tuple[str, str] | None:
-    """Verify a federated peer's edge JWT, for a profile that is a federation ingress.
+    """Verify a federated peer's primary JWT, for a profile that is a federation ingress.
 
     Only a profile with ``federation.peers`` engages this path (#592, C1); for
     any other profile it returns None so the caller falls through to OAuth or a
@@ -72,10 +72,10 @@ def verify_edge_jwt_header(
     whose key verified the token (the actor) and the real caller — on success.
     Returns None when there is no credential to try. Raises ``AuthError`` (→ 401)
     when a credential IS presented but fails: a federation ingress's credential
-    is the edge JWT, so a bad one is fail-closed, never a fall-through.
+    is the primary JWT, so a bad one is fail-closed, never a fall-through.
 
     C1 only authenticates. C2 binds ``(peer, sub)`` into the request context so
-    the upstream's audit and guards see the real caller.
+    the secondary's audit and guards see the real caller.
     """
     if profile.federation is None or not profile.federation.peers:
         return None
@@ -85,16 +85,16 @@ def verify_edge_jwt_header(
     if scheme.lower() != "bearer" or not presented:
         return None
 
-    from .edge_key import EdgeKeyError, load_public_key, verify_edge_jwt
+    from .federation_keys import FederationKeyError, load_public_key, verify_primary_jwt
 
     peers = {
         name: load_public_key(peer.public_key)
         for name, peer in profile.federation.peers.items()
     }
     try:
-        return verify_edge_jwt(presented, peers, aud=profile.name)
-    except EdgeKeyError as exc:
-        raise AuthError("invalid edge token") from exc
+        return verify_primary_jwt(presented, peers, aud=profile.name)
+    except FederationKeyError as exc:
+        raise AuthError("invalid primary token") from exc
 
 
 async def verify_oauth(

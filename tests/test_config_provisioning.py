@@ -7,8 +7,8 @@ mint the keys, declare the ingress, declare the backend, and finish with an
 edge that would actually authenticate — no file editing, no shell, no restart.
 
 The last assertion is the one that matters. It does not check that the config
-looks right; it mints the JWT the downstream would really send and verifies it
-against the peer key the upstream really holds.
+looks right; it mints the JWT the primary would really send and verifies it
+against the peer key the secondary really holds.
 """
 
 from __future__ import annotations
@@ -22,11 +22,11 @@ import pytest
 from trentina import config as config_mod
 from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
-from trentina.gateway.edge_key import (
+from trentina.gateway.federation_keys import (
     load_private_key,
     load_public_key,
-    sign_edge_jwt,
-    verify_edge_jwt,
+    sign_primary_jwt,
+    verify_primary_jwt,
 )
 from trentina.gateway.loader import get_active_config, load_profiles, register_active_config
 from trentina.gateway.profile import federation_audience
@@ -35,9 +35,9 @@ from trentina.tools.keygen import federation_keygen
 
 pytestmark = pytest.mark.anyio
 
-#: The downstream reaches the upstream's ingress profile here, and the edge
+#: The primary reaches the secondary's ingress profile here, and the edge
 #: JWT's audience is taken from the profile name in this URL.
-UPSTREAM_URL = "https://upstream.example/gateway/fed-ingress/mcp"
+SECONDARY_URL = "https://secondary.example/gateway/fed-ingress/mcp"
 
 #: A gateway that knows nothing about federation yet: one operator seat, and a
 #: consumer profile with no backends but its own tools.
@@ -109,10 +109,10 @@ async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_rest
 
     # 1. Each side mints its own key. Only the public halves ever come back.
     signing = await _op("keygen", "ingress-signing")
-    edge = await _op("keygen", "edge-to-upstream")
+    edge = await _op("keygen", "edge-to-secondary")
     assert "PRIVATE" not in str(signing) + str(edge)
 
-    # 2. The upstream ingress: who may authenticate, and the key it vouches
+    # 2. The secondary ingress: who may authenticate, and the key it vouches
     #    for responses with. `federation.peers` IS this profile's
     #    authentication, so it has to be writable in one go — a profile with
     #    neither auth nor peers does not load.
@@ -121,7 +121,7 @@ async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_rest
         {
             "federation": {
                 "peers": {"down": {"public_key": edge["public_key"]}},
-                "signing_key_name": "ingress-signing",
+                "secondary_key_name": "ingress-signing",
             },
             # What the ingress actually offers a peer: a real backend, plus
             # read_part so a paged response can be collected. An ingress may
@@ -134,33 +134,33 @@ async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_rest
         },
     )
 
-    # 3. The downstream side: a federated backend pointing at that ingress,
-    #    signing with the edge key by name.
+    # 3. The primary side: a federated backend pointing at that ingress,
+    #    signing with the primary key by name.
     await _set(
-        "profiles.down.backends.upstream",
+        "profiles.down.backends.secondary",
         {
-            "url": UPSTREAM_URL,
+            "url": SECONDARY_URL,
             "tools_allow": ["*"],
-            "federated": {"edge_key_name": "edge-to-upstream"},
+            "federated": {"primary_key_name": "edge-to-secondary"},
         },
     )
 
     # Both sides are live in the running gateway, with no restart.
     running = (get_active_config() or pytest.fail("no gateway")).config.profiles
     ingress = running["fed-ingress"].federation
-    backend = running["down"].backends["upstream"].federated
-    assert ingress is not None and ingress.signing_key is not None
-    assert backend is not None and backend.edge_key is not None
+    backend = running["down"].backends["secondary"].federated
+    assert ingress is not None and ingress.secondary_key is not None
+    assert backend is not None and backend.primary_key is not None
 
-    # The edge would authenticate: the token the downstream really mints
-    # verifies against the peer key the upstream really holds, and names the
+    # The edge would authenticate: the token the primary really mints
+    # verifies against the peer key the secondary really holds, and names the
     # peer as the actor.
-    audience = federation_audience(UPSTREAM_URL)
+    audience = federation_audience(SECONDARY_URL)
     assert audience == "fed-ingress"
-    token = sign_edge_jwt(
-        load_private_key(backend.edge_key.get_secret_value()), sub="down", aud=audience
+    token = sign_primary_jwt(
+        load_private_key(backend.primary_key.get_secret_value()), sub="down", aud=audience
     )
-    peer, caller = verify_edge_jwt(
+    peer, caller = verify_primary_jwt(
         token,
         {name: load_public_key(p.public_key) for name, p in ingress.peers.items()},
         aud=audience,
@@ -177,15 +177,15 @@ async def test_turning_on_scan_once_trust_is_the_one_step_left_to_a_person(
     gateway: pathlib.Path,
 ) -> None:
     """The edge above is authenticated and double-scanning, which is where #592
-    says to stop and prove it works. Going further — serving an upstream's
+    says to stop and prove it works. Going further — serving an secondary's
     response WITHOUT scanning it — is the one setting the API will not write."""
-    await _op("keygen", "edge-to-upstream")
+    await _op("keygen", "edge-to-secondary")
     await _set(
-        "profiles.down.backends.upstream",
+        "profiles.down.backends.secondary",
         {
-            "url": UPSTREAM_URL,
+            "url": SECONDARY_URL,
             "tools_allow": ["*"],
-            "federated": {"edge_key_name": "edge-to-upstream"},
+            "federated": {"primary_key_name": "edge-to-secondary"},
         },
     )
     before = gateway.read_text(encoding="utf-8")
@@ -193,7 +193,7 @@ async def test_turning_on_scan_once_trust_is_the_one_step_left_to_a_person(
     read = await _op("get")
     refused = await _op(
         "set",
-        "profiles.down.backends.upstream.federated.trust_verdict",
+        "profiles.down.backends.secondary.federated.trust_verdict",
         {"public_key": "x", "perimeter_stamp": "y"},
         read["hash"],
     )

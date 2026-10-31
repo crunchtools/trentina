@@ -364,11 +364,11 @@ class Config:
             "Unset it unless a trusted internal site must be fetched.",
         )
         # Federation's escape hatch (#592): lets a `federated:` backend be reached
-        # over plain http, where its 60 s edge JWT is replayable by an on-path peer.
+        # over plain http, where its 60 s primary JWT is replayable by an on-path peer.
         self.federation_allow_insecure: bool = insecure_opt_in(
             "TRENTINA_FEDERATION_ALLOW_INSECURE",
-            "[WARNING] TRENTINA_FEDERATION_ALLOW_INSECURE is on: a federated edge may "
-            "run over http, where its 60 s edge JWT is replayable by an on-path peer. "
+            "[WARNING] TRENTINA_FEDERATION_ALLOW_INSECURE is on: a federated link may "
+            "run over http, where its 60 s primary JWT is replayable by an on-path peer. "
             "Unset it unless the upstream is on a trusted local network.",
         )
         # The mode policy when no gateway profile is bound (#193): the agent of

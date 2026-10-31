@@ -1,4 +1,4 @@
-"""federation_keygen and keys by name (#633): an edge set up without a shell.
+"""federation_keygen and keys by name (#633): a link set up without a shell.
 
 Two halves. Minting: the PUBLIC key must come back, because the peer gateway
 has to pin it and a public key is not a secret; the PRIVATE key must not — not
@@ -24,8 +24,8 @@ from trentina.errors import FileReadError
 from trentina.gateway import key_store
 from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
-from trentina.gateway.edge_key import load_private_key, load_public_key, sign, verify
 from trentina.gateway.errors import ProfileConfigError
+from trentina.gateway.federation_keys import load_private_key, load_public_key, sign, verify
 from trentina.gateway.key_store import KEY_DIR_MODE, KEY_FILE_MODE, key_path
 from trentina.gateway.loader import load_profiles, register_active_config
 from trentina.gateway.profile import Profile
@@ -37,7 +37,7 @@ pytestmark = pytest.mark.anyio
 
 PRIVATE_MARKER = "-----BEGIN PRIVATE KEY-----"
 
-UPSTREAM = "https://lotor.example/gateway/fed-breetai/mcp"
+SECONDARY = "https://lotor.example/gateway/fed-breetai/mcp"
 
 #: A peer's public half, which the model validates as a real Ed25519 PEM.
 PEER_PUBLIC_KEY = (
@@ -52,7 +52,7 @@ PEER_PUBLIC_KEY = (
 
 FED_YAML = """\
 profiles:
-  edge:
+  primary:
     role: operator
     defense:
       provider: ollama
@@ -80,26 +80,26 @@ class TestMinting:
     """No ActiveConfig is registered, so the caller is the standalone operator."""
 
     async def test_it_returns_a_loadable_public_key(self, data_dir: pathlib.Path) -> None:
-        result = await federation_keygen("edge-to-lotor")
-        assert result["key"] == "edge-to-lotor"
-        load_public_key(result["public_key"])  # raises EdgeKeyError if it is not one
+        result = await federation_keygen("primary-to-lotor")
+        assert result["key"] == "primary-to-lotor"
+        load_public_key(result["public_key"])  # raises FederationKeyError if it is not one
 
     async def test_the_public_key_belongs_to_the_private_key(self, data_dir: pathlib.Path) -> None:
         """The returned half must actually verify what the stored half signs —
-        otherwise the peer pins a key that can never authenticate this edge."""
-        result = await federation_keygen("edge-to-lotor")
-        private = load_private_key(key_path("edge-to-lotor").read_text(encoding="utf-8"))
+        otherwise the peer pins a key that can never authenticate this link."""
+        result = await federation_keygen("primary-to-lotor")
+        private = load_private_key(key_path("primary-to-lotor").read_text(encoding="utf-8"))
         payload = b"a federated request"
         assert verify(load_public_key(result["public_key"]), sign(private, payload), payload)
 
     async def test_the_private_half_never_comes_back(self, data_dir: pathlib.Path) -> None:
-        result = await federation_keygen("edge-to-lotor")
+        result = await federation_keygen("primary-to-lotor")
         assert PRIVATE_MARKER not in str(result)
         assert set(result) == {"key", "public_key"}
 
     async def test_the_key_and_its_directory_are_private(self, data_dir: pathlib.Path) -> None:
-        await federation_keygen("edge-to-lotor")
-        path = key_path("edge-to-lotor")
+        await federation_keygen("primary-to-lotor")
+        path = key_path("primary-to-lotor")
         assert path.read_text(encoding="utf-8").startswith(PRIVATE_MARKER)
         assert os.stat(path).st_mode & 0o777 == KEY_FILE_MODE
         assert os.stat(path.parent).st_mode & 0o777 == KEY_DIR_MODE
@@ -114,29 +114,29 @@ class TestMinting:
         finally:
             os.umask(previous)
 
-        await federation_keygen("edge-to-lotor")
+        await federation_keygen("primary-to-lotor")
 
         assert os.stat(loose).st_mode & 0o777 == KEY_DIR_MODE
 
     async def test_no_file_tool_can_read_the_key(self, data_dir: pathlib.Path) -> None:
         """The keys sit under the gateway's own data directory, which
         ``confine`` refuses to read_tool and dir_tool alike."""
-        await federation_keygen("edge-to-lotor")
+        await federation_keygen("primary-to-lotor")
         with pytest.raises(FileReadError):
-            confine(str(key_path("edge-to-lotor")))
+            confine(str(key_path("primary-to-lotor")))
 
 
 class TestWrittenOnce:
     async def test_a_second_mint_of_one_name_is_refused(self, data_dir: pathlib.Path) -> None:
-        first = await federation_keygen("edge-to-lotor")
-        stored = key_path("edge-to-lotor").read_text(encoding="utf-8")
+        first = await federation_keygen("primary-to-lotor")
+        stored = key_path("primary-to-lotor").read_text(encoding="utf-8")
 
-        second = await federation_keygen("edge-to-lotor")
+        second = await federation_keygen("primary-to-lotor")
 
         assert "already exists" in second["error"]
         assert "public_key" not in second
-        # The live key is untouched: rotating under a running edge would break it.
-        assert key_path("edge-to-lotor").read_text(encoding="utf-8") == stored
+        # The live key is untouched: rotating under a running link would break it.
+        assert key_path("primary-to-lotor").read_text(encoding="utf-8") == stored
         assert load_public_key(first["public_key"])
 
 
@@ -176,7 +176,7 @@ class TestScope:
             {"name": "ag", "auth": {"bearer_token_env": "A"}, "backends": {}}
         )
         with profile_context(agent):
-            result = await federation_keygen("edge-to-lotor")
+            result = await federation_keygen("primary-to-lotor")
         assert "operator" in result["error"].lower()
         assert not (data_dir / "keys").exists()
 
@@ -191,19 +191,21 @@ class TestKeyByName:
         monkeypatch.setenv("EDGE_TOKEN", "t" * 20)
         path = tmp_path / "profiles.yaml"
         path.write_text(
-            FED_YAML.format(url=UPSTREAM, key_field="edge_key_name", key_value="edge-to-lotor"),
+            FED_YAML.format(
+                url=SECONDARY, key_field="primary_key_name", key_value="primary-to-lotor"
+            ),
             encoding="utf-8",
         )
         return path
 
     def test_a_named_key_resolves_to_its_pem(self, fed_config: pathlib.Path) -> None:
-        key_store.mint("edge-to-lotor")
+        key_store.mint("primary-to-lotor")
 
         config = load_profiles(fed_config)
 
-        edge = config.profiles["edge"].backends["lotor"].federated
-        assert edge is not None and edge.edge_key is not None
-        load_private_key(edge.edge_key.get_secret_value())
+        fed = config.profiles["primary"].backends["lotor"].federated
+        assert fed is not None and fed.primary_key is not None
+        load_private_key(fed.primary_key.get_secret_value())
 
     def test_a_key_minted_after_the_first_load_needs_no_restart(
         self, fed_config: pathlib.Path
@@ -213,33 +215,35 @@ class TestKeyByName:
         with pytest.raises(ProfileConfigError, match="has not minted"):
             load_profiles(fed_config)
 
-        key_store.mint("edge-to-lotor")
+        key_store.mint("primary-to-lotor")
 
-        edge = load_profiles(fed_config).profiles["edge"].backends["lotor"].federated
-        assert edge is not None and edge.edge_key is not None
+        fed = load_profiles(fed_config).profiles["primary"].backends["lotor"].federated
+        assert fed is not None and fed.primary_key is not None
 
     async def test_reload_profiles_picks_up_a_newly_minted_key(
         self, fed_config: pathlib.Path
     ) -> None:
         """End to end through the operator tool an agent would actually call."""
-        key_store.mint("edge-to-lotor")
+        key_store.mint("primary-to-lotor")
         config = load_profiles(fed_config)
         register_active_config(fed_config, config, {})
         set_profiles(config.profiles)
-        operator = config.profiles["edge"]
+        operator = config.profiles["primary"]
 
-        key_store.mint("edge-rotated")
+        key_store.mint("primary-rotated")
         fed_config.write_text(
-            FED_YAML.format(url=UPSTREAM, key_field="edge_key_name", key_value="edge-rotated"),
+            FED_YAML.format(
+                url=SECONDARY, key_field="primary_key_name", key_value="primary-rotated"
+            ),
             encoding="utf-8",
         )
         with profile_context(operator):
             result = await reload_profiles()
 
         assert result["reloaded"] is True
-        rotated = config.profiles["edge"].backends["lotor"].federated
-        assert rotated is not None and rotated.edge_key_name == "edge-rotated"
-        load_private_key(rotated.edge_key.get_secret_value())
+        rotated = config.profiles["primary"].backends["lotor"].federated
+        assert rotated is not None and rotated.primary_key_name == "primary-rotated"
+        load_private_key(rotated.primary_key.get_secret_value())
 
     def test_a_name_with_no_minted_key_fails_closed(self, fed_config: pathlib.Path) -> None:
         with pytest.raises(ProfileConfigError, match="federation_keygen"):
@@ -248,25 +252,25 @@ class TestKeyByName:
     def test_an_empty_key_file_fails_closed(self, fed_config: pathlib.Path) -> None:
         """A truncated key would otherwise load as a profile that cannot sign,
         and fail at the first federated call instead of at load."""
-        key_store.mint("edge-to-lotor")
-        key_path("edge-to-lotor").write_text("", encoding="utf-8")
+        key_store.mint("primary-to-lotor")
+        key_path("primary-to-lotor").write_text("", encoding="utf-8")
         with pytest.raises(ProfileConfigError, match="empty"):
             load_profiles(fed_config)
 
-    def test_an_edge_key_by_name_still_needs_a_gateway_url(
+    def test_an_primary_key_by_name_still_needs_a_gateway_url(
         self, data_dir: pathlib.Path, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The audience comes from the URL, so the rule cannot depend on which
-        source the key came from — a check naming only `edge_key_env` is the gap
+        source the key came from — a check naming only `primary_key_env` is the gap
         this item closed."""
         monkeypatch.setenv("EDGE_TOKEN", "t" * 20)
-        key_store.mint("edge-to-lotor")
+        key_store.mint("primary-to-lotor")
         path = tmp_path / "profiles.yaml"
         path.write_text(
             FED_YAML.format(
                 url="https://lotor.example/mcp",
-                key_field="edge_key_name",
-                key_value="edge-to-lotor",
+                key_field="primary_key_name",
+                key_value="primary-to-lotor",
             ),
             encoding="utf-8",
         )
@@ -279,21 +283,21 @@ class TestOneKeySource:
         with pytest.raises(ValidationError, match="both set"):
             Profile.model_validate(
                 {
-                    "name": "edge",
+                    "name": "primary",
                     "auth": {"bearer_token_env": "A"},
                     "backends": {
                         "lotor": {
-                            "url": UPSTREAM,
+                            "url": SECONDARY,
                             "federated": {
-                                "edge_key_env": "EDGE_KEY",
-                                "edge_key_name": "edge-to-lotor",
+                                "primary_key_env": "EDGE_KEY",
+                                "primary_key_name": "primary-to-lotor",
                             },
                         }
                     },
                 }
             )
 
-    def test_both_signing_key_sources_are_refused(self) -> None:
+    def test_both_secondary_key_sources_are_refused(self) -> None:
         with pytest.raises(ValidationError, match="both set"):
             Profile.model_validate(
                 {
@@ -302,19 +306,21 @@ class TestOneKeySource:
                     "backends": {},
                     "federation": {
                         "peers": {"breetai": {"public_key": PEER_PUBLIC_KEY}},
-                        "signing_key_env": "SIGN",
-                        "signing_key_name": "ingress-signing",
+                        "secondary_key_env": "SIGN",
+                        "secondary_key_name": "ingress-signing",
                     },
                 }
             )
 
     @pytest.mark.parametrize("name", ["Edge", "9edge", "edge_to_lotor", "../escape", "edge.pem"])
     def test_a_name_that_is_not_a_key_name_is_refused(self, name: str) -> None:
-        with pytest.raises(ValidationError, match="edge_key_name"):
+        with pytest.raises(ValidationError, match="primary_key_name"):
             Profile.model_validate(
                 {
-                    "name": "edge",
+                    "name": "primary",
                     "auth": {"bearer_token_env": "A"},
-                    "backends": {"lotor": {"url": UPSTREAM, "federated": {"edge_key_name": name}}},
+                    "backends": {
+                        "lotor": {"url": SECONDARY, "federated": {"primary_key_name": name}}
+                    },
                 }
             )

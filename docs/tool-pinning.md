@@ -56,35 +56,35 @@ only by `tool_pins reject`/`approve` or by losing the store. The held tools for
 a backend are the rows in `perimeter.db`'s `tool_pins` table with a non-null
 `pending_hash`, keyed by the backend's URL hash.
 
-## Federation: first connect, and held upstream
+## Federation: first connect, and held on the secondary
 
 When a backend is a **federated** peer (see [Federation](federation.md)),
-pinning behaves differently in two ways, both because the downstream trusts the
-declared edge:
+pinning behaves differently in two ways, both because the primary trusts the
+declared link:
 
 - **No first-connect storm.** A federated backend's **first** tools/list is
-  approved as a unit, not held tool by tool — a large upstream offering hundreds
+  approved as a unit, not held tool by tool — a large secondary offering hundreds
   of tools does not storm the operator, and its set already passed the peer's
   own pin gate. "First" is a persisted marker (so an empty first list still
-  records the connect); after it, a newly added or changed upstream tool is held
+  records the connect); after it, a newly added or changed secondary tool is held
   one at a time, exactly as a non-federated backend's would be. A non-federated
   remote backend still holds every new tool on first sight.
-- **Held state is visible downstream.** The upstream reports a count of the
+- **Held state is visible on the primary.** The secondary reports a count of the
   tools it is withholding in the caller's slice (names never cross), surfaced per
-  federated backend. When the upstream's call gate refuses a held tool, the
-  downstream reads the closed `tool_held` reason and answers the agent with its
-  own `tool_held_upstream` — "held upstream, awaiting approval" — never the
-  peer's text. The unauthenticated `/health` probe carries a gateway-wide count
-  of tools pending approval, for monitoring. Approving a federated hold is done
-  on the **upstream** that holds it.
+  federated backend. When the secondary's call gate refuses a held tool, the
+  primary reads the closed `tool_held` reason and answers the agent with its
+  own `tool_held_secondary` — "held on the secondary, awaiting approval" — never
+  the peer's text. The unauthenticated `/health` probe carries a gateway-wide
+  count of tools pending approval, for monitoring. Approving a federated hold is
+  done on the **secondary** that holds it.
 
 ## The call gate: detection at list time, enforcement at call time (#469)
 
 A held tool is withheld from `tools/list` AND refused if called: a call to a
 held remote tool is refused before the backend, as an ordinary result (not a
-JSON-RPC error) carrying `reason: tool_held`. A federated downstream maps that
-reason to its own words ("held upstream, awaiting approval"). Internal and
-decoy backends are not gated — only remote ones.
+JSON-RPC error) carrying `reason: tool_held`. A federated primary maps that
+reason to its own words ("held on the secondary, awaiting approval"). Internal
+and decoy backends are not gated — only remote ones.
 
 Detection of a changed tool stays at `tools/list` time (the aggregate build);
 enforcement is at call time. There is deliberately no per-call re-validation of

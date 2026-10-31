@@ -1,4 +1,4 @@
-"""D2a: a downstream trusts a federated peer's signed verdict and skips its own
+"""D2a: a primary trusts a federated peer's signed verdict and skips its own
 layers (#592) — scan-once at the trust boundary.
 
 ``_federated_trust`` is the decision: it returns a delivered ``Assembled`` when
@@ -55,7 +55,7 @@ def _keypair() -> tuple[str, str]:
     return private_pem, public_pem
 
 
-def _downstream(public_pem: str, *, stamp: str = STAMP, enforcement: str = "flag") -> Profile:
+def _primary(public_pem: str, *, stamp: str = STAMP, enforcement: str = "flag") -> Profile:
     backend = Backend(
         url="http://up:9000/mcp",
         tools_allow=["*"],
@@ -107,7 +107,7 @@ def _decide(profile: Profile, meta: dict[str, Any] | None, *, mode: Mode = Mode.
 
 def test_a_valid_verdict_is_trusted_and_delivered() -> None:
     priv, pub = _keypair()
-    assembled = _decide(_downstream(pub), {vsa.VSA_KEY: _envelope(priv)})
+    assembled = _decide(_primary(pub), {vsa.VSA_KEY: _envelope(priv)})
     assert assembled is not None  # trusted: delivered without re-judging
     assert assembled.result["content"] == CONTENT
 
@@ -124,18 +124,18 @@ def test_a_valid_verdict_is_trusted_and_delivered() -> None:
 )
 def test_a_mismatched_verdict_re_judges(meta_of: Any) -> None:
     priv, pub = _keypair()
-    assert _decide(_downstream(pub), meta_of(priv)) is None  # fall through to the pipeline
+    assert _decide(_primary(pub), meta_of(priv)) is None  # fall through to the pipeline
 
 
 def test_a_forged_signature_re_judges() -> None:
     priv, _ = _keypair()
     _, other_pub = _keypair()
-    assert _decide(_downstream(other_pub), {vsa.VSA_KEY: _envelope(priv)}) is None
+    assert _decide(_primary(other_pub), {vsa.VSA_KEY: _envelope(priv)}) is None
 
 
 def test_no_trust_verdict_never_trusts() -> None:
     priv, pub = _keypair()
-    profile = _downstream(pub)
+    profile = _primary(pub)
     federated = profile.backends["fed"].federated
     assert federated is not None
     federated.trust_verdict = None
@@ -146,7 +146,7 @@ def test_a_flagged_verdict_under_block_refuses() -> None:
     priv, pub = _keypair()
     flagged = {**vsa.verdict_summary(None, "block"), "flagged_by": "l2", "risk_level": "high"}
     env = _envelope(priv, verdict=flagged)
-    assembled = _decide(_downstream(pub, enforcement="block"), {vsa.VSA_KEY: env}, mode=Mode.BLOCK)
+    assembled = _decide(_primary(pub, enforcement="block"), {vsa.VSA_KEY: env}, mode=Mode.BLOCK)
     assert assembled is not None
     assert assembled.outcome is Outcome.BLOCKED_DEFENSE  # the peer's flag, applied under block
     assert assembled.result["content"] != CONTENT  # the body was withheld
@@ -156,10 +156,10 @@ def test_a_flagged_verdict_under_flag_delivers_with_a_warning() -> None:
     priv, pub = _keypair()
     flagged = {**vsa.verdict_summary(None, "flag"), "flagged_by": "l2", "risk_level": "high"}
     env = _envelope(priv, verdict=flagged)
-    assembled = _decide(_downstream(pub), {vsa.VSA_KEY: env}, mode=Mode.FLAG)
+    assembled = _decide(_primary(pub), {vsa.VSA_KEY: env}, mode=Mode.FLAG)
     assert assembled is not None
     assert CONTENT[0] in assembled.result["content"]  # the body is delivered under flag
-    assert assembled.result[WARNING_KEY]["flagged_by"] == "l2"  # downstream-authored warning
+    assert assembled.result[WARNING_KEY]["flagged_by"] == "l2"  # primary-authored warning
 
 
 def test_trust_verdict_rejects_a_bad_public_key() -> None:
@@ -199,7 +199,7 @@ async def test_the_transport_trusts_without_re_scanning() -> None:
         patch("time.time", return_value=1_000_030),
     ):
         resp = await route_jsonrpc(
-            _downstream(pub),
+            _primary(pub),
             {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -238,7 +238,7 @@ async def test_the_transport_re_judges_an_untrusted_response() -> None:
         patch("time.time", return_value=1_000_030),
     ):
         await route_jsonrpc(
-            _downstream(pub),
+            _primary(pub),
             {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -259,9 +259,9 @@ async def test_the_transport_re_judges_an_untrusted_response() -> None:
 )
 def test_an_incomplete_verdict_re_judges(warning: dict[str, Any]) -> None:
     # A valid, bound assertion whose verdict carries a gap/oversize/unread is
-    # NOT trust-delivered (#592): the downstream re-judges so its own policy
+    # NOT trust-delivered (#592): the primary re-judges so its own policy
     # (REQUIRE_L2/L3, the mode) decides, instead of inheriting the peer's
     # weaker gap handling. check_trust still passes; the gap bail returns None.
     priv, pub = _keypair()
     verdict = vsa.verdict_summary(warning, "flag")
-    assert _decide(_downstream(pub), {vsa.VSA_KEY: _envelope(priv, verdict=verdict)}) is None
+    assert _decide(_primary(pub), {vsa.VSA_KEY: _envelope(priv, verdict=verdict)}) is None

@@ -409,7 +409,7 @@ async def config_tool(
     Args:
         action: `get` reads, `set` writes a value, `unset` removes a key.
         path: Dotted config keys, e.g.
-            "profiles.myagent.backends.lotor.federated.edge_key_name". Omit on
+            "profiles.myagent.backends.lotor.federated.primary_key_name". Omit on
             `get` for the whole file.
         value: What to set. A scalar, a list or a mapping. It REPLACES whatever
             is at that path: setting a mapping removes any keys already there
@@ -430,24 +430,24 @@ async def config_tool(
 
 @mcp.tool()
 async def federation_keygen_tool(name: str) -> dict[str, Any]:
-    """Mint an Ed25519 keypair for a federated edge and return its public key.
+    """Mint an Ed25519 keypair for a federated link and return its public key.
 
     Operator profile only. Setting up federation needs a keypair on each side:
-    an edge key the downstream signs its requests with, and a signing key the
-    upstream vouches for responses with. This creates one without a shell.
+    a primary key the primary signs its requests with, and a secondary key the
+    secondary vouches for responses with. This creates one without a shell.
 
     The private half is written inside the gateway, where no file tool can
     reach it, and is never returned. What comes back is the PUBLIC key, which
     is what the other gateway pins for this peer — copy it into that side's
     config. Refer to the key here by the name you gave it, as
-    ``edge_key_name`` or ``signing_key_name``.
+    ``primary_key_name`` or ``secondary_key_name``.
 
     A name is written once. To rotate, mint a new name and point the config at
-    it, so a key in use is never replaced underneath a live edge.
+    it, so a key in use is never replaced underneath a live link.
 
     Args:
         name: What to call the key: lowercase letters, digits and hyphens
-            (e.g. "edge-to-lotor", "ingress-signing").
+            (e.g. "primary-to-lotor", "ingress-signing").
     """
     return await federation_keygen(name)
 

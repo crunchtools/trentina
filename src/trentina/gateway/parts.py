@@ -187,16 +187,19 @@ async def _part_blocks(
     peer no longer holds the response (expired, released or unreachable) — the
     caller then releases the proxy and tells the agent the handle is unknown.
     """
-    if paged.upstream is None:
+    if paged.secondary is None:
         part = paged.parts[number - 1]
         return [{"type": "text", "text": part.text}], part.lead_in
-    up = paged.upstream
-    backend = profile.backends.get(up.backend)
+    secondary = paged.secondary
+    backend = profile.backends.get(secondary.backend)
     if backend is None:
         return None
     try:
         call = await call_backend_tool(
-            up.backend, backend, up.reader, {"handle": up.handle, "part": number}
+            secondary.backend,
+            backend,
+            secondary.reader,
+            {"handle": secondary.handle, "part": number},
         )
     except BackendCallError as exc:
         # A transport or tool failure, distinct from an expired handle (which
@@ -205,8 +208,8 @@ async def _part_blocks(
         logger.info(
             "gateway: federated part fetch failed profile=%s %s/%s [%s]",
             profile.name,
-            up.backend,
-            loggable_tool(backend.url, up.reader),
+            secondary.backend,
+            loggable_tool(backend.url, secondary.reader),
             logsafe.exc_kind(exc),
         )
         return None
@@ -215,7 +218,7 @@ async def _part_blocks(
         # The peer answered, but not with a part (unknown handle, expired): the
         # rest is gone. Its own words are never relayed as ours.
         return None
-    return list(call.content), up.tail
+    return list(call.content), secondary.tail
 
 
 #: Characters of a forwarded part's end kept as the next part's lead-in, so an
@@ -267,7 +270,7 @@ def _framed_blocks(
     extraction block under redact, plus the warning block; no second framing,
     and the peer's tail is kept for the next forwarded part's lead-in.
     """
-    if paged.upstream is None:
+    if paged.secondary is None:
         body = (
             decision.extraction if decision.extraction is not None else paged.parts[number - 1].text
         )
@@ -290,10 +293,10 @@ def _framed_blocks(
                 ),
             }
         )
-    if paged.upstream is None:
+    if paged.secondary is None:
         blocks.append({"type": "text", "text": paging.footer(paged, number, reader)})
     else:
-        paged.upstream.tail = _joined_tail(content_blocks)
+        paged.secondary.tail = _joined_tail(content_blocks)
     return blocks
 
 
@@ -325,7 +328,7 @@ async def _deliver_part(
         return Assembled(
             {"content": [{"type": "text", "text": paging.UNKNOWN_HANDLE}], "isError": False},
             Outcome.DENIED_GUARD,
-            "upstream part gone",
+            "secondary part gone",
         )
     content_blocks, lead_in = fetched
     if _source_blocklisted(profile, paged, mode):
@@ -449,10 +452,10 @@ async def _read_part(
     # The tool that produced it must still be this profile's to call: a reload
     # that took the tool away takes the rest of its response too. A proxied
     # response also needs its backend to be federated still (#592, B2): a reload
-    # that dropped `federated` leaves no edge to forward the rest over.
+    # that dropped `federated` leaves no link to forward the rest over.
     stale_federation = (
         paged is not None
-        and paged.upstream is not None
+        and paged.secondary is not None
         and (backend is None or backend.federated is None)
     )
     if (
