@@ -7,9 +7,20 @@
 # set. So the laptop opens the path itself, outbound, and the public gateway's
 # web server proxies ONE path to the far end.
 #
-# DELIBERATELY NOT ENABLED. Install it and leave it stopped:
+# DELIBERATELY NOT ENABLED. Say where it connects, install it, leave it
+# stopped:
 #
+#   install -Dm600 /dev/stdin ~/.config/trentina/tunnel.env <<'EOF'
+#   TRENTINA_TUNNEL_TARGET=trentina-tunnel@gateway.your.domain
+#   TRENTINA_TUNNEL_SSH_PORT=22
+#   EOF
 #   systemctl --user daemon-reload          # no `enable`
+#
+# The target is read from that file rather than written here, for two
+# reasons. This repository is public and keeps deployment hostnames out of
+# itself, and `EnvironmentFile=` without a leading `-` makes a missing file
+# FAIL the unit — which is the right direction. A tunnel that starts without
+# knowing where it is going is worse than one that refuses to start.
 #
 # Open the door only while a person has something to approve, and let it shut
 # itself, so an abandoned session is not a standing public door:
@@ -60,6 +71,7 @@ Documentation=https://github.com/crunchtools/trentina/blob/main/docs/approvals.m
 After=network-online.target
 
 [Service]
+EnvironmentFile=%h/.config/trentina/tunnel.env
 ExecStart=/usr/bin/ssh -NT \
   -i %h/.ssh/trentina_tunnel \
   -o IdentitiesOnly=yes \
@@ -67,8 +79,9 @@ ExecStart=/usr/bin/ssh -NT \
   -o ServerAliveInterval=30 \
   -o ServerAliveCountMax=3 \
   -o StrictHostKeyChecking=accept-new \
+  -o Port=${TRENTINA_TUNNEL_SSH_PORT} \
   -R 127.0.0.1:8119:127.0.0.1:8019 \
-  trentina-tunnel@gateway.example.com
+  ${TRENTINA_TUNNEL_TARGET}
 # While the door is open it should stay open: a dropped link mid-approval is
 # the one failure a person cannot diagnose. What bounds it is the transient
 # stop timer above, not the absence of a restart.
