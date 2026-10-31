@@ -55,13 +55,17 @@ async def approval_enrol() -> dict[str, Any]:
             ),
         }
 
-    seconds = approver.open_enrolment()
+    seconds, code = approver.open_enrolment()
     return {
         "opened": True,
         "url": ENROL_PATH,
+        "code": code,
         "open_for_seconds": seconds,
         "note": (
-            "Ask a person to open that URL and choose the password. Until they do, a "
+            "Give a person that URL and code. They choose the password; you cannot, "
+            "because setting it is a form submission and none of your tools makes one. "
+            "The code is what stops anyone else who can reach the page claiming this "
+            "gateway's approver while the window is open. Until a password is set, a "
             "change to the operator seat or to federation trust cannot be approved, so "
             "both stay refused."
         ),

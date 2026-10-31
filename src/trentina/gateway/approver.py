@@ -43,7 +43,7 @@ import time
 from pathlib import Path
 
 from ..config import get_config
-from ..logsafe import exc_kind
+from ..logsafe import exc_kind, hold
 from . import secret_file
 
 logger = logging.getLogger(__name__)
@@ -151,7 +151,14 @@ def _verifier() -> str | None:
         return held.strip()
     try:
         stored = _store_path().read_text(encoding="utf-8").strip()
-    except OSError:
+    except FileNotFoundError:
+        # The ordinary case on a gateway nobody has enrolled yet.
+        return None
+    except OSError as exc:
+        # A permission or I/O problem is an operational fault, not first-time
+        # setup, and reads identically to one unless it is said out loud. Still
+        # fail closed: nothing configured means nothing can be approved.
+        logger.warning("approval: the verifier store could not be read: %s", exc_kind(exc))
         return None
     return stored or None
 
@@ -186,40 +193,71 @@ def set_password(password: str) -> None:
 #: a browser, short enough that an abandoned one is not a standing invitation.
 ENROL_WINDOW_SECONDS = 600
 
+#: Short enough to read out or retype, long enough that it is not guessed
+#: inside the window at the approval route's rate limit.
+_CODE_BYTES = 8
+
 _window_opened: float | None = None
+_window_code: str | None = None
 
 
-def open_enrolment() -> int:
-    """Open the window in which a first password may be set; return its length.
+def open_enrolment() -> tuple[int, str]:
+    """Open the window in which a first password may be set.
 
-    An operator agent asks for this, which is the whole point — it can request
-    that a person be prompted, exactly as ``backend_auth`` does for a backend
-    sign-in. What it cannot do is answer the prompt: setting the password is a
-    POST, and Trentina's own tools do not make one.
+    Returns how long it stands and the one-time code that must be presented
+    with the new password.
+
+    **Why the code is returned to the agent, when the approval password is
+    deliberately never returned to anything.** They defend against different
+    callers, and each is closed by a different half:
+
+    - The INTERNET can reach this route — the gateway is public — and could
+      otherwise claim a brand-new gateway's approver during the window simply
+      by being first. The code stops that: a scanner does not have it.
+    - The OPERATOR AGENT has the code and still cannot use it, because setting
+      a password is a POST and none of Trentina's tools makes one: ``fetch`` is
+      GET-only, and ``/proxy/http`` reaches only operator-named upstreams bound
+      at startup. It can ask for the prompt and not answer it.
+
+    So the code is not the capability to approve; it is proof that a person was
+    pointed here by this gateway's own operator. A profile that also holds a
+    code-execution backend defeats this, as it defeats every other control on
+    the gateway — see docs/deployment-hardening.md.
     """
-    global _window_opened
+    global _window_opened, _window_code
     _window_opened = time.monotonic()
+    _window_code = secrets.token_urlsafe(_CODE_BYTES)
+    hold(_window_code, "ENROLMENT_CODE")
     logger.info("approval: enrolment opened for %ds", ENROL_WINDOW_SECONDS)
-    return ENROL_WINDOW_SECONDS
+    return ENROL_WINDOW_SECONDS, _window_code
 
 
-def enrolling() -> bool:
-    """Whether a first password may be set right now.
+def enrolling(code: str | None = None) -> bool:
+    """Whether a first password may be set right now, by this caller.
 
-    Both conditions, and both matter. Nothing configured, so this can never
-    replace a working password — that takes the current one. And a window an
-    operator opened, so a gateway sitting with no password is not a standing
-    offer to whoever reaches the page first.
+    Three conditions, and each closes a different way in. Nothing configured,
+    so this can never replace a working password — that takes the current one.
+    A window an operator opened, so a gateway with no password is not a
+    standing offer. And the code from that window, so being able to reach the
+    route is not enough.
+
+    Called with no code to ask whether the window itself is open, which is what
+    the page needs to decide what to render.
     """
-    if _verifier() is not None or _window_opened is None:
+    if _verifier() is not None or _window_opened is None or _window_code is None:
         return False
-    return time.monotonic() - _window_opened <= ENROL_WINDOW_SECONDS
+    if time.monotonic() - _window_opened > ENROL_WINDOW_SECONDS:
+        return False
+    if code is None:
+        return True
+    return hmac.compare_digest(code.encode("utf-8"), _window_code.encode("utf-8"))
 
 
 def close_enrolment() -> None:
     """Shut the window. Called once a password is set, and by tests."""
-    global _window_opened
+    global _window_opened, _window_code
     _window_opened = None
+    _window_code = None
 
 
 def verify(password: str | None) -> bool:

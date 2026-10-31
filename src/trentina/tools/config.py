@@ -245,21 +245,41 @@ def _needs_approval(
     proportion to how plausible the request would look: minting a second root,
     and believing another gateway's scan instead of running our own.
     """
+    proposals: list[tuple[pending.Kind, dict[str, str]]] = []
     before_seat = config_guard.operator_seat(active.config.profiles)
     after_seat = config_guard.operator_seat(after)
     if before_seat != after_seat:
-        return pending.Kind.OPERATOR_SEAT, _seat_facts(before_seat, after_seat)
+        proposals.append((pending.Kind.OPERATOR_SEAT, _seat_facts(before_seat, after_seat)))
     if not config_guard.trust_stays_human(action, keys, value):
         before_pins = config_guard.trust_pins(active.config.profiles)
-        changed = {
-            where: pin
+        changed = sorted(
+            (where, pin)
             for where, pin in config_guard.trust_pins(after).items()
             if before_pins.get(where) != pin
-        }
-        if changed:
-            where, pin = next(iter(sorted(changed.items())))
-            return pending.Kind.FEDERATION_TRUST, _trust_facts(where, pin)
-    return None
+        )
+        proposals.extend(
+            (pending.Kind.FEDERATION_TRUST, _trust_facts(where, pin)) for where, pin in changed
+        )
+    if not proposals:
+        return None
+    if len(proposals) > 1:
+        # The constitution requires the approval to state WHAT IS BEING
+        # CHANGED. One write can move the seat and pin trust, or pin two
+        # backends at once, and a page can only put one decision in front of a
+        # person — so the rest would be applied unseen on the back of the one
+        # they read. Refuse and make the operator propose them one at a time;
+        # that is also the only shape in which "approve" means anything.
+        kinds = ", ".join(sorted({kind.value for kind, _ in proposals}))
+        raise ConfigWriteError(
+            {
+                "error": (
+                    f"this write needs more than one approval ({kinds}), and a person can "
+                    "only be shown one at a time, so nothing was changed. Propose them "
+                    "separately: one write per decision."
+                )
+            }
+        )
+    return proposals[0]
 
 
 def _rendered(

@@ -392,25 +392,32 @@ class TestEnrolment:
         assert approver.configured() is False
 
     def test_an_opened_window_lets_a_person_set_it(self, pages: TestClient) -> None:
-        approver.open_enrolment()
+        _, code = approver.open_enrolment()
         assert "Set the approval password" in pages.get(approval_routes.ENROL_PATH).text
         answer = pages.post(
-            approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD}
+            approval_routes.ENROL_PATH,
+            data={"code": code, "new": PASSWORD, "again": PASSWORD},
         )
         assert answer.status_code == 200
         assert approver.configured() is True
         assert approver.verify(PASSWORD) is True
 
     def test_setting_it_closes_the_window(self, pages: TestClient) -> None:
-        approver.open_enrolment()
-        pages.post(approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD})
+        _, code = approver.open_enrolment()
+        pages.post(
+            approval_routes.ENROL_PATH,
+            data={"code": code, "new": PASSWORD, "again": PASSWORD},
+        )
         assert approver.enrolling() is False
 
     def test_a_window_cannot_replace_a_working_password(self, pages: TestClient) -> None:
         """Once one is set, changing it takes the current one — a window is
         only ever for the first."""
-        approver.open_enrolment()
-        pages.post(approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD})
+        _, code = approver.open_enrolment()
+        pages.post(
+            approval_routes.ENROL_PATH,
+            data={"code": code, "new": PASSWORD, "again": PASSWORD},
+        )
         approver.open_enrolment()
         assert approver.enrolling() is False
         answer = pages.post(
@@ -427,23 +434,29 @@ class TestEnrolment:
         assert approver.enrolling() is False
 
     def test_mismatched_entries_change_nothing(self, pages: TestClient) -> None:
-        approver.open_enrolment()
+        _, code = approver.open_enrolment()
         answer = pages.post(
-            approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD + "x"}
+            approval_routes.ENROL_PATH,
+            data={"code": code, "new": PASSWORD, "again": PASSWORD + "x"},
         )
         assert answer.status_code == 400
         assert approver.configured() is False
 
     def test_a_short_password_is_refused_with_the_rule(self, pages: TestClient) -> None:
-        approver.open_enrolment()
-        answer = pages.post(approval_routes.ENROL_PATH, data={"new": "short", "again": "short"})
+        _, code = approver.open_enrolment()
+        answer = pages.post(
+            approval_routes.ENROL_PATH, data={"code": code, "new": "short", "again": "short"}
+        )
         assert answer.status_code == 400
         assert "at least" in answer.text
         assert approver.configured() is False
 
     def test_changing_it_needs_the_current_one(self, pages: TestClient) -> None:
-        approver.open_enrolment()
-        pages.post(approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD})
+        _, code = approver.open_enrolment()
+        pages.post(
+            approval_routes.ENROL_PATH,
+            data={"code": code, "new": PASSWORD, "again": PASSWORD},
+        )
         changed = "a-brand-new-password"
         refused = pages.post(
             approval_routes.ENROL_PATH,
@@ -479,9 +492,55 @@ class TestEnrolment:
         assert approver.verify(PASSWORD) is True
 
     def test_the_stored_verifier_is_private(self, pages: TestClient) -> None:
-        approver.open_enrolment()
-        pages.post(approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD})
+        _, code = approver.open_enrolment()
+        pages.post(
+            approval_routes.ENROL_PATH,
+            data={"code": code, "new": PASSWORD, "again": PASSWORD},
+        )
         path = approver._store_path()
         assert os.stat(path).st_mode & 0o777 == 0o600
         assert os.stat(path.parent).st_mode & 0o777 == 0o700
         assert PASSWORD not in path.read_text(encoding="utf-8")
+
+
+class TestTheEnrolmentCode:
+    """Gatehouse found the hole this closes: the gateway is public, so an open
+    window was an invitation to the whole internet to claim a new gateway's
+    approver by being first. The code and the agent's inability to POST close
+    different halves of that — see approver.open_enrolment."""
+
+    def test_the_window_alone_is_not_enough(self, pages: TestClient) -> None:
+        approver.open_enrolment()
+        answer = pages.post(
+            approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD}
+        )
+        assert answer.status_code == 404
+        assert approver.configured() is False
+
+    def test_a_wrong_code_is_not_enough(self, pages: TestClient) -> None:
+        approver.open_enrolment()
+        answer = pages.post(
+            approval_routes.ENROL_PATH,
+            data={"code": "not-the-code", "new": PASSWORD, "again": PASSWORD},
+        )
+        assert answer.status_code == 404
+        assert approver.configured() is False
+
+    def test_the_code_changes_every_time_the_window_opens(self, unset: Any) -> None:
+        del unset
+        _, first = approver.open_enrolment()
+        _, second = approver.open_enrolment()
+        assert first != second
+
+    def test_the_old_code_stops_working(self, pages: TestClient) -> None:
+        _, first = approver.open_enrolment()
+        approver.open_enrolment()
+        assert approver.enrolling(first) is False
+
+    def test_the_code_does_not_survive_the_window(
+        self, pages: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, code = approver.open_enrolment()
+        later = time.monotonic() + approver.ENROL_WINDOW_SECONDS + 1
+        monkeypatch.setattr(approver.time, "monotonic", lambda: later)
+        assert approver.enrolling(code) is False

@@ -548,3 +548,50 @@ class TestWithNoApprover:
             "set", "profiles.ag.defense.enforcement", "flag", await _hash()
         )
         assert result["applied"] is True
+
+
+class TestOneApprovalPerWrite:
+    """Gatehouse, against the constitution: a write could move the seat AND
+    pin trust, or pin two backends, while the page showed one of them — so the
+    rest would be applied unseen on the back of the one a person read."""
+
+    async def test_a_write_needing_two_approvals_is_refused(
+        self, gateway: pathlib.Path
+    ) -> None:
+        before = gateway.read_text(encoding="utf-8")
+        result = await _as_operator(
+            "set",
+            "profiles",
+            {
+                "op": {
+                    "role": "operator",
+                    "defense": {"provider": "ollama"},
+                    "auth": {"bearer_token_env": "AG_TOKEN"},
+                    "backends": {
+                        "web": {"url": "internal://web", "tools_allow": ["fetch_tool"]}
+                    },
+                },
+                "ag": {
+                    "auth": {"bearer_token_env": "AG_TOKEN"},
+                    "backends": {
+                        "lotor": {
+                            "url": "https://lotor.example/gateway/fed/mcp",
+                            "federated": {
+                                "trust_verdict": {
+                                    "public_key": _ED25519_PUBLIC,
+                                    "perimeter_stamp": "v7:guard@abc:0.7",
+                                    "judge": "openrouter/m/pack-1",
+                                }
+                            },
+                        }
+                    },
+                    "defense": {"enforcement": "block"},
+                },
+            },
+            await _hash(),
+        )
+        assert "more than one approval" in result["error"]
+        assert "operator seat" in result["error"]
+        assert "federation trust" in result["error"]
+        assert gateway.read_text(encoding="utf-8") == before
+        assert pending.outstanding() == {}

@@ -222,6 +222,12 @@ def register_approval_routes(mcp_server: Any) -> None:
     logger.info("gateway: the approval pages are mounted at %s", PATH)
 
 
+_CODE_FIELD = (
+    "<p><label>Enrolment code<br>"
+    '<input name="code" autocomplete="off" '
+    'style="font:inherit;padding:.4rem;width:20rem"></label></p>'
+)
+
 _SET_FORM = (
     '<p><label>New approval password<br>'
     '<input type="password" name="new" autocomplete="new-password" '
@@ -254,10 +260,12 @@ async def _password_page(_request: Request) -> Response:
             "<p>This gateway has no approval password yet, and an agent has asked for "
             "one to be set. Choose it here. Afterwards it is what you will be asked "
             f"for whenever an agent proposes a change only a person should agree to.</p>"
-            f'<form method="post" action="{html.escape(ENROL_PATH)}">{_SET_FORM}'
+            f'<form method="post" action="{html.escape(ENROL_PATH)}">'
+            f"{_CODE_FIELD}{_SET_FORM}"
             f'<button style="{_BUTTON}">Set password</button></form>'
-            f"<p style='color:#555'>At least {approver.MIN_PASSWORD_CHARS} characters. "
-            "Nothing else can be approved on this gateway until it is set.</p>",
+            f"<p style='color:#555'>The code came back to the agent that asked for this "
+            f"page. At least {approver.MIN_PASSWORD_CHARS} characters. Nothing else can "
+            "be approved on this gateway until it is set.</p>",
         )
     return _page(
         "Change the approval password",
@@ -281,9 +289,11 @@ async def _set_password(request: Request) -> Response:
 
     if approver.pinned_by_deployment():
         return _page("Not set", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
-    if not approver.enrolling() and not approver.verify(str(form.get("password") or "")):
-        # A wrong current password, and a closed window with none configured,
-        # answer the same: neither says which it was.
+    # Enrolling needs the code from the window the operator opened; changing an
+    # existing password needs the current one. A wrong code, a wrong current
+    # password and a closed window all answer the same: none says which it was.
+    enrolling = approver.enrolling(str(form.get("code") or ""))
+    if not enrolling and not approver.verify(str(form.get("password") or "")):
         logger.info("approval: a password change was not authorised")
         return _page("Not set", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
     try:

@@ -30,6 +30,13 @@ A proposal expires on its own if nobody acts on it, and a restart cancels
 every one — nothing is kept on disk. A staged change that outlives the process
 that proposed it is a change nobody is watching.
 
+**One decision per write.** A single config write could move the operator seat
+and pin federation trust, or pin two backends at once. A page can only put one
+decision in front of a person, so the rest would be applied unseen on the back
+of the one they read — which is exactly what the constitution's requirement
+about stating what is being changed forbids. Such a write is refused, naming
+the decisions it mixed, and the operator proposes them one at a time.
+
 ## The password
 
 The capability to approve has to be something the agent cannot read. That rules
@@ -50,9 +57,23 @@ a password is a form submission, and none of Trentina's tools makes one. That
 asymmetry is the whole property, and it is why asking is safe to hand to an
 agent.
 
-The window matters. A gateway sitting with no password would otherwise be a
-standing offer to whoever reached the page first. It is opened only on request,
-it is short, it closes the moment a password is set, and it can never replace a
+The window matters, and so does the code that comes with it. A gateway sitting
+with no password would otherwise be a standing offer to whoever reached the
+page first — and the page is on the public internet, so that is not a
+hypothetical. `approval_enrol` returns a one-time code, and setting the
+password needs it.
+
+The code goes back to the agent, which is the opposite of the rule about the
+approval password itself, so it is worth being explicit about why. They defend
+against different callers, and each is closed by a different half. A scanner on
+the internet can POST but does not have the code. The operator agent has the
+code and cannot POST — `fetch` is GET-only, and `/proxy/http` reaches only
+operator-named upstreams bound at startup. So the code is not the capability to
+approve; it is proof that a person was pointed at the page by this gateway's
+own operator.
+
+The window is opened only on request, it is short, the code changes each time
+it opens, and it closes the moment a password is set. It can never replace a
 working password — changing an existing one takes the current one.
 
 A deployment can pin a verifier in the gateway's configuration instead

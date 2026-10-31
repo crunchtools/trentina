@@ -66,13 +66,17 @@ with no approval password set nothing can approve, so both stay refused. See
 [Approvals](approvals.md) — including `approval_enrol`, which is how you ask a
 person to set that password without anyone touching a shell.
 
-Nothing needs a restart any more. A profile's bearer token used to have to be
+Adding a profile no longer needs a restart. Its bearer token used to have to be
 an environment variable, which the container carries, which made a brand-new
 profile a deployment change — and worse than that, a profile naming a variable
 that is not set fails validation, so the write was refused outright. Mint one
 with `profile_token` and name it with `auth.bearer_token_name`: it is re-read on
-every load, and a reload is a load. The result's `reload.not_applied` still
-names anything that needs a restart, so read it rather than assuming.
+every load, and a reload is a load.
+
+Other things still do. The `llm_providers` and `matrix` sections, and adding an
+alert or matrix ingress where no route was registered at startup, all bind when
+the process starts. The result's `reload.not_applied` names anything it saw, so
+read it rather than assuming.
 
 Keeping the history is the host's job, not the gateway's: the image ships no
 `git`, and the git transport carries a caller's client rather than authoring
