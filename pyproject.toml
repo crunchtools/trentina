@@ -63,6 +63,11 @@ dependencies = [
     "numpy>=1.24",
     "dbus-fast>=2.0",
     "pyyaml>=6.0",
+    # Reading config is pyyaml's job; WRITING it is ruamel's (#633). The
+    # loader's `yaml.safe_load` throws away comments and formatting, which is
+    # fine for reading and fatal for writing back a file a human maintains and
+    # keeps in git. ruamel's round-trip mode is what preserves them.
+    "ruamel.yaml>=0.18",
     "pypdf>=6.19",
     # OCR for images (#370). RapidOCR is Apache-2.0 and ships its three
     # PP-OCR models (31 MB) inside the wheel, so they are hash-pinned by

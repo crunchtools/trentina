@@ -1,0 +1,137 @@
+"""config_patch (#633): edit profiles.yaml without rewriting what you did not touch.
+
+``profiles.yaml`` is a file a human maintains, reviews in a diff and keeps in
+git. A write that reflowed a list or dropped a comment would turn one intended
+change into an unreadable diff, and on lotor it would show up as git drift in
+sections nobody edited. So the property under test is not "the YAML is
+equivalent" but "the bytes are the same".
+"""
+
+from __future__ import annotations
+
+import pathlib
+
+import pytest
+
+from trentina.gateway import config_patch as cp
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+
+#: Every profiles.yaml the repo ships, which is the only corpus of real ones.
+REAL_FILES = ["docs/demo/profiles.yaml", "examples/profiles-agent1.yaml"]
+
+COMMENTED = """\
+# The gateway's profiles.
+profiles:
+  myagent:
+    # This agent may read mail and draft, but never send.
+    auth:
+      bearer_token_env: TOKEN  # from the unit file
+    backends:
+      web:
+        url: "internal://web"
+        tools_allow:
+          - fetch_tool
+          - read_tool
+    defense:
+      enforcement: block
+"""
+
+
+class TestRoundTrip:
+    @pytest.mark.parametrize("name", REAL_FILES)
+    def test_a_real_file_survives_a_no_op_byte_for_byte(self, name: str) -> None:
+        text = (REPO / name).read_text(encoding="utf-8")
+        assert cp.dump(cp.load(text)) == text
+
+    def test_a_comment_above_an_edited_key_survives(self) -> None:
+        out = cp.set_at(COMMENTED, ("profiles", "myagent", "defense", "enforcement"), "redact")
+
+        assert "# This agent may read mail and draft, but never send." in out
+        assert "# The gateway's profiles." in out
+        assert "enforcement: redact" in out
+
+    def test_an_end_of_line_comment_survives(self) -> None:
+        out = cp.set_at(COMMENTED, ("profiles", "myagent", "defense", "enforcement"), "flag")
+        assert "bearer_token_env: TOKEN  # from the unit file" in out
+
+    def test_an_untouched_list_is_not_reflowed(self) -> None:
+        out = cp.set_at(COMMENTED, ("profiles", "myagent", "defense", "enforcement"), "flag")
+        assert "          - fetch_tool\n          - read_tool\n" in out
+
+    def test_only_the_edited_line_changes(self) -> None:
+        out = cp.set_at(COMMENTED, ("profiles", "myagent", "defense", "enforcement"), "flag")
+        changed = [
+            (a, b) for a, b in zip(COMMENTED.splitlines(), out.splitlines(), strict=True) if a != b
+        ]
+        assert changed == [("      enforcement: block", "      enforcement: flag")]
+
+
+class TestSetting:
+    def test_it_creates_intermediate_mappings(self) -> None:
+        out = cp.set_at(
+            COMMENTED,
+            ("profiles", "myagent", "backends", "lotor", "federated", "edge_key_name"),
+            "edge-to-lotor",
+        )
+        assert (
+            cp.get_at(
+                out, ("profiles", "myagent", "backends", "lotor", "federated", "edge_key_name")
+            )
+            == "edge-to-lotor"
+        )
+
+    def test_a_list_is_replaced_whole(self) -> None:
+        path = ("profiles", "myagent", "backends", "web", "tools_allow")
+        out = cp.set_at(COMMENTED, path, ["fetch_tool"])
+        assert list(cp.get_at(out, path)) == ["fetch_tool"]
+
+    def test_a_path_through_a_scalar_is_refused(self) -> None:
+        """Overwriting a scalar because a path ran through it would discard it
+        silently."""
+        with pytest.raises(cp.ConfigPatchError, match="mapping"):
+            cp.set_at(COMMENTED, ("profiles", "myagent", "defense", "enforcement", "deeper"), 1)
+
+    def test_the_result_is_still_loadable(self) -> None:
+        out = cp.set_at(COMMENTED, ("profiles", "other", "defense", "enforcement"), "block")
+        assert cp.get_at(out, ("profiles", "other", "defense", "enforcement")) == "block"
+
+
+class TestUnsetting:
+    def test_it_removes_a_key(self) -> None:
+        path = ("profiles", "myagent", "defense", "enforcement")
+        out = cp.unset_at(COMMENTED, path)
+        with pytest.raises(cp.ConfigPatchError):
+            cp.get_at(out, path)
+
+    def test_removing_what_is_not_there_is_an_error(self) -> None:
+        """A typo in a path must not read as a successful no-op."""
+        with pytest.raises(cp.ConfigPatchError, match="not set"):
+            cp.unset_at(COMMENTED, ("profiles", "myagent", "defence"))
+
+
+class TestPaths:
+    @pytest.mark.parametrize(
+        "key",
+        ["a.b", "a/b", "../etc", "", "x" * 65, "a b", "a:b"],
+    )
+    def test_a_segment_that_is_not_a_key_is_refused(self, key: str) -> None:
+        with pytest.raises(cp.ConfigPatchError, match="not a config key"):
+            cp.set_at(COMMENTED, ("profiles", key), 1)
+
+    def test_an_empty_path_is_refused(self) -> None:
+        with pytest.raises(cp.ConfigPatchError, match="at least one key"):
+            cp.set_at(COMMENTED, (), 1)
+
+
+class TestBadInput:
+    def test_invalid_yaml_is_refused_without_quoting_the_file(self) -> None:
+        """The parser's own message quotes the offending line, which is file
+        content and not ours to echo (#262)."""
+        with pytest.raises(cp.ConfigPatchError) as failed:
+            cp.load("profiles:\n  a: [unclosed\n  secret: hunter2\n")
+        assert "hunter2" not in str(failed.value)
+        assert failed.value.__cause__ is None
+
+    def test_an_empty_file_loads_as_an_empty_mapping(self) -> None:
+        assert cp.dump(cp.load("   \n")) in ("{}\n", "")
