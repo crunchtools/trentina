@@ -171,6 +171,34 @@ def _sneaky_bits(s: str) -> str:
     )
 
 
+#: Encoders whose alphabet is ASCII letters and digits only. garak's `_braille`
+#: and `_morse` drop every character they have no cell or code for at ENCODE
+#: time, so a mostly-non-Latin payload is a benign fragment before unpack ever
+#: sees it — measuring unpack's recovery on it measures garak, not the pipeline
+#: (#546, #423). The byte encoders (base*, UU, Ascii85) carry any text.
+LATIN_ONLY = frozenset({"Braille", "Morse"})
+
+#: The share of a payload's alphanumerics an ASCII-only encoder must be able to
+#: carry for decoding it to be a fair measure of unpack rather than of garak.
+CARRY_MIN_ASCII_ALNUM = 0.9
+
+
+def carries(name: str, text: str) -> bool:
+    """Whether encoder ``name`` can carry enough of ``text`` that decoding it
+    measures trentina's unpack stage, not garak's lossy encoder (#546).
+
+    A non-:data:`LATIN_ONLY` encoder carries everything. A Latin-only one
+    (Braille, Morse) carries ``text`` only when at least
+    :data:`CARRY_MIN_ASCII_ALNUM` of its alphanumerics are ASCII a-z/0-9 — the
+    characters those alphabets have a code for; garak drops the rest."""
+    if name not in LATIN_ONLY:
+        return True
+    alnums = [c for c in text if c.isalnum()]
+    if not alnums:
+        return False
+    return sum(c.isascii() for c in alnums) / len(alnums) >= CARRY_MIN_ASCII_ALNUM
+
+
 ENCODINGS: dict[str, Callable[[str], str]] = {
     "base16": _base16,
     "base32": _base32,

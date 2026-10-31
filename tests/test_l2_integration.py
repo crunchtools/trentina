@@ -23,7 +23,7 @@ import pytest
 
 from corpora.benign_ops import BENIGN as BENIGN_SHAPES
 from corpora.disclosed import CORPUS as DISCLOSED
-from corpora.garak_encodings import ENCODINGS
+from corpora.garak_encodings import ENCODINGS, carries
 from corpora.internal import CORPUS as INTERNAL
 from trentina.gateway.collect import _collect_response_texts
 from trentina.gateway.profile import AuthConfig, Backend, Profile
@@ -330,14 +330,30 @@ class TestKnownGaps:
         """Gap 21 closed (#546): unpack decodes base32, Ascii85, base85, UU,
         Braille and Morse, so the pipeline reads the attack inside and does not
         lose more than the gate allows against the plain text. Should a decoder
-        regress, this fails: re-run ``benchmarks/l2_encodings.py``."""
+        regress, this fails: re-run ``benchmarks/l2_encodings.py``.
+
+        Braille and Morse are ASCII letter/digit alphabets: garak's encoder
+        drops everything else at encode time, so a mostly-non-Latin attack is a
+        benign fragment before unpack ever sees it. ``carries`` scopes those two
+        to the attacks their encoder can hold (a floor guards against the filter
+        eating the corpus), measuring unpack rather than garak; the byte
+        encoders carry every attack. The loss that remains is the model reading
+        a decoded-but-normalised payload (Braille lowercases and collapses
+        colliding cells) differently — model sensitivity the gate tolerates, not
+        a decoder fault (fixed in the model, #17, never with an extra pass)."""
         if _MODEL is None or _MODEL.id != SHIPPED:
             pytest.skip(f"measured on {SHIPPED}")
-        attacks = [c.payload for c in INTERNAL if c.expect_injection]
-        plain = _detected(attacks)
+        attacks = [c for c in INTERNAL if c.expect_injection]
         for name in ("base32", "Ascii85", "base85", "UU", "Braille", "Morse"):
-            through = _detected(unpack(ENCODINGS[name](a)).text for a in attacks)
-            assert plain - through <= GATE_MAX_DROP, f"{name} loses {plain - through}"
+            scoped = [c for c in attacks if carries(name, c.payload)]
+            assert len(scoped) >= 40, f"{name}: only {len(scoped)} attacks in scope"
+            plain = _detected(c.payload for c in scoped)
+            through = _detected(unpack(ENCODINGS[name](c.payload)).text for c in scoped)
+            dropped = [c.id for c in attacks if not carries(name, c.payload)]
+            assert plain - through <= GATE_MAX_DROP, (
+                f"{name} loses {plain - through} over {len(scoped)} attacks "
+                f"(excluded as non-Latin: {dropped})"
+            )
 
     def test_a_letter_cipher_costs_detections(self) -> None:
         """Known gap 22 (#423): more attacks are lost than the gate allows.

@@ -446,6 +446,14 @@ one does; the rest name the benchmark that measured them.
     above). base32, UU, Braille and Morse decode at any length; Ascii85 and
     base85, whose decode is pure Python, are read between 16 and 20000
     characters, so a blob outside that range is the one remaining sliver.
+    Braille and Morse are ASCII letter/digit alphabets: garak's encoder drops
+    anything else at encode time, so "closed" is measured over the attacks that
+    encoder can carry (`garak_encodings.carries`, at least 90% ASCII
+    alphanumerics) — a mostly-non-Latin payload never becomes a Braille- or
+    Morse-hidden attack to recover. A decoded-but-normalised payload (Braille
+    lowercases and collapses colliding cells) can still read differently to the
+    model within the gate's one-detection tolerance; that is model sensitivity
+    (#17), not a decoder fault.
 22. **A letter cipher costs L2 detections and adds false positives**
     (#423). Under ROT13 and Atbash the shipped model flags 26 and 17 of 44
     attacks against 43 plain, and 24 and 12 of 86 benign texts against
