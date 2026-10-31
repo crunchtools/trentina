@@ -124,6 +124,22 @@ def judge_of(profile: Profile | None) -> tuple[str, str]:
     )
 
 
+def judge_stamp(profile: Profile | None) -> str:
+    """The L3 judge identity ``profile`` scans under: ``provider/model/pack``.
+
+    A federated verdict pins this separately from the ``perimeter_stamp``,
+    because that one covers L2 and the perimeter version but not L3 — a peer
+    that swapped to a weaker judge is caught here or nowhere. It is the same
+    (provider, model) and pack the verdict cache keys on.
+
+    Not a secret: it names a model and a prompt pack. An operator reads it to
+    tell a peer what to pin, and to compare a peer's against its own.
+    """
+    judge = judge_of(profile)
+    pack = pack_for(judge, profile.defense.l3_prompt_pack if profile is not None else None)
+    return f"{judge[0]}/{judge[1]}/{pack.stamp}"
+
+
 def log_service_identity(profiles: Mapping[str, Profile]) -> None:
     """Say, once, whose identity the gateway's own model calls run under.
 

@@ -406,6 +406,12 @@ it.
 - quarantine_stats — role-scoped like the gateway admin tools below: an agent
   profile gets its own audit rows, its own detections and the defense settings
   it runs under; an operator gets the gateway.
+- quarantine_stats — an operator also gets `perimeter`: this gateway's own
+  `stamp` (`perimeter_db.perimeter_stamp()`) and `judge`
+  (`service.judge_stamp`), which are what a federated peer pins in its
+  `trust_verdict` (#637). Nothing exposed them before, so an operator had no
+  way to read its own for comparison or to tell a peer what to pin. An agent's
+  slice does not carry them: they are the gateway's, not a tenant's.
   `surface` (`gateway/surface.py`) is the tool list offered vs. served;
   `gateway_audit.delivery` is response bytes arrived vs. delivered. Tokens are
   bytes/4 — a comparison, not a bill.

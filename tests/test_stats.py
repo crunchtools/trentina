@@ -22,6 +22,7 @@ from trentina.gateway.loader import (
     register_active_config,
 )
 from trentina.outcomes import Outcome
+from trentina.perimeter_db import perimeter_stamp
 from trentina.tools.stats import get_trentina_stats
 
 pytestmark = pytest.mark.asyncio
@@ -135,6 +136,29 @@ class TestOperatorScope:
         # 0.41.0: availability follows the provider chain, not Gemini's key.
         assert {"provider", "llm_available", "admission_tokens"} <= set(result["config"])
         assert "has_api_key" not in result["config"]
+
+    async def test_the_operator_can_read_what_this_gateway_scans_under(
+        self, gateway: dict
+    ) -> None:
+        """#637. Nothing exposed these before, so an operator asked to vet
+        another gateway's scanner could not read its own for comparison, and
+        could not tell a peer what to pin. Both are identities, not secrets."""
+        with profile_context(gateway["alpha"]):
+            result = await get_trentina_stats()
+
+        assert result["perimeter"]["stamp"] == perimeter_stamp()
+        # provider/model/pack, the shape a federated trust_verdict pins.
+        assert result["perimeter"]["judge"].count("/") >= 2
+
+    async def test_an_agent_does_not_get_the_perimeter_identity(
+        self, gateway: dict
+    ) -> None:
+        """It is the gateway's, not a tenant's, and an agent's slice says only
+        what that profile runs under."""
+        with profile_context(gateway["beta"]):
+            result = await get_trentina_stats()
+
+        assert "perimeter" not in result
 
 
 class TestUnknownCaller:
