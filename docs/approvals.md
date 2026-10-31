@@ -178,14 +178,19 @@ threat. Two other things are:
 
 A gateway with no inbound route of its own — a laptop reached over a reverse
 tunnel, which is the ordinary shape for a primary — should not hold a standing
-public door for this. Bring the tunnel up when a window is open or something is
-staged, and let it close itself:
+public door for this. `contrib/tunnel/trentina-tunnel.service` is that tunnel,
+and it is deliberately installed without being enabled. Bring it up when a
+window is open or something is staged, and let it close itself:
 
 ```
 systemctl --user start trentina-tunnel
 systemd-run --user --on-active=30min --unit=trentina-tunnel-close \
     systemctl --user stop trentina-tunnel
 ```
+
+The unit's header carries what the far side needs: the restricted account, the
+`sshd_config.d` block that says the same thing a second way, the anchored
+single-path vhost, and the two spellings that silently break it.
 
 A gateway that is already public cannot hide the route that way, and wants a
 sign-in in front of it instead (crunchtools/trentina#639).

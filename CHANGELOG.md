@@ -62,6 +62,15 @@ under that name.
   belongs to the deployment and not to the gateway, since a route that
   vanished when nothing was staged would make its own existence the signal for
   when to attack.
+- `contrib/tunnel/trentina-tunnel.service` publishes a laptop gateway's
+  approval page over a reverse tunnel, and is deliberately installed without
+  being enabled: the door opens when a person has something to approve and a
+  transient timer shuts it. Its header carries what the far side needs and the
+  two spellings that silently break it — `restrict` in `authorized_keys` turns
+  forwarding off, so `permitlisten` alone leaves the bind refused; and
+  `permitopen="none"` is valid only in `sshd_config`, since
+  `authorized_keys` reads it as a literal host:port and the whole key line
+  stops authenticating.
 
 ## [4.1.1] - 2026-10-31
 
