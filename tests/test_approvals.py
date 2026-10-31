@@ -14,6 +14,7 @@ may be enough to approve with.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import pathlib
 import time
@@ -649,3 +650,48 @@ class TestTheBodyCap:
         pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied([]))
         answer = client.post(approval_routes.PATH, data={"password": PASSWORD})
         assert answer.status_code == 200
+
+
+class TestPasswordWorkIsBounded:
+    """Found in review, as a consequence of moving scrypt to a worker: a KDF is
+    expensive by design, so an unbounded queue of them is the attack rather
+    than the defence — and the pool they queue on is the one L1 and the
+    tokenizer use."""
+
+    def test_only_one_password_operation_runs_at_a_time(self, page: TestClient) -> None:
+        assert isinstance(approval_routes._PASSWORD_WORK, asyncio.Semaphore)
+        assert approval_routes._PASSWORD_WORK._value == 1
+
+    def test_a_second_attempt_is_refused_rather_than_queued(self, page: TestClient) -> None:
+        """Busy says so with 503. Queueing would let guesses arrive faster than
+        workers finish them and pile up as request state."""
+        loop = asyncio.new_event_loop()
+        try:
+            held = loop.run_until_complete(_hold(approval_routes._PASSWORD_WORK))
+            del held
+            answer = page.post(approval_routes.PATH, data={"password": PASSWORD})
+            assert answer.status_code == 503
+            assert "in flight" in answer.text
+        finally:
+            approval_routes._PASSWORD_WORK = asyncio.Semaphore(1)
+            loop.close()
+
+    def test_setting_a_password_is_refused_while_busy(self, pages: TestClient) -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_hold(approval_routes._PASSWORD_WORK))
+            _, code = approver.open_enrolment()
+            answer = pages.post(
+                approval_routes.ENROL_PATH,
+                data={"code": code, "new": PASSWORD, "again": PASSWORD},
+            )
+            assert answer.status_code == 503
+            assert approver.configured() is False
+        finally:
+            approval_routes._PASSWORD_WORK = asyncio.Semaphore(1)
+            loop.close()
+
+
+async def _hold(semaphore: Any) -> None:
+    """Take the only slot and never give it back, so the route sees it busy."""
+    await semaphore.acquire()

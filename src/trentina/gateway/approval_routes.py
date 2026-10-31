@@ -57,6 +57,13 @@ PAGE_LIMIT = (10, 30)
 #: Nothing here needs a body: a password and two short fields.
 MAX_BODY_BYTES = 4096
 
+#: One password operation at a time, refusing rather than queueing. A KDF is
+#: expensive by design, so a queue of them is the attack and not the defence —
+#: and the pool it queues on is the default executor, which L1 and the
+#: tokenizer share. Holding it across the whole check-then-set also makes
+#: enrolment atomic (see ``_authorised_set``).
+_PASSWORD_WORK = asyncio.Semaphore(1)
+
 _HEADERS = {
     "Cache-Control": "no-store",
     "Referrer-Policy": "no-referrer",
@@ -147,6 +154,17 @@ def _nothing() -> Response:
     return _page("Nothing to approve", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
 
 
+def _busy() -> Response:
+    """Someone else's password operation is in flight. Say so rather than
+    queueing: a KDF is expensive by design, and a queue of them is a way to
+    starve the gateway rather than a way to be fair."""
+    return _page(
+        "Busy",
+        "<p>Another password attempt is in flight. Try again in a moment.</p>",
+        HTTPStatus.SERVICE_UNAVAILABLE,
+    )
+
+
 async def _act(kind: pending.Kind, decision: str) -> Response:
     """Carry out a decision a verified person made."""
     if decision == "decline":
@@ -176,10 +194,14 @@ async def _act(kind: pending.Kind, decision: str) -> Response:
 async def _decide(request: Request) -> Response:
     form = await request.form()
     password = str(form.get("password") or "")
+    if _PASSWORD_WORK.locked():
+        return _busy()
     # scrypt is deliberately expensive — ~16 MiB and tens of milliseconds — so
-    # it runs in a worker. On the loop it would stall every other profile's
-    # request for the duration of a stranger's password guess.
-    if not await asyncio.to_thread(approver.verify, password):
+    # it runs in a worker, bounded. On the loop it would stall every other
+    # profile's request for the duration of a stranger's password guess.
+    async with _PASSWORD_WORK:
+        verified = await asyncio.to_thread(approver.verify, password)
+    if not verified:
         # A wrong password and a right one with nothing staged answer the same.
         logger.info("approval: a visitor did not present a valid approval password")
         return _nothing()
@@ -292,35 +314,51 @@ async def _password_page(_request: Request) -> Response:
     )
 
 
+async def _authorised_set(code: str, current: str, new: str) -> Response | None:
+    """Authorise and perform a password change, or return the refusal.
+
+    One critical section, held across the authorisation AND the write, so two
+    requests that both saw an open enrolment window cannot both set a password
+    with the later silently replacing the first. Enrolling needs the code from
+    the window the operator opened; changing an existing password needs the
+    current one. A wrong code, a wrong current password and a closed window all
+    answer the same: none says which it was.
+
+    Returns None when the password was set.
+    """
+    async with _PASSWORD_WORK:
+        if not approver.enrolling(code) and not await asyncio.to_thread(
+            approver.verify, current
+        ):
+            logger.info("approval: a password change was not authorised")
+            return _page("Not set", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
+        # Deriving the verifier is the same cost as checking one, plus a write.
+        await asyncio.to_thread(approver.set_password, new)
+        approver.close_enrolment()
+    return None
+
+
 async def _set_password(request: Request) -> Response:
     """Set or change it. Fail-closed on every path that is not clearly allowed."""
     form = await request.form()
     new = str(form.get("new") or "")
     if new != str(form.get("again") or ""):
         return _page("Not set", "<p>Those did not match. Nothing was changed.</p>", 400)
-
     if approver.pinned_by_deployment():
         return _page("Not set", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
-    # Enrolling needs the code from the window the operator opened; changing an
-    # existing password needs the current one. A wrong code, a wrong current
-    # password and a closed window all answer the same: none says which it was.
-    enrolling = approver.enrolling(str(form.get("code") or ""))
-    if not enrolling and not await asyncio.to_thread(
-        approver.verify, str(form.get("password") or "")
-    ):
-        logger.info("approval: a password change was not authorised")
-        return _page("Not set", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
+    if _PASSWORD_WORK.locked():
+        return _busy()
     try:
-        # Deriving the verifier is the same cost as checking one, plus a write.
-        await asyncio.to_thread(approver.set_password, new)
+        refused = await _authorised_set(
+            str(form.get("code") or ""), str(form.get("password") or ""), new
+        )
     except ValueError as exc:
         # Its own message names the rule, never the password.
         return _page("Not set", f"<p>{html.escape(str(exc))}</p>", 400)
     except OSError as exc:
         logger.warning("approval: the password could not be stored err=%s", exc_kind(exc))
         return _page("Not set", "<p>It could not be stored. Nothing was changed.</p>", 500)
-    approver.close_enrolment()
-    return _page(
+    return refused or _page(
         "Password set",
         "<p>Set. This is what you will be asked for when an agent proposes a change "
         "only a person should agree to.</p>",
