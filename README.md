@@ -20,11 +20,10 @@ ashore: commerce keeps flowing, and nothing dangerous gets in.
 ## Why Trentina
 
 1. **Security.** Untrusted content crosses three independent layers at every
-   ingress: L1 deterministic checks, L2 a local classifier, L3 a quarantined
-   LLM with no tools — or, across a [federated](docs/federation.md) edge you
-   declare, the upstream scans once and signs a verdict the downstream verifies
-   instead of re-judging. [Semantic request guards](docs/semantic-request-guards.md) judge
-   what goes out against a rule you write in English. What is and is not
+   ingress to the trust boundary, which can be [federated](docs/federation.md)
+   with other instances: L1 deterministic checks, L2 a local classifier, L3 a
+   quarantined LLM with no tools. [Semantic request guards](docs/semantic-request-guards.md)
+   judge what goes out against a rule you write in English. What is and is not
    defended is in [Coverage](docs/defense-pipeline.md#coverage).
    [Defense Pipeline](docs/defense-pipeline.md) · [Benchmark](docs/benchmark.md) ·
    [OWASP mapping](docs/owasp-mapping.md)
