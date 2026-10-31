@@ -10,6 +10,25 @@ under that name.
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-10-31
+
+### Added
+
+- **API-driven configuration** (#633): an operator agent can provision and run a gateway — including a federated edge — with no human editing files and no restart. `docs/operator.md` already described this loop ("none of this needs a shell"); the product shipped half of it.
+  - **`config_tool`** reads and writes `profiles.yaml` itself, then applies the change the same way `reload_profiles` does. The file stays the source of truth: it is not a view over a database and not generated, and a hand edit still wins. `expect_hash` is required, so a write carries the hash of the version it was composed against and a file that moved underneath refuses the write instead of overwriting the other writer. Every successful write returns the next hash. A candidate is validated by loading it before anything is replaced, the previous version is kept under `<data>/config-backups/`, and the replace is atomic.
+  - **`federation_keygen`** mints an Ed25519 keypair inside the gateway and returns only the public half — the half a peer pins. The private half is written under the gateway's own data directory, which the file tools already refuse, and is never returned.
+  - **Keys by name:** `federated.edge_key_name` and `federation.signing_key_name` refer to a minted key instead of an environment variable. They are re-read on every load, and a reload is a load, so a key minted after startup takes effect without a restart. The `_env` forms remain, for podman and Kubernetes secret mounts; exactly one source per key.
+  - Two writes are refused, and not as a privilege boundary — the operator is root on the gateway. They exist because the operator is a model: it cannot create, move or remove the operator seat or change how a caller becomes one, and a change to federation trust or peers must be written on its own inside the federation block it belongs to.
+
+### Changed
+
+- The reference Quadlet unit binds the config **directory** writable rather than `profiles.yaml` as a single read-only file, because an atomic replace renames over the file and a rename needs the directory. `TRENTINA_REQUIRE_HARDENED` still passes: its checks are `statvfs("/")` and the import path, and a bind mount at the config path is neither. Deployments that want the file hand-edited only can keep the single-file `:ro` bind, and `config_tool` reports that it cannot write.
+- Adds `ruamel.yaml`. Reading config stays pyyaml's job; writing it needs round-trip mode, because `yaml.safe_load` discards the comments and formatting of a file a person maintains.
+
+### Fixed
+
+- A federated backend's "an edge key needs a gateway MCP URL" check tested `edge_key_env` specifically, so the same configuration spelled with a key name would have skipped it. It now asks whether the edge has a key at all, by either source.
+
 ## [3.2.0] - 2026-10-31
 
 ### Added
