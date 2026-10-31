@@ -3466,7 +3466,7 @@ wheels = [
 
 [[package]]
 name = "trentina"
-version = "4.1.1"
+version = "4.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },

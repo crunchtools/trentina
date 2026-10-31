@@ -52,6 +52,7 @@ from ..errors import EgressRefusedError
 from ..logsafe import exc_kind, redact_source
 from ..outcomes import Outcome
 from ..reach import egress
+from . import page
 from .backend_tokens import (
     AuthMethod,
     BackendClient,
@@ -901,30 +902,15 @@ async def revoke_remote(
 # ------------------------------------------------------------------ routes
 
 _REFUSED = "This sign-in link is invalid or has expired. Start again from your agent."
-_HEADERS = {
-    "Cache-Control": "no-store",
-    "Referrer-Policy": "no-referrer",
-    "X-Content-Type-Options": "nosniff",
-    # Nothing on these pages runs; the one link is followed by a click.
-    "Content-Security-Policy": (
-        "default-src 'none'; style-src 'unsafe-inline'; "
-        "sandbox allow-top-navigation-by-user-activation"
-    ),
-}
+# Nothing on these pages runs; the one link is followed by a click.
+_HEADERS = page.headers("sandbox allow-top-navigation-by-user-activation")
 
 
-def _page(title: str, body: str, status: int = 200) -> Response:
+def _page(request: Request, title: str, body: str, status: int = 200) -> Response:
     """A small fixed page. ``body`` is HTML the caller built from escaped values."""
     from starlette.responses import HTMLResponse
 
-    document = (
-        '<!doctype html><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>{html.escape(title)}</title>"
-        '<body style="font:16px/1.5 system-ui,sans-serif;max-width:36rem;margin:3rem auto;'
-        'padding:0 1rem">'
-        f"{body}</body>"
-    )
+    document = page.render(title, body, host=page.served_as(request))
     return HTMLResponse(document, status_code=status, headers=_HEADERS)
 
 
@@ -946,14 +932,15 @@ async def _start_page(request: Request) -> Response:
     try:
         page = _param(request, "flow")
     except BackendAuthError:
-        return _page("Sign-in link refused", f"<p>{_REFUSED}</p>", 400)
+        return _page(request, "Sign-in link refused", f"<p>{_REFUSED}</p>", 400)
     store = backend_token_store()
     flow = await store.peek_flow(flow_key(page)) if store and page else None
     if flow is None:
-        return _page("Sign-in link refused", f"<p>{_REFUSED}</p>", 400)
+        return _page(request, "Sign-in link refused", f"<p>{_REFUSED}</p>", 400)
     backend, profile = html.escape(flow.backend), html.escape(flow.profile)
     issuer = html.escape(urlsplit(flow.issuer).hostname or flow.issuer)
     return _page(
+        request,
         f"Sign in to {flow.backend}",
         f"<h1>Sign in to <b>{backend}</b></h1>"
         f"<p>This signs in the gateway profile <b>{profile}</b>: whatever account you "
@@ -979,13 +966,13 @@ async def _callback(request: Request) -> Response:
         logger.info("backend-oauth: callback refused (%s)", exc.code)
         state = None
     if not state:
-        return _page("Sign-in failed", f"<p>{_REFUSED}</p>", 400)
+        return _page(request, "Sign-in failed", f"<p>{_REFUSED}</p>", 400)
     # A fresh page, so the code leaves the address bar and the history.
     return RedirectResponse(DONE_PATH, status_code=HTTPStatus.SEE_OTHER, headers=_HEADERS)
 
 
-async def _done_page(_request: Request) -> Response:
-    return _page("Signed in", "<p>Signed in. You can close this tab.</p>")
+async def _done_page(request: Request) -> Response:
+    return _page(request, "Signed in", "<p>Signed in. You can close this tab.</p>")
 
 
 def register_backend_oauth_routes(mcp_server: Any) -> None:

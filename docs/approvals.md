@@ -72,9 +72,37 @@ operator-named upstreams bound at startup. So the code is not the capability to
 approve; it is proof that a person was pointed at the page by this gateway's
 own operator.
 
-The window is opened only on request, it is short, the code changes each time
-it opens, and it closes the moment a password is set. It can never replace a
-working password — changing an existing one takes the current one.
+The window is opened only on request, the code changes each time it opens, and
+it closes the moment a password is set. It can never replace a working
+password — changing an existing one takes the current one.
+
+How long it stands is the deployment's call, not the code's:
+
+```yaml
+gateway:
+  approval_enrol_window_seconds: 300   # the default; 60 to 3600
+```
+
+Five minutes by default, because the window is the one interval in which this
+gateway's approver can be claimed by whoever holds the code, so the default is
+the short one and a deployment that needs longer says so. An operator at the
+same keyboard as the browser needs seconds; an agent relaying the URL into a
+chat somebody reads on a phone needs a round trip. A value outside the bounds
+is clamped rather than refused — both directions are safe, and a reload
+refused over this would strand every other change in the same file.
+
+A window keeps the length it was opened with. Reading the setting at every
+check instead would let a config write stretch a window somebody is already
+inside, and the operator is who writes that file.
+
+**The page takes either the current password or a code, always.** It does not
+hide the code field when no window is open. That looks like the tidier design
+and is a trap: a gateway with no password has no current password to enter, a
+refusal here is deliberately silent, and a person who arrives after the window
+closed is left retyping a field that cannot ever succeed. With both fields
+present the agent can open a fresh window while they sit on the page. It
+discloses nothing — which field was offered, which field was wrong, and
+whether this gateway has a password at all are all answered identically.
 
 **The limit of this, stated plainly.** An operator profile that holds a backend
 able to make arbitrary HTTP requests — anything that runs code, shells out, or
@@ -101,6 +129,71 @@ verifier for that path.
 **With no approver configured, nothing can be approved**, so both changes stay
 refused exactly as they were before any of this existed. The absence of a way
 to approve is never an approval anyone can give.
+
+## What the page looks like, and why that is not decoration
+
+Every page a person meets on a gateway — the approval page, the page where the
+password is set, and the backend sign-in pages — is rendered by
+`gateway/page.py`: one parchment sheet, the Trentina mark, and the hostname
+the browser asked for.
+
+Two of those three ask for a secret, which is what makes the look part of the
+mechanism rather than a coat of paint. A password prompt carrying nothing
+recognisable is indistinguishable from a page phishing for the same password,
+and anyone who runs federation runs two gateways and therefore holds two
+approval passwords with nothing to tell them apart.
+
+The hostname is the only identity the gateway can show without being
+configured with one, and showing it reveals nothing: it is the visitor's own
+address bar read back. It is read from the `Host` header, which a caller
+chooses, so it is matched against a hostname shape and dropped entirely if it
+is anything else — the line is omitted rather than sanitised, so no fragment
+of what a caller wrote reaches the page.
+
+Each page is a single response. The mark is inlined as a data URI, the styles
+are one inline block, and the policy is `default-src 'none'` plus exactly what
+that needs. Nothing runs, nothing is fetched, and an approval page makes no
+second request for anything watching the network to count.
+
+## Keeping the page off the internet when nothing is pending
+
+The approval route is mounted whenever an approver is configured, and it stays
+mounted. That is deliberate: a page that disappeared when nothing was staged
+would turn its own existence into a signal, and probing for a 200 instead of a
+404 would tell an unauthenticated visitor exactly when something is pending and
+therefore when to attack. The page answers identically in every state for the
+same reason.
+
+Reachability is the layer to close instead, and it belongs to the deployment.
+The page is rate limited — a burst of ten and thirty an hour per address, with
+scrypt behind each attempt — so guessing a twelve-character minimum is not a
+threat. Two other things are:
+
+- **Lockout.** Behind a proxy with `TRENTINA_FORWARDED_ALLOW_IPS` unset, every
+  caller shares the proxy's address and therefore one bucket, so anyone who can
+  reach the page can spend the whole allowance and keep the person who needs it
+  out. Set that variable, or do not expose the page.
+- **Whatever is found later** in a form parser, the limiter, or the server in
+  front. A door that is not there has no bugs.
+
+A gateway with no inbound route of its own — a laptop reached over a reverse
+tunnel, which is the ordinary shape for a primary — should not hold a standing
+public door for this. `contrib/tunnel/trentina-tunnel.service` is that tunnel,
+and it is deliberately installed without being enabled. Bring it up when a
+window is open or something is staged, and let it close itself:
+
+```
+systemctl --user start trentina-tunnel
+systemd-run --user --on-active=30min --unit=trentina-tunnel-close \
+    systemctl --user stop trentina-tunnel
+```
+
+The unit's header carries what the far side needs: the restricted account, the
+`sshd_config.d` block that says the same thing a second way, the anchored
+single-path vhost, and the two spellings that silently break it.
+
+A gateway that is already public cannot hide the route that way, and wants a
+sign-in in front of it instead (crunchtools/trentina#639).
 
 ## What the page shows
 

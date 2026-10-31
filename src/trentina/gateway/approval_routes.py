@@ -22,8 +22,10 @@ only thing that may stand between a staged action and its application is
 something the agent cannot read.
 
 Modelled on ``backend_oauth``'s pages, down to the headers and the limiter, so
-a person meets one idiom on this gateway rather than three. No script, no
-external reference, and no form action but its own path.
+a person meets one idiom on this gateway rather than three. ``page`` is that
+idiom: the sheet, the mark, and the host this was reached on, which is what
+tells two gateways' passwords apart. No script, no external reference, and no
+form action but its own path.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ from typing import TYPE_CHECKING, Any
 from starlette.responses import HTMLResponse, Response
 
 from ..logsafe import exc_kind
-from . import approver, pending
+from . import approver, page, pending
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -64,14 +66,9 @@ MAX_BODY_BYTES = 4096
 #: enrolment atomic (see ``_authorised_set``).
 _PASSWORD_WORK = asyncio.Semaphore(1)
 
-_HEADERS = {
-    "Cache-Control": "no-store",
-    "Referrer-Policy": "no-referrer",
-    "X-Content-Type-Options": "nosniff",
-    "X-Frame-Options": "DENY",
-    # Nothing on this page runs, and nothing it shows is fetched.
-    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
-}
+# Nothing on this page runs, nothing it shows is fetched, and the one form on
+# it posts to this gateway or nowhere.
+_HEADERS = {**page.headers("form-action 'self'"), "X-Frame-Options": "DENY"}
 
 #: One wording for a wrong password and for a right one with nothing staged. A
 #: visitor who guesses learns neither whether the password was right nor
@@ -81,34 +78,24 @@ _NOTHING = (
     "that proposed it and try again."
 )
 
-_STYLE = "font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem"
-_BUTTON = "font:inherit;padding:.5rem 1rem"
 
-
-def _page(title: str, body: str, status: int = 200) -> Response:
+def _page(request: Request, title: str, body: str, status: int = 200) -> Response:
     """A small fixed page. ``body`` is HTML built from escaped values."""
-    document = (
-        '<!doctype html><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>{html.escape(title)}</title>"
-        f'<body style="{_STYLE}">{body}</body>'
-    )
+    document = page.render(title, body, host=page.served_as(request))
     return HTMLResponse(document, status_code=status, headers=_HEADERS)
 
 
 def _facts_table(facts: dict[str, str]) -> str:
     rows = "".join(
-        "<tr>"
-        "<th style='text-align:left;padding:.25rem 1rem .25rem 0;vertical-align:top'>"
-        f"{html.escape(label)}</th>"
-        f"<td style='padding:.25rem 0'><code>{html.escape(value)}</code></td>"
-        "</tr>"
+        f"<tr><th>{html.escape(label)}</th><td><code>{html.escape(value)}</code></td></tr>"
         for label, value in facts.items()
     )
-    return f"<table style='border-collapse:collapse;margin:1rem 0'>{rows}</table>"
+    return f"<table>{rows}</table>"
 
 
-def _review(password: str, staged: dict[pending.Kind, dict[str, str]]) -> Response:
+def _review(
+    request: Request, password: str, staged: dict[pending.Kind, dict[str, str]]
+) -> Response:
     """What is staged, with the password carried forward for the decision."""
     sections = "".join(
         f"<h2>{html.escape(kind.value)}</h2>"
@@ -116,20 +103,21 @@ def _review(password: str, staged: dict[pending.Kind, dict[str, str]]) -> Respon
         f'<form method="post" action="{html.escape(PATH)}">'
         f'<input type="hidden" name="password" value="{html.escape(password)}">'
         f'<input type="hidden" name="kind" value="{html.escape(kind.value)}">'
-        f'<button name="decision" value="approve" style="{_BUTTON}">Approve</button> '
-        f'<button name="decision" value="decline" style="{_BUTTON}">Decline</button>'
+        '<button name="decision" value="approve">Approve</button> '
+        '<button name="decision" value="decline">Decline</button>'
         "</form>"
         for kind, facts in staged.items()
     )
     return _page(
+        request,
         "Approve a change",
         f"<h1>Approve this change?</h1><p>Nothing has changed yet.</p>{sections}"
-        "<p style='color:#555'>Each of these expires on its own if you do nothing. "
+        "<p class='note'>Each of these expires on its own if you do nothing. "
         "If you did not expect it, decline it.</p>",
     )
 
 
-async def _show(_request: Request) -> Response:
+async def _show(request: Request) -> Response:
     """The first page: a password field, and no statement about what is staged.
 
     It does not say whether anything is pending, so an unauthenticated visitor
@@ -137,65 +125,67 @@ async def _show(_request: Request) -> Response:
     for something.
     """
     return _page(
+        request,
         "Approve a change",
         "<h1>Approve a change</h1>"
         "<p>An agent on this gateway may be asking to change something only a "
         "person should agree to. Enter the approval password to see it.</p>"
         f'<form method="post" action="{html.escape(PATH)}">'
-        "<p><label>Approval password<br>"
-        '<input type="password" name="password" autocomplete="current-password" '
-        'style="font:inherit;padding:.4rem;width:20rem"></label></p>'
-        f'<button style="{_BUTTON}">Continue</button>'
+        "<label>Approval password"
+        '<input type="password" name="password" autocomplete="current-password"></label>'
+        "<button>Continue</button>"
         "</form>",
     )
 
 
-def _nothing() -> Response:
-    return _page("Nothing to approve", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
+#: Spread into `_page` at every site that refuses, so the five of them are one
+#: answer rather than five that could drift apart. That they are identical is
+#: the property: a wrong password, a guessed kind and an idle gateway must be
+#: indistinguishable.
+_NOTHING_PAGE = ("Nothing to approve", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
+
+#: Someone else's password operation is in flight. Said rather than queued: a
+#: KDF is expensive by design, so a queue of them starves the gateway instead
+#: of being fair to anyone.
+_BUSY_PAGE = (
+    "Busy",
+    "<p>Another password attempt is in flight. Try again in a moment.</p>",
+    HTTPStatus.SERVICE_UNAVAILABLE,
+)
 
 
-def _busy() -> Response:
-    """Someone else's password operation is in flight. Say so rather than
-    queueing: a KDF is expensive by design, and a queue of them is a way to
-    starve the gateway rather than a way to be fair."""
-    return _page(
-        "Busy",
-        "<p>Another password attempt is in flight. Try again in a moment.</p>",
-        HTTPStatus.SERVICE_UNAVAILABLE,
-    )
-
-
-async def _act(kind: pending.Kind, decision: str) -> Response:
+async def _act(request: Request, kind: pending.Kind, decision: str) -> Response:
     """Carry out a decision a verified person made."""
     if decision == "decline":
         return (
-            _page("Declined", "<p>Declined. Nothing was changed.</p>")
+            _page(request, "Declined", "<p>Declined. Nothing was changed.</p>")
             if pending.decline(kind)
-            else _nothing()
+            else _page(request, *_NOTHING_PAGE)
         )
     try:
         await pending.approve(kind)
     except pending.PendingError:
-        return _nothing()
+        return _page(request, *_NOTHING_PAGE)
     except Exception as exc:
         # The action's own failure. It reports the detail to the agent that
         # staged it; a person is told it did not happen, never the exception
         # (#262).
         logger.warning("approval: applying refused err=%s", exc_kind(exc))
         return _page(
+            request,
             "Not applied",
             "<p>Approved, but the change could not be applied, so nothing was "
             "changed. The agent that proposed it has the reason.</p>",
             HTTPStatus.INTERNAL_SERVER_ERROR,
         )
-    return _page("Approved", "<p>Approved and applied. You can close this tab.</p>")
+    return _page(request, "Approved", "<p>Approved and applied. You can close this tab.</p>")
 
 
 async def _decide(request: Request) -> Response:
     form = await request.form()
     password = str(form.get("password") or "")
     if _PASSWORD_WORK.locked():
-        return _busy()
+        return _page(request, *_BUSY_PAGE)
     # scrypt is deliberately expensive — ~16 MiB and tens of milliseconds — so
     # it runs in a worker, bounded. On the loop it would stall every other
     # profile's request for the duration of a stranger's password guess.
@@ -204,14 +194,14 @@ async def _decide(request: Request) -> Response:
     if not verified:
         # A wrong password and a right one with nothing staged answer the same.
         logger.info("approval: a visitor did not present a valid approval password")
-        return _nothing()
+        return _page(request, *_NOTHING_PAGE)
 
     staged = pending.outstanding()
     kind = pending.kind_named(str(form.get("kind") or ""))
     decision = str(form.get("decision") or "")
     if kind is None or decision not in ("approve", "decline"):
-        return _review(password, staged) if staged else _nothing()
-    return await _act(kind, decision)
+        return _review(request, password, staged) if staged else _page(request, *_NOTHING_PAGE)
+    return await _act(request, kind, decision)
 
 
 def register_approval_routes(mcp_server: Any) -> None:
@@ -256,23 +246,21 @@ def register_approval_routes(mcp_server: Any) -> None:
     logger.info("gateway: the approval pages are mounted at %s", PATH)
 
 
-_CODE_FIELD = (
-    "<p><label>Enrolment code<br>"
-    '<input name="code" autocomplete="off" '
-    'style="font:inherit;padding:.4rem;width:20rem"></label></p>'
+_CODE_FIELD = '<label>Enrolment code<input name="code" autocomplete="off"></label>'
+
+_CURRENT_FIELD = (
+    "<label>Current approval password"
+    '<input type="password" name="password" autocomplete="current-password"></label>'
 )
 
 _SET_FORM = (
-    '<p><label>New approval password<br>'
-    '<input type="password" name="new" autocomplete="new-password" '
-    'style="font:inherit;padding:.4rem;width:20rem"></label></p>'
-    '<p><label>Again<br>'
-    '<input type="password" name="again" autocomplete="new-password" '
-    'style="font:inherit;padding:.4rem;width:20rem"></label></p>'
+    "<label>New approval password"
+    '<input type="password" name="new" autocomplete="new-password"></label>'
+    '<label>Again<input type="password" name="again" autocomplete="new-password"></label>'
 )
 
 
-async def _password_page(_request: Request) -> Response:
+async def _password_page(request: Request) -> Response:
     """Where a person sets or changes the approval password.
 
     An operator agent cannot set it — that is the whole point — but it CAN ask
@@ -282,6 +270,7 @@ async def _password_page(_request: Request) -> Response:
     """
     if approver.pinned_by_deployment():
         return _page(
+            request,
             "Approval password",
             "<h1>Approval password</h1><p>This gateway's approval password is pinned "
             "by its deployment, so it cannot be changed from here. Change it where "
@@ -289,32 +278,43 @@ async def _password_page(_request: Request) -> Response:
         )
     if approver.enrolling():
         return _page(
+            request,
             "Set the approval password",
             "<h1>Set the approval password</h1>"
             "<p>This gateway has no approval password yet, and an agent has asked for "
             "one to be set. Choose it here. Afterwards it is what you will be asked "
-            f"for whenever an agent proposes a change only a person should agree to.</p>"
+            "for whenever an agent proposes a change only a person should agree to.</p>"
             f'<form method="post" action="{html.escape(ENROL_PATH)}">'
             f"{_CODE_FIELD}{_SET_FORM}"
-            f'<button style="{_BUTTON}">Set password</button></form>'
-            f"<p style='color:#555'>The code came back to the agent that asked for this "
+            "<button>Set password</button></form>"
+            f"<p class='note'>The code came back to the agent that asked for this "
             f"page. At least {approver.MIN_PASSWORD_CHARS} characters. Nothing else can "
             "be approved on this gateway until it is set.</p>",
         )
+    # Both fields, because this is also what a person meets when the window
+    # has CLOSED behind them. Offering only the current password there is a
+    # trap: a gateway with no password has none to enter, the refusal is
+    # deliberately silent, and they are left retyping a field that cannot
+    # work. With the code field present the agent can open a fresh window
+    # while they sit on the page. It discloses nothing: which field was
+    # accepted, which was wrong, and which state this gateway is in all
+    # answer identically.
     return _page(
-        "Change the approval password",
-        "<h1>Change the approval password</h1>"
-        "<p>Enter the current password to change it.</p>"
+        request,
+        "Set the approval password",
+        "<h1>Set the approval password</h1>"
+        "<p>Enter the current approval password, if this gateway has one. If an "
+        "agent gave you an enrolment code instead, enter that.</p>"
         f'<form method="post" action="{html.escape(ENROL_PATH)}">'
-        "<p><label>Current password<br>"
-        '<input type="password" name="password" autocomplete="current-password" '
-        'style="font:inherit;padding:.4rem;width:20rem"></label></p>'
-        f"{_SET_FORM}"
-        f'<button style="{_BUTTON}">Change password</button></form>',
+        f"{_CURRENT_FIELD}{_CODE_FIELD}{_SET_FORM}"
+        "<button>Set password</button></form>"
+        f"<p class='note'>At least {approver.MIN_PASSWORD_CHARS} characters. An "
+        "enrolment code only works while the window the agent opened is still "
+        "open; ask it to open another if this is refused.</p>",
     )
 
 
-async def _authorised_set(code: str, current: str, new: str) -> Response | None:
+async def _authorised_set(request: Request, code: str, current: str, new: str) -> Response | None:
     """Authorise and perform a password change, or return the refusal.
 
     One critical section, held across the authorisation AND the write, so two
@@ -327,11 +327,9 @@ async def _authorised_set(code: str, current: str, new: str) -> Response | None:
     Returns None when the password was set.
     """
     async with _PASSWORD_WORK:
-        if not approver.enrolling(code) and not await asyncio.to_thread(
-            approver.verify, current
-        ):
+        if not approver.enrolling(code) and not await asyncio.to_thread(approver.verify, current):
             logger.info("approval: a password change was not authorised")
-            return _page("Not set", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
+            return _page(request, "Not set", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
         # Deriving the verifier is the same cost as checking one, plus a write.
         await asyncio.to_thread(approver.set_password, new)
         approver.close_enrolment()
@@ -343,22 +341,23 @@ async def _set_password(request: Request) -> Response:
     form = await request.form()
     new = str(form.get("new") or "")
     if new != str(form.get("again") or ""):
-        return _page("Not set", "<p>Those did not match. Nothing was changed.</p>", 400)
+        return _page(request, "Not set", "<p>Those did not match. Nothing was changed.</p>", 400)
     if approver.pinned_by_deployment():
-        return _page("Not set", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
+        return _page(request, "Not set", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
     if _PASSWORD_WORK.locked():
-        return _busy()
+        return _page(request, *_BUSY_PAGE)
     try:
         refused = await _authorised_set(
-            str(form.get("code") or ""), str(form.get("password") or ""), new
+            request, str(form.get("code") or ""), str(form.get("password") or ""), new
         )
     except ValueError as exc:
         # Its own message names the rule, never the password.
-        return _page("Not set", f"<p>{html.escape(str(exc))}</p>", 400)
+        return _page(request, "Not set", f"<p>{html.escape(str(exc))}</p>", 400)
     except OSError as exc:
         logger.warning("approval: the password could not be stored err=%s", exc_kind(exc))
-        return _page("Not set", "<p>It could not be stored. Nothing was changed.</p>", 500)
+        return _page(request, "Not set", "<p>It could not be stored. Nothing changed.</p>", 500)
     return refused or _page(
+        request,
         "Password set",
         "<p>Set. This is what you will be asked for when an agent proposes a change "
         "only a person should agree to.</p>",

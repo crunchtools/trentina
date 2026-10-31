@@ -1,0 +1,89 @@
+# Reverse tunnel so a public gateway can reach a laptop gateway's approval
+# page (#637).
+#
+# A primary gateway is typically a laptop: it listens on 127.0.0.1 and nothing
+# routes inbound to it, because the federation link runs the other way. That
+# leaves it unable to show anyone the page where its own approval password is
+# set. So the laptop opens the path itself, outbound, and the public gateway's
+# web server proxies ONE path to the far end.
+#
+# DELIBERATELY NOT ENABLED. Say where it connects, install it, leave it
+# stopped:
+#
+#   install -Dm600 /dev/stdin ~/.config/trentina/tunnel.env <<'EOF'
+#   TRENTINA_TUNNEL_TARGET=trentina-tunnel@gateway.your.domain
+#   TRENTINA_TUNNEL_SSH_PORT=22
+#   EOF
+#   systemctl --user daemon-reload          # no `enable`
+#
+# The target is read from that file rather than written here, for two
+# reasons. This repository is public and keeps deployment hostnames out of
+# itself, and `EnvironmentFile=` without a leading `-` makes a missing file
+# FAIL the unit — which is the right direction. A tunnel that starts without
+# knowing where it is going is worse than one that refuses to start.
+#
+# Open the door only while a person has something to approve, and let it shut
+# itself, so an abandoned session is not a standing public door:
+#
+#   systemctl --user start trentina-tunnel
+#   systemd-run --user --on-active=30min --unit=trentina-tunnel-close \
+#       systemctl --user stop trentina-tunnel
+#
+# The reason the gateway does not do this for itself — unmounting /approve
+# when nothing is staged — is in docs/approvals.md: the page answers
+# identically in every state so a visitor learns nothing, and a route that
+# vanished when idle would make its own existence the signal for when to
+# attack. Reachability is the layer to close, and it is the deployment's.
+#
+# Scoped four ways on the far side, because what is behind this is the
+# laptop's own agent seat and every backend it holds:
+#
+#   - GatewayPorts no (the sshd default), so the forwarded port binds the
+#     server's loopback and only its own web server can reach it.
+#   - A dedicated account whose authorized_keys reads
+#       restrict,port-forwarding,permitlisten="127.0.0.1:8119",command="/usr/bin/false"
+#     `restrict` turns forwarding OFF, and `permitlisten` only narrows what is
+#     already permitted, so `port-forwarding` has to be added back or the bind
+#     is refused. And `permitopen="none"` does NOT belong here: "none" is
+#     valid only for sshd_config's PermitOpen, and in authorized_keys it is
+#     parsed as a literal host:port, which invalidates the whole key line and
+#     the key silently stops authenticating.
+#   - A `Match User` block in sshd_config.d saying the same thing a second
+#     way, where an edit to that one key line cannot quietly widen it:
+#     AllowTcpForwarding remote (permits -R, refuses -L), PermitOpen none,
+#     ForceCommand /usr/bin/false.
+#   - A vhost that proxies an ANCHORED ^/approve$ and ^/approve/(.*)$ with a
+#     default-deny <Location />. A prefix ProxyPass would also match
+#     /approveanything, and a bare ProxyPass / would publish the gateway's
+#     whole surface: its MCP route, /health, /authorize, /token, /register.
+#
+# Worth testing rather than assuming, once: a second -R on another port is
+# refused, -L is administratively prohibited, and a shell attempt says the
+# account is unavailable.
+#
+# ExitOnForwardFailure is load-bearing. Without it ssh stays up having
+# silently failed to bind, and the proxy returns 502 with a healthy-looking
+# tunnel beneath it.
+
+[Unit]
+Description=Trentina approval-page reverse tunnel
+Documentation=https://github.com/crunchtools/trentina/blob/main/docs/approvals.md
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/trentina/tunnel.env
+ExecStart=/usr/bin/ssh -NT \
+  -i %h/.ssh/trentina_tunnel \
+  -o IdentitiesOnly=yes \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o StrictHostKeyChecking=accept-new \
+  -o Port=${TRENTINA_TUNNEL_SSH_PORT} \
+  -R 127.0.0.1:8119:127.0.0.1:8019 \
+  ${TRENTINA_TUNNEL_TARGET}
+# While the door is open it should stay open: a dropped link mid-approval is
+# the one failure a person cannot diagnose. What bounds it is the transient
+# stop timer above, not the absence of a restart.
+Restart=always
+RestartSec=10

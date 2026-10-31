@@ -21,6 +21,7 @@ from pydantic import SecretStr, ValidationError
 from .. import logsafe
 from ..channels import Channel
 from . import key_store, token_store
+from .approver import DEFAULT_ENROL_WINDOW_SECONDS, clamped_enrol_window
 from .drivers import build_transforms
 from .errors import ProfileConfigError
 from .filter import filter_tools
@@ -53,6 +54,7 @@ class GatewayConfig:
     egress_upstreams: dict[str, EgressUpstream] = field(default_factory=dict)
     session_ttl_seconds: float = 300.0
     max_sessions_per_profile: int = 10
+    approval_enrol_window_seconds: float = DEFAULT_ENROL_WINDOW_SECONDS
 
 
 logger = logging.getLogger(__name__)
@@ -1088,6 +1090,13 @@ def load_profiles(path: Path | str) -> GatewayConfig:
         egress_upstreams=egress_upstreams,
         session_ttl_seconds=float(gateway_section.get("session_ttl_seconds", 300.0)),
         max_sessions_per_profile=int(gateway_section.get("max_sessions_per_profile", 10)),
+        # Clamped at load rather than at use, so what the file says and what
+        # the gateway will do cannot differ (see approver.clamped_enrol_window).
+        approval_enrol_window_seconds=clamped_enrol_window(
+            float(
+                gateway_section.get("approval_enrol_window_seconds", DEFAULT_ENROL_WINDOW_SECONDS)
+            )
+        ),
     )
 
 
