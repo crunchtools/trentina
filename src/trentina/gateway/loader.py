@@ -20,6 +20,7 @@ from pydantic import SecretStr, ValidationError
 
 from .. import logsafe
 from ..channels import Channel
+from . import key_store
 from .drivers import build_transforms
 from .errors import ProfileConfigError
 from .filter import filter_tools
@@ -378,28 +379,54 @@ def _resolve_grant_tokens(name: str, profile: Profile) -> None:
             egress.token = _require_env(name, egress.token_env, f"egress_http.{upstream} token")
 
 
-def _resolve_federation_edge_keys(name: str, profile: Profile) -> None:
-    """Resolve each federated backend's edge private key from the environment (#592).
+def _require_key(name: str, key_name: str, what: str) -> SecretStr:
+    """Read a private key the gateway minted itself, failing closed if it is gone.
 
-    The key signs the downstream's JWT to the upstream. Fails closed on an unset
-    var, like every other credential: a federated edge that names a key env must
-    have it, or the link is misconfigured.
+    Read here, on every load AND every reload, which is what lets a key minted
+    after startup take effect without one (#633): ``reload_profiles`` re-runs
+    ``load_profiles``, and this runs again with it. The name has already been
+    held to ``KEY_NAME_RE`` by the profile model, so it is a filename.
+    """
+    try:
+        pem = key_store.read_key(key_name)
+    except OSError as exc:
+        raise ProfileConfigError(
+            f"Profile {name!r}: {what} names key {key_name!r}, which the gateway "
+            "has not minted — create it with federation_keygen"
+        ) from exc
+    if not pem.strip():
+        raise ProfileConfigError(f"Profile {name!r}: {what} key {key_name!r} is empty")
+    return SecretStr(pem)
+
+
+def _resolve_federation_edge_keys(name: str, profile: Profile) -> None:
+    """Resolve each federated backend's edge private key (#592, #633).
+
+    The key signs the downstream's JWT to the upstream. Either source fails
+    closed, like every other credential: a federated edge that names a key must
+    have it, or the link is misconfigured. The model has already refused naming
+    both sources for one key.
     """
     for backend_name, backend in profile.backends.items():
         fed = backend.federated
-        if fed is None or fed.edge_key_env is None:
+        if fed is None:
             continue
-        fed.edge_key = _require_env(
-            name, fed.edge_key_env, f"federation edge key for backend {backend_name!r}"
-        )
+        what = f"federation edge key for backend {backend_name!r}"
+        if fed.edge_key_env is not None:
+            fed.edge_key = _require_env(name, fed.edge_key_env, what)
+        elif fed.edge_key_name is not None:
+            fed.edge_key = _require_key(name, fed.edge_key_name, what)
     # The ingress's OWN signing key (#592, D1): the upstream signs a verdict
     # assertion with it. On the profile, not a backend — it vouches for every
     # federated response this ingress serves, whatever backend produced it.
     federation = profile.federation
-    if federation is not None and federation.signing_key_env is not None:
-        federation.signing_key = _require_env(
-            name, federation.signing_key_env, f"federation signing key for profile {name!r}"
-        )
+    if federation is None:
+        return
+    what = f"federation signing key for profile {name!r}"
+    if federation.signing_key_env is not None:
+        federation.signing_key = _require_env(name, federation.signing_key_env, what)
+    elif federation.signing_key_name is not None:
+        federation.signing_key = _require_key(name, federation.signing_key_name, what)
 
 
 def _resolve_bearer_token(name: str, profile: Profile) -> None:
