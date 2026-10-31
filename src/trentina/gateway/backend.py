@@ -629,13 +629,17 @@ async def _credentials(
     reached the backend, and must neither count against the circuit nor
     hold its half-open probe.
     """
-    if (
-        backend.federated is not None
-        and backend.federated.edge_key is not None
-        and profile is not None
-    ):
+    if backend.federated is not None and backend.federated.edge_key is not None:
         # Federated edge (#592): sign a short-lived JWT to the upstream instead
-        # of a static bearer. Takes precedence over any header credential.
+        # of a static bearer. Takes precedence over any header credential. The
+        # JWT's caller is the profile name, so a missing profile is a caller
+        # bug — fail loud here, BEFORE breaker.allow, rather than send an
+        # unauthenticated probe that 401s and opens the URL-keyed breaker for
+        # every profile on it.
+        if profile is None:
+            raise BackendCallError(
+                f"backend {backend_name!r} federated fetch needs a calling profile"
+            )
         jwt = _edge_jwt(backend.url, backend.federated.edge_key.get_secret_value(), profile.name)
         return {**backend.headers, "Authorization": f"Bearer {jwt}"}, None
     if backend.auth is None:

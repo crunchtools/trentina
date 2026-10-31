@@ -10,6 +10,23 @@ under that name.
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-31
+
+### Added
+
+- **Federation 1.1 — operability hardening** (#628): the gateway-to-gateway edge is now diagnosable and self-healing, with no change to the trust model.
+  - **Diagnosable federated errors:** `exc_kind` unwraps the MCP SDK's task-group `ExceptionGroup` to the first real leaf, so a failed federated `tools/list`/`tools/call` names its actual cause (e.g. `ConnectError`) in both the operator-visible error and the log, never the opaque wrapper.
+  - **Background auto-refresh:** new optional `federated.poll_seconds` (default 300, `0` disables, floor 30) re-probes each federated upstream on its cadence and rebuilds the sharing profiles under background L3 priority, so a newly approved or changed upstream tool appears without a manual `reconnect_backend`. A backend with an open circuit is skipped and picked up on recovery.
+
+### Fixed
+
+- **Operator reconnect no longer strands a federated edge** (#628): `reconnect_backend` refreshes in place instead of evicting before the fetch (eviction stays in `cache_flush`; a profile's aggregate is invalidated only after a successful fetch), and it passes the caller profile so a federated backend re-authenticates. Previously an operator reconnect of a federated upstream sent an unauthenticated probe, failed with an opaque `ExceptionGroup`, and dropped the backend's entire tool list.
+- Every federated fetch path — reconnect, the new poll, warm-up revalidation, and pre-compression — now carries a caller profile so the edge JWT mints; `_inflight_key` keys a federated edge-key backend by profile so a no-profile fetch can never be joined by an authenticated build; and `_credentials` fails loud (instead of sending an unauthenticated probe that would open the URL-keyed breaker) when a federated edge key has no caller profile.
+
+### Changed
+
+- The interim static-bearer federation deprecation no longer names a dated removal version; it is superseded by the `federated:` block and will be removed in a future release.
+
 ## [3.1.0] - 2026-10-30
 
 ### Added
@@ -27,7 +44,7 @@ under that name.
 
 ### Deprecated
 
-- The interim static-bearer federation path (one gateway mounting another as a plain MCP backend) is deprecated in favour of a first-class `federated:` block; the gateway warns at startup when it sees the pattern. Removal is planned for 3.2.0.
+- The interim static-bearer federation path (one gateway mounting another as a plain MCP backend) is deprecated in favour of a first-class `federated:` block; the gateway warns at startup when it sees the pattern. It will be removed in a future release.
 
 ### Security
 

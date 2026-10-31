@@ -434,7 +434,8 @@ disclosed to the caller. Work the short checklist on the downstream side:
 
 Before 3.1.0 a downstream mounted an upstream as a plain MCP backend with a
 shared static bearer in an `Authorization` header. That path still works in
-3.1.0 but is **deprecated and removed in 3.2.0**; the loader logs a deprecation
+3.1.0 but is **deprecated** — superseded by the first-class `federated:` block,
+to be removed in a future release; the loader logs a deprecation
 warning pointing here. To migrate a live link with no downtime:
 
 1. Stand up the upstream ingress profile (step 2 above) alongside the existing

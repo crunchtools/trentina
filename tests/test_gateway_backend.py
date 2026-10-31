@@ -569,6 +569,27 @@ def test_inflight_key_separates_a_federated_edge_by_profile() -> None:
 
 
 @pytest.mark.asyncio
+class TestFederatedFetchNeedsProfile:
+    """A federated edge-key fetch with no caller profile fails loud (#592, F6),
+    before the breaker, rather than sending an unauthenticated probe that 401s
+    and opens the URL-keyed circuit for every profile."""
+
+    async def test_no_profile_raises_and_spares_the_breaker(self) -> None:
+        from pydantic import SecretStr
+
+        from trentina.gateway.profile import FederatedConfig
+
+        url = "http://up:8000/gateway/fed-x/mcp"
+        fed = Backend(
+            url=url,
+            federated=FederatedConfig(edge_key_env="X_EDGE_KEY", edge_key=SecretStr("k")),
+        )
+        with pytest.raises(BackendCallError, match="needs a calling profile"):
+            await list_backend_tools("up", fed)  # profile defaults to None
+        assert breaker.get_state(url) is State.CLOSED
+
+
+@pytest.mark.asyncio
 class TestHeaderedBackendHttpTimeouts:
     """A backend with headers must get the SDK's HTTP timeouts, not httpx's 5s.
 
