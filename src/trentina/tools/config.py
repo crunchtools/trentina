@@ -141,6 +141,23 @@ def _prepared(
     is the caller's, because that belongs on the loop.
     """
     current_hash = config_store.config_hash(current)
+    if not config_patch.round_trips(current):
+        # Writing re-emits the whole document, so on a file the editor cannot
+        # reproduce exactly a one-key change also reformats everything else.
+        # Refuse rather than hand back an unreviewable diff.
+        raise ConfigWriteError(
+            {
+                "error": (
+                    "this file cannot be edited through the tool without reformatting "
+                    "the rest of it, so nothing was changed. Something in it is not "
+                    "reproduced exactly on the way out — usually a few lists indented "
+                    "differently from the rest of the file, or anchors and aliases, "
+                    "which are renumbered when rewritten. Normalise it once by hand "
+                    "and every write after that applies cleanly"
+                ),
+                "hash": current_hash,
+            }
+        )
     try:
         candidate_text = (
             config_patch.set_at(current, keys, value)

@@ -42,7 +42,7 @@ class TestRoundTrip:
     @pytest.mark.parametrize("name", REAL_FILES)
     def test_a_real_file_survives_a_no_op_byte_for_byte(self, name: str) -> None:
         text = (REPO / name).read_text(encoding="utf-8")
-        assert cp.dump(cp.load(text)) == text
+        assert cp.round_trips(text)
 
     def test_a_comment_above_an_edited_key_survives(self) -> None:
         out = cp.set_at(COMMENTED, ("profiles", "myagent", "defense", "enforcement"), "redact")
@@ -134,7 +134,7 @@ class TestBadInput:
         assert failed.value.__cause__ is None
 
     def test_an_empty_file_loads_as_an_empty_mapping(self) -> None:
-        assert cp.dump(cp.load("   \n")) in ("{}\n", "")
+        assert cp.dump(cp.load("   \n"), like="   \n") in ("{}\n", "")
 
 
 class TestYamlOneOneStrings:
@@ -180,3 +180,50 @@ class TestYamlOneOneStrings:
 
         out = cp.set_at(COMMENTED, ("profiles", "myagent", "n"), True)
         assert yaml.safe_load(out)["profiles"]["myagent"]["n"] is True
+
+
+OFFSET_ZERO = """\
+# A list style where the dash sits under its key.
+profiles:
+  myagent:
+    backends:
+      web:
+        url: "internal://web"
+        tools_allow:
+        - fetch_tool
+        - read_tool
+"""
+
+MIXED = """\
+profiles:
+  a:
+    one:
+    - x
+  b:
+    two:
+      - y
+"""
+
+
+class TestSequenceStyle:
+    """ruamel emits ONE sequence style per document, and real files differ. The
+    first production config this was pointed at indented 882 of its 885 lists
+    with the dash under its key; the repo's own examples indent it two further.
+    Guessing turns a one-key edit into a diff over the whole file."""
+
+    @pytest.mark.parametrize("text", [COMMENTED, OFFSET_ZERO])
+    def test_both_styles_round_trip(self, text: str) -> None:
+        assert cp.round_trips(text)
+
+    def test_a_write_keeps_the_style_it_found(self) -> None:
+        out = cp.set_at(OFFSET_ZERO, ("profiles", "myagent", "defense", "enforcement"), "block")
+        assert "        - fetch_tool\n        - read_tool\n" in out
+
+    def test_a_file_of_mixed_styles_does_not_round_trip(self) -> None:
+        """No single setting reproduces it, so the write path refuses instead of
+        reformatting the lists it did not touch."""
+        assert not cp.round_trips(MIXED)
+
+    def test_a_real_repo_file_round_trips(self) -> None:
+        text = (REPO / "docs/demo/profiles.yaml").read_text(encoding="utf-8")
+        assert cp.round_trips(text)

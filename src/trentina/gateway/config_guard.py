@@ -190,4 +190,4 @@ def mask_inline_secrets(text: str) -> str:
         if isinstance(node, dict) and isinstance(node.get(MASKED_FIELD), str):
             node[MASKED_FIELD] = REDACTED
             masked = True
-    return config_patch.dump(document) if masked else text
+    return config_patch.dump(document, like=text) if masked else text
