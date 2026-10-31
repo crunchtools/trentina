@@ -10,11 +10,14 @@
   "version": "4.2.0",
   "packages": [
     {
-      "registryType": "pypi",
-      "identifier": "trentina",
+      "registryType": "oci",
+      "registryBaseUrl": "https://quay.io",
+      "identifier": "quay.io/crunchtools/trentina",
       "version": "4.2.0",
+      "runtimeHint": "docker",
       "transport": {
-        "type": "stdio"
+        "type": "streamable-http",
+        "url": "http://127.0.0.1:8019/mcp"
       }
     }
   ]
