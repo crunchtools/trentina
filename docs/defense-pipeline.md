@@ -618,16 +618,16 @@ one does; the rest name the benchmark that measured them.
     `semantic_request_guards.egress_http`). Tested.
 
 33. **A trusted federated verdict does not bind the peer's defense block**
-    (#592, D2a). When a downstream pins a `federated.trust_verdict` (the peer's
+    (#592, D2a). When a primary pins a `federated.trust_verdict` (the peer's
     key, its `perimeter_stamp` and its `judge`), a response carrying a valid
-    signed assertion is delivered without the downstream re-running L1/L2/L3 —
+    signed assertion is delivered without the primary re-running L1/L2/L3 —
     scan-once at the declared trust boundary. The pin binds the peer's L2 model,
     its revision, threshold, polarity and gates (the `perimeter_stamp`) AND its
     L3 judge — the provider, model and prompt pack (`judge`, pinned separately
-    because the stamp does not cover L3) — so a model or judge change upstream
-    stops matching and the downstream re-judges until the operator re-pins. It
-    does NOT bind the peer profile's `defense` block — its threshold overrides,
-    allowlists and which modes it runs — so a downstream trusts that the peer
+    because the stamp does not cover L3) — so a model or judge change on the
+    secondary stops matching and the primary re-judges until the operator
+    re-pins. It does NOT bind the peer profile's `defense` block — its threshold
+    overrides, allowlists and which modes it runs — so a primary trusts that the peer
     scanned under the stamped model and judge, not that the peer's policy around
     them is as strict as its own. Fail-closed: a missing, forged, stale, or
     hash-, stamp-, judge- or mode-mismatched assertion is re-judged locally,
