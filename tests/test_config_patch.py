@@ -10,8 +10,10 @@ equivalent" but "the bytes are the same".
 from __future__ import annotations
 
 import pathlib
+import time
 
 import pytest
+import yaml
 
 from trentina.gateway import config_patch as cp
 
@@ -145,22 +147,16 @@ class TestYamlOneOneStrings:
 
     @pytest.mark.parametrize("value", ["yes", "no", "on", "off", "1:30"])
     def test_a_string_the_reader_would_reinterpret_is_quoted(self, value: str) -> None:
-        import yaml
-
         out = cp.set_at(COMMENTED, ("profiles", "myagent", "token"), value)
         assert yaml.safe_load(out)["profiles"]["myagent"]["token"] == value
 
     @pytest.mark.parametrize("value", ["plain", "null", "~", "True", "2026-10-31", ""])
     def test_a_string_that_round_trips_is_left_bare(self, value: str) -> None:
         """Nothing is noisily quoted: only what would actually change."""
-        import yaml
-
         out = cp.set_at(COMMENTED, ("profiles", "myagent", "token"), value)
         assert yaml.safe_load(out)["profiles"]["myagent"]["token"] == value
 
     def test_it_reaches_strings_nested_in_a_mapping_or_list(self) -> None:
-        import yaml
-
         written = {"tools_allow": ["no", "yes"], "mode": "off"}
         out = cp.set_at(COMMENTED, ("profiles", "myagent", "backends", "b"), written)
         assert yaml.safe_load(out)["profiles"]["myagent"]["backends"]["b"] == written
@@ -170,14 +166,10 @@ class TestYamlOneOneStrings:
         """A backend or peer named `no` is a valid config key, and written bare
         it comes back as the boolean False — a different key than the one
         asked for."""
-        import yaml
-
         out = cp.set_at(COMMENTED, ("profiles", "myagent", "backends"), {key: {"url": "x"}})
         assert list(yaml.safe_load(out)["profiles"]["myagent"]["backends"]) == [key]
 
     def test_non_strings_are_untouched(self) -> None:
-        import yaml
-
         out = cp.set_at(COMMENTED, ("profiles", "myagent", "n"), True)
         assert yaml.safe_load(out)["profiles"]["myagent"]["n"] is True
 
@@ -227,3 +219,13 @@ class TestSequenceStyle:
     def test_a_real_repo_file_round_trips(self) -> None:
         text = (REPO / "docs/demo/profiles.yaml").read_text(encoding="utf-8")
         assert cp.round_trips(text)
+
+
+def test_style_detection_is_linear_in_a_long_list() -> None:
+    """A backward scan per item is quadratic in the list length, and a real
+    config has lists of several hundred tool names."""
+    big = "profiles:\n  a:\n    tools_allow:\n" + "".join(f"    - tool_{i}\n" for i in range(4000))
+
+    started = time.perf_counter()
+    assert cp._sequence_offset(big) == 0
+    assert time.perf_counter() - started < 1.0

@@ -65,20 +65,26 @@ def _sequence_offset(text: str) -> int:
     turns a one-key edit into a diff nobody can review — and that is not a
     theoretical worry: it reindented 858 sequences in the first real config
     this was pointed at. So the style is read off the file rather than assumed.
+
+    One forward pass, carrying the last key seen. A sequence item's parent is
+    always the nearest key above it, so nothing needs re-reading — and a
+    backward scan per item would be quadratic in the length of a list, on a
+    file that has lists of several hundred tool names.
     """
     votes: dict[int, int] = {}
-    lines = text.splitlines()
-    for index, line in enumerate(lines):
-        item = _ITEM_RE.match(line)
-        if item is None:
+    key_indent: int | None = None
+    for line in text.splitlines():
+        # A sequence item starts with a dash, so it never matches the key
+        # pattern, and the two arms cannot both fire on one line.
+        key = _KEY_RE.match(line)
+        if key is not None:
+            key_indent = len(key.group(1))
             continue
-        for above in reversed(lines[:index]):
-            key = _KEY_RE.match(above)
-            if key is not None:
-                offset = len(item.group(1)) - len(key.group(1))
-                if offset in (0, _INDENT):
-                    votes[offset] = votes.get(offset, 0) + 1
-                break
+        item = _ITEM_RE.match(line)
+        if item is not None and key_indent is not None:
+            offset = len(item.group(1)) - key_indent
+            if offset in (0, _INDENT):
+                votes[offset] = votes.get(offset, 0) + 1
     if not votes:
         return _INDENT
     return max(votes, key=lambda offset: votes[offset])
