@@ -1,5 +1,6 @@
-# Copy to /srv/trentina/config/.gitignore when the config directory is bound
-# writable for config_tool (#633).
+# Copy to the .gitignore of the directory holding the live profiles.yaml
+# (/srv/trentina/live in the reference unit), which is the one bound writable
+# for config_tool (#633).
 #
 # The gateway writes two kinds of transient file in this directory: a random
 # candidate it validates a change in, and the staging file an atomic replace

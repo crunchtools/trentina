@@ -32,21 +32,32 @@ file over it, which means the *directory* has to be writable and bound as a
 directory rather than as the single file. That is a real write surface, and it
 is worth being plain about what it is and is not.
 
-It is one directory, holding config the gateway already reads. The rootfs stays
-read-only, the config directory is not on `sys.path`, and nothing there is
-imported, so a write cannot become code execution. `TRENTINA_REQUIRE_HARDENED`
-still passes: `rootfs_writable` tests `statvfs("/")` and `import_path_writable`
-tests `sys.path` entries, and a bind mount at the config path is neither.
+**Give `profiles.yaml` a directory of its own.** This is the part worth getting
+right. A rename needs a writable directory, so the temptation is to drop `:ro`
+from the config mount you already have — and in a real deployment that
+directory also holds the trust allowlist JSON, a federation signing key, and
+whatever else accumulated beside them. The trust allowlist is
+administrator-set by constitutional rule; it must not live somewhere the
+gateway can write. So mount two: the read-only config directory as before, and
+a second directory containing nothing but `profiles.yaml`, with
+`TRENTINA_PROFILES_PATH` pointing into it.
 
-Keep secrets out of that directory. They belong in the read-only secrets mount,
-by their `_FILE` form, exactly as before — the one field in the schema that can
-hold a credential value rather than the name of one is `llm_keys.*.api_key`,
-and `config_tool` masks it on the way out.
+The writable surface is then one directory holding one file. The rootfs stays
+read-only, nothing in it is on `sys.path` and nothing in it is imported, so a
+write cannot become code execution. `TRENTINA_REQUIRE_HARDENED` still passes:
+`rootfs_writable` tests `statvfs("/")` and `import_path_writable` tests
+`sys.path` entries, and a bind mount is neither. The file tools cannot read it
+either: `confine` denies the directory holding the live `profiles.yaml`,
+whichever directory that is.
 
-If you do not want this, bind the single file `:ro` as before. `config_tool`
-reads fine and reports that it cannot write, and `profiles.yaml` stays
-hand-edited-only. Federation keys are unaffected either way: they live in
-`/data`, not in the config directory.
+Keep secrets out of it. They belong in the read-only secrets mount by their
+`_FILE` form, exactly as before — the one field in the schema that can hold a
+credential value rather than the name of one is `llm_keys.*.api_key`, and
+`config_tool` masks it on the way out. Federation keys are unaffected either
+way: they live under `/data`, not with the config.
+
+If you do not want API-driven config at all, mount that directory `:ro` too.
+`config_tool` reads fine and reports that it cannot write.
 
 ## The startup check
 

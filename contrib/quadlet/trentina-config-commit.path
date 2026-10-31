@@ -23,7 +23,7 @@ Description=Commit Trentina config changes to git
 Documentation=https://github.com/crunchtools/trentina/blob/main/docs/operator.md
 
 [Path]
-PathChanged=/srv/trentina/config/profiles.yaml
+PathChanged=/srv/trentina/live/profiles.yaml
 # Settle so a burst of writes becomes one commit rather than one each.
 TriggerLimitIntervalSec=30s
 TriggerLimitBurst=5

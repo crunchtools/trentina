@@ -16,7 +16,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/srv/trentina/config
+WorkingDirectory=/srv/trentina/live
 # A write that changed nothing is not an error, and neither is a trigger that
 # fires twice for one change.
 ExecStart=/usr/bin/git add -- profiles.yaml

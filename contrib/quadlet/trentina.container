@@ -26,18 +26,25 @@ Environment=TRENTINA_REQUIRE_HARDENED=true
 # State: the only writable path besides /tmp.
 Volume=/srv/trentina/data:/data:Z
 
-# Config: the DIRECTORY, writable, so the operator can edit profiles.yaml
-# through config_tool (#633). It is bound as a directory rather than the single
-# file because replacing a file atomically means renaming over it, and a rename
-# needs the directory. The gateway is the only writer, the rootfs stays
-# read-only, and TRENTINA_REQUIRE_HARDENED still passes: its checks are
-# statvfs("/") and the import path, neither of which a bind mount here touches.
+# Config the gateway only READS, still read-only: the trust allowlist, and
+# anything else you mount here. The allowlist in particular is administrator-set
+# by constitutional rule, so it must not sit in a directory the gateway can
+# write.
+Volume=/srv/trentina/config:/etc/trentina:ro,Z
+
+# profiles.yaml, in a directory of its OWN, writable, so config_tool can edit
+# it (#633). A directory rather than the single file because replacing a file
+# atomically means renaming over it, and a rename needs the directory — which
+# is exactly why this is a separate mount: the writable surface then holds one
+# file instead of every secret and policy file beside it.
 #
-# Drop the `:ro` only if you want API-driven config. Leaving the single-file
-# `:ro` bind below instead keeps the file hand-edited-only, and config_tool
-# then reports that it cannot write.
-Volume=/srv/trentina/config:/etc/trentina:Z
-#Volume=/srv/trentina/config/profiles.yaml:/etc/trentina/profiles.yaml:ro,Z
+# The gateway is the only writer, the rootfs stays read-only, nothing here is
+# on sys.path, and TRENTINA_REQUIRE_HARDENED still passes (its checks are
+# statvfs("/") and the import path, neither of which a bind mount touches).
+# For a deployment that wants profiles.yaml hand-edited only, mount this `:ro`
+# as well: config_tool reads fine and reports that it cannot write.
+Volume=/srv/trentina/live:/etc/trentina-live:Z
+Environment=TRENTINA_PROFILES_PATH=/etc/trentina-live/profiles.yaml
 
 # Secrets stay read-only. Every secret by its _FILE form, never inline:
 # an environment value stays readable at /proc/self/environ.
