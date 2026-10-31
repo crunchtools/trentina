@@ -10,6 +10,16 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+
+- `contrib/quadlet/trentina-config-commit.path` allowed five triggers in
+  thirty seconds, which is fewer than two config writes produce: systemd
+  watches the containing directory, and one write touches it three times (the
+  validation candidate, the staging file, the atomic replace). Exceeding a
+  trigger limit *fails* the path unit rather than pacing it, so the
+  auto-commit would have stopped without saying so. Twenty, with the reason
+  written down beside it.
+
 ## [4.1.0] - 2026-10-31
 
 ### Added

@@ -24,9 +24,14 @@ Documentation=https://github.com/crunchtools/trentina/blob/main/docs/operator.md
 
 [Path]
 PathChanged=/srv/trentina/live/profiles.yaml
-# Settle so a burst of writes becomes one commit rather than one each.
+# Settle so a burst of writes becomes one commit rather than one each. The
+# burst is deliberately generous: systemd watches the containing DIRECTORY, and
+# one config_tool write touches it three times (the candidate it validates in,
+# the staging file, and the atomic replace). Exceeding the limit FAILS the path
+# unit rather than pacing it, which would end the auto-commit silently — so the
+# ceiling is here to stop a runaway loop, not to rate-limit ordinary writes.
 TriggerLimitIntervalSec=30s
-TriggerLimitBurst=5
+TriggerLimitBurst=20
 
 [Install]
 WantedBy=multi-user.target
