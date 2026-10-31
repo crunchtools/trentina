@@ -28,6 +28,7 @@ from .tools import (
     list_dir,
     manage_config,
     manage_tool_pins,
+    profile_token,
     read_file,
     reconnect_backend,
     reload_profiles,
@@ -533,6 +534,37 @@ async def backend_auth_tool(
     if action == "start":
         return await backend_auth_start(backend)
     return await backend_auth_revoke(backend)
+
+
+@mcp.tool()
+async def profile_token_tool(name: str) -> dict[str, Any]:
+    """Mint a bearer token for a profile and return it once. Operator only.
+
+    The last step of provisioning an agent that needed a person. A profile's
+    token could only be named as an environment variable, which the container
+    carries, which means a restart — and worse than a restart: a profile naming
+    a variable that is not set fails validation, so `config_tool` refuses the
+    write and restores the file. There was no way to add an agent profile to a
+    running gateway at all.
+
+    Put the NAME this returns in the profile's `auth.bearer_token_name` and
+    give the token itself to the agent that will use it. The gateway re-reads
+    the token on every reload, so a profile added now authenticates without a
+    restart.
+
+    This is the ONLY time the token comes back. Nothing else in Trentina
+    returns a credential — `federation_keygen` hands back only the public half
+    — so treat it accordingly: there is no second read, and a lost token is
+    rotated by minting a new name and pointing the profile at it.
+
+    Args:
+        name: Lower-case letters, digits and hyphens. It becomes a filename in
+            the gateway's own token store.
+
+    Returns:
+        `token_name` and `token`, or `error`.
+    """
+    return await profile_token(name)
 
 
 @mcp.tool()

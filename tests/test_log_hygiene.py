@@ -53,6 +53,7 @@ from trentina.tools import cache as cache_tool
 from trentina.tools import config as config_tool_mod
 from trentina.tools import keygen as keygen_tool
 from trentina.tools import reconnect as reconnect_tool
+from trentina.tools import token as token_tool
 from trentina.transports.mcp import route_jsonrpc
 
 from .mode_harness import MALICIOUS, layers
@@ -216,6 +217,9 @@ class TestInternalTools:
         # A key name becomes a filename, so a rejected one must not be logged
         # either as itself or as part of a path (#633).
         await keygen_tool.federation_keygen(f"{CANARY}/../escape")
+        # A token name becomes a filename too, and this tool hands back a live
+        # credential, so a rejected name must not be logged either (#635).
+        await token_tool.profile_token(f"{CANARY}/../escape")
         # A config path is caller-chosen and becomes keys in a file, so neither
         # the path nor a refusal about it may reach the journal (#633).
         await config_tool_mod.manage_config("get", f"profiles.{CANARY}")

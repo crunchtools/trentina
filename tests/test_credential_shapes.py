@@ -24,6 +24,8 @@ _ATTACKS = [
     ("openai", "key " + "sk" + "-proj-" + _TAIL, K.OPENAI_KEY),
     ("google-api", "key " + "AI" + "za" + _TAIL[:35], K.GOOGLE_API_KEY),
     ("google-oauth", "tok " + "ya" + "29." + _TAIL, K.GOOGLE_OAUTH_TOKEN),
+    # A token this gateway minted for one of its own profiles (#635).
+    ("trentina-profile", "auth " + "tr" + "t_" + _TAIL, K.TRENTINA_PROFILE_TOKEN),
     ("matrix", "tok " + "sy" + "t_" + _TAIL, K.MATRIX_TOKEN),
     ("github-classic", "tok " + "gh" + "p_" + "A" * 36, K.GITHUB_TOKEN),
     ("github-pat", "tok " + "github" + "_pat_" + "A" * 22, K.GITHUB_TOKEN),
@@ -43,6 +45,8 @@ _NEAR_MISSES = [
     "commit 3fa9c1d2aaaabbbbccccddddeeee000011112222 is a sha",
     "GET /search?monkey=banana&turkey=1",  # query, but not a secret param
     "the word secret appears but secret= does not",
+    "trt_short is under twenty",  # the minted-token lead-in, body too short
+    "a trt_ lead-in with nothing after it",
     "Bearer token authentication is a phrase",  # under 20 chars of value
     "eyJ is how a JWT starts but eyJonly is not one",
     "-----BEGIN PUBLIC KEY----- is not private",
@@ -84,6 +88,8 @@ def test_has_credential_agrees_with_find() -> None:
 
 _HOSTILE = [
     "AKIA",
+    "trt_",
+    "trt_" + "a" * 19,  # one short of the body minimum, repeated
     "AKIA" + "B" * 15,  # the fixed {16} + boundary, repeated
     "-----BEGIN ",
     "-----BEGIN A PRIVATE KEY-----",  # the PEM body loop

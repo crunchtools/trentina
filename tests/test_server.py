@@ -30,10 +30,12 @@ class TestServerRegistration:
         ``backend_auth`` (#479) is one tool with an action for the same reason.
         ``federation_keygen`` and ``config_tool`` (#633) made it 16: provisioning a
         gateway needs a keypair and a way to write the config, and both were
-        steps that still needed a shell.
+        steps that still needed a shell. ``profile_token`` (#635) made it 17 for
+        the same reason — a new profile's bearer token was the last step that
+        needed a person and a restart.
         """
         tools = await mcp.list_tools()
-        assert len(tools) == 16, f"Expected 16 tools, got {len(tools)}"
+        assert len(tools) == 17, f"Expected 17 tools, got {len(tools)}"
 
     async def test_every_family_takes_a_mode(self) -> None:
         """The mode is an argument the policy checks, not a name the agent picks."""
@@ -60,6 +62,7 @@ class TestServerRegistration:
             "tool_visibility_tool",
             "audit_verify_tool",
             "federation_keygen_tool",
+            "profile_token_tool",
             "config_tool",
         }
         assert tool_names == families | admin | {"read_part_tool"}

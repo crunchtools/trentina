@@ -16,6 +16,7 @@ from .reconnect import reconnect_backend
 from .reload import reload_profiles
 from .search import block_search, flag_search, redact_search, web_search
 from .stats import get_trentina_stats
+from .token import profile_token
 
 __all__ = [
     "audit_verify",
@@ -40,6 +41,7 @@ __all__ = [
     "list_dir",
     "manage_config",
     "manage_tool_pins",
+    "profile_token",
     "read_file",
     "reconnect_backend",
     "redact_content",

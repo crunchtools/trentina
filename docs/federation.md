@@ -28,11 +28,13 @@ Federation uses two separate private/public keypairs to ensure trust both ways:
 
 ## Setup
 
-Three moves. The first two an operator agent makes itself — no shell, no file editing, no restart. The third is deliberately a person's. The exact field names and formats live in the config schema and the code.
+Three moves, and none of them needs a shell, a file edit or a restart. An operator agent makes the first two itself. The third it proposes and you agree to. The exact field names and formats live in the config schema and the code.
 
 1. **Two keypairs exist** — a primary key for the primary, a secondary key for the secondary. Each gateway mints its own: ask it for a key and it keeps the private half somewhere no tool can read, and hands back the public half. A private key is never in a config file; the config refers to it by name. The public halves cross over and are pinned on the opposite side.
 2. **Declare the link in two profiles** — an *ingress* profile on the secondary that lists the tools it offers and names its peers, and a *federated backend* on the primary pointing at that ingress. At this stage the link is authenticated but still double-scans. Prove it works here first.
-3. **Turn on trust** — on the primary, pin the secondary's key plus a *fingerprint of its scanner*. Now the primary trusts verdicts that match and scans locally anything that doesn't. This one is a person editing the file: it is the only setting that decides whether a layer runs at all, so it is not something an agent can turn on, however convincingly it is asked.
+3. **Turn on trust** — on the primary, pin the secondary's key plus a *fingerprint of its scanner*. Now the primary trusts verdicts that match and scans locally anything that doesn't. The agent proposes this one; it cannot apply it. Nothing moves until a person opens the approval page and agrees, and the page shows the key's fingerprint and both gateways' scanners side by side, so you are comparing them rather than taking a name on trust.
+
+Trust is the only setting that decides whether a layer runs at all, which is why it is the one an agent can ask for and not take. [Approvals](approvals.md) is how that works, and what happens on a gateway where nobody can approve.
 
 Pinning the scanner's fingerprint, not just the key, is what makes trust safe: a response is trusted only if the secondary scanned it with the exact model and settings you vetted. If the secondary quietly swaps in a weaker scanner, the fingerprint stops matching and the primary falls back to scanning for itself.
 

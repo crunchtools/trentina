@@ -265,14 +265,27 @@ MAX_LIST_TIMEOUT_SECONDS = 60.0
 class AuthConfig(BaseModel):
     """Per-profile bearer-token auth config.
 
-    `bearer_token_env` is the env var name holding the actual token value;
-    `bearer_token` is resolved at load time and never serialized.
+    Either source names the token; `bearer_token` is resolved at load time and
+    never serialized. `bearer_token_env` names an environment variable, which
+    needs the container's environment to carry it and so a restart to add one.
+    `bearer_token_name` names a token the gateway minted itself (#635), re-read
+    on every load — which is what lets an operator agent add a whole profile to
+    a running gateway. Exactly one of the two.
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    bearer_token_env: str = Field(
-        ..., description="Env var name whose value is the profile's bearer token"
+    bearer_token_env: str | None = Field(
+        default=None, description="Env var name whose value is the profile's bearer token"
+    )
+    bearer_token_name: str | None = Field(
+        default=None,
+        description=(
+            "A token minted by `profile_token`, by name (#635). The same thing as "
+            "`bearer_token_env` and the preferred form: a token named here is re-read "
+            "on every reload, so a profile added after startup authenticates without "
+            "one. Exactly one of the two."
+        ),
     )
     bearer_token: SecretStr | None = Field(
         default=None, exclude=True, description="Resolved token (load-time only)"
@@ -280,11 +293,29 @@ class AuthConfig(BaseModel):
 
     @field_validator("bearer_token_env")
     @classmethod
-    def env_name_is_uppercase_identifier(cls, v: str) -> str:
+    def env_name_is_uppercase_identifier(cls, v: str | None) -> str | None:
         """Reject lowercase, leading digits, or non-identifier characters."""
-        if not ENV_NAME_RE.match(v):
+        if v is not None and not ENV_NAME_RE.match(v):
             raise ValueError(f"bearer_token_env {v!r} must be an UPPERCASE env-var identifier")
         return v
+
+    @field_validator("bearer_token_name")
+    @classmethod
+    def token_name_is_a_store_name(cls, v: str | None) -> str | None:
+        return _is_key_name(v, "bearer_token_name")
+
+    @model_validator(mode="after")
+    def one_token_source(self) -> AuthConfig:
+        """One source, and at least one.
+
+        ``_one_key_source`` refuses both; an ``auth`` block with neither names
+        no token at all, which would read as a profile that authenticates and
+        then match nothing.
+        """
+        _one_key_source(self.bearer_token_env, self.bearer_token_name, "bearer_token")
+        if self.bearer_token_env is None and self.bearer_token_name is None:
+            raise ValueError("auth needs bearer_token_env or bearer_token_name")
+        return self
 
 
 class LlmKeyOverride(BaseModel):
