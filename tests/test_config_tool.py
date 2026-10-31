@@ -93,6 +93,15 @@ class TestReading:
         read = await _as_operator("get", "profiles.nope")
         assert "not set" in read["error"]
 
+    async def test_a_hand_broken_file_is_reported_not_raised(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """A person can edit the file while the gateway runs, so a read has to
+        say the file is broken rather than raise out of the tool."""
+        gateway.write_text("profiles:\n  a: [unclosed\n", encoding="utf-8")
+        result = await _as_operator("get")
+        assert "not valid YAML" in result["error"]
+
     async def test_an_inline_api_key_is_masked(self, gateway: pathlib.Path) -> None:
         """The only field in the schema that can hold a credential value rather
         than the name of one. An internal tool's result skips the judge and the

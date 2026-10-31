@@ -138,7 +138,10 @@ def _as_written(value: Any) -> Any:
             return DoubleQuotedScalarString(value)
         return value if reread == value else DoubleQuotedScalarString(value)
     if isinstance(value, dict):
-        return {key: _as_written(nested) for key, nested in value.items()}
+        # Keys as well as values: a backend or peer named `no` or `on` is a
+        # valid config key (KEY_RE allows it) and would otherwise be written
+        # bare and read back as a boolean key, which is not the one asked for.
+        return {_as_written(key): _as_written(nested) for key, nested in value.items()}
     if isinstance(value, list):
         return [_as_written(item) for item in value]
     return value

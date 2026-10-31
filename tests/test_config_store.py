@@ -58,10 +58,18 @@ class TestReplace:
 
     def test_it_keeps_the_mode_the_file_already_had(self, live: pathlib.Path) -> None:
         """os.replace swaps the inode, so a mode of our own choosing would
-        silently re-permission a file the operator mounted deliberately."""
-        os.chmod(live, 0o640)
+        silently re-permission a file the operator mounted deliberately.
+
+        The mode compared is whatever the ambient umask gave the file, rather
+        than one this test sets: asserting equality catches the regression
+        wherever that is not already ``BACKUP_FILE_MODE``, and the test never
+        has to create a group-readable file to make its point.
+        """
+        before = os.stat(live).st_mode & 0o777
+
         config_store.replace_config(live, REPLACEMENT)
-        assert os.stat(live).st_mode & 0o777 == 0o640
+
+        assert os.stat(live).st_mode & 0o777 == before
 
     def test_a_failed_write_leaves_the_original_and_no_litter(
         self, live: pathlib.Path, monkeypatch: pytest.MonkeyPatch

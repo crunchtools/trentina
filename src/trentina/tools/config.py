@@ -89,6 +89,15 @@ def _read_at(text: str, keys: tuple[str, ...]) -> Any:
     return node
 
 
+def _read(keys: tuple[str, ...]) -> dict[str, Any]:
+    """A ``get``: the file's hash, and the masked value at ``keys``."""
+    _, _, current = _live_config()
+    return {
+        "hash": config_store.config_hash(current),
+        "value": _read_at(config_guard.mask_inline_secrets(current), keys),
+    }
+
+
 def _candidate_loads(live: Path, text: str, providers: dict[str, Any]) -> dict[str, Profile]:
     """Load ``text`` as a configuration, or refuse. Nothing live is touched.
 
@@ -116,15 +125,21 @@ def _candidate_loads(live: Path, text: str, providers: dict[str, Any]) -> dict[s
         staged.unlink(missing_ok=True)
 
 
-async def _write(
+def _prepared(
     active: ActiveConfig,
     live: Path,
     current: str,
     action: str,
     keys: tuple[str, ...],
     value: Any,
-) -> dict[str, Any]:
-    """Render, validate, keep, replace, reload — in that order and no other."""
+) -> tuple[str, Path]:
+    """Render, validate, guard, keep and replace. Returns (candidate, backup).
+
+    Every step here is blocking — parsing YAML, loading a candidate from disk,
+    fsync, rename — so it runs in a worker rather than on the event loop, the
+    same rule the rest of the gateway follows for L1 and for SQLite. The reload
+    is the caller's, because that belongs on the loop.
+    """
     current_hash = config_store.config_hash(current)
     try:
         candidate_text = (
@@ -178,15 +193,34 @@ async def _write(
             {"error": "the configuration changed while this write was checked; read it again"}
         )
 
-    after_hash = config_store.config_hash(candidate_text)
-    kept = config_store.back_up(current, after_hash=after_hash, now=time.time())
+    kept = config_store.back_up(
+        current, after_hash=config_store.config_hash(candidate_text), now=time.time()
+    )
     config_store.replace_config(live, candidate_text)
+    return candidate_text, kept
+
+
+async def _write(
+    active: ActiveConfig,
+    live: Path,
+    current: str,
+    action: str,
+    keys: tuple[str, ...],
+    value: Any,
+) -> dict[str, Any]:
+    """Apply a change: the blocking part off the loop, the reload on it."""
+    current_hash = config_store.config_hash(current)
+    candidate_text, kept = await asyncio.to_thread(
+        _prepared, active, live, current, action, keys, value
+    )
+    after_hash = config_store.config_hash(candidate_text)
+
     applied = await reload_profiles()
     if applied.get("reloaded") is not True:
         # The file must never be ahead of the running gateway: a later reader —
         # a human, a drift check, the next write's expect_hash — would be told
         # the change is live when it is not. Put back what was there.
-        config_store.replace_config(live, current)
+        await asyncio.to_thread(config_store.replace_config, live, current)
         logger.warning("config: reload refused the validated change; the file was restored")
         raise ConfigWriteError(
             {"error": "the change validated but the reload refused it", "reload": applied}
@@ -223,13 +257,11 @@ async def manage_config(
     try:
         require_operator(require_caller("config"), "config")
         if action == "get":
-            _, _, current = _live_config()
-            return {
-                "hash": config_store.config_hash(current),
-                "value": _read_at(config_guard.mask_inline_secrets(current), keys),
-            }
+            # Reading the file and parsing it twice is blocking too, so it goes
+            # to a worker like the write does.
+            return await asyncio.to_thread(_read, keys)
         async with _WRITE_LOCK:
-            active, live, current = _live_config()
+            active, live, current = await asyncio.to_thread(_live_config)
             config_guard.check_write_request(
                 action, keys, expect_hash, config_store.config_hash(current)
             )
@@ -239,6 +271,10 @@ async def manage_config(
         return {"error": str(exc)}
     except ConfigWriteError as exc:
         return exc.payload
+    except config_patch.ConfigPatchError as exc:
+        # The live file can be invalid YAML: a person edits it by hand while the
+        # gateway runs. A read has to say so rather than raise.
+        return {"error": str(exc)}
     except OSError as exc:
         logger.warning("config failed: %s", exc_kind(exc))
         return {"error": "the configuration could not be written"}

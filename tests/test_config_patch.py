@@ -165,6 +165,16 @@ class TestYamlOneOneStrings:
         out = cp.set_at(COMMENTED, ("profiles", "myagent", "backends", "b"), written)
         assert yaml.safe_load(out)["profiles"]["myagent"]["backends"]["b"] == written
 
+    @pytest.mark.parametrize("key", ["no", "on", "yes", "off"])
+    def test_a_mapping_key_the_reader_would_reinterpret_is_quoted(self, key: str) -> None:
+        """A backend or peer named `no` is a valid config key, and written bare
+        it comes back as the boolean False — a different key than the one
+        asked for."""
+        import yaml
+
+        out = cp.set_at(COMMENTED, ("profiles", "myagent", "backends"), {key: {"url": "x"}})
+        assert list(yaml.safe_load(out)["profiles"]["myagent"]["backends"]) == [key]
+
     def test_non_strings_are_untouched(self) -> None:
         import yaml
 
