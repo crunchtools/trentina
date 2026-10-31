@@ -28,9 +28,11 @@ from ..database import (
 )
 from ..gateway.errors import ScopeError
 from ..gateway.scope import CallerScope, require_caller
+from ..gateway.service import judge_stamp, service_profile
 from ..gateway.surface import TOKEN_NOTE, surface_profiles, surface_report
 from ..logsafe import redact_source
 from ..outcomes import Outcome
+from ..perimeter_db import perimeter_stamp
 from ..quarantine.classifier import is_classifier_available, model_info
 
 GATEWAY_AUDIT_LOOKBACK_DAYS = 30
@@ -155,6 +157,15 @@ def _gateway_stats() -> dict[str, Any]:
     config = get_config()
     return {
         "scope": "gateway",
+        # What this gateway scans UNDER, as a federated peer would pin it
+        # (#637). Nothing exposed these before, so an operator asked to vet
+        # another gateway's scanner had no way to read its own for comparison,
+        # and no way to tell a peer what to pin. Both are identities, not
+        # secrets: they name a model, a revision, a threshold and a judge.
+        "perimeter": {
+            "stamp": perimeter_stamp(),
+            "judge": judge_stamp(service_profile()),
+        },
         "config": {
             "model": config.model,
             "require_l2": config.require_l2,

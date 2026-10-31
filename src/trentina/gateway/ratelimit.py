@@ -213,7 +213,9 @@ class UnauthenticatedWriteGuard:
     """ASGI wrapper: cap the body, then rate-limit, then delegate.
 
     Wraps ONE route's app, so the bucket is per route class by construction
-    rather than by a path comparison made on every request.
+    rather than by a path comparison made on every request. ``limiter=None``
+    caps the body and does not limit, for a route that still needs the cap
+    while ``TRENTINA_RATE_LIMIT`` is off.
 
     Order matters. The body is read and measured first, because the point of
     the cap is to refuse a large registration *before it is parsed*; a limiter
@@ -227,18 +229,26 @@ class UnauthenticatedWriteGuard:
     preflight writes no record and costs nothing to serve.
     """
 
-    __slots__ = ("_inner", "_limiter", "_max_body_bytes")
+    __slots__ = ("_inner", "_limiter", "_max_body_bytes", "_name")
 
     def __init__(
         self,
         inner: Any,
         *,
-        limiter: RateLimiter,
+        limiter: RateLimiter | None,
         max_body_bytes: int | None = None,
+        name: str | None = None,
     ) -> None:
         self._inner = inner
+        # None means "cap the body but do not limit", which is what a route
+        # needs when TRENTINA_RATE_LIMIT is off: the limiter is an incident
+        # escape hatch, and a body cap is not something it should take with it
+        # (#637, found in review on the approval route's POSTs).
         self._limiter = limiter
         self._max_body_bytes = max_body_bytes
+        # What a refusal is logged under. The limiter carries one; without a
+        # limiter the caller names the route itself.
+        self._name = name or (limiter.name if limiter is not None else "route")
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope.get("type") != "http" or scope.get("method") == "OPTIONS":
@@ -251,7 +261,7 @@ class UnauthenticatedWriteGuard:
                 address = client_address(scope)
                 logger.warning(
                     "ratelimit: refused oversized %s body from %s (cap %d bytes)",
-                    self._limiter.name,
+                    self._name,
                     safe_address(address),
                     self._max_body_bytes,
                 )
@@ -269,6 +279,10 @@ class UnauthenticatedWriteGuard:
             if body is None:
                 return  # the client left mid-body; there is no request to serve
             receive = BufferedReceive(body, receive)
+
+        if self._limiter is None:
+            await self._inner(scope, receive, send)
+            return
 
         address = client_address(scope)
         if not self._limiter.allow(address):

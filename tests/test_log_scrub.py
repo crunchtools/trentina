@@ -426,6 +426,7 @@ _ATTACKS = [
     ("query-key", f"POST https://h.example/v1/m:generate?key={_TAIL}", _TAIL),
     ("query-token", f"GET /sync?since=s1&access_token={_TAIL}&x=1", _TAIL),
     ("query-api-key", f"GET /v1?API_KEY={_TAIL}", _TAIL),
+    ("trentina-profile-token", f"gateway: profile authenticated trt_{_TAIL}", f"trt_{_TAIL}"),
     ("bearer", f"headers: Authorization: Bearer {_TAIL}", _TAIL),
     ("basic", f"Authorization: Basic {_TAIL}==", _TAIL),
     ("userinfo", "connecting to https://svc:s3cretpass@db.example:5432/x", "s3cretpass"),
@@ -453,6 +454,7 @@ _BENIGN = [
     "perimeter: judgement failed for key=0a1b2c3d4e5f: TimeoutError at agent.py:10 in f",
     "GET /search?monkey=banana&turkey=1",
     "Bearer token authentication for gateway endpoints",
+    "token_store: minted a token under the name trt-like-but-not-one",
     'WWW-Authenticate: Bearer resource_metadata="https://mcp.example.com/x"',
     "matrix_proxy: registered /matrix/{path} → http://conduit:6167 for 2 profile(s): a, b",
     "bridge[josui]: joined @agent:matrix.example.org at https://matrix.example.org/_matrix",
@@ -487,6 +489,8 @@ def test_a_held_name_survives_the_query_pattern() -> None:
 
 _HOSTILE = [
     "?key=",
+    "trt_",
+    "trt_" + "a" * 19,
     "&token=a",
     "Bearer ",
     "Bearer" + " " * 64,

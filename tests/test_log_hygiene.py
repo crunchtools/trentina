@@ -53,6 +53,7 @@ from trentina.tools import cache as cache_tool
 from trentina.tools import config as config_tool_mod
 from trentina.tools import keygen as keygen_tool
 from trentina.tools import reconnect as reconnect_tool
+from trentina.tools import token as token_tool
 from trentina.transports.mcp import route_jsonrpc
 
 from .mode_harness import MALICIOUS, layers
@@ -216,10 +217,29 @@ class TestInternalTools:
         # A key name becomes a filename, so a rejected one must not be logged
         # either as itself or as part of a path (#633).
         await keygen_tool.federation_keygen(f"{CANARY}/../escape")
+        # A token name becomes a filename too, and this tool hands back a live
+        # credential, so a rejected name must not be logged either (#635).
+        await token_tool.profile_token(f"{CANARY}/../escape")
         # A config path is caller-chosen and becomes keys in a file, so neither
         # the path nor a refusal about it may reach the journal (#633).
         await config_tool_mod.manage_config("get", f"profiles.{CANARY}")
         await config_tool_mod.manage_config("set", f"profiles.{CANARY}", 1, "deadbeef")
+
+    async def test_a_wrong_approval_password_never_reaches_a_record(
+        self, captured: _Capture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The approval password is typed by a person into a public page (#637).
+        A wrong one is someone's guess, a right one is the capability itself,
+        and neither may be written down where journal_query can read it."""
+        from trentina.gateway import approver
+
+        monkeypatch.setenv(
+            "TRENTINA_APPROVAL_PASSWORD_HASH", approver.make_verifier("a-real-password-here")
+        )
+        assert approver.verify(CANARY) is False
+        # And a verifier that cannot be parsed logs the KIND, never the attempt.
+        monkeypatch.setenv("TRENTINA_APPROVAL_PASSWORD_HASH", f"scrypt$bad${CANARY}")
+        assert approver.verify(CANARY) is False
 
 
 # ------------------------------------------------------------ proxied tools

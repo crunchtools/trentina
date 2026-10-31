@@ -25,7 +25,12 @@ from typing import TYPE_CHECKING
 from ..database import record_gateway_call
 from ..logsafe import exc_kind
 from ..outcomes import Outcome
-from .context import current_call, current_caller, current_session
+from .context import (
+    current_call,
+    current_caller,
+    current_federated_verdict,
+    current_session,
+)
 
 if TYPE_CHECKING:
     from .destination import Destination
@@ -61,6 +66,9 @@ def _audit(
     # peer-chosen and is written to the audit and nowhere else — never logged.
     caller = current_caller.get()
     caller_peer, caller_sub = caller if caller is not None else (None, None)
+    # Whether a federated response was served on the secondary's verdict or
+    # re-judged here (#637). A closed value, decided in the response path.
+    federated_verdict = current_federated_verdict.get()
     # The audit must never fail the call it records, and sqlite3.Error is not
     # all a write can raise (a closed connection, a thread-affinity
     # ProgrammingError, a full disk surfacing as OSError). A lost row is
@@ -84,6 +92,7 @@ def _audit(
             content_digest=content_digest,
             caller_peer=caller_peer,
             caller_sub=caller_sub,
+            federated_verdict=federated_verdict,
         )
     except Exception as exc:
         logger.warning("gateway: audit row lost profile=%s err=%s", profile, exc_kind(exc))

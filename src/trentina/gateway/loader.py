@@ -20,7 +20,7 @@ from pydantic import SecretStr, ValidationError
 
 from .. import logsafe
 from ..channels import Channel
-from . import key_store
+from . import key_store, token_store
 from .drivers import build_transforms
 from .errors import ProfileConfigError
 from .filter import filter_tools
@@ -479,9 +479,15 @@ def _resolve_bearer_token(name: str, profile: Profile) -> None:
     """
     if profile.auth is None:
         return
+    if profile.auth.bearer_token_name is not None:
+        profile.auth.bearer_token = _require_token(
+            name, profile.auth.bearer_token_name, "bearer token"
+        )
+        return
     profile.auth.bearer_token = _require_env(
         name,
-        profile.auth.bearer_token_env,
+        # The model guarantees one source and at least one, so this is set.
+        profile.auth.bearer_token_env or "",
         "bearer token",
     )
 
@@ -708,6 +714,27 @@ def _held(value: str, env_var: str) -> str:
             logsafe.MIN_DECLARED_CHARS,
         )
     return value
+
+
+def _require_token(name: str, token_name: str, what: str) -> SecretStr:
+    """Read a bearer token the gateway minted itself, failing closed if it is gone.
+
+    Read on every load AND every reload, which is what lets a profile added
+    after startup authenticate without one (#635) — the same reason
+    ``_require_key`` reads a key here rather than once at startup. The name has
+    already been held to ``KEY_NAME_RE`` by the profile model, so it is a
+    filename.
+    """
+    try:
+        token = token_store.read_token(token_name)
+    except OSError as exc:
+        raise ProfileConfigError(
+            f"Profile {name!r}: {what} names token {token_name!r}, which the gateway "
+            "has not minted — create it with profile_token"
+        ) from exc
+    if not token:
+        raise ProfileConfigError(f"Profile {name!r}: {what} token {token_name!r} is empty")
+    return SecretStr(token)
 
 
 def _require_env(name: str, env_var: str, what: str) -> SecretStr:

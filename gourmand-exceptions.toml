@@ -1042,3 +1042,24 @@ path = "src/trentina/gateway/vsa.py"
 pattern = "verify_assertion"
 justification = "verify_assertion (fail-closed Ed25519 verdict-assertion check) shares only a guard-clauses-then-return control-flow shape with confine.open_confined (path confinement); unrelated domains, no shared logic to collapse."
 classification = "gourmand_bug"
+
+[[exceptions]]
+check = "EV010-single_use_helpers"
+path = "src/trentina/gateway/approval_routes.py"
+symbol = "_review"
+justification = "A renderer, not an extraction. It sits beside _page and _facts_table as the third of three rendering functions in this module, and it is called once because there is one place a review page is shown. Inlining its nineteen lines of markup into _decide would mix HTML construction into the function that decides whether a person is authorised and what they chose, which is the opposite of what this module separates. No complexity lint was being dodged: _decide is eleven lines."
+classification = "by_design"
+
+[[exceptions]]
+check = "EV010-single_use_helpers"
+path = "src/trentina/gateway/approver.py"
+symbol = "_verifier"
+justification = "Not single-use: _verifier is called from configured() at approver.py:116 and from verify() at approver.py:133, and both of those have production callers (approval_routes.register_approval_routes and tools/config._write). The check appears not to count a call whose result is consumed by an `is not None` comparison."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "DC005-dead_variants"
+path = "src/trentina/gateway/pending.py"
+symbol = "Kind"
+justification = "Both members are read in production, through the module rather than a direct import: tools/config._needs_approval returns pending.Kind.OPERATOR_SEAT at config.py:251 and pending.Kind.FEDERATION_TRUST at config.py:261, and approval_routes resolves them by value through pending.kind_named. The check does not appear to resolve a module.Class.MEMBER access."
+classification = "gourmand_bug"

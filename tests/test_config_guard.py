@@ -9,12 +9,14 @@ easy to slip into a plausible-looking request and expensive to discover later.
 from __future__ import annotations
 
 import pytest
+import yaml
 
 from trentina.gateway.config_guard import (
     REDACTED,
     ConfigWriteError,
     check_write_request,
     echoes_redaction,
+    equivalent,
     mask_inline_secrets,
     operator_seat,
     trust_stays_human,
@@ -99,9 +101,12 @@ class TestOperatorSeat:
 
 class TestTrustStaysHuman:
     """`trust_verdict` makes this gateway serve another gateway's response
-    without running its own layers. The constitution keeps trust decisions
-    administrator-set and says trust never changes WHETHER a layer runs, so
-    this one setting is not writable through the API at all."""
+    without running its own layers, so the constitution's Human Approval rule
+    lets an operator PROPOSE it and not apply it.
+
+    This predicate answers "does this write need a person" — it is the caller,
+    `tools/config._needs_approval`, that turns a False into a staged action.
+    Before #637 the same False was a flat refusal."""
 
     @pytest.mark.parametrize(
         ("keys", "value"),
@@ -180,10 +185,10 @@ class TestWriteRequest:
     def test_a_well_formed_write_passes(self) -> None:
         check_write_request("set", ("profiles", "a"), "abc", "abc")
 
-    def test_an_unknown_action_names_the_three(self) -> None:
+    def test_an_unknown_action_names_the_four(self) -> None:
         with pytest.raises(ConfigWriteError) as refused:
             check_write_request("delete", ("profiles", "a"), "abc", "abc")
-        assert "get, set or unset" in refused.value.payload["error"]
+        assert "get, set, unset or normalize" in refused.value.payload["error"]
 
     def test_a_write_needs_a_path(self) -> None:
         with pytest.raises(ConfigWriteError, match="need a path"):
@@ -216,3 +221,48 @@ class TestRedactionEcho:
     def test_an_ordinary_value_passes(self) -> None:
         assert not echoes_redaction({"url": "https://example.com", "tools_allow": ["*"]})
         assert not echoes_redaction("sk-a-real-looking-key")
+
+
+class TestEquivalent:
+    """The gate on the one write whose bytes are meant to change."""
+
+    def test_the_same_text_is_equivalent(self) -> None:
+        text = "a: 1  # note\nb:\n  - x\n"
+        assert equivalent(text, text) is True
+
+    def test_reformatting_without_changing_meaning_passes(self) -> None:
+        before = "a: 1\nb:\n    - x\n    - y\n"
+        after = "a: 1\nb:\n  - x\n  - y\n"
+        assert equivalent(before, after) is True
+
+    def test_a_changed_value_is_refused(self) -> None:
+        assert equivalent("a: 1\n", "a: 2\n") is False
+
+    def test_a_dropped_key_is_refused(self) -> None:
+        assert equivalent("a: 1\nb: 2\n", "a: 1\n") is False
+
+    def test_a_reordered_sequence_is_refused(self) -> None:
+        """Mapping order is presentation; sequence order is meaning."""
+        assert equivalent("a:\n  - x\n  - y\n", "a:\n  - y\n  - x\n") is False
+
+    def test_a_lost_comment_is_refused_even_though_the_meaning_holds(self) -> None:
+        """The check safe_load alone cannot make: it discards every comment, so
+        a dump that threw the documentation away would satisfy it completely."""
+        before = "# why this file exists\na: 1\n"
+        after = "a: 1\n"
+        assert yaml.safe_load(before) == yaml.safe_load(after)
+        assert equivalent(before, after) is False
+
+    def test_a_lost_inline_comment_is_refused(self) -> None:
+        assert equivalent("a: 1  # from the unit file\n", "a: 1\n") is False
+
+    def test_a_comment_that_only_moved_is_allowed(self) -> None:
+        """A comment travels with the line it is attached to, so position is
+        not compared — only that every comment is still there."""
+        before = "a: 1\n# about b\nb: 2\n"
+        after = "# about b\nb: 2\na: 1\n"
+        assert equivalent(before, after) is True
+
+    def test_a_hash_inside_a_quoted_value_does_not_confuse_it(self) -> None:
+        text = 'a: "not # a comment"\n'
+        assert equivalent(text, text) is True

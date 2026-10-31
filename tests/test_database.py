@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -316,3 +317,53 @@ class TestEveryLayersVerdict:
         source = inspect.getsource(database.record_detection)
         names = ", ".join(column for column, _ in database._VERDICT_COLUMNS)
         assert f"{names})" in source
+
+
+class TestSchemaAndMigrationAgree:
+    """A column must reach a FRESH database and an UPGRADED one.
+
+    ``SCHEMA`` builds a new ``gateway_calls``; ``_CALL_COLUMNS`` is what
+    ``_migrate`` adds to one that already exists. A column added to only one of
+    them breaks the other half of the fleet, silently until the first write:
+    added to ``_CALL_COLUMNS`` alone, every fresh database rejects the insert;
+    added to ``SCHEMA`` alone, every existing deployment does. #637 made the
+    first mistake, which is why this test exists.
+    """
+
+    def _fresh_columns(self) -> set[str]:
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.executescript(database.SCHEMA)
+            return {row[1] for row in conn.execute("PRAGMA table_info(gateway_calls)")}
+        finally:
+            conn.close()
+
+    def test_every_migration_column_exists_in_a_fresh_database(self) -> None:
+        missing = {name for name, _ in database._CALL_COLUMNS} - self._fresh_columns()
+        assert not missing, f"in _CALL_COLUMNS but not SCHEMA: {sorted(missing)}"
+
+    def test_the_insert_names_only_columns_that_exist(self) -> None:
+        """The failure mode directly: the insert is written by hand."""
+        bound = set(re.findall(r":([a-z_]+)", database._INSERT_CALL))
+        assert bound <= self._fresh_columns() | {"id"}
+
+    def test_migrating_an_old_table_reaches_the_fresh_column_set(self) -> None:
+        """An upgrade must land on the same shape a fresh install has."""
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        try:
+            # Everything else at its current shape, because _migrate reads the
+            # other tables too; only gateway_calls is rolled back to the shape
+            # it had before any of the additive columns existed.
+            conn.executescript(database.SCHEMA)
+            conn.execute("DROP TABLE gateway_calls")
+            conn.execute(
+                "CREATE TABLE gateway_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "timestamp REAL NOT NULL, profile TEXT, backend TEXT, tool TEXT, "
+                "success INTEGER, duration_ms INTEGER, outcome TEXT, error_message TEXT)"
+            )
+            database._migrate(conn)
+            upgraded = {row["name"] for row in conn.execute("PRAGMA table_info(gateway_calls)")}
+            assert {name for name, _ in database._CALL_COLUMNS} <= upgraded
+        finally:
+            conn.close()

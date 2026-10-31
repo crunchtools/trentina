@@ -21,6 +21,7 @@ from pydantic import SecretStr
 from trentina.core.stages import Arrived, IngressDecision
 from trentina.gateway import vsa
 from trentina.gateway.backend import BackendCall
+from trentina.gateway.context import current_federated_verdict
 from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
@@ -265,3 +266,74 @@ def test_an_incomplete_verdict_re_judges(warning: dict[str, Any]) -> None:
     priv, pub = _keypair()
     verdict = vsa.verdict_summary(warning, "flag")
     assert _decide(_primary(pub), {vsa.VSA_KEY: _envelope(priv, verdict=verdict)}) is None
+
+
+# --- the trust decision reaches the audit (#637) ---
+#
+# docs/federation.md tells an operator the primary's audit shows whether each
+# response was trusted or re-scanned. Until now it did not: the clean trusted
+# path set nothing on the row, and only two of the seven untrusted reasons were
+# even logged. Granting trust through a tool is not reviewable without this.
+
+
+@pytest.fixture(autouse=True)
+def _clear_verdict() -> Any:
+    """Each case decides for itself; nothing may carry in from the last one."""
+    token = current_federated_verdict.set(None)
+    yield
+    current_federated_verdict.reset(token)
+
+
+def test_a_trusted_response_is_recorded_as_trusted() -> None:
+    priv, pub = _keypair()
+    _decide(_primary(pub), {vsa.VSA_KEY: _envelope(priv)})
+    assert current_federated_verdict.get() == vsa.TRUSTED
+
+
+def test_an_absent_assertion_records_why_it_was_re_judged() -> None:
+    _, pub = _keypair()
+    _decide(_primary(pub), None)
+    assert current_federated_verdict.get() == "absent"
+
+
+def test_a_bad_signature_records_why_it_was_re_judged() -> None:
+    priv, _ = _keypair()
+    _, other_pub = _keypair()
+    _decide(_primary(other_pub), {vsa.VSA_KEY: _envelope(priv)})
+    assert current_federated_verdict.get() == "bad_signature"
+
+
+def test_a_stamp_mismatch_records_why_it_was_re_judged() -> None:
+    priv, pub = _keypair()
+    _decide(_primary(pub, stamp="a-different-stamp"), {vsa.VSA_KEY: _envelope(priv)})
+    assert current_federated_verdict.get() == "stamp_mismatch"
+
+
+def test_an_incomplete_verdict_is_recorded_as_incomplete_not_as_a_failure() -> None:
+    """Nothing was wrong with the assertion — the secondary could not fully
+    read the content, so the primary re-judged under its OWN gap policy."""
+    priv, pub = _keypair()
+    envelope = _envelope(priv, verdict={"flagged_by": None, "gaps": ["binary_unread"],
+                                        "oversize": False, "unread_kinds": [], "mode": "flag",
+                                        "risk_level": None})
+    _decide(_primary(pub), {vsa.VSA_KEY: envelope})
+    assert current_federated_verdict.get() == vsa.INCOMPLETE
+
+
+def test_a_backend_with_no_pin_records_nothing() -> None:
+    """An untrusted federated link is not a trust decision to report."""
+    _, pub = _keypair()
+    profile = _primary(pub)
+    fed = profile.backends["fed"].federated
+    assert fed is not None
+    fed.trust_verdict = None
+    _decide(profile, None)
+    assert current_federated_verdict.get() is None
+
+
+def test_every_recorded_value_is_in_the_closed_set() -> None:
+    """The column is read by an operator and must never carry peer text."""
+    assert vsa.TRUSTED in vsa.AUDITED_VERDICTS
+    assert vsa.INCOMPLETE in vsa.AUDITED_VERDICTS
+    for reason in vsa.TRUST_REASONS:
+        assert reason in vsa.AUDITED_VERDICTS

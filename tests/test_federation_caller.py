@@ -20,9 +20,9 @@ from pydantic import SecretStr
 from starlette.requests import Request
 
 from trentina import audit_chain
-from trentina.gateway import audit
+from trentina.gateway import audit, vsa
 from trentina.gateway.app import _authorize
-from trentina.gateway.context import current_caller
+from trentina.gateway.context import current_caller, current_federated_verdict
 from trentina.gateway.federation_keys import sign_primary_jwt
 from trentina.gateway.profile import (
     AuthConfig,
@@ -261,3 +261,56 @@ def test_the_caller_sub_is_never_logged(caplog: pytest.LogCaptureFixture) -> Non
         finally:
             current_caller.reset(token)
     assert "secret-sub-canary" not in caplog.text
+
+
+# --- the trust decision reaches the audit too (#637) ---
+
+
+def _verdict_of(db: Any, call_id: int) -> Any:
+    row = db.get_db().execute(
+        "SELECT federated_verdict FROM gateway_calls WHERE id = ?", (call_id,)
+    ).fetchone()
+    return row["federated_verdict"]
+
+
+def test_a_trusted_response_records_its_verdict(db: Any) -> None:
+    token = current_federated_verdict.set(vsa.TRUSTED)
+    try:
+        audit._audit("down", "fed", "echo", Outcome.OK, 1)
+    finally:
+        current_federated_verdict.reset(token)
+    assert _verdict_of(db, 1) == "trusted"
+
+
+def test_a_non_federated_call_has_a_null_verdict(db: Any) -> None:
+    audit._audit("agent", "web", "echo", Outcome.OK, 1)
+    assert _verdict_of(db, 1) is None
+
+
+def test_the_chain_verifies_with_and_without_a_verdict(db: Any) -> None:
+    audit._audit("agent", "web", "plain", Outcome.OK, 1)
+    token = current_federated_verdict.set("stamp_mismatch")
+    try:
+        audit._audit("down", "fed", "echo", Outcome.OK, 1)
+    finally:
+        current_federated_verdict.reset(token)
+    report = audit_chain.verify(db.get_db(), ttl_seconds=30 * DAY)
+    assert report["ok"], report
+
+
+def test_a_null_verdict_hashes_as_a_pre_637_row_did() -> None:
+    """The whole reason this column is optional in the chain: a row written
+    before it existed must still verify after the upgrade."""
+    base = dict.fromkeys(audit_chain.CHAIN_FIELDS, "x")
+    assert audit_chain.row_hash(base) == audit_chain.row_hash(
+        {**base, "federated_verdict": None}
+    )
+
+
+def test_a_verdict_commits_in_the_hash() -> None:
+    """An operator deciding how much of a link runs on the peer's scan is
+    reading this column, so editing it must break the chain."""
+    base = dict.fromkeys(audit_chain.CHAIN_FIELDS, "x")
+    trusted = audit_chain.row_hash({**base, "federated_verdict": "trusted"})
+    assert trusted != audit_chain.row_hash(base)
+    assert trusted != audit_chain.row_hash({**base, "federated_verdict": "absent"})

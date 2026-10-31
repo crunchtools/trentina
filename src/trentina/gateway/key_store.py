@@ -19,7 +19,6 @@ is the same directory ``backend_tokens`` keeps its grants in and which
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
@@ -27,13 +26,16 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from ..config import get_config
+from . import secret_file
 
 #: A key name, shaped like a backend or profile name. It becomes a filename, so
 #: the shape is what keeps it one: no dot, no slash, no traversal.
 KEY_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 
-KEY_DIR_MODE = 0o700
-KEY_FILE_MODE = 0o600
+#: Re-exported so the tests that check the mode bits, and token_store, have
+#: one spelling of them.
+KEY_DIR_MODE = secret_file.DIR_MODE
+KEY_FILE_MODE = secret_file.FILE_MODE
 
 KEY_SUFFIX = ".pem"
 
@@ -53,26 +55,15 @@ def key_path(name: str) -> Path:
 
 
 def ensure_keys_dir() -> Path:
-    """Create the key directory 0700, and hold it there.
-
-    ``mkdir(mode=)`` is masked by the umask and does nothing at all to a
-    directory that already exists, so the explicit ``chmod`` is the one that
-    decides the mode — the same reason
-    ``backend_tokens.open_backend_token_store`` does both.
-    """
-    directory = keys_dir()
-    directory.mkdir(mode=KEY_DIR_MODE, parents=True, exist_ok=True)
-    os.chmod(directory, KEY_DIR_MODE)
-    return directory
+    """Create the key directory 0700, and hold it there."""
+    return secret_file.private_dir("keys")
 
 
 def mint(name: str) -> str:
     """Write a new Ed25519 private key under ``name``; return its public PEM.
 
-    ``O_EXCL`` refuses an existing file, a planted file and a symlink in one
-    move, so a name is written exactly once and a key in use is never replaced
-    underneath a live link. A write that fails part way leaves nothing behind,
-    so the name stays free rather than becoming permanently unusable.
+    ``secret_file.write_once`` is what refuses an existing name, so a key in
+    use is never replaced underneath a live link; rotation is a new name.
 
     The private PEM is deliberately not passed to ``logsafe.hold``: that would
     keep it in process memory for the gateway's lifetime, where nothing
@@ -87,13 +78,7 @@ def mint(name: str) -> str:
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, KEY_FILE_MODE)
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(private_pem)
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
+    secret_file.write_once(path, private_pem)
     return (
         key.public_key()
         .public_bytes(

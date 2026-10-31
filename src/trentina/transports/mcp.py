@@ -58,7 +58,13 @@ from ..gateway import (
     vsa,
 )
 from ..gateway.backend import call_backend_tool, loggable_tool
-from ..gateway.context import PartsOffer, current_call, current_session, profile_context
+from ..gateway.context import (
+    PartsOffer,
+    current_call,
+    current_federated_verdict,
+    current_session,
+    profile_context,
+)
 from ..gateway.decoy import leaked_tokens
 from ..gateway.destination import Destination, destination_of
 from ..gateway.errors import BackendCallError
@@ -77,7 +83,7 @@ from ..gateway.modes_policy import (
 )
 from ..gateway.names import NAMESPACE_SEP, served_name
 from ..gateway.parts import _part_reader
-from ..gateway.service import judge_of
+from ..gateway.service import judge_stamp
 from ..gateway.sessions import session_registry
 from ..gateway.surface import held_total, wire_bytes, wire_digest
 from ..gateway.transform import transform_response
@@ -86,7 +92,6 @@ from ..modes import refusal_body
 from ..orchestrator import crossing, judge_response
 from ..outcomes import Outcome, classify_exception
 from ..perimeter_db import perimeter_stamp
-from ..quarantine.packs import pack_for
 from ..reserved import PINS_KEY, REFUSAL_KEY, WARNING_KEY, with_stripped
 from ..transforms.policy import PREPROCESS_PARAM
 from .base import Carrier, Early, Face, Transport
@@ -470,6 +475,7 @@ def _federated_trust(
         now=int(time.time()),
     )
     if assertion is None:
+        current_federated_verdict.set(reason)
         _log_untrusted(profile, backend_name, reason, tv.perimeter_stamp)
         return None
     verdict = assertion["verdict"]
@@ -480,22 +486,16 @@ def _federated_trust(
     # path does not consult. Re-judge locally so the primary's own policy
     # decides, instead of delivering clean on the peer's weaker gap handling.
     if verdict.get("gaps") or verdict.get("oversize") or verdict.get("unread_kinds"):
+        current_federated_verdict.set(vsa.INCOMPLETE)
         _log_untrusted(profile, backend_name, "incomplete_verdict", tv.perimeter_stamp)
         return None
+    current_federated_verdict.set(vsa.TRUSTED)
     return _deliver_trusted(
         arrived, call_result, verdict,
         mode=resolved, policy=policy, stripped=stripped, ok=ok,
     )
 
 
-def _judge_stamp(profile: Profile) -> str:
-    """The L3 judge identity this profile scans under (#592, D2a): its
-    ``provider/model`` and L3 prompt-pack stamp — the same (provider, model) and
-    pack the verdict cache keys on. The ``perimeter_stamp`` covers L2 and the
-    version but not L3, so a federated verdict pins this separately."""
-    judge = judge_of(profile)
-    pack = pack_for(judge, profile.defense.l3_prompt_pack)
-    return f"{judge[0]}/{judge[1]}/{pack.stamp}"
 
 
 def _federated_vsa(
@@ -529,7 +529,7 @@ def _federated_vsa(
         content_sha256=vsa.content_digest(blocks, structured, is_error),
         verdict=vsa.verdict_summary(warning, mode.value),
         perimeter_stamp=perimeter_stamp(),
-        judge=_judge_stamp(profile),
+        judge=judge_stamp(profile),
         ts=int(time.time()),
     )
     envelope = vsa.sign_assertion(assertion, federation.secondary_key.get_secret_value())

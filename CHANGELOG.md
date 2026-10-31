@@ -10,6 +10,68 @@ under that name.
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-10-31
+
+### Added
+
+- **Nothing on a Trentina gateway needs a text editor any more.** The two
+  changes an operator agent could not make — who holds the operator seat, and
+  turning on federation trust, which makes this gateway serve another
+  gateway's response without running its own three layers over it — are no
+  longer refused. The agent **proposes**; the gateway stages the change and
+  tells the agent what a person will be shown; a person approves at `/approve`
+  and only then is anything written. See `docs/approvals.md`.
+- **The approval password is set in a browser.** `approval_enrol` is an
+  operator tool that opens a short window and returns a URL; a person opens it
+  and chooses the password. The operator can ask for the prompt and cannot
+  answer it — setting a password is a form submission, and none of Trentina's
+  tools makes one. A deployment that would rather pin the verifier can set
+  `TRENTINA_APPROVAL_PASSWORD_HASH[_FILE]`, which wins. With neither, nothing
+  can be approved and both changes stay refused, exactly as before.
+- **`profile_token`** mints a profile's bearer token and returns it once, the
+  only Trentina tool that returns a credential. `auth.bearer_token_name` names
+  it and is re-read on every load, so a whole new agent profile can be added to
+  a running gateway (#635). Before this a profile naming an unset environment
+  variable did not merely need a restart — it failed validation, so the write
+  was refused and the file restored.
+- **`config_tool(action="normalize")`** rewrites a config file once into a form
+  that reproduces itself, so later writes apply as one-key diffs instead of
+  being refused. Gated on proving the meaning and every comment survive, and on
+  the result round-tripping. Verified against a live 2,209-line config: 34
+  lines in 14 hunks, idempotent, and a following `set` is a 2-line diff.
+- **`gateway_calls.federated_verdict`** records whether a federated response
+  was served on the peer's signed verdict or re-judged here, and why — which
+  `docs/federation.md` had promised and the code did not do. A closed set,
+  never the peer's text; NULL for every non-federated call, and it enters
+  `row_hash` only when non-NULL so older rows still verify.
+- **`quarantine_stats`** gives an operator this gateway's own `perimeter.stamp`
+  and `perimeter.judge` — the values a federated peer pins. Nothing exposed
+  either before, so an operator asked to vet another gateway's scanner could
+  not read its own for comparison.
+
+### Changed
+
+- The project constitution gains a **Human Approval** section (2.11.0). The
+  Trust Allowlist clause is about the allowlist and had been read as governing
+  every trust decision; federation's scan-once trust is a different mechanism
+  and does decide whether a layer runs, so what governs it is now written down
+  rather than inferred from a neighbour. Five places that misattributed the
+  rule are corrected.
+- `tests/test_database.py` holds `SCHEMA` and the migration list to each other.
+  A column has to reach a fresh database and an upgraded one, nothing asserted
+  the two agreed, and this release's first attempt added one to only the
+  migration list — which broke every fresh database at the first insert.
+
+### Note
+
+`federation_trust`, a tool that would fill a trust pin in from the live link,
+is deferred (#640). The only thing a peer signs is a response to a real
+`tools/call`; there is no wire message that returns a standalone signed claim
+of its scanner identity, so "verified at the link" needs a protocol addition
+that both gateways would have to be on. Trust can be set end to end without
+it: `config_tool` stages the pin and the approval page shows the key
+fingerprint with both gateways' scanners side by side.
+
 ## [4.0.0] - 2026-10-31
 
 ### Changed

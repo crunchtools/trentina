@@ -1,8 +1,8 @@
 # trentina Constitution
 
-> **Version:** 2.10.0
+> **Version:** 2.11.0
 > **Ratified:** 2026-09-22
-> **Amended:** 2026-10-30
+> **Amended:** 2026-10-31
 > **Status:** Active
 > **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.27.0
 > **Profile:** Security Gateway
@@ -246,6 +246,41 @@ agent-controlled. An allowlisted source still runs all three layers; the
 allowlist changes what a finding costs, never whether a layer runs. A
 compromised agent cannot override trust levels.
 
+## Human Approval
+
+The clause above is about the allowlist, and was read for a while as though it
+governed every trust decision in the product. It does not. Federation's
+scan-once trust is a different mechanism in a different file, and it *does*
+decide whether a layer runs — so what governs it is written here rather than
+inferred from a neighbour.
+
+Two decisions are not an operator agent's to make alone: **who holds the
+operator seat**, and **turning on a trust that stops a layer running**. Not
+because the operator lacks the authority — it is root on its gateway — but
+because it is a model, so the question is not whether it may but whether it can
+be talked into it.
+
+An operator agent MAY **propose** either. It MUST NOT be able to **apply**
+one. The gateway holds the proposal, a person approves it, and only then does
+it take effect. Agent-controlled trust stays forbidden; agent-proposed trust
+with a human in the loop is what this permits.
+
+Three properties make that real, and each is a requirement:
+
+1. **The approval capability is something the agent cannot read.** Not a token
+   in a tool result, not a file the gateway hands back, not anything returned
+   by the call that staged the proposal. A secret a person holds and the
+   gateway only verifies.
+2. **The approval states what is being changed**, in values a person can
+   check, and nothing a peer chose reaches that page unbounded.
+3. **No approver configured means no approval.** Both decisions stay refused.
+   The absence of a way to approve is never an approval anyone can give.
+
+What does NOT come here is anything high-volume. A gateway holds hundreds of
+tool pins and a restart can re-hold every remote tool at once; routing those
+through a person would push operators toward turning pinning off, which costs
+more than it protects.
+
 ## Python Version Coverage
 
 Two rules, not negotiable independently; the second only works because the
@@ -340,3 +375,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.8.0 | 2026-10-12 | Git transport (#453): a route carries git's smart HTTP to the repositories a profile lists, with the forge token injected by the gateway. The gateway terminates the connection, so it reads and enforces everything that is deterministic text (the path, the service, the protocol, a fetch request, a push's command list, ref listings) and hands none of it to the three layers: a pack is passed on unread and ref names are bounded but not judged, which is known gap 29 and a stated exception to the first rule of the layer contract. The block is perimeter: held on an agent reload, refused on a honeypot. `PERIMETER_VERSION` does not move: the route reaches no verdict a cache holds |
 | 2.9.0 | 2026-10-14 | Guarded execution (#456): a profile names tools whose calls its judge reads against an operator's plain-language policy before they are forwarded. It only subtracts, fails closed, judges the arguments with the three layers before the judge reads them, and returns a closed reason code. The block is perimeter: held on an agent reload, refused on a honeypot. Known gap 30: the gatekeeper is a model and judges one call at a time |
 | 2.10.0 | 2026-10-30 | Gateway-to-gateway federation (#592): a declared trust boundary added to the Layer Contract. Where an operator pins a federated upstream's key, perimeter stamp and judge, a response the upstream already scanned is delivered on its signed verdict instead of being re-judged — bound to the exact bytes, stamp and judge, fail-closed, carved out in the response edge not a layer. The promise reads "at every ingress — or at a trusted boundary you declare". Known gap 33: the stamp binds the upstream's model, gates and judge, not its defense-policy block. `PERIMETER_VERSION` does not move: the local pipeline's conclusions are unchanged |
+| 2.11.0 | 2026-10-31 | Human Approval (#637): the Trust Allowlist clause is about the allowlist, and had been read as governing every trust decision in the product. Federation's scan-once trust is a different mechanism and does decide whether a layer runs, so what governs it is stated rather than inferred. Two decisions — who holds the operator seat, and turning on a trust that stops a layer running — may be PROPOSED by an operator agent and applied only on a person's approval. Three requirements: the approval capability is something the agent cannot read, the approval states what is being changed in values a person can check, and no approver configured means both decisions stay refused. High-volume approvals (tool pins) deliberately stay out. `PERIMETER_VERSION` does not move: no verdict changes |

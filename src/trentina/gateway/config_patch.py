@@ -21,6 +21,7 @@ b]`` is one decision, not two.
 
 from __future__ import annotations
 
+import difflib
 import io
 import re
 from typing import Any
@@ -125,10 +126,36 @@ def round_trips(text: str) -> bool:
     reformats everything else — silently, in a file a person reviews in a diff
     and keeps in git. A file that fails this is refused rather than rewritten,
     which is the same fail-closed choice the rest of the gateway makes: the
-    cost is one hand-normalization, and the alternative is an unreviewable
-    diff and, in the worst case, a setting lost in the noise.
+    alternative is an unreviewable diff and, in the worst case, a setting lost
+    in the noise. ``normalized`` is how a file that fails it is brought in.
     """
     return dump(load(text), like=text) == text
+
+
+def normalized(text: str) -> tuple[str, dict[str, int]]:
+    """``text`` rewritten so that it reproduces itself, and what that changed.
+
+    The one deliberate reformat. Every other write refuses a file that does not
+    round-trip, which left the feature inert on exactly the files that most
+    needed it: a production config carrying anchors ruamel renumbers, or a few
+    sequences indented against the file's own majority. Rewriting once makes
+    every later write a one-key diff.
+
+    It is not a safe operation on its own — it changes bytes the author wrote,
+    which is the thing the round-trip precondition exists to prevent. What
+    makes it safe is the gate the caller puts around it
+    (``config_guard.equivalent``, then ``round_trips`` on the result), so the
+    counts come back with the text: a reviewer reads the file's own git diff,
+    and a number to check it against.
+    """
+    candidate = dump(load(text), like=text)
+    changes = list(
+        difflib.unified_diff(text.splitlines(), candidate.splitlines(), n=0, lineterm="")
+    )
+    return candidate, {
+        "lines": sum(1 for line in changes if line[:1] in "+-" and line[:3] not in ("+++", "---")),
+        "hunks": sum(1 for line in changes if line.startswith("@@")),
+    }
 
 
 def checked_path(path: tuple[str, ...]) -> tuple[str, ...]:

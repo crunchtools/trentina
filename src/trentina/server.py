@@ -16,6 +16,7 @@ from .gateway.diagnose import diagnose_visibility
 from .gateway.results import _refusal_text
 from .modes import current_policy, parse_mode_arg
 from .tools import (
+    approval_enrol,
     audit_verify,
     backend_auth_revoke,
     backend_auth_start,
@@ -28,6 +29,7 @@ from .tools import (
     list_dir,
     manage_config,
     manage_tool_pins,
+    profile_token,
     read_file,
     reconnect_backend,
     reload_profiles,
@@ -381,7 +383,7 @@ async def reconnect_backend_tool(backend: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def config_tool(
-    action: Literal["get", "set", "unset"],
+    action: Literal["get", "set", "unset", "normalize"],
     path: str | None = None,
     value: str | bool | int | float | list[Any] | dict[str, Any] | None = None,
     expect_hash: str | None = None,
@@ -406,23 +408,34 @@ async def config_tool(
     response without scanning it. Everything else about federation is yours,
     including `federation.peers`.
 
+    A write is refused outright if the file cannot be reproduced byte for byte
+    on the way out, because a one-key change would then silently reformat
+    everything else. `normalize` is the way through that: it rewrites the file
+    once into a form that does reproduce itself, having first proved the
+    rewrite keeps every value and every comment. It needs `expect_hash` like
+    any write, takes no `path`, and reports how many lines and hunks it moved
+    so you can check the file's own diff against a number. It refuses a file
+    that already reproduces itself — there is nothing to do.
+
     Args:
-        action: `get` reads, `set` writes a value, `unset` removes a key.
+        action: `get` reads, `set` writes a value, `unset` removes a key,
+            `normalize` rewrites the whole file so later writes apply cleanly.
         path: Dotted config keys, e.g.
             "profiles.myagent.backends.lotor.federated.primary_key_name". Omit on
-            `get` for the whole file.
+            `get` for the whole file, and on `normalize` entirely.
         value: What to set. A scalar, a list or a mapping. It REPLACES whatever
             is at that path: setting a mapping removes any keys already there
             that your mapping does not include, so write the deepest path that
             covers your change rather than a parent.
-        expect_hash: The `hash` from a previous `get` or write. Required to set
-            or unset.
+        expect_hash: The `hash` from a previous `get` or write. Required for
+            every write, `normalize` included.
 
     Returns:
         `get`: `hash` (of the whole file, whatever `path` you asked for) and
         `value`. A successful write: `applied`, `hash_before`, `hash_after`,
         `backup` (where the previous version was kept), and `reload` — read
-        `reload.not_applied` for anything that needs a restart. A refusal:
+        `reload.not_applied` for anything that needs a restart. A `normalize`
+        adds `reshaped` with the `lines` and `hunks` it moved. A refusal:
         `error`, plus `hash` when the file had moved on.
     """
     return await manage_config(action, path, value, expect_hash)
@@ -522,6 +535,62 @@ async def backend_auth_tool(
     if action == "start":
         return await backend_auth_start(backend)
     return await backend_auth_revoke(backend)
+
+
+@mcp.tool()
+async def approval_enrol_tool() -> dict[str, Any]:
+    """Ask a person to set this gateway's approval password. Operator only.
+
+    Two changes on this gateway need a person to agree: who holds the operator
+    seat, and turning on federation trust, which makes this gateway serve
+    another gateway's response without running its own layers over it. Both are
+    staged rather than refused, and a person approves them with a password.
+
+    If no password is set yet, those two changes cannot be approved at all, so
+    they stay refused. Call this and give the URL it returns to a person: they
+    choose the password in a browser, and nothing else is needed. The window is
+    short and closes as soon as the password is set.
+
+    You can ask for this; you cannot answer it. Setting the password is a form
+    submission, which none of your tools makes — that asymmetry is why asking
+    is yours to do.
+
+    Returns:
+        `url` and `open_for_seconds`, or `already_set`, or `error` when the
+        password is pinned by the deployment instead.
+    """
+    return await approval_enrol()
+
+
+@mcp.tool()
+async def profile_token_tool(name: str) -> dict[str, Any]:
+    """Mint a bearer token for a profile and return it once. Operator only.
+
+    The last step of provisioning an agent that needed a person. A profile's
+    token could only be named as an environment variable, which the container
+    carries, which means a restart — and worse than a restart: a profile naming
+    a variable that is not set fails validation, so `config_tool` refuses the
+    write and restores the file. There was no way to add an agent profile to a
+    running gateway at all.
+
+    Put the NAME this returns in the profile's `auth.bearer_token_name` and
+    give the token itself to the agent that will use it. The gateway re-reads
+    the token on every reload, so a profile added now authenticates without a
+    restart.
+
+    This is the ONLY time the token comes back. Nothing else in Trentina
+    returns a credential — `federation_keygen` hands back only the public half
+    — so treat it accordingly: there is no second read, and a lost token is
+    rotated by minting a new name and pointing the profile at it.
+
+    Args:
+        name: Lower-case letters, digits and hyphens. It becomes a filename in
+            the gateway's own token store.
+
+    Returns:
+        `token_name` and `token`, or `error`.
+    """
+    return await profile_token(name)
 
 
 @mcp.tool()

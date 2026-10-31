@@ -406,6 +406,12 @@ it.
 - quarantine_stats — role-scoped like the gateway admin tools below: an agent
   profile gets its own audit rows, its own detections and the defense settings
   it runs under; an operator gets the gateway.
+- quarantine_stats — an operator also gets `perimeter`: this gateway's own
+  `stamp` (`perimeter_db.perimeter_stamp()`) and `judge`
+  (`service.judge_stamp`), which are what a federated peer pins in its
+  `trust_verdict` (#637). Nothing exposed them before, so an operator had no
+  way to read its own for comparison or to tell a peer what to pin. An agent's
+  slice does not carry them: they are the gateway's, not a tenant's.
   `surface` (`gateway/surface.py`) is the tool list offered vs. served;
   `gateway_audit.delivery` is response bytes arrived vs. delivered. Tokens are
   bytes/4 — a comparison, not a bill.
@@ -467,27 +473,41 @@ that moved since that hash refuses the write. `get` returns the hash, and so
 does every successful write.
 
 Order, and it is the point: render the candidate (`gateway/config_patch.py`,
-ruamel round-trip so comments and formatting survive), refuse a trust decision
-riding along inside it, validate by LOADING it from a real temp file through
-`load_profiles` (the one schema authority), compare the operator seat before
-and after, re-read the live file, keep the previous text under
-`<data>/config-backups/`, `os.replace`, then apply through `reload_profiles`.
-Every refusal before the replace has touched nothing; the one after it restores
-the file, because a file ahead of the running gateway lies to the next reader.
-One `asyncio.Lock`: two writes validating against the same text would both
-satisfy their own `expect_hash`.
+ruamel round-trip so comments and formatting survive), validate by LOADING it
+from a real temp file through `load_profiles` (the one schema authority),
+compare the operator seat and the trust pins before and after, then either
+STAGE it for a person (below) or commit it — re-read the live file, keep the
+previous text under `<data>/config-backups/`, `os.replace`, apply through
+`reload_profiles`. `_commit` is the only code that replaces the file and is
+shared by the direct and approved paths, so the backup cannot be the step the
+quieter path skipped. Every refusal before the replace has touched nothing; the
+one after it restores the file, because a file ahead of the running gateway
+lies to the next reader. One `asyncio.Lock`: two writes validating against the
+same text would both satisfy their own `expect_hash`.
+
+A write that does not round-trip is refused rather than reformatted (3.3.1,
+after one of mine reindented hundreds of sequences on lotor and lost a
+setting). `action="normalize"` is the way through: the one write whose bytes are
+MEANT to change, gated on `config_guard.equivalent` — `safe_load` deep equality
+AND every comment still present, because safe_load discards comments entirely
+so a dump that threw the documentation away would satisfy it alone — then on
+the result round-tripping. It refuses a file that already round-trips and
+reports the lines and hunks it moved.
 
 `gateway/config_guard.py` holds the rules, pure: the operator seat (compared
 semantically, since a path check is evaded by writing a parent key — `auth`,
 `oauth`, and the `source_networks` of `matrix_ingress`/`client_egress`, because
 the peer address picks the profile there, #330), `trust_stays_human` (a `set`
-carrying `trust_verdict` at any depth is refused outright — the constitution
-keeps trust administrator-set and says trust never changes WHETHER a layer
-runs, and scan-once does; `unset` is allowed because it only scans more), and
-masking `llm_keys.*.api_key`, the one field in the schema that holds a
+carrying `trust_verdict` at any depth is STAGED for a person rather than
+applied, since #637 — the constitution's Human Approval rule lets an operator
+PROPOSE a trust that stops a layer running and not apply one; `unset` stays
+immediate because it only scans more), `trust_pins` (the pins compared before
+and after, so what a person approves is what LOADING the candidate produced,
+not the mapping the caller sent), and masking `llm_keys.*.api_key`, the one field in the schema that holds a
 credential value rather than the name of one. These are not a privilege
 boundary: the operator is root. They exist because the operator is a model, so
-the question is "can it be talked into it". `federation.peers` is deliberately
+the question is "can it be talked into it" — and since #637 the answer is that
+it may ask and a person decides, rather than being refused. `federation.peers` is deliberately
 NOT in the rule: it is an access grant, and refusing it would make a federation
 ingress impossible to create through the API, since `peers` is what
 authenticates one.
@@ -498,6 +518,50 @@ the public PEM. `primary_key_name`/`secondary_key_name` refer to one by NAME,
 not path, resolved on every load — which is what removes the restart, since a
 reload is a load. Keep `has_primary_key` in mind over testing `primary_key_env`:
 a check naming one source only is how #633 found a gap.
+
+## Human approval (#637)
+
+Two changes an operator may PROPOSE and not apply: the operator seat, and
+`trust_verdict`. `config_tool` stages them instead of refusing them, and a
+person approves at `/approve`. `docs/approvals.md` is the statement; the
+constitution's Human Approval section is the rule.
+
+One mechanism, deliberately. `gateway/pending.py` holds what is staged — in
+memory only, one per `Kind`, expiring, and it RETURNS NOTHING when it stages,
+because a caller holding a handle holds part of the capability it is being held
+away from. `gateway/approver.py` answers "may this request approve" and is the
+seam a passkey or a sign-in joins later (#639). `gateway/approval_routes.py`
+asks for the password first and does not say whether anything is pending, so an
+unauthenticated visitor learns nothing; a wrong password and an idle gateway
+answer identically.
+
+The capability must be something the agent cannot read. The first cut handed
+the staging agent a URL token — an agent reads its own tool result, and an
+operator with a code-execution backend can POST — so it is a password a person
+holds, stored as a scrypt verifier (a config mount is readable in-container; a
+verifier yields nothing submittable). `approval_enrol` (`tools/enrol.py`) opens
+a short window and returns a URL for a person to SET that password: the
+operator can ask for the prompt and cannot answer it, since setting it is a
+form submission and no Trentina tool makes one. No approver configured means
+nothing can be approved and both writes stay refused.
+
+A peer's `perimeter_stamp` and `judge` are PEER-CHOSEN strings shown to the
+person deciding whether to believe that peer, so they pass
+`pending.checked_display` before staging and are escaped again at render.
+`_apply` runs under `service_context()`: an approval has no bound caller, and
+without it the reload would refuse the change and restore the file — approved
+and silently not applied. It also writes the audit row, since an approval is
+not a tools/call and would otherwise have none.
+
+`profile_token` (`tools/token.py`, store in `gateway/token_store.py`) mints a
+profile's bearer token into `<data>/tokens/<name>` (`O_EXCL`, 0600) and returns
+it ONCE — the only Trentina tool that returns a credential, because the agent
+being provisioned has to be told its own token and the alternative is a person
+copying it. `auth.bearer_token_name` names it, re-read on every load, which is
+what lets a whole new profile be added to a running gateway (#635); before it,
+a profile naming an unset env var failed validation and the write was refused
+outright. The token carries a `trt_` lead-in so `credential_shapes` can hold it
+out of a log record, since an opaque string has no shape to recognise.
 
 Federation's two gateway roles are **primary** (uses the tools) and
 **secondary** (offers them), renamed from downstream/upstream in 4.0.0 (#637).

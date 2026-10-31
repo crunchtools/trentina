@@ -9,6 +9,7 @@ equivalent" but "the bytes are the same".
 
 from __future__ import annotations
 
+import difflib
 import pathlib
 import time
 
@@ -229,3 +230,94 @@ def test_style_detection_is_linear_in_a_long_list() -> None:
     started = time.perf_counter()
     assert cp._sequence_offset(big) == 0
     assert time.perf_counter() - started < 1.0
+
+
+#: The shape lotor's live config actually has, and the reason `normalize`
+#: exists: machine-written `&idNNN` anchors that ruamel renumbers, hand-named
+#: anchors beside them, a merge key, an alias carrying a trailing comment, and
+#: one sequence indented against the file's own majority.
+LOTOR_SHAPED = """\
+# The gateway's profiles.
+defaults: &id001
+  enforcement: block  # the default posture
+fences: &repo_fence
+  owner: crunchtools
+profiles:
+  one:
+    auth:
+      bearer_token_env: ONE
+    defense: *id001  # inherited, deliberately
+    backends:
+      web:
+        url: "internal://web"
+        tools_allow:
+        - fetch_tool
+        - read_tool
+  two:
+    <<: *id001
+    auth:
+      bearer_token_env: TWO
+    fences: *repo_fence
+    client_egress:
+      hosts:
+          - example.com
+          - example.org
+"""
+
+
+class TestNormalize:
+    def test_the_lotor_shape_does_not_round_trip_to_begin_with(self) -> None:
+        """Otherwise the rest of this class proves nothing."""
+        assert cp.round_trips(LOTOR_SHAPED) is False
+
+    def test_normalizing_makes_it_round_trip(self) -> None:
+        candidate, _ = cp.normalized(LOTOR_SHAPED)
+        assert cp.round_trips(candidate) is True
+
+    def test_it_is_idempotent(self) -> None:
+        """A second pass must be a no-op, or `normalize` would be a treadmill."""
+        once, _ = cp.normalized(LOTOR_SHAPED)
+        assert cp.dump(cp.load(once), like=once) == once
+
+    def test_the_meaning_is_unchanged(self) -> None:
+        candidate, _ = cp.normalized(LOTOR_SHAPED)
+        assert yaml.safe_load(candidate) == yaml.safe_load(LOTOR_SHAPED)
+
+    def test_the_merge_key_survives(self) -> None:
+        candidate, _ = cp.normalized(LOTOR_SHAPED)
+        assert yaml.safe_load(candidate)["profiles"]["two"]["enforcement"] == "block"
+
+    def test_every_comment_survives(self) -> None:
+        candidate, _ = cp.normalized(LOTOR_SHAPED)
+        for comment in ("# The gateway's profiles.", "# the default posture", "# inherited"):
+            assert comment in candidate
+
+    def test_it_reports_what_it_moved(self) -> None:
+        _, reshaped = cp.normalized(LOTOR_SHAPED)
+        assert reshaped["lines"] > 0
+        assert reshaped["hunks"] > 0
+
+    def test_a_write_after_normalizing_is_a_small_diff(self) -> None:
+        """The whole point: one key changed should read as one key changed."""
+        candidate, _ = cp.normalized(LOTOR_SHAPED)
+        after = cp.set_at(candidate, ("profiles", "one", "auth", "bearer_token_env"), "ONE_V2")
+        changed = [
+            line
+            for line in difflib.unified_diff(
+                candidate.splitlines(), after.splitlines(), n=0, lineterm=""
+            )
+            if line[:1] in "+-" and line[:3] not in ("+++", "---")
+        ]
+        assert len(changed) == 2  # the old line and the new one, nothing else
+
+    def test_a_file_that_already_round_trips_normalizes_to_itself(self) -> None:
+        """The tool refuses this case; the text layer just has nothing to do."""
+        candidate, reshaped = cp.normalized(COMMENTED)
+        assert candidate == COMMENTED
+        assert reshaped == {"lines": 0, "hunks": 0}
+
+    def test_a_duplicate_key_is_refused_by_the_parser(self) -> None:
+        """ruamel raises on a duplicate key, which is the right refusal: the
+        file says two things and nothing here may choose between them."""
+        with pytest.raises(cp.ConfigPatchError):
+            cp.normalized("profiles:\n  one:\n    a: 1\n    a: 2\n")

@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS gateway_calls (
     content_digest TEXT,
     caller_peer TEXT,
     caller_sub TEXT,
+    federated_verdict TEXT,
     detections_digest TEXT,
     prev_hash TEXT,
     row_hash TEXT
@@ -241,6 +242,13 @@ _CALL_COLUMNS = (
     # an old row still verifies (audit_chain.row_hash).
     ("caller_peer", "TEXT"),
     ("caller_sub", "TEXT"),
+    # Whether a federated response was served on the secondary's signed verdict
+    # or re-judged here, and if re-judged, why (#637): one of
+    # ``vsa.AUDITED_VERDICTS``. NULL for older rows and every non-federated
+    # call, and it enters row_hash only when non-NULL, so an old row still
+    # verifies. Without it there is no way to see how much of a federated link
+    # is actually running on the peer's scan.
+    ("federated_verdict", "TEXT"),
     # The hash chain (#472): a digest of the call's detection rows, the
     # previous row's hash, and this row's.
     ("detections_digest", "TEXT"),
@@ -358,10 +366,12 @@ _INSERT_CALL = (
     "INSERT INTO gateway_calls (id, timestamp, profile, backend, tool, success, duration_ms, "
     "error_message, outcome, bytes_arrived, bytes_delivered, normalized, destination, "
     "destination_kind, session, call_ref, content_digest, caller_peer, caller_sub, "
-    "detections_digest, prev_hash, row_hash) VALUES (:id, :timestamp, :profile, :backend, "
+    "federated_verdict, detections_digest, prev_hash, row_hash) VALUES (:id, :timestamp, "
+    ":profile, :backend, "
     ":tool, :success, :duration_ms, :error_message, :outcome, :bytes_arrived, "
     ":bytes_delivered, :normalized, :destination, :destination_kind, :session, :call_ref, "
-    ":content_digest, :caller_peer, :caller_sub, :detections_digest, :prev_hash, :row_hash)"
+    ":content_digest, :caller_peer, :caller_sub, :federated_verdict, :detections_digest, "
+    ":prev_hash, :row_hash)"
 )
 
 
@@ -693,6 +703,7 @@ def record_gateway_call(
     content_digest: str | None = None,
     caller_peer: str | None = None,
     caller_sub: str | None = None,
+    federated_verdict: str | None = None,
 ) -> None:
     """Record a gateway tools/call invocation.
 
@@ -739,6 +750,7 @@ def record_gateway_call(
             "content_digest": content_digest,
             "caller_peer": caller_peer,
             "caller_sub": caller_sub,
+            "federated_verdict": federated_verdict,
             "detections_digest": audit_chain.detections_digest(db, call_ref),
             "prev_hash": audit_chain.tail_hash(db),
         }
