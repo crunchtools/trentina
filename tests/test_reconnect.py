@@ -162,6 +162,30 @@ class TestReconnectBackend:
         load_tool_list_cache()
         assert _tool_list_cache.get(POSTIZ_URL) == good
 
+    async def test_operator_reconnect_of_a_federated_backend_passes_the_profile(self) -> None:
+        """A federated edge mints its JWT from the caller profile (#592 C1/C2);
+        the operator reconnect must pass one, or the probe goes out with no auth
+        and the upstream rejects it (surfacing as an opaque ExceptionGroup)."""
+        from trentina.gateway.profile import FederatedConfig
+
+        fed = Backend(
+            url="https://up.example/gateway/fed-x/mcp",
+            federated=FederatedConfig(edge_key_env="X_EDGE_KEY"),
+        )
+        set_profiles({"josui": _profile("josui", {"up": fed})})
+        captured: dict[str, Any] = {}
+
+        async def spy_refresh(_name: str, _backend: Backend, profile: Any = None) -> Any:
+            captured["profile"] = profile
+            return [{"name": "t"}]
+
+        with patch("trentina.tools.reconnect.refresh_backend_tools", side_effect=spy_refresh):
+            result = await reconnect_backend("up")
+
+        assert result["reconnected"] is True
+        assert captured["profile"] is not None
+        assert captured["profile"].name == "josui"
+
     async def test_internal_backend_is_noop(self) -> None:
         """An internal:// backend needs no transport reconnect."""
         set_profiles({"agent2": _profile("agent2", {"web": Backend(url="internal://web")})})
