@@ -25,6 +25,7 @@ The rules live in ``gateway/config_guard.py``; this module is the sequence.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import tempfile
@@ -34,13 +35,18 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from ..gateway import config_guard, config_patch, config_store
+from ..gateway import approver, config_guard, config_patch, config_store, pending
+from ..gateway.approval_routes import PATH
+from ..gateway.audit import _audit
 from ..gateway.config_guard import ConfigWriteError
 from ..gateway.errors import ProfileConfigError, ScopeError
 from ..gateway.llm_proxy import validate_profile_llm_keys
 from ..gateway.loader import get_active_config, load_profiles
 from ..gateway.scope import require_caller, require_operator
+from ..gateway.service import service_context, service_profile
 from ..logsafe import exc_kind
+from ..outcomes import Outcome
+from ..perimeter_db import perimeter_stamp
 from .reload import reload_profiles
 
 if TYPE_CHECKING:
@@ -177,20 +183,99 @@ def _reshaped(current: str, current_hash: str) -> tuple[str, dict[str, int]]:
     return candidate_text, reshaped
 
 
-def _prepared(
+def _fingerprint(pem: str) -> str:
+    """A short digest of a public key, for a person to compare by eye.
+
+    The whole PEM on an approval page is a wall of base64 nobody checks; a
+    fingerprint is what the other operator can read out loud.
+    """
+    return f"sha256:{hashlib.sha256(pem.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _seat_facts(before: dict[str, Any], after: dict[str, Any]) -> dict[str, str]:
+    """What a person needs to see about a seat change: who holds it now, and
+    who would. The names come from a file the operator can write, so they go
+    through ``checked_display`` like anything else it chose."""
+    return {
+        "Holds the operator seat now": pending.checked_display(
+            ", ".join(sorted(before)) or "nobody", what="the current operator seat"
+        ),
+        "Would hold it after this change": pending.checked_display(
+            ", ".join(sorted(after)) or "nobody", what="the proposed operator seat"
+        ),
+        "What this means": "Whoever holds the seat is root on this gateway.",
+    }
+
+
+def _trust_facts(where: str, pin: dict[str, str]) -> dict[str, str]:
+    """What a person needs to see about a trust pin.
+
+    The stamp and the judge are the PEER's own strings, so they are held to a
+    displayable shape before they reach a page where someone is deciding
+    whether to believe that peer.
+    """
+    return {
+        "Backend to trust": pending.checked_display(where, what="the backend name"),
+        "Its key": _fingerprint(pin["public_key"]),
+        "Its scanner": pending.checked_display(
+            pin["perimeter_stamp"], what="the peer's perimeter stamp"
+        ),
+        "Its judge": pending.checked_display(pin["judge"], what="the peer's judge"),
+        "This gateway scans under": perimeter_stamp(),
+        "What this means": (
+            "Responses from this backend will be served WITHOUT this gateway running "
+            "its own three layers over them. It does not pin the peer's own defense "
+            "settings - only the scanner and judge above."
+        ),
+    }
+
+
+def _needs_approval(
+    active: ActiveConfig,
+    after: dict[str, Profile],
+    action: str,
+    keys: tuple[str, ...],
+    value: Any,
+) -> tuple[pending.Kind, dict[str, str]] | None:
+    """Whether this write is one a person has to agree to, and what to show them.
+
+    Two of them, and they are not a privilege boundary — the operator is root.
+    They exist because the operator is a model, so the question is whether it
+    can be talked into the two changes whose blast radius is out of all
+    proportion to how plausible the request would look: minting a second root,
+    and believing another gateway's scan instead of running our own.
+    """
+    before_seat = config_guard.operator_seat(active.config.profiles)
+    after_seat = config_guard.operator_seat(after)
+    if before_seat != after_seat:
+        return pending.Kind.OPERATOR_SEAT, _seat_facts(before_seat, after_seat)
+    if not config_guard.trust_stays_human(action, keys, value):
+        before_pins = config_guard.trust_pins(active.config.profiles)
+        changed = {
+            where: pin
+            for where, pin in config_guard.trust_pins(after).items()
+            if before_pins.get(where) != pin
+        }
+        if changed:
+            where, pin = next(iter(sorted(changed.items())))
+            return pending.Kind.FEDERATION_TRUST, _trust_facts(where, pin)
+    return None
+
+
+def _rendered(
     active: ActiveConfig,
     live: Path,
     current: str,
     action: str,
     keys: tuple[str, ...],
     value: Any,
-) -> tuple[str, Path, dict[str, int]]:
-    """Render, validate, guard, keep and replace. Returns (candidate, backup).
+) -> tuple[str, dict[str, int], tuple[pending.Kind, dict[str, str]] | None]:
+    """Render and validate a candidate, and say whether it needs a person.
 
-    Every step here is blocking — parsing YAML, loading a candidate from disk,
-    fsync, rename — so it runs in a worker rather than on the event loop, the
-    same rule the rest of the gateway follows for L1 and for SQLite. The reload
-    is the caller's, because that belongs on the loop.
+    Changes nothing: a refusal here, and a staged action, have both touched the
+    file not at all. Every step is blocking — parsing YAML, loading a candidate
+    from disk — so it runs in a worker rather than on the event loop, the same
+    rule the rest of the gateway follows for L1 and for SQLite.
     """
     current_hash = config_store.config_hash(current)
     reshaped: dict[str, int] = {}
@@ -237,40 +322,28 @@ def _prepared(
                 )
             }
         )
-    if not config_guard.trust_stays_human(action, keys, value):
-        raise ConfigWriteError(
-            {
-                "error": (
-                    "trust_verdict makes this gateway serve another gateway's response "
-                    "without scanning it, so it is not writable through this tool; it "
-                    "stays an edit a person makes to the file"
-                )
-            }
-        )
-
     after = _candidate_loads(live, candidate_text, active.llm_providers)
-    if config_guard.operator_seat(after) != config_guard.operator_seat(active.config.profiles):
-        raise ConfigWriteError(
-            {
-                "error": (
-                    "a write may not create, move or remove the operator seat, or change "
-                    "how a caller becomes it; that stays a human edit of the file"
-                )
-            }
-        )
+    return candidate_text, reshaped, _needs_approval(active, after, action, keys, value)
 
+
+def _commit(live: Path, current: str, candidate_text: str) -> Path:
+    """Keep the previous version and put the candidate in its place.
+
+    The only code that replaces the live file, shared by a write that applied
+    straight away and one a person approved — so the two cannot drift, and the
+    backup is never the thing that got skipped on the less-travelled path.
+    """
     # Validating read and wrote a file, so look once more before replacing:
     # nothing else may have moved while this write was being checked.
     if live.read_text(encoding="utf-8") != current:
         raise ConfigWriteError(
             {"error": "the configuration changed while this write was checked; read it again"}
         )
-
     kept = config_store.back_up(
         current, after_hash=config_store.config_hash(candidate_text), now=time.time()
     )
     config_store.replace_config(live, candidate_text)
-    return candidate_text, kept, reshaped
+    return kept
 
 
 async def _write(
@@ -281,14 +354,73 @@ async def _write(
     keys: tuple[str, ...],
     value: Any,
 ) -> dict[str, Any]:
-    """Apply a change: the blocking part off the loop, the reload on it."""
+    """Apply a change, or stage it for a person: blocking parts off the loop."""
     current_hash = config_store.config_hash(current)
-    candidate_text, kept, reshaped = await asyncio.to_thread(
-        _prepared, active, live, current, action, keys, value
+    candidate_text, reshaped, approval = await asyncio.to_thread(
+        _rendered, active, live, current, action, keys, value
     )
+    if approval is not None:
+        kind, facts = approval
+        if not approver.configured():
+            # No person can approve, so nothing may be staged: the two writes
+            # are refused exactly as they were before #637. The absence of an
+            # approval password is the absence of the feature.
+            raise ConfigWriteError(
+                {
+                    "error": (
+                        f"changing the {kind.value} needs a person to approve it, and this "
+                        "gateway has no approval password configured, so nothing can be "
+                        "approved and nothing was changed"
+                    ),
+                    "hash": current_hash,
+                }
+            )
+        pending.stage(
+            kind,
+            facts,
+            lambda: _apply(live, current, candidate_text, current_hash, reshaped, approved=kind),
+        )
+        logger.info("config: %s needs a person; staged", kind.value)
+        return {
+            "staged": True,
+            "awaiting": kind.value,
+            "shown_for_approval": facts,
+            "hash": current_hash,
+            # Deliberately no link and no handle. Anything returned here is
+            # something this caller holds, and the whole point is that it does
+            # not hold the approval.
+            "note": (
+                f"Nothing has changed. Ask a person to open {PATH} on this gateway and "
+                "approve it with the approval password. It expires on its own if nobody "
+                "does."
+            ),
+        }
+    return await _apply(live, current, candidate_text, current_hash, reshaped)
+
+
+async def _apply(
+    live: Path,
+    current: str,
+    candidate_text: str,
+    current_hash: str,
+    reshaped: dict[str, int],
+    *,
+    approved: pending.Kind | None = None,
+) -> dict[str, Any]:
+    """Replace the file and apply it. The one path, approved or not.
+
+    ``reload_profiles`` applies the WHOLE file only for an operator, and an
+    approved action is applied from the approval route, where there is no bound
+    caller at all — a person's browser holds no profile. So the apply runs as
+    the service identity, which is the operator this gateway already runs its
+    own work as. Without it an approval would replace the file and then be
+    refused by the reload, restoring it: approved, and silently not applied.
+    """
+    kept = await asyncio.to_thread(_commit, live, current, candidate_text)
     after_hash = config_store.config_hash(candidate_text)
 
-    applied = await reload_profiles()
+    with service_context():
+        applied = await reload_profiles()
     if applied.get("reloaded") is not True:
         # The file must never be ahead of the running gateway: a later reader —
         # a human, a drift check, the next write's expect_hash — would be told
@@ -300,6 +432,20 @@ async def _write(
         )
 
     logger.info("config: applied a change and reloaded")
+    if approved is not None:
+        # An approved change arrives on the approval route, not as a tools/call,
+        # so the row every tool call gets does not exist for it — and the two
+        # changes that come this way are the highest-blast-radius writes in the
+        # product. Audited here rather than nowhere. The direct path is not
+        # audited twice: its enclosing tools/call row already says what happened.
+        _audit(
+            service_profile().name,
+            "internal://config",
+            "config_tool",
+            Outcome.OK,
+            0,
+            f"approved by a person: {approved.value}",
+        )
     answer: dict[str, Any] = {
         "applied": True,
         "hash_before": current_hash,

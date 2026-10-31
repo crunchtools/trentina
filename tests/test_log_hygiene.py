@@ -221,6 +221,22 @@ class TestInternalTools:
         await config_tool_mod.manage_config("get", f"profiles.{CANARY}")
         await config_tool_mod.manage_config("set", f"profiles.{CANARY}", 1, "deadbeef")
 
+    async def test_a_wrong_approval_password_never_reaches_a_record(
+        self, captured: _Capture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The approval password is typed by a person into a public page (#637).
+        A wrong one is someone's guess, a right one is the capability itself,
+        and neither may be written down where journal_query can read it."""
+        from trentina.gateway import approver
+
+        monkeypatch.setenv(
+            "TRENTINA_APPROVAL_PASSWORD_HASH", approver.make_verifier("a-real-password-here")
+        )
+        assert approver.verify(CANARY) is False
+        # And a verifier that cannot be parsed logs the KIND, never the attempt.
+        monkeypatch.setenv("TRENTINA_APPROVAL_PASSWORD_HASH", f"scrypt$bad${CANARY}")
+        assert approver.verify(CANARY) is False
+
 
 # ------------------------------------------------------------ proxied tools
 

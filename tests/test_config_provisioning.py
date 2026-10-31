@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 from trentina import config as config_mod
+from trentina.gateway import approver, pending
 from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
 from trentina.gateway.federation_keys import (
@@ -74,6 +75,11 @@ def gateway(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
     monkeypatch.setenv("QUARANTINE_DB", str(tmp_path / "state" / "trentina.db"))
     monkeypatch.setenv("OP_TOKEN", "o" * 20)
     monkeypatch.setenv("DOWN_TOKEN", "d" * 20)
+    # A person can approve on this gateway, so trust can be proposed (#637).
+    monkeypatch.setenv(
+        "TRENTINA_APPROVAL_PASSWORD_HASH", approver.make_verifier("correct horse battery staple")
+    )
+    pending.clear()
     config_mod._config = None
     path = tmp_path / "config" / "profiles.yaml"
     path.parent.mkdir(parents=True)
@@ -173,30 +179,52 @@ async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_rest
     assert "fetch_tool" in before and "fetch_tool" in after
 
 
-async def test_turning_on_scan_once_trust_is_the_one_step_left_to_a_person(
+async def test_turning_on_scan_once_trust_waits_for_a_person(
     gateway: pathlib.Path,
 ) -> None:
-    """The edge above is authenticated and double-scanning, which is where #592
-    says to stop and prove it works. Going further — serving an secondary's
-    response WITHOUT scanning it — is the one setting the API will not write."""
-    await _op("keygen", "edge-to-secondary")
+    """The link above is authenticated and double-scanning, which is where #592
+    says to stop and prove it works. Going further — serving a secondary's
+    response WITHOUT scanning it — the operator may now propose, but only a
+    person can agree to (#637). The file does not move until they do."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    public_pem = (
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+    await _op("keygen", "primary-to-secondary")
     await _set(
         "profiles.down.backends.secondary",
         {
             "url": SECONDARY_URL,
             "tools_allow": ["*"],
-            "federated": {"primary_key_name": "edge-to-secondary"},
+            "federated": {"primary_key_name": "primary-to-secondary"},
         },
     )
     before = gateway.read_text(encoding="utf-8")
 
     read = await _op("get")
-    refused = await _op(
+    staged = await _op(
         "set",
         "profiles.down.backends.secondary.federated.trust_verdict",
-        {"public_key": "x", "perimeter_stamp": "y"},
+        {
+            "public_key": public_pem,
+            "perimeter_stamp": "v7:guard-small@abc123:0.7",
+            "judge": "openrouter/google/gemini-3.5-flash-lite/pack-1",
+        },
         read["hash"],
     )
 
-    assert "not writable through this tool" in refused["error"]
+    assert staged["staged"] is True
+    assert staged["awaiting"] == "federation trust"
     assert gateway.read_text(encoding="utf-8") == before
+
+    # And approving it is what applies it — the whole point of the mechanism.
+    from trentina.gateway import pending
+
+    await pending.approve(pending.Kind.FEDERATION_TRUST)
+    assert gateway.read_text(encoding="utf-8") != before
+    assert "trust_verdict" in gateway.read_text(encoding="utf-8")

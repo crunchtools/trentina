@@ -118,8 +118,10 @@ def _register_push_ingresses(
     other_agents: frozenset[str] = frozenset(),
 ) -> None:
     """The paths content is pushed in on rather than fetched: alerts, the
-    Matrix bridge and backend OAuth callbacks. All bind at startup."""
+    Matrix bridge, backend OAuth callbacks and the approval page. All bind at
+    startup."""
     from .gateway.alert_ingress import register_alert_routes
+    from .gateway.approval_routes import register_approval_routes
     from .gateway.backend_oauth import register_backend_oauth_routes
     from .gateway.matrix_bridge import register_bridge_routes
 
@@ -127,6 +129,10 @@ def _register_push_ingresses(
     register_bridge_routes(mcp_server, profiles, data_dir, other_agents=other_agents)
     # The return leg of a backend's OAuth flow (#479); mounted only with a key.
     register_backend_oauth_routes(mcp_server)
+    # Where a person approves what an operator staged (#637). Mounted always:
+    # nothing is staged at startup, and a route that appeared only once
+    # something was pending would be a signal of its own.
+    register_approval_routes(mcp_server)
 
 
 def _register_proxies(mcp_server: FastMCP, gateway_config: GatewayConfig) -> dict[str, Any]:

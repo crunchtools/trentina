@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 from trentina import config as config_mod
-from trentina.gateway import config_patch, config_store
+from trentina.gateway import approver, config_patch, config_store, pending
 from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
 from trentina.gateway.loader import get_active_config, load_profiles, register_active_config
@@ -24,6 +24,23 @@ from trentina.gateway.profile import Profile
 from trentina.tools.config import manage_config
 
 pytestmark = pytest.mark.anyio
+
+
+def _ed25519_public() -> str:
+    """A real public PEM: ``TrustVerdict.public_key`` is validated at load, so a
+    placeholder would be refused for the wrong reason."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    return (
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+
+
+_ED25519_PUBLIC = _ed25519_public()
 
 YAML = """\
 # The gateway's profiles.
@@ -57,6 +74,12 @@ def gateway(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
     monkeypatch.setenv("QUARANTINE_DB", str(tmp_path / "state" / "trentina.db"))
     monkeypatch.setenv("OP_TOKEN", "o" * 20)
     monkeypatch.setenv("AG_TOKEN", "a" * 20)
+    # A person can approve here, so the two guarded writes stage rather than
+    # being refused. Without this they are refused, which is its own test.
+    monkeypatch.setenv(
+        "TRENTINA_APPROVAL_PASSWORD_HASH", approver.make_verifier("correct horse battery staple")
+    )
+    pending.clear()
     config_mod._config = None
     path = tmp_path / "config" / "profiles.yaml"
     path.parent.mkdir(parents=True)
@@ -213,10 +236,15 @@ class TestRefusals:
         assert "error" in result
         assert gateway.read_text(encoding="utf-8") == before
 
-    async def test_moving_the_seat_wholesale_is_refused(self, gateway: pathlib.Path) -> None:
+    async def test_moving_the_seat_wholesale_is_staged_not_applied(
+        self, gateway: pathlib.Path
+    ) -> None:
         """The write the loader cannot catch: one valid operator, a different
         one. Replacing the whole `profiles` mapping keeps the config legal and
-        hands root to someone else, which is what the seat check is for."""
+        hands root to someone else, which is what the seat check is for.
+
+        Since #637 it is not refused — it waits for a person, and the file is
+        untouched until they say yes."""
         before = gateway.read_text(encoding="utf-8")
         moved = {
             "op": {
@@ -233,30 +261,60 @@ class TestRefusals:
 
         result = await _as_operator("set", "profiles", moved, await _hash())
 
-        assert "operator seat" in result["error"]
+        assert result["staged"] is True
+        assert result["awaiting"] == "operator seat"
+        # NOTHING returned here may be enough to approve with. The first cut of
+        # #637 handed back a capability URL, which an agent reads out of its own
+        # tool result and an operator with code execution can POST.
+        assert "approve_url" not in result
+        assert "token" not in repr(result)
+        # The facts a person is shown name who holds root now and who would.
+        shown = " ".join(result["shown_for_approval"].values())
+        assert "op" in shown and "ag" in shown
         assert gateway.read_text(encoding="utf-8") == before
 
-    async def test_changing_the_operators_own_auth_is_refused(self, gateway: pathlib.Path) -> None:
+    async def test_changing_the_operators_own_auth_is_staged(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """How a caller BECOMES the operator is the seat too, not just who holds it."""
+        before = gateway.read_text(encoding="utf-8")
         result = await _as_operator(
             "set", "profiles.op.auth.bearer_token_env", "AG_TOKEN", await _hash()
         )
-        assert "operator seat" in result["error"]
+        assert result["awaiting"] == "operator seat"
+        assert gateway.read_text(encoding="utf-8") == before
 
-    async def test_turning_on_scan_once_trust_is_refused(self, gateway: pathlib.Path) -> None:
+    async def test_turning_on_scan_once_trust_is_staged_not_applied(
+        self, gateway: pathlib.Path
+    ) -> None:
         """`trust_verdict` makes this gateway serve another gateway's response
-        without scanning it. The constitution keeps trust decisions
-        administrator-set and says trust never changes WHETHER a layer runs, so
-        this one setting is not writable through the API."""
+        without running its own layers over it. Since #637 the operator may
+        PROPOSE it; a person decides, and the file does not move until they
+        do."""
+        before = gateway.read_text(encoding="utf-8")
         result = await _as_operator(
             "set",
             "profiles.ag.backends.lotor",
             {
                 "url": "https://lotor.example/gateway/fed/mcp",
-                "federated": {"trust_verdict": {"public_key": "x", "perimeter_stamp": "y"}},
+                "federated": {
+                    "trust_verdict": {
+                        "public_key": _ED25519_PUBLIC,
+                        "perimeter_stamp": "v7:guard-small@abc123:0.7",
+                        "judge": "openrouter/google/gemini-3.5-flash-lite/pack-1",
+                    }
+                },
             },
             await _hash(),
         )
-        assert "not writable through this tool" in result["error"]
+        assert result["staged"] is True
+        assert result["awaiting"] == "federation trust"
+        shown = result["shown_for_approval"]
+        assert shown["Backend to trust"] == "ag.lotor"
+        # A fingerprint, not the PEM: a wall of base64 is not reviewed by eye.
+        assert shown["Its key"].startswith("sha256:")
+        assert "WITHOUT this gateway running" in shown["What this means"]
+        assert gateway.read_text(encoding="utf-8") == before
 
     async def test_a_no_op_write_is_refused(self, gateway: pathlib.Path) -> None:
         result = await _as_operator(
@@ -372,7 +430,7 @@ profiles:
         url: "internal://web"
         tools_allow:
           - fetch_tool
-    defense: *id001  # shared with nothing else, for now
+    defense: *id001  # an alias, and a comment riding on it
 """
 
 
@@ -421,7 +479,7 @@ class TestNormalize:
         assert config_patch.round_trips(after) is True
         # And it still says the same thing, comment included.
         assert yaml.safe_load(after) == yaml.safe_load(UNNORMALIZED)
-        assert "# shared with nothing else, for now" in after
+        assert "# an alias, and a comment riding on it" in after
         assert "# The gateway's profiles." in after
 
     async def test_the_previous_version_is_kept(
@@ -452,3 +510,41 @@ class TestNormalize:
             "set", "profiles.ag.defense.enforcement", "flag", await _hash()
         )
         assert applied["applied"] is True
+
+
+class TestWithNoApprover:
+    """No approval password, no feature: the two guarded writes are refused
+    exactly as they were before #637. The absence of a way to approve is never
+    an approval anyone can give."""
+
+    @pytest.fixture(autouse=True)
+    def _no_approver(
+        self, gateway: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Depends on `gateway` so it runs AFTER it: that fixture configures an
+        # approver, and an autouse fixture would otherwise be undone by it.
+        del gateway
+        monkeypatch.delenv("TRENTINA_APPROVAL_PASSWORD_HASH", raising=False)
+        pending.clear()
+
+    async def test_a_seat_change_is_refused_outright(self, gateway: pathlib.Path) -> None:
+        before = gateway.read_text(encoding="utf-8")
+        result = await _as_operator(
+            "set", "profiles.op.auth.bearer_token_env", "AG_TOKEN", await _hash()
+        )
+        assert "no approval password" in result["error"]
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_nothing_is_left_staged_by_a_refusal(self, gateway: pathlib.Path) -> None:
+        """A refusal must not leave something a later-configured password could
+        approve: the proposal never existed."""
+        await _as_operator("set", "profiles.op.auth.bearer_token_env", "AG_TOKEN", await _hash())
+        assert pending.outstanding() == {}
+
+    async def test_an_ordinary_write_still_applies(self, gateway: pathlib.Path) -> None:
+        """Only the two guarded writes need a person; everything else is the
+        operator's as it always was."""
+        result = await _as_operator(
+            "set", "profiles.ag.defense.enforcement", "flag", await _hash()
+        )
+        assert result["applied"] is True

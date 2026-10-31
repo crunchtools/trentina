@@ -159,6 +159,29 @@ def operator_seat(profiles: dict[str, Profile]) -> dict[str, Any]:
     }
 
 
+def trust_pins(profiles: dict[str, Profile]) -> dict[str, dict[str, str]]:
+    """Every federated backend's pinned verdict, by ``<profile>.<backend>``.
+
+    Compared before and after a write, the way ``operator_seat`` is, so what a
+    person is asked to approve is the pin that actually resulted from loading
+    the candidate — not the mapping the caller sent. A write can reach a pin by
+    setting a parent key, and the loaded config is the only place that is
+    unambiguous.
+    """
+    pins: dict[str, dict[str, str]] = {}
+    for name, profile in profiles.items():
+        for backend_name, backend in profile.backends.items():
+            federated = backend.federated
+            verdict = federated.trust_verdict if federated is not None else None
+            if verdict is not None:
+                pins[f"{name}.{backend_name}"] = {
+                    "public_key": verdict.public_key,
+                    "perimeter_stamp": verdict.perimeter_stamp,
+                    "judge": verdict.judge,
+                }
+    return pins
+
+
 def _nodes(root: Any) -> Any:
     """Every mapping and list reachable from ``root``, including itself."""
     stack = [root]
@@ -173,7 +196,10 @@ def _nodes(root: Any) -> Any:
 
 
 def trust_stays_human(action: str, keys: tuple[str, ...], value: Any) -> bool:
-    """Whether a write leaves scan-once trust alone.
+    """Whether a write leaves scan-once trust alone — i.e. needs no approval.
+
+    Since #637 a write that does NOT satisfy this is staged for a person rather
+    than refused: the decision stays human, and stops being a text editor.
 
     ``trust_verdict`` makes this gateway serve another gateway's response
     WITHOUT running its own three layers over it. The constitution's Trust
