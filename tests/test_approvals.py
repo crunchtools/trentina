@@ -15,6 +15,7 @@ may be enough to approve with.
 from __future__ import annotations
 
 import os
+import pathlib
 import time
 from typing import Any
 
@@ -23,6 +24,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from trentina.gateway import approval_routes, approver, pending
+from trentina.gateway.context import profile_context
 
 pytestmark = pytest.mark.anyio
 
@@ -544,3 +546,69 @@ class TestTheEnrolmentCode:
         later = time.monotonic() + approver.ENROL_WINDOW_SECONDS + 1
         monkeypatch.setattr(approver.time, "monotonic", lambda: later)
         assert approver.enrolling(code) is False
+
+
+class TestTheEnrolTool:
+    """The tool boundary, not just the module behind it. The code it returns
+    has to be the one the page accepts, or the flow is unusable while every
+    unit test still passes."""
+
+    async def test_it_returns_a_url_a_duration_and_a_code(self, unset: Any) -> None:
+        del unset
+        from trentina.tools.enrol import approval_enrol
+
+        result = await approval_enrol()
+        assert result["opened"] is True
+        assert result["url"] == approval_routes.ENROL_PATH
+        assert result["open_for_seconds"] == approver.ENROL_WINDOW_SECONDS
+        assert result["code"]
+
+    async def test_its_code_is_the_one_the_page_accepts(self, pages: TestClient) -> None:
+        """End to end, the way Scott's acceptance test runs it: the operator
+        asks, a person uses what came back."""
+        from trentina.tools.enrol import approval_enrol
+
+        code = (await approval_enrol())["code"]
+        answer = pages.post(
+            approval_routes.ENROL_PATH,
+            data={"code": code, "new": PASSWORD, "again": PASSWORD},
+        )
+        assert answer.status_code == 200
+        assert approver.verify(PASSWORD) is True
+
+    async def test_it_says_so_when_one_is_already_set(self, unset: Any) -> None:
+        """Set through the store, which is what enrolment does — not pinned by
+        the environment, which is the other branch."""
+        del unset
+        from trentina.tools.enrol import approval_enrol
+
+        approver.set_password(PASSWORD)
+        result = await approval_enrol()
+        assert result["already_set"] is True
+        assert "code" not in result
+        # It did not open a window, so nothing can be set without the current one.
+        assert approver.enrolling() is False
+
+    async def test_it_refuses_when_the_deployment_pinned_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from trentina.tools.enrol import approval_enrol
+
+        monkeypatch.setenv("TRENTINA_APPROVAL_PASSWORD_HASH", approver.make_verifier(PASSWORD))
+        result = await approval_enrol()
+        assert "pinned by its deployment" in result["error"]
+
+    async def test_an_agent_caller_is_refused(self, unset: Any) -> None:
+        del unset
+        from trentina.gateway.loader import GatewayConfig, register_active_config
+        from trentina.gateway.profile import AuthConfig, Profile
+        from trentina.tools.enrol import approval_enrol
+
+        agent = Profile(name="ag", auth=AuthConfig(bearer_token_env="AG_TOKEN"))
+        register_active_config(
+            pathlib.Path("profiles.yaml"), GatewayConfig(profiles={"ag": agent}), {}
+        )
+        with profile_context(agent):
+            result = await approval_enrol()
+        assert "operator" in result["error"]
+        assert approver.enrolling() is False
