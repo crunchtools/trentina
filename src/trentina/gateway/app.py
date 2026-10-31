@@ -49,6 +49,7 @@ from .errors import (
 from .google_verifier import token_digest
 from .matrix_bridge.routes import media_refused, outbound_refused
 from .sessions import SessionRegistry, session_registry
+from .tool_pins import backend_id
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
@@ -443,8 +444,17 @@ def _health_payload(registry: dict[str, Profile]) -> Response:
         # Tools held pending operator approval, gateway-wide (#592, E1c): a
         # number Nagios can alert on. Summed like the fields below, so the
         # unauthenticated probe names no profile; which backend holds what is in
-        # the tool_pins operator tool.
-        "pending_pins": count_pending_pins(),
+        # the tool_pins operator tool. Only the backends that still exist: a
+        # pin belonging to a URL nothing is configured at any more withholds
+        # nothing and cannot be released, so counting it is an alert with no
+        # action behind it.
+        "pending_pins": count_pending_pins(
+            {
+                backend_id(backend.url)
+                for profile in registry.values()
+                for backend in profile.backends.values()
+            }
+        ),
     }
     # Summed, so the unauthenticated probe names no profile; which one is
     # in quarantine_stats' gateway_audit (backend matrix_bridge, #317).

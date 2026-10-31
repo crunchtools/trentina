@@ -19,6 +19,14 @@ under that name.
   trigger limit *fails* the path unit rather than pacing it, so the
   auto-commit would have stopped without saying so. Twenty, with the reason
   written down beside it.
+- `/health`'s `pending_pins` counted tools held for a backend that no longer
+  exists. A pin belongs to the hash of a backend's URL, so changing a URL or
+  removing a backend leaves that identity's rows behind — and `tool_pins`
+  resolves a backend by its *live* URL, so it can neither list nor approve
+  them. The number was therefore an alert with nothing behind it and no way to
+  clear it. Found on a live gateway, which reported one held tool that was
+  being served. The rows are kept rather than swept: a URL that comes back
+  should find its approvals again instead of re-holding everything it offers.
 
 ## [4.1.0] - 2026-10-31
 

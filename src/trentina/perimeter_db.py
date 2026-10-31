@@ -31,9 +31,12 @@ import logging
 import sqlite3
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .config import get_config
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
 
 logger = logging.getLogger(__name__)
 
@@ -238,17 +241,30 @@ def list_pending_pins(backend_id: str) -> list[sqlite3.Row]:
     return rows
 
 
-def count_pending_pins() -> int:
-    """How many tools are held pending approval, gateway-wide (#592, E1c).
+def count_pending_pins(backend_ids: Collection[str]) -> int:
+    """How many tools are held pending approval, across the backends that EXIST.
 
     Across every backend, so the unauthenticated ``/health`` probe can surface a
     number for Nagios without naming a profile — which backend holds what is in
     the ``tool_pins`` operator tool, not here.
+
+    Hence the argument. A backend's id is the hash of its URL, so changing a URL,
+    or removing a backend, leaves that identity's rows behind, and those rows
+    hold nothing from anyone: ``tool_pins`` resolves a backend by its LIVE URL,
+    so it can neither list them nor approve them. Counting them reported a held
+    tool that no tool could show and nobody could release — an alert with no
+    action behind it. They stay in the store rather than being swept, because a
+    URL that comes back should find its approvals again instead of re-holding
+    every tool it offers.
     """
-    row = get_perimeter_db().execute(
-        "SELECT COUNT(*) FROM tool_pins WHERE pending_hash IS NOT NULL"
-    ).fetchone()
-    return int(row[0]) if row else 0
+    if not backend_ids:
+        return 0
+    live = set(backend_ids)
+    rows = get_perimeter_db().execute(
+        "SELECT backend_id, COUNT(*) FROM tool_pins "
+        "WHERE pending_hash IS NOT NULL GROUP BY backend_id"
+    )
+    return sum(int(count) for backend_id, count in rows if backend_id in live)
 
 
 def get_all_verdicts(perimeter_version: str) -> dict[str, dict[str, Any] | None]:
