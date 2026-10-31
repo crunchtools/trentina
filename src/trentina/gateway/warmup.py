@@ -74,12 +74,17 @@ async def warm_all() -> None:
         l3_throttle_budget.reset(budget)
 
 
-async def _revalidate(backends: dict[str, tuple[str, Backend]]) -> list[str]:
+async def _revalidate(backends: dict[str, tuple[str, Backend, Profile]]) -> list[str]:
     """Refetch each backend's tool list, once per URL, all at once; return the
     URLs whose list changed. A backend that cannot be reached keeps its cached
-    list (``revalidate_backend_tools`` returns False there)."""
+    list (``revalidate_backend_tools`` returns False there). The owning profile
+    is passed so a federated backend can mint its edge JWT — without it the
+    probe goes out unauthenticated and the upstream rejects it."""
     changed = await asyncio.gather(
-        *(revalidate_backend_tools(name, backend) for name, backend in backends.values())
+        *(
+            revalidate_backend_tools(name, backend, profile)
+            for name, backend, profile in backends.values()
+        )
     )
     return [url for url, differs in zip(backends, changed, strict=True) if differs]
 
@@ -91,12 +96,11 @@ async def _revalidate_tool_lists(profiles: list[Profile]) -> None:
     its aggregate is dropped when the backend's list turned out to differ, and
     ``_warm`` rebuilds it next.
     """
-    backends = {
-        backend.url: (name, backend)
-        for profile in profiles
-        for name, backend in profile.backends.items()
-        if backend.is_remote
-    }
+    backends: dict[str, tuple[str, Backend, Profile]] = {}
+    for profile in profiles:
+        for name, backend in profile.backends.items():
+            if backend.is_remote:
+                backends.setdefault(backend.url, (name, backend, profile))
     stale = await _revalidate(backends)
     for url in stale:
         invalidate_profile_cache_for_backend(url)
@@ -121,13 +125,13 @@ async def _poll_once(now: float) -> float:
     if active is None:
         return IDLE_TICK
     profiles = list(active.config.profiles.values())
-    polled: dict[str, tuple[str, Backend]] = {}
+    polled: dict[str, tuple[str, Backend, Profile]] = {}
     interval: dict[str, int] = {}
     for profile in profiles:
         for name, backend in profile.backends.items():
             fed = backend.federated
             if backend.is_remote and fed is not None and fed.poll_seconds > 0:
-                polled.setdefault(backend.url, (name, backend))
+                polled.setdefault(backend.url, (name, backend, profile))
                 interval[backend.url] = fed.poll_seconds
     for url in [u for u in _next_due if u not in polled]:
         del _next_due[url]

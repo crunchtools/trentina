@@ -52,8 +52,10 @@ class TestPollOnce:
         b = _profile("b", {"up": _fed(UP, 30)})
         c = _profile("c", {"other": Backend(url="http://other:8000/mcp")})
         warmup._next_due[UP] = 0.0  # already due
+        got_profiles: list[Any] = []
 
-        async def revalidate(_name: str, _backend: Backend) -> bool:
+        async def revalidate(_name: str, _backend: Backend, profile: Any = None) -> bool:
+            got_profiles.append(profile)
             return True  # the list changed
 
         rebuilt: list[list[str]] = []
@@ -71,6 +73,8 @@ class TestPollOnce:
 
         # Exactly the two profiles sharing the changed URL are rebuilt; "c" is not.
         assert rebuilt == [["a", "b"]]
+        # The owning profile is passed so a federated backend can mint its edge JWT.
+        assert got_profiles and got_profiles[0].name == "a"
         assert warmup._next_due[UP] == 130.0  # re-seeded now + poll_seconds
         assert sleep_for == pytest.approx(30.0)
 
@@ -78,7 +82,7 @@ class TestPollOnce:
         a = _profile("a", {"up": _fed(UP, 300)})
         warmup._next_due[UP] = 500.0  # due in the future
 
-        async def revalidate(_name: str, _backend: Backend) -> bool:
+        async def revalidate(_name: str, _backend: Backend, _profile: Any = None) -> bool:
             raise AssertionError("revalidate must not run before a backend is due")
 
         with (
@@ -94,7 +98,7 @@ class TestPollOnce:
     async def test_non_federated_backend_is_not_polled(self) -> None:
         a = _profile("a", {"plain": Backend(url="http://plain:8000/mcp")})
 
-        async def revalidate(_name: str, _backend: Backend) -> bool:
+        async def revalidate(_name: str, _backend: Backend, _profile: Any = None) -> bool:
             raise AssertionError("a non-federated backend must not be polled")
 
         with (
@@ -112,7 +116,7 @@ class TestPollOnce:
         a = _profile("a", {"up": _fed(UP, 30)})
         warmup._next_due[UP] = 0.0
 
-        async def revalidate(_name: str, _backend: Backend) -> bool:
+        async def revalidate(_name: str, _backend: Backend, _profile: Any = None) -> bool:
             return False  # unchanged, or unreachable (revalidate_backend_tools swallows the error)
 
         with (

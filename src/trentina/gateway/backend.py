@@ -511,7 +511,9 @@ async def _joined_fetch(
     return await inflight
 
 
-async def revalidate_backend_tools(backend_name: str, backend: Backend) -> bool:
+async def revalidate_backend_tools(
+    backend_name: str, backend: Backend, profile: Profile | None = None
+) -> bool:
     """Refetch a list loaded from SQLite at startup; True when it changed (#335).
 
     The persisted list survives a restart so a backend that is down still has
@@ -525,7 +527,7 @@ async def revalidate_backend_tools(backend_name: str, backend: Backend) -> bool:
     if before is None or backend.auth is not None:
         return False
     try:
-        return await refresh_backend_tools(backend_name, backend) != before
+        return await refresh_backend_tools(backend_name, backend, profile) != before
     except BackendCallError:
         return False
 
