@@ -281,6 +281,22 @@ class TestRefusals:
         assert "the reload refused it" in result["error"]
         assert gateway.read_text(encoding="utf-8") == before
 
+    async def test_a_file_the_editor_cannot_reproduce_is_refused_untouched(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """Writing re-emits the whole document, so on a file whose layout the
+        editor cannot reproduce exactly, a one-key change would reformat
+        everything else. It refuses instead, and changes nothing."""
+        mixed = YAML + "mixed:\n  a:\n  - x\n  b:\n    - y\n"
+        gateway.write_text(mixed, encoding="utf-8")
+
+        result = await _as_operator(
+            "set", "profiles.ag.defense.enforcement", "flag", await _hash()
+        )
+
+        assert "without reformatting the rest of it" in result["error"]
+        assert gateway.read_text(encoding="utf-8") == mixed
+
     async def test_a_bad_path_is_refused(self, gateway: pathlib.Path) -> None:
         result = await _as_operator("set", "profiles.ag/../../etc", 1, await _hash())
         assert "not a config key" in result["error"]

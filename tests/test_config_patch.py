@@ -10,8 +10,10 @@ equivalent" but "the bytes are the same".
 from __future__ import annotations
 
 import pathlib
+import time
 
 import pytest
+import yaml
 
 from trentina.gateway import config_patch as cp
 
@@ -42,7 +44,7 @@ class TestRoundTrip:
     @pytest.mark.parametrize("name", REAL_FILES)
     def test_a_real_file_survives_a_no_op_byte_for_byte(self, name: str) -> None:
         text = (REPO / name).read_text(encoding="utf-8")
-        assert cp.dump(cp.load(text)) == text
+        assert cp.round_trips(text)
 
     def test_a_comment_above_an_edited_key_survives(self) -> None:
         out = cp.set_at(COMMENTED, ("profiles", "myagent", "defense", "enforcement"), "redact")
@@ -134,7 +136,7 @@ class TestBadInput:
         assert failed.value.__cause__ is None
 
     def test_an_empty_file_loads_as_an_empty_mapping(self) -> None:
-        assert cp.dump(cp.load("   \n")) in ("{}\n", "")
+        assert cp.dump(cp.load("   \n"), like="   \n") in ("{}\n", "")
 
 
 class TestYamlOneOneStrings:
@@ -145,22 +147,16 @@ class TestYamlOneOneStrings:
 
     @pytest.mark.parametrize("value", ["yes", "no", "on", "off", "1:30"])
     def test_a_string_the_reader_would_reinterpret_is_quoted(self, value: str) -> None:
-        import yaml
-
         out = cp.set_at(COMMENTED, ("profiles", "myagent", "token"), value)
         assert yaml.safe_load(out)["profiles"]["myagent"]["token"] == value
 
     @pytest.mark.parametrize("value", ["plain", "null", "~", "True", "2026-10-31", ""])
     def test_a_string_that_round_trips_is_left_bare(self, value: str) -> None:
         """Nothing is noisily quoted: only what would actually change."""
-        import yaml
-
         out = cp.set_at(COMMENTED, ("profiles", "myagent", "token"), value)
         assert yaml.safe_load(out)["profiles"]["myagent"]["token"] == value
 
     def test_it_reaches_strings_nested_in_a_mapping_or_list(self) -> None:
-        import yaml
-
         written = {"tools_allow": ["no", "yes"], "mode": "off"}
         out = cp.set_at(COMMENTED, ("profiles", "myagent", "backends", "b"), written)
         assert yaml.safe_load(out)["profiles"]["myagent"]["backends"]["b"] == written
@@ -170,13 +166,66 @@ class TestYamlOneOneStrings:
         """A backend or peer named `no` is a valid config key, and written bare
         it comes back as the boolean False — a different key than the one
         asked for."""
-        import yaml
-
         out = cp.set_at(COMMENTED, ("profiles", "myagent", "backends"), {key: {"url": "x"}})
         assert list(yaml.safe_load(out)["profiles"]["myagent"]["backends"]) == [key]
 
     def test_non_strings_are_untouched(self) -> None:
-        import yaml
-
         out = cp.set_at(COMMENTED, ("profiles", "myagent", "n"), True)
         assert yaml.safe_load(out)["profiles"]["myagent"]["n"] is True
+
+
+OFFSET_ZERO = """\
+# A list style where the dash sits under its key.
+profiles:
+  myagent:
+    backends:
+      web:
+        url: "internal://web"
+        tools_allow:
+        - fetch_tool
+        - read_tool
+"""
+
+MIXED = """\
+profiles:
+  a:
+    one:
+    - x
+  b:
+    two:
+      - y
+"""
+
+
+class TestSequenceStyle:
+    """ruamel emits ONE sequence style per document, and real files differ. The
+    first production config this was pointed at indented 882 of its 885 lists
+    with the dash under its key; the repo's own examples indent it two further.
+    Guessing turns a one-key edit into a diff over the whole file."""
+
+    @pytest.mark.parametrize("text", [COMMENTED, OFFSET_ZERO])
+    def test_both_styles_round_trip(self, text: str) -> None:
+        assert cp.round_trips(text)
+
+    def test_a_write_keeps_the_style_it_found(self) -> None:
+        out = cp.set_at(OFFSET_ZERO, ("profiles", "myagent", "defense", "enforcement"), "block")
+        assert "        - fetch_tool\n        - read_tool\n" in out
+
+    def test_a_file_of_mixed_styles_does_not_round_trip(self) -> None:
+        """No single setting reproduces it, so the write path refuses instead of
+        reformatting the lists it did not touch."""
+        assert not cp.round_trips(MIXED)
+
+    def test_a_real_repo_file_round_trips(self) -> None:
+        text = (REPO / "docs/demo/profiles.yaml").read_text(encoding="utf-8")
+        assert cp.round_trips(text)
+
+
+def test_style_detection_is_linear_in_a_long_list() -> None:
+    """A backward scan per item is quadratic in the list length, and a real
+    config has lists of several hundred tool names."""
+    big = "profiles:\n  a:\n    tools_allow:\n" + "".join(f"    - tool_{i}\n" for i in range(4000))
+
+    started = time.perf_counter()
+    assert cp._sequence_offset(big) == 0
+    assert time.perf_counter() - started < 1.0

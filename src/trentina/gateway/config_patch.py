@@ -50,34 +50,85 @@ class ConfigPatchError(ValueError):
     that failed, never a value."""
 
 
-def _yaml() -> YAML:
-    """A round-trip parser configured to give back what it was given."""
+#: A block sequence item, and the mapping key a sequence hangs under.
+_ITEM_RE = re.compile(r"^( *)- ")
+_KEY_RE = re.compile(r'^( *)["A-Za-z_].*:')
+
+
+def _sequence_offset(text: str) -> int:
+    """How far a block sequence's dash is indented past its parent key, in
+    ``text``, by majority.
+
+    ruamel emits one sequence style for a whole document, and the two in the
+    wild are ``offset=0`` (the dash under its key) and ``offset=2`` (the dash
+    indented past it). Guessing wrong reindents every list in the file, which
+    turns a one-key edit into a diff nobody can review — and that is not a
+    theoretical worry: it reindented 858 sequences in the first real config
+    this was pointed at. So the style is read off the file rather than assumed.
+
+    One forward pass, carrying the last key seen. A sequence item's parent is
+    always the nearest key above it, so nothing needs re-reading — and a
+    backward scan per item would be quadratic in the length of a list, on a
+    file that has lists of several hundred tool names.
+    """
+    votes: dict[int, int] = {}
+    key_indent: int | None = None
+    for line in text.splitlines():
+        # A sequence item starts with a dash, so it never matches the key
+        # pattern, and the two arms cannot both fire on one line.
+        key = _KEY_RE.match(line)
+        if key is not None:
+            key_indent = len(key.group(1))
+            continue
+        item = _ITEM_RE.match(line)
+        if item is not None and key_indent is not None:
+            offset = len(item.group(1)) - key_indent
+            if offset in (0, _INDENT):
+                votes[offset] = votes.get(offset, 0) + 1
+    if not votes:
+        return _INDENT
+    return max(votes, key=lambda offset: votes[offset])
+
+
+def _yaml(like: str) -> YAML:
+    """A round-trip parser that writes in the style ``like`` is written in."""
     yaml = YAML(typ="rt")
     yaml.preserve_quotes = True
     yaml.width = _WIDTH
-    # ruamel's default puts a block sequence's dash at its parent key's indent;
-    # every profiles.yaml in this repo indents it two further. Matching the
-    # house style is what makes an untouched list round-trip byte-for-byte
-    # instead of showing up as a whitespace diff in a section nobody edited.
-    yaml.indent(mapping=_INDENT, sequence=_INDENT * 2, offset=_INDENT)
+    offset = _sequence_offset(like)
+    yaml.indent(mapping=_INDENT, sequence=_INDENT + offset, offset=offset)
     return yaml
 
 
 def load(text: str) -> Any:
     """Parse ``text``, keeping comments and formatting."""
     try:
-        return _yaml().load(text) if text.strip() else CommentedMap()
+        return _yaml(text).load(text) if text.strip() else CommentedMap()
     except YAMLError:
         # The parser's message quotes the offending line, which is file content
         # and not ours to echo (#262), so the cause is dropped with it.
         raise ConfigPatchError("the file is not valid YAML") from None
 
 
-def dump(document: Any) -> str:
-    """Render ``document`` back to text."""
+def dump(document: Any, *, like: str) -> str:
+    """Render ``document`` back to text, written the way ``like`` is written."""
     stream = io.StringIO()
-    _yaml().dump(document, stream)
+    _yaml(like).dump(document, stream)
     return stream.getvalue()
+
+
+def round_trips(text: str) -> bool:
+    """Whether reading ``text`` and writing it back gives the same bytes.
+
+    The precondition for editing a file at all. ruamel re-emits the WHOLE
+    document, so on a file it cannot reproduce exactly, a one-key write also
+    reformats everything else — silently, in a file a person reviews in a diff
+    and keeps in git. A file that fails this is refused rather than rewritten,
+    which is the same fail-closed choice the rest of the gateway makes: the
+    cost is one hand-normalization, and the alternative is an unreviewable
+    diff and, in the worst case, a setting lost in the noise.
+    """
+    return dump(load(text), like=text) == text
 
 
 def checked_path(path: tuple[str, ...]) -> tuple[str, ...]:
@@ -152,7 +203,7 @@ def set_at(text: str, path: tuple[str, ...], value: Any) -> str:
     document = load(text)
     holder = _walk(document, checked_path(path))
     holder[path[-1]] = _as_written(value)
-    return dump(document)
+    return dump(document, like=text)
 
 
 def unset_at(text: str, path: tuple[str, ...]) -> str:
@@ -163,4 +214,4 @@ def unset_at(text: str, path: tuple[str, ...]) -> str:
     if path[-1] not in holder:
         raise ConfigPatchError(f"{path[-1]!r} is not set")
     del holder[path[-1]]
-    return dump(document)
+    return dump(document, like=text)
