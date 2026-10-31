@@ -1,6 +1,6 @@
 [project]
 name = "trentina"
-version = "4.0.0"
+version = "4.1.0"
 description = "MCP gateway for AI agents — prompt-injection defense, token savings, deterministic policy, OAuth, per-agent profiles"
 requires-python = ">=3.11"
 license = "AGPL-3.0-or-later"

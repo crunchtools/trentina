@@ -24,13 +24,12 @@ container — which ``tools/confine.py`` refuses to every file tool.
 
 from __future__ import annotations
 
-import os
 import secrets
 from pathlib import Path
 
 from ..config import get_config
 from ..logsafe import hold
-from .key_store import KEY_DIR_MODE, KEY_FILE_MODE
+from . import secret_file
 
 #: The lead-in every minted token carries. An opaque random string has no shape
 #: a scrubber could recognise, unlike a PEM; this is what gives it one, so
@@ -57,26 +56,15 @@ def token_path(name: str) -> Path:
 
 
 def ensure_tokens_dir() -> Path:
-    """Create the token directory 0700, and hold it there.
-
-    ``mkdir(mode=)`` is masked by the umask and does nothing at all to a
-    directory that already exists, so the explicit ``chmod`` is the one that
-    decides the mode — the same reason ``key_store.ensure_keys_dir`` does both.
-    """
-    directory = tokens_dir()
-    directory.mkdir(mode=KEY_DIR_MODE, parents=True, exist_ok=True)
-    os.chmod(directory, KEY_DIR_MODE)
-    return directory
+    """Create the token directory 0700, and hold it there."""
+    return secret_file.private_dir("tokens")
 
 
 def mint(name: str) -> str:
     """Write a new bearer token under ``name``; return it.
 
-    ``O_EXCL`` refuses an existing file, a planted file and a symlink in one
-    move, so a name is written exactly once and a token in use is never
-    replaced underneath a live profile. A write that fails part way leaves
-    nothing behind, so the name stays free rather than becoming permanently
-    unusable. Rotation is a new name.
+    ``secret_file.write_once`` is what refuses an existing name, so a token in
+    use is never replaced underneath a live profile; rotation is a new name.
 
     Unlike ``key_store.mint``, the value IS passed to ``logsafe.hold``. A
     private key is held out of every record by pattern and nothing retains it
@@ -88,13 +76,7 @@ def mint(name: str) -> str:
     ensure_tokens_dir()
     path = token_path(name)
     token = MINTED_PREFIX + secrets.token_urlsafe(_TOKEN_BYTES)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, KEY_FILE_MODE)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(token)
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
+    secret_file.write_once(path, token.encode("utf-8"))
     hold(token, "PROFILE_TOKEN")
     return token
 

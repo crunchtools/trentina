@@ -38,13 +38,13 @@ import base64
 import hashlib
 import hmac
 import logging
-import os
 import secrets
 import time
 from pathlib import Path
 
 from ..config import get_config
 from ..logsafe import exc_kind
+from . import secret_file
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +64,7 @@ _PREFIX = "scrypt"
 #: which is the only place the password itself is ever seen.
 MIN_PASSWORD_CHARS = 12
 
-_DIR_MODE = 0o700
-_FILE_MODE = 0o600
+_STORE_DIR = "approval"
 
 
 def make_verifier(password: str) -> str:
@@ -136,7 +135,7 @@ def _store_path() -> Path:
     ``tools/confine.py`` refuses to every file tool. The config mount is
     read-only by design, so a password set at runtime cannot live there.
     """
-    return Path(get_config().db_path).parent / "approval" / "verifier"
+    return Path(get_config().db_path).parent / _STORE_DIR / "verifier"
 
 
 def _verifier() -> str | None:
@@ -178,18 +177,8 @@ def set_password(password: str) -> None:
     password — and this does not second-guess it.
     """
     verifier = make_verifier(password)
-    path = _store_path()
-    path.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
-    os.chmod(path.parent, _DIR_MODE)
-    staged = path.with_name(path.name + ".staged")
-    fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _FILE_MODE)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(verifier)
-        os.replace(staged, path)
-    except BaseException:
-        staged.unlink(missing_ok=True)
-        raise
+    secret_file.private_dir(_STORE_DIR)
+    secret_file.replace_atomically(_store_path(), verifier.encode("utf-8"))
     logger.info("approval: an approval password was set")
 
 

@@ -14,6 +14,7 @@ may be enough to approve with.
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -480,8 +481,6 @@ class TestEnrolment:
     def test_the_stored_verifier_is_private(self, pages: TestClient) -> None:
         approver.open_enrolment()
         pages.post(approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD})
-        import os
-
         path = approver._store_path()
         assert os.stat(path).st_mode & 0o777 == 0o600
         assert os.stat(path.parent).st_mode & 0o777 == 0o700

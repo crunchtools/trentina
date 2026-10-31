@@ -202,13 +202,17 @@ def trust_stays_human(action: str, keys: tuple[str, ...], value: Any) -> bool:
     than refused: the decision stays human, and stops being a text editor.
 
     ``trust_verdict`` makes this gateway serve another gateway's response
-    WITHOUT running its own three layers over it. The constitution's Trust
-    Allowlist rule is that "trust decisions are administrator-set... not
-    agent-controlled" and that trust "changes what a finding costs, never
-    whether a layer runs" — and scan-once changes exactly whether a layer runs,
-    so it is the one setting in the file the API will not write at all. Not
-    because the operator lacks the authority: because the operator is a model,
-    and this is the setting where being talked into it costs the most.
+    WITHOUT running its own three layers over it. The constitution's Human
+    Approval rule governs it: an operator agent may PROPOSE a trust that stops
+    a layer running and may not apply one. Not because the operator lacks the
+    authority — because the operator is a model, and this is the setting where
+    being talked into it costs the most.
+
+    The Trust Allowlist clause is about the allowlist and says a finding's cost
+    changes while a layer still runs. That was quoted here as though it forbade
+    scan-once, which it does not: federation trust is a different mechanism in
+    a different file. What governs it is written down now rather than inferred
+    from a neighbour (#637).
 
     Everything else about federation IS the operator's: minting keys, declaring
     the link, and ``federation.peers``, which decides who may authenticate —

@@ -42,30 +42,37 @@ them. The file is the source of truth, not a view over anything, and it stays a
 file a person can read, diff and keep in git. Every successful write returns
 the next hash, so a run of changes needs one read at the start.
 
-Two things the operator cannot write, and they are not about authority — the
-operator *is* root on this gateway. They exist because the operator is a model,
-so what matters is not whether it may but whether it can be talked into it.
+Two things the operator can propose and cannot apply, and they are not about
+authority — the operator *is* root on this gateway. They exist because the
+operator is a model, so what matters is not whether it may but whether it can
+be talked into it.
 
 The first is the operator seat: who holds `role: operator`, and how a caller
-becomes one. That stays a human edit of the file, because minting a second root
-is the one change whose blast radius is unbounded and permanent.
+becomes one. Minting a second root is the one change whose blast radius is
+unbounded and permanent.
 
-The second is `trust_verdict`, which makes this gateway serve another
-gateway's response *without* running its own three layers over it. The
-constitution's rule is that trust decisions are administrator-set rather than
-agent-controlled, and that trust changes what a finding costs and never
-whether a layer runs — and scan-once changes exactly whether a layer runs.
-Everything else about federation is the operator's, including
-`federation.peers`, which decides who may authenticate: that is an access
-grant like any other, not a decision to believe someone else's scan.
+The second is `trust_verdict`, which makes this gateway serve another gateway's
+response *without* running its own three layers over it. The project
+constitution keeps trust administrator-set rather than agent-controlled, and
+this is the setting that decides whether a layer runs at all. Everything else
+about federation is the operator's, including `federation.peers`, which decides
+who may authenticate: that is an access grant like any other, not a decision to
+believe someone else's scan.
 
-One thing still needs a restart, and it is worth knowing before you plan a
-change: a profile that authenticates by `auth.bearer_token_env` needs that
-environment variable to exist in the container, so a brand-new profile of that
-kind is a deployment change rather than a config change. Everything about an
-existing profile, and a new profile that authenticates by federation peers, is
-live on the reload. The result's `reload.not_applied` names anything that
-needs a restart, so read it rather than assuming.
+Both are written the way any other change is written. The gateway stages them
+instead of applying them, tells you what a person will be shown, and waits. A
+person approves at `/approve`; nothing moves until they do, and on a gateway
+with no approval password set nothing can approve, so both stay refused. See
+[Approvals](approvals.md) — including `approval_enrol`, which is how you ask a
+person to set that password without anyone touching a shell.
+
+Nothing needs a restart any more. A profile's bearer token used to have to be
+an environment variable, which the container carries, which made a brand-new
+profile a deployment change — and worse than that, a profile naming a variable
+that is not set fails validation, so the write was refused outright. Mint one
+with `profile_token` and name it with `auth.bearer_token_name`: it is re-read on
+every load, and a reload is a load. The result's `reload.not_applied` still
+names anything that needs a restart, so read it rather than assuming.
 
 Keeping the history is the host's job, not the gateway's: the image ships no
 `git`, and the git transport carries a caller's client rather than authoring

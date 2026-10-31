@@ -101,9 +101,12 @@ class TestOperatorSeat:
 
 class TestTrustStaysHuman:
     """`trust_verdict` makes this gateway serve another gateway's response
-    without running its own layers. The constitution keeps trust decisions
-    administrator-set and says trust never changes WHETHER a layer runs, so
-    this one setting is not writable through the API at all."""
+    without running its own layers, so the constitution's Human Approval rule
+    lets an operator PROPOSE it and not apply it.
+
+    This predicate answers "does this write need a person" — it is the caller,
+    `tools/config._needs_approval`, that turns a False into a staged action.
+    Before #637 the same False was a flat refusal."""
 
     @pytest.mark.parametrize(
         ("keys", "value"),

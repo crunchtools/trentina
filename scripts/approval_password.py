@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
 """Print a verifier for an approval password (#637).
 
+Most deployments do not need this. The usual way to set the approval password
+is to let an operator agent call `approval_enrol`, which opens a short window
+and returns a URL where a person chooses the password in a browser — no script
+and no config edit. See docs/approvals.md.
+
+This is for the other case: a deployment that would rather PIN the verifier in
+its own configuration, so the gateway cannot change it. Put the output in
+`TRENTINA_APPROVAL_PASSWORD_HASH`, or better its `_FILE` form in the read-only
+config mount. A verifier pinned that way wins over anything set in a browser.
+
+
     python scripts/approval_password.py
 
 Or against the shipped image, which is where an operator will usually be:

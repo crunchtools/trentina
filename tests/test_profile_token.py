@@ -24,7 +24,7 @@ from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.key_store import KEY_DIR_MODE, KEY_FILE_MODE
-from trentina.gateway.loader import load_profiles, register_active_config
+from trentina.gateway.loader import GatewayConfig, load_profiles, register_active_config
 from trentina.gateway.profile import AuthConfig, Profile
 from trentina.gateway.token_store import MINTED_PREFIX, token_path
 from trentina.tools.confine import confine
@@ -110,19 +110,15 @@ class TestMinting:
         """It hands back a usable credential, so an agent reaching it would get
         a token rather than merely a refusal."""
         agent = Profile(name="ag", auth=AuthConfig(bearer_token_env="AG_TOKEN"))
-        register_active_config(data_dir / "profiles.yaml", _active({"ag": agent}), {})
+        register_active_config(
+            data_dir / "profiles.yaml", GatewayConfig(profiles={"ag": agent}), {}
+        )
         try:
             with profile_context(agent):
                 result = await profile_token("newagent")
         finally:
             config_mod._config = None
         assert "operator" in result["error"]
-
-
-def _active(profiles: dict[str, Profile]) -> object:
-    from trentina.gateway.loader import GatewayConfig
-
-    return GatewayConfig(profiles=profiles)
 
 
 class TestTokenByName:
