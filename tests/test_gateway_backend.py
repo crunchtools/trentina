@@ -548,6 +548,26 @@ class TestRevalidateForwardsProfile:
         assert captured["profile"] is prof
 
 
+def test_inflight_key_separates_a_federated_edge_by_profile() -> None:
+    """A federated edge-key backend keys its in-flight fetch by profile, so a
+    no-profile fetch is never joined by the authenticated build (#592, F5)."""
+    from pydantic import SecretStr
+
+    from trentina.gateway.backend import _inflight_key
+    from trentina.gateway.profile import FederatedConfig
+
+    fed = Backend(
+        url="http://up:8000/gateway/fed-x/mcp",
+        federated=FederatedConfig(edge_key_env="X_EDGE_KEY", edge_key=SecretStr("k")),
+    )
+    plain = Backend(url="http://plain:8000/mcp")
+    prof = Profile(name="josui", auth=AuthConfig(bearer_token_env="T"))
+
+    assert _inflight_key(fed, None) != _inflight_key(fed, prof)
+    assert _inflight_key(fed, prof) == "http://up:8000/gateway/fed-x/mcp#josui"
+    assert _inflight_key(plain, None) == _inflight_key(plain, prof) == "http://plain:8000/mcp"
+
+
 @pytest.mark.asyncio
 class TestHeaderedBackendHttpTimeouts:
     """A backend with headers must get the SDK's HTTP timeouts, not httpx's 5s.

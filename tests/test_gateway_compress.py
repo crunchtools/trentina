@@ -583,3 +583,25 @@ class TestPreprocessToolDescriptions:
             )
         assert out == [("a", "A.")]
         assert "PARAMETER" in generate.call_args.kwargs["system_prompt"]
+
+
+class TestPrecompressForwardsProfile:
+    """_precompress_backend passes the holder profile so a federated backend
+    authenticates its list fetch (#592, F4) — otherwise the cold-cache fetch
+    goes out unauthenticated and the build joins it via single-flight."""
+
+    async def test_profile_reaches_the_list_fetch(self) -> None:
+        from trentina.gateway.profile import AuthConfig, Backend, Profile
+
+        captured: dict[str, Any] = {}
+
+        async def spy_list(_name: str, _backend: Any, profile: Any = None) -> list[Any]:
+            captured["profile"] = profile
+            return []
+
+        prof = Profile(name="josui", auth=AuthConfig(bearer_token_env="T"))
+        backend = Backend(url="http://up:8000/mcp")
+        with patch("trentina.gateway.backend.list_backend_tools", side_effect=spy_list):
+            await _precompress_backend("up", backend, prof)
+
+        assert captured["profile"] is prof
