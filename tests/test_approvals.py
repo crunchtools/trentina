@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 from starlette.applications import Starlette
+from starlette.requests import Request
 from starlette.testclient import TestClient
 
 from trentina.gateway import approval_routes, approver, pending
@@ -30,6 +31,10 @@ from trentina.gateway.context import profile_context
 pytestmark = pytest.mark.anyio
 
 PASSWORD = "correct horse battery staple"
+
+#: _authorised_set renders its refusal, so it needs a request to read the host
+#: off. These tests call it below the route, where there is no real one.
+BARE_REQUEST = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
 
 
 @pytest.fixture(autouse=True)
@@ -224,8 +229,7 @@ class TestThePage:
         approver.close_enrolment()
         mcp = FastMCP("t")
         approval_routes.register_approval_routes(mcp)
-        client = TestClient(App(routes=mcp._additional_http_routes),
-                            base_url="https://gw.example")
+        client = TestClient(App(routes=mcp._additional_http_routes), base_url="https://gw.example")
 
         record: list[str] = []
         pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
@@ -245,9 +249,7 @@ class TestThePage:
         assert "ag.lotor" not in body
         assert "federation trust" not in body
 
-    def test_the_wrong_password_shows_nothing_about_what_is_staged(
-        self, page: TestClient
-    ) -> None:
+    def test_the_wrong_password_shows_nothing_about_what_is_staged(self, page: TestClient) -> None:
         pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied([]))
         answer = page.post(approval_routes.PATH, data={"password": "wrong"})
         assert answer.status_code == 404
@@ -371,9 +373,7 @@ def pages(unset: Any) -> TestClient:
     del unset
     mcp = FastMCP("t")
     approval_routes.register_approval_routes(mcp)
-    return TestClient(
-        Starlette(routes=mcp._additional_http_routes), base_url="https://gw.example"
-    )
+    return TestClient(Starlette(routes=mcp._additional_http_routes), base_url="https://gw.example")
 
 
 class TestEnrolment:
@@ -388,9 +388,7 @@ class TestEnrolment:
     def test_the_window_has_to_be_opened(self, pages: TestClient) -> None:
         """A gateway sitting with no password is not a standing offer to
         whoever reaches the page first."""
-        answer = pages.post(
-            approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD}
-        )
+        answer = pages.post(approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD})
         assert answer.status_code == 404
         assert approver.configured() is False
 
@@ -432,7 +430,7 @@ class TestEnrolment:
 
     def test_the_window_expires(self, pages: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         approver.open_enrolment()
-        later = time.monotonic() + approver.ENROL_WINDOW_SECONDS + 1
+        later = time.monotonic() + approver._window_seconds + 1
         monkeypatch.setattr(approver.time, "monotonic", lambda: later)
         assert approver.enrolling() is False
 
@@ -506,6 +504,112 @@ class TestEnrolment:
         assert PASSWORD not in path.read_text(encoding="utf-8")
 
 
+@pytest.fixture
+def window_of(unset: Any) -> Any:
+    """Set gateway.approval_enrol_window_seconds for one test."""
+    from trentina.gateway.loader import (
+        GatewayConfig,
+        register_active_config,
+        reset_active_config,
+    )
+
+    del unset
+
+    def _configured(seconds: float) -> None:
+        register_active_config(
+            pathlib.Path("profiles.yaml"),
+            GatewayConfig(profiles={}, approval_enrol_window_seconds=seconds),
+        )
+
+    yield _configured
+    reset_active_config()
+
+
+class TestHowLongTheWindowStands:
+    """Scott's call: how long is enough is a property of the deployment, not
+    of the code, so it is `gateway.approval_enrol_window_seconds`. Five
+    minutes by default, because the window is the one interval in which this
+    gateway's approver can be claimed by whoever holds the code."""
+
+    def test_a_gateway_with_no_config_loaded_uses_the_default(self, unset: Any) -> None:
+        del unset
+        assert approver.enrol_window_seconds() == approver.DEFAULT_ENROL_WINDOW_SECONDS
+
+    def test_the_configured_value_is_what_a_window_gets(self, window_of: Any) -> None:
+        window_of(900.0)
+        assert approver.open_enrolment()[0] == 900
+
+    @pytest.mark.parametrize(
+        ("configured", "used"),
+        [(0.0, 60.0), (-1.0, 60.0), (59.0, 60.0), (86400.0, 3600.0), (300.0, 300.0)],
+    )
+    def test_it_is_bounded_at_both_ends(self, configured: float, used: float) -> None:
+        """Clamped rather than refused: both directions are safe, and a reload
+        refused over this would strand every other change in the file."""
+        assert approver.clamped_enrol_window(configured) == used
+
+    def test_a_config_change_cannot_extend_a_window_already_open(self, window_of: Any) -> None:
+        """The length is taken when the window opens. An operator can write
+        this file, so reading it at every check would let a staged-for-seconds
+        window be stretched from under the person it was opened for."""
+        window_of(60.0)
+        _, code = approver.open_enrolment()
+        window_of(3600.0)
+
+        assert approver._window_seconds == 60.0
+        assert approver.enrolling(code) is True
+
+
+class TestAClosedWindow:
+    """The failure this is here for happened to Scott on a real gateway. An
+    agent opened a window and told him about it in a chat he read on a phone;
+    by the time he opened the page the window had closed, the form had
+    silently become one asking for a current password that did not exist, and
+    the refusal is identical to every other refusal by design. He retyped it
+    three times. A page that cannot succeed and will not say so is a trap, so
+    the code field is on it whether or not a window is open right now."""
+
+    def test_the_page_takes_a_code_with_no_window_open(self, pages: TestClient) -> None:
+        body = pages.get(approval_routes.ENROL_PATH).text
+        assert 'name="code"' in body
+        assert 'name="password"' in body
+
+    def test_a_window_opened_while_a_person_reads_the_page_works(self, pages: TestClient) -> None:
+        """What the trap cost: the agent can open a fresh window while the
+        person sits on the page, and they just type the new code."""
+        assert 'name="code"' in pages.get(approval_routes.ENROL_PATH).text
+        _, code = approver.open_enrolment()
+
+        answer = pages.post(
+            approval_routes.ENROL_PATH,
+            data={"code": code, "password": "", "new": PASSWORD, "again": PASSWORD},
+        )
+
+        assert answer.status_code == 200
+        assert approver.verify(PASSWORD) is True
+
+    def test_an_expired_code_is_refused_exactly_like_a_wrong_password(
+        self, pages: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both fields on one form must not become an oracle: which one was
+        offered, and which was wrong, answer the same."""
+        _, code = approver.open_enrolment()
+        monkeypatch.setattr(time, "monotonic", lambda: time.perf_counter() + 1e6)
+
+        expired = pages.post(
+            approval_routes.ENROL_PATH,
+            data={"code": code, "new": PASSWORD, "again": PASSWORD},
+        )
+        guessed = pages.post(
+            approval_routes.ENROL_PATH,
+            data={"password": "not-the-password", "new": PASSWORD, "again": PASSWORD},
+        )
+
+        assert expired.status_code == guessed.status_code == 404
+        assert expired.text == guessed.text
+        assert approver.configured() is False
+
+
 class TestTheEnrolmentCode:
     """Gatehouse found the hole this closes: the gateway is public, so an open
     window was an invitation to the whole internet to claim a new gateway's
@@ -514,9 +618,7 @@ class TestTheEnrolmentCode:
 
     def test_the_window_alone_is_not_enough(self, pages: TestClient) -> None:
         approver.open_enrolment()
-        answer = pages.post(
-            approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD}
-        )
+        answer = pages.post(approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD})
         assert answer.status_code == 404
         assert approver.configured() is False
 
@@ -544,7 +646,7 @@ class TestTheEnrolmentCode:
         self, pages: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _, code = approver.open_enrolment()
-        later = time.monotonic() + approver.ENROL_WINDOW_SECONDS + 1
+        later = time.monotonic() + approver._window_seconds + 1
         monkeypatch.setattr(approver.time, "monotonic", lambda: later)
         assert approver.enrolling(code) is False
 
@@ -561,7 +663,7 @@ class TestTheEnrolTool:
         result = await approval_enrol()
         assert result["opened"] is True
         assert result["url"] == approval_routes.ENROL_PATH
-        assert result["open_for_seconds"] == approver.ENROL_WINDOW_SECONDS
+        assert result["open_for_seconds"] == approver.DEFAULT_ENROL_WINDOW_SECONDS
         assert result["code"]
 
     async def test_its_code_is_the_one_the_page_accepts(self, pages: TestClient) -> None:
@@ -625,9 +727,7 @@ class TestTheBodyCap:
         from fastmcp import FastMCP
 
         monkeypatch.setenv("TRENTINA_RATE_LIMIT", limiting)
-        monkeypatch.setenv(
-            "TRENTINA_APPROVAL_PASSWORD_HASH", approver.make_verifier(PASSWORD)
-        )
+        monkeypatch.setenv("TRENTINA_APPROVAL_PASSWORD_HASH", approver.make_verifier(PASSWORD))
         mcp = FastMCP("t")
         approval_routes.register_approval_routes(mcp)
         return TestClient(
@@ -713,16 +813,14 @@ class TestCompetingPasswordChanges:
         """Bound to this test's own running loop, not a previous one's."""
         approval_routes._PASSWORD_WORK = asyncio.Semaphore(1)
 
-    async def test_two_enrolments_from_one_window_leave_one_password(
-        self, unset: Any
-    ) -> None:
+    async def test_two_enrolments_from_one_window_leave_one_password(self, unset: Any) -> None:
         del unset
         _, code = approver.open_enrolment()
         first, second = "password-one-here", "password-two-here"
 
         results = await asyncio.gather(
-            approval_routes._authorised_set(code, "", first),
-            approval_routes._authorised_set(code, "", second),
+            approval_routes._authorised_set(BARE_REQUEST, code, "", first),
+            approval_routes._authorised_set(BARE_REQUEST, code, "", second),
         )
 
         # Exactly one set a password; the other was refused.
@@ -744,16 +842,14 @@ class TestCompetingPasswordChanges:
         _, code = approver.open_enrolment()
 
         await asyncio.gather(
-            approval_routes._authorised_set(code, "", "password-one-here"),
-            approval_routes._authorised_set(code, "", "password-two-here"),
+            approval_routes._authorised_set(BARE_REQUEST, code, "", "password-one-here"),
+            approval_routes._authorised_set(BARE_REQUEST, code, "", "password-two-here"),
         )
 
         assert approver.enrolling(code) is False
         assert approver.configured() is True
 
-    async def test_a_change_cannot_be_overtaken_by_an_unauthorised_one(
-        self, unset: Any
-    ) -> None:
+    async def test_a_change_cannot_be_overtaken_by_an_unauthorised_one(self, unset: Any) -> None:
         """One caller knows the current password and one does not. The one that
         does not must lose regardless of ordering."""
         del unset
@@ -761,8 +857,10 @@ class TestCompetingPasswordChanges:
         wanted = "the-authorised-change"
 
         results = await asyncio.gather(
-            approval_routes._authorised_set("", PASSWORD, wanted),
-            approval_routes._authorised_set("", "wrong-current-password", "the-other-one"),
+            approval_routes._authorised_set(BARE_REQUEST, "", PASSWORD, wanted),
+            approval_routes._authorised_set(
+                BARE_REQUEST, "", "wrong-current-password", "the-other-one"
+            ),
         )
 
         assert sorted(r is None for r in results) == [False, True]

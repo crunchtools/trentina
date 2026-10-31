@@ -10,6 +10,59 @@ under that name.
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-10-31
+
+### Changed
+
+- **Every page a person sees on a gateway now looks like Trentina.** The
+  approval page, the page where the approval password is set, and the backend
+  sign-in pages each carried their own inline styles and none of them said
+  whose gateway it was. Two of the three ask for a secret, which makes this
+  part of the mechanism rather than a coat of paint: a password prompt with
+  nothing recognisable on it is indistinguishable from one phishing for the
+  same password, and anyone running federation runs two gateways and so holds
+  two approval passwords with nothing to tell them apart. `gateway/page.py` is
+  the one sheet — the mark inlined as a data URI, one inline style block, and
+  the hostname the browser asked for. Each page stays a single response under
+  `default-src 'none'`: nothing runs and nothing is fetched. The hostname comes
+  from a caller-chosen header, so it is matched against a hostname shape and
+  the line is omitted entirely rather than sanitised when it is anything else.
+  The OAuth consent page is unchanged — it is fastmcp's markup, patched on the
+  way out, and not ours to restyle.
+- How long an enrolment window stands is now
+  `gateway.approval_enrol_window_seconds` in `profiles.yaml`, five minutes by
+  default and bounded to 60–3600. It was a fixed ten minutes, which is the
+  wrong shape for it: an operator at the same keyboard as the browser needs
+  seconds, and an agent relaying the URL into a chat somebody reads on a phone
+  needs a round trip. The default is the short one because the window is the
+  one interval in which a gateway's approver can be claimed by whoever holds
+  the code. A value outside the bounds is clamped rather than refused, since
+  both directions are safe and a reload refused over this would strand every
+  other change in the file. A window keeps the length it was opened with — a
+  config write must not be able to stretch one somebody is already inside, and
+  the operator is who writes that file. Reloads without a restart.
+
+### Fixed
+
+- The password page hid the enrolment code field whenever a window was not
+  open, which made it a trap rather than tidier. A person arriving after the
+  window closed met a form asking for a *current* password that, on a gateway
+  with no password set, does not exist — and the refusal there is silent by
+  design, so nothing said why. Found the hard way on a live gateway: three
+  submissions, three identical refusals, no indication that the field needed
+  was missing from the page. Both fields are now always present and either is
+  accepted, so an agent can open a fresh window while the person sits on the
+  page. It discloses nothing: which field was offered, which was wrong, and
+  whether the gateway has a password at all still answer identically.
+
+### Documentation
+
+- `docs/approvals.md` gains why the pages look the way they do, and how to
+  keep the route off the internet when nothing is pending — including why that
+  belongs to the deployment and not to the gateway, since a route that
+  vanished when nothing was staged would make its own existence the signal for
+  when to attack.
+
 ## [4.1.1] - 2026-10-31
 
 ### Fixed

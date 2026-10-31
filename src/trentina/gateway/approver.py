@@ -189,9 +189,45 @@ def set_password(password: str) -> None:
     logger.info("approval: an approval password was set")
 
 
-#: How long an operator-opened enrolment window stands. Long enough to walk to
-#: a browser, short enough that an abandoned one is not a standing invitation.
-ENROL_WINDOW_SECONDS = 600
+#: How long an operator-opened enrolment window stands, as
+#: ``gateway.approval_enrol_window_seconds`` in ``profiles.yaml``. A setting
+#: rather than a constant because how long is enough belongs to the
+#: deployment: an agent relaying the URL into a chat read on a phone needs a
+#: round trip, an operator at the same keyboard as the browser needs seconds.
+#: Five minutes by default, since the window is the one interval in which this
+#: gateway's approver can be claimed. Bounded both ways — a minute is not
+#: actionable, and an hour is where "short" stops being true.
+DEFAULT_ENROL_WINDOW_SECONDS = 300.0
+MIN_ENROL_WINDOW_SECONDS = 60.0
+MAX_ENROL_WINDOW_SECONDS = 3600.0
+
+
+def clamped_enrol_window(seconds: float) -> float:
+    """``seconds`` brought inside the bounds, which is always the safe way.
+
+    Clamping rather than refusing, because both directions are safe here —
+    shortening an over-long window and lengthening an unusable one each leave
+    the code as the control — and a reload refused over a cosmetic bound would
+    strand every other change in the same file.
+    """
+    return max(MIN_ENROL_WINDOW_SECONDS, min(MAX_ENROL_WINDOW_SECONDS, seconds))
+
+
+def enrol_window_seconds() -> float:
+    """How long the NEXT window will stand, from the running configuration.
+
+    Read here rather than held, so a reload takes effect without a restart.
+    An open window keeps the length it was opened with (see
+    ``open_enrolment``): a config write must not be able to extend a window
+    somebody is already inside.
+    """
+    from .loader import get_active_config
+
+    active = get_active_config()
+    if active is None:
+        return DEFAULT_ENROL_WINDOW_SECONDS
+    return clamped_enrol_window(active.config.approval_enrol_window_seconds)
+
 
 #: Short enough to read out or retype, long enough that it is not guessed
 #: inside the window at the approval route's rate limit.
@@ -199,6 +235,7 @@ _CODE_BYTES = 8
 
 _window_opened: float | None = None
 _window_code: str | None = None
+_window_seconds: float = DEFAULT_ENROL_WINDOW_SECONDS
 
 
 def open_enrolment() -> tuple[int, str]:
@@ -224,12 +261,13 @@ def open_enrolment() -> tuple[int, str]:
     code-execution backend defeats this, as it defeats every other control on
     the gateway — see docs/deployment-hardening.md.
     """
-    global _window_opened, _window_code
+    global _window_opened, _window_code, _window_seconds
     _window_opened = time.monotonic()
+    _window_seconds = enrol_window_seconds()
     _window_code = secrets.token_urlsafe(_CODE_BYTES)
     hold(_window_code, "ENROLMENT_CODE")
-    logger.info("approval: enrolment opened for %ds", ENROL_WINDOW_SECONDS)
-    return ENROL_WINDOW_SECONDS, _window_code
+    logger.info("approval: enrolment opened for %.0fs", _window_seconds)
+    return int(_window_seconds), _window_code
 
 
 def enrolling(code: str | None = None) -> bool:
@@ -246,7 +284,7 @@ def enrolling(code: str | None = None) -> bool:
     """
     if _verifier() is not None or _window_opened is None or _window_code is None:
         return False
-    if time.monotonic() - _window_opened > ENROL_WINDOW_SECONDS:
+    if time.monotonic() - _window_opened > _window_seconds:
         return False
     if code is None:
         return True
@@ -255,9 +293,10 @@ def enrolling(code: str | None = None) -> bool:
 
 def close_enrolment() -> None:
     """Shut the window. Called once a password is set, and by tests."""
-    global _window_opened, _window_code
+    global _window_opened, _window_code, _window_seconds
     _window_opened = None
     _window_code = None
+    _window_seconds = DEFAULT_ENROL_WINDOW_SECONDS
 
 
 def verify(password: str | None) -> bool:
@@ -271,4 +310,3 @@ def verify(password: str | None) -> bool:
     if verifier is None or not password:
         return False
     return _matches(password, verifier)
-
