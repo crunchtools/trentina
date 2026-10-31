@@ -10,6 +10,12 @@ under that name.
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-10-31
+
+### Fixed
+
+- **`config_tool` read a file's layout instead of assuming it, and now refuses a file it cannot reproduce** (#633). ruamel emits one block-sequence style per document; the byte-for-byte test covered the five YAML files in this repo, which all indent a sequence's dash two past its parent key, and the first production config this was pointed at does the opposite in 882 of its 885 sequences. A one-key write therefore reindented hundreds of lists, and an `unset` in that state removed a `session_ttl_seconds` that had been set explicitly. The style is now read off the file by majority, and a write is refused outright unless reading the file and writing it back reproduces it exactly — a file using YAML anchors does not, because those are renumbered when rewritten, so such a file reads fine and refuses to write until it is normalised once by hand.
+
 ## [3.3.0] - 2026-10-31
 
 ### Added
