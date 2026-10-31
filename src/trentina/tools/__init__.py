@@ -8,6 +8,7 @@ from .cache import cache_flush
 from .config import manage_config
 from .content import block_content, flag_content, judge_content, redact_content
 from .dir import block_dir, flag_dir, list_dir, redact_dir
+from .enrol import approval_enrol
 from .fetch import block_fetch, fetch_page, flag_fetch, redact_fetch
 from .keygen import federation_keygen
 from .pins import manage_tool_pins
@@ -19,6 +20,7 @@ from .stats import get_trentina_stats
 from .token import profile_token
 
 __all__ = [
+    "approval_enrol",
     "audit_verify",
     "backend_auth_revoke",
     "backend_auth_start",

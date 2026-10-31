@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PATH = "/approve"
+ENROL_PATH = "/approve/password"
 
 #: Tighter than the OAuth pages'. A person approves a handful of things ever,
 #: and this route gates who holds root, so the limit is also what bounds a
@@ -193,23 +194,109 @@ def register_approval_routes(mcp_server: Any) -> None:
     this feature. The absence of a password is the absence of the feature.
     """
     if not approver.configured():
-        logger.info(
-            "gateway: no approval password configured, so %s is not mounted and the "
-            "operator seat and federation trust stay unwritable",
-            PATH,
+        logger.warning(
+            "gateway: no approval password is set, so the operator seat and federation "
+            "trust stay unwritable. An operator agent can ask for one with "
+            "approval_enrol, which opens %s for a person to set it",
+            ENROL_PATH,
         )
-        return
 
     from starlette.routing import request_response
 
     from .ratelimit import RateLimiter, UnauthenticatedWriteGuard, enabled
 
     limiter = RateLimiter(*PAGE_LIMIT, name=PATH)
-    for methods, handler in ((["GET"], _show), (["POST"], _decide)):
+    routes = (
+        (PATH, ["GET"], _show),
+        (PATH, ["POST"], _decide),
+        (ENROL_PATH, ["GET"], _password_page),
+        (ENROL_PATH, ["POST"], _set_password),
+    )
+    for path, methods, handler in routes:
         app: Any = handler
         if enabled():
             app = UnauthenticatedWriteGuard(
                 request_response(handler), limiter=limiter, max_body_bytes=MAX_BODY_BYTES
             )
-        mcp_server.custom_route(PATH, methods=methods)(app)
-    logger.info("gateway: the approval page is mounted at %s", PATH)
+        mcp_server.custom_route(path, methods=methods)(app)
+    logger.info("gateway: the approval pages are mounted at %s", PATH)
+
+
+_SET_FORM = (
+    '<p><label>New approval password<br>'
+    '<input type="password" name="new" autocomplete="new-password" '
+    'style="font:inherit;padding:.4rem;width:20rem"></label></p>'
+    '<p><label>Again<br>'
+    '<input type="password" name="again" autocomplete="new-password" '
+    'style="font:inherit;padding:.4rem;width:20rem"></label></p>'
+)
+
+
+async def _password_page(_request: Request) -> Response:
+    """Where a person sets or changes the approval password.
+
+    An operator agent cannot set it — that is the whole point — but it CAN ask
+    for this page to be worth opening, which is what `approval_enrol` does.
+    Three states, and the page says which one it is in rather than offering
+    something that will be refused.
+    """
+    if approver.pinned_by_deployment():
+        return _page(
+            "Approval password",
+            "<h1>Approval password</h1><p>This gateway's approval password is pinned "
+            "by its deployment, so it cannot be changed from here. Change it where "
+            "the configuration is kept.</p>",
+        )
+    if approver.enrolling():
+        return _page(
+            "Set the approval password",
+            "<h1>Set the approval password</h1>"
+            "<p>This gateway has no approval password yet, and an agent has asked for "
+            "one to be set. Choose it here. Afterwards it is what you will be asked "
+            f"for whenever an agent proposes a change only a person should agree to.</p>"
+            f'<form method="post" action="{html.escape(ENROL_PATH)}">{_SET_FORM}'
+            f'<button style="{_BUTTON}">Set password</button></form>'
+            f"<p style='color:#555'>At least {approver.MIN_PASSWORD_CHARS} characters. "
+            "Nothing else can be approved on this gateway until it is set.</p>",
+        )
+    return _page(
+        "Change the approval password",
+        "<h1>Change the approval password</h1>"
+        "<p>Enter the current password to change it.</p>"
+        f'<form method="post" action="{html.escape(ENROL_PATH)}">'
+        "<p><label>Current password<br>"
+        '<input type="password" name="password" autocomplete="current-password" '
+        'style="font:inherit;padding:.4rem;width:20rem"></label></p>'
+        f"{_SET_FORM}"
+        f'<button style="{_BUTTON}">Change password</button></form>',
+    )
+
+
+async def _set_password(request: Request) -> Response:
+    """Set or change it. Fail-closed on every path that is not clearly allowed."""
+    form = await request.form()
+    new = str(form.get("new") or "")
+    if new != str(form.get("again") or ""):
+        return _page("Not set", "<p>Those did not match. Nothing was changed.</p>", 400)
+
+    if approver.pinned_by_deployment():
+        return _page("Not set", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
+    if not approver.enrolling() and not approver.verify(str(form.get("password") or "")):
+        # A wrong current password, and a closed window with none configured,
+        # answer the same: neither says which it was.
+        logger.info("approval: a password change was not authorised")
+        return _page("Not set", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
+    try:
+        approver.set_password(new)
+    except ValueError as exc:
+        # Its own message names the rule, never the password.
+        return _page("Not set", f"<p>{html.escape(str(exc))}</p>", 400)
+    except OSError as exc:
+        logger.warning("approval: the password could not be stored err=%s", exc_kind(exc))
+        return _page("Not set", "<p>It could not be stored. Nothing was changed.</p>", 500)
+    approver.close_enrolment()
+    return _page(
+        "Password set",
+        "<p>Set. This is what you will be asked for when an agent proposes a change "
+        "only a person should agree to.</p>",
+    )

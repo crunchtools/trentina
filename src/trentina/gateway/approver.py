@@ -38,8 +38,12 @@ import base64
 import hashlib
 import hmac
 import logging
+import os
 import secrets
+import time
+from pathlib import Path
 
+from ..config import get_config
 from ..logsafe import exc_kind
 
 logger = logging.getLogger(__name__)
@@ -59,6 +63,9 @@ _PREFIX = "scrypt"
 #: route's rate limit) is not a search. Enforced when the verifier is MADE,
 #: which is the only place the password itself is ever seen.
 MIN_PASSWORD_CHARS = 12
+
+_DIR_MODE = 0o700
+_FILE_MODE = 0o600
 
 
 def make_verifier(password: str) -> str:
@@ -114,18 +121,116 @@ def _matches(password: str, verifier: str) -> bool:
 def configured() -> bool:
     """Whether an approver is configured at all.
 
-    Read on every call rather than cached, so a verifier added by a deploy and
-    a reload takes effect without a restart — and so removing it takes effect
-    just as fast, which is the direction that matters.
+    Read on every call rather than cached, so a password set through the
+    enrolment page, or a verifier added by a deploy, takes effect at once — and
+    so removing one takes effect just as fast, which is the direction that
+    matters.
     """
     return _verifier() is not None
 
 
+def _store_path() -> Path:
+    """Where a password set through the enrolment page is kept.
+
+    Beside the key and token stores, under ``/data``, which
+    ``tools/confine.py`` refuses to every file tool. The config mount is
+    read-only by design, so a password set at runtime cannot live there.
+    """
+    return Path(get_config().db_path).parent / "approval" / "verifier"
+
+
 def _verifier() -> str | None:
+    """The configured verifier: the environment first, then the store.
+
+    The environment wins so a deploy can pin one and an enrolled password
+    cannot quietly override what an administrator put in the image's config.
+    """
     from .loader import read_secret_env
 
     held = read_secret_env("TRENTINA_APPROVAL_PASSWORD_HASH", record=False)
-    return held.strip() or None if held else None
+    if held and held.strip():
+        return held.strip()
+    try:
+        stored = _store_path().read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return stored or None
+
+
+def pinned_by_deployment() -> bool:
+    """Whether the verifier came from the environment rather than the store.
+
+    A deployment that pinned one is saying the password is not the gateway's to
+    change, so the enrolment page says so instead of offering to.
+    """
+    from .loader import read_secret_env
+
+    held = read_secret_env("TRENTINA_APPROVAL_PASSWORD_HASH", record=False)
+    return bool(held and held.strip())
+
+
+def set_password(password: str) -> None:
+    """Write the verifier for ``password``, replacing any stored one.
+
+    Atomic, because a half-written verifier would lock approvals out until
+    somebody noticed. The caller decides WHETHER this may happen — either an
+    open enrolment window with nothing configured yet, or a correct current
+    password — and this does not second-guess it.
+    """
+    verifier = make_verifier(password)
+    path = _store_path()
+    path.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
+    os.chmod(path.parent, _DIR_MODE)
+    staged = path.with_name(path.name + ".staged")
+    fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _FILE_MODE)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(verifier)
+        os.replace(staged, path)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
+    logger.info("approval: an approval password was set")
+
+
+#: How long an operator-opened enrolment window stands. Long enough to walk to
+#: a browser, short enough that an abandoned one is not a standing invitation.
+ENROL_WINDOW_SECONDS = 600
+
+_window_opened: float | None = None
+
+
+def open_enrolment() -> int:
+    """Open the window in which a first password may be set; return its length.
+
+    An operator agent asks for this, which is the whole point — it can request
+    that a person be prompted, exactly as ``backend_auth`` does for a backend
+    sign-in. What it cannot do is answer the prompt: setting the password is a
+    POST, and Trentina's own tools do not make one.
+    """
+    global _window_opened
+    _window_opened = time.monotonic()
+    logger.info("approval: enrolment opened for %ds", ENROL_WINDOW_SECONDS)
+    return ENROL_WINDOW_SECONDS
+
+
+def enrolling() -> bool:
+    """Whether a first password may be set right now.
+
+    Both conditions, and both matter. Nothing configured, so this can never
+    replace a working password — that takes the current one. And a window an
+    operator opened, so a gateway sitting with no password is not a standing
+    offer to whoever reaches the page first.
+    """
+    if _verifier() is not None or _window_opened is None:
+        return False
+    return time.monotonic() - _window_opened <= ENROL_WINDOW_SECONDS
+
+
+def close_enrolment() -> None:
+    """Shut the window. Called once a password is set, and by tests."""
+    global _window_opened
+    _window_opened = None
 
 
 def verify(password: str | None) -> bool:

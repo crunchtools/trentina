@@ -16,6 +16,7 @@ from .gateway.diagnose import diagnose_visibility
 from .gateway.results import _refusal_text
 from .modes import current_policy, parse_mode_arg
 from .tools import (
+    approval_enrol,
     audit_verify,
     backend_auth_revoke,
     backend_auth_start,
@@ -534,6 +535,31 @@ async def backend_auth_tool(
     if action == "start":
         return await backend_auth_start(backend)
     return await backend_auth_revoke(backend)
+
+
+@mcp.tool()
+async def approval_enrol_tool() -> dict[str, Any]:
+    """Ask a person to set this gateway's approval password. Operator only.
+
+    Two changes on this gateway need a person to agree: who holds the operator
+    seat, and turning on federation trust, which makes this gateway serve
+    another gateway's response without running its own layers over it. Both are
+    staged rather than refused, and a person approves them with a password.
+
+    If no password is set yet, those two changes cannot be approved at all, so
+    they stay refused. Call this and give the URL it returns to a person: they
+    choose the password in a browser, and nothing else is needed. The window is
+    short and closes as soon as the password is set.
+
+    You can ask for this; you cannot answer it. Setting the password is a form
+    submission, which none of your tools makes — that asymmetry is why asking
+    is yours to do.
+
+    Returns:
+        `url` and `open_for_seconds`, or `already_set`, or `error` when the
+        password is pinned by the deployment instead.
+    """
+    return await approval_enrol()
 
 
 @mcp.tool()

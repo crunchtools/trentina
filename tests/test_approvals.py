@@ -207,17 +207,30 @@ def page(approval: str) -> TestClient:
 
 
 class TestThePage:
-    def test_the_route_does_not_exist_without_an_approver(
+    def test_nothing_can_be_approved_without_a_password(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """No password, no feature. The absence of an approver is never an
-        approval anyone can give."""
+        """No password, no approvals. The pages still mount — that is where a
+        password gets set in the first place — but none of them approves
+        anything."""
         from fastmcp import FastMCP
+        from starlette.applications import Starlette as App
 
         monkeypatch.delenv("TRENTINA_APPROVAL_PASSWORD_HASH", raising=False)
+        approver.close_enrolment()
         mcp = FastMCP("t")
         approval_routes.register_approval_routes(mcp)
-        assert mcp._additional_http_routes == []
+        client = TestClient(App(routes=mcp._additional_http_routes),
+                            base_url="https://gw.example")
+
+        record: list[str] = []
+        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
+        answer = client.post(
+            approval_routes.PATH,
+            data={"password": PASSWORD, "kind": "operator seat", "decision": "approve"},
+        )
+        assert answer.status_code == 404
+        assert record == []
 
     def test_the_first_page_asks_only_for_the_password(self, page: TestClient) -> None:
         """It does not say whether anything is pending: an unauthenticated
@@ -331,3 +344,145 @@ class TestThePage:
         body = page.post(approval_routes.PATH, data={"password": PASSWORD}).text
         assert "value <b>" not in body
         assert "&lt;b&gt;" in body
+
+
+@pytest.fixture
+def unset(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Any:
+    """A gateway with no approval password and its own data directory."""
+    from trentina import config as config_mod
+
+    monkeypatch.delenv("TRENTINA_APPROVAL_PASSWORD_HASH", raising=False)
+    monkeypatch.setenv("QUARANTINE_DB", str(tmp_path / "state" / "trentina.db"))
+    config_mod._config = None
+    approver.close_enrolment()
+    yield
+    approver.close_enrolment()
+    config_mod._config = None
+
+
+@pytest.fixture
+def pages(unset: Any) -> TestClient:
+    from fastmcp import FastMCP
+
+    del unset
+    mcp = FastMCP("t")
+    approval_routes.register_approval_routes(mcp)
+    return TestClient(
+        Starlette(routes=mcp._additional_http_routes), base_url="https://gw.example"
+    )
+
+
+class TestEnrolment:
+    """Scott's ruling: the operator asks, Trentina prompts a person, and the
+    person chooses. The operator can ask and cannot answer — setting the
+    password is a form submission, which none of its tools makes."""
+
+    def test_a_gateway_starts_with_no_approver(self, unset: Any) -> None:
+        assert approver.configured() is False
+        assert approver.enrolling() is False
+
+    def test_the_window_has_to_be_opened(self, pages: TestClient) -> None:
+        """A gateway sitting with no password is not a standing offer to
+        whoever reaches the page first."""
+        answer = pages.post(
+            approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD}
+        )
+        assert answer.status_code == 404
+        assert approver.configured() is False
+
+    def test_an_opened_window_lets_a_person_set_it(self, pages: TestClient) -> None:
+        approver.open_enrolment()
+        assert "Set the approval password" in pages.get(approval_routes.ENROL_PATH).text
+        answer = pages.post(
+            approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD}
+        )
+        assert answer.status_code == 200
+        assert approver.configured() is True
+        assert approver.verify(PASSWORD) is True
+
+    def test_setting_it_closes_the_window(self, pages: TestClient) -> None:
+        approver.open_enrolment()
+        pages.post(approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD})
+        assert approver.enrolling() is False
+
+    def test_a_window_cannot_replace_a_working_password(self, pages: TestClient) -> None:
+        """Once one is set, changing it takes the current one — a window is
+        only ever for the first."""
+        approver.open_enrolment()
+        pages.post(approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD})
+        approver.open_enrolment()
+        assert approver.enrolling() is False
+        answer = pages.post(
+            approval_routes.ENROL_PATH,
+            data={"new": "something-else-entirely", "again": "something-else-entirely"},
+        )
+        assert answer.status_code == 404
+        assert approver.verify(PASSWORD) is True
+
+    def test_the_window_expires(self, pages: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        approver.open_enrolment()
+        later = time.monotonic() + approver.ENROL_WINDOW_SECONDS + 1
+        monkeypatch.setattr(approver.time, "monotonic", lambda: later)
+        assert approver.enrolling() is False
+
+    def test_mismatched_entries_change_nothing(self, pages: TestClient) -> None:
+        approver.open_enrolment()
+        answer = pages.post(
+            approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD + "x"}
+        )
+        assert answer.status_code == 400
+        assert approver.configured() is False
+
+    def test_a_short_password_is_refused_with_the_rule(self, pages: TestClient) -> None:
+        approver.open_enrolment()
+        answer = pages.post(approval_routes.ENROL_PATH, data={"new": "short", "again": "short"})
+        assert answer.status_code == 400
+        assert "at least" in answer.text
+        assert approver.configured() is False
+
+    def test_changing_it_needs_the_current_one(self, pages: TestClient) -> None:
+        approver.open_enrolment()
+        pages.post(approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD})
+        changed = "a-brand-new-password"
+        refused = pages.post(
+            approval_routes.ENROL_PATH,
+            data={"password": "wrong", "new": changed, "again": changed},
+        )
+        assert refused.status_code == 404
+        assert approver.verify(PASSWORD) is True
+
+        ok = pages.post(
+            approval_routes.ENROL_PATH,
+            data={"password": PASSWORD, "new": changed, "again": changed},
+        )
+        assert ok.status_code == 200
+        assert approver.verify(changed) is True
+        assert approver.verify(PASSWORD) is False
+
+    def test_a_deployment_pinned_password_cannot_be_changed_from_here(
+        self, pages: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A deployment that pinned one is saying it is not the gateway's to
+        change, so the page says so instead of offering to."""
+        monkeypatch.setenv("TRENTINA_APPROVAL_PASSWORD_HASH", approver.make_verifier(PASSWORD))
+        assert "pinned by its deployment" in pages.get(approval_routes.ENROL_PATH).text
+        answer = pages.post(
+            approval_routes.ENROL_PATH,
+            data={
+                "password": PASSWORD,
+                "new": "another-long-password",
+                "again": "another-long-password",
+            },
+        )
+        assert answer.status_code == 404
+        assert approver.verify(PASSWORD) is True
+
+    def test_the_stored_verifier_is_private(self, pages: TestClient) -> None:
+        approver.open_enrolment()
+        pages.post(approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD})
+        import os
+
+        path = approver._store_path()
+        assert os.stat(path).st_mode & 0o777 == 0o600
+        assert os.stat(path.parent).st_mode & 0o777 == 0o700
+        assert PASSWORD not in path.read_text(encoding="utf-8")
