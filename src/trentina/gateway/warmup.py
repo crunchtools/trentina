@@ -143,7 +143,10 @@ async def _poll_once(now: float) -> float:
         for url in due:
             _next_due[url] = now + interval[url]
         if stale:
-            sharing = [p for p in profiles if any(b.url in stale for b in p.backends.values())]
+            stale_urls = set(stale)
+            sharing = [
+                p for p in profiles if any(b.url in stale_urls for b in p.backends.values())
+            ]
             rebuilt = await rebuild_profiles(sharing)
             logger.warning(
                 "federation poll: %d backend(s) changed, rebuilt %d profile(s)",

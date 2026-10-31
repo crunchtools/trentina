@@ -28,7 +28,7 @@ from trentina.gateway.backend import (
 )
 from trentina.gateway.circuit import State, breaker
 from trentina.gateway.errors import BackendCallError
-from trentina.gateway.profile import Backend
+from trentina.gateway.profile import AuthConfig, Backend, Profile
 from trentina.logsafe import exc_kind
 
 
@@ -522,6 +522,30 @@ class TestFederatedErrorKindIsLegible:
         assert "ExceptionGroup" not in str(info.value)
         assert "ConnectError" in caplog.text
         assert "ExceptionGroup" not in caplog.text
+
+
+@pytest.mark.asyncio
+class TestRevalidateForwardsProfile:
+    """revalidate_backend_tools must forward the caller profile to the refresh,
+    so a federated probe can mint its edge JWT (#592, F3). Without it the probe
+    goes out unauthenticated and the upstream rejects it."""
+
+    async def test_profile_reaches_refresh(self) -> None:
+        from trentina.gateway.backend import revalidate_backend_tools
+
+        _tool_list_cache[URL] = [{"name": "old"}]
+        prof = Profile(name="josui", auth=AuthConfig(bearer_token_env="T"))
+        captured: dict[str, Any] = {}
+
+        async def spy_refresh(_name: str, _backend: Backend, profile: Any = None) -> Any:
+            captured["profile"] = profile
+            return [{"name": "new"}]
+
+        with patch("trentina.gateway.backend.refresh_backend_tools", side_effect=spy_refresh):
+            changed = await revalidate_backend_tools("rotv", _backend(), prof)
+
+        assert changed is True
+        assert captured["profile"] is prof
 
 
 @pytest.mark.asyncio
