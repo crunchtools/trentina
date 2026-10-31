@@ -26,6 +26,7 @@ from .tools import (
     get_trentina_stats,
     judge_content,
     list_dir,
+    manage_config,
     manage_tool_pins,
     read_file,
     reconnect_backend,
@@ -376,6 +377,46 @@ async def reconnect_backend_tool(backend: str) -> dict[str, Any]:
         backend: Backend name to reconnect (e.g. "postiz", "slack", "jira").
     """
     return await reconnect_backend(backend)
+
+
+@mcp.tool()
+async def config_tool(
+    action: Literal["get", "set", "unset"],
+    path: str | None = None,
+    value: str | bool | int | float | list[Any] | dict[str, Any] | None = None,
+    expect_hash: str | None = None,
+) -> dict[str, Any]:
+    """Read and change this gateway's own configuration. Operator profile only.
+
+    The configuration is a YAML file that a person also maintains by hand and
+    keeps in version control, so a write must not be composed blind: read the
+    part you intend to change, then send the `hash` that `get` returned back as
+    `expect_hash`. If the file moved in between, the write is refused rather
+    than overwriting whatever else was done to it. Every successful write
+    returns the new hash, so a run of changes needs one read at the start.
+
+    A change is validated by loading it before anything is replaced, so a
+    refusal has changed nothing, and the previous version is kept inside the
+    gateway. The change is applied the same way `reload_profiles` applies one;
+    whatever needs a restart to take effect is reported in the result.
+
+    Two writes are refused. The operator seat itself — who holds `role:
+    operator`, and how a caller becomes one — stays a human edit of the file.
+    And a change to federation trust or peers must be written on its own,
+    inside the federation block it belongs to, rather than carried along inside
+    a larger value.
+
+    Args:
+        action: `get` reads, `set` writes a value, `unset` removes a key.
+        path: Dotted config keys, e.g.
+            "profiles.myagent.backends.lotor.federated.edge_key_name". Omit on
+            `get` for the whole file.
+        value: What to set. A scalar, a list, or a mapping to merge in at that
+            path. A list is replaced whole.
+        expect_hash: The `hash` from a previous `get` or write. Required to set
+            or unset.
+    """
+    return await manage_config(action, path, value, expect_hash)
 
 
 @mcp.tool()
