@@ -50,6 +50,7 @@ from trentina.gateway.profile import (
 )
 from trentina.testing.hygiene import LogCapture, capture_logs, leaked
 from trentina.tools import cache as cache_tool
+from trentina.tools import keygen as keygen_tool
 from trentina.tools import reconnect as reconnect_tool
 from trentina.transports.mcp import route_jsonrpc
 
@@ -211,6 +212,9 @@ class TestInternalTools:
     async def test_admin_tools_refusing_a_name(self, captured: _Capture) -> None:
         await cache_tool.cache_flush(CANARY)
         await reconnect_tool.reconnect_backend(CANARY)
+        # A key name becomes a filename, so a rejected one must not be logged
+        # either as itself or as part of a path (#633).
+        await keygen_tool.federation_keygen(f"{CANARY}/../escape")
 
 
 # ------------------------------------------------------------ proxied tools

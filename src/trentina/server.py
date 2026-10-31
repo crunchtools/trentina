@@ -21,6 +21,7 @@ from .tools import (
     backend_auth_start,
     backend_auth_status,
     cache_flush,
+    federation_keygen,
     fetch_page,
     get_trentina_stats,
     judge_content,
@@ -375,6 +376,30 @@ async def reconnect_backend_tool(backend: str) -> dict[str, Any]:
         backend: Backend name to reconnect (e.g. "postiz", "slack", "jira").
     """
     return await reconnect_backend(backend)
+
+
+@mcp.tool()
+async def federation_keygen_tool(name: str) -> dict[str, Any]:
+    """Mint an Ed25519 keypair for a federated edge and return its public key.
+
+    Operator profile only. Setting up federation needs a keypair on each side:
+    an edge key the downstream signs its requests with, and a signing key the
+    upstream vouches for responses with. This creates one without a shell.
+
+    The private half is written inside the gateway, where no file tool can
+    reach it, and is never returned. What comes back is the PUBLIC key, which
+    is what the other gateway pins for this peer — copy it into that side's
+    config. Refer to the key here by the name you gave it, as
+    ``edge_key_name`` or ``signing_key_name``.
+
+    A name is written once. To rotate, mint a new name and point the config at
+    it, so a key in use is never replaced underneath a live edge.
+
+    Args:
+        name: What to call the key: lowercase letters, digits and hyphens
+            (e.g. "edge-to-lotor", "ingress-signing").
+    """
+    return await federation_keygen(name)
 
 
 @mcp.tool()

@@ -8,6 +8,7 @@ from .cache import cache_flush
 from .content import block_content, flag_content, judge_content, redact_content
 from .dir import block_dir, flag_dir, list_dir, redact_dir
 from .fetch import block_fetch, fetch_page, flag_fetch, redact_fetch
+from .keygen import federation_keygen
 from .pins import manage_tool_pins
 from .read import block_read, flag_read, read_file, redact_read
 from .reconnect import reconnect_backend
@@ -26,6 +27,7 @@ __all__ = [
     "block_read",
     "block_search",
     "cache_flush",
+    "federation_keygen",
     "fetch_page",
     "flag_content",
     "flag_dir",

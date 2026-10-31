@@ -28,9 +28,11 @@ class TestServerRegistration:
         somebody made, not something that happened. It was 19 until 0.32.0,
         when the mode moved from the tool NAME to an argument (#193).
         ``backend_auth`` (#479) is one tool with an action for the same reason.
+        ``federation_keygen`` (#633) made it 15: provisioning an edge needs a
+        keypair, and minting one was the step that still needed a shell.
         """
         tools = await mcp.list_tools()
-        assert len(tools) == 14, f"Expected 14 tools, got {len(tools)}"
+        assert len(tools) == 15, f"Expected 15 tools, got {len(tools)}"
 
     async def test_every_family_takes_a_mode(self) -> None:
         """The mode is an argument the policy checks, not a name the agent picks."""
@@ -56,6 +58,7 @@ class TestServerRegistration:
             "tool_pins_tool",
             "tool_visibility_tool",
             "audit_verify_tool",
+            "federation_keygen_tool",
         }
         assert tool_names == families | admin | {"read_part_tool"}
 
