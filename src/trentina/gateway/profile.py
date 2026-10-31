@@ -1002,8 +1002,8 @@ class Backend(BaseModel):
             "Mark this backend as a federated secondary Trentina — a peer gateway "
             "whose own perimeter already judged its responses (#592). Inert in "
             "itself today: the link still runs as a plain MCP backend, so the "
-            "interim static-bearer edge keeps working unchanged. Its presence is "
-            "a trust-boundary declaration later items build on (edge-key auth, "
+            "interim static-bearer link keeps working unchanged. Its presence is "
+            "a trust-boundary declaration later items build on (primary-key auth, "
             "verdict trust). Remote backends only; held across an agent reload "
             "like the defense block, since it names a trust boundary."
         ),
@@ -1201,7 +1201,7 @@ class Backend(BaseModel):
         peer, so it cannot be federated. A ``decoy://`` backend has no server
         at all — the ``_REMOTE_ONLY_FIELDS`` check refuses ``federated`` there.
 
-        When an edge key is set, by either source, the backend signs a JWT whose
+        When an primary key is set, by either source, the backend signs a JWT whose
         audience is the secondary profile named in the URL, so the URL must be a
         gateway MCP endpoint (``…/<profile>/mcp``) from which that name is
         derivable.
@@ -1214,14 +1214,14 @@ class Backend(BaseModel):
             and federation_audience(self.url) is None
         ):
             raise ValueError(
-                "a federated backend with an edge key must point at a gateway MCP "
+                "a federated backend with an primary key must point at a gateway MCP "
                 "endpoint (.../<profile>/mcp), from which the token audience is taken"
             )
         if self.federated is not None and self.federated.poll_seconds > 0 and self.auth is not None:
             raise ValueError(
                 "a federated backend with poll_seconds cannot also use auth: "
                 "background revalidation skips auth backends, so the poll would "
-                "never run — use the federated edge key, not an auth grant"
+                "never run — use the federated primary key, not an auth grant"
             )
         return self
 
@@ -3127,7 +3127,7 @@ class Profile(BaseModel):
         default=None,
         description=(
             "The secondary side of federation (#592): primary peers that may "
-            "authenticate to this profile with an edge JWT. A profile with "
+            "authenticate to this profile with an primary JWT. A profile with "
             "federation.peers is a federation ingress and needs no other "
             "credential (optional)"
         ),
@@ -3213,7 +3213,7 @@ class Profile(BaseModel):
 
     @model_validator(mode="after")
     def a_federation_ingress_is_directed(self) -> Profile:
-        """Refuse a federation ingress that is not a directed edge (#592, C2).
+        """Refuse a federation ingress that is not a directed link (#592, C2).
 
         A profile with ``federation.peers`` offers a declared set to a primary
         peer and can never reach past it. The rule is structural, like a

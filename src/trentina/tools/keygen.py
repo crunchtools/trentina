@@ -1,6 +1,6 @@
 """Federation keypair generation (#633): operator only.
 
-A federated edge needs an Ed25519 keypair on each side. Until now the only way
+A federated link needs an Ed25519 keypair on each side. Until now the only way
 to get one was ``openssl`` on the host, which is the manual step the operator
 seat exists to remove: ``docs/operator.md`` promises a loop where "none of this
 needs a shell", and generating a key was one of the places that was not true.

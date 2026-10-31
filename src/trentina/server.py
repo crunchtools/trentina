@@ -443,11 +443,11 @@ async def federation_keygen_tool(name: str) -> dict[str, Any]:
     ``primary_key_name`` or ``secondary_key_name``.
 
     A name is written once. To rotate, mint a new name and point the config at
-    it, so a key in use is never replaced underneath a live edge.
+    it, so a key in use is never replaced underneath a live link.
 
     Args:
         name: What to call the key: lowercase letters, digits and hyphens
-            (e.g. "edge-to-lotor", "ingress-signing").
+            (e.g. "primary-to-lotor", "ingress-signing").
     """
     return await federation_keygen(name)
 

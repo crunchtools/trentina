@@ -26,9 +26,9 @@ from . import federation_keys
 VSA_KEY = "_trentina_vsa"
 
 #: An assertion older than this is not trusted (clock skew + flight time); the
-#: primary re-judges instead (#592, D2a). Wider than the 60 s edge JWT: this
+#: primary re-judges instead (#592, D2a). Wider than the 60 s primary JWT: this
 #: must survive the secondary's own tool-call latency plus the return hop, where
-#: the edge JWT covers only a single outbound request. Bound to content_sha256,
+#: the primary JWT covers only a single outbound request. Bound to content_sha256,
 #: so a replayed assertion only validates the identical bytes it was signed for.
 MAX_AGE_SECONDS = 300
 

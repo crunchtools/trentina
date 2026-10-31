@@ -495,7 +495,7 @@ async def refresh_backend_tools(
 
 def _inflight_key(backend: Backend, profile: Profile | None) -> str:
     """One fetch per URL; per URL and profile when the fetch carries a
-    per-profile credential — an ``auth`` grant, or a federated edge key whose
+    per-profile credential — an ``auth`` grant, or a federated primary key whose
     JWT caller is the profile. Keying a federated fetch by profile too stops a
     no-profile fetch (e.g. pre-compression) from being joined by the
     authenticated build, which would hand the build the secondary's 401 (#592)."""

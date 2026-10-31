@@ -64,7 +64,7 @@ def verify_bearer(authorization_header: str | None, profile: Profile) -> None:
 def verify_primary_jwt_header(
     authorization_header: str | None, profile: Profile
 ) -> tuple[str, str] | None:
-    """Verify a federated peer's edge JWT, for a profile that is a federation ingress.
+    """Verify a federated peer's primary JWT, for a profile that is a federation ingress.
 
     Only a profile with ``federation.peers`` engages this path (#592, C1); for
     any other profile it returns None so the caller falls through to OAuth or a
@@ -72,7 +72,7 @@ def verify_primary_jwt_header(
     whose key verified the token (the actor) and the real caller — on success.
     Returns None when there is no credential to try. Raises ``AuthError`` (→ 401)
     when a credential IS presented but fails: a federation ingress's credential
-    is the edge JWT, so a bad one is fail-closed, never a fall-through.
+    is the primary JWT, so a bad one is fail-closed, never a fall-through.
 
     C1 only authenticates. C2 binds ``(peer, sub)`` into the request context so
     the secondary's audit and guards see the real caller.
@@ -94,7 +94,7 @@ def verify_primary_jwt_header(
     try:
         return verify_primary_jwt(presented, peers, aud=profile.name)
     except FederationKeyError as exc:
-        raise AuthError("invalid edge token") from exc
+        raise AuthError("invalid primary token") from exc
 
 
 async def verify_oauth(

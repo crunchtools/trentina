@@ -199,7 +199,7 @@ def _check_interim_federation(name: str, profile: Profile) -> None:
     A backend that points at a Trentina gateway's federation endpoint
     (``.../gateway/<profile>/mcp``) without a ``federated:`` block is the
     pre-3.1 arrangement: it mounts another gateway over a shared static bearer
-    and re-judges everything. First-class federation (edge-key auth +
+    and re-judges everything. First-class federation (primary-key auth +
     scan-once trust) supersedes it; the interim path still works but is
     deprecated; it is superseded by the first-class ``federated:`` block and
     will be removed in a future release. Warned by profile and backend name only,
@@ -252,12 +252,12 @@ def _check_federation_topology(name: str, profile: Profile) -> None:
         if not allow_insecure:
             raise ProfileConfigError(
                 f"Profile {name!r} backend {backend_name!r}: a federated backend must "
-                f"use https (the edge JWT is replayable over http); set "
+                f"use https (the primary JWT is replayable over http); set "
                 f"TRENTINA_FEDERATION_ALLOW_INSECURE=1 for a trusted local network"
             )
         logger.warning(
             "gateway: profile=%s backend=%s federated over insecure http "
-            "(TRENTINA_FEDERATION_ALLOW_INSECURE) — the edge JWT is replayable",
+            "(TRENTINA_FEDERATION_ALLOW_INSECURE) — the primary JWT is replayable",
             name,
             backend_name,
         )

@@ -78,7 +78,7 @@ async def _revalidate(backends: dict[str, tuple[str, Backend, Profile]]) -> list
     """Refetch each backend's tool list, once per URL, all at once; return the
     URLs whose list changed. A backend that cannot be reached keeps its cached
     list (``revalidate_backend_tools`` returns False there). The owning profile
-    is passed so a federated backend can mint its edge JWT — without it the
+    is passed so a federated backend can mint its primary JWT — without it the
     probe goes out unauthenticated and the secondary rejects it."""
     changed = await asyncio.gather(
         *(

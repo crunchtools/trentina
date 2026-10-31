@@ -471,7 +471,7 @@ def _hold_federated(before: Profile, after: Profile) -> list[str]:
             after_backend.federated = before_fed
             held.append(f"backends.{name}.federated")
         # The url of a backend that was federated is held too (#592, C1):
-        # repointing it would send the edge key to a different host.
+        # repointing it would send the primary key to a different host.
         if (
             before_backend is not None
             and before_fed is not None

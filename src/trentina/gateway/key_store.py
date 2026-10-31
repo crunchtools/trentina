@@ -1,6 +1,6 @@
 """The gateway's own federation keypairs, by name (#633).
 
-A federated edge needs an Ed25519 private key on each side. Until 3.3.0 a
+A federated link needs an Ed25519 private key on each side. Until 3.3.0 a
 profile could only name an environment variable holding one, which means a new
 key needs a new variable in the container's environment, which means a restart
 — the one step an operator agent cannot take. Referring to a key by NAME
@@ -71,7 +71,7 @@ def mint(name: str) -> str:
 
     ``O_EXCL`` refuses an existing file, a planted file and a symlink in one
     move, so a name is written exactly once and a key in use is never replaced
-    underneath a live edge. A write that fails part way leaves nothing behind,
+    underneath a live link. A write that fails part way leaves nothing behind,
     so the name stays free rather than becoming permanently unusable.
 
     The private PEM is deliberately not passed to ``logsafe.hold``: that would

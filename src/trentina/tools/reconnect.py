@@ -136,11 +136,11 @@ async def _reset_one(
                 "circuit": breaker.get_state(url).value,
             }
     elif cfg.federated is not None and holders:
-        # A federated edge authenticates with a per-request JWT whose caller is
+        # A federated link authenticates with a per-request JWT whose caller is
         # the primary profile (#592 C1/C2); _credentials mints it only when a
         # profile is passed. The operator path otherwise passed none, so the
         # probe went out unauthenticated and the secondary rejected it with an
-        # opaque ExceptionGroup. Hand it an owning profile so the edge re-auths.
+        # opaque ExceptionGroup. Hand it an owning profile so the link re-auths.
         holder = holders[0]
     breaker.reset(url)
     try:

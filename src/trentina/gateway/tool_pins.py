@@ -113,7 +113,7 @@ def check_tools(
     """Pin ``tools`` against ``url``'s approvals; return those not held.
 
     A FEDERATED backend's first list is auto-approved as a unit (#592, E1b):
-    declaring the edge accepts the peer's curation — its offered set already
+    declaring the link accepts the peer's curation — its offered set already
     passed the peer's own pin gate — so a large secondary does not storm the
     operator with hundreds of per-tool approvals. "First" is decided by a
     persisted marker (``FIRST_SEEN_SENTINEL``), not by whether any tool row

@@ -178,8 +178,8 @@ async def _authorize(
     if _static_bearer_ok(auth_header, profile):
         return None
 
-    # A federated peer's edge JWT (#592, C1), for a federation-ingress profile.
-    # Only engages when the profile has federation.peers; a bad edge token is
+    # A federated peer's primary JWT (#592, C1), for a federation-ingress profile.
+    # Only engages when the profile has federation.peers; a bad primary token is
     # fail-closed (401), never a fall-through.
     try:
         caller = verify_primary_jwt_header(auth_header, profile)
@@ -190,10 +190,10 @@ async def _authorize(
             request.state.federation_caller = caller
             return None
     except AuthError:
-        # The reason is always the fixed literal "invalid edge token", so there
+        # The reason is always the fixed literal "invalid primary token", so there
         # is nothing to log beyond that it failed (no exc text — O8/#262).
         logger.info(
-            "gateway: edge auth failed profile=%s [%s]", profile.name, _client_desc(request)
+            "gateway: primary auth failed profile=%s [%s]", profile.name, _client_desc(request)
         )
         return _plain(401, "Unauthorized")
 
