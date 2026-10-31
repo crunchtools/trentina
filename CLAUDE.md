@@ -258,9 +258,13 @@ new pattern goes into that file's attack, benign and linearity tables.
   the git transport (#453), registered only when the file has `git_remotes`.
   Bearer token picks the profile, as on `/proxy/llm`. (Renamed from `/git` in
   2.0.0 with `/proxy/http` and `/proxy/llm`, #511; the old paths now 404.)
-- `GET /health` — unauthenticated liveness probe returning `{status, classifier, profiles}`.
-  A timeout here means the asyncio event loop is blocked, not merely that a
-  backend is slow.
+- `GET /health` — unauthenticated liveness probe returning `{status,
+  classifier, profiles, pending_pins}`, plus `matrix_bridge` counts where a
+  profile is bridged. A timeout here means the asyncio event loop is blocked,
+  not merely that a backend is slow. Everything here is SUMMED, so the
+  unauthenticated probe names no profile; `pending_pins` counts only the
+  backends still configured, since a pin belonging to a URL nothing is
+  configured at any more withholds nothing and `tool_pins` cannot release it.
 
 ## Layer 2 scanning limits
 

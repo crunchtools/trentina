@@ -12,7 +12,7 @@ from trentina import perimeter_db
 from trentina.gateway import tool_pins
 
 # Imported at module load, before conftest's autouse fixture replaces it on the module.
-from trentina.gateway.tool_pins import check_tools, decide, held, pending
+from trentina.gateway.tool_pins import backend_id, check_tools, decide, held, pending
 
 if TYPE_CHECKING:
     import pytest
@@ -86,11 +86,30 @@ def test_pin_hold_flags_reports_each_state() -> None:
 def test_count_pending_pins_is_gateway_wide() -> None:
     # Held tools on two different backends; the count sums across both (#592,
     # E1c), and approving one decrements it.
+    other = "http://other.invalid/mcp"
+    live = {backend_id(URL), backend_id(other)}
     check_tools(URL, "b", [_tool(name="send")])
-    check_tools("http://other.invalid/mcp", "c", [_tool(name="fetch")])
-    assert perimeter_db.count_pending_pins() == 2
+    check_tools(other, "c", [_tool(name="fetch")])
+    assert perimeter_db.count_pending_pins(live) == 2
     assert decide(URL, "send", approve=True)
-    assert perimeter_db.count_pending_pins() == 1
+    assert perimeter_db.count_pending_pins(live) == 1
+
+
+def test_count_pending_pins_ignores_a_backend_that_no_longer_exists() -> None:
+    # A backend's id is the hash of its URL, so a URL change or a removed
+    # backend leaves the old identity's rows behind. tool_pins resolves by the
+    # LIVE url, so it can neither list nor approve those rows: counting them
+    # reported a held tool nothing was withholding and nobody could release.
+    gone = "http://moved.invalid/mcp"
+    check_tools(URL, "b", [_tool(name="send")])
+    check_tools(gone, "b", [_tool(name="send")])
+    assert perimeter_db.count_pending_pins({backend_id(URL), backend_id(gone)}) == 2
+    assert perimeter_db.count_pending_pins({backend_id(URL)}) == 1
+    # No backends at all is zero rather than every row ever written.
+    assert perimeter_db.count_pending_pins(set()) == 0
+    # The rows are kept, not swept: the URL coming back finds its approvals
+    # again instead of re-holding everything it offers.
+    assert pending(gone) != []
 
 
 def test_first_boot_of_the_upgrade_pins_current_tools_as_approved() -> None:
