@@ -232,11 +232,11 @@ class TestRefusals:
         )
         assert "operator seat" in result["error"]
 
-    async def test_trust_riding_along_inside_a_backend_write_is_refused(
-        self, gateway: pathlib.Path
-    ) -> None:
-        """Accepting another gateway's security verdict has to be what the write
-        is for, not something carried inside a larger value."""
+    async def test_turning_on_scan_once_trust_is_refused(self, gateway: pathlib.Path) -> None:
+        """`trust_verdict` makes this gateway serve another gateway's response
+        without scanning it. The constitution keeps trust decisions
+        administrator-set and says trust never changes WHETHER a layer runs, so
+        this one setting is not writable through the API."""
         result = await _as_operator(
             "set",
             "profiles.ag.backends.lotor",
@@ -246,13 +246,31 @@ class TestRefusals:
             },
             await _hash(),
         )
-        assert "on its own" in result["error"]
+        assert "not writable through this tool" in result["error"]
 
     async def test_a_no_op_write_is_refused(self, gateway: pathlib.Path) -> None:
         result = await _as_operator(
             "set", "profiles.ag.defense.enforcement", "block", await _hash()
         )
         assert "already in the configuration" in result["error"]
+
+    async def test_a_refused_reload_puts_the_file_back(
+        self, gateway: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A file ahead of the running gateway lies to the next reader: a
+        person, the drift check, or the next write's expect_hash."""
+        import trentina.tools.config as config_tool_mod
+
+        before = gateway.read_text(encoding="utf-8")
+
+        async def refusing_reload() -> dict[str, Any]:
+            return {"reloaded": False, "error": "nope"}
+
+        monkeypatch.setattr(config_tool_mod, "reload_profiles", refusing_reload)
+        result = await _as_operator("set", "profiles.ag.defense.enforcement", "flag", await _hash())
+
+        assert "the reload refused it" in result["error"]
+        assert gateway.read_text(encoding="utf-8") == before
 
     async def test_a_bad_path_is_refused(self, gateway: pathlib.Path) -> None:
         result = await _as_operator("set", "profiles.ag/../../etc", 1, await _hash())

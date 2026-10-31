@@ -480,11 +480,17 @@ satisfy their own `expect_hash`.
 `gateway/config_guard.py` holds the rules, pure: the operator seat (compared
 semantically, since a path check is evaded by writing a parent key — `auth`,
 `oauth`, and the `source_networks` of `matrix_ingress`/`client_egress`, because
-the peer address picks the profile there, #330), trust isolation (the VALUE is
-walked, not the config diffed), and masking `llm_keys.*.api_key`, the one field
-in the schema that holds a credential value rather than the name of one. These
-are not a privilege boundary: the operator is root. They exist because the
-operator is a model, so the question is "can it be talked into it".
+the peer address picks the profile there, #330), `trust_stays_human` (a `set`
+carrying `trust_verdict` at any depth is refused outright — the constitution
+keeps trust administrator-set and says trust never changes WHETHER a layer
+runs, and scan-once does; `unset` is allowed because it only scans more), and
+masking `llm_keys.*.api_key`, the one field in the schema that holds a
+credential value rather than the name of one. These are not a privilege
+boundary: the operator is root. They exist because the operator is a model, so
+the question is "can it be talked into it". `federation.peers` is deliberately
+NOT in the rule: it is an access grant, and refusing it would make a federation
+ingress impossible to create through the API, since `peers` is what
+authenticates one.
 
 `federation_keygen` (`tools/keygen.py`, store in `gateway/key_store.py`) mints
 an Ed25519 pair into `<data>/keys/<name>.pem` (`O_EXCL`, 0600) and returns only

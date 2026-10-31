@@ -30,11 +30,11 @@ One key says who's talking; the other says what was decided. Leaking one can't f
 
 ## Setting one up, in concept
 
-Three moves, all of which an operator agent can make itself — no shell, no file editing, no restart. The exact field names and formats live in the config schema and the code.
+Three moves. The first two an operator agent makes itself — no shell, no file editing, no restart. The third is deliberately a person's. The exact field names and formats live in the config schema and the code.
 
 1. **Two keypairs exist** — an edge key for the downstream, a signing key for the upstream. Each gateway mints its own: ask it for a key and it keeps the private half somewhere no tool can read, and hands back the public half. A private key is never in a config file; the config refers to it by name. The public halves cross over and are pinned on the opposite side.
 2. **Declare the edge in two profiles** — an *ingress* profile on the upstream that lists the tools it offers and names its peers, and a *federated backend* on the downstream pointing at that ingress. At this stage the link is authenticated but still double-scans. Prove it works here first.
-3. **Turn on trust** — on the downstream, pin the upstream's signing key plus a *fingerprint of its scanner*. Now the downstream trusts verdicts that match and scans locally anything that doesn't.
+3. **Turn on trust** — on the downstream, pin the upstream's signing key plus a *fingerprint of its scanner*. Now the downstream trusts verdicts that match and scans locally anything that doesn't. This one is a person editing the file: it is the only setting that decides whether a layer runs at all, so it is not something an agent can turn on, however convincingly it is asked.
 
 Pinning the scanner's fingerprint, not just the key, is what makes trust safe: a response is trusted only if the upstream scanned it with the exact model and settings you vetted. If the upstream quietly swaps in a weaker scanner, the fingerprint stops matching and the downstream falls back to scanning for itself.
 

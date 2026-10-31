@@ -139,12 +139,23 @@ async def _write(
         raise ConfigWriteError(
             {"error": "that change is already in the configuration", "hash": current_hash}
         )
-    if not config_guard.trust_is_isolated(keys, value):
+    if config_guard.echoes_redaction(value):
         raise ConfigWriteError(
             {
                 "error": (
-                    "a change to federation trust or peers must be written on its own, "
-                    "inside the federation block it belongs to"
+                    f"that value contains {config_guard.REDACTED}, which is what a read "
+                    "puts in place of a credential — send the real value, or leave the "
+                    "field out of the write"
+                )
+            }
+        )
+    if not config_guard.trust_stays_human(action, keys, value):
+        raise ConfigWriteError(
+            {
+                "error": (
+                    "trust_verdict makes this gateway serve another gateway's response "
+                    "without scanning it, so it is not writable through this tool; it "
+                    "stays an edit a person makes to the file"
                 )
             }
         )

@@ -25,9 +25,11 @@ import io
 import re
 from typing import Any
 
+import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.error import YAMLError
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
 #: A config key: what appears on the left of a colon in profiles.yaml, which is
 #: a profile name, a backend name or a field name. Not a value, and never a
@@ -116,11 +118,37 @@ def get_at(text: str, path: tuple[str, ...]) -> Any:
     return node
 
 
+def _as_written(value: Any) -> Any:
+    """``value``, with any string the READER would not give back quoted.
+
+    ruamel writes YAML 1.2, where ``yes``, ``no``, ``on``, ``off`` and ``1:30``
+    are strings. The loader is pyyaml, which reads YAML 1.1, where the first
+    four are booleans and the last is 90. Written bare, a string set here comes
+    back as something else — a tool named ``no``, a token spelled ``on``, a
+    value that happens to look like a clock. Quoting what the reader would
+    reinterpret is what makes a write mean the same thing to both parsers.
+
+    Only strings are touched, and only when they would change: a value that
+    round-trips bare stays bare, so nothing is noisily quoted.
+    """
+    if isinstance(value, str):
+        try:
+            reread = yaml.safe_load(value)
+        except yaml.YAMLError:
+            return DoubleQuotedScalarString(value)
+        return value if reread == value else DoubleQuotedScalarString(value)
+    if isinstance(value, dict):
+        return {key: _as_written(nested) for key, nested in value.items()}
+    if isinstance(value, list):
+        return [_as_written(item) for item in value]
+    return value
+
+
 def set_at(text: str, path: tuple[str, ...], value: Any) -> str:
     """``text`` with ``path`` set to ``value``, everything else untouched."""
     document = load(text)
     holder = _walk(document, checked_path(path))
-    holder[path[-1]] = value
+    holder[path[-1]] = _as_written(value)
     return dump(document)
 
 

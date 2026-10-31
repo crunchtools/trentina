@@ -28,13 +28,9 @@ if TYPE_CHECKING:
 
 WRITE_ACTIONS = ("set", "unset")
 
-#: What a trust decision is called, wherever it appears. ``trust_verdict`` makes
-#: a downstream accept an upstream's scan instead of running its own; ``peers``
-#: is the set of downstreams an ingress will authenticate at all.
-TRUST_FIELDS = frozenset({"trust_verdict", "peers"})
-
-#: The two blocks a trust decision is allowed to be written inside.
-FEDERATION_BLOCKS = frozenset({"federated", "federation"})
+#: Accepting another gateway's scan instead of running our own. Not writable
+#: through the API at all — see ``trust_stays_human``.
+TRUST_FIELD = "trust_verdict"
 
 #: The one field in the whole profile schema that can hold a credential VALUE
 #: rather than the name of somewhere to find one. Everything else resolves from
@@ -134,24 +130,49 @@ def _nodes(root: Any) -> Any:
             stack.extend(node)
 
 
-def trust_is_isolated(keys: tuple[str, ...], value: Any) -> bool:
-    """Whether a write carrying a trust decision is a write ABOUT federation.
+def trust_stays_human(action: str, keys: tuple[str, ...], value: Any) -> bool:
+    """Whether a write leaves scan-once trust alone.
 
-    Turning on scan-once trust, or adding a peer an ingress will authenticate,
-    is the most consequential change in the file: it makes this gateway accept
-    another one's security verdict. It has to be what the write is for, not
-    something riding along inside a mapping set at some unrelated key — which
-    is the only way a single-path write can mix the two, so the VALUE is walked
-    rather than the resulting config diffed.
+    ``trust_verdict`` makes this gateway serve another gateway's response
+    WITHOUT running its own three layers over it. The constitution's Trust
+    Allowlist rule is that "trust decisions are administrator-set... not
+    agent-controlled" and that trust "changes what a finding costs, never
+    whether a layer runs" — and scan-once changes exactly whether a layer runs,
+    so it is the one setting in the file the API will not write at all. Not
+    because the operator lacks the authority: because the operator is a model,
+    and this is the setting where being talked into it costs the most.
 
-    Unsetting an ancestor removes trust, which fails closed, so it is allowed.
+    Everything else about federation IS the operator's: minting keys, declaring
+    the edge, and ``federation.peers``, which decides who may authenticate —
+    an access grant like any other, not a decision to believe someone's scan.
+
+    Removing trust only makes this gateway scan more, so ``unset`` is allowed.
+    The value is walked rather than the resulting config diffed, because
+    carrying a mapping that holds the field is the only way a single-path write
+    can reach it.
     """
-    carried = any(key in TRUST_FIELDS for key in keys) or any(
-        key in TRUST_FIELDS for node in _nodes(value) if isinstance(node, dict) for key in node
-    )
-    if not carried:
+    if action == "unset":
         return True
-    return any(key in FEDERATION_BLOCKS for key in keys)
+    carried = TRUST_FIELD in keys or any(
+        TRUST_FIELD in node for node in _nodes(value) if isinstance(node, dict)
+    )
+    return not carried
+
+
+def echoes_redaction(value: Any) -> bool:
+    """Whether ``value`` carries the placeholder ``get`` hands back.
+
+    ``get`` masks the one inline credential field, so the obvious way to use
+    this tool — read a section, change one thing, write the section back —
+    would otherwise store the literal ``[REDACTED]`` as a real API key. The
+    write is refused instead, because the alternative is a provider call
+    failing later with nothing pointing back to here.
+    """
+    return any(
+        isinstance(item, str) and item == REDACTED
+        for node in _nodes(value)
+        for item in (node.values() if isinstance(node, dict) else node)
+    ) or (isinstance(value, str) and value == REDACTED)
 
 
 def mask_inline_secrets(text: str) -> str:

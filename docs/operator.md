@@ -42,13 +42,36 @@ them. The file is the source of truth, not a view over anything, and it stays a
 file a person can read, diff and keep in git. Every successful write returns
 the next hash, so a run of changes needs one read at the start.
 
-Two things the operator cannot do, and they are not about authority — the
+Two things the operator cannot write, and they are not about authority — the
 operator *is* root on this gateway. They exist because the operator is a model,
-so what matters is not whether it may but whether it can be talked into it. It
-cannot create, move or remove the operator seat, or change how a caller becomes
-one; that stays a human edit of the file. And a change to federation trust or
-peers has to be written on its own, inside the federation block it belongs to,
-rather than carried along inside some larger value.
+so what matters is not whether it may but whether it can be talked into it.
+
+The first is the operator seat: who holds `role: operator`, and how a caller
+becomes one. That stays a human edit of the file, because minting a second root
+is the one change whose blast radius is unbounded and permanent.
+
+The second is `trust_verdict`, which makes this gateway serve another
+gateway's response *without* running its own three layers over it. The
+constitution's rule is that trust decisions are administrator-set rather than
+agent-controlled, and that trust changes what a finding costs and never
+whether a layer runs — and scan-once changes exactly whether a layer runs.
+Everything else about federation is the operator's, including
+`federation.peers`, which decides who may authenticate: that is an access
+grant like any other, not a decision to believe someone else's scan.
+
+One thing still needs a restart, and it is worth knowing before you plan a
+change: a profile that authenticates by `auth.bearer_token_env` needs that
+environment variable to exist in the container, so a brand-new profile of that
+kind is a deployment change rather than a config change. Everything about an
+existing profile, and a new profile that authenticates by federation peers, is
+live on the reload. The result's `reload.not_applied` names anything that
+needs a restart, so read it rather than assuming.
+
+Keeping the history is the host's job, not the gateway's: the image ships no
+`git`, and the git transport carries a caller's client rather than authoring
+commits. `contrib/quadlet/trentina-config-commit.{path,service}` commit the
+file whenever it changes, which is what turns "the file is the record of what
+is running" into a history of how it got there.
 
 Setting up a federated edge needs no shell either: `federation_keygen` mints
 the keypair and keeps the private half where no tool can read it, the public

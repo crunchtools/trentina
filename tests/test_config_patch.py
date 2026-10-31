@@ -135,3 +135,38 @@ class TestBadInput:
 
     def test_an_empty_file_loads_as_an_empty_mapping(self) -> None:
         assert cp.dump(cp.load("   \n")) in ("{}\n", "")
+
+
+class TestYamlOneOneStrings:
+    """Writing is ruamel (YAML 1.2) and reading is pyyaml (YAML 1.1), and they
+    disagree about bare `yes`, `no`, `on`, `off` and `1:30`. A value set here
+    has to mean the same thing to the reader, or a tool named `no` comes back
+    as `False`."""
+
+    @pytest.mark.parametrize("value", ["yes", "no", "on", "off", "1:30"])
+    def test_a_string_the_reader_would_reinterpret_is_quoted(self, value: str) -> None:
+        import yaml
+
+        out = cp.set_at(COMMENTED, ("profiles", "myagent", "token"), value)
+        assert yaml.safe_load(out)["profiles"]["myagent"]["token"] == value
+
+    @pytest.mark.parametrize("value", ["plain", "null", "~", "True", "2026-10-31", ""])
+    def test_a_string_that_round_trips_is_left_bare(self, value: str) -> None:
+        """Nothing is noisily quoted: only what would actually change."""
+        import yaml
+
+        out = cp.set_at(COMMENTED, ("profiles", "myagent", "token"), value)
+        assert yaml.safe_load(out)["profiles"]["myagent"]["token"] == value
+
+    def test_it_reaches_strings_nested_in_a_mapping_or_list(self) -> None:
+        import yaml
+
+        written = {"tools_allow": ["no", "yes"], "mode": "off"}
+        out = cp.set_at(COMMENTED, ("profiles", "myagent", "backends", "b"), written)
+        assert yaml.safe_load(out)["profiles"]["myagent"]["backends"]["b"] == written
+
+    def test_non_strings_are_untouched(self) -> None:
+        import yaml
+
+        out = cp.set_at(COMMENTED, ("profiles", "myagent", "n"), True)
+        assert yaml.safe_load(out)["profiles"]["myagent"]["n"] is True

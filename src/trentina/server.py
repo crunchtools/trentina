@@ -400,21 +400,30 @@ async def config_tool(
     gateway. The change is applied the same way `reload_profiles` applies one;
     whatever needs a restart to take effect is reported in the result.
 
-    Two writes are refused. The operator seat itself — who holds `role:
+    Two things are refused. The operator seat itself — who holds `role:
     operator`, and how a caller becomes one — stays a human edit of the file.
-    And a change to federation trust or peers must be written on its own,
-    inside the federation block it belongs to, rather than carried along inside
-    a larger value.
+    So does `trust_verdict`, which makes this gateway serve another gateway's
+    response without scanning it. Everything else about federation is yours,
+    including `federation.peers`.
 
     Args:
         action: `get` reads, `set` writes a value, `unset` removes a key.
         path: Dotted config keys, e.g.
             "profiles.myagent.backends.lotor.federated.edge_key_name". Omit on
             `get` for the whole file.
-        value: What to set. A scalar, a list, or a mapping to merge in at that
-            path. A list is replaced whole.
+        value: What to set. A scalar, a list or a mapping. It REPLACES whatever
+            is at that path: setting a mapping removes any keys already there
+            that your mapping does not include, so write the deepest path that
+            covers your change rather than a parent.
         expect_hash: The `hash` from a previous `get` or write. Required to set
             or unset.
+
+    Returns:
+        `get`: `hash` (of the whole file, whatever `path` you asked for) and
+        `value`. A successful write: `applied`, `hash_before`, `hash_after`,
+        `backup` (where the previous version was kept), and `reload` — read
+        `reload.not_applied` for anything that needs a restart. A refusal:
+        `error`, plus `hash` when the file had moved on.
     """
     return await manage_config(action, path, value, expect_hash)
 

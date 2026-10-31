@@ -14,9 +14,10 @@ from trentina.gateway.config_guard import (
     REDACTED,
     ConfigWriteError,
     check_write_request,
+    echoes_redaction,
     mask_inline_secrets,
     operator_seat,
-    trust_is_isolated,
+    trust_stays_human,
 )
 from trentina.gateway.profile import Profile
 
@@ -69,6 +70,24 @@ class TestOperatorSeat:
         wide = _profile(client_egress={"hosts": ["example.com"], "source_networks": ["10.0.0.0/8"]})
         assert operator_seat({"op": narrow}) != operator_seat({"op": wide})
 
+    def test_changing_the_operators_oauth_changes_it(self) -> None:
+        """`allowed_emails` is the seat for a web client that cannot hold a
+        static bearer."""
+        before = operator_seat({"op": _profile()})
+        after = operator_seat(
+            {
+                "op": _profile(
+                    oauth={"enabled": True, "allowed_emails": ["someone-else@example.com"]}
+                )
+            }
+        )
+        assert before != after
+
+    def test_widening_the_operators_matrix_networks_changes_it(self) -> None:
+        narrow = _profile(matrix_ingress={"source_networks": ["10.0.0.1/32"]})
+        wide = _profile(matrix_ingress={"source_networks": ["10.0.0.0/8"]})
+        assert operator_seat({"op": narrow}) != operator_seat({"op": wide})
+
     def test_an_unrelated_edit_leaves_it_alone(self) -> None:
         """Otherwise every ordinary write would be refused as a seat change."""
         before = operator_seat({"op": _profile()})
@@ -78,44 +97,51 @@ class TestOperatorSeat:
         assert before == after
 
 
-class TestTrustIsolation:
+class TestTrustStaysHuman:
+    """`trust_verdict` makes this gateway serve another gateway's response
+    without running its own layers. The constitution keeps trust decisions
+    administrator-set and says trust never changes WHETHER a layer runs, so
+    this one setting is not writable through the API at all."""
+
     @pytest.mark.parametrize(
         ("keys", "value"),
         [
             (("profiles", "a", "backends", "b", "federated", "trust_verdict"), {"x": 1}),
             (("profiles", "a", "backends", "b", "federated"), {"trust_verdict": {"x": 1}}),
-            (("profiles", "a", "federation"), {"peers": {"p": {"public_key": "k"}}}),
-            (("profiles", "a", "federation", "peers"), {"p": {"public_key": "k"}}),
-        ],
-    )
-    def test_a_trust_write_inside_a_federation_block_is_allowed(
-        self, keys: tuple[str, ...], value: object
-    ) -> None:
-        assert trust_is_isolated(keys, value)
-
-    @pytest.mark.parametrize(
-        ("keys", "value"),
-        [
-            # Smuggled in as part of a whole-profile or whole-backend write.
-            (("profiles", "a"), {"backends": {"b": {"federated": {"trust_verdict": {"x": 1}}}}}),
-            (("profiles",), {"a": {"federation": {"peers": {}}}}),
             (("profiles", "a", "backends", "b"), {"federated": {"trust_verdict": {"x": 1}}}),
-            # Or written somewhere that is not a federation block at all.
-            (("profiles", "a", "defense"), {"trust_verdict": True}),
+            (("profiles", "a"), {"backends": {"b": {"federated": {"trust_verdict": {}}}}}),
+            (("profiles",), {"a": {"backends": {"b": {"federated": {"trust_verdict": {}}}}}}),
         ],
     )
-    def test_a_trust_decision_riding_along_is_refused(
+    def test_setting_trust_is_refused_however_it_is_spelled(
         self, keys: tuple[str, ...], value: object
     ) -> None:
-        assert not trust_is_isolated(keys, value)
+        assert not trust_stays_human("set", keys, value)
+
+    def test_removing_trust_is_allowed_because_it_fails_closed(self) -> None:
+        """Dropping it only makes this gateway scan more."""
+        assert trust_stays_human(
+            "unset", ("profiles", "a", "backends", "b", "federated", "trust_verdict"), None
+        )
+        assert trust_stays_human("unset", ("profiles", "a", "backends", "b"), None)
+
+    def test_the_rest_of_federation_is_the_operators(self) -> None:
+        """Minting keys, declaring the edge and naming peers are all the
+        operator's. `peers` decides who may AUTHENTICATE — an access grant like
+        any other, not a decision to believe someone's scan. Refusing it would
+        make a federation ingress impossible to create through the API, because
+        `federation.peers` is what authenticates one."""
+        assert trust_stays_human(
+            "set",
+            ("profiles", "up", "federation"),
+            {"peers": {"breetai": {"public_key": "..."}}, "signing_key_name": "sign"},
+        )
+        assert trust_stays_human(
+            "set", ("profiles", "down", "backends", "lotor", "federated"), {"edge_key_name": "k"}
+        )
 
     def test_an_ordinary_write_is_untouched(self) -> None:
-        assert trust_is_isolated(("profiles", "a", "defense", "enforcement"), "block")
-
-    def test_unsetting_an_ancestor_is_allowed_because_it_fails_closed(self) -> None:
-        """Removing a backend removes its trust with it, which can only make the
-        downstream scan more."""
-        assert trust_is_isolated(("profiles", "a", "backends", "b"), None)
+        assert trust_stays_human("set", ("profiles", "a", "defense", "enforcement"), "block")
 
 
 class TestMasking:
@@ -174,3 +200,19 @@ class TestWriteRequest:
         with pytest.raises(ConfigWriteError) as refused:
             check_write_request("set", ("profiles", "a"), "old", "new")
         assert refused.value.payload["hash"] == "new"
+
+
+class TestRedactionEcho:
+    """`get` masks the one inline credential field, so read-change-write would
+    otherwise store the placeholder as a real key."""
+
+    def test_the_placeholder_as_a_value_is_caught(self) -> None:
+        assert echoes_redaction(REDACTED)
+
+    def test_the_placeholder_nested_in_a_write_is_caught(self) -> None:
+        assert echoes_redaction({"llm_keys": {"openrouter": {"api_key": REDACTED}}})
+        assert echoes_redaction(["a", REDACTED])
+
+    def test_an_ordinary_value_passes(self) -> None:
+        assert not echoes_redaction({"url": "https://example.com", "tools_allow": ["*"]})
+        assert not echoes_redaction("sk-a-real-looking-key")

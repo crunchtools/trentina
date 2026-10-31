@@ -1,0 +1,32 @@
+# Commit profiles.yaml whenever the gateway writes it (#633).
+#
+# config_tool edits the live profiles.yaml, which makes the file the record of
+# what is running — but not yet a HISTORY of it. Scott's requirement for an
+# API-driven config was "logged, backed up, version controlled": the gateway
+# writes the audit row and keeps the previous version under /data, and this
+# unit is the third part.
+#
+# The gateway cannot commit for itself. Its image is distroless and ships no
+# git, and the git transport is a proxy for a caller's own client rather than a
+# way to author a commit. So the host does it, which is also where the
+# credentials and the branch policy belong.
+#
+# Without this, every write leaves the config repository dirty, and a drift
+# check watching /srv reports it — correctly, because an uncommitted change IS
+# drift until someone records it.
+#
+# Install to /etc/systemd/system/ with the matching .service, then:
+#   systemctl enable --now trentina-config-commit.path
+
+[Unit]
+Description=Commit Trentina config changes to git
+Documentation=https://github.com/crunchtools/trentina/blob/main/docs/operator.md
+
+[Path]
+PathChanged=/srv/trentina/config/profiles.yaml
+# Settle so a burst of writes becomes one commit rather than one each.
+TriggerLimitIntervalSec=30s
+TriggerLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

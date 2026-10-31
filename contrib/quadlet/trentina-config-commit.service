@@ -1,0 +1,23 @@
+# Triggered by trentina-config-commit.path (#633). See that file for why.
+#
+# Stages profiles.yaml BY NAME, never `git add -A`: the config directory is
+# writable by the gateway, so a commit that swept the whole directory would
+# commit whatever else happened to be there. The gateway's own staging files
+# are hidden (a leading dot) and listed in .gitignore beside this unit, but
+# naming the one file is the rule that does not depend on remembering that.
+#
+# Nothing here pushes. A push needs a credential and a branch policy, which are
+# the host operator's to decide; `git log` on the host is already the history
+# this exists to create.
+
+[Unit]
+Description=Commit Trentina config changes to git
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/trentina/config
+# A write that changed nothing is not an error, and neither is a trigger that
+# fires twice for one change.
+ExecStart=/usr/bin/git add -- profiles.yaml
+ExecStart=/bin/sh -c 'git diff --cached --quiet || git commit -m "config: applied by the gateway operator" -m "Written through config_tool. Previous version kept under the data directory."'

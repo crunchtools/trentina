@@ -245,6 +245,14 @@ class TestKeyByName:
         with pytest.raises(ProfileConfigError, match="federation_keygen"):
             load_profiles(fed_config)
 
+    def test_an_empty_key_file_fails_closed(self, fed_config: pathlib.Path) -> None:
+        """A truncated key would otherwise load as a profile that cannot sign,
+        and fail at the first federated call instead of at load."""
+        key_store.mint("edge-to-lotor")
+        key_path("edge-to-lotor").write_text("", encoding="utf-8")
+        with pytest.raises(ProfileConfigError, match="empty"):
+            load_profiles(fed_config)
+
     def test_an_edge_key_by_name_still_needs_a_gateway_url(
         self, data_dir: pathlib.Path, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
