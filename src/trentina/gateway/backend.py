@@ -494,8 +494,12 @@ async def refresh_backend_tools(
 
 
 def _inflight_key(backend: Backend, profile: Profile | None) -> str:
-    """One fetch per URL; per URL and profile when the fetch carries a grant."""
-    if backend.auth is None:
+    """One fetch per URL; per URL and profile when the fetch carries a
+    per-profile credential — an ``auth`` grant, or a federated edge key whose
+    JWT caller is the profile. Keying a federated fetch by profile too stops a
+    no-profile fetch (e.g. pre-compression) from being joined by the
+    authenticated build, which would hand the build the upstream's 401 (#592)."""
+    if backend.auth is None and (backend.federated is None or backend.federated.edge_key is None):
         return backend.url
     return f"{backend.url}#{profile.name if profile else ''}"
 
@@ -511,7 +515,9 @@ async def _joined_fetch(
     return await inflight
 
 
-async def revalidate_backend_tools(backend_name: str, backend: Backend) -> bool:
+async def revalidate_backend_tools(
+    backend_name: str, backend: Backend, profile: Profile | None = None
+) -> bool:
     """Refetch a list loaded from SQLite at startup; True when it changed (#335).
 
     The persisted list survives a restart so a backend that is down still has
@@ -525,7 +531,7 @@ async def revalidate_backend_tools(backend_name: str, backend: Backend) -> bool:
     if before is None or backend.auth is not None:
         return False
     try:
-        return await refresh_backend_tools(backend_name, backend) != before
+        return await refresh_backend_tools(backend_name, backend, profile) != before
     except BackendCallError:
         return False
 
@@ -623,13 +629,17 @@ async def _credentials(
     reached the backend, and must neither count against the circuit nor
     hold its half-open probe.
     """
-    if (
-        backend.federated is not None
-        and backend.federated.edge_key is not None
-        and profile is not None
-    ):
+    if backend.federated is not None and backend.federated.edge_key is not None:
         # Federated edge (#592): sign a short-lived JWT to the upstream instead
-        # of a static bearer. Takes precedence over any header credential.
+        # of a static bearer. Takes precedence over any header credential. The
+        # JWT's caller is the profile name, so a missing profile is a caller
+        # bug — fail loud here, BEFORE breaker.allow, rather than send an
+        # unauthenticated probe that 401s and opens the URL-keyed breaker for
+        # every profile on it.
+        if profile is None:
+            raise BackendCallError(
+                f"backend {backend_name!r} federated fetch needs a calling profile"
+            )
         jwt = _edge_jwt(backend.url, backend.federated.edge_key.get_secret_value(), profile.name)
         return {**backend.headers, "Authorization": f"Bearer {jwt}"}, None
     if backend.auth is None:

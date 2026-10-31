@@ -132,6 +132,7 @@ josui:
       url: https://lotor.example.com/gateway/fed-breetai/mcp
       federated:
         edge_key_env: BREETAI_EDGE_KEY        # _FILE form resolves the PEM
+        poll_seconds: 300                     # re-probe the upstream every 5 min (0 = off)
         # trust_verdict omitted for now — re-judge, auth only (step 4 turns it on)
 ```
 
@@ -141,6 +142,13 @@ static bearer, and restart. With `edge_key_env` set and `trust_verdict` unset,
 the link is **authenticated but still double-judging** — a safe checkpoint. Omit
 `edge_key_env` entirely and the backend keeps using its existing headers/auth,
 which is how the interim static-bearer edge keeps working during migration.
+
+**Keeping the downstream fresh.** `poll_seconds` (default 300, `0` disables,
+floor 30) sets how often this gateway re-probes the upstream in the background
+and rebuilds the aggregates that use it, so a tool the upstream newly approves or
+changes appears here within one interval — no manual `reconnect_backend`. A
+backend whose circuit is open is skipped and picked up when it recovers; a
+backend using `auth` instead of a federated edge key cannot set it.
 
 ### 4. Turn on scan-once
 
@@ -426,7 +434,8 @@ disclosed to the caller. Work the short checklist on the downstream side:
 
 Before 3.1.0 a downstream mounted an upstream as a plain MCP backend with a
 shared static bearer in an `Authorization` header. That path still works in
-3.1.0 but is **deprecated and removed in 3.2.0**; the loader logs a deprecation
+3.1.0 but is **deprecated** — superseded by the first-class `federated:` block,
+to be removed in a future release; the loader logs a deprecation
 warning pointing here. To migrate a live link with no downtime:
 
 1. Stand up the upstream ingress profile (step 2 above) alongside the existing

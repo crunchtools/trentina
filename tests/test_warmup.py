@@ -189,7 +189,7 @@ class TestPersistedListsAreRevalidated:
     async def test_each_url_once_and_changed_ones_are_invalidated(self) -> None:
         order: list[str] = []
 
-        async def revalidate(name: str, _backend: Backend) -> bool:
+        async def revalidate(name: str, _backend: Backend, _profile: Any = None) -> bool:
             order.append(name)
             return name == "feeds"
 
@@ -214,7 +214,7 @@ class TestPersistedListsAreRevalidated:
         invalidate.assert_called_once_with("http://feeds:8000/mcp")
 
     async def test_nothing_changed_invalidates_nothing(self) -> None:
-        async def revalidate(_name: str, _backend: Backend) -> bool:
+        async def revalidate(_name: str, _backend: Backend, _profile: Any = None) -> bool:
             return False
 
         async def build(_profile: Profile, _generation: int | None = None) -> list[Any]:

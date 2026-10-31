@@ -200,7 +200,8 @@ def _check_interim_federation(name: str, profile: Profile) -> None:
     pre-3.1 arrangement: it mounts another gateway over a shared static bearer
     and re-judges everything. First-class federation (edge-key auth +
     scan-once trust) supersedes it; the interim path still works but is
-    deprecated and removed in 3.2.0. Warned by profile and backend name only,
+    deprecated; it is superseded by the first-class ``federated:`` block and
+    will be removed in a future release. Warned by profile and backend name only,
     never the URL (#262).
     """
     for backend_name, backend in profile.backends.items():
@@ -215,7 +216,7 @@ def _check_interim_federation(name: str, profile: Profile) -> None:
             logger.warning(
                 "gateway: profile=%s backend=%s uses the interim static-bearer "
                 "federation path; migrate to a federated: block "
-                "(deprecated, removed in 3.2.0) — see docs/federation.md",
+                "(deprecated; superseded by a federated: block) — see docs/federation.md",
                 name,
                 backend_name,
             )

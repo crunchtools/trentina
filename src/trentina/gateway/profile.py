@@ -691,6 +691,12 @@ class TrustVerdict(BaseModel):
         return v
 
 
+#: Downstream federation poll cadence (#592, F3), in seconds: the default
+#: re-probe interval and the floor below which a non-zero value is rejected.
+DEFAULT_POLL_SECONDS = 300
+MIN_POLL_SECONDS = 30
+
+
 class FederatedConfig(BaseModel):
     """Marks a backend as a federated upstream Trentina — a peer gateway whose
     own perimeter already judged its responses, not a leaf MCP server (#592).
@@ -730,6 +736,15 @@ class FederatedConfig(BaseModel):
             "every federated response is re-judged, as today."
         ),
     )
+    poll_seconds: int = Field(
+        default=DEFAULT_POLL_SECONDS,
+        description=(
+            "How often (seconds) the downstream re-probes this federated upstream "
+            "in the background, so an approved or changed tool appears without a "
+            "manual reconnect (#592, F3). 0 disables it; the floor is 30. A backend "
+            "with `auth` is not background-revalidated."
+        ),
+    )
 
     @field_validator("edge_key_env")
     @classmethod
@@ -737,6 +752,16 @@ class FederatedConfig(BaseModel):
         """Reject lowercase, leading digits, or non-identifier characters."""
         if v is not None and not ENV_NAME_RE.match(v):
             raise ValueError(f"edge_key_env {v!r} must be an UPPERCASE env-var identifier")
+        return v
+
+    @field_validator("poll_seconds")
+    @classmethod
+    def poll_seconds_off_or_at_least_30(cls, v: int) -> int:
+        """0 disables; otherwise at least 30s — a typo like 3 would hammer the peer."""
+        if v != 0 and v < MIN_POLL_SECONDS:
+            raise ValueError(
+                f"poll_seconds must be 0 (off) or at least {MIN_POLL_SECONDS}, not {v}"
+            )
         return v
 
 
@@ -1112,6 +1137,16 @@ class Backend(BaseModel):
             raise ValueError(
                 "a federated backend with edge_key_env must point at a gateway MCP "
                 "endpoint (.../<profile>/mcp), from which the token audience is taken"
+            )
+        if (
+            self.federated is not None
+            and self.federated.poll_seconds > 0
+            and self.auth is not None
+        ):
+            raise ValueError(
+                "a federated backend with poll_seconds cannot also use auth: "
+                "background revalidation skips auth backends, so the poll would "
+                "never run — use the federated edge key, not an auth grant"
             )
         return self
 

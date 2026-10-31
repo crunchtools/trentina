@@ -110,16 +110,26 @@ def _rebuild_after_compression() -> None:
         _rebuild_task = asyncio.ensure_future(_rebuild_in_background(list(profiles.values())))
 
 
+async def rebuild_profiles(profiles: list[Profile]) -> int:
+    """Rebuild each profile's aggregate in the background, after any build
+    already in flight, replacing the cached one when done. Clients keep the
+    cached list meanwhile: nothing is invalidated. The caller owns the l3
+    priority. Returns how many profiles were rebuilt.
+    """
+    for profile in profiles:
+        # After the build in flight, which may predate the new text. A
+        # failed build keeps the cached list, and the build logged why.
+        inflight = _profile_inflight.get(profile.name)
+        if inflight is not None:
+            await asyncio.gather(inflight, return_exceptions=True)
+        await asyncio.gather(ensure_profile_build(profile), return_exceptions=True)
+    return len(profiles)
+
+
 async def _rebuild_in_background(profiles: list[Profile]) -> None:
     token = l3_priority.set(Priority.BACKGROUND)
     try:
-        for profile in profiles:
-            # After the build in flight, which may predate the new text. A
-            # failed build keeps the cached list, and the build logged why.
-            inflight = _profile_inflight.get(profile.name)
-            if inflight is not None:
-                await asyncio.gather(inflight, return_exceptions=True)
-            await asyncio.gather(ensure_profile_build(profile), return_exceptions=True)
+        await rebuild_profiles(profiles)
     finally:
         l3_priority.reset(token)
 

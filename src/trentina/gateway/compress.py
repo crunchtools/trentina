@@ -259,7 +259,7 @@ async def precompress_all(
             seen_urls.add(backend.url)
 
             try:
-                count = await _precompress_backend(backend_name, backend)
+                count = await _precompress_backend(backend_name, backend, profile)
                 stats[backend_name] = count
             except Exception as exc:
                 logger.warning(
@@ -302,12 +302,21 @@ def _store_result(
     return True
 
 
-async def _precompress_backend(backend_name: str, backend: Backend) -> int:
-    """Fetch tools from one backend, compress uncached descriptions."""
+async def _precompress_backend(
+    backend_name: str, backend: Backend, profile: Profile | None = None
+) -> int:
+    """Fetch tools from one backend, compress uncached descriptions.
+
+    ``profile`` is the first holder, passed so a federated backend can mint its
+    edge JWT — without it the list fetch goes out unauthenticated and the
+    upstream rejects it. On a cold cache this task is created before the build's
+    own fetch, and both share the URL-keyed single-flight slot, so an
+    unauthenticated fetch here is the one the build would join (#592, F4).
+    """
     from .backend import list_backend_tools
 
     try:
-        tools = await list_backend_tools(backend_name, backend)
+        tools = await list_backend_tools(backend_name, backend, profile)
     except Exception:
         logger.warning("compress: %s — could not list tools, skipping", backend_name)
         return 0
