@@ -135,7 +135,7 @@ async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_rest
     )
 
     # 3. The primary side: a federated backend pointing at that ingress,
-    #    signing with the edge key by name.
+    #    signing with the primary key by name.
     await _set(
         "profiles.down.backends.secondary",
         {

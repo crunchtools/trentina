@@ -21,9 +21,9 @@ under that name.
   transport, the Matrix bridge and the `egress_upstreams` config field. Those
   keep the word, so after this release "upstream" means only a network origin.
 - **BREAKING: four `profiles.yaml` field names change**, with no deprecation
-  shim. Because the models are `extra="forbid"`, an old spelling fails
-  validation rather than being ignored, and a gateway will not start on a config
-  that still uses one. Rename them in the same change as the image:
+  shim. A gateway will not start on a config that still uses one: the load
+  refuses it by name and says what to rename it to, which is the whole migration
+  aid there is. Rename them in the same change as the image:
 
   | old | new |
   |---|---|

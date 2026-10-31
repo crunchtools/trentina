@@ -73,7 +73,7 @@ class TestPollOnce:
 
         # Exactly the two profiles sharing the changed URL are rebuilt; "c" is not.
         assert rebuilt == [["a", "b"]]
-        # The owning profile is passed so a federated backend can mint its edge JWT.
+        # The owning profile is passed so a federated backend can mint its primary JWT.
         assert got_profiles and got_profiles[0].name == "a"
         assert warmup._next_due[UP] == 130.0  # re-seeded now + poll_seconds
         assert sleep_for == pytest.approx(30.0)

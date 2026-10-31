@@ -1,6 +1,6 @@
 """C2: the federated caller reaches the secondary's audit, and the directed edge (#592).
 
-C1 authenticated an edge JWT and threw the ``(peer, sub)`` away; C2 binds it to
+C1 authenticated an primary JWT and threw the ``(peer, sub)`` away; C2 binds it to
 ``current_caller`` so the secondary's audit records who really called through the
 federation profile, adds two nullable ``gateway_calls`` columns that enter the
 hash chain only when set, and refuses a federation ingress that is not a

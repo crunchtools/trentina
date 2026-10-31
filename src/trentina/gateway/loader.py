@@ -99,6 +99,7 @@ def _build_profile(name: str, body: Any) -> Profile:
         raise ProfileConfigError(
             f"Profile {name!r}: body must be a mapping, got {type(body).__name__}"
         )
+    _check_renamed_federation_keys(name, body)
     try:
         profile = Profile(name=name, **body)
     except ValidationError as exc:
@@ -191,6 +192,46 @@ def _check_transports(name: str, profile: Profile) -> None:
             build_transport(backend.transport)
         except ProfileConfigError as exc:
             raise ProfileConfigError(f"Profile {name!r} backend {backend_name!r}: {exc}") from exc
+
+
+#: The 4.0.0 rename (#637), old spelling to new. ``extra="forbid"`` already
+#: refuses the old name, but pydantic's own message is "Extra inputs are not
+#: permitted" against the key that is gone — true and useless. There is no
+#: deprecation shim by decision, so a clear error is the whole migration aid an
+#: operator gets, and it has to name the replacement.
+_RENAMED_FEDERATION_KEYS = {
+    "edge_key_env": "primary_key_env",
+    "edge_key_name": "primary_key_name",
+    "signing_key_env": "secondary_key_env",
+    "signing_key_name": "secondary_key_name",
+}
+
+
+def _check_renamed_federation_keys(name: str, body: dict[str, Any]) -> None:
+    """Refuse a pre-4.0.0 federation key name, naming what it is called now.
+
+    Read off the RAW body, before the model is built, because the model's
+    ``extra="forbid"`` would otherwise get there first with a worse message.
+    Only the two places the schema ever accepted these are checked, so a
+    profile that merely has a string of the same name somewhere is not caught
+    by accident. The key is a schema name, not a value, so it is safe to print.
+    """
+    blocks: list[Any] = [body.get("federation")]
+    backends = body.get("backends")
+    if isinstance(backends, dict):
+        blocks.extend(
+            backend.get("federated") for backend in backends.values() if isinstance(backend, dict)
+        )
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        for old, new in _RENAMED_FEDERATION_KEYS.items():
+            if old in block:
+                raise ProfileConfigError(
+                    f"Profile {name!r}: {old!r} was renamed to {new!r} in 4.0.0, when "
+                    "federation's roles became primary (uses the tools) and secondary "
+                    "(offers them). Rename the field; the value is unchanged."
+                )
 
 
 def _check_interim_federation(name: str, profile: Profile) -> None:

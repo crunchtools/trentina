@@ -1,6 +1,6 @@
-"""C1: a federated link authenticates with an edge JWT, no shared bearer (#592).
+"""C1: a federated link authenticates with an primary JWT, no shared bearer (#592).
 
-End to end on the two-gateway harness: the primary signs a per-edge JWT, the
+End to end on the two-gateway harness: the primary signs a primary JWT, the
 secondary (a federation ingress with the peer's public key and NO static bearer)
 verifies it, and a tool call crosses the link. A wrong key is refused.
 """
@@ -95,7 +95,7 @@ async def test_a_federated_call_authenticates_with_an_edge_jwt() -> None:
         assert any(n.endswith("echo") for n in names), names
         echo = next(t["name"] for t in (await client.list_tools()) if t["name"].endswith("echo"))
         result = await client.call_tool(echo, {"text": "signed-hello"})
-    # The whole round trip was authenticated by the edge JWT; the secondary holds
+    # The whole round trip was authenticated by the primary JWT; the secondary holds
     # no shared bearer for the primary.
     assert "echo:signed-hello" in json.dumps(result), result
 
@@ -112,7 +112,7 @@ async def test_a_wrong_primary_key_is_refused() -> None:
         fed.primary_client() as client,
     ):
         names = {t["name"] for t in await client.list_tools()}
-    # The secondary rejected the edge JWT, so the federated backend served nothing.
+    # The secondary rejected the primary JWT, so the federated backend served nothing.
     assert not any(n.endswith("echo") for n in names), names
 
 
@@ -138,7 +138,7 @@ def _down(url: str) -> Profile:
 
 class TestReloadHolds:
     def test_a_federated_backends_url_is_held(self) -> None:
-        # Repointing a federated backend would send the edge key to a new host.
+        # Repointing a federated backend would send the primary key to a new host.
         before = _down("https://lotor.example/gateway/fed/mcp")
         after = _down("https://evil.example/gateway/fed/mcp")
         held = _hold_perimeter_fields(before, after)
