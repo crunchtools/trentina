@@ -1,6 +1,6 @@
-"""Downstream federation poll (#592, F3).
+"""Primary federation poll (#592, F3).
 
-A federated upstream's newly approved or changed tool should appear downstream
+A federated secondary's newly approved or changed tool should appear primary
 without a hand-run reconnect. ``warmup._poll_once`` re-probes the federated
 backends whose interval has elapsed and rebuilds the profiles that share a
 changed one, under background L3 priority. These drive ``_poll_once`` directly

@@ -35,7 +35,7 @@ is worth being plain about what it is and is not.
 **Give `profiles.yaml` a directory of its own.** This is the part worth getting
 right. A rename needs a writable directory, so the temptation is to drop `:ro`
 from the config mount you already have — and in a real deployment that
-directory also holds the trust allowlist JSON, a federation signing key, and
+directory also holds the trust allowlist JSON, a federation secondary key, and
 whatever else accumulated beside them. The trust allowlist is
 administrator-set by constitutional rule; it must not live somewhere the
 gateway can write. So mount two: the read-only config directory as before, and

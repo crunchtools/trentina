@@ -457,10 +457,10 @@ def _hold_federated(before: Profile, after: Profile) -> list[str]:
     direction, so a backend new to this reload cannot bring federation in.
 
     Removing the backend outright is deliberately NOT held: that is fail-closed
-    (the profile loses the upstream and gains no trust or reach — the one
+    (the profile loses the secondary and gains no trust or reach — the one
     direction this hold exists to stop), and holding it would make ``backends``
     the single map an agent reload may not shrink, a broader constraint than
-    #298 took. Preventing an agent from tearing down a federated edge, if we
+    #298 took. Preventing an agent from tearing down a federated link, if we
     want it, is a separate call for C1 beside the ``url`` hold.
     """
     held: list[str] = []

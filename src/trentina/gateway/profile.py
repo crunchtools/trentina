@@ -669,32 +669,35 @@ class BackendAuth(BaseModel):
 
 
 class TrustVerdict(BaseModel):
-    """What a downstream pins to trust a federated upstream's signed verdict
-    (#592, D2a): the upstream's Ed25519 PUBLIC key and the exact
+    """What a primary pins to trust a federated secondary's signed verdict
+    (#592, D2a): the secondary's Ed25519 PUBLIC key and the exact
     ``perimeter_stamp`` it must have scanned under.
 
     When set, a federated response carrying a valid assertion (signature, the
     delivered-bytes hash, this stamp, and the resolved mode all matching) is
-    delivered WITHOUT the downstream re-running its own L1/L2/L3. A stamp change
-    upstream — a different model, threshold or gate — stops matching, and the
-    downstream re-judges until the operator re-pins. The stamp covers the model
+    delivered WITHOUT the primary re-running its own L1/L2/L3. A stamp change on
+    the secondary — a different model, threshold or gate — stops matching, and
+    the primary re-judges until the operator re-pins. The stamp covers the model
     and its gates, NOT the peer profile's ``defense`` block (its thresholds and
     allowlists), which are trusted unpinned (Known gap).
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    public_key: str = Field(..., description="The upstream's Ed25519 public key, PEM SPKI")
+    public_key: str = Field(..., description="The secondary's Ed25519 public key, PEM SPKI")
     perimeter_stamp: str = Field(
         ...,
         min_length=1,
-        description="The exact perimeter_stamp the upstream must have scanned under (L2 + version)",
+        description=(
+            "The exact perimeter_stamp the secondary must have scanned under "
+            "(L2 + version)"
+        ),
     )
     judge: str = Field(
         ...,
         min_length=1,
         description=(
-            "The exact L3 judge the upstream must have used (provider/model/pack). The "
+            "The exact L3 judge the secondary must have used (provider/model/pack). The "
             "perimeter_stamp does not cover L3, so a peer that swapped to a weaker judge is "
             "caught here and re-judged."
         ),
@@ -703,29 +706,29 @@ class TrustVerdict(BaseModel):
     @field_validator("public_key")
     @classmethod
     def public_key_is_ed25519_pem(cls, v: str) -> str:
-        from .edge_key import EdgeKeyError, load_public_key
+        from .federation_keys import FederationKeyError, load_public_key
 
         try:
             load_public_key(v)
-        except EdgeKeyError as exc:
+        except FederationKeyError as exc:
             raise ValueError(f"trust_verdict.public_key is not a valid Ed25519 PEM: {exc}") from exc
         return v
 
 
-#: Downstream federation poll cadence (#592, F3), in seconds: the default
+#: The primary's federation poll cadence (#592, F3), in seconds: the default
 #: re-probe interval and the floor below which a non-zero value is rejected.
 DEFAULT_POLL_SECONDS = 300
 MIN_POLL_SECONDS = 30
 
 
 class FederatedConfig(BaseModel):
-    """Marks a backend as a federated upstream Trentina — a peer gateway whose
+    """Marks a backend as a federated secondary Trentina — a peer gateway whose
     own perimeter already judged its responses, not a leaf MCP server (#592).
 
-    The block's presence declares the trust boundary (B1). ``edge_key_env``
-    (C1) makes the DOWNSTREAM side of the edge sign a short-lived JWT to the
-    upstream instead of presenting a static bearer. ``trust_verdict`` (D2a) lets
-    the downstream trust the upstream's signed verdict and skip its own layers.
+    The block's presence declares the trust boundary (B1). ``primary_key_env``
+    (C1) makes the PRIMARY side of the link sign a short-lived JWT to the
+    secondary instead of presenting a static bearer. ``trust_verdict`` (D2a) lets
+    the primary trust the secondary's signed verdict and skip its own layers.
     A field arrives with the code that acts on it — a declared option nothing
     honours is a faked property — and ``extra="forbid"`` keeps a premature one
     from loading quietly.
@@ -733,45 +736,46 @@ class FederatedConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    edge_key_env: str | None = Field(
+    primary_key_env: str | None = Field(
         default=None,
         description=(
-            "Env var (or its _FILE form) holding this edge's Ed25519 PRIVATE key "
-            "(PEM PKCS#8). With it, the downstream signs a 60s JWT to the upstream "
-            "(audience = the upstream profile named in this backend's URL) rather "
+            "Env var (or its _FILE form) holding this primary's Ed25519 PRIVATE key "
+            "(PEM PKCS#8). With it, the primary signs a 60s JWT to the secondary "
+            "(audience = the secondary profile named in this backend's URL) rather "
             "than a static bearer (#592, C1). Unset: the link uses its "
-            "headers/auth unchanged, so the interim static-bearer edge keeps "
+            "headers/auth unchanged, so the interim static-bearer link keeps "
             "working."
         ),
     )
-    edge_key_name: str | None = Field(
+    primary_key_name: str | None = Field(
         default=None,
         description=(
             "A key minted by `federation_keygen`, by name (#633). The same thing "
-            "as `edge_key_env` and the preferred form: a key named here is "
+            "as `primary_key_env` and the preferred form: a key named here is "
             "re-read on every reload, so one minted after startup takes effect "
             "without a restart. Exactly one of the two per key."
         ),
     )
-    edge_key: SecretStr | None = Field(
+    primary_key: SecretStr | None = Field(
         default=None,
         exclude=True,
         description=(
-            "Resolved edge private key PEM (load-time only, from edge_key_env or edge_key_name)"
+            "Resolved primary private key PEM (load-time only, from primary_key_env "
+            "or primary_key_name)"
         ),
     )
     trust_verdict: TrustVerdict | None = Field(
         default=None,
         description=(
-            "Pin the upstream's public key + perimeter_stamp to TRUST its signed "
-            "verdict and skip the downstream's own L1/L2/L3 (#592, D2a). Unset: "
+            "Pin the secondary's public key + perimeter_stamp to TRUST its signed "
+            "verdict and skip the primary's own L1/L2/L3 (#592, D2a). Unset: "
             "every federated response is re-judged, as today."
         ),
     )
     poll_seconds: int = Field(
         default=DEFAULT_POLL_SECONDS,
         description=(
-            "How often (seconds) the downstream re-probes this federated upstream "
+            "How often (seconds) the primary re-probes this federated secondary "
             "in the background, so an approved or changed tool appears without a "
             "manual reconnect (#592, F3). 0 disables it; the floor is 30. A backend "
             "with `auth` is not background-revalidated."
@@ -779,31 +783,31 @@ class FederatedConfig(BaseModel):
     )
 
     @property
-    def has_edge_key(self) -> bool:
-        """Whether this edge signs its requests, by either key source.
+    def has_primary_key(self) -> bool:
+        """Whether this link signs its requests, by either key source.
 
         Asked before the key is resolved, so it reads the declaration rather
-        than ``edge_key`` — the two sources must never diverge in behaviour,
+        than ``primary_key`` — the two sources must never diverge in behaviour,
         and a check that named only one is how #633 found a gap.
         """
-        return self.edge_key_env is not None or self.edge_key_name is not None
+        return self.primary_key_env is not None or self.primary_key_name is not None
 
-    @field_validator("edge_key_env")
+    @field_validator("primary_key_env")
     @classmethod
-    def edge_key_env_is_an_env_name(cls, v: str | None) -> str | None:
+    def primary_key_env_is_an_env_name(cls, v: str | None) -> str | None:
         """Reject lowercase, leading digits, or non-identifier characters."""
         if v is not None and not ENV_NAME_RE.match(v):
-            raise ValueError(f"edge_key_env {v!r} must be an UPPERCASE env-var identifier")
+            raise ValueError(f"primary_key_env {v!r} must be an UPPERCASE env-var identifier")
         return v
 
-    @field_validator("edge_key_name")
+    @field_validator("primary_key_name")
     @classmethod
-    def edge_key_name_is_a_key_name(cls, v: str | None) -> str | None:
-        return _is_key_name(v, "edge_key_name")
+    def primary_key_name_is_a_key_name(cls, v: str | None) -> str | None:
+        return _is_key_name(v, "primary_key_name")
 
     @model_validator(mode="after")
-    def one_edge_key_source(self) -> FederatedConfig:
-        _one_key_source(self.edge_key_env, self.edge_key_name, "edge_key")
+    def one_primary_key_source(self) -> FederatedConfig:
+        _one_key_source(self.primary_key_env, self.primary_key_name, "primary_key")
         return self
 
     @field_validator("poll_seconds")
@@ -818,10 +822,10 @@ class FederatedConfig(BaseModel):
 
 
 class FederationPeer(BaseModel):
-    """One downstream peer the upstream federation profile trusts (#592, C1).
+    """One primary peer the secondary's federation profile trusts (#592, C1).
 
     ``public_key`` is the peer's Ed25519 public key (PEM SubjectPublicKeyInfo).
-    The upstream verifies an edge JWT against each peer's key; the name of the
+    The secondary verifies a primary JWT against each peer's key; the name of the
     key that verifies is the acting peer (C2 reads the caller from the token).
     A public key is not a secret, so it is inline, not an env reference.
     """
@@ -834,59 +838,59 @@ class FederationPeer(BaseModel):
     @classmethod
     def public_key_is_ed25519_pem(cls, v: str) -> str:
         """Fail at load, not at first call, if the PEM is not an Ed25519 key."""
-        from .edge_key import EdgeKeyError, load_public_key
+        from .federation_keys import FederationKeyError, load_public_key
 
         try:
             load_public_key(v)
-        except EdgeKeyError as exc:
+        except FederationKeyError as exc:
             raise ValueError(f"public_key is not a valid Ed25519 PEM: {exc}") from exc
         return v
 
 
 class FederationConfig(BaseModel):
-    """The upstream (offering) side of federation: the peers this profile trusts.
+    """The secondary (offering) side of federation: the peers this profile trusts.
 
-    A profile with ``federation.peers`` is a federation ingress — a downstream
-    peer authenticates to it with an edge JWT signed by one of these keys
+    A profile with ``federation.peers`` is a federation ingress — a primary
+    peer authenticates to it with a primary JWT signed by one of these keys
     (#592, C1), which is a way to authenticate, so the profile needs no static
-    bearer. ``signing_key_env`` (D1) holds the ingress's OWN Ed25519 private key,
+    bearer. ``secondary_key_env`` (D1) holds the ingress's OWN Ed25519 private key,
     with which it signs a verdict assertion beside each federated response so a
-    downstream that pins the matching public key can trust the scan instead of
-    re-judging (#592, D2a trusts it). The upstream's signing key is distinct
-    from a peer's edge key: the edge key is the DOWNSTREAM's (it authenticates a
-    caller), this one is the UPSTREAM's (it vouches for a response).
+    primary that pins the matching public key can trust the scan instead of
+    re-judging (#592, D2a trusts it). The secondary's key is distinct from a
+    peer's primary key: the primary key is the PRIMARY's (it authenticates a
+    caller), this one is the SECONDARY's (it vouches for a response).
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     peers: dict[str, FederationPeer] = Field(
         default_factory=dict,
-        description="Downstream peers that may authenticate with an edge JWT, by name",
+        description="Primary peers that may authenticate with a primary JWT, by name",
     )
-    signing_key_env: str | None = Field(
+    secondary_key_env: str | None = Field(
         default=None,
         description=(
             "Env var (or its _FILE form) holding this ingress's Ed25519 PRIVATE "
             "key (PEM PKCS#8), with which it signs the verdict assertion beside a "
             "federated response (#592, D1). Unset: no assertion is emitted and a "
-            "downstream re-judges, exactly as today."
+            "primary re-judges, exactly as today."
         ),
     )
-    signing_key_name: str | None = Field(
+    secondary_key_name: str | None = Field(
         default=None,
         description=(
             "A key minted by `federation_keygen`, by name (#633). The same thing "
-            "as `signing_key_env` and the preferred form: a key named here is "
+            "as `secondary_key_env` and the preferred form: a key named here is "
             "re-read on every reload, so one minted after startup takes effect "
             "without a restart. Exactly one of the two per key."
         ),
     )
-    signing_key: SecretStr | None = Field(
+    secondary_key: SecretStr | None = Field(
         default=None,
         exclude=True,
         description=(
-            "Resolved signing private key PEM (load-time only, from "
-            "signing_key_env or signing_key_name)"
+            "Resolved secondary private key PEM (load-time only, from "
+            "secondary_key_env or secondary_key_name)"
         ),
     )
 
@@ -900,27 +904,27 @@ class FederationConfig(BaseModel):
                 raise ValueError(f"federation peer name {name!r} is not a valid name")
         return v
 
-    @field_validator("signing_key_env")
+    @field_validator("secondary_key_env")
     @classmethod
-    def signing_key_env_is_an_env_name(cls, v: str | None) -> str | None:
+    def secondary_key_env_is_an_env_name(cls, v: str | None) -> str | None:
         """Reject lowercase, leading digits, or non-identifier characters."""
         if v is not None and not ENV_NAME_RE.match(v):
-            raise ValueError(f"signing_key_env {v!r} must be an UPPERCASE env-var identifier")
+            raise ValueError(f"secondary_key_env {v!r} must be an UPPERCASE env-var identifier")
         return v
 
-    @field_validator("signing_key_name")
+    @field_validator("secondary_key_name")
     @classmethod
-    def signing_key_name_is_a_key_name(cls, v: str | None) -> str | None:
-        return _is_key_name(v, "signing_key_name")
+    def secondary_key_name_is_a_key_name(cls, v: str | None) -> str | None:
+        return _is_key_name(v, "secondary_key_name")
 
     @model_validator(mode="after")
-    def one_signing_key_source(self) -> FederationConfig:
-        _one_key_source(self.signing_key_env, self.signing_key_name, "signing_key")
+    def one_secondary_key_source(self) -> FederationConfig:
+        _one_key_source(self.secondary_key_env, self.secondary_key_name, "secondary_key")
         return self
 
 
 def federation_audience(url: str) -> str | None:
-    """The upstream profile name an edge JWT is audience-pinned to (#592).
+    """The secondary profile name a primary JWT is audience-pinned to (#592).
 
     It is the path segment before ``/mcp`` in a federated backend's gateway URL
     (``…/gateway/<profile>/mcp`` or the test shape ``…/<profile>/mcp``), or None
@@ -995,7 +999,7 @@ class Backend(BaseModel):
     federated: FederatedConfig | None = Field(
         default=None,
         description=(
-            "Mark this backend as a federated upstream Trentina — a peer gateway "
+            "Mark this backend as a federated secondary Trentina — a peer gateway "
             "whose own perimeter already judged its responses (#592). Inert in "
             "itself today: the link still runs as a plain MCP backend, so the "
             "interim static-bearer edge keeps working unchanged. Its presence is "
@@ -1198,7 +1202,7 @@ class Backend(BaseModel):
         at all — the ``_REMOTE_ONLY_FIELDS`` check refuses ``federated`` there.
 
         When an edge key is set, by either source, the backend signs a JWT whose
-        audience is the upstream profile named in the URL, so the URL must be a
+        audience is the secondary profile named in the URL, so the URL must be a
         gateway MCP endpoint (``…/<profile>/mcp``) from which that name is
         derivable.
         """
@@ -1206,7 +1210,7 @@ class Backend(BaseModel):
             raise ValueError("federated does not apply to an internal:// backend")
         if (
             self.federated is not None
-            and self.federated.has_edge_key
+            and self.federated.has_primary_key
             and federation_audience(self.url) is None
         ):
             raise ValueError(
@@ -3122,7 +3126,7 @@ class Profile(BaseModel):
     federation: FederationConfig | None = Field(
         default=None,
         description=(
-            "The upstream side of federation (#592): downstream peers that may "
+            "The secondary side of federation (#592): primary peers that may "
             "authenticate to this profile with an edge JWT. A profile with "
             "federation.peers is a federation ingress and needs no other "
             "credential (optional)"
@@ -3211,7 +3215,7 @@ class Profile(BaseModel):
     def a_federation_ingress_is_directed(self) -> Profile:
         """Refuse a federation ingress that is not a directed edge (#592, C2).
 
-        A profile with ``federation.peers`` offers a declared set to a downstream
+        A profile with ``federation.peers`` offers a declared set to a primary
         peer and can never reach past it. The rule is structural, like a
         honeypot's: the profile is ``role: agent`` — an operator ingress would
         offer the gateway's admin tools to a peer — and its internal backend's
@@ -3456,7 +3460,7 @@ class Profile(BaseModel):
         if self.oauth is not None and self.oauth.enabled:
             return self
         if self.federation is not None and self.federation.peers:
-            # A federation ingress: a downstream peer authenticates with an edge
+            # A federation ingress: a primary peer authenticates with a primary
             # JWT signed by one of these keys (#592), which is authentication.
             return self
         raise ValueError(

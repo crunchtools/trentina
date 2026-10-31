@@ -32,7 +32,7 @@ from mcp_types import INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND
 from ..database import delete_all_tool_lists, delete_tool_list, save_tool_list
 from ..logsafe import exc_kind, redact_source, safe_url
 from ..reserved import PINS_KEY
-from . import edge_key
+from . import federation_keys
 from .circuit import breaker
 from .context import get_current_profile
 from .errors import (
@@ -262,7 +262,7 @@ class BackendCall:
     """Outcome of a backend tool invocation.
 
     ``meta`` is the response's ``_meta`` object, carried ONLY for a federated
-    backend (#592, B2): a federated upstream Trentina puts its paging marker at
+    backend (#592, B2): a federated secondary Trentina puts its paging marker at
     ``_meta._trentina_part`` because the SDK drops a root-level ``_trentina_part``
     before we see it. For every other backend it is None, and the consumer reads
     only the one key it expects, shape-checked.
@@ -280,7 +280,7 @@ _tool_list_cache: dict[str, list[dict[str, Any]]] = {}
 # E1c), keyed by backend URL: the count of tools it is withholding from this
 # caller's slice. Read only for a federated backend; a non-federated backend
 # never sets it. A hint for the surface report, never a trust input.
-_federated_held_upstream: dict[str, int] = {}
+_federated_held_secondary: dict[str, int] = {}
 
 
 def _read_federated_held(backend: Backend, tools_result: Any) -> None:
@@ -295,13 +295,13 @@ def _read_federated_held(backend: Backend, tools_result: Any) -> None:
     """
     if backend.federated is None:
         return
-    _federated_held_upstream.pop(backend.url, None)
+    _federated_held_secondary.pop(backend.url, None)
     meta = getattr(tools_result, "meta", None)
     pins = meta.get(PINS_KEY) if isinstance(meta, dict) else None
     held = pins.get("held") if isinstance(pins, dict) else None
     if isinstance(held, bool) or not isinstance(held, int) or held < 0:
         return
-    _federated_held_upstream[backend.url] = held
+    _federated_held_secondary[backend.url] = held
 
 # JSON-RPC errors that mean "your request was wrong", said by a backend that
 # is up. Each is named in the refusal by our own words, never the backend's:
@@ -387,7 +387,7 @@ def on_backend_cache_evict(callback: Any) -> None:
 def _evict_backend_cache(url: str) -> None:
     """Remove a backend's cached tool list and notify listeners."""
     if _tool_list_cache.pop(url, None) is not None:
-        _federated_held_upstream.pop(url, None)
+        _federated_held_secondary.pop(url, None)
         delete_tool_list(url)
         for cb in _on_evict_callbacks:
             cb(url)
@@ -415,7 +415,7 @@ def flush_all_caches() -> int:
     urls = list(_tool_list_cache.keys())
     for url in urls:
         _tool_list_cache.pop(url, None)
-        _federated_held_upstream.pop(url, None)
+        _federated_held_secondary.pop(url, None)
         for cb in _on_evict_callbacks:
             cb(url)
     delete_all_tool_lists()
@@ -498,8 +498,10 @@ def _inflight_key(backend: Backend, profile: Profile | None) -> str:
     per-profile credential — an ``auth`` grant, or a federated edge key whose
     JWT caller is the profile. Keying a federated fetch by profile too stops a
     no-profile fetch (e.g. pre-compression) from being joined by the
-    authenticated build, which would hand the build the upstream's 401 (#592)."""
-    if backend.auth is None and (backend.federated is None or backend.federated.edge_key is None):
+    authenticated build, which would hand the build the secondary's 401 (#592)."""
+    if backend.auth is None and (
+        backend.federated is None or backend.federated.primary_key is None
+    ):
         return backend.url
     return f"{backend.url}#{profile.name if profile else ''}"
 
@@ -609,15 +611,15 @@ def _cooldown_key(profile: Profile | None, backend_name: str) -> str:
     return f"{profile.name if profile else ''}:{backend_name}"
 
 
-def _edge_jwt(url: str, private_key_pem: str, caller: str) -> str:
-    """Sign the downstream's 60s JWT to a federated upstream (#592, C1).
+def _primary_jwt(url: str, private_key_pem: str, caller: str) -> str:
+    """Sign the primary's 60s JWT to a federated secondary (#592, C1).
 
-    The audience is the upstream profile named in the backend URL (the Backend
-    validator guarantees it is derivable whenever an edge key is set); the
+    The audience is the secondary profile named in the backend URL (the Backend
+    validator guarantees it is derivable whenever a primary key is set); the
     subject is the calling profile.
     """
-    key = edge_key.load_private_key(private_key_pem)
-    return edge_key.sign_edge_jwt(key, sub=caller, aud=federation_audience(url) or "")
+    key = federation_keys.load_private_key(private_key_pem)
+    return federation_keys.sign_primary_jwt(key, sub=caller, aud=federation_audience(url) or "")
 
 
 async def _credentials(
@@ -629,8 +631,8 @@ async def _credentials(
     reached the backend, and must neither count against the circuit nor
     hold its half-open probe.
     """
-    if backend.federated is not None and backend.federated.edge_key is not None:
-        # Federated edge (#592): sign a short-lived JWT to the upstream instead
+    if backend.federated is not None and backend.federated.primary_key is not None:
+        # Federated link (#592): sign a short-lived JWT to the secondary instead
         # of a static bearer. Takes precedence over any header credential. The
         # JWT's caller is the profile name, so a missing profile is a caller
         # bug — fail loud here, BEFORE breaker.allow, rather than send an
@@ -640,7 +642,9 @@ async def _credentials(
             raise BackendCallError(
                 f"backend {backend_name!r} federated fetch needs a calling profile"
             )
-        jwt = _edge_jwt(backend.url, backend.federated.edge_key.get_secret_value(), profile.name)
+        jwt = _primary_jwt(
+            backend.url, backend.federated.primary_key.get_secret_value(), profile.name
+        )
         return {**backend.headers, "Authorization": f"Bearer {jwt}"}, None
     if backend.auth is None:
         return backend.headers or None, None
@@ -814,7 +818,7 @@ async def call_backend_tool(
         )
     content: list[dict[str, Any]] = [_serialize_content_block(b) for b in raw_content]
     structured = _field(result, "structured_content", "structuredContent")
-    # _meta is carried only for a federated peer (B2): it is where an upstream
+    # _meta is carried only for a federated peer (B2): it is where an secondary
     # Trentina leaves its paging marker, since the SDK drops a root-level one.
     meta = _field(result, "meta", "_meta") if backend.federated is not None else None
     return BackendCall(

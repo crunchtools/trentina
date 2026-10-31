@@ -31,7 +31,7 @@ async def federation_keygen(name: str) -> dict[str, Any]:
 
     Args:
         name: What to call the key, lowercase letters, digits and hyphens. It
-            is what a profile's ``edge_key_name`` or ``signing_key_name`` refers
+            is what a profile's ``primary_key_name`` or ``secondary_key_name`` refers
             to later, and it is written once.
     """
     try:

@@ -62,7 +62,7 @@ uv run trentina
   (`tool_pins` operator tool) — dark, not silently trusted. One exception
   (#592): a `federated:` backend's first reconnect after the store is lost is a
   first connect, so its offered set is auto-approved as a unit (the trust is the
-  declared edge, not the store).
+  declared link, not the store).
 - `QUARANTINE_TRUST_CONFIG` — Trust allowlist JSON path
 - `TRENTINA_READ_ROOTS` — `os.pathsep`-separated absolute directories that
   `read_tool` and `dir_tool` may reach (#261); a relative entry fails startup.
@@ -494,10 +494,19 @@ authenticates one.
 
 `federation_keygen` (`tools/keygen.py`, store in `gateway/key_store.py`) mints
 an Ed25519 pair into `<data>/keys/<name>.pem` (`O_EXCL`, 0600) and returns only
-the public PEM. `edge_key_name`/`signing_key_name` refer to one by NAME, not
-path, resolved on every load — which is what removes the restart, since a
-reload is a load. Keep `has_edge_key` in mind over testing `edge_key_env`: a
-check naming one source only is how #633 found a gap.
+the public PEM. `primary_key_name`/`secondary_key_name` refer to one by NAME,
+not path, resolved on every load — which is what removes the restart, since a
+reload is a load. Keep `has_primary_key` in mind over testing `primary_key_env`:
+a check naming one source only is how #633 found a gap.
+
+Federation's two gateway roles are **primary** (uses the tools) and
+**secondary** (offers them), renamed from downstream/upstream in 4.0.0 (#637).
+"Upstream" now means only an HTTP origin the gateway dials — egress, the LLM
+proxy, the git transport, the bridge, `egress_upstreams`. A federated backend
+names its own key with `primary_key_env`/`primary_key_name`; a federation
+ingress names its own with `secondary_key_env`/`secondary_key_name`. The wire
+format was deliberately left alone, so gateways on either side of the rename
+still federate.
 
 The deployment needs the config DIRECTORY bound writable (a rename needs the
 directory). `TRENTINA_REQUIRE_HARDENED` still passes: its checks are

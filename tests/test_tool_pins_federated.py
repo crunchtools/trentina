@@ -2,7 +2,7 @@
 
 Field note from running federation: on breetai, `tool_pins list backend=lotor`
 returned `held: []` while the raw `tool_pins` table held several pending — the
-operator could not see, by name, what the federated upstream was holding.
+operator could not see, by name, what the federated secondary was holding.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ def _drop_profiles() -> object:
 
 
 async def test_a_held_federated_tool_is_listed(gateway: dict[str, Profile]) -> None:
-    # lotor's tool is held downstream under backend_id(the federated backend url).
+    # lotor's tool is held primary under backend_id(the federated backend url).
     perimeter_db.put_pin(
         backend_id(LOTOR_URL), "send_message", approved=None, pending=("h", "{}"), rejected=False
     )

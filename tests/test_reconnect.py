@@ -128,7 +128,7 @@ class TestReconnectBackend:
         assert POSTIZ_URL not in _tool_list_cache
 
     async def test_failed_operator_reconnect_keeps_the_last_good_list(self) -> None:
-        """A failed operator reconnect must not strand the downstream: the
+        """A failed operator reconnect must not strand the primary: the
         last-good list survives in memory and SQLite, and the error names the
         real leaf, not the SDK task group (F1 + F2)."""
         import httpx
@@ -165,12 +165,12 @@ class TestReconnectBackend:
     async def test_operator_reconnect_of_a_federated_backend_passes_the_profile(self) -> None:
         """A federated edge mints its JWT from the caller profile (#592 C1/C2);
         the operator reconnect must pass one, or the probe goes out with no auth
-        and the upstream rejects it (surfacing as an opaque ExceptionGroup)."""
+        and the secondary rejects it (surfacing as an opaque ExceptionGroup)."""
         from trentina.gateway.profile import FederatedConfig
 
         fed = Backend(
             url="https://up.example/gateway/fed-x/mcp",
-            federated=FederatedConfig(edge_key_env="X_EDGE_KEY"),
+            federated=FederatedConfig(primary_key_env="X_EDGE_KEY"),
         )
         set_profiles({"josui": _profile("josui", {"up": fed})})
         captured: dict[str, Any] = {}

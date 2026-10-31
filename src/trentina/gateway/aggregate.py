@@ -23,7 +23,7 @@ from ..reserved import (
 )
 from . import discovery, tool_pins
 from .backend import (
-    _federated_held_upstream,
+    _federated_held_secondary,
     list_backend_tools,
     on_backend_cache_evict,
 )
@@ -237,7 +237,7 @@ def _held_in_allowed_slice(
     The surface's ``allowed`` is measured after both the hold filter and the
     allowlist, so it cannot tell a hold from an allowlist drop. This counts the
     held tools (offered minus unheld) that also pass the allowlist — the number
-    a federation ingress reports to a downstream as "held upstream", scoped to
+    a federation ingress reports to a primary as "held secondary", scoped to
     the caller's own slice so no hold from another profile leaks.
     """
     if backend.is_internal or backend.is_decoy:
@@ -344,8 +344,8 @@ async def _build_profile_tools(
             allowed,
             shaped,
             held=held_count,
-            held_upstream=(
-                _federated_held_upstream.get(backend.url) if backend.federated else None
+            held_secondary=(
+                _federated_held_secondary.get(backend.url) if backend.federated else None
             ),
         )
 

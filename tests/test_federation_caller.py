@@ -1,7 +1,7 @@
-"""C2: the federated caller reaches the upstream's audit, and the directed edge (#592).
+"""C2: the federated caller reaches the secondary's audit, and the directed edge (#592).
 
 C1 authenticated an edge JWT and threw the ``(peer, sub)`` away; C2 binds it to
-``current_caller`` so the upstream's audit records who really called through the
+``current_caller`` so the secondary's audit records who really called through the
 federation profile, adds two nullable ``gateway_calls`` columns that enter the
 hash chain only when set, and refuses a federation ingress that is not a
 directed edge (``role: agent``; no egress/disk tool offered to a peer).
@@ -23,7 +23,7 @@ from trentina import audit_chain
 from trentina.gateway import audit
 from trentina.gateway.app import _authorize
 from trentina.gateway.context import current_caller
-from trentina.gateway.edge_key import sign_edge_jwt
+from trentina.gateway.federation_keys import sign_primary_jwt
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -133,12 +133,12 @@ def _caller_of(db: Any, call_id: int) -> tuple[Any, Any]:
 
 
 def test_a_federated_call_records_its_caller(db: Any) -> None:
-    token = current_caller.set(("breetai", "downstream"))
+    token = current_caller.set(("breetai", "primary"))
     try:
         audit._audit("up", "web", "echo", Outcome.OK, 1)
     finally:
         current_caller.reset(token)
-    assert _caller_of(db, 1) == ("breetai", "downstream")
+    assert _caller_of(db, 1) == ("breetai", "primary")
 
 
 def test_a_non_federated_call_has_a_null_caller(db: Any) -> None:
@@ -149,7 +149,7 @@ def test_a_non_federated_call_has_a_null_caller(db: Any) -> None:
 
 def test_the_chain_verifies_with_and_without_a_caller(db: Any) -> None:
     audit._audit("agent", "web", "plain", Outcome.OK, 1)  # no caller
-    token = current_caller.set(("breetai", "downstream"))
+    token = current_caller.set(("breetai", "primary"))
     try:
         audit._audit("up", "web", "echo", Outcome.OK, 1)  # federated
     finally:
@@ -237,10 +237,10 @@ def _peer_ingress(pub: str) -> Profile:
 async def test_authorize_captures_the_federated_caller() -> None:
     priv, pub = _signing_pair()
     profile = _peer_ingress(pub)
-    jwt = sign_edge_jwt(priv, sub="downstream", aud=profile.name)
+    jwt = sign_primary_jwt(priv, sub="primary", aud=profile.name)
     request = _request(f"Bearer {jwt}")
     assert await _authorize(request, profile, None) is None
-    assert request.state.federation_caller == ("breetai", "downstream")
+    assert request.state.federation_caller == ("breetai", "primary")
 
 
 async def test_authorize_leaves_no_caller_without_an_edge_jwt() -> None:

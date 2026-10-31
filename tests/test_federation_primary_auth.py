@@ -1,7 +1,7 @@
 """C1: a federated link authenticates with an edge JWT, no shared bearer (#592).
 
-End to end on the two-gateway harness: the downstream signs a per-edge JWT, the
-upstream (a federation ingress with the peer's public key and NO static bearer)
+End to end on the two-gateway harness: the primary signs a per-edge JWT, the
+secondary (a federation ingress with the peer's public key and NO static bearer)
 verifies it, and a tool call crosses the link. A wrong key is refused.
 """
 
@@ -16,7 +16,7 @@ from pydantic import SecretStr
 
 from tests.federation_harness import (
     INTERNAL_KEY,
-    UPSTREAM_PROFILE,
+    SECONDARY_PROFILE,
     federated_pair,
     serving_mcp_backend,
 )
@@ -48,14 +48,14 @@ def _keypair() -> tuple[str, str]:
     return private_pem, public_pem
 
 
-def _upstream(public_pem: str, demo_port: int) -> Profile:
+def _secondary(public_pem: str, demo_port: int) -> Profile:
     # A federation ingress: peers only, NO static bearer (peers-only
     # authenticates). The directed edge (#592, C2): its OFFERED tools are a real
-    # REMOTE backend (the demo server, behind the upstream's perimeter), and its
+    # REMOTE backend (the demo server, behind the secondary's perimeter), and its
     # internal surface is limited to read_part_tool — never the gateway's own
     # fetch/search/admin tools.
     return Profile(
-        name=UPSTREAM_PROFILE,
+        name=SECONDARY_PROFILE,
         federation=FederationConfig(peers={"breetai": FederationPeer(public_key=public_pem)}),
         backends={
             "demo": Backend(url=f"http://127.0.0.1:{demo_port}/mcp"),
@@ -64,17 +64,17 @@ def _upstream(public_pem: str, demo_port: int) -> Profile:
     )
 
 
-def _downstream_factory(private_pem: str):
+def _primary_factory(private_pem: str):
     def down(up_port: int) -> Profile:
         backend = Backend(
-            url=f"http://127.0.0.1:{up_port}/{UPSTREAM_PROFILE}/mcp",
-            federated=FederatedConfig(edge_key_env="BREETAI_EDGE_KEY"),
+            url=f"http://127.0.0.1:{up_port}/{SECONDARY_PROFILE}/mcp",
+            federated=FederatedConfig(primary_key_env="BREETAI_EDGE_KEY"),
         )
-        # The loader would resolve edge_key_env -> edge_key; set it directly here.
+        # The loader would resolve primary_key_env -> primary_key; set it directly here.
         assert backend.federated is not None
-        backend.federated.edge_key = SecretStr(private_pem)
+        backend.federated.primary_key = SecretStr(private_pem)
         profile = Profile(
-            name="downstream", auth=AuthConfig(bearer_token_env="D"), backends={"fed": backend}
+            name="primary", auth=AuthConfig(bearer_token_env="D"), backends={"fed": backend}
         )
         profile.auth.bearer_token = SecretStr("down-token")
         return profile
@@ -87,32 +87,32 @@ async def test_a_federated_call_authenticates_with_an_edge_jwt() -> None:
     async with (
         serving_mcp_backend() as demo_port,
         federated_pair(
-            upstream=_upstream(public_pem, demo_port), downstream=_downstream_factory(private_pem)
+            secondary=_secondary(public_pem, demo_port), primary=_primary_factory(private_pem)
         ) as fed,
-        fed.downstream_client() as client,
+        fed.primary_client() as client,
     ):
         names = {t["name"] for t in await client.list_tools()}
         assert any(n.endswith("echo") for n in names), names
         echo = next(t["name"] for t in (await client.list_tools()) if t["name"].endswith("echo"))
         result = await client.call_tool(echo, {"text": "signed-hello"})
-    # The whole round trip was authenticated by the edge JWT; the upstream holds
-    # no shared bearer for the downstream.
+    # The whole round trip was authenticated by the edge JWT; the secondary holds
+    # no shared bearer for the primary.
     assert "echo:signed-hello" in json.dumps(result), result
 
 
-async def test_a_wrong_edge_key_is_refused() -> None:
-    # The downstream signs with a key whose public half the upstream does not trust.
+async def test_a_wrong_primary_key_is_refused() -> None:
+    # The primary signs with a key whose public half the secondary does not trust.
     _, trusted_pub = _keypair()
     wrong_priv, _ = _keypair()
     async with (
         serving_mcp_backend() as demo_port,
         federated_pair(
-            upstream=_upstream(trusted_pub, demo_port), downstream=_downstream_factory(wrong_priv)
+            secondary=_secondary(trusted_pub, demo_port), primary=_primary_factory(wrong_priv)
         ) as fed,
-        fed.downstream_client() as client,
+        fed.primary_client() as client,
     ):
         names = {t["name"] for t in await client.list_tools()}
-    # The upstream rejected the edge JWT, so the federated backend served nothing.
+    # The secondary rejected the edge JWT, so the federated backend served nothing.
     assert not any(n.endswith("echo") for n in names), names
 
 
@@ -120,15 +120,15 @@ async def test_a_wrong_edge_key_is_refused() -> None:
 
 
 def _fed_backend(url: str) -> Backend:
-    backend = Backend(url=url, federated=FederatedConfig(edge_key_env="K"))
+    backend = Backend(url=url, federated=FederatedConfig(primary_key_env="K"))
     assert backend.federated is not None
-    backend.federated.edge_key = SecretStr("pem")
+    backend.federated.primary_key = SecretStr("pem")
     return backend
 
 
 def _down(url: str) -> Profile:
     profile = Profile(
-        name="downstream",
+        name="primary",
         auth=AuthConfig(bearer_token_env="D"),
         backends={"fed": _fed_backend(url)},
     )

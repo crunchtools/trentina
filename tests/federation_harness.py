@@ -1,10 +1,10 @@
 """Two real Trentina gateways on loopback, for gateway-to-gateway federation (#592).
 
-The thing under test is a DOWNSTREAM gateway that mounts an UPSTREAM gateway as a
+The thing under test is a PRIMARY gateway that mounts an SECONDARY gateway as a
 backend and uses its tools. This harness stands both gateways up in the test
-process and lets a client drive the downstream, so what is exercised is the real
-federation data path — the downstream's MCP client speaking to the upstream's
-``/<profile>/mcp`` route, the upstream dispatching to its own backend, and every
+process and lets a client drive the primary, so what is exercised is the real
+federation data path — the primary's MCP client speaking to the secondary's
+``/<profile>/mcp`` route, the secondary dispatching to its own backend, and every
 response crossing each gateway's perimeter — and not what a test author believes
 that path does.
 
@@ -15,17 +15,17 @@ What is real and what is stood in:
   ``lifespan="off"`` means warmup never runs; the first ``tools/list`` fetches
   live, as production's first list does.
 - **The link is a plain MCP backend with a static bearer**, which is the interim
-  federation in use today (issue #592) and needs no code change: the downstream's
-  ``Backend.url`` is the upstream's loopback route and the upstream's token rides
+  federation in use today (issue #592) and needs no code change: the primary's
+  ``Backend.url`` is the secondary's loopback route and the secondary's token rides
   in ``Backend.headers``. The MCP backend path skips the egress guard
   (``gateway/backend.py`` builds its own client), so a loopback URL needs no
   ``TRENTINA_FETCH_ALLOW_PRIVATE``. Later items (B1+) replace this plain backend
   with a first-class ``federated:`` block; the harness carries whatever the
-  downstream profile declares.
-- **The upstream's tools are an in-process FastMCP** bound as the internal
+  primary profile declares.
+- **The secondary's tools are an in-process FastMCP** bound as the internal
   backend (``register_internal_server``, which its own docstring blesses for
   tests), so there is no leaf subprocess and a test controls exactly what the
-  upstream offers and returns — including a tool that returns caller-chosen text,
+  secondary offers and returns — including a tool that returns caller-chosen text,
   for the scan-once items (D) to push a payload across the boundary.
 
 Profiles default to ``flag`` enforcement (``DefenseConfig.enforcement`` default),
@@ -64,10 +64,10 @@ from trentina.gateway.sessions import SessionRegistry
 if TYPE_CHECKING:
     from starlette.applications import Starlette
 
-UPSTREAM_PROFILE = "upstream"
-DOWNSTREAM_PROFILE = "downstream"
-UPSTREAM_TOKEN = "upstream-token-the-agent-never-types"
-DOWNSTREAM_TOKEN = "downstream-token"
+SECONDARY_PROFILE = "secondary"
+PRIMARY_PROFILE = "primary"
+SECONDARY_TOKEN = "secondary-token-the-agent-never-types"
+PRIMARY_TOKEN = "primary-token"
 INTERNAL_KEY = "up"
 FEDERATED_KEY = "fed"
 
@@ -84,7 +84,7 @@ def _free_port() -> int:
 
 
 def default_tools() -> list[Callable[..., Any]]:
-    """The upstream's default offered tools: enough to exercise federation.
+    """The secondary's default offered tools: enough to exercise federation.
 
     ``echo`` and ``emit`` return caller-chosen text, so a federation test — and
     later a scan-once test — can push a known string (or an injection payload)
@@ -108,20 +108,20 @@ def default_tools() -> list[Callable[..., Any]]:
 
 
 def internal_server(tools: list[Callable[..., Any]] | None = None) -> FastMCP:
-    """A FastMCP whose tools the upstream's ``internal://`` backend will serve."""
-    server: FastMCP = FastMCP("federation-upstream")
+    """A FastMCP whose tools the secondary's ``internal://`` backend will serve."""
+    server: FastMCP = FastMCP("federation-secondary")
     for tool in default_tools() if tools is None else tools:
         server.tool()(tool)
     return server
 
 
-def upstream_profile(
+def secondary_profile(
     *,
-    name: str = UPSTREAM_PROFILE,
-    token: str = UPSTREAM_TOKEN,
+    name: str = SECONDARY_PROFILE,
+    token: str = SECONDARY_TOKEN,
     backend_key: str = INTERNAL_KEY,
 ) -> Profile:
-    """The upstream: a bearer-authenticated profile serving its internal tools.
+    """The secondary: a bearer-authenticated profile serving its internal tools.
 
     Modelled on an agent seat, which is what a federation profile is (#592):
     later items narrow its ``tools_allow`` and declare its trust posture.
@@ -135,19 +135,19 @@ def upstream_profile(
     return profile
 
 
-def downstream_profile(
+def primary_profile(
     *,
-    upstream_port: int,
-    name: str = DOWNSTREAM_PROFILE,
-    token: str = DOWNSTREAM_TOKEN,
-    upstream_name: str = UPSTREAM_PROFILE,
-    upstream_token: str = UPSTREAM_TOKEN,
+    secondary_port: int,
+    name: str = PRIMARY_PROFILE,
+    token: str = PRIMARY_TOKEN,
+    secondary_name: str = SECONDARY_PROFILE,
+    secondary_token: str = SECONDARY_TOKEN,
     backend_key: str = FEDERATED_KEY,
 ) -> Profile:
-    """The downstream: a profile that mounts the upstream gateway as a backend.
+    """The primary: a profile that mounts the secondary gateway as a backend.
 
-    The interim federation (#592): a plain MCP backend at the upstream's route
-    with the upstream's bearer in ``headers``. B1 replaces this with a
+    The interim federation (#592): a plain MCP backend at the secondary's route
+    with the secondary's bearer in ``headers``. B1 replaces this with a
     ``federated:`` block; pass a different profile to the harness to exercise it.
     """
     profile = Profile(
@@ -155,8 +155,8 @@ def downstream_profile(
         auth=AuthConfig(bearer_token_env="DOWN"),
         backends={
             backend_key: Backend(
-                url=f"http://127.0.0.1:{upstream_port}/{upstream_name}/mcp",
-                headers={"Authorization": f"Bearer {upstream_token}"},
+                url=f"http://127.0.0.1:{secondary_port}/{secondary_name}/mcp",
+                headers={"Authorization": f"Bearer {secondary_token}"},
             )
         },
     )
@@ -199,8 +199,8 @@ async def serving_mcp_backend(
     A federation ingress offers its own REMOTE backends to a peer, never the
     gateway's internal surface (that is the directed edge: a peer reaches
     nothing of the gateway but a paging continuation). So a federated tool is a
-    remote tool behind the upstream's perimeter — this is that backend, which
-    an upstream profile mounts at ``http://127.0.0.1:<port>/mcp``.
+    remote tool behind the secondary's perimeter — this is that backend, which
+    an secondary profile mounts at ``http://127.0.0.1:<port>/mcp``.
     """
     app = internal_server(tools).http_app(path="/mcp")
     async with serving(app, lifespan="auto") as port:
@@ -213,7 +213,7 @@ def bound_internal_server(server: FastMCP) -> Iterator[FastMCP]:
 
     ``register_internal_server`` is a module-level singleton the whole process
     shares; its docstring blesses re-binding in tests. Restoring the previous
-    binding keeps one test's upstream from leaking into the next.
+    binding keeps one test's secondary from leaking into the next.
     """
     previous = internal._server
     register_internal_server(server)
@@ -308,30 +308,30 @@ class MCPClient:
 
 @dataclass
 class Federation:
-    """A standing downstream→upstream federation and how to drive it."""
+    """A standing primary→secondary federation and how to drive it."""
 
-    upstream_port: int
-    downstream_port: int
-    upstream_name: str = UPSTREAM_PROFILE
-    downstream_name: str = DOWNSTREAM_PROFILE
-    upstream_token: str = UPSTREAM_TOKEN
-    downstream_token: str = DOWNSTREAM_TOKEN
+    secondary_port: int
+    primary_port: int
+    secondary_name: str = SECONDARY_PROFILE
+    primary_name: str = PRIMARY_PROFILE
+    secondary_token: str = SECONDARY_TOKEN
+    primary_token: str = PRIMARY_TOKEN
     clients: list[MCPClient] = field(default_factory=list)
 
     def _url(self, port: int, profile: str) -> str:
         return f"http://127.0.0.1:{port}/{profile}/mcp"
 
-    def downstream_client(self) -> MCPClient:
-        """A client for the downstream gateway (the federation consumer)."""
-        url = self._url(self.downstream_port, self.downstream_name)
-        client = MCPClient(url, self.downstream_token)
+    def primary_client(self) -> MCPClient:
+        """A client for the primary gateway (the federation consumer)."""
+        url = self._url(self.primary_port, self.primary_name)
+        client = MCPClient(url, self.primary_token)
         self.clients.append(client)
         return client
 
-    def upstream_client(self) -> MCPClient:
-        """A client for the upstream gateway directly, for comparison."""
-        url = self._url(self.upstream_port, self.upstream_name)
-        client = MCPClient(url, self.upstream_token)
+    def secondary_client(self) -> MCPClient:
+        """A client for the secondary gateway directly, for comparison."""
+        url = self._url(self.secondary_port, self.secondary_name)
+        client = MCPClient(url, self.secondary_token)
         self.clients.append(client)
         return client
 
@@ -340,44 +340,44 @@ class Federation:
 async def federated_pair(
     *,
     tools: list[Callable[..., Any]] | None = None,
-    upstream: Profile | None = None,
-    downstream: Callable[[int], Profile] | None = None,
+    secondary: Profile | None = None,
+    primary: Callable[[int], Profile] | None = None,
 ) -> AsyncIterator[Federation]:
-    """Stand an upstream gateway and a downstream gateway that federates it.
+    """Stand an secondary gateway and a primary gateway that federates it.
 
     Args:
-        tools: the upstream's offered tools (default: ``default_tools()``).
-        upstream: override the upstream profile (default: ``upstream_profile()``).
-        downstream: a factory taking the upstream's port and returning the
-            downstream profile (default: ``downstream_profile``). B1+ pass a
+        tools: the secondary's offered tools (default: ``default_tools()``).
+        secondary: override the secondary profile (default: ``secondary_profile()``).
+        primary: a factory taking the secondary's port and returning the
+            primary profile (default: ``primary_profile``). B1+ pass a
             factory that builds a profile with a ``federated:`` block here.
 
-    Yields a :class:`Federation` whose ``downstream_client()`` drives the
+    Yields a :class:`Federation` whose ``primary_client()`` drives the
     consumer gateway.
     """
-    up_profile = upstream or upstream_profile()
+    up_profile = secondary or secondary_profile()
     with bound_internal_server(internal_server(tools)):
         up_sessions = SessionRegistry()
         up_app = gateway_app({up_profile.name: up_profile}, sessions=up_sessions)
         async with serving(up_app) as up_port:
-            if downstream is not None:
-                down_profile = downstream(up_port)
+            if primary is not None:
+                down_profile = primary(up_port)
             else:
-                down_profile = downstream_profile(upstream_port=up_port)
+                down_profile = primary_profile(secondary_port=up_port)
             down_sessions = SessionRegistry()
             down_app = gateway_app({down_profile.name: down_profile}, sessions=down_sessions)
             async with serving(down_app) as down_port:
                 fed = Federation(
-                    upstream_port=up_port,
-                    downstream_port=down_port,
-                    upstream_name=up_profile.name,
-                    downstream_name=down_profile.name,
-                    upstream_token=up_profile.auth.bearer_token.get_secret_value()
+                    secondary_port=up_port,
+                    primary_port=down_port,
+                    secondary_name=up_profile.name,
+                    primary_name=down_profile.name,
+                    secondary_token=up_profile.auth.bearer_token.get_secret_value()
                     if up_profile.auth and up_profile.auth.bearer_token
-                    else UPSTREAM_TOKEN,
-                    downstream_token=down_profile.auth.bearer_token.get_secret_value()
+                    else SECONDARY_TOKEN,
+                    primary_token=down_profile.auth.bearer_token.get_secret_value()
                     if down_profile.auth and down_profile.auth.bearer_token
-                    else DOWNSTREAM_TOKEN,
+                    else PRIMARY_TOKEN,
                 )
                 try:
                     yield fed

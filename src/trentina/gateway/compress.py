@@ -308,8 +308,8 @@ async def _precompress_backend(
     """Fetch tools from one backend, compress uncached descriptions.
 
     ``profile`` is the first holder, passed so a federated backend can mint its
-    edge JWT — without it the list fetch goes out unauthenticated and the
-    upstream rejects it. On a cold cache this task is created before the build's
+    primary JWT — without it the list fetch goes out unauthenticated and the
+    secondary rejects it. On a cold cache this task is created before the build's
     own fetch, and both share the URL-keyed single-flight slot, so an
     unauthenticated fetch here is the one the build would join (#592, F4).
     """

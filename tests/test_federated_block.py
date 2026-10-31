@@ -1,6 +1,6 @@
 """B1: the inert ``federated:`` Backend block (#592).
 
-The block marks a backend as a federated upstream Trentina. In B1 it is inert —
+The block marks a backend as a federated secondary Trentina. In B1 it is inert —
 the link still runs as a plain MCP backend — but it earns two behaviours now:
 it is refused where there is no peer to federate (internal/decoy, honeypot), and
 an agent-triggered reload may not apply or drop it (it names a trust boundary).
@@ -25,9 +25,9 @@ class TestSchema:
         assert backend.is_remote
 
     def test_the_block_carries_only_what_is_wired(self) -> None:
-        # C1 added edge_key_env (the downstream signer key); D2a added
-        # trust_verdict (the downstream's pin to trust a peer's verdict).
-        assert "edge_key_env" in FederatedConfig.model_fields
+        # C1 added primary_key_env (the primary signer key); D2a added
+        # trust_verdict (the primary's pin to trust a peer's verdict).
+        assert "primary_key_env" in FederatedConfig.model_fields
         assert "trust_verdict" in FederatedConfig.model_fields
 
     def test_an_unknown_field_is_refused(self) -> None:
@@ -96,15 +96,15 @@ class TestAnAgentCannotReloadItsOwnFederation:
 
 
 async def test_a_federated_backend_still_federates_inertly() -> None:
-    # Inert: marking the downstream's backend federated changes nothing in B1 —
+    # Inert: marking the primary's backend federated changes nothing in B1 —
     # it still federates like a plain MCP backend (proven on the harness).
-    from tests.federation_harness import downstream_profile, federated_pair
+    from tests.federation_harness import federated_pair, primary_profile
 
     def down(up_port: int) -> Profile:
-        profile = downstream_profile(upstream_port=up_port)
+        profile = primary_profile(secondary_port=up_port)
         next(iter(profile.backends.values())).federated = FederatedConfig()
         return profile
 
-    async with federated_pair(downstream=down) as fed, fed.downstream_client() as client:
+    async with federated_pair(primary=down) as fed, fed.primary_client() as client:
         names = {t["name"] for t in await client.list_tools()}
     assert any(n.endswith("echo") for n in names), names

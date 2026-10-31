@@ -137,15 +137,15 @@ async def _reset_one(
             }
     elif cfg.federated is not None and holders:
         # A federated edge authenticates with a per-request JWT whose caller is
-        # the downstream profile (#592 C1/C2); _credentials mints it only when a
+        # the primary profile (#592 C1/C2); _credentials mints it only when a
         # profile is passed. The operator path otherwise passed none, so the
-        # probe went out unauthenticated and the upstream rejected it with an
+        # probe went out unauthenticated and the secondary rejected it with an
         # opaque ExceptionGroup. Hand it an owning profile so the edge re-auths.
         holder = holders[0]
     breaker.reset(url)
     try:
         # Refresh in place — never evict first. Evicting before the fetch
-        # stranded the downstream with no tools when the fetch then failed
+        # stranded the primary with no tools when the fetch then failed
         # (the list was already gone from memory and SQLite). refresh fetches
         # fresh, replaces on success, and leaves the last-good list untouched
         # on failure; the aggregate is invalidated below only after a success.

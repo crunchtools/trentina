@@ -1,10 +1,10 @@
-"""The federated verdict assertion (#592, D1): what an upstream's perimeter
-concluded about a response, signed, so a downstream that pins the matching
+"""The federated verdict assertion (#592, D1): what an secondary's perimeter
+concluded about a response, signed, so a primary that pins the matching
 public key and perimeter stamp can trust the scan instead of re-judging (D2a).
 
 SLSA-VSA shaped: ``{verifier, content_sha256, verdict, perimeter_stamp, ts}``,
-signed with the ingress's Ed25519 signing key (``FederationConfig.signing_key``)
-and verified with the downstream's pinned public key. This module is PURE — no
+signed with the ingress's Ed25519 secondary key (``FederationConfig.secondary_key``)
+and verified with the primary's pinned public key. This module is PURE — no
 I/O, no gateway state, no decision objects: the emission site (``transports/mcp``)
 and the trust site (D2a) map to and from it. The signature covers the RFC 8785
 canonical form of the assertion, and ``content_sha256`` binds it to the exact
@@ -17,17 +17,17 @@ import hashlib
 from typing import Any
 
 from .. import audit_chain
-from . import edge_key
+from . import federation_keys
 
 #: The assertion rides under ``_meta`` beside a federated response, like the
 #: paging marker (#592, B2): the MCP SDK drops a root-level reserved key but
-#: keeps ``_meta``, so a downstream Trentina reads it while a plain client
+#: keeps ``_meta``, so a primary Trentina reads it while a plain client
 #: ignores it.
 VSA_KEY = "_trentina_vsa"
 
 #: An assertion older than this is not trusted (clock skew + flight time); the
-#: downstream re-judges instead (#592, D2a). Wider than the 60 s edge JWT: this
-#: must survive the upstream's own tool-call latency plus the return hop, where
+#: primary re-judges instead (#592, D2a). Wider than the 60 s edge JWT: this
+#: must survive the secondary's own tool-call latency plus the return hop, where
 #: the edge JWT covers only a single outbound request. Bound to content_sha256,
 #: so a replayed assertion only validates the identical bytes it was signed for.
 MAX_AGE_SECONDS = 300
@@ -38,9 +38,9 @@ def content_digest(blocks: list[Any] | None, structured: Any, is_error: bool) ->
 
     Over the content blocks as ``_serialize_content_block`` shapes them, the
     structured content, and ``isError`` — the bytes the agent receives, so the
-    downstream can bind the signature to exactly what it got. NOT over
+    primary can bind the signature to exactly what it got. NOT over
     ``_trentina_warning``/``_meta`` (the SDK and the reserved-key strip alter
-    those), and NOT over ``DefenseVerdict.read`` (the downstream cannot
+    those), and NOT over ``DefenseVerdict.read`` (the primary cannot
     reproduce the unpacked text without reading it, which is the work being
     skipped).
     """
@@ -49,7 +49,7 @@ def content_digest(blocks: list[Any] | None, structured: Any, is_error: bool) ->
 
 
 #: The gap/truncation flags a warning carries (warning.py), all closed-set
-#: booleans — the part of a verdict a downstream must see to apply its own mode.
+#: booleans — the part of a verdict a primary must see to apply its own mode.
 _GAP_FLAGS = (
     "l2_unavailable",
     "l3_unavailable",
@@ -63,7 +63,7 @@ def verdict_summary(warning: dict[str, Any] | None, mode: str) -> dict[str, Any]
     """The closed verdict an assertion carries, from a gateway warning + mode.
 
     ONE definition shared by the emit side (#592, D1) and the trust side (D2a),
-    so the downstream reconstructs exactly what the upstream concluded. Only
+    so the primary reconstructs exactly what the secondary concluded. Only
     closed-set facts: the flagging layer, the risk level, the gap/truncation
     flags, oversize, and the unread binary kinds — never any free text an L3
     assessment or a backend wrote (``warning.py`` keeps those out of these
@@ -94,7 +94,7 @@ def build_assertion(
     (flagged_by, risk_level, gaps, oversize, unread, truncated, mode); ``verifier``
     names the signing ingress; ``perimeter_stamp`` is its L2 policy identity and
     ``judge`` its L3 one (provider/model/pack) — the stamp does not cover L3, so
-    the two are pinned separately downstream."""
+    the two are pinned separately primary."""
     return {
         "verifier": verifier,
         "content_sha256": content_sha256,
@@ -105,14 +105,14 @@ def build_assertion(
     }
 
 
-def sign_assertion(assertion: dict[str, Any], signing_key_pem: str) -> dict[str, Any]:
+def sign_assertion(assertion: dict[str, Any], secondary_key_pem: str) -> dict[str, Any]:
     """Sign ``assertion`` and wrap it as ``{assertion, signature}`` (signature hex).
 
-    The signature is over the RFC 8785 canonical form, so the downstream
+    The signature is over the RFC 8785 canonical form, so the primary
     verifies the same bytes regardless of key order or re-serialization.
     """
-    key = edge_key.load_private_key(signing_key_pem)
-    signature = edge_key.sign(key, audit_chain.canonical(assertion))
+    key = federation_keys.load_private_key(secondary_key_pem)
+    signature = federation_keys.sign(key, audit_chain.canonical(assertion))
     return {"assertion": assertion, "signature": signature.hex()}
 
 
@@ -148,7 +148,7 @@ def check_trust(
     (its L3 provider/model/pack — the stamp does NOT cover L3, so a peer that
     swapped to a weaker judge must be caught here), the resolved ``mode``, and is
     no older than ``MAX_AGE_SECONDS``; otherwise ``(None, reason)`` with a closed
-    reason (``TRUST_REASONS``) so the downstream re-judges and audits WHY it did
+    reason (``TRUST_REASONS``) so the primary re-judges and audits WHY it did
     not trust. Pure and fail-closed: any shortfall is a re-judge, never a trust.
     """
     if envelope is None:
@@ -188,14 +188,14 @@ def verify_assertion(envelope: Any, public_key_pem: str) -> dict[str, Any] | Non
     except ValueError:
         return None
     try:
-        key = edge_key.load_public_key(public_key_pem)
+        key = federation_keys.load_public_key(public_key_pem)
         # Canonicalizing an attacker-supplied assertion can raise — RFC 8785 has
         # no form for a non-finite number, and JSON parses NaN/Infinity by
         # default — so it is inside the guard: a malformed assertion fails
         # closed to None, it does not raise into the caller.
         payload = audit_chain.canonical(assertion)
-    except (edge_key.EdgeKeyError, ValueError, TypeError):
+    except (federation_keys.FederationKeyError, ValueError, TypeError):
         return None
-    if not edge_key.verify(key, raw, payload):
+    if not federation_keys.verify(key, raw, payload):
         return None
     return assertion

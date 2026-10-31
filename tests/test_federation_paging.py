@@ -1,11 +1,11 @@
 """B2: the federated paging proxy (#592).
 
 A federated peer pages a large response (part 1 + a marker under
-``_meta._trentina_part``, the rest held on the peer). The downstream holds a
+``_meta._trentina_part``, the rest held on the peer). The primary holds a
 proxy under the peer's handle and forwards ``read_part`` to the peer, re-judging
 each part, instead of re-paging or orphaning the rest.
 
-The end-to-end path (a real large response actually cut by the upstream) needs
+The end-to-end path (a real large response actually cut by the secondary) needs
 the L2 tokenizer/model and is covered where that runs; here the pieces are
 driven directly with the peer call and the scan mocked, so the proxy's delivery,
 relay-not-reframe, teardown and shape-checks are verified without a model.
@@ -41,7 +41,7 @@ def _fresh_store() -> None:
 
 def _profile() -> Profile:
     profile = Profile(
-        name="downstream",
+        name="primary",
         auth=AuthConfig(bearer_token_env="D"),
         backends={"fed": Backend(url="https://lotor/gateway/up/mcp", federated=FederatedConfig())},
     )
@@ -51,7 +51,7 @@ def _profile() -> Profile:
 
 def _origin() -> paging.Origin:
     return paging.Origin(
-        profile="downstream", backend="fed", tool="echo", label="echo",
+        profile="primary", backend="fed", tool="echo", label="echo",
         is_error=False, acted=False,
     )
 
@@ -61,7 +61,7 @@ def _policy(profile: Profile):
 
 
 def _proxied(count: int = 3) -> paging.Paged:
-    up = paging.Upstream(backend="fed", reader="read_part", handle=HANDLE, count=count)
+    up = paging.Secondary(backend="fed", reader="read_part", handle=HANDLE, count=count)
     paged = paging.hold_federated(
         _origin(),
         up,
@@ -100,9 +100,9 @@ def _clean_scan(monkeypatch: pytest.MonkeyPatch) -> None:
 # --- pure shape / store units ---
 
 
-def test_federated_upstream_reads_a_valid_marker() -> None:
+def test_federated_secondary_reads_a_valid_marker() -> None:
     meta = {paging.PART_KEY: {"part": 1, "parts": 4, "handle": HANDLE, "next": 2, "reader": "rp"}}
-    up = paging.federated_upstream("fed", meta)
+    up = paging.federated_secondary("fed", meta)
     assert up is not None
     assert (up.backend, up.reader, up.handle, up.count) == ("fed", "rp", HANDLE, 4)
 
@@ -119,8 +119,8 @@ def test_federated_upstream_reads_a_valid_marker() -> None:
         {paging.PART_KEY: {"handle": HANDLE, "parts": 4}},  # no reader
     ],
 )
-def test_federated_upstream_refuses_a_bad_marker(meta: dict[str, Any] | None) -> None:
-    assert paging.federated_upstream("fed", meta) is None
+def test_federated_secondary_refuses_a_bad_marker(meta: dict[str, Any] | None) -> None:
+    assert paging.federated_secondary("fed", meta) is None
 
 
 def test_with_part_marker_writes_root_and_meta_with_reader() -> None:
@@ -135,11 +135,11 @@ def test_hold_federated_uses_the_peer_handle_and_refuses_a_collision() -> None:
     paged = _proxied()
     assert paged.handle == HANDLE
     assert paged.count == 3
-    assert paged.upstream is not None
+    assert paged.secondary is not None
     # A second hold on the same handle is refused, not overwritten.
     again = paging.hold_federated(
         _origin(),
-        paging.Upstream(backend="fed", reader="read_part", handle=HANDLE, count=3),
+        paging.Secondary(backend="fed", reader="read_part", handle=HANDLE, count=3),
         mode=Mode.FLAG, prompt=None, provenance=Provenance.EXTERNAL, l3_context=None, hidden=None,
     )
     assert again is None
@@ -175,10 +175,10 @@ async def test_the_last_proxied_part_releases_the_proxy(monkeypatch: pytest.Monk
     await parts._deliver_part(
         profile, paged, 3, mode=Mode.FLAG, prompt=None, policy=_policy(profile)
     )
-    assert paging.find("downstream", HANDLE) is None  # released on the last part
+    assert paging.find("primary", HANDLE) is None  # released on the last part
 
 
-async def test_an_expired_upstream_is_a_clean_unknown_handle(
+async def test_an_expired_secondary_is_a_clean_unknown_handle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clean_scan(monkeypatch)
@@ -191,7 +191,7 @@ async def test_an_expired_upstream_is_a_clean_unknown_handle(
         profile, paged, 2, mode=Mode.FLAG, prompt=None, policy=_policy(profile)
     )
     assert paging.UNKNOWN_HANDLE in json.dumps(assembled.result)
-    assert paging.find("downstream", HANDLE) is None  # released
+    assert paging.find("primary", HANDLE) is None  # released
 
 
 async def _done(value: Any) -> Any:
@@ -238,7 +238,7 @@ def _served_profile() -> Profile:
     # short_names off so read_part is served as "web__read_part" without the name
     # registry; an internal backend is what makes this profile able to page.
     profile = Profile(
-        name="downstream",
+        name="primary",
         short_names=False,
         auth=AuthConfig(bearer_token_env="D"),
         backends={
@@ -274,9 +274,9 @@ def test_a_federated_part_one_holds_a_proxy_and_is_marked() -> None:
     assert out[paging.PART_KEY]["handle"] == HANDLE  # our continuation marker, at root
     served = f"web__{paging.READ_PART_TOOL}"
     assert out["_meta"][paging.PART_KEY]["reader"] == served  # our reader, not the peer's
-    held = paging.find("downstream", HANDLE)
-    assert held is not None and held.upstream is not None  # a proxy, under the peer's handle
-    assert held.upstream.reader == "rp"  # the peer's reader, for the forwarded call
+    held = paging.find("primary", HANDLE)
+    assert held is not None and held.secondary is not None  # a proxy, under the peer's handle
+    assert held.secondary.reader == "rp"  # the peer's reader, for the forwarded call
 
 
 def test_a_non_federated_backend_is_left_alone() -> None:
@@ -284,14 +284,14 @@ def test_a_non_federated_backend_is_left_alone() -> None:
     profile.backends["fed"].federated = None
     out = _continuation(profile, _marker())
     assert paging.PART_KEY not in out  # not recognized as federated; untouched
-    assert paging.find("downstream", HANDLE) is None
+    assert paging.find("primary", HANDLE) is None
 
 
 def test_a_response_without_a_peer_marker_is_left_alone() -> None:
     profile = _served_profile()
     out = _continuation(profile, {})
     assert paging.PART_KEY not in out
-    assert paging.find("downstream", HANDLE) is None
+    assert paging.find("primary", HANDLE) is None
 
 
 def test_a_profile_that_cannot_read_a_part_does_not_proxy() -> None:
@@ -300,4 +300,4 @@ def test_a_profile_that_cannot_read_a_part_does_not_proxy() -> None:
     profile = _profile()  # only the federated backend
     out = _continuation(profile, _marker())
     assert paging.PART_KEY not in out
-    assert paging.find("downstream", HANDLE) is None
+    assert paging.find("primary", HANDLE) is None

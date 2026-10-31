@@ -32,7 +32,7 @@ from ..perimeter_db import count_pending_pins
 from ..quarantine.classifier import classifier_status
 from ..transports.jsonrpc import JSONRPC_INTERNAL_ERROR
 from ..transports.mcp import route_jsonrpc
-from .auth import verify_bearer, verify_edge_jwt_header, verify_oauth
+from .auth import verify_bearer, verify_oauth, verify_primary_jwt_header
 from .context import current_caller, current_session, session_fingerprint
 from .errors import (
     AuthError,
@@ -182,7 +182,7 @@ async def _authorize(
     # Only engages when the profile has federation.peers; a bad edge token is
     # fail-closed (401), never a fall-through.
     try:
-        caller = verify_edge_jwt_header(auth_header, profile)
+        caller = verify_primary_jwt_header(auth_header, profile)
         if caller is not None:
             # The real caller (peer, sub), carried one hop on request.state and
             # bound to current_caller beside current_session (#592, C2), so the

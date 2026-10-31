@@ -558,7 +558,7 @@ def test_inflight_key_separates_a_federated_edge_by_profile() -> None:
 
     fed = Backend(
         url="http://up:8000/gateway/fed-x/mcp",
-        federated=FederatedConfig(edge_key_env="X_EDGE_KEY", edge_key=SecretStr("k")),
+        federated=FederatedConfig(primary_key_env="X_EDGE_KEY", primary_key=SecretStr("k")),
     )
     plain = Backend(url="http://plain:8000/mcp")
     prof = Profile(name="josui", auth=AuthConfig(bearer_token_env="T"))
@@ -582,7 +582,7 @@ class TestFederatedFetchNeedsProfile:
         url = "http://up:8000/gateway/fed-x/mcp"
         fed = Backend(
             url=url,
-            federated=FederatedConfig(edge_key_env="X_EDGE_KEY", edge_key=SecretStr("k")),
+            federated=FederatedConfig(primary_key_env="X_EDGE_KEY", primary_key=SecretStr("k")),
         )
         with pytest.raises(BackendCallError, match="needs a calling profile"):
             await list_backend_tools("up", fed)  # profile defaults to None

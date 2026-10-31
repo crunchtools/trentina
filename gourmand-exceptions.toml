@@ -1003,14 +1003,14 @@ classification = "by_design"
 
 [[exceptions]]
 check = "copy_paste_detection"
-path = "src/trentina/gateway/edge_key.py"
+path = "src/trentina/gateway/federation_keys.py"
 pattern = "verify_edge_jwt"
 justification = "A closed-shape JWT verifier is a sequence of fail-closed guard clauses over a parsed object; it shares that SHAPE with tool_pins._pin_one (pin-change detection) but no logic. Both are deliberately literal, auditable guard sequences — the security idiom — and merging JWT verification with pin detection would be nonsense."
 classification = "gourmand_bug"
 
 [[exceptions]]
 check = "copy_paste_detection"
-path = "src/trentina/gateway/edge_key.py"
+path = "src/trentina/gateway/federation_keys.py"
 pattern = "load_public_key"
 justification = "load/isinstance/raise is the idiom for loading a typed key from untrusted PEM; it resembles providers/base.json_object (typed JSON parse) in shape only. Unrelated domains (Ed25519 key loading vs JSON object parsing)."
 classification = "gourmand_bug"
@@ -1019,14 +1019,14 @@ classification = "gourmand_bug"
 check = "copy_paste_detection"
 path = "src/trentina/gateway/app.py"
 pattern = "_static_bearer_ok"
-justification = "Both _static_bearer_ok and edge_key.verify answer a credential-check as a bool via try/except, but one is a constant-time static-bearer compare and the other an Ed25519 signature verification — different credentials, no shared logic, just the try/except->bool idiom a security gateway uses everywhere."
+justification = "Both _static_bearer_ok and federation_keys.verify answer a credential-check as a bool via try/except, but one is a constant-time static-bearer compare and the other an Ed25519 signature verification — different credentials, no shared logic, just the try/except->bool idiom a security gateway uses everywhere."
 classification = "gourmand_bug"
 
 [[exceptions]]
 check = "copy_paste_detection"
 path = "src/trentina/gateway/discovery.py"
 pattern = "load"
-justification = "discovery.load (per-session tool loading) and edge_key.verify_edge_jwt (JWT verification) share a guard-clause control-flow shape and nothing else; they are unrelated domains and must stay separate."
+justification = "discovery.load (per-session tool loading) and federation_keys.verify_primary_jwt (JWT verification) share a guard-clause control-flow shape and nothing else; they are unrelated domains and must stay separate."
 classification = "gourmand_bug"
 
 [[exceptions]]

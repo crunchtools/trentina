@@ -49,9 +49,9 @@ WARMUP_THROTTLE_BUDGET = 300.0
 
 _task: asyncio.Task[None] | None = None
 
-# The downstream federation poll (#592, F3): one shared task, started beside
+# The primary's federation poll (#592, F3): one shared task, started beside
 # _task, that re-probes federated backends on their own cadence so an approved
-# or changed upstream tool appears without a manual reconnect. It idle-ticks
+# or changed secondary tool appears without a manual reconnect. It idle-ticks
 # when nothing sets poll_seconds.
 IDLE_TICK = 60.0
 _poll_task: asyncio.Task[None] | None = None
@@ -79,7 +79,7 @@ async def _revalidate(backends: dict[str, tuple[str, Backend, Profile]]) -> list
     URLs whose list changed. A backend that cannot be reached keeps its cached
     list (``revalidate_backend_tools`` returns False there). The owning profile
     is passed so a federated backend can mint its edge JWT — without it the
-    probe goes out unauthenticated and the upstream rejects it."""
+    probe goes out unauthenticated and the secondary rejects it."""
     changed = await asyncio.gather(
         *(
             revalidate_backend_tools(name, backend, profile)

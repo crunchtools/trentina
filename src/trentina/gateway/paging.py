@@ -85,20 +85,20 @@ class Part:
 
 
 @dataclass
-class Upstream:
-    """A federated peer's already-paged response the downstream proxies (#592, B2).
+class Secondary:
+    """A federated peer's already-paged response the primary proxies (#592, B2).
 
     When a federated backend returns a part marker at ``_meta._trentina_part``,
-    the downstream holds THIS instead of a local ``parts`` tuple: it never cut
+    the primary holds THIS instead of a local ``parts`` tuple: it never cut
     the response, so it forwards ``read_part`` to the peer rather than serving
     from memory. ``handle`` is the UPSTREAM's handle, reused verbatim.
 
     Attributes:
-        backend: the downstream's federated backend name, to address the peer.
+        backend: the primary's federated backend name, to address the peer.
         reader: the tool name the peer serves ``read_part`` under, called
             directly by the proxy (hidden from this profile's own tool list).
-        handle: the upstream's handle for this response.
-        count: the number of parts the upstream declared.
+        handle: the secondary's handle for this response.
+        count: the number of parts the secondary declared.
         tail: the last delivered part's trailing tokens, read in front of the
             next part as its lead-in (the margin the layers keep).
     """
@@ -168,11 +168,11 @@ class Paged:
     blocklists: bool = True
     #: Set when this is a federated peer's paging we proxy (#592, B2): ``parts``
     #: is then empty and the parts are fetched from the peer via ``read_part``.
-    upstream: Upstream | None = None
+    secondary: Secondary | None = None
 
     @property
     def count(self) -> int:
-        return self.upstream.count if self.upstream is not None else len(self.parts)
+        return self.secondary.count if self.secondary is not None else len(self.parts)
 
 
 def cut(text: str) -> tuple[Part, ...] | None:
@@ -345,7 +345,7 @@ def hold(
     return paged
 
 
-def federated_upstream(backend_name: str, meta: dict[str, Any] | None) -> Upstream | None:
+def federated_secondary(backend_name: str, meta: dict[str, Any] | None) -> Secondary | None:
     """Read a federated peer's part marker from a response's ``_meta`` (#592, B2).
 
     None when the response is not a peer's paged part. Takes ONLY the keys it
@@ -367,10 +367,10 @@ def federated_upstream(backend_name: str, meta: dict[str, Any] | None) -> Upstre
         or not reader
     ):
         return None
-    return Upstream(backend=backend_name, reader=reader, handle=handle, count=parts)
+    return Secondary(backend=backend_name, reader=reader, handle=handle, count=parts)
 
 
-def hold_federated(origin: Origin, upstream: Upstream, **judged: Any) -> Paged | None:
+def hold_federated(origin: Origin, secondary: Secondary, **judged: Any) -> Paged | None:
     """Hold a federated peer's paging as a proxy, under the peer's own handle.
 
     ``parts`` is empty: the response lives on the peer, reached through
@@ -382,11 +382,11 @@ def hold_federated(origin: Origin, upstream: Upstream, **judged: Any) -> Paged |
     """
     now = time.monotonic()
     expire(now)
-    if upstream.handle in _store:
+    if secondary.handle in _store:
         return None
     _evict(origin.profile, 0)
     paged = Paged(
-        handle=upstream.handle,
+        handle=secondary.handle,
         profile=origin.profile,
         backend=origin.backend,
         tool=origin.tool,
@@ -396,7 +396,7 @@ def hold_federated(origin: Origin, upstream: Upstream, **judged: Any) -> Paged |
         acted=origin.acted,
         size=0,
         used=now,
-        upstream=upstream,
+        secondary=secondary,
         **judged,
     )
     _store[paged.handle] = paged
@@ -581,16 +581,16 @@ def with_part_marker(
     """Attach a part marker at the root AND under ``_meta`` (#592, B2).
 
     The root ``_trentina_part`` is for an agent client. The copy under ``_meta``
-    is for a federated downstream Trentina: the MCP SDK drops a root-level
-    ``_trentina_part`` before the downstream reads the result, but ``_meta``
-    survives, so a paging proxy can see that the upstream already paged and
+    is for a federated primary Trentina: the MCP SDK drops a root-level
+    ``_trentina_part`` before the primary reads the result, but ``_meta``
+    survives, so a paging proxy can see that the secondary already paged and
     forward ``read_part`` to it instead of orphaning the rest. ``reader`` — the
     name this gateway serves ``read_part`` under — rides the ``_meta`` copy only,
-    so the downstream calls the right tool without parsing footer text. Harmless
+    so the primary calls the right tool without parsing footer text. Harmless
     to a non-Trentina client, which ignores an unknown ``_meta`` key.
     """
     # PART_KEY stays FIRST, read before the content as a header is; the _meta
-    # copy (self-describing for a federated downstream) rides alongside.
+    # copy (self-describing for a federated primary) rides alongside.
     meta_body = {**body, "reader": reader} if reader is not None else body
     meta = {**(result.get("_meta") or {}), PART_KEY: meta_body}
     return {PART_KEY: body, **result, "_meta": meta}

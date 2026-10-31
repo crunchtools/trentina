@@ -187,10 +187,10 @@ async def _part_blocks(
     peer no longer holds the response (expired, released or unreachable) — the
     caller then releases the proxy and tells the agent the handle is unknown.
     """
-    if paged.upstream is None:
+    if paged.secondary is None:
         part = paged.parts[number - 1]
         return [{"type": "text", "text": part.text}], part.lead_in
-    up = paged.upstream
+    up = paged.secondary
     backend = profile.backends.get(up.backend)
     if backend is None:
         return None
@@ -267,7 +267,7 @@ def _framed_blocks(
     extraction block under redact, plus the warning block; no second framing,
     and the peer's tail is kept for the next forwarded part's lead-in.
     """
-    if paged.upstream is None:
+    if paged.secondary is None:
         body = (
             decision.extraction if decision.extraction is not None else paged.parts[number - 1].text
         )
@@ -290,10 +290,10 @@ def _framed_blocks(
                 ),
             }
         )
-    if paged.upstream is None:
+    if paged.secondary is None:
         blocks.append({"type": "text", "text": paging.footer(paged, number, reader)})
     else:
-        paged.upstream.tail = _joined_tail(content_blocks)
+        paged.secondary.tail = _joined_tail(content_blocks)
     return blocks
 
 
@@ -325,7 +325,7 @@ async def _deliver_part(
         return Assembled(
             {"content": [{"type": "text", "text": paging.UNKNOWN_HANDLE}], "isError": False},
             Outcome.DENIED_GUARD,
-            "upstream part gone",
+            "secondary part gone",
         )
     content_blocks, lead_in = fetched
     if _source_blocklisted(profile, paged, mode):
@@ -452,7 +452,7 @@ async def _read_part(
     # that dropped `federated` leaves no edge to forward the rest over.
     stale_federation = (
         paged is not None
-        and paged.upstream is not None
+        and paged.secondary is not None
         and (backend is None or backend.federated is None)
     )
     if (

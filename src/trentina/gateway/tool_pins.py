@@ -114,7 +114,7 @@ def check_tools(
 
     A FEDERATED backend's first list is auto-approved as a unit (#592, E1b):
     declaring the edge accepts the peer's curation — its offered set already
-    passed the peer's own pin gate — so a large upstream does not storm the
+    passed the peer's own pin gate — so a large secondary does not storm the
     operator with hundreds of per-tool approvals. "First" is decided by a
     persisted marker (``FIRST_SEEN_SENTINEL``), not by whether any tool row
     exists, so an empty first list still records the connect and a later-added
@@ -177,15 +177,16 @@ def decide(url: str, tool: str, *, approve: bool) -> bool:
 
 
 #: The closed reason code the call gate refuses a held tool with (#469), in the
-#: JSON-RPC error's ``data.reason``. A federated downstream maps it to its own
-#: words ("held upstream, awaiting approval"); it never relays peer text (#592).
+#: JSON-RPC error's ``data.reason``. A federated primary maps it to its own
+#: words ("held on the secondary, awaiting approval"); it never relays peer
+#: text (#592).
 TOOL_HELD_REASON = "tool_held"
 
-#: The closed reason a federated DOWNSTREAM refuses with when its upstream peer
-#: answered a call with ``TOOL_HELD_REASON`` (#592, E1c). The downstream authors
-#: this itself — "held upstream, awaiting approval" — from the peer's closed
+#: The closed reason a federated PRIMARY refuses with when its secondary peer
+#: answered a call with ``TOOL_HELD_REASON`` (#592, E1c). The primary authors
+#: this itself — "held on the secondary, awaiting approval" — from the peer's closed
 #: reason code alone, never relaying the peer's ``detail`` text (#262).
-TOOL_HELD_UPSTREAM_REASON = "tool_held_upstream"
+TOOL_HELD_SECONDARY_REASON = "tool_held_secondary"
 
 
 def held(url: str, tool: str) -> bool:

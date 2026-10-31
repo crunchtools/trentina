@@ -263,9 +263,9 @@ def _federated_continuation(
     """
     if backend.federated is None:
         return result
-    upstream = paging.federated_upstream(backend_name, call_result.meta)
+    secondary = paging.federated_secondary(backend_name, call_result.meta)
     reader = _part_reader(profile)
-    if upstream is None or reader is None:
+    if secondary is None or reader is None:
         return result
     paged = paging.hold_federated(
         paging.Origin(
@@ -276,7 +276,7 @@ def _federated_continuation(
             is_error=arrived.is_error,
             acted=arrived.acted,
         ),
-        upstream,
+        secondary,
         mode=effective_mode(profile, mode),
         prompt=prompt,
         provenance=provenance,
@@ -297,7 +297,7 @@ def _federated_continuation(
 #: hash/mode mismatch, a stale assertion — re-judge quietly.
 _LOGGED_UNTRUSTED = frozenset({"bad_signature", "stamp_mismatch"})
 #: (profile, backend, stamp) a stamp-mismatch was already warned for: a changed
-#: upstream stamp warns once, not on every call. A log-dedup; dropped and
+#: secondary stamp warns once, not on every call. A log-dedup; dropped and
 #: re-warned once if it ever grows past this many distinct stamps.
 _WARNED_STAMPS_MAX = 4096
 _warned_stamps: set[tuple[str, str, str]] = set()
@@ -307,7 +307,7 @@ def _log_untrusted(profile: Profile, backend_name: str, reason: str, stamp: str)
     """Note why a federated response was NOT trusted and will be re-judged (#592).
 
     A bad signature (a peer whose key does not verify) and a stamp mismatch (the
-    upstream changed its policy and the operator has not re-pinned) are logged;
+    secondary changed its policy and the operator has not re-pinned) are logged;
     a stamp mismatch once per (profile, backend, stamp). Everything else is the
     quiet common case. The backend name is config, not caller-chosen, so it is
     loggable; the peer's own text never is.
@@ -371,12 +371,12 @@ def _federated_hold_refusal(
 ) -> Assembled | None:
     """A federated peer refused the call with its pin CALL GATE (#592, E1c).
 
-    The upstream's gate (#469) returns ``tool_held`` as a result-shaped refusal;
+    The secondary's gate (#469) returns ``tool_held`` as a result-shaped refusal;
     its root ``_trentina_refusal`` does not survive the SDK, so the peer mirrors
     the closed reason into ``_meta`` (``_mirror_refusal_meta``). Read it BEFORE
     the transform — otherwise the peer's "[TRENTINA] Refused" text is judged as
     content and relayed. Match the reason by its exact closed code, never the
-    ``detail``, and author our OWN refusal so the agent reads downstream words.
+    ``detail``, and author our OWN refusal so the agent reads primary words.
     Only a federated backend; a non-federated one never sets ``backend.federated``.
     """
     if backend.federated is None:
@@ -390,15 +390,15 @@ def _federated_hold_refusal(
             {
                 "type": "text",
                 "text": (
-                    "[TRENTINA] Refused (tool_held_upstream). The tool is held pending "
-                    "operator approval on the upstream gateway."
+                    "[TRENTINA] Refused (tool_held_secondary). The tool is held pending "
+                    "operator approval on the secondary gateway."
                 ),
             }
         ],
         "isError": False,
         REFUSAL_KEY: {
-            "reason": tool_pins.TOOL_HELD_UPSTREAM_REASON,
-            "detail": "held upstream, awaiting approval",
+            "reason": tool_pins.TOOL_HELD_SECONDARY_REASON,
+            "detail": "held on the secondary, awaiting approval",
             "alternatives": [],
         },
     }
@@ -442,10 +442,10 @@ def _federated_trust(
     stripped: int,
     ok: Outcome,
 ) -> Assembled | None:
-    """Trust a federated peer's signed verdict and SKIP the downstream's L1/L2/L3
+    """Trust a federated peer's signed verdict and SKIP the primary's L1/L2/L3
     (#592, D2a), or None to re-judge locally (fail-closed).
 
-    Only for a federated backend whose ``trust_verdict`` pins the upstream's key
+    Only for a federated backend whose ``trust_verdict`` pins the secondary's key
     and perimeter stamp. The assertion (in ``call_result.meta`` — B2's channel)
     must verify against that key, bind to the delivered bytes and the pinned
     stamp, match the resolved mode and be fresh; any shortfall re-judges, with
@@ -473,11 +473,11 @@ def _federated_trust(
         _log_untrusted(profile, backend_name, reason, tv.perimeter_stamp)
         return None
     verdict = assertion["verdict"]
-    # An INCOMPLETE upstream judgment is never trust-delivered (#592): a gap, an
-    # oversize refusal or unread binary means the upstream could not fully read
-    # the content, and whether that is acceptable is THIS downstream's policy
+    # An INCOMPLETE secondary judgment is never trust-delivered (#592): a gap, an
+    # oversize refusal or unread binary means the secondary could not fully read
+    # the content, and whether that is acceptable is THIS primary's policy
     # (TRENTINA_REQUIRE_L2/L3, the mode's handling of gaps) — which the trust
-    # path does not consult. Re-judge locally so the downstream's own policy
+    # path does not consult. Re-judge locally so the primary's own policy
     # decides, instead of delivering clean on the peer's weaker gap handling.
     if verdict.get("gaps") or verdict.get("oversize") or verdict.get("unread_kinds"):
         _log_untrusted(profile, backend_name, "incomplete_verdict", tv.perimeter_stamp)
@@ -514,7 +514,7 @@ def _federated_vsa(
 
     The assertion binds the signature to the delivered bytes (``content_digest``
     over the blocks, structured content and ``isError``, never the warning or
-    ``_meta``) and to the perimeter stamp, so a downstream that pins the public
+    ``_meta``) and to the perimeter stamp, so a primary that pins the public
     key and the stamp can trust the scan instead of re-judging (D2a). Emitted
     only here, on the clean-or-flagged DELIVERED path where the layers ran —
     never on a blocked or redacted response, which returned earlier, and never
@@ -522,7 +522,7 @@ def _federated_vsa(
     unchanged for a profile that is not a signing federation ingress.
     """
     federation = profile.federation
-    if federation is None or federation.signing_key is None:
+    if federation is None or federation.secondary_key is None:
         return result
     assertion = vsa.build_assertion(
         verifier=profile.name,
@@ -532,7 +532,7 @@ def _federated_vsa(
         judge=_judge_stamp(profile),
         ts=int(time.time()),
     )
-    envelope = vsa.sign_assertion(assertion, federation.signing_key.get_secret_value())
+    envelope = vsa.sign_assertion(assertion, federation.secondary_key.get_secret_value())
     meta = {**(result.get("_meta") or {}), vsa.VSA_KEY: envelope}
     return {**result, "_meta": meta}
 
@@ -542,9 +542,9 @@ def _mirror_refusal_meta(profile: Profile, response: dict[str, Any]) -> dict[str
     ingress caller (#592, E1c).
 
     A policy refusal carries its reason in a root ``_trentina_refusal``, which a
-    federated downstream's MCP SDK drops in transit (``_meta`` survives). Copy
+    federated primary's MCP SDK drops in transit (``_meta`` survives). Copy
     ONLY the closed reason code, never the ``detail`` text (#262), so the
-    downstream can author its own "held upstream" wording. A clean result has no
+    primary can author its own "held on the secondary" wording. A clean result has no
     root refusal and is returned unchanged; no-op off a federation ingress.
     """
     result = response.get("result")
@@ -620,7 +620,7 @@ class McpServerFace(Face):
                 destination=dest,
             )
             # A policy refusal, delivered as an ordinary result (not a JSON-RPC
-            # error), carrying the closed tool_held reason a federated downstream
+            # error), carrying the closed tool_held reason a federated primary
             # maps to its own words (#592, E1c).
             return Early(
                 _refused(
@@ -852,7 +852,7 @@ class McpServerFace(Face):
         )
 
         # Before the transform, two federated early exits (#592): a peer's pin
-        # call gate refusal mapped to our own "held upstream" words (E1c), and a
+        # call gate refusal mapped to our own "held on the secondary" words (E1c), and a
         # peer's trusted signed verdict served without re-judging (D2a). Both
         # fail-closed — anything else falls through to the full local pipeline.
         early = _federated_early(
@@ -968,8 +968,8 @@ class McpServerFace(Face):
                     result[WARNING_KEY] = judged.decision.warning
                 return Assembled(result, ok, warning=gateway_warning, stripped=stripped)
             results._attach_warning(result, judged.decision.warning)
-            # The upstream vouches for this delivered response (#592, D1): a
-            # signed verdict beside it a downstream can trust instead of
+            # The secondary vouches for this delivered response (#592, D1): a
+            # signed verdict beside it a primary can trust instead of
             # re-judging. Only here — the layers ran, nothing was blocked or
             # redacted — and only for a signing federation ingress.
             result = _federated_vsa(
@@ -1281,8 +1281,8 @@ async def _route_tools_list(profile: Profile, req_id: Any) -> dict[str, Any]:
     if aggregated is None:
         aggregated = await aggregate.ensure_profile_build(profile)
     result: dict[str, Any] = {"tools": discovery.shape(profile, aggregated, current_session.get())}
-    # Tell a federated downstream how many tools this ingress is holding, so it
-    # can report "N held upstream" without ever seeing their names (#592, E1c).
+    # Tell a federated primary how many tools this ingress is holding, so it
+    # can report "N held on the secondary" without ever seeing their names (#592, E1c).
     # A hint in ``_meta`` (the SDK-safe channel), scoped to this caller's slice.
     if profile.federation is not None:
         result["_meta"] = {PINS_KEY: {"held": held_total(profile.name)}}

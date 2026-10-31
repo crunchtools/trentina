@@ -156,18 +156,18 @@ def _peers() -> dict[str, FederationPeer]:
     return {"breetai": FederationPeer(public_key=_keypair()[1])}
 
 
-def test_signing_key_env_accepts_an_env_name() -> None:
-    cfg = FederationConfig(peers=_peers(), signing_key_env="LOTOR_SIGNING_KEY")
-    assert cfg.signing_key_env == "LOTOR_SIGNING_KEY"
-    assert cfg.signing_key is None  # resolved at load, not here
+def test_secondary_key_env_accepts_an_env_name() -> None:
+    cfg = FederationConfig(peers=_peers(), secondary_key_env="LOTOR_SIGNING_KEY")
+    assert cfg.secondary_key_env == "LOTOR_SIGNING_KEY"
+    assert cfg.secondary_key is None  # resolved at load, not here
 
 
-def test_signing_key_env_rejects_a_non_env_name() -> None:
+def test_secondary_key_env_rejects_a_non_env_name() -> None:
     with pytest.raises(ValueError, match="UPPERCASE env-var identifier"):
-        FederationConfig(peers=_peers(), signing_key_env="lotor-key")
+        FederationConfig(peers=_peers(), secondary_key_env="lotor-key")
 
 
-# --- check_trust: the downstream's decision to trust (D2a) ---
+# --- check_trust: the primary's decision to trust (D2a) ---
 
 
 def _signed(priv: str, *, digest: str = "d", stamp: str = "v1", mode: str = "flag",

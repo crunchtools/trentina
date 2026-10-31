@@ -61,7 +61,7 @@ def verify_bearer(authorization_header: str | None, profile: Profile) -> None:
         raise AuthError("invalid token")
 
 
-def verify_edge_jwt_header(
+def verify_primary_jwt_header(
     authorization_header: str | None, profile: Profile
 ) -> tuple[str, str] | None:
     """Verify a federated peer's edge JWT, for a profile that is a federation ingress.
@@ -75,7 +75,7 @@ def verify_edge_jwt_header(
     is the edge JWT, so a bad one is fail-closed, never a fall-through.
 
     C1 only authenticates. C2 binds ``(peer, sub)`` into the request context so
-    the upstream's audit and guards see the real caller.
+    the secondary's audit and guards see the real caller.
     """
     if profile.federation is None or not profile.federation.peers:
         return None
@@ -85,15 +85,15 @@ def verify_edge_jwt_header(
     if scheme.lower() != "bearer" or not presented:
         return None
 
-    from .edge_key import EdgeKeyError, load_public_key, verify_edge_jwt
+    from .federation_keys import FederationKeyError, load_public_key, verify_primary_jwt
 
     peers = {
         name: load_public_key(peer.public_key)
         for name, peer in profile.federation.peers.items()
     }
     try:
-        return verify_edge_jwt(presented, peers, aud=profile.name)
-    except EdgeKeyError as exc:
+        return verify_primary_jwt(presented, peers, aud=profile.name)
+    except FederationKeyError as exc:
         raise AuthError("invalid edge token") from exc
 
 
