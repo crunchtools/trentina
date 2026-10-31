@@ -13,9 +13,10 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+import yaml
 
 from trentina import config as config_mod
-from trentina.gateway import config_store
+from trentina.gateway import config_patch, config_store
 from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
 from trentina.gateway.loader import get_active_config, load_profiles, register_active_config
@@ -325,9 +326,9 @@ class TestScope:
 
 
 class TestUnknownAction:
-    async def test_it_names_the_three(self, gateway: pathlib.Path) -> None:
+    async def test_it_names_the_four(self, gateway: pathlib.Path) -> None:
         result = await _as_operator("delete", "profiles.ag", None, await _hash())
-        assert "get, set or unset" in result["error"]
+        assert "get, set, unset or normalize" in result["error"]
 
 
 def test_the_profile_model_still_refuses_an_unknown_mode() -> None:
@@ -342,3 +343,112 @@ def test_the_profile_model_still_refuses_an_unknown_mode() -> None:
                 "defense": {"enforcement": "not-a-mode"},
             }
         )
+
+
+#: The same two profiles, written the way a file that needs normalizing is:
+#: a machine-named anchor ruamel will renumber, and one list indented against
+#: the majority. Loads to the same configuration as ``YAML``.
+UNNORMALIZED = """\
+# The gateway's profiles.
+shared: &id001
+  enforcement: block
+profiles:
+  op:
+    role: operator
+    defense:
+      provider: ollama
+    auth:
+      bearer_token_env: OP_TOKEN
+    backends:
+      web:
+        url: "internal://web"
+        tools_allow:
+            - fetch_tool
+  ag:
+    auth:
+      bearer_token_env: AG_TOKEN
+    backends:
+      web:
+        url: "internal://web"
+        tools_allow:
+          - fetch_tool
+    defense: *id001  # shared with nothing else, for now
+"""
+
+
+class TestNormalize:
+    async def test_a_file_that_already_round_trips_is_refused(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """Nothing to do is said plainly, not reported as a successful rewrite."""
+        result = await _as_operator("normalize", None, None, await _hash())
+        assert "already reproduces itself" in result["error"]
+        assert gateway.read_text(encoding="utf-8") == YAML
+
+    async def test_it_takes_no_path(self, gateway: pathlib.Path) -> None:
+        result = await _as_operator("normalize", "profiles.ag", None, await _hash())
+        assert "takes no path" in result["error"]
+
+    async def test_it_needs_expect_hash_like_any_write(self, gateway: pathlib.Path) -> None:
+        result = await _as_operator("normalize")
+        assert "expect_hash" in result["error"]
+
+    async def test_a_stale_hash_is_refused(self, gateway: pathlib.Path) -> None:
+        result = await _as_operator("normalize", None, None, "deadbeef")
+        assert "changed since that hash" in result["error"]
+        assert gateway.read_text(encoding="utf-8") == YAML
+
+    async def test_an_agent_caller_is_refused(self, gateway: pathlib.Path) -> None:
+        agent = (get_active_config() or pytest.fail("no config")).config.profiles["ag"]
+        with profile_context(agent):
+            result = await manage_config("normalize", None, None, await _hash())
+        assert "operator" in result["error"]
+        assert gateway.read_text(encoding="utf-8") == YAML
+
+    async def test_it_rewrites_a_file_that_does_not_round_trip(
+        self, gateway: pathlib.Path
+    ) -> None:
+        gateway.write_text(UNNORMALIZED, encoding="utf-8")
+        register_active_config(gateway, load_profiles(gateway), {})
+
+        result = await _as_operator("normalize", None, None, await _hash())
+
+        assert result["applied"] is True
+        assert result["reshaped"]["lines"] > 0
+        after = gateway.read_text(encoding="utf-8")
+        assert after != UNNORMALIZED
+        # The point of the whole thing: writes work on it now.
+        assert config_patch.round_trips(after) is True
+        # And it still says the same thing, comment included.
+        assert yaml.safe_load(after) == yaml.safe_load(UNNORMALIZED)
+        assert "# shared with nothing else, for now" in after
+        assert "# The gateway's profiles." in after
+
+    async def test_the_previous_version_is_kept(
+        self, gateway: pathlib.Path
+    ) -> None:
+        gateway.write_text(UNNORMALIZED, encoding="utf-8")
+        register_active_config(gateway, load_profiles(gateway), {})
+
+        result = await _as_operator("normalize", None, None, await _hash())
+
+        kept = pathlib.Path(result["backup"])
+        assert kept.read_text(encoding="utf-8") == UNNORMALIZED
+
+    async def test_a_set_that_was_refused_before_applies_after(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The acceptance for C1, end to end."""
+        gateway.write_text(UNNORMALIZED, encoding="utf-8")
+        register_active_config(gateway, load_profiles(gateway), {})
+
+        refused = await _as_operator(
+            "set", "profiles.ag.defense.enforcement", "flag", await _hash()
+        )
+        assert "without reformatting" in refused["error"]
+
+        await _as_operator("normalize", None, None, await _hash())
+        applied = await _as_operator(
+            "set", "profiles.ag.defense.enforcement", "flag", await _hash()
+        )
+        assert applied["applied"] is True

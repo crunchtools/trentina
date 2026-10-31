@@ -381,7 +381,7 @@ async def reconnect_backend_tool(backend: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def config_tool(
-    action: Literal["get", "set", "unset"],
+    action: Literal["get", "set", "unset", "normalize"],
     path: str | None = None,
     value: str | bool | int | float | list[Any] | dict[str, Any] | None = None,
     expect_hash: str | None = None,
@@ -406,23 +406,34 @@ async def config_tool(
     response without scanning it. Everything else about federation is yours,
     including `federation.peers`.
 
+    A write is refused outright if the file cannot be reproduced byte for byte
+    on the way out, because a one-key change would then silently reformat
+    everything else. `normalize` is the way through that: it rewrites the file
+    once into a form that does reproduce itself, having first proved the
+    rewrite keeps every value and every comment. It needs `expect_hash` like
+    any write, takes no `path`, and reports how many lines and hunks it moved
+    so you can check the file's own diff against a number. It refuses a file
+    that already reproduces itself — there is nothing to do.
+
     Args:
-        action: `get` reads, `set` writes a value, `unset` removes a key.
+        action: `get` reads, `set` writes a value, `unset` removes a key,
+            `normalize` rewrites the whole file so later writes apply cleanly.
         path: Dotted config keys, e.g.
             "profiles.myagent.backends.lotor.federated.primary_key_name". Omit on
-            `get` for the whole file.
+            `get` for the whole file, and on `normalize` entirely.
         value: What to set. A scalar, a list or a mapping. It REPLACES whatever
             is at that path: setting a mapping removes any keys already there
             that your mapping does not include, so write the deepest path that
             covers your change rather than a parent.
-        expect_hash: The `hash` from a previous `get` or write. Required to set
-            or unset.
+        expect_hash: The `hash` from a previous `get` or write. Required for
+            every write, `normalize` included.
 
     Returns:
         `get`: `hash` (of the whole file, whatever `path` you asked for) and
         `value`. A successful write: `applied`, `hash_before`, `hash_after`,
         `backup` (where the previous version was kept), and `reload` — read
-        `reload.not_applied` for anything that needs a restart. A refusal:
+        `reload.not_applied` for anything that needs a restart. A `normalize`
+        adds `reshaped` with the `lines` and `hunks` it moved. A refusal:
         `error`, plus `hash` when the file had moved on.
     """
     return await manage_config(action, path, value, expect_hash)

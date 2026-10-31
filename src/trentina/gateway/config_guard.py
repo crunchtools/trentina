@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import yaml
+
 from . import config_patch
 
 if TYPE_CHECKING:
@@ -26,7 +28,10 @@ if TYPE_CHECKING:
 
     from .profile import Profile
 
-WRITE_ACTIONS = ("set", "unset")
+WRITE_ACTIONS = ("set", "unset", "normalize")
+
+#: The one action that takes no path, because it rewrites the whole document.
+RESHAPE_ACTION = "normalize"
 
 #: Accepting another gateway's scan instead of running our own. Not writable
 #: through the API at all — see ``trust_stays_human``.
@@ -67,11 +72,16 @@ def check_write_request(
     read at the start and not one per change.
     """
     if action not in WRITE_ACTIONS:
-        raise ConfigWriteError({"error": "action is get, set or unset"})
-    if not keys:
+        raise ConfigWriteError({"error": "action is get, set, unset or normalize"})
+    if action == RESHAPE_ACTION:
+        if keys:
+            raise ConfigWriteError(
+                {"error": "normalize takes no path: it rewrites the whole file or nothing"}
+            )
+    elif not keys:
         raise ConfigWriteError({"error": "set and unset need a path"})
     if expect_hash is None:
-        raise ConfigWriteError({"error": "set and unset need expect_hash from a get"})
+        raise ConfigWriteError({"error": f"{action} needs expect_hash from a get"})
     if expect_hash != current_hash:
         raise ConfigWriteError(
             {
@@ -79,6 +89,38 @@ def check_write_request(
                 "hash": current_hash,
             }
         )
+
+
+def _annotations(text: str) -> list[str]:
+    """Every comment in ``text``, sorted, position discarded.
+
+    Taken from the first ``#`` on each line that has one, so an inline note
+    counts as much as a whole-line one — and so does a ``#`` inside a quoted
+    value, which is harmless: such a line reads the same on both sides, and
+    ``equivalent`` has already proved every value identical, so it can only
+    ever match. Position is dropped because a comment legitimately moves with
+    the line it is attached to.
+    """
+    return sorted(line[line.index("#") :].strip() for line in text.splitlines() if "#" in line)
+
+
+def equivalent(before: str, after: str) -> bool:
+    """Whether two config texts mean the same thing AND say the same things.
+
+    The gate on ``normalize``, the one write whose bytes are meant to change.
+    Two checks, because either alone passes something a reader would call a
+    loss. ``safe_load`` equality proves no value, key or sequence order moved,
+    and it is exactly what the loader reads — but it discards every comment, so
+    a dump that threw away the file's documentation satisfies it completely.
+    Comparing the comments catches that, and catches ruamel dislocating one
+    that trails an alias.
+
+    Deliberately not a hash of the text: that is what ``round_trips`` already
+    answers, and it answers "no" for every file worth normalizing.
+    """
+    if yaml.safe_load(before) != yaml.safe_load(after):
+        return False
+    return _annotations(before) == _annotations(after)
 
 
 def _dumped(model: BaseModel | None) -> Any:

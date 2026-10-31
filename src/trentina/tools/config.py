@@ -125,6 +125,58 @@ def _candidate_loads(live: Path, text: str, providers: dict[str, Any]) -> dict[s
         staged.unlink(missing_ok=True)
 
 
+def _reshaped(current: str, current_hash: str) -> tuple[str, dict[str, int]]:
+    """Render a normalization of ``current``, or refuse to.
+
+    The only write that changes bytes nobody asked to change, so it carries its
+    own gate rather than the round-trip precondition every other write gets:
+
+    1. The file must NOT already round-trip. On one that does, this would be a
+       no-op dressed as a rewrite, and the honest answer is that there is
+       nothing to do.
+    2. The result must mean the same thing and keep every comment
+       (``config_guard.equivalent``). This is the check that makes a deliberate
+       reformat reviewable rather than a leap of faith.
+    3. The result must round-trip. Without it, normalizing could hand back
+       something no better than what it replaced, and the next write would
+       refuse for the same reason as before.
+    """
+    if config_patch.round_trips(current):
+        raise ConfigWriteError(
+            {
+                "error": (
+                    "this file already reproduces itself exactly, so there is nothing "
+                    "to normalize; set and unset work on it as they are"
+                ),
+                "hash": current_hash,
+            }
+        )
+    candidate_text, reshaped = config_patch.normalized(current)
+    if not config_guard.equivalent(current, candidate_text):
+        raise ConfigWriteError(
+            {
+                "error": (
+                    "normalizing this file would change what it says, not just how it "
+                    "is written, so nothing was changed. Either a value moved or a "
+                    "comment was lost. This needs a person to look at the file"
+                ),
+                "hash": current_hash,
+            }
+        )
+    if not config_patch.round_trips(candidate_text):
+        raise ConfigWriteError(
+            {
+                "error": (
+                    "normalizing this file does not make it reproducible, so nothing "
+                    "was changed and a later write would refuse for the same reason. "
+                    "This needs a person to look at the file"
+                ),
+                "hash": current_hash,
+            }
+        )
+    return candidate_text, reshaped
+
+
 def _prepared(
     active: ActiveConfig,
     live: Path,
@@ -132,7 +184,7 @@ def _prepared(
     action: str,
     keys: tuple[str, ...],
     value: Any,
-) -> tuple[str, Path]:
+) -> tuple[str, Path, dict[str, int]]:
     """Render, validate, guard, keep and replace. Returns (candidate, backup).
 
     Every step here is blocking — parsing YAML, loading a candidate from disk,
@@ -141,31 +193,35 @@ def _prepared(
     is the caller's, because that belongs on the loop.
     """
     current_hash = config_store.config_hash(current)
-    if not config_patch.round_trips(current):
-        # Writing re-emits the whole document, so on a file the editor cannot
-        # reproduce exactly a one-key change also reformats everything else.
-        # Refuse rather than hand back an unreviewable diff.
-        raise ConfigWriteError(
-            {
-                "error": (
-                    "this file cannot be edited through the tool without reformatting "
-                    "the rest of it, so nothing was changed. Something in it is not "
-                    "reproduced exactly on the way out — usually a few lists indented "
-                    "differently from the rest of the file, or anchors and aliases, "
-                    "which are renumbered when rewritten. Normalise it once by hand "
-                    "and every write after that applies cleanly"
-                ),
-                "hash": current_hash,
-            }
-        )
-    try:
-        candidate_text = (
-            config_patch.set_at(current, keys, value)
-            if action == "set"
-            else config_patch.unset_at(current, keys)
-        )
-    except config_patch.ConfigPatchError as exc:
-        raise ConfigWriteError({"error": str(exc)}) from None
+    reshaped: dict[str, int] = {}
+    if action == config_guard.RESHAPE_ACTION:
+        candidate_text, reshaped = _reshaped(current, current_hash)
+    else:
+        if not config_patch.round_trips(current):
+            # Writing re-emits the whole document, so on a file the editor cannot
+            # reproduce exactly a one-key change also reformats everything else.
+            # Refuse rather than hand back an unreviewable diff.
+            raise ConfigWriteError(
+                {
+                    "error": (
+                        "this file cannot be edited through the tool without reformatting "
+                        "the rest of it, so nothing was changed. Something in it is not "
+                        "reproduced exactly on the way out — usually a few lists indented "
+                        "differently from the rest of the file, or anchors and aliases, "
+                        "which are renumbered when rewritten. Run this tool once with "
+                        'action "normalize" and every write after that applies cleanly'
+                    ),
+                    "hash": current_hash,
+                }
+            )
+        try:
+            candidate_text = (
+                config_patch.set_at(current, keys, value)
+                if action == "set"
+                else config_patch.unset_at(current, keys)
+            )
+        except config_patch.ConfigPatchError as exc:
+            raise ConfigWriteError({"error": str(exc)}) from None
 
     if candidate_text == current:
         raise ConfigWriteError(
@@ -214,7 +270,7 @@ def _prepared(
         current, after_hash=config_store.config_hash(candidate_text), now=time.time()
     )
     config_store.replace_config(live, candidate_text)
-    return candidate_text, kept
+    return candidate_text, kept, reshaped
 
 
 async def _write(
@@ -227,7 +283,7 @@ async def _write(
 ) -> dict[str, Any]:
     """Apply a change: the blocking part off the loop, the reload on it."""
     current_hash = config_store.config_hash(current)
-    candidate_text, kept = await asyncio.to_thread(
+    candidate_text, kept, reshaped = await asyncio.to_thread(
         _prepared, active, live, current, action, keys, value
     )
     after_hash = config_store.config_hash(candidate_text)
@@ -244,13 +300,18 @@ async def _write(
         )
 
     logger.info("config: applied a change and reloaded")
-    return {
+    answer: dict[str, Any] = {
         "applied": True,
         "hash_before": current_hash,
         "hash_after": after_hash,
         "backup": str(kept),
         "reload": applied,
     }
+    if reshaped:
+        # What to expect in the file's own git diff, so the rewrite can be
+        # checked against a number rather than taken on trust.
+        answer["reshaped"] = reshaped
+    return answer
 
 
 async def manage_config(
@@ -262,13 +323,14 @@ async def manage_config(
     """Read or change the gateway's configuration.
 
     Args:
-        action: ``get``, ``set`` or ``unset``.
+        action: ``get``, ``set``, ``unset`` or ``normalize``.
         path: A dotted path of config keys, e.g.
             ``profiles.myagent.backends.lotor.federated.primary_key_name``. For
-            ``get`` it may be omitted, which returns the whole file.
+            ``get`` it may be omitted, which returns the whole file;
+            ``normalize`` takes none.
         value: What to set, for ``set``. A scalar, a list or a mapping.
         expect_hash: The ``hash`` a previous ``get`` or write returned.
-            Required for ``set`` and ``unset``.
+            Required for every write.
     """
     keys = tuple(path.split(".")) if path else ()
     try:
