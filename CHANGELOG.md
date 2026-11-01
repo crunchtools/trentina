@@ -83,8 +83,13 @@ Breaking, so read this before deploying. The gateway refuses to START on items
   is pinned, how responses were handled and the commonest reason one was
   re-judged. A `trusted` count of zero beside a climbing `hash_mismatch` is a
   pin that has quietly stopped matching, which nothing reported before.
-- **The peer approval page says whose account the link will use**: which of the
-  seat's backends cross and which run as your sign-in.
+- **The peer approval page says whose account the link will use, and where the
+  tools are**: which of the seat's backends cross, each with its destination,
+  and which run as your sign-in. An approval is bound to the facts a person
+  read, so a destination absent from them was not consented to — and the
+  operator is root over its own `url` fields. Userinfo and a query are
+  fingerprinted rather than printed, either being somewhere a credential can
+  sit, so the binding still covers them.
 - **`profile_lint`**: `federation-no-secondary-key` (a link that signs nothing
   re-judges everything, invisibly) and `federation-shares-write-tools`.
 
