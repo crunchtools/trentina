@@ -62,6 +62,28 @@ def wiki_tools() -> list:
     return [wiki_read]
 
 
+def gateway_surface() -> list:
+    """What `internal://` serves — the gateway's whole native surface, admin
+    tools included. The derived ingress gets a FRESH internal backend allowing
+    `read_part_tool` alone rather than a filtered copy of the seat's, and these
+    names are how the test can tell the two apart on the wire.
+    """
+
+    def read_part_tool(handle: str, part: int) -> str:
+        """Deliver one part of a held response."""
+        return f"part {part} of {handle}"
+
+    def config(action: str) -> str:
+        """Read and write profiles.yaml. Operator only, and never a peer's."""
+        return action
+
+    def reload_profiles() -> str:
+        """Re-read profiles.yaml and apply it."""
+        return "reloaded"
+
+    return [read_part_tool, config, reload_profiles]
+
+
 def peer_gateway(private_pem: str):
     """A primary that mounts the ingress DERIVED from the seat.
 
@@ -126,7 +148,9 @@ async def test_one_block_shares_the_seat_and_the_peer_can_call_it() -> None:
         seat.auth.bearer_token = SecretStr("seat-token-only-the-agent-holds")
 
         async with (
-            federated_pair(secondary=seat, primary=peer_gateway(private_pem)) as fed,
+            federated_pair(
+                tools=gateway_surface(), secondary=seat, primary=peer_gateway(private_pem)
+            ) as fed,
             fed.primary_client() as peer,
         ):
             names = {tool["name"] for tool in await peer.list_tools()}
@@ -135,3 +159,18 @@ async def test_one_block_shares_the_seat_and_the_peer_can_call_it() -> None:
             result = await peer.call_tool(served[0], {"page": "Federation"})
 
     assert "wiki:Federation" in json.dumps(result), result
+
+    # The ingress's internal backend is CONSTRUCTED, allowing the paging reader
+    # alone, rather than carried from the seat — so the gateway's native
+    # surface reaches a peer nowhere. This is the failure only the wire shows:
+    # a derived `internal://trentina` allowing `*` would hand the peer the
+    # operator's own tools, and the loader would have nothing to object to,
+    # because the profile it was derived from is perfectly valid.
+    for admin in ("config", "reload_profiles"):
+        assert not any(name.endswith(admin) for name in names), (admin, sorted(names))
+    # And the peer's own part reader does not reach this agent either, from the
+    # other side of the same link: `parts.py` proxies a peer's paged response
+    # itself, with the lead-in, in order, stopping at a flagged part, so
+    # offering that reader here would be a second and unjudged way to the same
+    # parts — `filter._withheld`, which no allowlist can override.
+    assert not any(name.endswith("read_part") for name in names), sorted(names)

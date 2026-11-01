@@ -36,9 +36,22 @@ Two rules keep the promise honest:
 | `federation` | #592 | A seat's `federation` block, the derived ingress profile, the primary JWT, and the signed verdict assertion | [federation.md](federation.md) |
 
 Nothing else is preview. In particular, API-driven configuration (#633) and
-human approval (#637) are **stable** despite having churned recently: both
-carry breaking changes in 5.0.0, and declaring them preview in the same release
-would be exactly the retroactive move the second rule above forbids.
+human approval (#637) are **stable** despite having churned recently.
+
+That is a choice, not a consequence of the rules. 5.0.0 is a major release, so
+the breaking changes it makes to either of them need no preview declaration;
+declaring one here would only buy the freedom to break it again in a *minor*,
+which is forward-looking and so is not the retroactive move the second rule
+forbids. The reason to decline that freedom is what the declaration would say
+to an operator. Human approval is a consent boundary: "we may change how a
+person authorises a trust pin, in a minor" is the wrong promise to make about
+the one mechanism here that a model cannot talk its way past. API-driven
+configuration is the arguable one — it is young and its tool shape will move —
+and we have simply not taken the freedom yet.
+
+Adding a new `Kind` to human approval, or a new rule to `config_guard`, is a
+TIGHTENING: something an operator could do alone now needs a person. It is not
+a breaking change and does not need a preview surface to happen in a minor.
 
 ## How you know
 
