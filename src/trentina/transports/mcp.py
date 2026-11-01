@@ -299,28 +299,40 @@ def _federated_continuation(
 
 
 #: The untrusted reasons worth a log line (#592, D2a): the rest — absent, a
-#: hash/mode mismatch, a stale assertion — re-judge quietly.
-_LOGGED_UNTRUSTED = frozenset({"bad_signature", "stamp_mismatch"})
-#: (profile, backend, stamp) a stamp-mismatch was already warned for: a changed
-#: secondary stamp warns once, not on every call. A log-dedup; dropped and
-#: re-warned once if it ever grows past this many distinct stamps.
+#: hash/mode mismatch, a stale assertion — re-judge quietly. `judge_mismatch`
+#: is here because the judge is pinned SEPARATELY from the perimeter stamp
+#: precisely to catch a peer that swapped to a weaker L3 (`vsa.check_trust`),
+#: which is no quieter an event than swapping its L2.
+_LOGGED_UNTRUSTED = frozenset({"bad_signature", "stamp_mismatch", "judge_mismatch"})
+
+#: (profile, backend, reason, stamp) a mismatch was already warned for, so a
+#: peer that changed its policy warns once rather than on every call. A
+#: log-dedup; dropped and re-warned once if it grows past this many entries.
 _WARNED_STAMPS_MAX = 4096
-_warned_stamps: set[tuple[str, str, str]] = set()
+_warned_stamps: set[tuple[str, str, str, str]] = set()
+
+#: The reasons deduped by the PEER's stamp rather than logged every time.
+_DEDUPED_UNTRUSTED = frozenset({"stamp_mismatch", "judge_mismatch"})
 
 
-def _log_untrusted(profile: Profile, backend_name: str, reason: str, stamp: str) -> None:
+def _log_untrusted(profile: Profile, backend_name: str, reason: str, peer_stamp: str) -> None:
     """Note why a federated response was NOT trusted and will be re-judged (#592).
 
-    A bad signature (a peer whose key does not verify) and a stamp mismatch (the
-    secondary changed its policy and the operator has not re-pinned) are logged;
-    a stamp mismatch once per (profile, backend, stamp). Everything else is the
-    quiet common case. The backend name is config, not caller-chosen, so it is
-    loggable; the peer's own text never is.
+    A bad signature (a peer whose key does not verify), a stamp mismatch (the
+    secondary changed its L2 policy and the operator has not re-pinned) and a
+    judge mismatch (it changed its L3 — the reason the judge is pinned apart
+    from the stamp) are logged. Everything else is the quiet common case.
+
+    The two mismatches dedupe on the PEER's stamp, not on the pin: keying on
+    the pin warned once per pin for the life of the process, so a peer that
+    drifted twice was reported once. The backend name is config, not
+    caller-chosen, so it is loggable; the peer's own text never is, which is
+    why its stamp is a dedup key here and not part of the message.
     """
     if reason not in _LOGGED_UNTRUSTED:
         return
-    key = (profile.name, backend_name, stamp)
-    if reason == "stamp_mismatch":
+    if reason in _DEDUPED_UNTRUSTED:
+        key = (profile.name, backend_name, reason, peer_stamp)
         if key in _warned_stamps:
             return
         # A log-dedup, not state anything reads: if it grows past a sane bound
@@ -331,8 +343,27 @@ def _log_untrusted(profile: Profile, backend_name: str, reason: str, stamp: str)
         _warned_stamps.add(key)
     logger.info(
         "gateway: federated verdict not trusted profile=%s backend=%s reason=%s",
-        profile.name, backend_name, reason,
+        profile.name,
+        backend_name,
+        reason,
     )
+
+
+def _peer_stamp(envelope: Any, reason: str, public_key: str) -> str:
+    """The stamp or judge the PEER claimed, for the log dedup only.
+
+    Read by verifying the envelope a second time, which happens only on the
+    two mismatch paths: `check_trust` does not hand back an assertion it
+    refused, and a caller that received one would be holding a verdict it was
+    told not to use. Signature-verified, so this is the peer's own signed
+    claim and not an unauthenticated string — and it is never logged, only
+    hashed into the dedup key.
+    """
+    assertion = vsa.verify_assertion(envelope, public_key)
+    if assertion is None:
+        return ""
+    field = "judge" if reason == "judge_mismatch" else "perimeter_stamp"
+    return str(assertion.get(field) or "")
 
 
 def _deliver_trusted(
@@ -347,19 +378,39 @@ def _deliver_trusted(
 ) -> Assembled:
     """Deliver a response on the peer's TRUSTED verdict, the layers not re-run
     (#592, D2a). Clean → delivered; flagged under block → refused as a defense
-    block would; flagged under flag → delivered with a DOWNSTREAM-authored
-    warning built from the verdict's closed fields (never the peer's text). The
-    transform is skipped too, so nothing unjudged is reshaped before delivery."""
-    flagged_by = verdict.get("flagged_by")
-    warning = {k: v for k, v in verdict.items() if k != "mode"} if flagged_by else None
+    block would; flagged under flag → delivered with the warning the verdict's
+    closed fields state. The transform is skipped too, so nothing unjudged is
+    reshaped before delivery.
+
+    The warning is RE-PROJECTED through ``vsa.verdict_summary`` instead of
+    copied out of the assertion. The peer signed that mapping, but the peer
+    also chose its contents, and the rule is that a warning an agent reads
+    carries gateway-authored fields only: re-projecting keeps the closed set
+    and drops anything else it put there.
+
+    ``flagged_by`` is already None or one of the three layer names:
+    ``_federated_trust`` re-judges instead of reaching here when it is anything
+    else. It must not be narrowed to None locally — an unknown layer read as
+    "not flagged" would deliver, under block, content whose own signed verdict
+    says a layer flagged it.
+
+    No warning BLOCK is appended. The peer appended its own before signing, so
+    it is inside ``content_sha256`` and already in ``arrived.content_blocks``;
+    a second would tell the agent twice and deliver bytes the digest does not
+    cover."""
+    summary = vsa.verdict_summary(verdict, str(verdict.get("mode") or mode.value))
+    flagged_by = summary["flagged_by"]
+    warning = {k: v for k, v in summary.items() if k != "mode"} if flagged_by else None
     result: dict[str, Any] = {"content": arrived.content_blocks, "isError": arrived.is_error}
     if arrived.structured is not None:
         result["structuredContent"] = arrived.structured
     if flagged_by and mode.value == "block":
-        refusal = refusal_body(f"flagged by {flagged_by}", mode, flagged_by=str(flagged_by),
-                               policy=policy)
-        blocked = results._blocked_result(IngressDecision(warning=warning, blocked=True,
-                                                          refusal=refusal))
+        refusal = refusal_body(
+            f"flagged by {flagged_by}", mode, flagged_by=str(flagged_by), policy=policy
+        )
+        blocked = results._blocked_result(
+            IngressDecision(warning=warning, blocked=True, refusal=refusal)
+        )
         return Assembled(
             results._executed(blocked, call_result.is_error) if arrived.acted else blocked,
             Outcome.BLOCKED_DEFENSE,
@@ -367,7 +418,8 @@ def _deliver_trusted(
             warning=warning,
             stripped=stripped,
         )
-    results._attach_warning(result, warning)
+    if warning is not None:
+        result[WARNING_KEY] = warning
     return Assembled(result, ok, warning=warning, stripped=stripped)
 
 
@@ -430,8 +482,15 @@ def _federated_early(
     if held is not None:
         return held
     return _federated_trust(
-        profile, backend, backend_name, arrived, call_result,
-        mode=mode, policy=policy, stripped=stripped, ok=ok,
+        profile,
+        backend,
+        backend_name,
+        arrived,
+        call_result,
+        mode=mode,
+        policy=policy,
+        stripped=stripped,
+        ok=ok,
     )
 
 
@@ -476,9 +535,18 @@ def _federated_trust(
     )
     if assertion is None:
         current_federated_verdict.set(reason)
-        _log_untrusted(profile, backend_name, reason, tv.perimeter_stamp)
+        _log_untrusted(profile, backend_name, reason, _peer_stamp(envelope, reason, tv.public_key))
         return None
     verdict = assertion["verdict"]
+    # A layer name this gateway does not know is a verdict it cannot read, and
+    # the peer chose the string. Reading an unknown layer as "not flagged"
+    # would deliver, under block, content whose own signed verdict says a layer
+    # flagged it — a sanitization turned into a bypass.
+    flagged_by = verdict.get("flagged_by")
+    if flagged_by is not None and flagged_by not in vsa.LAYER_NAMES:
+        current_federated_verdict.set(vsa.UNINTERPRETABLE)
+        _log_untrusted(profile, backend_name, vsa.UNINTERPRETABLE, "")
+        return None
     # An INCOMPLETE secondary judgment is never trust-delivered (#592): a gap, an
     # oversize refusal or unread binary means the secondary could not fully read
     # the content, and whether that is acceptable is THIS primary's policy
@@ -487,15 +555,20 @@ def _federated_trust(
     # decides, instead of delivering clean on the peer's weaker gap handling.
     if verdict.get("gaps") or verdict.get("oversize") or verdict.get("unread_kinds"):
         current_federated_verdict.set(vsa.INCOMPLETE)
-        _log_untrusted(profile, backend_name, "incomplete_verdict", tv.perimeter_stamp)
+        # Not in `_LOGGED_UNTRUSTED`, so this is a no-op kept for the day it is
+        # added: an incomplete verdict is the peer's own, not a drift to dedupe.
+        _log_untrusted(profile, backend_name, "incomplete_verdict", "")
         return None
     current_federated_verdict.set(vsa.TRUSTED)
     return _deliver_trusted(
-        arrived, call_result, verdict,
-        mode=resolved, policy=policy, stripped=stripped, ok=ok,
+        arrived,
+        call_result,
+        verdict,
+        mode=resolved,
+        policy=policy,
+        stripped=stripped,
+        ok=ok,
     )
-
-
 
 
 def _federated_vsa(
@@ -513,20 +586,40 @@ def _federated_vsa(
     signing key.
 
     The assertion binds the signature to the delivered bytes (``content_digest``
-    over the blocks, structured content and ``isError``, never the warning or
-    ``_meta``) and to the perimeter stamp, so a primary that pins the public
+    over the blocks, structured content and ``isError``, never the warning key
+    or ``_meta``) and to the perimeter stamp, so a primary that pins the public
     key and the stamp can trust the scan instead of re-judging (D2a). Emitted
     only here, on the clean-or-flagged DELIVERED path where the layers ran —
     never on a blocked or redacted response, which returned earlier, and never
     for an internal tool, which is judged at its own ingress. Returns ``result``
     unchanged for a profile that is not a signing federation ingress.
+
+    ``blocks`` must be the DELIVERED content, which is why the call site passes
+    ``result["content"]`` after ``_attach_warning`` rather than the transformed
+    list it started from. ``_attach_warning`` rebinds ``result["content"]`` to a
+    new list with the ``[TRENTINA WARNING]`` block appended: digesting the list
+    before it signed N blocks while N+1 went on the wire, so every flagged
+    response was ``hash_mismatch`` at the primary — silently re-judged, and
+    audited as the one symptom docs/federation.md tells an operator means a pin
+    has quietly stopped matching.
     """
     federation = profile.federation
     if federation is None or federation.secondary_key is None:
         return result
+    digest = vsa.content_digest(blocks, structured, is_error)
+    if digest is None:
+        # Nothing to bind a signature to, and not an error: a 64-bit id is
+        # ordinary. Deliver unsigned; the primary re-judges under
+        # `undigestable`, which is what it would do with no assertion anyway.
+        logger.warning(
+            "gateway: profile=%s federated response cannot be canonicalized, "
+            "so no verdict assertion is attached and the caller will re-judge",
+            profile.name,
+        )
+        return result
     assertion = vsa.build_assertion(
         verifier=profile.name,
-        content_sha256=vsa.content_digest(blocks, structured, is_error),
+        content_sha256=digest,
         verdict=vsa.verdict_summary(warning, mode.value),
         perimeter_stamp=perimeter_stamp(),
         judge=judge_stamp(profile),
@@ -856,8 +949,15 @@ class McpServerFace(Face):
         # peer's trusted signed verdict served without re-judging (D2a). Both
         # fail-closed — anything else falls through to the full local pipeline.
         early = _federated_early(
-            profile, backend, backend_name, arrived, call_result,
-            mode=mode, policy=policy, stripped=stripped, ok=ok,
+            profile,
+            backend,
+            backend_name,
+            arrived,
+            call_result,
+            mode=mode,
+            policy=policy,
+            stripped=stripped,
+            ok=ok,
         )
         if early is not None:
             return early
@@ -968,15 +1068,15 @@ class McpServerFace(Face):
                     result[WARNING_KEY] = judged.decision.warning
                 return Assembled(result, ok, warning=gateway_warning, stripped=stripped)
             results._attach_warning(result, judged.decision.warning)
-            # The secondary vouches for this delivered response (#592, D1): a
-            # signed verdict beside it a primary can trust instead of
-            # re-judging. Only here — the layers ran, nothing was blocked or
-            # redacted — and only for a signing federation ingress.
+            # The secondary vouches for this delivered response (#592, D1).
+            # Only here — the layers ran, nothing was blocked or redacted — and
+            # AFTER `_attach_warning`, over `result` rather than `transformed`:
+            # see `_federated_vsa` for why that ordering is the whole fix.
             result = _federated_vsa(
                 profile,
                 result,
-                blocks=transformed.content_blocks,
-                structured=arrived.structured,
+                blocks=result["content"],
+                structured=result.get("structuredContent"),
                 is_error=call_result.is_error,
                 warning=gateway_warning,
                 mode=effective_mode(profile, mode),

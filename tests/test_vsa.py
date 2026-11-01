@@ -8,6 +8,7 @@ any gateway state.
 
 from __future__ import annotations
 
+from dataclasses import fields
 from typing import Any
 
 import pytest
@@ -93,8 +94,14 @@ def test_a_tampered_assertion_does_not_verify() -> None:
 
 def test_verify_is_none_for_malformed_envelopes() -> None:
     _, pub = _keypair()
-    for bad in [None, {}, "nope", {"assertion": "x", "signature": "aa"},
-                {"assertion": {}, "signature": 5}, {"assertion": {}, "signature": "zz-not-hex"}]:
+    for bad in [
+        None,
+        {},
+        "nope",
+        {"assertion": "x", "signature": "aa"},
+        {"assertion": {}, "signature": 5},
+        {"assertion": {}, "signature": "zz-not-hex"},
+    ]:
         assert vsa.verify_assertion(bad, pub) is None
 
 
@@ -170,11 +177,16 @@ def test_secondary_key_env_rejects_a_non_env_name() -> None:
 # --- check_trust: the primary's decision to trust (D2a) ---
 
 
-def _signed(priv: str, *, digest: str = "d", stamp: str = "v1", mode: str = "flag",
-            ts: int = 1_000_000) -> dict[str, Any]:
+def _signed(
+    priv: str, *, digest: str = "d", stamp: str = "v1", mode: str = "flag", ts: int = 1_000_000
+) -> dict[str, Any]:
     assertion = vsa.build_assertion(
-        verifier="lotor", content_sha256=digest,
-        verdict={"flagged_by": None, "mode": mode}, perimeter_stamp=stamp, judge="j1", ts=ts,
+        verifier="lotor",
+        content_sha256=digest,
+        verdict={"flagged_by": None, "mode": mode},
+        perimeter_stamp=stamp,
+        judge="j1",
+        ts=ts,
     )
     return vsa.sign_assertion(assertion, priv)
 
@@ -183,8 +195,13 @@ def test_check_trust_accepts_a_matching_assertion() -> None:
     priv, pub = _keypair()
     env = _signed(priv)
     got, reason = vsa.check_trust(
-        env, public_key=pub, content_sha256="d", perimeter_stamp="v1", judge="j1",
-        mode="flag", now=1_000_010,
+        env,
+        public_key=pub,
+        content_sha256="d",
+        perimeter_stamp="v1",
+        judge="j1",
+        mode="flag",
+        now=1_000_010,
     )
     assert reason == "trusted" and got is not None
 
@@ -193,8 +210,14 @@ def test_check_trust_reasons() -> None:
     priv, pub = _keypair()
     _, other = _keypair()
     env = _signed(priv)
-    base = {"public_key": pub, "content_sha256": "d", "perimeter_stamp": "v1", "judge": "j1",
-            "mode": "flag", "now": 1_000_010}
+    base = {
+        "public_key": pub,
+        "content_sha256": "d",
+        "perimeter_stamp": "v1",
+        "judge": "j1",
+        "mode": "flag",
+        "now": 1_000_010,
+    }
 
     def why(**over: Any) -> str:
         return vsa.check_trust(env, **{**base, **over})[1]
@@ -212,8 +235,14 @@ def test_check_trust_reasons_are_all_declared() -> None:
     # every reason check_trust returns is in the closed TRUST_REASONS set
     priv, pub = _keypair()
     env = _signed(priv)
-    base = {"public_key": pub, "content_sha256": "d", "perimeter_stamp": "v1", "judge": "j1",
-            "mode": "flag", "now": 1_000_010}
+    base = {
+        "public_key": pub,
+        "content_sha256": "d",
+        "perimeter_stamp": "v1",
+        "judge": "j1",
+        "mode": "flag",
+        "now": 1_000_010,
+    }
     reasons = {
         vsa.check_trust(None, **base)[1],
         vsa.check_trust(env, **{**base, "public_key": _keypair()[1]})[1],
@@ -229,10 +258,51 @@ def test_check_trust_reasons_are_all_declared() -> None:
 def test_check_trust_freshness_is_inclusive_at_the_boundary() -> None:
     priv, pub = _keypair()
     env = _signed(priv, ts=1_000_000)
-    base = {"public_key": pub, "content_sha256": "d", "perimeter_stamp": "v1", "judge": "j1",
-            "mode": "flag"}
+    base = {
+        "public_key": pub,
+        "content_sha256": "d",
+        "perimeter_stamp": "v1",
+        "judge": "j1",
+        "mode": "flag",
+    }
     at = 1_000_000 + vsa.MAX_AGE_SECONDS
     assert vsa.check_trust(env, **base, now=at)[1] == "trusted"  # exactly MAX_AGE: inclusive
     assert vsa.check_trust(env, **base, now=at + 1)[1] == "stale"  # one second past
     future = 1_000_000 - vsa.MAX_AGE_SECONDS - 1
     assert vsa.check_trust(env, **base, now=future)[1] == "stale"  # a future assertion, too far
+
+
+class TestTheVerdictCarriesEveryGap:
+    """A verdict the primary trusts must state every way the secondary fell
+    short of reading the content, because `_federated_trust` re-judges on any
+    of them (INCOMPLETE). A gap the pipeline can set but the assertion does
+    not carry would be trusted away silently."""
+
+    def test_every_gap_field_is_in_the_summary(self) -> None:
+        """`Gaps` is the authority. Adding a field there without adding it to
+        `_GAP_FLAGS` must fail here rather than in production."""
+        from trentina.modes import Gaps
+
+        gap_fields = {f.name for f in fields(Gaps)}
+        # `oversize` rides its own key in the summary, not the gaps list.
+        assert gap_fields == set(vsa._GAP_FLAGS) | {"oversize"}
+
+    def test_a_set_gap_reaches_the_summary(self) -> None:
+        for flag in vsa._GAP_FLAGS:
+            summary = vsa.verdict_summary({flag: True}, "flag")
+            assert summary["gaps"] == [flag], flag
+
+    def test_oversize_and_unread_kinds_are_read_separately(self) -> None:
+        assert vsa.verdict_summary({"oversize": True}, "flag")["oversize"] is True
+        unread = vsa.verdict_summary({"unread_kinds": ["image/png"]}, "flag")
+        assert unread["unread_kinds"] == ["image/png"]
+
+    def test_the_summary_keys_are_closed(self) -> None:
+        assert set(vsa.verdict_summary(None, "flag")) == {
+            "flagged_by",
+            "risk_level",
+            "gaps",
+            "oversize",
+            "unread_kinds",
+            "mode",
+        }
