@@ -101,9 +101,8 @@ HONEYPOT_READS = frozenset({"fetch_tool", "search_tool", "content_tool"})
 # reload_profiles, tool_pins, reconnect_backend) — so the rule is an exact-name
 # ALLOWLIST, not a denylist of today's egress tools: a denylist would offer a
 # peer cache_flush, and would federate every internal tool added later. A peer
-# reaches nothing of this gateway but a paging continuation and the ingress
-# profile's own sign-in to its own OAuth backends: a federated call runs as the
-# ingress, so no other seat can start that sign-in.
+# reaches only a paging continuation and the ingress's sign-in to its own OAuth
+# backends, which no other seat can start: a federated call runs as the ingress.
 FEDERATION_INTERNAL_ALLOW = frozenset({"read_part_tool", "backend_auth_tool"})
 #: Characters: the longest description and canned result a decoy tool may carry.
 DECOY_DESCRIPTION_MAX_CHARS = 1024
