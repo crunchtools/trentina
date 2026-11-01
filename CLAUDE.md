@@ -514,7 +514,9 @@ the question is "can it be talked into it" — and since #637 the answer is that
 it may ask and a person decides, rather than being refused.
 
 Three more rules joined them in 5.0.0, in the same shape and the same file:
-`federation_peers` (who may authenticate to a federation ingress),
+`federation_peers` (who may authenticate to a shared seat; SEATS only, since a
+derived ingress carries its seat's block verbatim and counting both would show a
+person every peer twice),
 `defense_posture` + `defense_downgraded` (`modes`, `enforcement` or
 `llm_completion` reaching `flag`) and `egress_grants` (`client_egress.hosts`,
 `egress_upstreams`, `llm_providers`). `federation.peers` was deliberately NOT in
@@ -592,10 +594,51 @@ Federation's two gateway roles are **primary** (uses the tools) and
 **secondary** (offers them), renamed from downstream/upstream in 4.0.0 (#637).
 "Upstream" now means only an HTTP origin the gateway dials — egress, the LLM
 proxy, the git transport, the bridge, `egress_upstreams`. A federated backend
-names its own key with `primary_key_env`/`primary_key_name`; a federation
-ingress names its own with `secondary_key_env`/`secondary_key_name`. The wire
-format was deliberately left alone, so gateways on either side of the rename
-still federate.
+names its own key with `primary_key_env`/`primary_key_name`; a shared seat
+names its own with `secondary_key_env`/`secondary_key_name`. The wire format
+was deliberately left alone, so gateways on either side of the rename still
+federate.
+
+## Federation is a property of a seat (#592, 5.0.0)
+
+`federation` is declared on the SEAT whose tools are shared and
+`gateway/federation_link.py` DERIVES the ingress: `<seat>-federation`
+(`INGRESS_SUFFIX`, which lives in `profile.py` because the seat validator needs
+it and `federation_link` imports that module, not the reverse), offering
+`offerable_backends(seat)` — remote, not `federated`, not `decoy://` — plus one
+`internal://` backend allowing `READ_PART_TOOL` alone. `load_profiles` calls
+`derive_all` right after building the registry and before every registry-wide
+check, so an ingress is held to the audience rule like any written profile; a
+derived name colliding with a written one is refused.
+
+Every `Profile` field is decided by name in `CARRIED`, `DROPPED` or
+`CONSTRUCTED`, and `test_every_profile_field_is_decided` fails on a field in
+none of them. Deriving the offered set removes drift; the risk that replaces it
+is a field added later reaching a peer because nobody thought about it, and
+that test is the whole mitigation. Put a new field in one of the sets.
+
+`federation_of` names the seat an ingress was derived from, and
+`Profile.grant_owner` is `federation_of or name`: a derived ingress spends the
+SEAT's OAuth grants, so a person signs in once. It is a FIELD, not a name
+match, because deriving privilege from `name` would make a hand-written
+`josui-federation` a way to claim josui's grants; `load_profiles` refuses a file
+that sets it. Every grant call site passes `grant_owner`, held by an AST test in
+`tests/test_federation_grants.py`; `_audit` keeps the ACTING profile.
+`_after_login` refreshes every profile spending the grant, or the link answers
+`needs_auth` after a successful sign-in until a cache flush.
+
+Two properties are structural, not checked: the derived set excludes every
+`federated` backend, so A→B→C is unsayable and ONE SEAT MAY BOTH CONSUME A PEER
+AND SHARE ITSELF (`_check_federation_topology` lost its one-profile-one-role
+clause, which existed because a single `Profile` deadlocked its own
+single-flight aggregate build); and the ingress's internal backend is
+constructed rather than filtered, so the seat keeps its full native surface.
+`FEDERATION_INTERNAL_ALLOW` is `read_part_tool` alone — `backend_auth_tool`
+(#656) and the single-peer rule it needed are both gone.
+
+Federation is a declared PREVIEW surface (`src/trentina/stability.py`,
+`docs/stability.md`): a breaking change confined to it is a MINOR bump. A
+surface is declared BEFORE the release that relies on it, never during one.
 
 The deployment needs the config DIRECTORY bound writable (a rename needs the
 directory). `TRENTINA_REQUIRE_HARDENED` still passes: its checks are

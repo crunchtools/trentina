@@ -311,26 +311,35 @@ client can do, and the choice is per profile.
 All four mechanisms, the `oauth` keys each one needs, and the security rules that
 go with them are in **[Authentication](authentication.md)**.
 
-### A federation ingress authenticates differently
+### A shared seat, and the ingress derived from it
 
-A profile with a `federation` block is a *federation ingress*: another Trentina
-gateway calls it, and the caller proves who it is with a short-lived signed
-token rather than a bearer. Three rules come with the shape, and all three are
-refused at load rather than warned about:
+`federation` is declared on the **seat whose tools you are sharing**, and the
+gateway derives the ingress from it: a profile named `<seat>-federation` that
+offers that seat's own non-federated remote backends, with that seat's guards,
+defense posture and `llm_keys`. You do not write the ingress, and a profile name
+ending `-federation` is reserved for a derived one.
+
+Four rules come with sharing a seat, all refused at load rather than warned
+about:
 
 | Rule | Why |
 |---|---|
-| At least one `federation.peers` entry | The peer list *is* this profile's authentication. A `federation` block without one is not an ingress, and would still sign verdict assertions over its responses. |
-| `role: agent` | An operator ingress would offer the gateway's own admin tools to a peer. |
-| No `auth` and no `oauth` | A second way in. The gateway tries a static bearer first, so a bearer here admits a caller with no peer and no `sub` — a null caller in the audit, and one shared owner for every held response part. |
+| At least one `federation.peers` entry | The peer list *is* the link's authentication. A `federation` block without one would still sign verdict assertions over its responses. |
+| `role: agent` | A shared operator seat would offer a peer the gateway's own admin tools. |
+| `auth` or `oauth` of its own | A seat is something an agent signs in to; a profile no agent can reach has no tools of its own to share. It is also how the pre-5.0.0 standalone ingress profile — which carried neither — is refused. |
+| At least one non-federated remote backend | An empty link admits a peer and costs an approval, then serves it nothing. An `internal://` backend is the gateway's own surface and a federated one would re-export the next gateway, so neither can be offered. |
 
-Its internal backend may offer only `read_part_tool`, so a paged response can
-be collected and nothing else native is reachable. The offered set is the
-profile's own remote backends; there is no second list.
+The derived ingress carries no `auth` and no `oauth`. The gateway tries a static
+bearer first, so a bearer there would admit a caller with no peer and no `sub` —
+a null caller in the audit, and one shared owner for every held response part.
+Its internal backend offers only `read_part_tool`, so a paged response can be
+collected and nothing else native is reachable.
 
-Adding or changing a peer is staged for a person since 5.0.0 — it hands another
-gateway a seat. Removing one applies at once. **[Federation](federation.md)** is
-the whole statement; **[Approvals](approvals.md)** covers the decision.
+The seat's OAuth grants serve the link: sign in once, on the seat. Adding or
+changing a peer is staged for a person — it hands another gateway a seat, and
+the accounts that seat signed in to. Removing one applies at once.
+**[Federation](federation.md)** is the whole statement;
+**[Approvals](approvals.md)** covers the decision.
 
 ## Multi-Agent Deployment
 

@@ -12,8 +12,8 @@ under that name.
 
 ### Upgrading
 
-Breaking, so read this before deploying. The gateway refuses to START on the
-first four, so a missed one is loud rather than silent.
+Breaking, so read this before deploying. The gateway refuses to START on items
+1 to 4 and 7, so a missed one is loud rather than silent.
 
 1. **Migrate any interim federation backend.** A backend pointing at
    `.../gateway/<profile>/mcp` with no `federated:` block is now a load error.
@@ -41,11 +41,25 @@ first four, so a missed one is loud rather than silent.
    (`federated_part_oversize`) rather than re-cut, because re-cutting orphaned
    the peer's remaining parts. Keep `TRENTINA_PART_TOKENS` equal on both, or
    higher on the primary.
-7. **Delete `auth` and `oauth` from any federation ingress.** A profile with a
-   `federation` block may no longer carry either, and the gateway refuses to
-   start if one does. `peers` was already doing the work; a bearer on an
-   ingress was tried FIRST and admitted a caller with no peer and no `sub`.
-8. **Set an approval password before your operator agent needs one.** Three
+7. **Move each federation ingress's `federation` block onto the seat it
+   shares, and delete the ingress profile.** Federation is declared on the
+   SEAT whose tools are shared and the gateway derives the
+   `<seat>-federation` ingress from it, so a standalone ingress profile that
+   hand-lists its backends no longer loads. Point the primary at
+   `/gateway/<seat>-federation/mcp`. The path changes, so the audience and the
+   tool-pin key change: expect ONE first connect on each side, which is now
+   reported with its count rather than silent. A shared seat keeps its own
+   `auth` or `oauth` — that is what makes it a seat — and the derived ingress
+   carries neither, since `peers` is its authentication and a bearer there
+   would be tried FIRST and admit a caller with no peer and no `sub`.
+8. **Stop using `backend_auth_tool` across a link.** It is no longer offerable
+   to a peer, and does not need to be: a derived ingress spends its SEAT's
+   OAuth grants, so one sign-in on the seat serves both sides. If you signed
+   the ingress in separately, that grant is now unused; sign in on the seat
+   instead. This also retires the rule that `backend_auth_tool` needed a
+   single-peer ingress, so **several peers on one seat is an ordinary
+   configuration again**.
+9. **Set an approval password before your operator agent needs one.** Three
    more writes now wait for a person, so without
    `TRENTINA_APPROVAL_PASSWORD_HASH[_FILE]` they are REFUSED rather than
    applied: adding or changing a `federation.peers` entry, moving a profile's
@@ -54,19 +68,59 @@ first four, so a missed one is loud rather than silent.
    configuration keeps working untouched — this bites the next write, not the
    current file.
 
+### Added — this phase
+
+- **Stability tiers** (`src/trentina/stability.py`,
+  [docs/stability.md](docs/stability.md)). A named set of features is
+  *preview*: a breaking change confined to one is a minor release, so the next
+  federation change does not move the whole program's version. Federation
+  (#592) is the only declared surface. One `WARNING` per surface in use at
+  startup, and `preview_surfaces` in `quarantine_stats`' operator slice.
+- **`quarantine_stats` carries a `federation` section for an operator**: per
+  shared seat, the derived ingress, peers by key fingerprint, which backends
+  cross, which run on the seat's sign-in, whether the link signs verdicts, and
+  tools held for approval; per federated backend, the audience, whether trust
+  is pinned, how responses were handled and the commonest reason one was
+  re-judged. A `trusted` count of zero beside a climbing `hash_mismatch` is a
+  pin that has quietly stopped matching, which nothing reported before.
+- **The peer approval page says whose account the link will use**: which of the
+  seat's backends cross and which run as your sign-in.
+- **`profile_lint`**: `federation-no-secondary-key` (a link that signs nothing
+  re-judges everything, invisibly) and `federation-shares-write-tools`.
+
+### Preview
+
+Breaking changes confined to the **federation** preview surface (#592). See
+[docs/stability.md](docs/stability.md): a break inside a declared preview
+surface is a minor release. This one rides a major because the release carries
+breaking changes outside it as well.
+
+- **Federation is declared on the seat that shares it.** `federation` goes on
+  the seat whose tools are shared and the gateway derives the ingress
+  (`<seat>-federation`) from it: the seat's own non-federated remote backends
+  with the seat's guards, defense posture and `llm_keys`, plus an internal
+  backend offering `read_part_tool` alone. A standalone ingress profile that
+  hand-lists its backends no longer loads. Upgrading note 7.
+- **The link spends the seat's OAuth grants**, so `backend_auth_tool` is no
+  longer offerable to a peer and the single-peer rule it needed is gone.
+  Upgrading note 8.
+- **`FEDERATION_INTERNAL_ALLOW` is `read_part_tool` alone.**
+- **One seat may both consume a peer and share itself.** "One profile is one
+  role" existed because a single `Profile` serving both roles deadlocked its
+  own aggregate build; the ingress is a separate object now, and derivation
+  excludes every federated backend, so A→B→C is unsayable rather than refused.
+
 ### Added
 
-- **A federated profile can sign in to the secondary's OAuth backends.** A grant
-  belongs to one profile, and a federated call runs as the ingress profile, so
-  an OAuth backend on the secondary could not be reached through the link and
-  nothing could start its sign-in. `backend_auth_tool` is now allowed on an
-  ingress when its internal backend lists it; it acts only on that profile's
-  own backends. On the primary it is served with the peer's tag, for example
-  `lotor_backend_auth`. **Only on an ingress with one peer**: a grant belongs
-  to `(profile, backend)` and a federated call runs as the ingress, so on a
-  shared ingress any peer could revoke another's sign-in, or start a fresh one
-  and make its own human's account the one every peer's calls use. Two peers
-  plus `backend_auth_tool` is refused at load.
+- **A federated link reaches the secondary's OAuth backends, on one sign-in.**
+  A grant belongs to one profile and a federated call runs as the ingress, so
+  an OAuth backend on the secondary could not be reached through the link at
+  all. The link now spends its SEAT's grants (`Profile.grant_owner`), so a
+  person signs in once — on the seat, with the seat's own `backend_auth` — and
+  both sides are signed in. #656 first solved this by offering
+  `backend_auth_tool` across the link, which made it a shared capability on a
+  multi-peer ingress and needed a further rule refusing it there; neither the
+  tool nor the rule survives, and several peers on one seat is ordinary again.
 
 ### Removed
 

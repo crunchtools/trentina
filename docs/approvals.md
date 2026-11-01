@@ -5,8 +5,8 @@ Your agent runs this gateway. Five things it cannot do alone:
 - **Move the operator seat** — who is root here.
 - **Turn on federation trust** — serve another gateway's answers without
   scanning them.
-- **Let another gateway in** — add a peer that may authenticate to one of your
-  federation ingresses.
+- **Let another gateway in** — add a peer that may authenticate to a seat you
+  share, and use that seat's sign-ins.
 - **Stand a perimeter down** — let a profile detect injections without
   refusing them.
 - **Open a way out** — let an agent's traffic reach somewhere new on the
@@ -26,8 +26,8 @@ Your operator agent has the authority; it is root on its gateway. The problem
 is that it is a *model*, so the question was never whether it may, but whether
 it can be talked into it. These are the changes where a plausible-sounding
 request does the most damage: one hands root to someone else, one turns off the
-scanning this product exists to do, one hands a seat to a gateway you have
-never met, one leaves a profile detecting attacks and permitting them, and one
+scanning this product exists to do, one hands a seat — and the accounts it is signed in to —
+to a gateway you have never met, one leaves a profile detecting attacks and permitting them, and one
 gives an agent a route off your network.
 
 That last one has the widest blast radius of the five, which is easy to get
@@ -79,7 +79,13 @@ actually check:
   catch.
 - **Federation peers** — each gateway being let in, by name, with its key as a
   short fingerprint. A peer whose *name* you already approved but whose key
-  has changed shows up here too: same name, different gateway.
+  has changed shows up here too: same name, different gateway. Beside the keys,
+  what the link actually hands over: which of that seat's backends cross, and
+  which of those **run as your sign-in**. A federated call runs as the seat, so
+  the seat's OAuth grants serve the link — admitting a peer to a seat signed in
+  to a mailbox means that peer's calls read and write that mailbox. Both rows
+  are always there, "none" included, so a missing one never has to be read as
+  "the page did not mention it".
 - **Defense downgrade** — which profile, and each setting's before and after.
   `flag` means that profile still detects an injection and no longer refuses
   one.

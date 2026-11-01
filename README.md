@@ -134,8 +134,9 @@ Then point Claude Code at it:
 | [Matrix Reverse Proxy](docs/network-isolation.md) | Matrix for agents on an isolated network |
 | [Client Egress](docs/client-egress.md) | A CONNECT tunnel to listed hosts for the agent's own client |
 | [Git Transport](docs/git-transport.md) | Clone, fetch and push to listed repositories and branches |
+| [Stability tiers](docs/stability.md) | Which features may change shape in a minor release, and how you are told |
 | [Approvals](docs/approvals.md) | The five grants an operator proposes and a person agrees to |
-| [Federation](docs/federation.md) | A second gateway's tools mounted over a trusted link, scanned once |
+| [Federation](docs/federation.md) | Share a seat with a second gateway: its tools mounted over a trusted link, scanned once |
 | [HTTP(S) Egress](docs/egress-http.md) | An agent's outbound request judged and re-originated to a named destination |
 | [Deployment Hardening](docs/deployment-hardening.md) | Container flags, secrets, egress, the startup check |
 | [Plugins](docs/plugins.md) | Write, test, install and name your own transform plugins |

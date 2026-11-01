@@ -57,6 +57,7 @@ from pydantic import SecretStr
 
 from trentina.gateway import internal
 from trentina.gateway.app import MCP_SESSION_ID_HEADER, gateway_app
+from trentina.gateway.federation_link import derive_all
 from trentina.gateway.internal import register_internal_server
 from trentina.gateway.profile import AuthConfig, Backend, FederatedConfig, Profile
 from trentina.gateway.sessions import SessionRegistry
@@ -366,9 +367,15 @@ async def federated_pair(
     consumer gateway.
     """
     up_profile = secondary or secondary_profile()
+    # The secondary's registry the way `load_profiles` builds it: a SEAT
+    # carrying `federation` also serves the ingress derived from it. Passing a
+    # seat here is how a test exercises the shape production runs; passing an
+    # already-derived ingress (one with `federation_of`) derives nothing.
+    up_registry = {up_profile.name: up_profile}
+    up_registry.update(derive_all(up_registry))
     with bound_internal_server(internal_server(tools)):
         up_sessions = SessionRegistry()
-        up_app = gateway_app({up_profile.name: up_profile}, sessions=up_sessions)
+        up_app = gateway_app(up_registry, sessions=up_sessions)
         async with serving(up_app) as up_port:
             if primary is not None:
                 down_profile = primary(up_port)
