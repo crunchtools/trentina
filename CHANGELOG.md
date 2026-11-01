@@ -10,6 +10,17 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An image built from a branch labelled itself with the branch name.**
+  `docker/metadata-action`'s `version` output is the ref, so every
+  `:latest` published from a main push carried
+  `org.opencontainers.image.version=main` while the Containerfile's own
+  `version` label — read from `pyproject.toml` through the `VERSION`
+  build-arg — said 4.2.3. One image, two answers, and only a tag build was
+  right. The `pkgver` step now runs before the metadata and overwrites the
+  OCI label, so the two agree on every build.
+
 ## [4.2.3] - 2026-11-01
 
 ### Fixed
