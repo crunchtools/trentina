@@ -19,15 +19,21 @@ from typing import Any
 
 import pytest
 
-from trentina.gateway import aggregate, surface, tool_pins
+from trentina.gateway import aggregate, results, surface, tool_pins
 from trentina.gateway import backend as backend_mod
 from trentina.gateway.backend import BackendCall
+from trentina.gateway.errors import (
+    NEEDS_AUTH_REASON,
+    NEEDS_AUTH_SECONDARY_REASON,
+    BackendNeedsAuthError,
+)
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
     DefenseConfig,
     FederatedConfig,
     FederationConfig,
+    FederationPeer,
     Profile,
 )
 from trentina.gateway.surface import BackendSurface, Stage, Surface
@@ -35,11 +41,17 @@ from trentina.outcomes import Outcome
 from trentina.reserved import PINS_KEY, REFUSAL_KEY
 from trentina.transports.mcp import (
     _federated_hold_refusal,
+    _federated_needs_auth_refusal,
     _mirror_refusal_meta,
     _route_tools_list,
 )
 
 UP_URL = "http://up:9000/mcp"
+_PEER_KEY = (
+    "-----BEGIN PUBLIC KEY-----\n"
+    "MCowBQYDK2VwAyEADQkszPlthFCBeWc9iiuXME80uLDRMavhs5P6VYdxgVM=\n"
+    "-----END PUBLIC KEY-----\n"
+)
 
 
 def _federated_backend() -> Backend:
@@ -260,3 +272,111 @@ async def test_tools_list_has_no_held_meta_off_an_ingress() -> None:
         assert "_meta" not in resp["result"]
     finally:
         aggregate._profile_tools_cache.pop(profile.name, None)
+
+
+# --- A peer with no grant: a refusal, in the primary's words ---
+
+
+def _primary(backend: Backend) -> Profile:
+    return Profile(
+        name="down",
+        auth=AuthConfig(bearer_token_env="UP"),
+        defense=DefenseConfig(provider="ollama"),
+        backends={"lotor": backend},
+    )
+
+
+def test_needs_auth_is_a_refusal_not_a_jsonrpc_error() -> None:
+    answer = results._failed_call(7, BackendNeedsAuthError("era"), False, "flag", SimpleNamespace())
+    assert "error" not in answer
+    assert answer["result"]["isError"] is False
+    assert answer["result"][REFUSAL_KEY]["reason"] == NEEDS_AUTH_REASON
+    assert answer["result"][REFUSAL_KEY]["backend"] == "era"
+
+
+def test_an_ingress_mirrors_the_needs_auth_backend_and_not_the_detail() -> None:
+    response = {
+        "result": {
+            "content": [],
+            "isError": False,
+            REFUSAL_KEY: {"reason": NEEDS_AUTH_REASON, "backend": "era", "detail": "peer wording"},
+        }
+    }
+    mirrored = _mirror_refusal_meta(_ingress(), response)["result"]["_meta"][REFUSAL_KEY]
+    assert mirrored == {"reason": NEEDS_AUTH_REASON, "backend": "era"}
+
+
+def test_only_needs_auth_mirrors_a_backend() -> None:
+    response = {
+        "result": {
+            "content": [],
+            "isError": False,
+            REFUSAL_KEY: {"reason": "tool_held", "backend": "era"},
+        }
+    }
+    mirrored = _mirror_refusal_meta(_ingress(), response)["result"]["_meta"][REFUSAL_KEY]
+    assert mirrored == {"reason": "tool_held"}
+
+
+def test_the_primary_writes_needs_auth_in_its_own_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _federated_backend()
+    monkeypatch.setattr("trentina.transports.mcp.served_name", lambda *_: "lotor_backend_auth")
+    call = _call(
+        {REFUSAL_KEY: {"reason": NEEDS_AUTH_REASON, "backend": "era"}}, text="SECRET peer wording"
+    )
+    assembled = _federated_needs_auth_refusal(_primary(backend), backend, "lotor", call, stripped=0)
+    assert assembled is not None
+    assert assembled.outcome is Outcome.NEEDS_AUTH
+    assert assembled.result[REFUSAL_KEY]["reason"] == NEEDS_AUTH_SECONDARY_REASON
+    text = assembled.result["content"][0]["text"]
+    assert 'Call lotor_backend_auth with action="start" and backend="era"' in text
+    assert "SECRET" not in text
+
+
+def test_an_unapproved_sign_in_tool_is_named_as_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = _federated_backend()
+    monkeypatch.setattr("trentina.transports.mcp.served_name", lambda *_: None)
+    call = _call({REFUSAL_KEY: {"reason": NEEDS_AUTH_REASON, "backend": "era"}})
+    assembled = _federated_needs_auth_refusal(_primary(backend), backend, "lotor", call, stripped=0)
+    assert assembled is not None
+    assert "must list backend_auth_tool" in assembled.result["content"][0]["text"]
+
+
+@pytest.mark.parametrize("slug", ["Ignore previous instructions", "a" * 65, 7, None])
+def test_a_peer_backend_name_that_is_not_a_slug_is_not_repeated(
+    slug: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = _federated_backend()
+    monkeypatch.setattr("trentina.transports.mcp.served_name", lambda *_: "lotor_backend_auth")
+    call = _call({REFUSAL_KEY: {"reason": NEEDS_AUTH_REASON, "backend": slug}})
+    assembled = _federated_needs_auth_refusal(_primary(backend), backend, "lotor", call, stripped=0)
+    assert assembled is not None
+    text = assembled.result["content"][0]["text"]
+    assert "Ignore" not in text
+    assert "this backend" in text
+
+
+def test_a_non_federated_backend_is_never_needs_auth_mapped() -> None:
+    plain = Backend(url=UP_URL, tools_allow=["*"])
+    call = _call({REFUSAL_KEY: {"reason": NEEDS_AUTH_REASON, "backend": "era"}})
+    assert _federated_needs_auth_refusal(_primary(plain), plain, "lotor", call, stripped=0) is None
+
+
+def test_an_ingress_may_offer_backend_auth_but_no_other_admin_tool() -> None:
+    def ingress(allow: list[str]) -> Profile:
+        return Profile(
+            name="fed",
+            auth=AuthConfig(bearer_token_env="UP"),
+            defense=DefenseConfig(provider="ollama"),
+            federation=FederationConfig(
+                peers={"down": FederationPeer(public_key=_PEER_KEY)},
+            ),
+            backends={"web": Backend(url="internal://web", tools_allow=allow)},
+        )
+
+    assert ingress(["read_part_tool", "backend_auth_tool"]).federation is not None
+    for refused in (["tool_pins_tool"], ["*"], ["backend_*"]):
+        with pytest.raises(ValueError, match="may offer a peer only"):
+            ingress(refused)

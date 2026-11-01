@@ -20,7 +20,12 @@ from ..outcomes import refusal_of
 from ..reserved import REFUSAL_KEY, WARNING_KEY, strip_content_blocks, strip_reserved
 from ..transports.jsonrpc import JSONRPC_INTERNAL_ERROR, _err, _ok, _refused
 from .backend import cached_tool_read_only
-from .errors import BackendCallError, BackendResponseTooLargeError
+from .errors import (
+    NEEDS_AUTH_REASON,
+    BackendCallError,
+    BackendNeedsAuthError,
+    BackendResponseTooLargeError,
+)
 from .modes_policy import MODE_PARAM
 
 if TYPE_CHECKING:
@@ -218,6 +223,19 @@ def _failed_call(
     req_id: Any, exc: BackendCallError, acted: bool, mode: Mode, policy: ModePolicy
 ) -> dict[str, Any]:
     """What the agent is told of a call that raised: the refusal it carries, if any."""
+    if isinstance(exc, BackendNeedsAuthError):
+        # Waiting on a human, so an answer rather than a failure. As a JSON-RPC
+        # error a federated primary lost the message and counted it against the
+        # breaker, taking down every tool on the peer for one missing grant.
+        return _refused(
+            req_id,
+            {
+                "reason": NEEDS_AUTH_REASON,
+                "detail": str(exc),
+                "backend": exc.backend,
+                "alternatives": [],
+            },
+        )
     refusal = _call_refusal(exc, mode, policy)
     if refusal is None:
         return _err(req_id, JSONRPC_INTERNAL_ERROR, str(exc))
