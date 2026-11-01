@@ -393,7 +393,7 @@ async def _client_for(
     configured = _configured_client(backend, disc)
     if configured is not None:
         return configured
-    existing = await store.get_client(profile.name, name, backend)
+    existing = await store.get_client(profile.grant_owner, name, backend)
     if (
         existing is not None
         and existing.issuer == disc.issuer
@@ -443,7 +443,7 @@ async def _client_for(
         token_endpoint=disc.token_endpoint,
         revocation_endpoint=disc.revocation_endpoint,
     )
-    await store.put_client(profile.name, name, backend, client)
+    await store.put_client(profile.grant_owner, name, backend, client)
     return client
 
 
@@ -466,7 +466,7 @@ async def _client_of(
     """The client a flow or grant was made with, if the slot still holds it."""
     auth = backend.auth
     if auth is not None and auth.client_id == client_id:
-        stored = await store.get_client(profile.name, name, backend)
+        stored = await store.get_client(profile.grant_owner, name, backend)
         method = stored.auth_method if stored and stored.client_id == client_id else None
         return BackendClient(
             client_id=client_id,
@@ -475,7 +475,7 @@ async def _client_of(
             issuer="",
             token_endpoint="",
         )
-    stored = await store.get_client(profile.name, name, backend)
+    stored = await store.get_client(profile.grant_owner, name, backend)
     return stored if stored is not None and stored.client_id == client_id else None
 
 
@@ -547,8 +547,8 @@ async def _prepare(
     # another: a backend that changes its metadata does not get to send the
     # human, or the client, somewhere new. Revoke first, or pin auth.issuer.
     for prior in (
-        await store.get_grant(profile.name, name, backend),
-        await store.get_client(profile.name, name, backend),
+        await store.get_grant(profile.grant_owner, name, backend),
+        await store.get_client(profile.grant_owner, name, backend),
     ):
         if prior is not None and prior.issuer != disc.issuer:
             raise BackendAuthError("issuer_changed")
@@ -589,7 +589,7 @@ async def start(profile: Profile, name: str, *, authorized_by: Literal["self", "
             params["prompt"] = "consent"
     joiner = "&" if "?" in disc.authorization_endpoint else "?"
     flow = BackendFlow(
-        profile=profile.name,
+        profile=profile.grant_owner,
         backend=name,
         origin=backend_origin(backend.url),
         issuer=disc.issuer,
@@ -609,7 +609,7 @@ async def start(profile: Profile, name: str, *, authorized_by: Literal["self", "
     keys = (flow_key(state), flow.page_key)
     for key in keys:
         await store.put_flow(key, flow)
-    live = _live_flows.setdefault(slot_key(profile.name, name), deque())
+    live = _live_flows.setdefault(slot_key(profile.grant_owner, name), deque())
     live.append(keys)
     while len(live) > MAX_FLOWS_PER_SLOT:
         for key in live.popleft():
@@ -788,11 +788,11 @@ async def fresh_grant(
     backend = profile.backends.get(name)
     if store is None or backend is None or backend.auth is None:
         return None
-    grant = await store.get_grant(profile.name, name, backend)
+    grant = await store.get_grant(profile.grant_owner, name, backend)
     if grant is None or _usable(grant, stale_generation):
         return grant
-    async with store.locked(profile.name, name):
-        grant = await store.get_grant(profile.name, name, backend)
+    async with store.locked(profile.grant_owner, name):
+        grant = await store.get_grant(profile.grant_owner, name, backend)
         if grant is None or _usable(grant, stale_generation):
             return grant
         started = time.monotonic()
@@ -829,9 +829,9 @@ async def _refresh(
     if reply.status == 429 or reply.status >= 500:
         raise BackendAuthError("token_endpoint_busy")
     if reply.status != 200:
-        await store.delete_grant(profile.name, name)
+        await store.delete_grant(profile.grant_owner, name)
         if _oauth_error(reply) == "invalid_client":
-            await store.delete_client(profile.name, name)
+            await store.delete_client(profile.grant_owner, name)
         raise BackendAuthError("refresh_rejected")
     fresh = _grant_from(
         reply,
@@ -843,7 +843,7 @@ async def _refresh(
         previous=grant,
     )
     return await store.put_grant(
-        profile.name, name, backend, fresh, expected_generation=grant.generation
+        profile.grant_owner, name, backend, fresh, expected_generation=grant.generation
     )
 
 

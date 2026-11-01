@@ -1279,13 +1279,28 @@ def _wire_login_notifications(session_registry: Any) -> None:
     A backend with ``auth`` is skipped from a profile's tools/list while the
     profile has no grant; once the human signs in, the client must hear that
     the list changed or it keeps the old one until it reconnects (#479).
+
+    And the grant belongs to the SEAT, so a sign-in there is also a sign-in for
+    every ingress derived from it (#592): those profiles were skipping the same
+    backend for want of the same grant. Without this the link kept answering
+    ``needs_auth`` after a successful sign-in until something flushed the
+    cache, which is the symptom seat-owned grants exist to remove.
     """
     from .gateway.aggregate import invalidate_profile_cache
     from .gateway.backend_oauth import on_grant_stored
+    from .gateway.loader import get_active_config
 
     async def _after_login(profile_name: str) -> None:
-        invalidate_profile_cache(profile_name)
-        await session_registry.broadcast_tools_changed(profile_name)
+        active = get_active_config()
+        profiles = active.config.profiles if active else {}
+        spenders = [
+            name
+            for name, profile in profiles.items()
+            if profile.grant_owner == profile_name and name != profile_name
+        ]
+        for name in (profile_name, *spenders):
+            invalidate_profile_cache(name)
+            await session_registry.broadcast_tools_changed(name)
 
     on_grant_stored(_after_login)
 

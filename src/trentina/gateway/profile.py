@@ -3442,6 +3442,35 @@ class Profile(BaseModel):
             raise ValueError(f"derived federation ingress: {'; '.join(problems)}")
         return self
 
+    @property
+    def grant_owner(self) -> str:
+        """Which profile's OAuth grants this one spends (#479, #592).
+
+        Itself, for every profile a person writes. For a DERIVED federation
+        ingress, the seat it was derived from — so a human signs in ONCE, on
+        the seat, and the link uses that sign-in.
+
+        Before this, a grant belonged to ``(profile, backend)`` and a federated
+        call ran as the ingress, so a seat already signed in to a backend held
+        nothing for the link: the same person had to authorize the same account
+        twice, and the second sign-in had to be driven through a tool offered
+        across the link, which on a multi-peer ingress let one peer revoke
+        another's grant or repoint it at its own human's account.
+
+        The peer reaches a strict subset of what the seat's own agent already
+        can — the offered set IS the seat's backends, with the seat's guards —
+        so spending the seat's grant grants no new reach; it removes a
+        ``needs_auth`` refusal. What it does widen is consent, which is why
+        adding a ``federation`` block to a seat is staged for a person.
+
+        It is a FIELD rather than a name match on purpose. Deriving the owner
+        from ``name`` would make a hand-written ``josui-federation`` a way to
+        claim josui's grants, leaving a name-collision check as the only thing
+        between a typo and someone else's mailbox. ``load_profiles`` refuses a
+        file that sets ``federation_of`` at all.
+        """
+        return self.federation_of or self.name
+
     def channel_bridges(self) -> dict[str, MatrixBridgeConfig]:
         """Every bridge this profile declares, by channel: ``matrix_bridge``
         as ``matrix``, then ``bridges`` (#483). Enabled or not."""

@@ -610,7 +610,12 @@ AUTH_COOLDOWN_SECONDS = 60.0
 
 
 def _cooldown_key(profile: Profile | None, backend_name: str) -> str:
-    return f"{profile.name if profile else ''}:{backend_name}"
+    """The reauth cooldown is per GRANT, so it keys on the grant's owner.
+
+    A derived ingress and the seat it was derived from spend one grant, so one
+    failed refresh should hold both off rather than letting each spend its own
+    attempt against the same authorization server."""
+    return f"{profile.grant_owner if profile else ''}:{backend_name}"
 
 
 def _primary_jwt(url: str, private_key_pem: str, caller: str) -> str:
