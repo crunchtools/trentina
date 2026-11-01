@@ -313,13 +313,20 @@ class TestShape:
         ],
     )
     def test_linear(self, make: Callable[[int], str]) -> None:
-        """Twice the input must not take much more than twice the time."""
+        """Twice the input must not take much more than twice the time.
+
+        Best of three per size: a single sample measures the machine as much
+        as the code, and the suite runs on every core at once.
+        """
         timings = []
         for n in (40_000, 80_000):
             text = make(n)
-            start = time.perf_counter()
-            unpack(text)
-            timings.append(time.perf_counter() - start)
+            best = float("inf")
+            for _ in range(3):
+                start = time.perf_counter()
+                unpack(text)
+                best = min(best, time.perf_counter() - start)
+            timings.append(best)
         assert timings[1] < max(timings[0] * 4, 0.05)
 
 

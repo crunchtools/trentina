@@ -10,6 +10,22 @@ under that name.
 
 ## [Unreleased]
 
+### Changed
+
+- **The test suite runs on every core.** `pytest-xdist` joins the `dev` extra
+  and `addopts` sets `-n auto`, locally and in CI; `-n0` runs a single test
+  in-process. CI's test step took 210–265s per Python version on one core; the
+  full suite now runs in 60–90s on a 14-core laptop. Running in parallel
+  surfaced three tests that only passed in serial order: a parametrize whose IDs carried a gzip timestamp, so
+  workers collected different tests; the upstream connection pool, which
+  outlived the event loop that opened it; and a linearity check timed from a
+  single sample.
+- **CI's container build reads the layer cache.** `build-container` was a raw
+  `docker build` with no cache, rebuilding every stage on every run while
+  `container.yml` built the same Containerfile with one. It now uses
+  `docker/build-push-action` with the same `type=gha` cache. The L2
+  integration tests in the image run four workers with one ONNX thread each.
+
 ## [4.2.1] - 2026-11-01
 
 ### Fixed

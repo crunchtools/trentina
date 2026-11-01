@@ -42,8 +42,11 @@ jobs:
       - name: Run type checker
         run: uv run mypy src
 
+      # Parallel across the runner's cores (addopts: -n auto). -rfE keeps
+      # failures and errors in the summary; -v per-test lines interleave
+      # across workers and say nothing a failure summary does not.
       - name: Run tests
-        run: uv run pytest -v
+        run: uv run pytest -q -rfE
         env:
           GEMINI_API_KEY: "test_key_for_ci"
 
@@ -88,7 +91,7 @@ jobs:
           TRENTINA_LIVE_L3: "1"
           TRENTINA_LIVE_L3_PROVIDER: openrouter
           QUARANTINE_MODEL: "google/gemini-2.5-flash"
-        run: uv run pytest tests/test_l3_live.py -v
+        run: uv run pytest -n0 tests/test_l3_live.py -v
 
   boundary-review-eval:
     name: Boundary Review Eval (#90)
@@ -167,9 +170,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The same layer cache container.yml writes (default gha scope), so a
+      # push that changed only src/ rebuilds only the last stage here too.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
       - name: Build container image
-        run: |
-          docker build -f Containerfile -t trentina:test .
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Containerfile
+          load: true
+          tags: trentina:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Verify container starts
         run: |
@@ -215,7 +229,7 @@ jobs:
           docker build -f - -t trentina:test-runner . <<'EOF'
           FROM quay.io/hummingbird/python:3.14-builder AS test-deps
           USER 0
-          RUN pip install --no-cache-dir --prefix=/usr pytest pytest-asyncio
+          RUN pip install --no-cache-dir --prefix=/usr pytest pytest-asyncio pytest-xdist
 
           FROM trentina:test
           COPY --from=test-deps /usr/lib/python3.14/site-packages/ /usr/lib/python3.14/site-packages/
@@ -237,9 +251,10 @@ jobs:
               -e GEMINI_API_KEY="test_key_for_ci" \
               -e CLASSIFIER_MODEL="$model" \
               -e TRENTINA_REQUIRE_L2_MODEL=1 \
+              -e CLASSIFIER_THREADS=1 \
               trentina:test-runner \
-              -m pytest /tests/test_l2_integration.py \
-                "/tests/test_adversarial_corpus.py::TestLayer2Boundary" -v
+              -m pytest -n 4 -q -rfE /tests/test_l2_integration.py \
+                "/tests/test_adversarial_corpus.py::TestLayer2Boundary"
             echo "::endgroup::"
           done
 
