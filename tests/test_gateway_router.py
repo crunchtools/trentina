@@ -36,6 +36,22 @@ from trentina.gateway.tool_pins import check_tools as _real_check_tools
 from trentina.transports.mcp import PROTOCOL_VERSION, route_jsonrpc
 
 
+def _fake_db_config(mock_cfg: Any, db_path: str) -> None:
+    """Point ``trentina.database``'s config at a private file for one test.
+
+    Every field the writes below read has to be set. ``blocklist_ttl_days`` is
+    one of them and is easy to miss: ``record_gateway_call`` runs the retention
+    sweep on the first call after start, the blocklist cutoff is a
+    ``timedelta`` built from it, and a bare ``MagicMock`` there raises
+    ``TypeError``. These tests only ever passed because something earlier in
+    the session had already marked the sweep done — so alone, or on an xdist
+    worker that drew them first, they failed.
+    """
+    mock_cfg.return_value.db_path = db_path
+    mock_cfg.return_value.ensure_db_dir = lambda: None
+    mock_cfg.return_value.blocklist_ttl_days = 30
+
+
 def _profile() -> Profile:
     """Build a Profile with two backends and one deny pattern for testing."""
     p = Profile(
@@ -329,8 +345,7 @@ class TestRouter:
             ),
             patch("trentina.database.get_config") as mock_cfg,
         ):
-            mock_cfg.return_value.db_path = db_path
-            mock_cfg.return_value.ensure_db_dir = lambda: None
+            _fake_db_config(mock_cfg, db_path)
             await route_jsonrpc(
                 _profile(),
                 {
@@ -372,8 +387,7 @@ class TestRouter:
             ),
             patch("trentina.database.get_config") as mock_cfg,
         ):
-            mock_cfg.return_value.db_path = db_path
-            mock_cfg.return_value.ensure_db_dir = lambda: None
+            _fake_db_config(mock_cfg, db_path)
             resp = await route_jsonrpc(
                 _profile(),
                 {
@@ -402,8 +416,7 @@ class TestRouter:
 
         db_mod._db = None
         with patch("trentina.database.get_config") as mock_cfg:
-            mock_cfg.return_value.db_path = str(tmp_path / "denied_allow.db")
-            mock_cfg.return_value.ensure_db_dir = lambda: None
+            _fake_db_config(mock_cfg, str(tmp_path / "denied_allow.db"))
             resp = await route_jsonrpc(
                 _profile(),
                 {
@@ -451,8 +464,7 @@ class TestRouter:
         p.auth.bearer_token = SecretStr("x")
 
         with patch("trentina.database.get_config") as mock_cfg:
-            mock_cfg.return_value.db_path = str(tmp_path / "denied_guard.db")
-            mock_cfg.return_value.ensure_db_dir = lambda: None
+            _fake_db_config(mock_cfg, str(tmp_path / "denied_guard.db"))
             await route_jsonrpc(
                 p,
                 {
@@ -525,8 +537,7 @@ class TestRouter:
             patch("trentina.orchestrator.scan_tool_response", mock_scan),
             patch("trentina.database.get_config") as mock_cfg,
         ):
-            mock_cfg.return_value.db_path = str(tmp_path / "denied_response.db")
-            mock_cfg.return_value.ensure_db_dir = lambda: None
+            _fake_db_config(mock_cfg, str(tmp_path / "denied_response.db"))
             resp = await route_jsonrpc(
                 p,
                 {
@@ -628,8 +639,7 @@ class TestRouter:
             ),
             patch("trentina.database.get_config") as mock_cfg,
         ):
-            mock_cfg.return_value.db_path = str(tmp_path / "tool_error.db")
-            mock_cfg.return_value.ensure_db_dir = lambda: None
+            _fake_db_config(mock_cfg, str(tmp_path / "tool_error.db"))
             await route_jsonrpc(
                 _profile(),
                 {
@@ -1082,8 +1092,7 @@ class TestOneAuditRowPerCall:
             patch("trentina.orchestrator.scan_tool_response", mock_scan),
             patch("trentina.database.get_config") as mock_cfg,
         ):
-            mock_cfg.return_value.db_path = str(tmp_path / "one_row.db")
-            mock_cfg.return_value.ensure_db_dir = lambda: None
+            _fake_db_config(mock_cfg, str(tmp_path / "one_row.db"))
             if scan is not None:
                 try:
                     await route_jsonrpc(
@@ -1161,8 +1170,7 @@ class TestOneAuditRowPerCall:
             ),
             patch("trentina.database.get_config") as mock_cfg,
         ):
-            mock_cfg.return_value.db_path = str(tmp_path / "internal.db")
-            mock_cfg.return_value.ensure_db_dir = lambda: None
+            _fake_db_config(mock_cfg, str(tmp_path / "internal.db"))
             resp = await route_jsonrpc(
                 _mixed_profile(),
                 {
@@ -1345,8 +1353,7 @@ class TestArgumentHygiene:
                 patch("trentina.orchestrator.scan_tool_response", mock_scan),
                 patch("trentina.database.get_config") as mock_cfg,
             ):
-                mock_cfg.return_value.db_path = str(tmp_path / "hygiene.db")
-                mock_cfg.return_value.ensure_db_dir = lambda: None
+                _fake_db_config(mock_cfg, str(tmp_path / "hygiene.db"))
                 resp = await route_jsonrpc(
                     profile,
                     {

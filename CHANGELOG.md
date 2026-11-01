@@ -10,6 +10,42 @@ under that name.
 
 ## [Unreleased]
 
+## [4.2.3] - 2026-11-01
+
+### Fixed
+
+- **A retention sweep that failed took the audit row down with it.**
+  `record_gateway_call` and `is_blocked` both run `_maybe_sweep` inline, so
+  deleting an expired row happened inside the call writing a new one. Any
+  failure in a sweep — a locked table, a full disk, the hash-chain prune —
+  propagated out of `record_gateway_call`, and `gateway/audit.py` logged the
+  row as lost: the audit discarding a row in order to delete one. The sweep is
+  now best-effort and says so when it does not finish. A failed pass leaves
+  `_last_sweep` unset, so the next call retries, and the rows it meant to
+  delete simply stay — the harmless direction.
+
+- **Sixteen router tests passed only by riding on another test's state.**
+  Nine fake configs in `tests/test_gateway_router.py` patched
+  `trentina.database.get_config` with a bare `MagicMock`, leaving
+  `blocklist_ttl_days` a mock that `timedelta` cannot take. The blocklist
+  cutoff is only computed on the first audit write after start, so these tests
+  passed whenever something earlier in the session had already marked the
+  sweep done, and failed alone or on an xdist worker that drew them first —
+  the last of the order dependencies #651 exposed. `conftest` now clears
+  `_last_sweep` per test, which leaves every test with the sweep DUE: the
+  strict reading, and the one production has on its first call.
+
+### Changed
+
+- **The approval page's "no oracle" claim is now held to the bytes.** The
+  wording, the status and the headers of every state a visitor can reach
+  without the password — a wrong one, an empty field, a right one with nothing
+  staged, and a right one naming a kind that is not there — are asserted
+  identical, and the refusal is asserted not to name the gateway's state in
+  either direction. Confirmed against a live gateway as well: with a
+  federation trust staged and with nothing staged, a wrong password returns the
+  same 11,195 bytes under the same headers.
+
 ## [4.2.2] - 2026-11-01
 
 ### Changed

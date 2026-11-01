@@ -301,6 +301,36 @@ class TestRetention:
         assert _count(audit_db) == 2
         assert database._last_sweep is not None
 
+    def test_a_failing_sweep_does_not_cost_the_row_being_written(
+        self, audit_db: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Housekeeping runs inside the write; it must never take it down.
+
+        The sweep deletes expired rows and the call is writing a new one. A
+        locked table or a full disk met while pruning used to propagate out of
+        ``record_gateway_call``, and ``gateway/audit.py`` logged the row as
+        lost — the audit losing a row in order to delete one.
+        """
+
+        def boom(_db: Any) -> int:
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(database, "sweep_expired_blocks", boom)
+        database.record_gateway_call("alpha", "b", "t", "ok", 0)
+        assert _count(audit_db) == 1
+        assert database._last_sweep is None  # still due, so the next call retries
+
+    def test_a_failing_sweep_does_not_fail_the_blocklist_answer(
+        self, audit_db: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other caller: the perimeter is waiting on this answer."""
+
+        def boom(_db: Any) -> int:
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(database, "sweep_old_gateway_calls", boom)
+        assert database.is_blocked("https://example.com/x", "alpha") is False
+
     def test_the_first_call_sweeps_on_a_host_up_under_an_hour(
         self, audit_db: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:

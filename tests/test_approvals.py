@@ -258,11 +258,41 @@ class TestThePage:
     def test_a_wrong_password_and_nothing_staged_are_indistinguishable(
         self, page: TestClient
     ) -> None:
-        """No oracle: a guesser cannot tell a bad password from an idle gateway."""
-        wrong = page.post(approval_routes.PATH, data={"password": "wrong"})
-        right_but_idle = page.post(approval_routes.PATH, data={"password": PASSWORD})
-        assert wrong.status_code == right_but_idle.status_code == 404
-        assert wrong.text == right_but_idle.text
+        """No oracle: a guesser cannot tell a bad password from an idle gateway.
+
+        Every refusal this route can reach has to be one answer, down to the
+        headers — a `Content-Length` that differs by a byte, or a header one
+        branch sets and another does not, is the same oracle as different
+        words. The four below are the states a stranger can put the page in
+        without the password: a wrong one, an empty field, a right one with
+        nothing staged, and a right one naming a kind that is not there.
+        """
+        answers = [
+            page.post(approval_routes.PATH, data={"password": "wrong"}),
+            page.post(approval_routes.PATH, data={"password": ""}),
+            page.post(approval_routes.PATH, data={"password": PASSWORD}),
+            page.post(
+                approval_routes.PATH,
+                data={"password": PASSWORD, "kind": "operator seat", "decision": "approve"},
+            ),
+        ]
+        first, *rest = answers
+        assert first.status_code == 404
+        for other in rest:
+            assert (other.status_code, other.text) == (first.status_code, first.text)
+            assert dict(other.headers) == dict(first.headers)
+
+    def test_a_guess_learns_nothing_from_the_wording_either(self, page: TestClient) -> None:
+        """What the refusal says is as load-bearing as that they match.
+
+        It must not name the gateway's state in either direction — no "wrong
+        password", which confirms the password was read and judged, and no
+        "nothing is pending", which answers the question an unauthenticated
+        visitor came to ask.
+        """
+        body = page.post(approval_routes.PATH, data={"password": "wrong"}).text.lower()
+        for leak in ("wrong", "incorrect", "invalid", "denied", "not authorised", "pending"):
+            assert leak not in body
 
     def test_the_right_password_shows_what_is_about_to_change(self, page: TestClient) -> None:
         pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied([]))
