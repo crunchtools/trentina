@@ -348,6 +348,34 @@ class TestRefusals:
         assert "JOSUI_TOKEN" in facts["josui.auth now"]
         assert facts["josui.auth after this change"] == "absent"
 
+    @pytest.mark.parametrize(("value", "shown"), [(True, "yes"), (False, "no")])
+    def test_a_boolean_seat_field_reads_as_a_word(self, value: bool, shown: str) -> None:
+        """``oauth.enabled`` is a bool, and "True" on an approval page is a
+        Python repr rather than an answer to the question being asked."""
+        from trentina.tools.config import _seat_value
+
+        assert _seat_value(value) == shown
+
+    def test_the_seat_field_limit_is_exact(self) -> None:
+        """Exactly at the limit is shown; one character past it is refused.
+
+        A bound tested only far above itself says nothing about where it
+        actually falls, and this one decides between a page a person reads and
+        a write that does not happen.
+        """
+        from trentina.tools.config import _SEAT_VALUE_CHARS, _seat_facts, _seat_value
+
+        # 14 fragments of 141, joined by 13 ", " separators: 1974 + 26 = 2000.
+        fits = ["x" * 141] * 14
+        assert len(_seat_value(fits)) == _SEAT_VALUE_CHARS
+        shown = _seat_facts({"op": {"matrix_networks": None}}, {"op": {"matrix_networks": fits}})
+        assert shown["op.matrix_networks after this change"].startswith("xxx")
+
+        over = [*fits[:-1], "x" * 142]
+        assert len(_seat_value(over)) == _SEAT_VALUE_CHARS + 1
+        with pytest.raises(pending.PendingError, match="too long to show"):
+            _seat_facts({"op": {"matrix_networks": None}}, {"op": {"matrix_networks": over}})
+
     def test_an_absent_seat_field_is_not_shown_as_an_unset_one(self) -> None:
         """``dict.get`` alone reports a missing key and a key set to ``None``
         identically, so a change between them would vanish from the page."""
