@@ -804,6 +804,32 @@ def reset_gateway_calls() -> int:
     return int(before)
 
 
+def get_federated_verdict_stats(days: int = 30) -> dict[str, dict[str, int]]:
+    """How each federated response was handled, per ``<profile>.<backend>``.
+
+    The signal an operator cannot otherwise read: whether a trust pin is
+    buying anything. A pin that has quietly stopped matching — the peer rotated
+    a key, or swapped a weaker scanner in — keeps working and keeps costing a
+    full local re-judge, and the only trace is the reason in these rows.
+
+    ``federated_verdict`` is NULL on every non-federated call, so those rows
+    are left out rather than counted as a verdict of their own.
+    """
+    db = _read_db()
+    cutoff = time.time() - (days * 86400)
+    rows = db.execute(
+        "SELECT profile, backend, federated_verdict, COUNT(*) AS cnt FROM gateway_calls "
+        "WHERE timestamp > ? AND federated_verdict IS NOT NULL "
+        "GROUP BY profile, backend, federated_verdict",
+        (cutoff,),
+    ).fetchall()
+    stats: dict[str, dict[str, int]] = {}
+    for row in rows:
+        where = f"{row['profile']}.{row['backend']}"
+        stats.setdefault(where, {})[row["federated_verdict"]] = int(row["cnt"])
+    return stats
+
+
 def get_gateway_call_stats(
     profile: str | None = None,
     days: int = 30,

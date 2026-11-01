@@ -367,3 +367,59 @@ class TestSchemaAndMigrationAgree:
             assert {name for name, _ in database._CALL_COLUMNS} <= upgraded
         finally:
             conn.close()
+
+
+class TestFederatedVerdictStats:
+    """How each federated response was handled, per `<profile>.<backend>`.
+
+    The signal an operator cannot otherwise read: whether a trust pin is
+    buying anything. A pin that has quietly stopped matching keeps working and
+    keeps costing a full local re-judge, and the only trace is the reason in
+    these rows.
+    """
+
+    @staticmethod
+    def _rows(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
+        with (
+            patch.object(database, "_db", conn),
+            patch.object(database, "get_db", return_value=conn),
+            patch.object(database, "_read_db", return_value=conn),
+        ):
+            for profile, backend, verdict in (
+                ("down", "lotor", "trusted"),
+                ("down", "lotor", "trusted"),
+                ("down", "lotor", "hash_mismatch"),
+                ("down", "other", "stale"),
+                ("up", "lotor", "trusted"),
+                ("down", "plain", None),  # a non-federated call
+            ):
+                database.record_gateway_call(
+                    profile, backend, "search", "ok", 1, federated_verdict=verdict
+                )
+            return database.get_federated_verdict_stats(days=30)
+
+    def test_counts_are_grouped_by_profile_backend_and_verdict(self) -> None:
+        stats = self._rows(_fresh_db())
+
+        assert stats["down.lotor"] == {"trusted": 2, "hash_mismatch": 1}
+        assert stats["down.other"] == {"stale": 1}
+        # Same backend name, different profile: its own key, not merged.
+        assert stats["up.lotor"] == {"trusted": 1}
+
+    def test_a_non_federated_call_is_not_a_verdict_of_its_own(self) -> None:
+        """`federated_verdict` is NULL on every ordinary call, and counting
+        those as a verdict would bury the ones that mean something."""
+        assert "down.plain" not in self._rows(_fresh_db())
+
+    def test_a_row_outside_the_window_is_left_out(self) -> None:
+        conn = _fresh_db()
+        self._rows(conn)
+        conn.execute("UPDATE gateway_calls SET timestamp = timestamp - ?", (40 * 86400,))
+
+        with (
+            patch.object(database, "_db", conn),
+            patch.object(database, "get_db", return_value=conn),
+            patch.object(database, "_read_db", return_value=conn),
+        ):
+            assert database.get_federated_verdict_stats(days=30) == {}
+            assert database.get_federated_verdict_stats(days=50) != {}

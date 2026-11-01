@@ -198,8 +198,30 @@ def _gateway_stats() -> dict[str, Any]:
         "surface": {name: surface_report(name) for name in surface_profiles()},
         "plugins": _plugins(),
         "preview_surfaces": _preview_surfaces(),
+        "federation": _federation(),
         "token_note": TOKEN_NOTE,
     }
+
+
+def _federation() -> dict[str, Any]:
+    """Every federation link this gateway is on, in both directions.
+
+    An operator had no way to read this: `surface` is per profile and
+    `perimeter` is per gateway, so a drifted offered set, an orphaned pin or a
+    trust pin that had quietly stopped matching showed up as an agent saying
+    "I don't have that tool" — or not at all, since a pin matching nothing
+    just costs a full local re-judge and keeps working.
+    """
+    from ..database import get_federated_verdict_stats
+    from ..gateway.federation_report import VERDICT_WINDOW_DAYS, link_report
+    from ..gateway.loader import get_active_config
+
+    active = get_active_config()
+    if active is None:
+        return {"shared": [], "consumed": [], "verdict_window_days": VERDICT_WINDOW_DAYS}
+    return link_report(
+        active.config.profiles, get_federated_verdict_stats(days=VERDICT_WINDOW_DAYS)
+    )
 
 
 def _preview_surfaces() -> list[dict[str, str]]:
