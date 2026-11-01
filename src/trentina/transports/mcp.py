@@ -27,7 +27,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -374,8 +373,6 @@ def _deliver_trusted(
 
 #: The peer's tool a primary names when a peer backend needs a sign-in.
 _BACKEND_AUTH_TOOL = "backend_auth_tool"
-#: What a peer's backend name must look like before our wording repeats it.
-_BACKEND_SLUG = re.compile(r"[a-z0-9_-]{1,64}")
 
 
 def _peer_refusal(backend: Backend, call_result: BackendCall) -> dict[str, Any] | None:
@@ -399,29 +396,25 @@ def _federated_needs_auth_refusal(
 
     Authored here for the same reason as the hold refusal, and because only this
     gateway knows what the peer's ``backend_auth`` is served as: the peer's own
-    wording names a tool that, here, signs in to something else. The peer's
-    backend name is echoed only if it is a plain slug.
+    wording names a tool that, here, signs in to something else. Nothing of the
+    peer's reaches this text, since it skips the layers. ``status`` names the
+    backend, through the pipeline.
     """
     refusal = _peer_refusal(backend, call_result)
     if refusal is None or refusal.get("reason") != NEEDS_AUTH_REASON:
         return None
-    peer_backend = refusal.get("backend")
-    named = isinstance(peer_backend, str) and _BACKEND_SLUG.fullmatch(peer_backend) is not None
-    target = f"backend {peer_backend!r}" if named else "this backend"
     tool = served_name(profile, backend_name, _BACKEND_AUTH_TOOL)
     if tool is None:
         fix = (
             "Its sign-in tool is not available here: the secondary's ingress must "
             f"list {_BACKEND_AUTH_TOOL}, and this gateway must approve it."
         )
-    elif named:
-        fix = (
-            f'Call {tool} with action="start" and backend="{peer_backend}", then send '
-            "the link it returns to your human."
-        )
     else:
-        fix = f'Call {tool} with action="status", then action="start" for that backend.'
-    detail = f"{target} on {backend_name!r} is not authorized for this gateway's link."
+        fix = (
+            f'Call {tool} with action="status" to see which backend needs it, then '
+            'action="start" for that backend, and send the link it returns to your human.'
+        )
+    detail = f"This tool's backend on {backend_name!r} is not authorized for this gateway's link."
     result = {
         "content": [
             {
@@ -614,10 +607,8 @@ def _mirror_refusal_meta(profile: Profile, response: dict[str, Any]) -> dict[str
     A policy refusal carries its reason in a root ``_trentina_refusal``, which a
     federated primary's MCP SDK drops in transit (``_meta`` survives). Copy
     ONLY the closed reason code, never the ``detail`` text (#262), so the
-    primary can author its own "held on the secondary" wording. A ``needs_auth``
-    refusal also carries the backend's name, which the primary's wording has to
-    give and checks before using. A clean result has no root refusal and is
-    returned unchanged; no-op off a federation ingress.
+    primary can author its own "held on the secondary" wording. A clean result has no
+    root refusal and is returned unchanged; no-op off a federation ingress.
     """
     result = response.get("result")
     if not isinstance(result, dict):
@@ -627,10 +618,7 @@ def _mirror_refusal_meta(profile: Profile, response: dict[str, Any]) -> dict[str
         return response
     if profile.federation is None:
         return response
-    mirrored = {"reason": refusal["reason"]}
-    if refusal["reason"] == NEEDS_AUTH_REASON and "backend" in refusal:
-        mirrored["backend"] = refusal["backend"]
-    result["_meta"] = {**(result.get("_meta") or {}), REFUSAL_KEY: mirrored}
+    result["_meta"] = {**(result.get("_meta") or {}), REFUSAL_KEY: {"reason": refusal["reason"]}}
     return response
 
 
