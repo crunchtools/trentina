@@ -155,7 +155,10 @@ class TestWriting:
         result = await _as_operator(
             "set",
             "profiles.ag.backends.lotor",
-            {"url": "https://lotor.example/gateway/fed/mcp", "tools_allow": ["*"]},
+            # An ordinary MCP server: the test is about a write reaching the
+            # running profile. A gateway federation endpoint without a
+            # `federated:` block is the interim path, refused since 5.0.0.
+            {"url": "https://memory.example/mcp", "tools_allow": ["*"]},
             await _hash(),
         )
 

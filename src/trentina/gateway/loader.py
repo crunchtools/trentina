@@ -388,16 +388,25 @@ def _check_federation_audience(registry: dict[str, Profile]) -> None:
 
 
 def _check_interim_federation(name: str, profile: Profile) -> None:
-    """Warn on the interim static-bearer federation path (#592, D2b).
+    """Refuse the interim static-bearer federation path (#592, D2b; removed in 5.0.0).
 
     A backend that points at a Trentina gateway's federation endpoint
     (``.../gateway/<profile>/mcp``) without a ``federated:`` block is the
     pre-3.1 arrangement: it mounts another gateway over a shared static bearer
-    and re-judges everything. First-class federation (primary-key auth +
-    scan-once trust) supersedes it; the interim path still works but is
-    deprecated; it is superseded by the first-class ``federated:`` block and
-    will be removed in a future release. Warned by profile and backend name only,
-    never the URL (#262).
+    and re-judges everything. First-class federation superseded it in 3.1.0,
+    it was deprecated with a removal announced for 3.2.0, and it only ever
+    warned — through 4.2.3.
+
+    It is refused now because the warning was load-bearing for a promise it
+    could not keep. docs/federation.md says federation is loop-free by
+    construction, and ``_check_federation_topology`` enforces that by refusing
+    an ingress that also mounts a ``federated:`` backend — which this shape is
+    not. So an ingress profile could mount the next gateway's ingress over a
+    bearer and re-export it: A to B to C, with a ring self-joining
+    ``_profile_inflight`` until the list timeout. "No routing" was a property
+    of the first-class path only, and the prose did not say so.
+
+    Named by profile and backend, never the URL (#262).
     """
     for backend_name, backend in profile.backends.items():
         if backend.federated is not None or not backend.is_remote:
@@ -408,12 +417,13 @@ def _check_interim_federation(name: str, profile: Profile) -> None:
         # mentions "gateway" and ends /mcp, so an ordinary MCP server is not
         # mistaken for the interim path.
         if len(parts) >= 3 and parts[-1] == "mcp" and parts[-3] == "gateway":
-            logger.warning(
-                "gateway: profile=%s backend=%s uses the interim static-bearer "
-                "federation path; migrate to a federated: block "
-                "(deprecated; superseded by a federated: block) — see docs/federation.md",
-                name,
-                backend_name,
+            raise ProfileConfigError(
+                f"Profile {name!r} backend {backend_name!r} points at a Trentina "
+                "federation endpoint without a 'federated:' block. That interim "
+                "static-bearer arrangement was deprecated in 3.1.0 and is removed: it "
+                "re-judges every response and, on an ingress profile, re-exports the "
+                "next gateway, which is the loop federation is meant not to have. Add a "
+                "'federated:' block with a primary key — see docs/federation.md."
             )
 
 

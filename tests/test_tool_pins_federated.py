@@ -22,7 +22,7 @@ from trentina.tools.pins import manage_tool_pins
 
 pytestmark = pytest.mark.asyncio
 
-LOTOR_URL = "http://lotor:8019/gateway/josui/mcp"
+LOTOR_URL = "https://lotor:8019/gateway/josui/mcp"
 
 YAML = f"""\
 profiles:
@@ -35,6 +35,7 @@ profiles:
     backends:
       lotor:
         url: {LOTOR_URL}
+        federated: {{}}
 """
 
 
@@ -91,7 +92,11 @@ async def test_an_agent_cannot_manage_pins() -> None:
     # Pins belong to a backend's whole surface, so only the operator may list
     # or release them; an agent profile is refused without learning anything.
     agent = Profile.model_validate(
-        {"name": "ag", "auth": {"bearer_token_env": "A"}, "backends": {"lotor": {"url": LOTOR_URL}}}
+        {
+            "name": "ag",
+            "auth": {"bearer_token_env": "A"},
+            "backends": {"lotor": {"url": LOTOR_URL, "federated": {}}},
+        }
     )
     with profile_context(agent):
         result = await manage_tool_pins("list", "lotor")

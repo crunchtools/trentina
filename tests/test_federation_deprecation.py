@@ -1,21 +1,28 @@
-"""D2b: the interim static-bearer federation path warns at load (#592).
+"""D2b: the interim static-bearer federation path is refused (#592).
 
-First-class federation (edge-key auth + scan-once trust) supersedes mounting
-another gateway over a shared static bearer. The old arrangement still works
-but is deprecated (removed in 3.2.0), so the loader warns — by profile and
-backend name only, never the URL (#262).
+Mounting another gateway over a shared static bearer was the pre-3.1
+arrangement. First-class federation superseded it in 3.1.0, it was deprecated
+with removal announced for 3.2.0, and through 4.2.3 it only warned.
+
+It is refused in 5.0.0 because the warning was load-bearing for a promise it
+could not keep: docs/federation.md says federation is loop-free by
+construction, and `_check_federation_topology` enforces that only for a
+`federated:` block. An ingress profile could mount the next gateway's ingress
+over a bearer and re-export it — A to B to C — which is the loop the design
+says cannot exist.
+
+Refusals name the profile and backend, never the URL (the logging rule, #262).
 """
 
 from __future__ import annotations
 
-import logging
-from typing import TYPE_CHECKING
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.loader import _check_interim_federation
 from trentina.gateway.profile import AuthConfig, Backend, FederatedConfig, Profile
-
-if TYPE_CHECKING:
-    import pytest
 
 GATEWAY_URL = "https://lotor.example/gateway/josui/mcp"
 
@@ -28,35 +35,51 @@ def _profile(backend: Backend) -> Profile:
     )
 
 
-def test_a_static_bearer_gateway_backend_warns(caplog: pytest.LogCaptureFixture) -> None:
+def test_a_static_bearer_gateway_backend_is_refused() -> None:
     profile = _profile(Backend(url=GATEWAY_URL, tools_allow=["*"]))
-    with caplog.at_level(logging.WARNING):
+    with pytest.raises(ProfileConfigError, match="without a 'federated:' block") as caught:
         _check_interim_federation("breetai", profile)
-    assert any("interim static-bearer federation" in r.message for r in caplog.records)
-    # The URL is never in the message (the logging rule).
-    assert all("lotor.example" not in r.getMessage() for r in caplog.records)
+    # The profile and backend are config and loggable; the URL is not (#262).
+    assert "lotor.example" not in str(caught.value)
+    assert "breetai" in str(caught.value) and "lotor" in str(caught.value)
 
 
-def test_a_federated_block_does_not_warn(caplog: pytest.LogCaptureFixture) -> None:
+def test_a_federated_block_is_fine() -> None:
     profile = _profile(Backend(url=GATEWAY_URL, tools_allow=["*"], federated=FederatedConfig()))
-    with caplog.at_level(logging.WARNING):
-        _check_interim_federation("breetai", profile)
-    assert not caplog.records
+    _check_interim_federation("breetai", profile)
 
 
-def test_a_plain_mcp_backend_does_not_warn(caplog: pytest.LogCaptureFixture) -> None:
+def test_a_plain_mcp_backend_is_fine() -> None:
     # No "gateway" segment: an ordinary MCP server, not a Trentina federation
     # endpoint, must not be mistaken for the interim path.
-    profile = _profile(Backend(url="https://api.example/foo/mcp", tools_allow=["*"]))
-    with caplog.at_level(logging.WARNING):
-        _check_interim_federation("breetai", profile)
-    assert not caplog.records
+    _check_interim_federation("breetai", _profile(Backend(url="https://api.example/foo/mcp")))
 
 
-def test_gateway_elsewhere_in_the_path_does_not_warn(caplog: pytest.LogCaptureFixture) -> None:
+def test_gateway_elsewhere_in_the_path_is_fine() -> None:
     # "gateway" present but NOT the antepenultimate segment: not the
-    # .../gateway/<profile>/mcp shape, so no warning (the detection is exact).
-    profile = _profile(Backend(url="https://api.example/gateway/a/b/mcp", tools_allow=["*"]))
-    with caplog.at_level(logging.WARNING):
-        _check_interim_federation("breetai", profile)
-    assert not caplog.records
+    # .../gateway/<profile>/mcp shape, so not the interim path (detection is exact).
+    _check_interim_federation(
+        "breetai", _profile(Backend(url="https://api.example/gateway/a/b/mcp"))
+    )
+
+
+def test_the_re_export_that_made_this_worth_removing() -> None:
+    """An ingress mounting the next gateway over a bearer: the A-to-B-to-C the
+    topology check never saw, because it only refuses a `federated:` block on
+    an ingress."""
+    from trentina.gateway.profile import FederationConfig, FederationPeer
+
+    pem = (
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+    profile = Profile(
+        name="middle",
+        auth=AuthConfig(bearer_token_env="B"),
+        federation=FederationConfig(peers={"a": FederationPeer(public_key=pem)}),
+        backends={"onward": Backend(url="https://c.example/gateway/fed/mcp", tools_allow=["*"])},
+    )
+    with pytest.raises(ProfileConfigError, match="re-exports the next gateway"):
+        _check_interim_federation("middle", profile)

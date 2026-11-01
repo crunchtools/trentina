@@ -10,7 +10,75 @@ under that name.
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING: the interim static-bearer federation path.** A backend pointing
+  at a gateway's federation endpoint (`.../gateway/<profile>/mcp`) without a
+  `federated:` block is refused at load instead of warned about. It was
+  superseded in 3.1.0, deprecated with a removal announced for 3.2.0, and
+  still only warned through 4.2.3. It goes now because the warning was
+  load-bearing for a promise it could not keep: `_check_federation_topology`
+  refuses an ingress that also mounts a `federated:` backend, which this shape
+  is not, so an ingress could mount the next gateway over a bearer and
+  re-export it — A to B to C, the loop docs/federation.md says cannot exist by
+  construction. Add a `federated:` block with a primary key to migrate.
+
+### Changed
+
+- **BREAKING: a federation block must name at least one peer**, and two peers
+  may not share a public key. `peers` is what authenticates a primary, so a
+  block without one was never an ingress; a shared key left the audited caller
+  a matter of which peer was written first, since `verify_primary_jwt` returns
+  the first key that verifies.
+- **BREAKING: one primary key may not serve two secondaries whose ingress
+  profiles share a name.** The per-request token's audience is the ingress
+  profile name and says nothing about which gateway it was minted for, so that
+  configuration let either secondary replay the other's token inside the
+  60-second window. Refused across the whole file, since two profiles can each
+  hold one half of the pair. Give each secondary its own primary key, or the
+  ingress profiles different names.
+- **BREAKING: a backend header or URL may not reference an env var this file
+  declares as a secret, or one of the gateway's own.** It could resolve any
+  `${VAR}`, so an operator agent could forward this gateway's operator bearer —
+  or `TRENTINA_OAUTH_JWT_SIGNING_KEY` — to an endpoint it chose, with no seat
+  change and no approval. A backend's own credential still works: that variable
+  is referenced, not declared. See docs/profiles.md.
+
 ### Fixed
+
+- **A federated peer could read another peer's held response parts.** A held
+  paged response was owned by the profile name alone, and a federation ingress
+  is one profile for every primary that calls it; meanwhile the peer's own
+  `read_part` was served to agents as an ordinary tool. One primary could list
+  every handle on the ingress and read another's parts, around the proxy's
+  ordering, its lead-in and its rule that a flagged part withholds the rest.
+  The owner is now `(profile, caller)`, the per-owner caps with it, and a
+  federated backend's `read_part` is withheld from `tools/list` and refused as
+  a direct call.
+- **An approval could be swapped between reading it and agreeing to it.** The
+  review form carried only the `Kind`, and staging replaces silently, so an
+  agent could propose one trust pin, let a person read it, re-stage another,
+  and have the click apply the second. The page now carries a fingerprint of
+  the facts it showed and `approve` requires it to still match.
+- **A flagged federated response could never be trusted.** The emit side
+  digested the content blocks before the `[TRENTINA WARNING]` block was
+  appended, so the signature covered one fewer block than the wire carried and
+  every flagged response was `hash_mismatch` — silently re-judged, and audited
+  as exactly the symptom that is documented to mean a pin has stopped matching.
+- **A 64-bit id broke a federated tool outright.** `content_digest` canonicalized
+  unguarded, and RFC 8785 has no form for an integer past ±(2^53−1), so a leaf
+  returning a GitHub, Discord or Slack id made response assembly raise whether
+  trust was pinned or not. It now yields no digest, the response is delivered
+  unsigned, and the caller re-judges under a new audited reason,
+  `undigestable`.
+- **A trusted verdict's fields reached the agent as the peer wrote them**, and
+  an unknown `flagged_by` was read as "not flagged" — which under `block` would
+  have delivered content the verdict said was flagged. The warning is
+  re-projected through the closed summary, and a layer name this gateway does
+  not know re-judges as `uninterpretable`.
+- `judge_mismatch` is now logged, and the mismatch log dedupes on the peer's
+  own signed stamp rather than on the pin, so a peer that drifts twice is
+  reported twice.
 
 - **An image built from a branch labelled itself with the branch name.**
   `docker/metadata-action`'s `version` output is the ref, so every
