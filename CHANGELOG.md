@@ -10,6 +10,38 @@ under that name.
 
 ## [Unreleased]
 
+### Upgrading
+
+Breaking, so read this before deploying. The gateway refuses to START on the
+first four, so a missed one is loud rather than silent.
+
+1. **Migrate any interim federation backend.** A backend pointing at
+   `.../gateway/<profile>/mcp` with no `federated:` block is now a load error.
+   Add `federated:` with a `primary_key_name`, use https (or set
+   `TRENTINA_FEDERATION_ALLOW_INSECURE=1` on a trusted network), and add a
+   matching `peers` entry on the secondary.
+2. **Every `federation:` block names at least one peer**, and no two peers
+   share a public key.
+3. **One primary key per secondary**, or ingress profiles with different names.
+   Two federated backends sharing a key and deriving the same audience while
+   pointing at different gateways is refused.
+4. **Rename any backend header or URL variable that the same file also
+   declares under a `*_env` key**, and any that names a gateway secret such as
+   `TRENTINA_OAUTH_JWT_SIGNING_KEY`. Give each backend a variable nothing else
+   in the file names. Note that a name stays protected for the life of the
+   process once any successful load has seen it declared, so retiring one takes
+   a restart.
+5. **Upgrade the secondary first, or both together.** The flagged-response
+   digest fix is on the SECONDARY's emit side, so a 5.0 primary against a
+   4.2.3 secondary keeps auditing `hash_mismatch` for flagged responses and
+   re-judging them — the same (safe) behaviour as before, not a regression.
+   Clean responses are unaffected in either direction.
+6. **The primary's part budget must be at least the secondary's.** A federated
+   part larger than this gateway can judge in one call is now refused
+   (`federated_part_oversize`) rather than re-cut, because re-cutting orphaned
+   the peer's remaining parts. Keep `TRENTINA_PART_TOKENS` equal on both, or
+   higher on the primary.
+
 ### Removed
 
 - **BREAKING: the interim static-bearer federation path.** A backend pointing

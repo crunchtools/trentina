@@ -286,3 +286,49 @@ class TestOnePrimaryKeyPerSecondary:
             keys={"a": "K", "b": "K"},
         )
         _check_federation_audience({"breetai": profile})
+
+
+class TestOneSecondarySpelledTwoWays:
+    """One secondary written two ways is one secondary.
+
+    Comparing raw URLs refused a correct configuration: `:443`, a trailing
+    slash or a capitalised host read as two gateways sharing an audience, and
+    the message says "pointing at different URLs" without showing either.
+    """
+
+    def _profile(self, urls: dict[str, str]) -> Profile:
+        profile = Profile(
+            name="breetai",
+            auth=AuthConfig(bearer_token_env="B"),
+            backends={
+                name: Backend(url=url, tools_allow=["*"], federated=FederatedConfig())
+                for name, url in urls.items()
+            },
+        )
+        for backend in profile.backends.values():
+            assert backend.federated is not None
+            backend.federated.primary_key = SecretStr("K")
+        return profile
+
+    @pytest.mark.parametrize(
+        "other",
+        [
+            pytest.param("https://prod.example:443/gateway/fed/mcp", id="default-port"),
+            pytest.param("https://PROD.example/gateway/fed/mcp", id="host-case"),
+        ],
+    )
+    def test_the_same_gateway_spelled_differently_is_fine(self, other: str) -> None:
+        profile = self._profile({"a": "https://prod.example/gateway/fed/mcp", "b": other})
+        _check_federation_audience({"breetai": profile})
+
+    def test_two_prefixes_on_one_host_are_still_two_gateways(self) -> None:
+        """The path is kept: reading those as one endpoint is the mistake in
+        the other direction."""
+        profile = self._profile(
+            {
+                "a": "https://shared.example/one/gateway/fed/mcp",
+                "b": "https://shared.example/two/gateway/fed/mcp",
+            }
+        )
+        with pytest.raises(ProfileConfigError, match="could replay the other's token"):
+            _check_federation_audience({"breetai": profile})

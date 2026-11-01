@@ -10,6 +10,7 @@ through the transport to show a trusted response is delivered without the scan.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -618,8 +619,19 @@ def test_every_recorded_value_is_in_the_closed_set() -> None:
     """The column is read by an operator and must never carry peer text."""
     assert vsa.TRUSTED in vsa.AUDITED_VERDICTS
     assert vsa.INCOMPLETE in vsa.AUDITED_VERDICTS
+    assert vsa.UNINTERPRETABLE in vsa.AUDITED_VERDICTS
     for reason in vsa.TRUST_REASONS:
         assert reason in vsa.AUDITED_VERDICTS
+
+
+def test_the_audit_doc_names_every_value_the_column_can_hold() -> None:
+    """The doc is what an operator reads to interpret the column, and it had
+    drifted: two values this branch added were recorded and undocumented.
+    Checking the code against itself could not catch that."""
+    page = Path(__file__).parents[1].joinpath("docs/audit-log.md").read_text(encoding="utf-8")
+    row = next(line for line in page.splitlines() if "`federated_verdict`" in line)
+    missing = [v for v in vsa.AUDITED_VERDICTS if f"`{v}`" not in row]
+    assert not missing, f"docs/audit-log.md does not name: {missing}"
 
 
 class TestTheEmitSideWhenThereIsNoDigest:
@@ -664,10 +676,18 @@ class TestTheEmitSideWhenThereIsNoDigest:
         assert out["content"] == CONTENT  # still delivered, unchanged
         assert out["structuredContent"] == {"id": 1234567890123456789}
 
-    def test_it_says_so(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level(logging.WARNING):
+    def test_it_says_so_once_per_profile(self, caplog: pytest.LogCaptureFixture) -> None:
+        """INFO and deduped: a backend whose structured content holds a 64-bit
+        id does this on every call, and a line per call buries the ones that
+        mean something."""
+        mcp_mod._UNDIGESTABLE_SEEN.clear()
+        with caplog.at_level(logging.INFO):
             self._emit({"id": 1234567890123456789})
-        assert any("cannot be canonicalized" in r.message for r in caplog.records)
+            self._emit({"id": 1234567890123456789})
+        said = [r for r in caplog.records if "cannot be canonicalized" in r.getMessage()]
+        assert len(said) == 1
+        assert said[0].levelno == logging.INFO
+        mcp_mod._UNDIGESTABLE_SEEN.clear()
 
 
 class TestTheMismatchLogDedupesOnThePeersStamp:

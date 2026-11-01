@@ -58,7 +58,7 @@ from pydantic import SecretStr
 from trentina.gateway import internal
 from trentina.gateway.app import MCP_SESSION_ID_HEADER, gateway_app
 from trentina.gateway.internal import register_internal_server
-from trentina.gateway.profile import AuthConfig, Backend, Profile
+from trentina.gateway.profile import AuthConfig, Backend, FederatedConfig, Profile
 from trentina.gateway.sessions import SessionRegistry
 
 if TYPE_CHECKING:
@@ -146,9 +146,18 @@ def primary_profile(
 ) -> Profile:
     """The primary: a profile that mounts the secondary gateway as a backend.
 
-    The interim federation (#592): a plain MCP backend at the secondary's route
-    with the secondary's bearer in ``headers``. B1 replaces this with a
-    ``federated:`` block; pass a different profile to the harness to exercise it.
+    A first-class `federated:` block, which is what production runs. It carries
+    no `primary_key`, so the link authenticates with the secondary's bearer in
+    `headers` — a federated backend without a key falls back to it
+    (`backend._auth_headers`) — which keeps the harness key-free while still
+    being the shape the loader accepts.
+
+    It used to be the interim arrangement: a plain MCP backend at the
+    secondary's route with that bearer and no `federated:` block. Production
+    refuses that shape as of 5.0.0, and a harness whose default certifies a
+    refused link is a harness that tests the wrong thing. The loader never
+    caught it here because these profiles are built directly and the route is
+    `/<profile>/mcp` rather than `/gateway/<profile>/mcp`.
     """
     profile = Profile(
         name=name,
@@ -157,6 +166,7 @@ def primary_profile(
             backend_key: Backend(
                 url=f"http://127.0.0.1:{secondary_port}/{secondary_name}/mcp",
                 headers={"Authorization": f"Bearer {secondary_token}"},
+                federated=FederatedConfig(),
             )
         },
     )

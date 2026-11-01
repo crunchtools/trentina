@@ -14,6 +14,7 @@ relay-not-reframe, teardown and shape-checks are verified without a model.
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -28,7 +29,9 @@ from trentina.gateway.filter import filter_tools
 from trentina.gateway.modes_policy import policy_for
 from trentina.gateway.profile import AuthConfig, Backend, FederatedConfig, Profile
 from trentina.modes import Mode
-from trentina.transports.mcp import _federated_continuation
+from trentina.outcomes import Outcome
+from trentina.reserved import REFUSAL_KEY
+from trentina.transports.mcp import _federated_continuation, _first_part_or_refusal
 
 HANDLE = "a" * 32
 
@@ -399,3 +402,76 @@ class TestThePeersReaderIsNotOffered:
         paged = _proxied()
         assert paged.secondary is not None
         assert paged.secondary.reader == "read_part"
+
+
+class TestAPeersPartIsNeverReCut:
+    """The primary must not cut a response the peer already cut.
+
+    `_hold_paged` runs before `_federated_continuation`, so a peer part larger
+    than this gateway's whole-response budget was cut AGAIN and returned early:
+    the agent got "part 1 of 2" and was told part 2 was the last, while the
+    peer's parts 2..n were orphaned. Withholding the peer's own reader removed
+    the last route to them, so this had to become a refusal.
+    """
+
+    async def _assembled(self, marker: dict[str, Any], text: str) -> Any:
+        profile = _served_profile()
+        call = BackendCall(
+            content=[{"type": "text", "text": text}],
+            is_error=False,
+            structured_content=None,
+            meta=marker,
+        )
+        paged = paging.hold(
+            _origin(),
+            paging.cut(text) or (paging.Part(text),),
+            mode=Mode.FLAG,
+            prompt=None,
+            provenance=Provenance.EXTERNAL,
+            l3_context=None,
+            hidden=None,
+        )
+        arrived = Arrived(
+            content_blocks=list(call.content),
+            structured=None,
+            stripped=0,
+            is_error=False,
+            acted=False,
+        )
+        return await _first_part_or_refusal(
+            profile,
+            profile.backends["fed"],
+            "fed",
+            "echo",
+            paged,
+            arrived,
+            call,
+            prompt=None,
+            policy=None,
+            stripped=0,
+        )
+
+    async def test_a_peer_marked_response_is_refused_rather_than_re_cut(self) -> None:
+        out = await self._assembled(_marker(), "body " * 4_000)
+        assert out.outcome is Outcome.DENIED_GUARD
+        assert out.result[REFUSAL_KEY]["reason"] == "federated_part_oversize"
+        # Nothing of the response is delivered, and no handle is left behind.
+        assert "body" not in out.result["content"][0]["text"]
+        assert paging.find(("primary", None), HANDLE) is None
+
+    async def test_the_refusal_names_the_knob_and_not_the_peer(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING):
+            out = await self._assembled(_marker(), "body " * 4_000)
+        line = next(
+            r.getMessage() for r in caplog.records if "federated part exceeds" in r.getMessage()
+        )
+        assert "TRENTINA_PART_TOKENS" in line
+        assert "lotor" not in line  # the peer's URL is never logged (#262)
+        assert "align the two gateways' part budgets" in out.result["content"][0]["text"]
+
+    async def test_an_unmarked_response_still_pages_normally(self) -> None:
+        """Only a peer-marked response. This gateway's own paging is untouched."""
+        out = await self._assembled({}, "body " * 4_000)
+        assert out.result[paging.PART_KEY]["part"] == 1

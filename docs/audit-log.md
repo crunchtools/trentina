@@ -29,7 +29,9 @@ Each gateway call writes one row to the `gateway_calls` table:
 | `session` | text | `3f9a…`: a fingerprint of the MCP session the call arrived on. NULL for a client that sends no session header |
 | `call_ref` | text | `8c1d…`: a random reference for this call. A `detections` row raised by the call carries the same one |
 | `content_digest` | text | `b27e…`: a fingerprint of the delivered result. NULL when nothing was delivered |
-| `federated_verdict` | text | `trusted` when the response was served on a secondary's signed verdict without this gateway's own layers running; otherwise why it was re-judged (`absent`, `bad_signature`, `stamp_mismatch`, `judge_mismatch`, `hash_mismatch`, `mode_mismatch`, `stale`, `incomplete`). A closed set, never the peer's text. NULL for every non-federated call |
+| `federated_verdict` | text | `trusted` when the response was served on a secondary's signed verdict without this gateway's own layers running; otherwise why it was re-judged (`absent`, `bad_signature`, `stamp_mismatch`, `judge_mismatch`, `hash_mismatch`, `mode_mismatch`, `stale`, `undigestable`, `uninterpretable`, `incomplete`). A closed set, never the peer's text. NULL for every non-federated call, and for the later parts of a paged one |
+| `caller_peer` | text | On a federation ingress, the peer whose key verified the request's primary JWT — the actor. NULL for every non-federated call |
+| `caller_sub` | text | The caller that peer asserted (`sub`). Peer-chosen, so it is an audit fact and never an input to scope, role, policy or a guard. NULL for every non-federated call |
 
 ### How much of a federated link runs on the peer's scan
 
@@ -50,6 +52,18 @@ it scans with and nobody re-pinned, so the pin is now costing a round trip and
 buying nothing. `incomplete` is not a failure — the assertion verified, but the
 secondary could not fully read the content, so the primary applied its own gap
 policy instead.
+
+Read `absent` before concluding anything from a low `trusted` share. A response
+the secondary delivered in PARTS is never trusted: it signs a delivered
+response, and one delivered in parts is not one, so part 1 arrives with no
+assertion and every part is judged here. On a link whose responses are mostly
+large, `absent` dominating is the shape of the feature rather than a broken pin
+([gap 33](defense-pipeline.md#known-gaps)). The later parts carry NULL, like a
+non-federated call, so they do not appear in this query at all.
+
+`undigestable` and `uninterpretable` are the two the peer caused without
+anything being wrong with the link: a response holding a number RFC 8785 cannot
+carry, and a verdict naming a layer this gateway does not know.
 
 ### Joining rows
 

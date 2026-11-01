@@ -388,6 +388,35 @@ def _check_renamed_federation_keys(name: str, body: dict[str, Any]) -> None:
                 )
 
 
+#: Default ports, so one secondary spelled with and without its own is one
+#: secondary rather than two.
+_DEFAULT_PORTS = {"https": 443, "http": 80}
+
+
+def _same_gateway_key(url: str) -> str:
+    """A URL reduced to "which gateway endpoint is this", for comparison only.
+
+    Scheme and host lower-cased, a default port dropped, a trailing slash
+    dropped. Without this, ONE secondary written two ways — `:443`, a trailing
+    slash, a capitalised host — was refused as two gateways sharing an
+    audience, which is a confusing load error for a correct configuration.
+
+    The path AND QUERY are kept. Two gateways can live behind one host on
+    different prefixes, and a token-in-URL backend carries its credential in
+    the query (`_expand_backend_url`), so two URLs differing only there can be
+    two endpoints. Reading those as one is the mistake in the other direction,
+    and it is the dangerous one: it would skip the refusal this feeds.
+    """
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    port = parts.port
+    if port is not None and _DEFAULT_PORTS.get(parts.scheme.lower()) == port:
+        port = None
+    authority = f"{host}:{port}" if port is not None else host
+    query = f"?{parts.query}" if parts.query else ""
+    return f"{parts.scheme.lower()}://{authority}{parts.path.rstrip('/')}{query}"
+
+
 def _check_federation_audience(registry: dict[str, Profile]) -> None:
     """One primary key may not serve two secondaries with the same audience.
 
@@ -418,8 +447,9 @@ def _check_federation_audience(registry: dict[str, Profile]) -> None:
                 continue
             audience = federation_audience(backend.url) or ""
             group = (federated.primary_key.get_secret_value(), audience)
-            first = seen.setdefault(group, (profile_name, backend_name, backend.url))
-            if first[2] != backend.url:
+            target = _same_gateway_key(backend.url)
+            first = seen.setdefault(group, (profile_name, backend_name, target))
+            if first[2] != target:
                 raise ProfileConfigError(
                     f"Federated backends {first[0]}.{first[1]} and "
                     f"{profile_name}.{backend_name} share a primary key and both derive "

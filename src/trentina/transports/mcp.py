@@ -466,6 +466,99 @@ def _federated_hold_refusal(
     return Assembled(result, Outcome.DENIED_GUARD, stripped=stripped)
 
 
+async def _first_part_or_refusal(
+    profile: Profile,
+    backend: Backend,
+    backend_name: str,
+    tool_name: str,
+    paged: paging.Paged,
+    arrived: Arrived,
+    call_result: BackendCall,
+    *,
+    prompt: str | None,
+    policy: ModePolicy | None,
+    stripped: int,
+) -> Assembled:
+    """Part 1 of a response this gateway cut — unless the PEER cut it first.
+
+    A response carrying a peer part marker must not be re-cut: what arrived is
+    the peer's part 1, and the rest live on the peer behind a handle only
+    `_federated_continuation` can proxy. Cutting again returns before that
+    proxy is built, so the agent was handed "part 1 of 2" and told part 2 was
+    the last while the peer's parts 2..n were orphaned — and, now that the
+    peer's own reader is withheld, unreachable. Under block it was silent.
+
+    It happens only when this gateway's whole-response budget is SMALLER than
+    the peer's part size, which is a configuration to fix rather than a
+    response to mangle. `_federated_recut_refusal` names the knob.
+    """
+    if paging.federated_secondary(backend_name, call_result.meta):
+        return _federated_recut_refusal(
+            profile, backend_name, tool_name, paged, arrived, call_result, stripped
+        )
+    first = await parts._deliver_part(
+        profile,
+        paged,
+        1,
+        mode=paged.mode,
+        prompt=prompt,
+        policy=policy or policy_for(profile, backend, tool_name),
+    )
+    first.stripped = stripped
+    return first
+
+
+def _federated_recut_refusal(
+    profile: Profile,
+    backend_name: str,
+    tool_name: str,
+    paged: paging.Paged,
+    arrived: Arrived,
+    call_result: BackendCall,
+    stripped: int,
+) -> Assembled:
+    """Refuse a peer's part this gateway cannot judge whole (#592, B2).
+
+    Why, and when it happens: `_first_part_or_refusal`.
+    """
+    paging.release(paged)
+    message = "a federated part is larger than this gateway can judge in one call"
+    audit._audit(profile.name, backend_name, tool_name, Outcome.DENIED_GUARD, 0, message)
+    logger.warning(
+        "gateway: profile=%s backend=%s a federated part exceeds this gateway's "
+        "whole-response budget, so it cannot be judged whole and re-cutting it would "
+        "orphan the peer's remaining parts. Raise TRENTINA_PART_TOKENS here to at "
+        "least the peer's, or lower the peer's",
+        profile.name,
+        backend_name,
+    )
+    refused = {
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "[TRENTINA] Refused (federated_part_oversize). The secondary gateway "
+                    "delivers this response in parts larger than this gateway can judge "
+                    "in one call, so no part of it is delivered. An operator must align "
+                    "the two gateways' part budgets."
+                ),
+            }
+        ],
+        "isError": False,
+        REFUSAL_KEY: {
+            "reason": "federated_part_oversize",
+            "detail": message,
+            "alternatives": [],
+        },
+    }
+    return Assembled(
+        results._executed(refused, call_result.is_error) if arrived.acted else refused,
+        Outcome.DENIED_GUARD,
+        message,
+        stripped=stripped,
+    )
+
+
 def _federated_early(
     profile: Profile,
     backend: Backend,
@@ -574,6 +667,11 @@ def _federated_trust(
     )
 
 
+#: Profiles already told their responses cannot be canonicalized. A log-dedup,
+#: nothing reads it; bounded by the number of profiles.
+_UNDIGESTABLE_SEEN: set[str] = set()
+
+
 def _federated_vsa(
     profile: Profile,
     result: dict[str, Any],
@@ -614,11 +712,17 @@ def _federated_vsa(
         # Nothing to bind a signature to, and not an error: a 64-bit id is
         # ordinary. Deliver unsigned; the primary re-judges under
         # `undigestable`, which is what it would do with no assertion anyway.
-        logger.warning(
-            "gateway: profile=%s federated response cannot be canonicalized, "
-            "so no verdict assertion is attached and the caller will re-judge",
-            profile.name,
-        )
+        # INFO, and not per response: a backend whose structured content holds
+        # a 64-bit id does this on every call, and a WARNING per call would
+        # bury the ones that mean something.
+        if profile.name not in _UNDIGESTABLE_SEEN:
+            _UNDIGESTABLE_SEEN.add(profile.name)
+            logger.info(
+                "gateway: profile=%s a federated response cannot be canonicalized "
+                "(a number RFC 8785 cannot carry), so it is delivered unsigned and the "
+                "caller re-judges it. Logged once per profile",
+                profile.name,
+            )
         return result
     assertion = vsa.build_assertion(
         verifier=profile.name,
@@ -1008,16 +1112,18 @@ class McpServerFace(Face):
                 acted=arrived.acted,
             )
             if paged is not None:
-                first = await parts._deliver_part(
+                return await _first_part_or_refusal(
                     profile,
+                    backend,
+                    backend_name,
+                    tool_name,
                     paged,
-                    1,
-                    mode=paged.mode,
+                    arrived,
+                    call_result,
                     prompt=prompt,
-                    policy=policy or policy_for(profile, backend, tool_name),
+                    policy=policy,
+                    stripped=stripped,
                 )
-                first.stripped = stripped
-                return first
         transformed = Transformed(
             arrived=arrived, content_blocks=content_blocks, provenance=provenance, reduced=reduced
         )
