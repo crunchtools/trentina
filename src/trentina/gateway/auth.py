@@ -88,8 +88,7 @@ def verify_primary_jwt_header(
     from .federation_keys import FederationKeyError, load_public_key, verify_primary_jwt
 
     peers = {
-        name: load_public_key(peer.public_key)
-        for name, peer in profile.federation.peers.items()
+        name: load_public_key(peer.public_key) for name, peer in profile.federation.peers.items()
     }
     try:
         return verify_primary_jwt(presented, peers, aud=profile.name)

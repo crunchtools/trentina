@@ -24,6 +24,7 @@ from trentina.gateway import audit, vsa
 from trentina.gateway.app import _authorize
 from trentina.gateway.context import current_caller, current_federated_verdict
 from trentina.gateway.federation_keys import sign_primary_jwt
+from trentina.gateway.federation_link import derive_ingress
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -41,37 +42,65 @@ _PUB = (
 )
 
 
-def _ingress(**over: Any) -> dict[str, Any]:
+def _seat(**over: Any) -> dict[str, Any]:
+    """A seat that shares itself: `federation` plus a way in of its own."""
     base: dict[str, Any] = {
         "name": "up",
+        "auth": AuthConfig(bearer_token_env="UP_TOKEN"),
         "federation": FederationConfig(peers={"breetai": FederationPeer(public_key=_PUB)}),
-        "backends": {"web": Backend(url="internal://web", tools_allow=["read_part_tool"])},
+        "backends": {"peer": Backend(url="https://real/mcp", tools_allow=["*"])},
     }
     base.update(over)
     return base
 
 
-# --- the directed edge (validator) ---
+# --- the shared seat and its derived ingress (validators) ---
 
 
-def test_a_directed_ingress_loads() -> None:
-    # role agent (default), internal backend offers only read_part_tool.
-    profile = Profile(**_ingress())
-    assert profile.federation is not None and "breetai" in profile.federation.peers
-    assert profile.role == "agent"
+def test_a_shared_seat_loads_and_derives_an_ingress() -> None:
+    seat = Profile(**_seat())
+    ingress = derive_ingress(seat)
+
+    assert ingress.name == "up-federation"
+    assert ingress.role == "agent"
+    assert ingress.federation_of == "up"
+    # The seat's own remote backend, plus the paging reader and nothing else.
+    assert ingress.backends["peer"].is_remote
+    assert ingress.backends["trentina"].tools_allow == ["read_part_tool"]
 
 
-def test_an_offered_remote_backend_is_unrestricted() -> None:
-    # The offered set is the profile's own tools_allow on a REAL backend; the
-    # directed-edge rule only bars the gateway's own egress/disk tools.
-    offered = {"peer": Backend(url="https://real/mcp", tools_allow=["*"])}
-    profile = Profile(**_ingress(backends=offered))
-    assert profile.backends["peer"].is_remote
+def test_the_seats_internal_surface_is_not_offered() -> None:
+    """A seat's internal backend serves the whole native surface, admin tools
+    included. The derived ingress gets a fresh one, not a filtered copy."""
+    seat = Profile(
+        **_seat(
+            backends={
+                "peer": Backend(url="https://real/mcp", tools_allow=["*"]),
+                "web": Backend(url="internal://web", tools_allow=["*"]),
+            }
+        )
+    )
+    ingress = derive_ingress(seat)
+
+    assert "web" not in ingress.backends
+    assert ingress.backends["trentina"].tools_allow == ["read_part_tool"]
 
 
-def test_an_operator_federation_ingress_is_refused() -> None:
+def test_an_operator_seat_may_not_be_shared() -> None:
     with pytest.raises(ValueError, match="role must be agent"):
-        Profile(**_ingress(role="operator"))
+        Profile(**_seat(role="operator"))
+
+
+def test_a_seat_with_no_way_in_is_the_old_ingress_shape() -> None:
+    """The pre-5.0.0 shape loaded with no `auth`, because `peers` WAS its
+    authentication. Requiring one refuses exactly that shape."""
+    with pytest.raises(ValueError, match="a shared seat needs auth or oauth"):
+        Profile(**_seat(auth=None))
+
+
+def test_a_seat_may_not_take_the_ingress_suffix() -> None:
+    with pytest.raises(ValueError, match="may not end in"):
+        Profile(**_seat(name="up-federation"))
 
 
 @pytest.mark.parametrize(
@@ -84,9 +113,15 @@ def test_an_operator_federation_ingress_is_refused() -> None:
         ["read_part_tool", "cache_flush"],
     ],
 )
-def test_offering_any_other_internal_tool_to_a_peer_is_refused(allow: list[str]) -> None:
+def test_a_derived_ingress_may_not_widen_its_internal_tools(allow: list[str]) -> None:
+    """Derivation builds these, so this guards the derivation, not the file."""
     with pytest.raises(ValueError, match="may offer a peer only"):
-        Profile(**_ingress(backends={"web": Backend(url="internal://web", tools_allow=allow)}))
+        Profile(
+            name="up-federation",
+            federation_of="up",
+            federation=FederationConfig(peers={"breetai": FederationPeer(public_key=_PUB)}),
+            backends={"web": Backend(url="internal://web", tools_allow=allow)},
+        )
 
 
 def test_a_profile_without_peers_is_unconstrained() -> None:
@@ -126,9 +161,11 @@ def db(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 def _caller_of(db: Any, call_id: int) -> tuple[Any, Any]:
-    row = db.get_db().execute(
-        "SELECT caller_peer, caller_sub FROM gateway_calls WHERE id = ?", (call_id,)
-    ).fetchone()
+    row = (
+        db.get_db()
+        .execute("SELECT caller_peer, caller_sub FROM gateway_calls WHERE id = ?", (call_id,))
+        .fetchone()
+    )
     return row["caller_peer"], row["caller_sub"]
 
 
@@ -230,8 +267,14 @@ def _request(authorization: str | None) -> Request:
 
 
 def _peer_ingress(pub: str) -> Profile:
+    """The DERIVED ingress a peer authenticates to, as the gateway builds it.
+
+    A primary's JWT is audience-pinned to the profile name it calls, which for
+    a derived ingress is `<seat>-federation` — so the audience now follows from
+    the seat rather than from a name an operator invented.
+    """
     peers = {"breetai": FederationPeer(public_key=pub)}
-    return Profile(**_ingress(federation=FederationConfig(peers=peers)))
+    return derive_ingress(Profile(**_seat(federation=FederationConfig(peers=peers))))
 
 
 async def test_authorize_captures_the_federated_caller() -> None:
@@ -267,9 +310,11 @@ def test_the_caller_sub_is_never_logged(caplog: pytest.LogCaptureFixture) -> Non
 
 
 def _verdict_of(db: Any, call_id: int) -> Any:
-    row = db.get_db().execute(
-        "SELECT federated_verdict FROM gateway_calls WHERE id = ?", (call_id,)
-    ).fetchone()
+    row = (
+        db.get_db()
+        .execute("SELECT federated_verdict FROM gateway_calls WHERE id = ?", (call_id,))
+        .fetchone()
+    )
     return row["federated_verdict"]
 
 
@@ -302,9 +347,7 @@ def test_a_null_verdict_hashes_as_a_pre_637_row_did() -> None:
     """The whole reason this column is optional in the chain: a row written
     before it existed must still verify after the upgrade."""
     base = dict.fromkeys(audit_chain.CHAIN_FIELDS, "x")
-    assert audit_chain.row_hash(base) == audit_chain.row_hash(
-        {**base, "federated_verdict": None}
-    )
+    assert audit_chain.row_hash(base) == audit_chain.row_hash({**base, "federated_verdict": None})
 
 
 def test_a_verdict_commits_in_the_hash() -> None:

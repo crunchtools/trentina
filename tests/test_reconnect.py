@@ -142,13 +142,9 @@ class TestReconnectBackend:
         save_tool_list(POSTIZ_URL, good)
 
         async def grouped_connect_error(_url: str, _headers: Any, *_: Any) -> Any:
-            raise ExceptionGroup(
-                "unhandled errors in a TaskGroup", [httpx.ConnectError("boom")]
-            )
+            raise ExceptionGroup("unhandled errors in a TaskGroup", [httpx.ConnectError("boom")])
 
-        with patch(
-            "trentina.gateway.backend._do_list_tools", side_effect=grouped_connect_error
-        ):
+        with patch("trentina.gateway.backend._do_list_tools", side_effect=grouped_connect_error):
             result = await reconnect_backend("postiz")
 
         assert result["reconnected"] is False

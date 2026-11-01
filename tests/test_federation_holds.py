@@ -21,7 +21,6 @@ from typing import Any
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from pydantic import ValidationError
 
 from trentina.gateway import aggregate, results, surface, tool_pins
 from trentina.gateway import backend as backend_mod
@@ -110,10 +109,12 @@ def test_only_the_exact_tool_held_reason_maps(meta: dict[str, Any] | None) -> No
 
 
 def _ingress() -> Profile:
-    # No `auth`: `peers` is a federation ingress's authentication, and a second
-    # way in is refused since it admits a caller with no peer and no sub.
+    # A DERIVED ingress (`federation_of` names its seat): it carries no way in
+    # of its own, because `peers` is its authentication and a second one would
+    # admit a caller with no peer and no sub.
     return Profile(
-        name="lotor",
+        name="lotor-federation",
+        federation_of="lotor",
         defense=DefenseConfig(provider="ollama"),
         # An ingress names at least one peer: `peers` IS what authenticates a
         # primary, so a block without one is not an ingress (`profile.py`).
@@ -368,12 +369,20 @@ def test_a_non_federated_backend_is_never_needs_auth_mapped() -> None:
     assert _federated_needs_auth_refusal(_primary(plain), plain, "lotor", call, stripped=0) is None
 
 
-def test_an_ingress_may_offer_backend_auth_but_no_other_admin_tool() -> None:
+def test_a_peer_is_offered_the_paging_reader_and_nothing_else() -> None:
+    """`internal://` serves the whole native surface, admin tools included, so
+    the allowlist is by exact name and a glob is refused as written.
+
+    `backend_auth_tool` was briefly allowed here (#656), so a peer could start
+    the ingress profile's own OAuth sign-in. It is gone: a derived ingress
+    spends its SEAT's grants, so the human signs in once on the seat, through a
+    tool no peer can reach.
+    """
+
     def ingress(allow: list[str]) -> Profile:
-        # No `auth`: `peers` is the ingress's authentication, and a second way
-        # in is refused since it admits a caller with no peer and no sub.
         return Profile(
-            name="fed",
+            name="fed-federation",
+            federation_of="fed",
             defense=DefenseConfig(provider="ollama"),
             federation=FederationConfig(
                 peers={"down": FederationPeer(public_key=_PEER_KEY)},
@@ -381,28 +390,27 @@ def test_an_ingress_may_offer_backend_auth_but_no_other_admin_tool() -> None:
             backends={"web": Backend(url="internal://web", tools_allow=allow)},
         )
 
-    assert ingress(["read_part_tool", "backend_auth_tool"]).federation is not None
-    for refused in (["tool_pins_tool"], ["*"], ["backend_*"]):
+    assert ingress(["read_part_tool"]).federation is not None
+    for refused in (["tool_pins_tool"], ["*"], ["backend_*"], ["backend_auth_tool"]):
         with pytest.raises(ValueError, match="may offer a peer only"):
             ingress(refused)
 
 
-def test_the_sign_in_tool_needs_a_single_peer_ingress() -> None:
-    """A backend grant belongs to `(profile, backend)` and a federated call runs
-    as the ingress profile — one identity for every peer. So on an ingress with
-    two peers `backend_auth_tool` is a SHARED capability:
+def test_two_peers_on_one_link_are_fine_now() -> None:
+    """The single-peer rule is gone, because what it guarded is gone.
 
-    * `revoke` drops the grant every other peer's calls depend on, and asks the
-      authorization server to revoke the tokens, so it is not even locally
-      repairable.
-    * `start` is worse. A peer sends the link to ITS human, and whatever account
-      that human chooses becomes the account the ingress uses for that backend,
-      for every peer. One peer silently repoints another's reads and writes at
-      a mailbox it controls.
+    A backend grant belongs to `(profile, backend)` and a federated call runs
+    as the ingress — one identity for every peer. While `backend_auth_tool` was
+    offered across the link, that made it a SHARED capability on a multi-peer
+    ingress: `revoke` dropped the grant every other peer depended on (and
+    revoked it at the authorization server, so it was not even locally
+    repairable), and `start` let one peer's human become the account every
+    peer's calls used. So the model refused two peers plus that tool.
 
-    Same root cause as the held-parts hole this release closed: a per-profile
-    capability shared by N callers. Until grants are keyed by `(profile, peer,
-    sub)`, the single-peer link it shipped for is where it is allowed.
+    Neither half is reachable now. The tool is not offerable, and the grant
+    belongs to the seat, so no peer can start or revoke one. Two peers is an
+    ordinary configuration again — which it has to be, since a seat shared with
+    both a laptop and a phone is the thing a person actually wants.
     """
     second = (
         Ed25519PrivateKey.generate()
@@ -410,22 +418,17 @@ def test_the_sign_in_tool_needs_a_single_peer_ingress() -> None:
         .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
         .decode()
     )
+    peers = {
+        "down": FederationPeer(public_key=_PEER_KEY),
+        "other": FederationPeer(public_key=second),
+    }
+    ingress = Profile(
+        name="fed-federation",
+        federation_of="fed",
+        defense=DefenseConfig(provider="ollama"),
+        federation=FederationConfig(peers=peers),
+        backends={"web": Backend(url="internal://web", tools_allow=["read_part_tool"])},
+    )
 
-    def ingress(peers: dict[str, FederationPeer], allow: list[str]) -> Profile:
-        return Profile(
-            name="fed",
-            defense=DefenseConfig(provider="ollama"),
-            federation=FederationConfig(peers=peers),
-            backends={"web": Backend(url="internal://web", tools_allow=allow)},
-        )
-
-    one = {"down": FederationPeer(public_key=_PEER_KEY)}
-    two = {**one, "other": FederationPeer(public_key=second)}
-
-    # One peer: the configuration the feature shipped for.
-    assert ingress(one, ["read_part_tool", "backend_auth_tool"]).federation is not None
-    # Two peers, paging only: still fine, a held part is owned per caller.
-    assert ingress(two, ["read_part_tool"]).federation is not None
-
-    with pytest.raises(ValidationError, match="needs an ingress with ONE peer"):
-        ingress(two, ["read_part_tool", "backend_auth_tool"])
+    assert ingress.federation is not None
+    assert sorted(ingress.federation.peers) == ["down", "other"]

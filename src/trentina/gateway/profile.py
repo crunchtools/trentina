@@ -95,19 +95,21 @@ HONEYTOKEN_MIN_CHARS = 16
 #: own disk, is not something to hand an agent meant to be hijacked.
 HONEYPOT_READS = frozenset({"fetch_tool", "search_tool", "content_tool"})
 
-#: The sign-in tool, named because the directed-ingress rule needs it twice:
-#: in the allowlist, and again to refuse it on an ingress with more than one
-#: peer, where a grant belonging to the profile is shared by every peer.
-SIGN_IN_TOOL = "backend_auth_tool"
-
 # The only internal tools a federation ingress may offer a peer (#592, C2).
-# ``internal://<label>`` is one FastMCP server serving the whole native surface
-# — the reading tools AND the admin tools (quarantine_stats, cache_flush,
-# reload_profiles, tool_pins, reconnect_backend) — so this is an exact-name
-# ALLOWLIST, not a denylist: a denylist would offer a peer cache_flush, and
-# would federate every internal tool added later. A peer reaches a paging
-# continuation and, on a single-peer link, the ingress's own OAuth sign-in.
-FEDERATION_INTERNAL_ALLOW = frozenset({"read_part_tool", SIGN_IN_TOOL})
+# ``internal://<label>`` is one FastMCP server serving the whole native surface,
+# admin tools included, so this is an exact-name ALLOWLIST: a denylist would
+# offer a peer ``cache_flush`` and would federate every internal tool added
+# later. ``backend_auth_tool`` was briefly here (#656) and is not, because a
+# derived ingress spends its SEAT's grants — the human signs in once, on the
+# seat, through a tool no peer can reach.
+FEDERATION_INTERNAL_ALLOW = frozenset({"read_part_tool"})
+
+#: What the ingress profile derived from a seat is named: ``<seat>-federation``.
+#: It lives here rather than in ``federation_link`` because the seat validator
+#: needs it and ``federation_link`` imports this module, not the reverse. The
+#: profile name IS the JWT audience, so this suffix is load-bearing on both
+#: sides: the primary's backend URL ends ``/gateway/<seat>-federation/mcp``.
+INGRESS_SUFFIX = "-federation"
 #: Characters: the longest description and canned result a decoy tool may carry.
 DECOY_DESCRIPTION_MAX_CHARS = 1024
 DECOY_RESULT_MAX_CHARS = 4096
@@ -3241,10 +3243,25 @@ class Profile(BaseModel):
     federation: FederationConfig | None = Field(
         default=None,
         description=(
-            "The secondary side of federation (#592): primary peers that may "
-            "authenticate to this profile with an primary JWT. A profile with "
-            "federation.peers is a federation ingress and needs no other "
-            "credential (optional)"
+            "Share this SEAT with a peer gateway (#592): the primary peers that "
+            "may authenticate with a primary JWT. The gateway derives a "
+            "`<name>-federation` ingress profile offering this seat's own "
+            "non-federated remote backends, with this seat's guards and defense "
+            "posture. Write this on the seat whose tools you are sharing; there "
+            "is no separate ingress profile to keep in step (optional)"
+        ),
+    )
+    federation_of: str | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Set by the loader, never by the file: the seat this profile was "
+            "DERIVED from (`federation_link.derive_ingress`). It is what makes "
+            "the link first-class rather than a naming convention — the audit, "
+            "the link report and the grant owner all read it. `load_profiles` "
+            "refuses a profiles.yaml that sets it, because a hand-written "
+            "profile naming another seat here would claim that seat's OAuth "
+            "grants; privilege must be loader-derived, never caller-chosen."
         ),
     )
     tool_discovery: ToolDiscoveryConfig = Field(
@@ -3327,54 +3344,77 @@ class Profile(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def a_federation_ingress_is_directed(self) -> Profile:
-        """Refuse a federation ingress that is not a directed link (#592, C2).
+    def a_shared_seat_is_shareable(self) -> Profile:
+        """Refuse a seat that cannot be shared as written (#592).
 
-        A profile with a ``federation`` block offers a declared set to a primary
-        peer and can never reach past it. The rule is structural, like a
-        honeypot's: the profile is ``role: agent`` — an operator ingress would
-        offer the gateway's admin tools to a peer — and its internal backend's
-        ``tools_allow`` is an exact subset of ``FEDERATION_INTERNAL_ALLOW``
-        (``read_part_tool``, ``backend_auth_tool``). A glob such as ``read_*`` or ``*`` is refused
-        as written, before it can match the whole native surface. The offered
-        set itself is the profile's own remote backends; no second list.
+        ``federation`` is declared on the SEAT whose tools are being shared, and
+        ``federation_link.derive_ingress`` builds the ingress from it. So this
+        rule no longer describes the ingress — derivation constructs that
+        correctly by definition — it holds the seat to being a thing that can
+        legibly be shared.
 
-        Keyed on ``federation is not None``, as the topology check and the VSA
-        emit site are. Keying it on ``peers`` instead left a block with only a
-        ``secondary_key_name`` outside the rule while still signing assertions;
-        ``an_ingress_names_its_peers`` now makes the two spellings mean the same
-        thing, and this one no longer has to guess which it meant.
+        ``role: agent``, because a derived operator ingress would offer a peer
+        the gateway's own admin tools. The name must not already end in the
+        ingress suffix, or the derived name would collide with another link's.
 
-        It also carries NO other way in. ``peers`` IS this profile's
-        authentication, and ``app.py`` tries a static bearer first — so a
-        federation ingress that also had ``auth`` or ``oauth`` would admit a
-        caller through that instead, with no peer and no ``sub``. Everything
-        downstream then reads a null caller: the audit records no actor, the
-        docs' claim that every federated call names its peer is false for that
-        profile, and since held parts are owned by ``(profile, peer, sub)``
-        every such caller would share one paging owner — the isolation hole
-        this release closed, reopened through the front door.
+        And a shared seat MUST carry ``auth`` or ``oauth``, which is also how the
+        pre-5.0.0 shape is refused. That shape was a standalone ingress profile
+        that hand-listed its backends, and the rule it loaded under refused
+        ``auth`` and ``oauth`` on it outright — ``peers`` was its authentication.
+        So every such profile that loads today has neither, and requiring one
+        here refuses exactly those and nothing that was ever valid. It is a real
+        rule in its own right, not only a discriminator: a seat is something an
+        agent signs in to, and a profile no agent can reach has no tools of its
+        own to share.
 
-        And ``backend_auth_tool`` is offered only on a SINGLE-peer ingress. A
-        backend grant belongs to ``(profile, backend)``, and a federated call
-        runs as the ingress profile — which is one identity for every peer. So
-        on an ingress with two peers, that tool is a shared capability:
-
-        * ``revoke`` drops the grant every other peer's calls depend on, and
-          asks the authorization server to revoke the tokens, so it is not even
-          locally repairable.
-        * ``start`` is worse. A peer sends the link to ITS human, and whatever
-          account that human chooses becomes the account the ingress uses for
-          that backend — for every peer. One peer can silently repoint
-          another's reads and writes at a mailbox it controls.
-
-        Both are the same root cause as the paging hole: a per-profile
-        capability shared by N callers. Making it safe needs grants keyed by
-        ``(profile, peer, sub)``, which is a different design from the one
-        ``backend_tokens`` has; until then the single-peer link this shipped
-        for is the configuration it is allowed in.
+        Skipped for a DERIVED ingress, which carries the seat's ``federation``
+        block and would otherwise be judged as a seat itself: its name ends in
+        the reserved suffix and it deliberately has no way in.
+        ``a_derived_ingress_is_bounded`` is the rule that applies to those.
         """
-        if self.federation is None:
+        if self.federation is None or self.federation_of is not None:
+            return self
+        problems: list[str] = []
+        if self.role != "agent":
+            problems.append(
+                "role must be agent: a derived operator ingress would offer a "
+                "peer this gateway's own admin tools"
+            )
+        if self.name.endswith(INGRESS_SUFFIX):
+            problems.append(
+                f"a seat's name may not end in {INGRESS_SUFFIX!r}, which is "
+                "reserved for the ingress derived from it"
+            )
+        if self.auth is None and self.oauth is None:
+            problems.append(
+                "a shared seat needs auth or oauth. Since 5.0.0 `federation` is "
+                "declared on the SEAT whose tools are shared, and the gateway "
+                "derives the `<name>-federation` ingress from it. If this was a "
+                "standalone ingress profile, move its `federation` block onto "
+                "the seat it offers and delete the profile; the primary then "
+                "points at /gateway/<seat>-federation/mcp"
+            )
+        if problems:
+            raise ValueError(f"shared seat: {'; '.join(problems)}")
+        return self
+
+    @model_validator(mode="after")
+    def a_derived_ingress_is_bounded(self) -> Profile:
+        """Hold a DERIVED ingress to its bounds, as a check on the derivation.
+
+        ``derive_ingress`` builds every one of these profiles, so nothing a
+        person writes reaches this rule — ``load_profiles`` refuses a file that
+        sets ``federation_of`` at all. It exists because the cost of a
+        derivation bug is a peer holding a tool nobody offered it, and that is
+        worth a second opinion from a different piece of code.
+
+        The internal backend is held to ``FEDERATION_INTERNAL_ALLOW`` by exact
+        name, so a glob such as ``read_*`` or ``*`` is refused as written rather
+        than at the moment it matches the whole native surface. No remote
+        backend may be ``federated``: that is what keeps a link from
+        re-exporting the next one, A to B to C.
+        """
+        if self.federation_of is None:
             return self
         problems: list[str] = []
         if self.role != "agent":
@@ -3386,16 +3426,6 @@ class Profile(BaseModel):
                     "authenticates here, and a second way in would admit a caller "
                     "with no peer and no sub"
                 )
-        if len(self.federation.peers) > 1 and any(
-            SIGN_IN_TOOL in backend.tools_allow
-            for backend in self.backends.values()
-            if backend.is_internal
-        ):
-            problems.append(
-                f"{SIGN_IN_TOOL} needs an ingress with ONE peer: a backend grant "
-                "belongs to the profile, so on a shared ingress any peer could "
-                "revoke another's sign-in or repoint it at its own account"
-            )
         for name, backend in self.backends.items():
             extra = sorted(set(backend.tools_allow) - FEDERATION_INTERNAL_ALLOW)
             if backend.is_internal and extra:
@@ -3403,8 +3433,13 @@ class Profile(BaseModel):
                     f"internal backend {name!r} may offer a peer only "
                     f"{sorted(FEDERATION_INTERNAL_ALLOW)}, not {extra}"
                 )
+            if backend.federated is not None:
+                problems.append(
+                    f"backend {name!r} is federated: a derived ingress never "
+                    "re-exports the next gateway"
+                )
         if problems:
-            raise ValueError(f"federation ingress: {'; '.join(problems)}")
+            raise ValueError(f"derived federation ingress: {'; '.join(problems)}")
         return self
 
     def channel_bridges(self) -> dict[str, MatrixBridgeConfig]:

@@ -25,10 +25,12 @@ from . import key_store, token_store
 from .approver import DEFAULT_ENROL_WINDOW_SECONDS, clamped_enrol_window
 from .drivers import build_transforms
 from .errors import ProfileConfigError
+from .federation_link import derive_all
 from .filter import filter_tools
 from .profile import (
     GIT_REMOTE_NAME_RE,
     HONEYTOKEN_MIN_CHARS,
+    INGRESS_SUFFIX,
     MATRIX_CHANNEL,
     AlertIngressConfig,
     EgressUpstream,
@@ -391,6 +393,42 @@ def _check_renamed_federation_keys(name: str, body: dict[str, Any]) -> None:
 
 #: Default ports, so one secondary spelled with and without its own is one
 #: secondary rather than two.
+def _refuse_derived_fields(config_path: Path, profiles_section: dict[str, Any]) -> None:
+    """Refuse a file that writes a field only the loader may set.
+
+    ``federation_of`` names the seat whose OAuth grants a derived ingress
+    spends. A hand-written profile setting it would claim another seat's grants
+    — the field is privilege, so it has to be loader-derived and never
+    caller-chosen. Checked on the RAW mapping, before any profile is built,
+    because ``exclude=True`` keeps it out of a dump but not out of an input.
+    """
+    for name, body in profiles_section.items():
+        if isinstance(body, dict) and "federation_of" in body:
+            raise ProfileConfigError(
+                f"Profile {name!r}: 'federation_of' is set by the gateway, not by "
+                f"{config_path}. It names the seat a derived federation ingress "
+                "acts for, including whose OAuth grants it spends. Declare "
+                "`federation` on the seat instead and the ingress is derived."
+            )
+
+
+def _add_derived_ingresses(registry: dict[str, Profile]) -> None:
+    """Add each shared seat's derived federation ingress to ``registry``.
+
+    A collision is refused rather than resolved: whichever way it went, an
+    operator would have one profile named after another's link, and the
+    derived one carries the authority to spend that seat's grants.
+    """
+    for name, ingress in derive_all(registry).items():
+        if name in registry:
+            raise ProfileConfigError(
+                f"Profile {name!r} collides with the ingress derived from seat "
+                f"{ingress.federation_of!r}. A profile name ending "
+                f"{INGRESS_SUFFIX!r} is reserved for a derived federation ingress."
+            )
+        registry[name] = ingress
+
+
 def _check_federation_audience(registry: dict[str, Profile]) -> None:
     """One primary key may not serve two secondaries with the same audience.
 
@@ -483,23 +521,23 @@ def _check_interim_federation(name: str, profile: Profile) -> None:
 def _check_federation_topology(name: str, profile: Profile) -> None:
     """Hold the federation topology at load (#592): loop-free, and a secure link.
 
-    - A profile that is a federation INGRESS (``federation.peers``) must not also
-      CONSUME a federated secondary (a backend with ``federated``). A gateway
-      consumes, it does not route, so one profile is one role; a two-way pair is
-      two profiles. One profile that is both would have its single-flight
-      aggregate build wait on a peer whose build waits back — a deadlock.
-    - A federated backend must be reached over https. The 60 s primary JWT carries
-      no replay nonce, so over plain http an on-path peer could replay it within
-      the window. ``TRENTINA_FEDERATION_ALLOW_INSECURE=1`` lifts this for a
-      trusted local network (warned), as fetch's private-address rule is lifted.
+    A federated backend must be reached over https. The 60 s primary JWT carries
+    no replay nonce, so over plain http an on-path peer could replay it within
+    the window. ``TRENTINA_FEDERATION_ALLOW_INSECURE=1`` lifts this for a
+    trusted local network (warned), as fetch's private-address rule is lifted.
+
+    Loop-freedom used to be the other half of this check: a profile with
+    ``federation.peers`` could not also mount a ``federated`` backend, because
+    one ``Profile`` serving both roles would have its single-flight aggregate
+    build wait on a peer whose build waited back. Since 5.0.0 a seat's ingress
+    is DERIVED, so those are two objects and there is no deadlock — and
+    ``federation_link.offerable_backends`` excludes every ``federated`` backend,
+    so a link cannot re-export the next gateway whatever the seat mounts. A to B
+    to C is now unsayable rather than refused, which is what
+    ``docs/federation.md`` always claimed. One seat may therefore both consume a
+    peer's tools and share its own, which is what an operator wanted all along.
     """
     federated = {bn: b for bn, b in profile.backends.items() if b.federated is not None}
-    if profile.federation is not None and federated:
-        raise ProfileConfigError(
-            f"Profile {name!r} is a federation ingress and also mounts federated "
-            f"backend(s) {sorted(federated)!r}: one profile is one role (ingress or "
-            f"consumer); a two-way pair uses two profiles."
-        )
     from ..config import get_config
 
     allow_insecure = get_config().federation_allow_insecure
@@ -1279,11 +1317,17 @@ def load_profiles(path: Path | str) -> GatewayConfig:
     # on the order profiles appear in. In force for this load only until the
     # load succeeds — `_commit_protected` says why.
     declared = _declared_secret_env_names(cfg_data)
+    _refuse_derived_fields(config_path, profiles_section)
 
     with _protecting(declared, config_path):
         registry: dict[str, Profile] = {
             name: _build_profile(name, body) for name, body in profiles_section.items()
         }
+        # Derived BEFORE every registry-wide check, so an ingress is held to the
+        # audience rule, the judge rule and the rest exactly as a written
+        # profile is. A derived name that collides with a written one is
+        # refused rather than silently winning either way.
+        _add_derived_ingresses(registry)
         _check_operator(registry)
         _check_federation_audience(registry)
         _check_judges(registry)

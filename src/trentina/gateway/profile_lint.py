@@ -399,6 +399,57 @@ def check_self_authorize(profiles_file: dict[str, Any]) -> list[Finding]:
     return findings
 
 
+def check_federation_links(profiles_file: dict[str, Any]) -> list[Finding]:
+    """What a shared seat gives a peer, where the operator probably did not mean it.
+
+    Two findings, both specific to sharing a seat:
+
+    ``federation-no-secondary-key`` — the link authenticates but signs no
+    verdict, so the primary re-judges every response it already judged here.
+    That is the double scan federation exists to remove, and it is invisible:
+    the link works, it just costs twice. Not an error — #592 says to prove a
+    link works before turning trust on — but an operator who left it this way
+    by accident should hear so.
+
+    ``federation-shares-write-tools`` — the seat offers a backend that can
+    write, with no parameter guard on it. The peer is another gateway, so
+    whatever reaches it reaches that backend; a glob is read the way
+    ``check_shared_write_backends`` reads one, by asking what it could admit.
+    """
+    findings = []
+    for profile, body in _profiles(profiles_file).items():
+        federation = body.get("federation")
+        if not isinstance(federation, dict):
+            continue
+        if not (federation.get("secondary_key_name") or federation.get("secondary_key_env")):
+            findings.append(
+                Finding(
+                    "federation-no-secondary-key",
+                    f"seat {profile!r} is shared but signs no verdict "
+                    "(federation.secondary_key_name), so a primary re-judges every "
+                    "response this gateway already judged",
+                )
+            )
+        for backend, spec in (body.get("backends") or {}).items():
+            if not isinstance(spec, dict):
+                continue
+            url = str(spec.get("url", ""))
+            if url.startswith((INTERNAL_SCHEME, DECOY_SCHEME)) or spec.get("federated"):
+                continue  # not offered: derivation excludes all three
+            writes = sorted(
+                pattern for pattern, kinds in held_tools(spec).items() if "write" in kinds
+            )
+            if writes and not all(_guarded(spec, pattern) for pattern in writes):
+                findings.append(
+                    Finding(
+                        "federation-shares-write-tools",
+                        f"seat {profile!r} shares backend {backend!r} with a peer and "
+                        f"it can write ({', '.join(writes)}) with no parameter guard",
+                    )
+                )
+    return findings
+
+
 def check_require_defaults(source: str | None = None) -> list[Finding]:
     """Every ``TRENTINA_REQUIRE_*`` read from the environment defaults to fail-closed.
 
@@ -457,6 +508,7 @@ def lint(profiles_file: dict[str, Any], *, config_source: str | None = None) -> 
         *check_guarded_destinations(profiles_file),
         *check_oauth_subjects(profiles_file),
         *check_self_authorize(profiles_file),
+        *check_federation_links(profiles_file),
         *check_require_defaults(config_source),
     ]
 

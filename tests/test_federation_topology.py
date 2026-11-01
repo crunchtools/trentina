@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import SecretStr, ValidationError
 
 from trentina.gateway.errors import ProfileConfigError
+from trentina.gateway.federation_link import derive_ingress
 from trentina.gateway.loader import (
     _check_federation_audience,
     _check_federation_topology,
@@ -48,20 +49,31 @@ def _profile(*, ingress: bool, federated_url: str | None) -> Profile:
     backends = {}
     if federated_url is not None:
         backends["up"] = Backend(url=federated_url, tools_allow=["*"], federated=FederatedConfig())
-    # An ingress carries no `auth`: `peers` is its authentication, and the
-    # profile model refuses a second way in. A consumer still needs one.
+    # A SEAT is shared now, and a seat has a way in of its own: `federation` on
+    # it is what the gateway derives the ingress from.
     return Profile(
         name="breetai",
-        auth=None if ingress else AuthConfig(bearer_token_env="B"),
+        auth=AuthConfig(bearer_token_env="B"),
         federation=FederationConfig(peers=_peers()) if ingress else None,
-        backends=backends,
+        backends={**backends, "web": Backend(url="https://wiki/mcp", tools_allow=["*"])},
     )
 
 
-def test_an_ingress_that_also_consumes_is_refused() -> None:
-    profile = _profile(ingress=True, federated_url=HTTPS)
-    with pytest.raises(ProfileConfigError, match="one role"):
-        _check_federation_topology("breetai", profile)
+def test_a_seat_may_both_consume_and_share() -> None:
+    """The rule that forbade this is gone, and the reason is structural.
+
+    One `Profile` serving both roles used to deadlock its own single-flight
+    aggregate build, so "one profile is one role" refused it. The ingress is
+    DERIVED now, so those are two objects — and derivation excludes every
+    `federated` backend, so the peer cannot be offered the next gateway
+    whatever this seat mounts. A to B to C is unsayable, not refused.
+    """
+    seat = _profile(ingress=True, federated_url=HTTPS)
+    _check_federation_topology("breetai", seat)
+
+    offered = derive_ingress(seat).backends
+    assert "up" not in offered  # the federated backend is NOT re-exported
+    assert "web" in offered
 
 
 def test_an_ingress_alone_is_fine() -> None:
@@ -167,14 +179,29 @@ class TestOneDefinitionOfAnIngress:
                 backends={},
             )
 
-    def test_an_ingress_may_not_widen_its_internal_tools(self) -> None:
-        with pytest.raises(ValidationError, match="may offer a peer only"):
-            Profile(
-                name="fed",
-                auth=AuthConfig(bearer_token_env="B"),
-                federation=FederationConfig(peers=_peers()),
-                backends={"web": Backend(url="internal://web", tools_allow=["*"])},
-            )
+    def test_a_shared_seat_keeps_its_own_internal_surface(self) -> None:
+        """The seat is unrestricted; what it OFFERS is bounded by derivation.
+
+        This rule used to refuse the profile outright, because the profile was
+        the ingress. Now the seat keeps `internal://web` with everything on it
+        — that is the agent's own native surface — and the derived ingress gets
+        a fresh internal backend with the paging reader alone.
+        """
+        seat = Profile(
+            name="fed",
+            auth=AuthConfig(bearer_token_env="B"),
+            federation=FederationConfig(peers=_peers()),
+            backends={
+                "web": Backend(url="internal://web", tools_allow=["*"]),
+                # A shared seat needs something it can actually offer.
+                "wiki": Backend(url="https://wiki/mcp", tools_allow=["*"]),
+            },
+        )
+        assert seat.backends["web"].tools_allow == ["*"]
+
+        offered = derive_ingress(seat).backends
+        assert "web" not in offered
+        assert offered["trentina"].tools_allow == ["read_part_tool"]
 
     def test_two_peers_may_not_share_a_key(self) -> None:
         """`verify_primary_jwt` returns the first peer whose key verifies, so a
@@ -337,8 +364,16 @@ class TestOneSecondarySpelledTwoWays:
             _check_federation_audience({"breetai": profile})
 
 
-def test_an_ingress_may_not_also_take_a_static_bearer() -> None:
-    """`peers` IS a federation ingress's authentication, and `app.py` tries a
+@pytest.mark.parametrize(
+    "way_in",
+    [
+        {"auth": AuthConfig(bearer_token_env="B")},
+        {"oauth": OAuthConfig(enabled=True, allowed_emails=["alice@example.com"])},
+    ],
+    ids=["static-bearer", "oauth"],
+)
+def test_a_derived_ingress_may_not_take_a_second_way_in(way_in: dict[str, object]) -> None:
+    """`peers` IS a derived ingress's authentication, and `app.py` tries a
     static bearer FIRST — so an ingress carrying `auth` as well would admit a
     caller through that instead, with no peer and no `sub`.
 
@@ -347,21 +382,30 @@ def test_an_ingress_may_not_also_take_a_static_bearer() -> None:
     false for that profile, and since a held part is owned by
     `(profile, peer, sub)` every such caller shares ONE paging owner — the
     isolation hole this release closed, reopened through the front door.
+
+    Derivation never writes either field, so this guards the derivation. The
+    SEAT carries a way in and must: that is `a_shared_seat_is_shareable`.
     """
-    with pytest.raises(ValidationError, match="auth does not apply"):
+    with pytest.raises(ValidationError, match="does not apply"):
         Profile(
-            name="breetai",
-            auth=AuthConfig(bearer_token_env="B"),
+            name="breetai-federation",
+            federation_of="breetai",
             federation=FederationConfig(peers=_peers()),
             backends={},
+            **way_in,
         )
 
 
-def test_an_ingress_may_not_take_oauth_either() -> None:
-    with pytest.raises(ValidationError, match="oauth does not apply"):
-        Profile(
-            name="breetai",
-            oauth=OAuthConfig(enabled=True, allowed_emails=["alice@example.com"]),
-            federation=FederationConfig(peers=_peers()),
-            backends={},
-        )
+def test_derivation_drops_the_seats_ways_in() -> None:
+    """The seat has both; the ingress derived from it has neither."""
+    seat = Profile(
+        name="breetai",
+        auth=AuthConfig(bearer_token_env="B"),
+        oauth=OAuthConfig(enabled=True, allowed_emails=["alice@example.com"]),
+        federation=FederationConfig(peers=_peers()),
+        backends={"web": Backend(url="https://wiki/mcp", tools_allow=["*"])},
+    )
+    ingress = derive_ingress(seat)
+
+    assert ingress.auth is None
+    assert ingress.oauth is None

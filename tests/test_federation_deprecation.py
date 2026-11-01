@@ -75,10 +75,14 @@ def test_the_re_export_that_made_this_worth_removing() -> None:
         .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
         .decode()
     )
-    # No `auth`: an ingress is authenticated by `peers` and the model refuses
-    # a second way in.
+    # A shared SEAT mounting the next gateway over a bearer. The seat may now
+    # legitimately both share itself and consume a peer — derivation excludes
+    # `federated` backends, so a real link cannot be re-exported — but this
+    # backend carries NO `federated:` block, which is exactly the interim path
+    # derivation cannot see and this check still has to refuse.
     profile = Profile(
         name="middle",
+        auth=AuthConfig(bearer_token_env="M"),
         federation=FederationConfig(peers={"a": FederationPeer(public_key=pem)}),
         backends={"onward": Backend(url="https://c.example/gateway/fed/mcp", tools_allow=["*"])},
     )

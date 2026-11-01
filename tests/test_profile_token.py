@@ -122,9 +122,7 @@ class TestMinting:
 
 
 class TestTokenByName:
-    async def test_a_named_token_resolves_to_what_was_minted(
-        self, data_dir: pathlib.Path
-    ) -> None:
+    async def test_a_named_token_resolves_to_what_was_minted(self, data_dir: pathlib.Path) -> None:
         minted = (await profile_token("newagent"))["token"]
         path = data_dir.parent / "profiles.yaml"
         path.write_text(

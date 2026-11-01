@@ -135,9 +135,7 @@ class Surface:
                     "shaped": b.shaped.as_dict(),
                     "held": b.held,
                     **(
-                        {"held_secondary": b.held_secondary}
-                        if b.held_secondary is not None
-                        else {}
+                        {"held_secondary": b.held_secondary} if b.held_secondary is not None else {}
                     ),
                 }
                 for name, b in sorted(

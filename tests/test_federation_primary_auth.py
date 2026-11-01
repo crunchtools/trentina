@@ -53,14 +53,22 @@ def _keypair() -> tuple[str, str]:
     return private_pem, public_pem
 
 
+#: The seat this ingress was derived from. The harness serves the ingress at
+#: `/<SECONDARY_PROFILE>/mcp` and the audience is the profile NAME, so the two
+#: stay as they were; what `federation_of` adds is that the profile reads as
+#: derived rather than hand-written, which is what the model now requires.
+SECONDARY_SEAT = "shared-seat"
+
+
 def _secondary(public_pem: str, demo_port: int) -> Profile:
-    # A federation ingress: peers only, NO static bearer (peers-only
-    # authenticates). The directed edge (#592, C2): its OFFERED tools are a real
-    # REMOTE backend (the demo server, behind the secondary's perimeter), and its
-    # internal surface is limited to read_part_tool — never the gateway's own
-    # fetch/search/admin tools.
+    # The ingress DERIVED from a shared seat: peers only, NO static bearer
+    # (peers-only authenticates). Its offered tools are the seat's real REMOTE
+    # backend (the demo server, behind the secondary's perimeter), and its
+    # internal surface is the paging reader — never the gateway's own
+    # fetch/search/admin tools, which the seat itself still has.
     return Profile(
         name=SECONDARY_PROFILE,
+        federation_of=SECONDARY_SEAT,
         federation=FederationConfig(peers={"breetai": FederationPeer(public_key=public_pem)}),
         backends={
             "demo": Backend(url=f"http://127.0.0.1:{demo_port}/mcp"),
@@ -159,10 +167,12 @@ class TestReloadHolds:
             auth=AuthConfig(bearer_token_env="A"),
         )
         before.auth.bearer_token = SecretStr("t")
-        # Becoming an ingress means losing `auth`: `peers` replaces it, and
-        # the model refuses both at once.
+        # A seat that starts sharing itself KEEPS its `auth`: `federation` is
+        # declared on the seat now, and the ingress is derived from it. What
+        # matters here is that an agent-triggered reload may not add the block.
         after = Profile(
             name="up",
+            auth=AuthConfig(bearer_token_env="A"),
             federation=FederationConfig(peers={"breetai": FederationPeer(public_key=pub)}),
             backends={"x": Backend(url="internal://web", tools_allow=["read_part_tool"])},
         )

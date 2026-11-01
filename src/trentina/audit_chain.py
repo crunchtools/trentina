@@ -138,7 +138,9 @@ def digest(value: Any) -> str:
 #: non-federated row hash exactly as they did before and still verify, while a
 #: federated row commits to its caller. Appending them to ``CHAIN_FIELDS``
 #: instead would change every earlier row's hash and need a version flag.
-_OPTIONAL_CHAIN_FIELDS = ("caller_peer", "caller_sub",
+_OPTIONAL_CHAIN_FIELDS = (
+    "caller_peer",
+    "caller_sub",
     "federated_verdict",
 )
 

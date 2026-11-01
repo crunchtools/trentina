@@ -112,9 +112,7 @@ def _seat(name: str, *, offers: bool = False, consumes: bool = False) -> Profile
     )
     return Profile(
         name=name,
-        # An ingress may carry no second way in today, which is the very shape
-        # the seat-level design changes: `peers` IS its authentication.
-        auth=None if offers else AuthConfig(bearer_token_env="TEST_TOKEN"),
+        auth=AuthConfig(bearer_token_env="TEST_TOKEN"),
         defense=DefenseConfig(enforcement="block"),
         backends=backends,
         federation=federation,

@@ -37,9 +37,12 @@ from trentina.tools.token import profile_token
 
 pytestmark = pytest.mark.anyio
 
-#: The primary reaches the secondary's ingress profile here, and the edge
-#: JWT's audience is taken from the profile name in this URL.
-SECONDARY_URL = "https://secondary.example/gateway/fed-ingress/mcp"
+#: The primary reaches the secondary's DERIVED ingress here, and the edge JWT's
+#: audience is taken from the profile name in this URL. The name follows from
+#: the seat being shared (`shared` -> `shared-federation`) rather than being
+#: invented, which is what stops the two sides drifting apart.
+SECONDARY_SEAT = "shared"
+SECONDARY_URL = "https://secondary.example/gateway/shared-federation/mcp"
 
 #: A gateway that knows nothing about federation yet: one operator seat, and a
 #: consumer profile with no backends but its own tools.
@@ -137,29 +140,34 @@ async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_rest
     edge = await _op("keygen", "edge-to-secondary")
     assert "PRIVATE" not in str(signing) + str(edge)
 
-    # 2. The secondary ingress: who may authenticate, and the key it vouches
-    #    for responses with. `federation.peers` IS this profile's
-    #    authentication, so it has to be writable in one go — a profile with
-    #    neither auth nor peers does not load.
+    # 2. The SEAT being shared. A seat is a thing an agent signs in to, so it
+    #    gets its own minted token — no shell, nobody copying a secret.
+    await _op("mint-token", SECONDARY_SEAT)
+
+    #    Then `federation` on that seat: who may authenticate as a primary, and
+    #    the key the seat vouches for its responses with. There is no ingress
+    #    profile to write. The gateway derives `shared-federation` from this
+    #    seat, offering the seat's own non-federated remote backends with the
+    #    seat's guards and posture, so the two can never drift.
     #
-    #    This step needs one person. `peers` is who may authenticate to the
-    #    ingress as a primary gateway, which is an access grant, so the
-    #    operator proposes it and a human agrees: still no shell and still no
-    #    restart, which is what the title claims — and one approval, which is
-    #    what the hardening pass added.
+    #    This step needs one person. `peers` is who may authenticate as a
+    #    primary gateway, which is an access grant, so the operator proposes it
+    #    and a human agrees: still no shell and still no restart, which is what
+    #    the title claims.
     await _set_approving(
-        "profiles.fed-ingress",
+        f"profiles.{SECONDARY_SEAT}",
         {
+            "auth": {"bearer_token_name": SECONDARY_SEAT},
             "federation": {
                 "peers": {"down": {"public_key": edge["public_key"]}},
                 "secondary_key_name": "ingress-signing",
             },
-            # What the ingress actually offers a peer: a real backend, plus
-            # read_part so a paged response can be collected. An ingress's
-            # internal tools are limited to FEDERATION_INTERNAL_ALLOW.
+            # The seat's own tools. Its internal surface is NOT offered — the
+            # derived ingress gets a fresh one with the paging reader alone —
+            # so the seat can keep whatever it needs for itself.
             "backends": {
-                "shared": {"url": "http://shared:8000/mcp", "tools_allow": ["*"]},
-                "web": {"url": "internal://web", "tools_allow": ["read_part_tool"]},
+                "wiki": {"url": "http://shared:8000/mcp", "tools_allow": ["*"]},
+                "web": {"url": "internal://web", "tools_allow": ["fetch_tool"]},
             },
             "defense": {"enforcement": "block"},
         },
@@ -177,9 +185,17 @@ async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_rest
         },
     )
 
-    # Both sides are live in the running gateway, with no restart.
+    # Both sides are live in the running gateway, with no restart — and the
+    # ingress nobody wrote is serving.
     running = (get_active_config() or pytest.fail("no gateway")).config.profiles
-    ingress = running["fed-ingress"].federation
+    derived = running["shared-federation"]
+    assert derived.federation_of == SECONDARY_SEAT
+    # The seat's remote backend crossed; its internal surface did not.
+    assert set(derived.backends) == {"wiki", "trentina"}
+    assert derived.backends["trentina"].tools_allow == ["read_part_tool"]
+    assert derived.auth is None  # `peers` is its authentication
+
+    ingress = derived.federation
     backend = running["down"].backends["secondary"].federated
     assert ingress is not None and ingress.secondary_key is not None
     assert backend is not None and backend.primary_key is not None
@@ -188,7 +204,7 @@ async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_rest
     # verifies against the peer key the secondary really holds, and names the
     # peer as the actor.
     audience = federation_audience(SECONDARY_URL)
-    assert audience == "fed-ingress"
+    assert audience == "shared-federation"
     token = sign_primary_jwt(
         load_private_key(backend.primary_key.get_secret_value()), sub="down", aud=audience
     )

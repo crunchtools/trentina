@@ -39,9 +39,7 @@ def _offer(monkeypatch: pytest.MonkeyPatch, tools: list[dict[str, Any]]) -> None
 
 def _profile(*, federated: bool) -> Profile:
     backend = Backend(url=URL, federated=FederatedConfig() if federated else None)
-    profile = Profile(
-        name="agent", auth=AuthConfig(bearer_token_env="A"), backends={"up": backend}
-    )
+    profile = Profile(name="agent", auth=AuthConfig(bearer_token_env="A"), backends={"up": backend})
     profile.auth.bearer_token = SecretStr("t")
     return profile
 

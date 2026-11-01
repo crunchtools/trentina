@@ -504,9 +504,7 @@ class TestFederatedErrorKindIsLegible:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         async def grouped_connect_error(_url: str, _headers: Any, *_: Any) -> Any:
-            raise ExceptionGroup(
-                "unhandled errors in a TaskGroup", [httpx.ConnectError("boom")]
-            )
+            raise ExceptionGroup("unhandled errors in a TaskGroup", [httpx.ConnectError("boom")])
 
         with (
             patch(

@@ -19,6 +19,7 @@ from pydantic import SecretStr
 
 from trentina.core.stages import IngressDecision
 from trentina.gateway.backend import BackendCall
+from trentina.gateway.federation_link import derive_ingress, ingress_name
 from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
@@ -54,21 +55,26 @@ def _keypair() -> tuple[str, str]:
 
 
 def _ingress(*, private_pem: str | None) -> Profile:
-    # A directed federation ingress: role agent (default), a remote offered
-    # backend, internal surface read_part only. With a key it signs verdicts.
+    """The ingress derived from a shared seat. With a key it signs verdicts.
+
+    Built by the real derivation rather than hand-written, so these tests
+    exercise the profile a gateway actually serves: role agent, the seat's
+    remote backend offered, the seat's own internal surface replaced by the
+    paging reader, and no second way in.
+    """
     federation = FederationConfig(peers={"breetai": FederationPeer(public_key=_PEER_PUB)})
     if private_pem is not None:
         federation.secondary_key = SecretStr(private_pem)
-    # No `auth`: `peers` IS a federation ingress's authentication, and a
-    # second way in is refused since it would admit a caller with no peer.
-    return Profile(
+    seat = Profile(
         name="lotor",
+        auth=AuthConfig(bearer_token_env="LOTOR_TOKEN"),
         federation=federation,
         backends={
             "demo": Backend(url="https://peer.invalid/mcp"),
-            "web": Backend(url="internal://web", tools_allow=["read_part_tool"]),
+            "web": Backend(url="internal://web", tools_allow=["*"]),
         },
     )
+    return derive_ingress(seat)
 
 
 def _deliver(profile: Profile, result: dict, *, warning=None, mode=Mode.FLAG):
@@ -89,7 +95,7 @@ def test_a_signing_ingress_attaches_a_verifiable_assertion() -> None:
     out = _deliver(_ingress(private_pem=private_pem), result)
     assertion = verify_assertion(out["_meta"][VSA_KEY], public_pem)
     assert assertion is not None
-    assert assertion["verifier"] == "lotor"
+    assert assertion["verifier"] == ingress_name("lotor")
     assert assertion["content_sha256"] == content_digest(result["content"], None, False)
     assert assertion["verdict"] == {
         "flagged_by": None,
@@ -169,13 +175,18 @@ def test_an_existing_meta_is_preserved() -> None:
 def _served_ingress(private_pem: str) -> Profile:
     # short_names off so `remote__echo` resolves without a name registry; a real
     # remote backend so the response is judged (an internal tool would not be).
+    # `short_names` is one of the fields derivation CARRIES, so setting it on
+    # the seat is what sets it on the link.
     federation = FederationConfig(peers={"breetai": FederationPeer(public_key=_PEER_PUB)})
     federation.secondary_key = SecretStr(private_pem)
-    return Profile(
-        name="lotor",
-        short_names=False,
-        federation=federation,
-        backends={"remote": Backend(url="http://peer:8000/mcp", tools_allow=["*"])},
+    return derive_ingress(
+        Profile(
+            name="lotor",
+            auth=AuthConfig(bearer_token_env="LOTOR_TOKEN"),
+            short_names=False,
+            federation=federation,
+            backends={"remote": Backend(url="http://peer:8000/mcp", tools_allow=["*"])},
+        )
     )
 
 
@@ -208,5 +219,5 @@ async def test_the_transport_delivers_the_assertion_on_a_real_call() -> None:
     result = resp["result"]
     assertion = verify_assertion(result["_meta"][VSA_KEY], public_pem)
     assert assertion is not None  # the transport called the hook and delivered the VSA
-    assert assertion["verifier"] == "lotor"
+    assert assertion["verifier"] == ingress_name("lotor")
     assert assertion["content_sha256"] == content_digest(result["content"], None, False)

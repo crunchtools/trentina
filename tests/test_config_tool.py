@@ -84,6 +84,8 @@ def gateway(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
     monkeypatch.setenv("QUARANTINE_DB", str(tmp_path / "state" / "trentina.db"))
     monkeypatch.setenv("OP_TOKEN", "o" * 20)
     monkeypatch.setenv("AG_TOKEN", "a" * 20)
+    # A shared seat keeps its own way in, so the federation fixtures need one.
+    monkeypatch.setenv("FED_TOKEN", "f" * 20)
     # A person can approve here, so the two guarded writes stage rather than
     # being refused. Without this they are refused, which is its own test.
     monkeypatch.setenv(
@@ -752,6 +754,7 @@ class TestOneApprovalPerWrite:
                     },
                 },
                 "fed": {
+                    "auth": {"bearer_token_env": "FED_TOKEN"},
                     "federation": {"peers": {"down": {"public_key": _ED25519_PUBLIC}}},
                     "backends": {
                         "memory": {"url": "https://memory.example/mcp", "tools_allow": ["*"]}
@@ -793,17 +796,19 @@ _OPERATOR = {
 
 
 def _with_peers(peers: dict[str, Any]) -> dict[str, Any]:
-    """A config whose ``fed`` profile is a federation ingress admitting ``peers``.
+    """A config whose ``fed`` SEAT is shared with ``peers``.
 
-    No ``auth`` block: a federation ingress authenticates a peer by its primary
-    JWT, so a static bearer there is refused. ``role`` is left at its default
-    agent, and the ingress offers only remote backends, as the directed-link
-    rule requires.
+    ``federation`` is declared on the seat whose tools are shared, and the
+    gateway derives the ``fed-federation`` ingress from it — so the seat keeps
+    its own ``auth``, and what the peer is offered is the seat's own remote
+    backends. ``role`` is left at its default agent, which a shared seat must
+    be.
     """
     return {
         "profiles": {
             "op": _OPERATOR,
             "fed": {
+                "auth": {"bearer_token_env": "FED_TOKEN"},
                 "federation": {"peers": peers},
                 "backends": {"memory": {"url": "https://memory.example/mcp", "tools_allow": ["*"]}},
             },
