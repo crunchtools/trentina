@@ -168,6 +168,56 @@ class TestNoChannelBetweenAgents:
         assert warm == cold
 
 
+class TestTheEvictionCascadeSurvivesATestReset:
+    """Evicting a backend's tool list must drop every profile aggregate built
+    from it. ``aggregate`` wires that up by registering ``_on_backend_evicted``
+    when the module is IMPORTED, and nothing re-registers it.
+
+    ``reset_tool_list_cache`` used to clear the listener list along with the
+    cached data, and ``tests/conftest.py`` calls it before every test — so the
+    first test in a process unwired the cascade for the whole session. Every
+    test of ``cache_flush``, ``reconnect_backend`` and tool pinning that ran
+    second or later was exercising a gateway whose caches cannot cascade,
+    which is not the gateway that ships. These two hold the wiring: the first
+    on the registration, the second on the behaviour that depends on it.
+    """
+
+    async def test_the_listener_is_still_registered_after_a_reset(self) -> None:
+        from trentina.gateway.aggregate import _on_backend_evicted
+        from trentina.gateway.backend import _on_evict_callbacks, reset_tool_list_cache
+
+        reset_tool_list_cache()
+
+        assert _on_backend_evicted in _on_evict_callbacks, (
+            "reset_tool_list_cache cleared import-time wiring, not just cached data"
+        )
+
+    async def test_an_eviction_still_drops_the_aggregates_built_from_it(self) -> None:
+        from trentina.gateway.aggregate import _profile_backend_urls
+        from trentina.gateway.backend import (
+            evict_backend_cache_url,
+            reset_tool_list_cache,
+        )
+
+        reset_tool_list_cache()
+        # The state the cascade reads: one backend cached, and two profiles
+        # whose aggregates were built from it.
+        _tool_list_cache[WIKI_URL] = [{"name": "a_tool"}]
+        for name in ("alpha", "beta"):
+            _profile_tools_cache[name] = [{"name": "x"}]
+            _profile_backend_urls[name] = {WIKI_URL}
+        _profile_tools_cache["unrelated"] = [{"name": "z"}]
+        _profile_backend_urls["unrelated"] = {PERSONAL_URL}
+
+        assert evict_backend_cache_url(WIKI_URL) == 1
+
+        assert "alpha" not in _profile_tools_cache
+        assert "beta" not in _profile_tools_cache
+        # Only the profiles holding that URL: the cascade is targeted, not a
+        # flush of everything.
+        assert "unrelated" in _profile_tools_cache
+
+
 class TestOperatorScope:
     async def test_no_argument_flushes_the_gateway(self, gateway: dict) -> None:
         with profile_context(gateway["alpha"]):

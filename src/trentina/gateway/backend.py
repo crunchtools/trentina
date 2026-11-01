@@ -382,7 +382,13 @@ _on_evict_callbacks: list[Any] = []
 
 
 def on_backend_cache_evict(callback: Any) -> None:
-    """Register a callback(url) to fire when a backend cache entry is evicted."""
+    """Register a callback(url) to fire when a backend cache entry is evicted.
+
+    Registration is IMPORT-TIME wiring, not per-request state: ``aggregate``
+    registers its one listener when the module loads, and nothing unregisters.
+    That is why ``reset_tool_list_cache`` leaves this list alone — see its
+    docstring for what clearing it cost.
+    """
     _on_evict_callbacks.append(callback)
 
 
@@ -436,10 +442,21 @@ def load_tool_list_cache() -> int:
 
 
 def reset_tool_list_cache() -> None:
-    """Clear the in-memory cache without touching SQLite (for testing)."""
+    """Clear the in-memory cache without touching SQLite (for testing).
+
+    It clears CACHED DATA and nothing else. It used to clear
+    ``_on_evict_callbacks`` as well, and that list is not data: ``aggregate``
+    registers ``_on_backend_evicted`` once, when the module is imported, and
+    nothing ever re-registers it. ``tests/conftest.py`` calls this before every
+    test, so the first test in a process unwired the eviction cascade for the
+    whole session — after it, evicting a backend's tool list no longer dropped
+    the profile aggregates built from it. Every test of ``cache_flush``,
+    ``reconnect_backend`` and tool pinning that ran second or later was
+    therefore testing a gateway whose caches cannot cascade, which is not the
+    gateway that ships.
+    """
     _tool_list_cache.clear()
     _inflight.clear()
-    _on_evict_callbacks.clear()
 
 
 async def list_backend_tools(

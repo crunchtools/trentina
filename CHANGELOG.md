@@ -191,6 +191,14 @@ breaking changes outside it as well.
 
 ### Fixed
 
+- **Flushing a backend's tool list stopped dropping the profile lists built
+  from it.** `aggregate` registers that cascade when it is imported, and
+  `reset_tool_list_cache` — the test reset — cleared the listener along with
+  the cached data. The suite calls it before every test, so the first test in
+  a process unwired the cascade for the rest of the session: every later test
+  of `cache_flush`, `reconnect_backend` and tool pinning ran against a gateway
+  whose caches cannot cascade, which is not the gateway that ships. The reset
+  now clears cached data only, and two tests hold the wiring.
 - **One missing OAuth grant took down a whole federated peer.** "Not authorized"
   was a JSON-RPC error, so the primary lost the message and counted it against
   the breaker, and every other tool on that peer went with it. It is now a
