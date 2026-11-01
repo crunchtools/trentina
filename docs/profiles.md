@@ -624,6 +624,31 @@ allowed only after the host, and its value must be URL-safe
     url: "http://rotv:8080/mcp?token=${ROTV_TOKEN}"
 ```
 
+### What a reference may not name
+
+A header or `url` may reference a backend's own credential, and nothing else.
+A `${VAR}` naming a secret the gateway itself holds is a load error:
+
+- any variable this file declares under a `*_env` key — a profile's
+  `auth.bearer_token_env`, an `llm_keys.*.api_key_env`, a federation key, a
+  bridge or ingress secret, anywhere in the file, not only in this profile;
+- the gateway's own secrets, such as `TRENTINA_OAUTH_JWT_SIGNING_KEY`,
+  `TRENTINA_BACKEND_TOKEN_KEY` and the provider API keys.
+
+Without this, a backend header was a way to send one of those to whatever
+endpoint the backend pointed at — including this gateway's own operator
+endpoint, which needs no approval to configure and hands the other side
+`config_tool`. Naming the variable was enough; nothing had to read its value.
+
+The variable your backend authenticates with is referenced and not declared,
+so it is unaffected. Give each backend a variable nothing else in the file
+names.
+
+A name stays protected for the life of the process once any load has seen it
+declared, so removing a declaration does not make it referenceable — otherwise
+one write could retire a credential and forward it in the same breath. A
+secret you genuinely retire is referenceable again after a restart.
+
 ## Backend OAuth
 
 

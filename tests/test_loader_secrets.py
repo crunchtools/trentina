@@ -10,6 +10,7 @@ anything able to inspect the container can read.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -289,3 +290,206 @@ class TestBackendUrlSecrets:
         out = safe_url("http://h:zqx7canary/x")
         assert "zqx7canary" not in out
         assert out.startswith("sha256:")
+
+
+ESCALATION_YAML = """\
+profiles:
+  op:
+    role: operator
+    auth:
+      bearer_token_env: OP_TOKEN
+    llm_keys:
+      gemini:
+        api_key_env: GEM_KEY
+    backends:
+      web:
+        url: internal://web
+  spare:
+    auth:
+      bearer_token_env: SPARE_TOKEN
+    backends:
+      web:
+        url: internal://web
+  relay:
+    auth:
+      bearer_token_env: RELAY_TOKEN
+    backends:
+      self:
+        url: http://127.0.0.1:8019/gateway/op/mcp
+        tools_allow: ["*"]
+        headers:
+          Authorization: "Bearer ${%s}"
+"""
+
+#: The `spare` profile exists only to declare a secret nothing else needs, so
+#: one test can take the DECLARATION away without breaking the file.
+_SPARE_BLOCK = """\
+  spare:
+    auth:
+      bearer_token_env: SPARE_TOKEN
+    backends:
+      web:
+        url: internal://web
+"""
+
+
+class TestAHeaderCannotNameTheFilesOwnSecrets:
+    """A backend header could reference ANY env var, including one this file
+    declares as a credential of its own.
+
+    An operator agent writes a profile whose remote backend points at this
+    gateway's own operator endpoint with `Bearer ${OP_TOKEN}`. That is no seat
+    change and no `trust_verdict`, so it applied with nobody watching, and the
+    outside gateway then held `config_tool`, `tool_pins` and `approval_enrol`.
+    The agent never needed to READ the token — naming the variable was enough.
+    """
+
+    def _write(self, tmp_path: Path, var: str) -> Path:
+        cfg = tmp_path / "profiles.yaml"
+        cfg.write_text(ESCALATION_YAML % var)
+        return cfg
+
+    def _env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for name in ("OP_TOKEN", "RELAY_TOKEN", "GEM_KEY", "SPARE_TOKEN", "UNRELATED_TOKEN"):
+            monkeypatch.setenv(name, f"value-of-{name.lower()}")
+
+    def test_a_header_naming_another_profiles_bearer_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._env(monkeypatch)
+        with pytest.raises(ProfileConfigError, match="holds a secret of this gateway's own"):
+            load_profiles(self._write(tmp_path, "OP_TOKEN"))
+
+    def test_a_header_naming_its_own_profiles_bearer_is_refused_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Not only another profile's: the rule is about the file's secrets."""
+        self._env(monkeypatch)
+        with pytest.raises(ProfileConfigError, match="holds a secret of this gateway's own"):
+            load_profiles(self._write(tmp_path, "RELAY_TOKEN"))
+
+    def test_a_header_naming_an_llm_key_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Any `*_env` the schema declares, not a hand-kept list of fields."""
+        self._env(monkeypatch)
+        with pytest.raises(ProfileConfigError, match="holds a secret of this gateway's own"):
+            load_profiles(self._write(tmp_path, "GEM_KEY"))
+
+    def test_the_refusal_never_prints_the_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._env(monkeypatch)
+        with pytest.raises(ProfileConfigError) as caught:
+            load_profiles(self._write(tmp_path, "OP_TOKEN"))
+        assert "value-of-op_token" not in str(caught.value)
+
+    def test_a_backends_own_credential_still_works(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The legitimate case, and the reason this is not simply "no refs in
+        headers": a var the file REFERENCES but does not declare is a
+        backend's own credential and is untouched."""
+        self._env(monkeypatch)
+        loaded = load_profiles(self._write(tmp_path, "UNRELATED_TOKEN"))
+        headers = loaded.profiles["relay"].backends["self"].headers
+        assert headers["Authorization"] == "Bearer value-of-unrelated_token"
+
+    def test_removing_the_declaration_does_not_lift_the_refusal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The protected set only grows within a process.
+
+        Rebuilding it per load would let one write remove a profile's
+        `bearer_token_env` and reference that variable in a header in the same
+        breath — laundering a credential out through the declaration that was
+        protecting it. A genuinely retired secret stays refused until a
+        restart, which is the fail-closed direction and not something an agent
+        can do.
+        """
+        self._env(monkeypatch)
+        cfg = self._write(tmp_path, "SPARE_TOKEN")
+        with pytest.raises(ProfileConfigError):
+            load_profiles(cfg)
+        cfg.write_text((ESCALATION_YAML % "SPARE_TOKEN").replace(_SPARE_BLOCK, ""))
+        with pytest.raises(ProfileConfigError, match="holds a secret of this gateway's own"):
+            load_profiles(cfg)
+
+    @pytest.mark.parametrize(
+        "var",
+        ["TRENTINA_OAUTH_JWT_SIGNING_KEY", "TRENTINA_BACKEND_TOKEN_KEY", "OPENROUTER_API_KEY"],
+    )
+    def test_a_header_cannot_name_a_secret_of_the_gateways_own(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, var: str
+    ) -> None:
+        """These are read by name through `read_secret_env` and never declared
+        in profiles.yaml, so the file-derived set cannot contain them. A header
+        resolving the token-signing key is worse than any profile's bearer."""
+        self._env(monkeypatch)
+        monkeypatch.setenv(var, "gateway-own-secret")
+        with pytest.raises(ProfileConfigError, match="holds a secret of this gateway's own"):
+            load_profiles(self._write(tmp_path, var))
+
+    def test_the_protected_names_match_the_secret_call_sites(self) -> None:
+        """`_GATEWAY_SECRET_ENVS` is hand-kept, so hold it to the literal
+        `read_secret_env` calls it stands in for: a new gateway secret read
+        anywhere in the package has to be added here too."""
+        from trentina.gateway.loader import _GATEWAY_SECRET_ENVS
+
+        root = Path(__file__).resolve().parent.parent / "src" / "trentina"
+        called = {
+            match.group(1)
+            for path in root.rglob("*.py")
+            for match in re.finditer(
+                r'read_secret_env\(\s*"([A-Z][A-Z0-9_]*)"', path.read_text(encoding="utf-8")
+            )
+        }
+        assert called, "no literal read_secret_env call sites found — did the spelling change?"
+        assert called <= _GATEWAY_SECRET_ENVS, sorted(called - _GATEWAY_SECRET_ENVS)
+
+    def test_the_collector_reads_every_env_key_at_any_depth(self) -> None:
+        from trentina.gateway.loader import _declared_secret_env_names
+
+        found = _declared_secret_env_names(
+            {
+                "profiles": {
+                    "a": {
+                        "auth": {"bearer_token_env": "A_TOK"},
+                        "federation": {"secondary_key_env": "A_KEY"},
+                        "backends": {"b": {"headers": {"X": "${NOT_DECLARED}"}}},
+                    }
+                },
+                "git_remotes": [{"token_env": "G_TOK"}],
+                "not_an_env_key": "IGNORED",
+                "empty_env": "",
+            }
+        )
+        assert found == {"A_TOK", "A_KEY", "G_TOK"}
+
+
+class TestTheProtectedSetOnlyGrows:
+    """The history is kept so a removed declaration cannot launder a secret.
+    The bound is on what ONE config may declare, deliberately: bounding the
+    protected set instead means shedding protection, and a write can provoke
+    that on purpose — omit a credential's declaration, pad with enough new
+    names to force the shed, and reference the omitted one in a header, all in
+    one write."""
+
+    def test_an_absurd_number_of_declarations_is_refused(self, tmp_path: Path) -> None:
+        body = "".join(f"      h{i}:\n        bearer_token_env: PAD_{i}\n" for i in range(600))
+        cfg = tmp_path / "profiles.yaml"
+        cfg.write_text("profiles:\n  a:\n    honeytokens:\n" + body)
+        with pytest.raises(ProfileConfigError, match="more than"):
+            load_profiles(cfg)
+
+    def test_nothing_sheds_the_protected_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No branch anywhere drops a protected name, which is what makes the
+        guarantee monotonic."""
+        from trentina.gateway import loader
+
+        loader._reset_protected_secret_envs()
+        loader._protect({"FIRST_TOKEN"}, Path("x"))
+        loader._protect({"SECOND_TOKEN"}, Path("x"))
+        assert {"FIRST_TOKEN", "SECOND_TOKEN"} <= loader._protected_secret_envs
+        assert "TRENTINA_OAUTH_JWT_SIGNING_KEY" in loader._protected_secret_envs
+        loader._reset_protected_secret_envs()

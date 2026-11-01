@@ -62,17 +62,126 @@ logger = logging.getLogger(__name__)
 _ENV_REF_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 _URL_SAFE_VALUE_RE = re.compile(r"[A-Za-z0-9._~%-]+")
 
+#: The gateway's OWN secret env vars: read by name through ``read_secret_env``
+#: and never declared in profiles.yaml, so the file-derived set cannot hold
+#: them. A header resolving the token-signing key is worse than any profile's
+#: bearer. Held to the literal call sites by ``test_loader_secrets``.
+_GATEWAY_SECRET_ENVS = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "BRIDGE_OLD_ACCESS_TOKEN",
+        "BRIDGE_PICKLE_KEY",
+        "BRIDGE_RECOVERY_KEY",
+        "GEMINI_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "TRENTINA_APPROVAL_PASSWORD_HASH",
+        "TRENTINA_BACKEND_TOKEN_KEY",
+        "TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET",
+        "TRENTINA_OAUTH_JWT_SIGNING_KEY",
+    }
+)
+
+#: Every env var a backend header or URL may NOT reference: the gateway's own
+#: secrets, plus every ``*_env`` any config loaded in this process has named.
+#: Written by ``_protect``, which says why the history is kept.
+_protected_secret_envs: set[str] = set(_GATEWAY_SECRET_ENVS)
+
+#: Distinct ``*_env`` names ONE config may declare. The bound is on the input,
+#: not on what has been protected: no real file comes near it, and bounding the
+#: protected set instead means shedding protection, which a write can provoke
+#: on purpose (omit a credential's declaration, pad with enough new names to
+#: force the shed, reference the omitted one in a header, all in one write).
+#: Refusing a pathological file cannot be turned into that.
+_MAX_DECLARED_PER_LOAD = 512
+
+
+def _protect(declared: set[str], where: Path) -> None:
+    """Add ``declared`` to the protected set, keeping what earlier loads named.
+
+    The history is the point. Rebuilding per load would let one write remove a
+    profile's ``bearer_token_env`` and reference that variable in a header in
+    the same breath — or in the next write — laundering a credential out
+    through the declaration that was protecting it. A secret genuinely retired
+    stays refused until the process restarts, which is the fail-closed
+    direction and is not something an agent can do.
+
+    The set therefore only grows, and nothing sheds it: it holds short names,
+    gains one only when a config names a secret no earlier load named, and a
+    restart empties it.
+    """
+    if len(declared) > _MAX_DECLARED_PER_LOAD:
+        raise ProfileConfigError(
+            f"Profiles file {where} declares {len(declared)} distinct secret env "
+            f"vars, more than the {_MAX_DECLARED_PER_LOAD} allowed"
+        )
+    _protected_secret_envs.update(declared)
+
+
+def _reset_protected_secret_envs() -> None:
+    """Forget what earlier loads declared (for tests loading many configs).
+
+    Nothing in the gateway calls this: the growth is the property.
+    """
+    _protected_secret_envs.clear()
+    _protected_secret_envs.update(_GATEWAY_SECRET_ENVS)
+
+
+def _declared_secret_env_names(node: Any) -> set[str]:
+    """Every ``*_env`` value anywhere in the raw config.
+
+    The suffix is the schema's own marker for "this names an env var holding a
+    secret", so a field added later is covered without an edit here. Broader
+    than strictly-credentials by a field or two (``audience_env``), which is
+    the safe direction: none of them belongs in a header.
+
+    What this is for: a backend may legitimately carry its own credential in a
+    header (``Authorization: "Bearer ${SOME_API_TOKEN}"``), and that variable
+    is referenced without being declared, so it is not collected. What is
+    refused is a header naming a variable the file declares as a credential of
+    its own — an operator agent writing a remote backend that points at this
+    gateway's operator endpoint with ``Bearer ${OP_TOKEN}``, which is no seat
+    change and no ``trust_verdict``, so it applied unwatched and handed an
+    outside gateway ``config_tool``. Naming the variable was enough; the agent
+    never had to read its value.
+    """
+    found: set[str] = set()
+    _collect_secret_env_names(node, found)
+    return found
+
+
+def _collect_secret_env_names(node: Any, found: set[str]) -> None:
+    """Walk ``node``, adding into ``found``. One set for the whole walk: a
+    union per child made collection quadratic in the number of names."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(key, str) and key.endswith("_env") and isinstance(value, str) and value:
+                found.add(value)
+            else:
+                _collect_secret_env_names(value, found)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_secret_env_names(item, found)
+
 
 def _expand_env_refs(value: str, *, context: str) -> str:
     """Substitute ${VAR} references in a header value or URL from os.environ.
 
     Fails closed (raises ProfileConfigError) if a referenced var is unset or
     empty — a missing auth secret must not silently become an unauthenticated
-    backend call.
+    backend call — or if it names a protected secret
+    (``_protected_secret_envs``), which is how a backend header reached
+    credentials it was never given.
     """
 
     def _replace(match: re.Match[str]) -> str:
         var_name = match.group(1)
+        if var_name in _protected_secret_envs:
+            raise ProfileConfigError(
+                f"{context}: env var {var_name} holds a secret of this gateway's "
+                "own, so it may not be referenced here; a backend's own credential "
+                "belongs in an env var nothing else names"
+            )
         resolved = read_secret_env(var_name)
         if not resolved:
             raise ProfileConfigError(
@@ -1057,6 +1166,14 @@ def load_profiles(path: Path | str) -> GatewayConfig:
         raise ProfileConfigError(
             f"Profiles file {config_path} must contain a non-empty 'profiles' mapping"
         )
+
+    # Before a single profile is built: expanding a backend header or URL
+    # refuses a reference into this set, and which names are in it is a
+    # property of the WHOLE file, not of the profile being built. Collected
+    # here rather than as profiles load, which would make the refusal depend
+    # on the order profiles appear in. Unioned, never replaced: see
+    # `_protected_secret_envs`.
+    _protect(_declared_secret_env_names(cfg_data), config_path)
 
     registry: dict[str, Profile] = {
         name: _build_profile(name, body) for name, body in profiles_section.items()
