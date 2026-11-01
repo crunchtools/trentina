@@ -402,11 +402,16 @@ async def config_tool(
     gateway. The change is applied the same way `reload_profiles` applies one;
     whatever needs a restart to take effect is reported in the result.
 
-    Two things are refused. The operator seat itself — who holds `role:
-    operator`, and how a caller becomes one — stays a human edit of the file.
-    So does `trust_verdict`, which makes this gateway serve another gateway's
-    response without scanning it. Everything else about federation is yours,
-    including `federation.peers`.
+    Two things you may propose and cannot apply: the operator seat — who holds
+    `role: operator`, and how a caller becomes one — and `trust_verdict`, which
+    makes this gateway serve another gateway's response without scanning it. A
+    write carrying either is STAGED rather than applied. Nothing changes, the
+    result says what a person will be shown, and it takes effect only when one
+    opens `/approve` on this gateway and agrees; `approval_enrol` is how you ask
+    for the password that lets them. With no approval password set there is no
+    way to agree, so both stay refused. Removing trust (`unset`) applies at
+    once, since it only causes more scanning. Everything else about federation
+    is yours, including `federation.peers`.
 
     A write is refused outright if the file cannot be reproduced byte for byte
     on the way out, because a one-key change would then silently reformat

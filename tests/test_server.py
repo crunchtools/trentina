@@ -80,6 +80,23 @@ class TestServerRegistration:
     def test_server_name(self) -> None:
         assert mcp.name == "trentina"
 
+    async def test_config_tool_says_the_two_writes_are_staged_not_refused(self) -> None:
+        """A tool's description is how an operator agent decides what is
+        possible, so a stale one withdraws a feature without changing a line
+        of behaviour.
+
+        #637 turned the operator seat and ``trust_verdict`` from flat refusals
+        into writes a person approves, and this description went on saying they
+        were refused and "stays a human edit of the file" for a whole release.
+        An operator reading that would never attempt either — and would reach
+        for the shell the feature exists to remove.
+        """
+        described = {t.name: t.description or "" for t in await mcp.list_tools()}
+        config = described["config_tool"]
+        assert "staged" in config.lower()
+        assert "/approve" in config
+        assert "human edit of the file" not in config
+
 
 FAMILY_CALLS = [
     ("fetch_tool", "fetch_page", {"url": "https://example.com"}),
