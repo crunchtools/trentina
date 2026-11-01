@@ -1096,6 +1096,38 @@ class TestAdmittingAFederationPeer:
         facts = pending.outstanding()[pending.Kind.FEDERATION_PEERS]
         assert facts["Tools shared from fed"] == shown
 
+    async def test_a_token_in_the_path_is_shown_as_its_variable(
+        self, gateway: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """These are the LOADED profiles, and `loader._expand_backend_url`
+        substitutes `${VAR}` into a backend's path on purpose (#268) — a
+        token-in-URL backend keeps its credential in the environment, so by
+        the time it reaches the approval page the path holds the token's VALUE.
+
+        The loader reads it through `read_secret_env`, which holds it, so
+        `logsafe.scrub` puts the reference back. The person sees which variable
+        is in the path, `/admin` still differs from `/mcp`, and the digest
+        still moves when the path moves — without the page becoming a new
+        place the secret is written down.
+        """
+        monkeypatch.setenv("WIKI_PATH_TOKEN", "s3cret-path-token")
+        document = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
+        document["profiles"]["fed"]["backends"]["memory"]["url"] = (
+            "https://memory.example/mcp/${WIKI_PATH_TOKEN}"
+        )
+        _rewrite(gateway, document)
+        await _as_operator(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await _hash(),
+        )
+        row = pending.outstanding()[pending.Kind.FEDERATION_PEERS]["Tools shared from fed"]
+
+        assert "s3cret-path-token" not in row, row
+        assert "WIKI_PATH_TOKEN" in row, row
+        assert row.startswith("memory -> https://memory.example/mcp/"), row
+
     async def test_the_page_says_none_when_no_sign_in_is_involved(
         self, gateway: pathlib.Path
     ) -> None:

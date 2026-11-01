@@ -78,15 +78,15 @@ ENROL_PATH = "/approve/password"
 #: made.
 TTL_SECONDS = 900
 
-#: What may be shown on the approval page. Every value a person reads is either
-#: authored here or a config name — except a federated peer's stamp and judge,
-#: which the PEER chose, and which this bound keeps to a shape. A value that
-#: does not match is refused rather than displayed: rendering a peer's text to
-#: the person deciding whether to trust that peer is the one place this feature
-#: could be turned against its own purpose. Square brackets are in the set for
-#: an IPv6 authority (``[::1]:443``), since a backend destination reaches this
-#: page since #592 and a refusal there would admit no peer at all.
-_DISPLAYABLE = re.compile(r"^[A-Za-z0-9 ._:/@+=,'()\[\]-]{1,200}$")
+#: What may be shown on the approval page. Every value is authored here or is a
+#: config name, except a federated peer's stamp and judge, which the PEER chose
+#: — rendering a peer's text to the person deciding whether to trust it is the
+#: one place this feature could be turned against its purpose, so a value that
+#: does not match is refused rather than displayed. ``[]``, ``~`` and ``%`` are
+#: in the set because a backend destination reaches this page since #592: an
+#: IPv6 authority and a percent-encoded path are spelled with them, and leaving
+#: them out refused the peer rather than the character.
+_DISPLAYABLE = re.compile(r"^[A-Za-z0-9 ._:/@+=,'()\[\]~%-]{1,200}$")
 
 
 class PendingError(ValueError):

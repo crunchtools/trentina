@@ -51,7 +51,7 @@ from ..gateway.llm_proxy import validate_profile_llm_keys
 from ..gateway.loader import get_active_config, load_profiles
 from ..gateway.scope import require_caller, require_operator
 from ..gateway.service import service_context, service_profile
-from ..logsafe import exc_kind, redact_source
+from ..logsafe import exc_kind, redact_source, scrub
 from ..outcomes import Outcome
 from ..perimeter_db import perimeter_stamp
 from .reload import reload_profiles
@@ -437,6 +437,16 @@ def _shared_seat_facts(seat: str, after: GatewayConfig) -> dict[str, str]:
     What is NOT printed is a ``netloc``'s userinfo and a query, either of which
     can carry a credential — those are fingerprinted instead, so the digest
     still covers them even though the page does not show them.
+
+    The path is ``logsafe.scrub``bed, and that is not belt-and-braces. These
+    are the LOADED profiles, and ``loader._expand_backend_url`` substitutes
+    ``${VAR}`` into a backend's path and query on purpose (#268): a
+    token-in-URL backend keeps its credential in the environment rather than
+    in ``profiles.yaml``, so by the time it reaches here the path holds the
+    token's VALUE. The loader read it through ``read_secret_env``, which holds
+    it, so ``scrub`` puts the reference back — ``/mcp/[REDACTED:WIKI_TOKEN]``.
+    The person sees which variable is in the path, ``/admin`` still differs
+    from ``/mcp``, and the digest still moves when the path moves.
     """
     profile = after.profiles[seat]
     offered = federation_link.offerable_backends(profile)
@@ -461,8 +471,9 @@ def _shared_seat_facts(seat: str, after: GatewayConfig) -> dict[str, str]:
         userinfo = split.username is not None or split.password is not None
         if split.query or split.fragment or userinfo:
             where = f"{where} ({redact_source(url)})"
+        shown = scrub(where)
         destinations.append(
-            f"{name} -> {pending.checked_display(where, what='a backend destination')}"
+            f"{name} -> {pending.checked_display(shown, what='a backend destination')}"
         )
     return {
         f"Tools shared from {label}": ", ".join(destinations) or "none",
