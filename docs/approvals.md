@@ -68,8 +68,10 @@ one moment this gateway's approver could be claimed by whoever holds the code.
 run code or fetch arbitrary URLs can submit the form itself — and can rewrite
 the configuration directly anyway, so no setting inside the gateway binds it.
 If you want the guarantee unconditionally, pin the password in the gateway's
-own configuration (`TRENTINA_APPROVAL_PASSWORD_HASH_FILE`), where the gateway
-cannot set it at all.
+own configuration, where the gateway cannot set it at all —
+`TRENTINA_APPROVAL_PASSWORD_HASH_FILE`, and
+[configuration](configuration.md) has both forms and the script that prints
+one.
 
 ## If the page seems unhelpful
 
