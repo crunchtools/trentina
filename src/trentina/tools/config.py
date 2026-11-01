@@ -49,8 +49,7 @@ from ..perimeter_db import perimeter_stamp
 from .reload import reload_profiles
 
 if TYPE_CHECKING:
-    from ..gateway.loader import ActiveConfig
-    from ..gateway.profile import Profile
+    from ..gateway.loader import ActiveConfig, GatewayConfig
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +102,7 @@ def _read(keys: tuple[str, ...]) -> dict[str, Any]:
     }
 
 
-def _candidate_loads(live: Path, text: str, providers: dict[str, Any]) -> dict[str, Profile]:
+def _candidate_loads(live: Path, text: str, providers: dict[str, Any]) -> GatewayConfig:
     """Load ``text`` as a configuration, or refuse. Nothing live is touched.
 
     Written to a real file beside the live one and loaded by path, because that
@@ -125,7 +124,10 @@ def _candidate_loads(live: Path, text: str, providers: dict[str, Any]) -> dict[s
         reason = str(exc).replace(str(staged), str(live))
         raise ConfigWriteError({"error": f"the change does not validate: {reason}"}) from None
     else:
-        return config.profiles
+        # The whole config, not just the profiles: the egress grants a person
+        # approves live in `egress_upstreams` and `llm_providers`, which are
+        # file-level sections rather than per-profile blocks.
+        return config
     finally:
         staged.unlink(missing_ok=True)
 
@@ -207,24 +209,28 @@ _MISSING = object()
 _SEAT_VALUE_CHARS = 2000
 
 
-def _seat_value(value: Any) -> str:
-    """One field of the seat, as something a person can read off a page.
+def _shown_value(value: Any) -> str:
+    """One config field, as something a person can read off a page.
 
     Each fragment that came out of the file is checked on its own and the
     punctuation between them is ours. Checking the joined line instead would
     refuse a long but perfectly legitimate value — an OAuth allowlist with a
     dozen addresses — for being longer than one displayable string may be.
+
+    Named for what it does rather than for the first page that needed it: the
+    defense table renders through it too, and `_seat_value` read as though seat
+    formatting were being applied to something else.
     """
     if value is None:
         return "not set"
     if isinstance(value, bool):
         return "yes" if value else "no"
     if isinstance(value, list):
-        return ", ".join(_seat_value(item) for item in value) if value else "empty"
+        return ", ".join(_shown_value(item) for item in value) if value else "empty"
     if isinstance(value, dict):
         shown = [
             f"{pending.checked_display(str(key), what='an operator seat field')}"
-            f"={_seat_value(item)}"
+            f"={_shown_value(item)}"
             for key, item in sorted(value.items())
             if item is not None
         ]
@@ -236,7 +242,7 @@ def _seat_shown(value: Any, aspect: str) -> str:
     """One side of a changed aspect, or a refusal if it cannot be read."""
     if value is _MISSING:
         return "absent"
-    rendered = _seat_value(value)
+    rendered = _shown_value(value)
     if len(rendered) > _SEAT_VALUE_CHARS:
         raise pending.PendingError(
             f"the operator seat's {aspect} is too long to show for approval; "
@@ -316,36 +322,265 @@ def _trust_facts(where: str, pin: dict[str, str]) -> dict[str, str]:
     }
 
 
+#: The most rows one grant or downgrade proposal may render. Each is already
+#: held to ``checked_display``'s length, but it is the operator that decides HOW
+#: MANY there are: a write adding one host nobody recognises among forty
+#: familiar ones is a way to get it approved. Past this the write is refused and
+#: the operator is told to make it in the file, where a person reads a diff.
+_MAX_PROPOSAL_ROWS = 24
+
+
+def _too_many(what: str, rows: int) -> ConfigWriteError:
+    return ConfigWriteError(
+        {
+            "error": (
+                f"this write would need a person to approve {rows} {what} at once, which "
+                f"is more than an approval page can show readably (the limit is "
+                f"{_MAX_PROPOSAL_ROWS}), so nothing was changed. Make a change this large "
+                "in the file, where a person can read it as a diff, or propose it in "
+                "smaller writes"
+            )
+        }
+    )
+
+
+def _granted_facts(rendered: dict[str, str], *, naming: str, meaning: str) -> dict[str, str]:
+    """One proposal's table: a checked row per grant, then what it means.
+
+    Shared by the peer page and the egress page because they ask the same shape
+    of question — here is a set of things being granted, each named and each
+    with one value a person can check. ``rendered`` already holds the display
+    value, because the two sides render differently: a peer's key becomes a
+    fingerprint, an egress destination is the operator's own text and is
+    checked. Written once after Gourmand caught the second copy.
+    """
+    facts = {
+        pending.checked_display(where, what=naming): value
+        for where, value in sorted(rendered.items())
+    }
+    facts["What this means"] = meaning
+    return facts
+
+
+def _peer_facts(added: dict[str, str]) -> dict[str, str]:
+    """What a person needs to see about peers being admitted to an ingress.
+
+    One proposal for the whole write rather than one per peer, unlike a trust
+    pin: a peer list is a list an operator legitimately writes in one go, and
+    each entry is the same question asked of a different key. A pin is not —
+    each is its own belief about its own scanner and judge.
+
+    The key is shown as a fingerprint, which is the thing the operator at the
+    other end can read down a phone. The whole PEM is a wall of base64 nobody
+    checks by eye.
+    """
+    if len(added) > _MAX_PROPOSAL_ROWS:
+        raise _too_many("federation peers", len(added))
+    return _granted_facts(
+        {where: _fingerprint(key) for where, key in added.items()},
+        naming="a federation peer name",
+        meaning=(
+            "Each key above may authenticate to that ingress as that peer, and reach "
+            "whatever that profile's backends reach. It does NOT let the peer's own "
+            "scan be believed in place of this gateway's - that is a separate approval."
+        ),
+    )
+
+
+def _defense_facts(downgraded: dict[str, dict[str, Any]]) -> dict[str, str]:
+    """What a person needs to see about a perimeter that stops enforcing.
+
+    Both sides of all three fields, not only the one that moved: an operator
+    reading "may now choose flag" needs to know whether the other two edges
+    were already there, because a profile already resolving an omitted mode to
+    ``flag`` is a different decision from one that was refusing outright.
+    """
+    # Counted in ROWS, like the other two, rather than in profiles: each
+    # profile contributes up to three, so a limit on profiles would let a
+    # defense page run to three times the length the limit states. Counted
+    # BEFORE rendering, so an oversized proposal is refused without sorting
+    # and checking every name it was never going to show.
+    changed = [
+        (name, order, aspect)
+        for name, sides in downgraded.items()
+        for order, aspect in enumerate(_DEFENSE_ASPECTS)
+        if sides["before"][aspect] != sides["after"][aspect]
+    ]
+    if len(changed) > _MAX_PROPOSAL_ROWS:
+        raise _too_many("changed defense settings", len(changed))
+    facts: dict[str, str] = {}
+    # By profile, then in the order the fields are declared rather than
+    # alphabetically: "what the agent may choose, what an omitted choice
+    # resolves to, what a stream gets" is how they read.
+    for name, _, aspect in sorted(changed):
+        shown = pending.checked_display(name, what="a profile name")
+        sides = downgraded[name]
+        was, now = sides["before"][aspect], sides["after"][aspect]
+        facts[f"{shown}.{aspect}"] = f"{_shown_value(was)}  ->  {_shown_value(now)}"
+    facts["What this means"] = (
+        "flag delivers exactly the bytes that arrived, with the verdict attached and "
+        "nothing withheld. Those profiles will still DETECT an injection and will no "
+        "longer refuse one."
+    )
+    return facts
+
+
+def _egress_facts(added: dict[str, str]) -> dict[str, str]:
+    """What a person needs to see about a new way out of network isolation.
+
+    Three settings in one question, because a person is being asked the same
+    thing about each: may this gateway carry an agent's traffic somewhere new.
+    ``llm_providers`` binds at startup, so the page says the grant is not live
+    yet rather than letting a reader assume the reload applied it.
+    """
+    if len(added) > _MAX_PROPOSAL_ROWS:
+        raise _too_many("egress destinations", len(added))
+    unshowable = sorted(
+        where
+        for where, what_for in added.items()
+        if what_for == config_guard.UNSHOWABLE_DESTINATION
+    )
+    if unshowable:
+        # The constitution requires an approval to state what is being changed
+        # in values a person can CHECK. A placeholder is not one: it asks
+        # someone to grant a route out without telling them where to. Only a
+        # grant being proposed is refused — a malformed entry already in the
+        # file does not block unrelated writes.
+        raise ConfigWriteError(
+            {
+                "error": (
+                    f"these egress grants have no destination a person could check "
+                    f"({', '.join(unshowable)}): the upstream is not a URL with a host, "
+                    "so nothing was changed. Give each a scheme and a host"
+                )
+            }
+        )
+    facts = _granted_facts(
+        {
+            where: pending.checked_display(what_for, what="an egress destination")
+            for where, what_for in added.items()
+        },
+        naming="an egress grant",
+        meaning=(
+            "Each is a route out of this gateway's network isolation. No layer reads what "
+            "crosses a CONNECT tunnel, so a client_egress host is an UNREAD channel out."
+        ),
+    )
+    if any(where.startswith("llm_providers:") for where in added):
+        facts["Not live until a restart"] = (
+            "An llm_providers entry binds at startup, so approving this writes the "
+            "file and the route does not exist until this gateway is restarted."
+        )
+    return facts
+
+
+#: One question for a person: which decision, and the table they read.
+_Proposal = tuple[pending.Kind, dict[str, str]]
+
+#: The three fields of a ``defense`` block that decide what it enforces, in the
+#: order a person reads them.
+_DEFENSE_ASPECTS = ("modes", "enforcement", "llm_completion")
+
+
+def _seat_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Proposal]:
+    """Who the operator is, and how a caller becomes one."""
+    was = config_guard.operator_seat(before.profiles)
+    now = config_guard.operator_seat(after.profiles)
+    return [] if was == now else [(pending.Kind.OPERATOR_SEAT, _seat_facts(was, now))]
+
+
+def _trust_proposals(
+    before: GatewayConfig, after: GatewayConfig, action: str, keys: tuple[str, ...], value: Any
+) -> list[_Proposal]:
+    """Believing a peer's scan instead of running our own.
+
+    The one rule that reads the write itself rather than only the loaded
+    candidate: ``trust_stays_human`` walks the value, because carrying a mapping
+    that holds the field is how a single-path write reaches it. The pins are
+    then compared on the candidate, so what a person approves is what LOADING
+    produced. One proposal per pin — each is its own belief about its own
+    scanner and judge, so they are not collapsible the way a peer list is.
+    """
+    if config_guard.trust_stays_human(action, keys, value):
+        return []
+    was = config_guard.trust_pins(before.profiles)
+    return [
+        (pending.Kind.FEDERATION_TRUST, _trust_facts(where, pin))
+        for where, pin in sorted(config_guard.trust_pins(after.profiles).items())
+        if was.get(where) != pin
+    ]
+
+
+def _peer_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Proposal]:
+    """Who may authenticate to a federation ingress as a primary gateway."""
+    admitted = config_guard.widened(
+        config_guard.federation_peers(before.profiles),
+        config_guard.federation_peers(after.profiles),
+    )
+    return [(pending.Kind.FEDERATION_PEERS, _peer_facts(admitted))] if admitted else []
+
+
+def _defense_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Proposal]:
+    """A profile's perimeter going from enforcing to detect-only."""
+    stood_down = config_guard.defense_downgraded(
+        config_guard.defense_posture(before.profiles),
+        config_guard.defense_posture(after.profiles),
+    )
+    return [(pending.Kind.DEFENSE_DOWNGRADE, _defense_facts(stood_down))] if stood_down else []
+
+
+def _egress_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Proposal]:
+    """A new destination this gateway may carry an agent's traffic to."""
+
+    def grants(config: GatewayConfig) -> dict[str, str]:
+        return config_guard.egress_grants(
+            config.profiles, config.egress_upstreams, config.llm_providers
+        )
+
+    # Two comparisons, one question. Destinations diff as strings; who may open
+    # a tunnel has to diff as address ranges, or narrowing a CIDR reads as a
+    # new grant.
+    granted = {
+        **config_guard.widened(grants(before), grants(after)),
+        **config_guard.source_networks_widened(
+            config_guard.client_egress_networks(before.profiles),
+            config_guard.client_egress_networks(after.profiles),
+        ),
+    }
+    return [(pending.Kind.EGRESS_GRANT, _egress_facts(granted))] if granted else []
+
+
 def _needs_approval(
     active: ActiveConfig,
-    after: dict[str, Profile],
+    after: GatewayConfig,
     action: str,
     keys: tuple[str, ...],
     value: Any,
-) -> tuple[pending.Kind, dict[str, str]] | None:
+) -> _Proposal | None:
     """Whether this write is one a person has to agree to, and what to show them.
 
-    Two of them, and they are not a privilege boundary — the operator is root.
+    Five of them, and they are not a privilege boundary — the operator is root.
     They exist because the operator is a model, so the question is whether it
-    can be talked into the two changes whose blast radius is out of all
-    proportion to how plausible the request would look: minting a second root,
-    and believing another gateway's scan instead of running our own.
+    can be talked into a change whose blast radius is out of all proportion to
+    how plausible the request would look: minting a second root, believing
+    another gateway's scan instead of running our own, admitting a gateway to a
+    federation ingress, standing a profile's perimeter down to detect-only, and
+    opening a way out of network isolation.
+
+    Every rule but ``trust_stays_human`` is computed on the LOADED candidate
+    rather than on the mapping the caller sent, because a write reaches any of
+    these by setting a parent key and the loaded config is the only place the
+    result is unambiguous. Each is a widening test: a write that only withdraws
+    a grant or tightens a perimeter applies at once.
     """
-    proposals: list[tuple[pending.Kind, dict[str, str]]] = []
-    before_seat = config_guard.operator_seat(active.config.profiles)
-    after_seat = config_guard.operator_seat(after)
-    if before_seat != after_seat:
-        proposals.append((pending.Kind.OPERATOR_SEAT, _seat_facts(before_seat, after_seat)))
-    if not config_guard.trust_stays_human(action, keys, value):
-        before_pins = config_guard.trust_pins(active.config.profiles)
-        changed = sorted(
-            (where, pin)
-            for where, pin in config_guard.trust_pins(after).items()
-            if before_pins.get(where) != pin
-        )
-        proposals.extend(
-            (pending.Kind.FEDERATION_TRUST, _trust_facts(where, pin)) for where, pin in changed
-        )
+    before = active.config
+    proposals = [
+        *_seat_proposals(before, after),
+        *_trust_proposals(before, after, action, keys, value),
+        *_peer_proposals(before, after),
+        *_defense_proposals(before, after),
+        *_egress_proposals(before, after),
+    ]
     if not proposals:
         return None
     if len(proposals) > 1:

@@ -111,6 +111,22 @@ async def _set(path: str, value: Any) -> dict[str, Any]:
     return result
 
 
+async def _set_approving(path: str, value: Any, kind: pending.Kind) -> dict[str, Any]:
+    """A write a person has to agree to: staged, then approved, then applied.
+
+    Two assertions in the middle rather than one at the end, because the thing
+    worth proving is that the file did NOT move while the proposal stood. The
+    digest is taken from the staged facts, which is what a person's form
+    carries, so a swap between the render and the click would refuse here too.
+    """
+    read = await _op("get")
+    staged = await _op("set", path, value, read["hash"])
+    assert staged.get("staged") is True, staged
+    assert staged["awaiting"] == kind.value, staged
+    shown = pending.outstanding()[kind]
+    return await pending.approve(kind, pending.digest_of(shown))
+
+
 async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_restart(
     gateway: pathlib.Path,
 ) -> None:
@@ -125,7 +141,13 @@ async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_rest
     #    for responses with. `federation.peers` IS this profile's
     #    authentication, so it has to be writable in one go — a profile with
     #    neither auth nor peers does not load.
-    await _set(
+    #
+    #    This step needs one person. `peers` is who may authenticate to the
+    #    ingress as a primary gateway, which is an access grant, so the
+    #    operator proposes it and a human agrees: still no shell and still no
+    #    restart, which is what the title claims — and one approval, which is
+    #    what the hardening pass added.
+    await _set_approving(
         "profiles.fed-ingress",
         {
             "federation": {
@@ -141,6 +163,7 @@ async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_rest
             },
             "defense": {"enforcement": "block"},
         },
+        pending.Kind.FEDERATION_PEERS,
     )
 
     # 3. The primary side: a federated backend pointing at that ingress,

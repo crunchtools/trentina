@@ -1,8 +1,8 @@
 # trentina Constitution
 
-> **Version:** 2.11.0
+> **Version:** 2.12.0
 > **Ratified:** 2026-09-22
-> **Amended:** 2026-10-31
+> **Amended:** 2026-11-01
 > **Status:** Active
 > **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.28.0
 > **Profile:** Security Gateway
@@ -254,16 +254,52 @@ scan-once trust is a different mechanism in a different file, and it *does*
 decide whether a layer runs — so what governs it is written here rather than
 inferred from a neighbour.
 
-Two decisions are not an operator agent's to make alone: **who holds the
-operator seat**, and **turning on a trust that stops a layer running**. Not
-because the operator lacks the authority — it is root on its gateway — but
-because it is a model, so the question is not whether it may but whether it can
-be talked into it.
+Five decisions are not an operator agent's to make alone. Not because the
+operator lacks the authority — it is root on its gateway — but because it is a
+model, so the question is not whether it may but whether it can be talked into
+it.
 
-An operator agent MAY **propose** either. It MUST NOT be able to **apply**
+1. **Who holds the operator seat**, including how a caller becomes one.
+2. **Turning on a trust that stops a layer running.**
+3. **Who may authenticate** to a federation ingress as a primary gateway.
+4. **Standing a profile's perimeter down** from enforcing to detect-only.
+5. **Opening a way out of network isolation.**
+
+The last three were added by the security hardening pass. Each is a grant an
+operator could previously make with nobody watching, and the fifth is the
+widest of the five: a trusted peer has at least run three layers over the
+response it hands over, while nothing reads the bytes inside a CONNECT tunnel
+at all.
+
+An operator agent MAY **propose** any of them. It MUST NOT be able to **apply**
 one. The gateway holds the proposal, a person approves it, and only then does
 it take effect. Agent-controlled trust stays forbidden; agent-proposed trust
 with a human in the loop is what this permits.
+
+**Only widening needs a person.** Withdrawing a peer, taking `flag` away,
+removing an egress host: each makes the gateway stricter, and each MUST apply
+at once. A gate standing in front of tightening teaches an operator that the
+approval page is something to get past, which costs more than it protects.
+
+**Each approval is one decision.** A write that would need two is refused
+rather than shown as one, because a page can put a single question in front of
+a person and the rest would be applied unseen on the back of the one they read.
+
+What makes several changes ONE decision is that the page states all of them
+and the person reads all of them before answering. "Admit these three gateways
+to this ingress" is one decision with three rows; "move the seat *and* believe
+this peer's scan" is two, because no single page can carry both facts tables
+and whichever is not rendered is applied unread. The test is therefore whether
+anything would be applied that the person was not shown — not how many keys
+the write touched. A rule MAY collapse a set of like grants into one proposal
+when every member is named on the page, and MUST NOT collapse unlike ones.
+
+The corollary is that a proposal has a size past which it stops being read. A
+rule that can collapse grants MUST bound how many it will render and refuse
+beyond it, because one unfamiliar row among forty familiar ones is approved by
+a person who read all forty. Trust pins do not collapse at all: each is its own
+belief about its own scanner and judge, so two pins in one write is two
+decisions and is refused.
 
 Three properties make that real, and each is a requirement:
 
@@ -273,8 +309,9 @@ Three properties make that real, and each is a requirement:
    gateway only verifies.
 2. **The approval states what is being changed**, in values a person can
    check, and nothing a peer chose reaches that page unbounded.
-3. **No approver configured means no approval.** Both decisions stay refused.
-   The absence of a way to approve is never an approval anyone can give.
+3. **No approver configured means no approval.** Every one of these decisions
+   stays refused. The absence of a way to approve is never an approval anyone
+   can give.
 
 What does NOT come here is anything high-volume. A gateway holds hundreds of
 tool pins and a restart can re-hold every remote tool at once; routing those
@@ -376,3 +413,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.9.0 | 2026-10-14 | Guarded execution (#456): a profile names tools whose calls its judge reads against an operator's plain-language policy before they are forwarded. It only subtracts, fails closed, judges the arguments with the three layers before the judge reads them, and returns a closed reason code. The block is perimeter: held on an agent reload, refused on a honeypot. Known gap 30: the gatekeeper is a model and judges one call at a time |
 | 2.10.0 | 2026-10-30 | Gateway-to-gateway federation (#592): a declared trust boundary added to the Layer Contract. Where an operator pins a federated upstream's key, perimeter stamp and judge, a response the upstream already scanned is delivered on its signed verdict instead of being re-judged — bound to the exact bytes, stamp and judge, fail-closed, carved out in the response edge not a layer. The promise reads "at every ingress — or at a trusted boundary you declare". Known gap 33: the stamp binds the upstream's model, gates and judge, not its defense-policy block. `PERIMETER_VERSION` does not move: the local pipeline's conclusions are unchanged |
 | 2.11.0 | 2026-10-31 | Human Approval (#637): the Trust Allowlist clause is about the allowlist, and had been read as governing every trust decision in the product. Federation's scan-once trust is a different mechanism and does decide whether a layer runs, so what governs it is stated rather than inferred. Two decisions — who holds the operator seat, and turning on a trust that stops a layer running — may be PROPOSED by an operator agent and applied only on a person's approval. Three requirements: the approval capability is something the agent cannot read, the approval states what is being changed in values a person can check, and no approver configured means both decisions stay refused. High-volume approvals (tool pins) deliberately stay out. `PERIMETER_VERSION` does not move: no verdict changes |
+| 2.12.0 | 2026-11-01 | Human Approval extended by the federation security hardening pass: three more decisions an operator agent may propose and not apply — who may authenticate to a federation ingress (`federation.peers`), standing a profile's perimeter down to detect-only (`defense.modes`, `enforcement`, `llm_completion` reaching `flag`), and opening a way out of network isolation (`client_egress.hosts`, `egress_upstreams`, `llm_providers`). The last is the widest of the five: a trusted peer has run three layers over its response, while nothing reads a CONNECT tunnel's bytes (known gap 26). Two rules stated rather than left to each rule's author: only WIDENING needs a person, since narrowing only makes the gateway stricter and a gate in front of tightening teaches an operator to click through; and each approval is ONE decision, a write needing two being refused rather than shown as one. `PERIMETER_VERSION` does not move: no verdict changes |

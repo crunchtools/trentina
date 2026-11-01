@@ -29,6 +29,20 @@ high-volume: a gateway holds hundreds of tool pins and a restart can re-hold
 every remote tool at once, so routing those through a human would push people
 toward turning pinning off, which is worse than the thing it protects.
 
+Three more came in with the security hardening pass, once the mechanism was
+sound enough to carry them (a decision used to name only its ``Kind``, so
+consent given to one proposal applied to whatever was staged by the time it was
+clicked). All three are grants an operator could make with nobody watching:
+**who may authenticate** to a federation ingress, a profile's perimeter going
+**detect-only**, and a **way out of network isolation**. The last is the widest
+of the five — a trusted peer has at least run three layers over the response,
+while nothing reads a CONNECT tunnel's bytes at all.
+
+**Only widening stages.** Removing a peer, dropping ``flag``, withdrawing an
+egress host: each makes this gateway stricter, and each applies at once. A gate
+that also stood in front of tightening would teach an operator that the page is
+something to get past.
+
 Nothing is written to disk. A staged action lives in this process only, so a
 restart cancels every one of them. That is the fail-closed direction: a staged
 change that outlives the process that proposed it is a change nobody is
@@ -87,6 +101,12 @@ class Kind(Enum):
 
     OPERATOR_SEAT = "operator seat"
     FEDERATION_TRUST = "federation trust"
+    #: Who may authenticate to a federation ingress as a primary gateway.
+    FEDERATION_PEERS = "federation peers"
+    #: A profile's perimeter going from enforcing to detect-only.
+    DEFENSE_DOWNGRADE = "defense downgrade"
+    #: A new way out of network isolation, read by no layer.
+    EGRESS_GRANT = "egress grant"
 
 
 @dataclass(frozen=True)

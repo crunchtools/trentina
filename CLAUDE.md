@@ -511,10 +511,27 @@ not the mapping the caller sent), and masking `llm_keys.*.api_key`, the one fiel
 credential value rather than the name of one. These are not a privilege
 boundary: the operator is root. They exist because the operator is a model, so
 the question is "can it be talked into it" — and since #637 the answer is that
-it may ask and a person decides, rather than being refused. `federation.peers` is deliberately
-NOT in the rule: it is an access grant, and refusing it would make a federation
-ingress impossible to create through the API, since `peers` is what
-authenticates one.
+it may ask and a person decides, rather than being refused.
+
+Three more rules joined them in 5.0.0, in the same shape and the same file:
+`federation_peers` (who may authenticate to a federation ingress),
+`defense_posture` + `defense_downgraded` (`modes`, `enforcement` or
+`llm_completion` reaching `flag`) and `egress_grants` (`client_egress.hosts`,
+`egress_upstreams`, `llm_providers`). `federation.peers` was deliberately NOT in
+the rule before then, on the ground that refusing an access grant would make a
+federation ingress impossible to create through the API. The second half of that
+stopped being true at #637: a grant is PROPOSED rather than refused, so the
+ingress is still built by an agent in one write and a person still sees who was
+let in.
+
+Two rules hold across all five, and a sixth follows them rather than deciding
+for itself. Each is computed on the LOADED candidate, never on the mapping the
+caller sent, because a write reaches any of them by setting a parent key. And
+only WIDENING stages: withdrawing a peer, dropping `flag`, removing an egress
+host each apply at once, since a gate in front of tightening teaches an operator
+that the page is something to get past. `config_guard.widened` is the shared
+diff; `defense_downgraded` is its own because "stricter" there is not a subset
+test.
 
 `federation_keygen` (`tools/keygen.py`, store in `gateway/key_store.py`) mints
 an Ed25519 pair into `<data>/keys/<name>.pem` (`O_EXCL`, 0600) and returns only
@@ -525,10 +542,14 @@ a check naming one source only is how #633 found a gap.
 
 ## Human approval (#637)
 
-Two changes an operator may PROPOSE and not apply: the operator seat, and
-`trust_verdict`. `config_tool` stages them instead of refusing them, and a
-person approves at `/approve`. `docs/approvals.md` is the statement; the
-constitution's Human Approval section is the rule.
+Five changes an operator may PROPOSE and not apply: the operator seat,
+`trust_verdict`, `federation.peers`, a `defense` block reaching `flag`, and the
+three settings that open a way out of network isolation. `config_tool` stages
+them instead of refusing them, and a person approves at `/approve`.
+`docs/approvals.md` is the statement; the constitution's Human Approval section
+is the rule. Only widening stages — narrowing any of them applies at once — and
+a write needing two approvals is refused rather than shown as one, since a page
+can put one decision in front of a person and the rest would ride along unread.
 
 One mechanism, deliberately. `gateway/pending.py` holds what is staged — in
 memory only, one per `Kind`, expiring, and it RETURNS NOTHING when it stages,

@@ -68,6 +68,16 @@ profiles:
       enforcement: block
 """
 
+#: A write that changes something real and needs nobody's approval.
+#:
+#: Every test here that just needed SOME applying write used to spell it
+#: ``defense.enforcement: flag``. That write is now a ``DEFENSE_DOWNGRADE`` and
+#: stages for a person, so a test that means "an ordinary write" has to say so
+#: by name rather than borrow the one setting whose whole point is that it is
+#: not ordinary. ``l2_threshold`` is a consequence dial, guarded by nothing.
+ORDINARY_PATH = "profiles.ag.defense.l2_threshold"
+ORDINARY_VALUE = 0.9
+
 
 @pytest.fixture
 def gateway(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[pathlib.Path]:
@@ -142,12 +152,12 @@ class TestReading:
 
 class TestWriting:
     async def test_a_set_applies_with_no_restart(self, gateway: pathlib.Path) -> None:
-        result = await _as_operator("set", "profiles.ag.defense.enforcement", "flag", await _hash())
+        result = await _as_operator("set", ORDINARY_PATH, ORDINARY_VALUE, await _hash())
 
         assert result["applied"] is True
-        assert "enforcement: flag" in gateway.read_text(encoding="utf-8")
+        assert "l2_threshold: 0.9" in gateway.read_text(encoding="utf-8")
         running = (get_active_config() or pytest.fail("gone")).config.profiles["ag"]
-        assert running.defense.enforcement == "flag"
+        assert running.defense.l2_threshold == ORDINARY_VALUE
 
     async def test_adding_a_backend_reaches_the_running_profile(
         self, gateway: pathlib.Path
@@ -168,24 +178,27 @@ class TestWriting:
 
     async def test_a_write_returns_the_next_hash(self, gateway: pathlib.Path) -> None:
         """So a run of changes needs one read at the start, not one per write."""
-        first = await _as_operator("set", "profiles.ag.defense.enforcement", "flag", await _hash())
-        second = await _as_operator(
-            "set", "profiles.ag.defense.enforcement", "block", first["hash_after"]
-        )
+        first = await _as_operator("set", ORDINARY_PATH, ORDINARY_VALUE, await _hash())
+        second = await _as_operator("set", ORDINARY_PATH, 0.8, first["hash_after"])
         assert second["applied"] is True
 
     async def test_an_unset_removes_the_key(self, gateway: pathlib.Path) -> None:
-        result = await _as_operator("unset", "profiles.ag.defense.enforcement", None, await _hash())
+        await _as_operator("set", ORDINARY_PATH, ORDINARY_VALUE, await _hash())
+        result = await _as_operator("unset", ORDINARY_PATH, None, await _hash())
         assert result["applied"] is True
-        assert "enforcement:" not in gateway.read_text(encoding="utf-8")
+        assert "l2_threshold" not in gateway.read_text(encoding="utf-8")
 
     async def test_comments_survive_a_write(self, gateway: pathlib.Path) -> None:
-        await _as_operator("set", "profiles.ag.defense.enforcement", "flag", await _hash())
+        result = await _as_operator("set", ORDINARY_PATH, ORDINARY_VALUE, await _hash())
+        # Asserted, because on a staged write the file is untouched and the
+        # comment survives for the wrong reason — which is exactly what this
+        # test did while it was spelled as an enforcement change.
+        assert result["applied"] is True
         assert "# The gateway's profiles." in gateway.read_text(encoding="utf-8")
 
     async def test_the_previous_version_is_kept(self, gateway: pathlib.Path) -> None:
         before = gateway.read_text(encoding="utf-8")
-        result = await _as_operator("set", "profiles.ag.defense.enforcement", "flag", await _hash())
+        result = await _as_operator("set", ORDINARY_PATH, ORDINARY_VALUE, await _hash())
         assert pathlib.Path(result["backup"]).read_text(encoding="utf-8") == before
 
 
@@ -254,7 +267,13 @@ class TestRefusals:
             },
             "ag": {
                 "role": "operator",
-                "defense": {"provider": "ollama"},
+                # Its `enforcement: block` is carried over deliberately. Dropping
+                # it would stand ag's perimeter down as well, and a write that
+                # moves the seat AND downgrades defense is refused for needing
+                # two approvals — which would pass this test for the wrong
+                # reason. One decision per write is the rule being respected
+                # here, not one being dodged.
+                "defense": {"provider": "ollama", "enforcement": "block"},
                 "auth": {"bearer_token_env": "AG_TOKEN"},
                 "backends": {"web": {"url": "internal://web", "tools_allow": ["fetch_tool"]}},
             },
@@ -355,9 +374,9 @@ class TestRefusals:
     def test_a_boolean_seat_field_reads_as_a_word(self, value: bool, shown: str) -> None:
         """``oauth.enabled`` is a bool, and "True" on an approval page is a
         Python repr rather than an answer to the question being asked."""
-        from trentina.tools.config import _seat_value
+        from trentina.tools.config import _shown_value
 
-        assert _seat_value(value) == shown
+        assert _shown_value(value) == shown
 
     def test_the_seat_field_limit_is_exact(self) -> None:
         """Exactly at the limit is shown; one character past it is refused.
@@ -366,16 +385,16 @@ class TestRefusals:
         actually falls, and this one decides between a page a person reads and
         a write that does not happen.
         """
-        from trentina.tools.config import _SEAT_VALUE_CHARS, _seat_facts, _seat_value
+        from trentina.tools.config import _SEAT_VALUE_CHARS, _seat_facts, _shown_value
 
         # 14 fragments of 141, joined by 13 ", " separators: 1974 + 26 = 2000.
         fits = ["x" * 141] * 14
-        assert len(_seat_value(fits)) == _SEAT_VALUE_CHARS
+        assert len(_shown_value(fits)) == _SEAT_VALUE_CHARS
         shown = _seat_facts({"op": {"matrix_networks": None}}, {"op": {"matrix_networks": fits}})
         assert shown["op.matrix_networks after this change"].startswith("xxx")
 
         over = [*fits[:-1], "x" * 142]
-        assert len(_seat_value(over)) == _SEAT_VALUE_CHARS + 1
+        assert len(_shown_value(over)) == _SEAT_VALUE_CHARS + 1
         with pytest.raises(pending.PendingError, match="too long to show"):
             _seat_facts({"op": {"matrix_networks": None}}, {"op": {"matrix_networks": over}})
 
@@ -464,7 +483,7 @@ class TestRefusals:
             return {"reloaded": False, "error": "nope"}
 
         monkeypatch.setattr(config_tool_mod, "reload_profiles", refusing_reload)
-        result = await _as_operator("set", "profiles.ag.defense.enforcement", "flag", await _hash())
+        result = await _as_operator("set", ORDINARY_PATH, ORDINARY_VALUE, await _hash())
 
         assert "the reload refused it" in result["error"]
         assert gateway.read_text(encoding="utf-8") == before
@@ -619,21 +638,17 @@ class TestNormalize:
         gateway.write_text(UNNORMALIZED, encoding="utf-8")
         register_active_config(gateway, load_profiles(gateway), {})
 
-        refused = await _as_operator(
-            "set", "profiles.ag.defense.enforcement", "flag", await _hash()
-        )
+        refused = await _as_operator("set", ORDINARY_PATH, ORDINARY_VALUE, await _hash())
         assert "without reformatting" in refused["error"]
 
         await _as_operator("normalize", None, None, await _hash())
-        applied = await _as_operator(
-            "set", "profiles.ag.defense.enforcement", "flag", await _hash()
-        )
+        applied = await _as_operator("set", ORDINARY_PATH, ORDINARY_VALUE, await _hash())
         assert applied["applied"] is True
 
 
 class TestWithNoApprover:
-    """No approval password, no feature: the two guarded writes are refused
-    exactly as they were before #637. The absence of a way to approve is never
+    """No approval password, no feature: every guarded write is refused exactly
+    as the first two were before #637. The absence of a way to approve is never
     an approval anyone can give."""
 
     @pytest.fixture(autouse=True)
@@ -659,10 +674,16 @@ class TestWithNoApprover:
         assert pending.outstanding() == {}
 
     async def test_an_ordinary_write_still_applies(self, gateway: pathlib.Path) -> None:
-        """Only the two guarded writes need a person; everything else is the
+        """Only the guarded writes need a person; everything else is the
         operator's as it always was."""
-        result = await _as_operator("set", "profiles.ag.defense.enforcement", "flag", await _hash())
+        result = await _as_operator("set", ORDINARY_PATH, ORDINARY_VALUE, await _hash())
         assert result["applied"] is True
+
+    async def test_a_defense_downgrade_is_refused_outright(self, gateway: pathlib.Path) -> None:
+        before = gateway.read_text(encoding="utf-8")
+        result = await _as_operator("set", "profiles.ag.defense.enforcement", "flag", await _hash())
+        assert "no approval password" in result["error"]
+        assert gateway.read_text(encoding="utf-8") == before
 
 
 class TestOneApprovalPerWrite:
@@ -706,3 +727,754 @@ class TestOneApprovalPerWrite:
         assert "federation trust" in result["error"]
         assert gateway.read_text(encoding="utf-8") == before
         assert pending.outstanding() == {}
+
+    async def test_a_write_mixing_two_of_the_new_kinds_is_refused(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The rule has to hold for the kinds added later, not only for the two
+        it was written against. A parent-key write is the shape that reaches
+        several at once: here one profile gains a peer and another gains an
+        egress host."""
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set",
+            "profiles",
+            {
+                "op": _OPERATOR,
+                "ag": {
+                    "auth": {"bearer_token_env": "AG_TOKEN"},
+                    "backends": {"web": {"url": "internal://web", "tools_allow": ["fetch_tool"]}},
+                    "defense": {"enforcement": "block"},
+                    "client_egress": {
+                        "source_networks": ["10.9.0.0/24"],
+                        "hosts": ["exfil.example"],
+                    },
+                },
+                "fed": {
+                    "federation": {"peers": {"down": {"public_key": _ED25519_PUBLIC}}},
+                    "backends": {
+                        "memory": {"url": "https://memory.example/mcp", "tools_allow": ["*"]}
+                    },
+                },
+            },
+            await _hash(),
+        )
+
+        assert "more than one approval" in result["error"]
+        assert "federation peers" in result["error"]
+        assert "egress grant" in result["error"]
+        assert gateway.read_text(encoding="utf-8") == before
+        assert pending.outstanding() == {}
+
+
+_SECOND_PUBLIC = _ed25519_public()
+
+
+def _rewrite(path: pathlib.Path, document: dict[str, Any]) -> None:
+    """Put ``document`` on disk as the live config and register it.
+
+    The base state for a widening test is itself a guarded write, so it cannot
+    be made through the tool — the tool is what is under test. Written straight
+    to the file and loaded, which is also how a person sets one of these up.
+    """
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    config = load_profiles(path)
+    register_active_config(path, config, {})
+    set_profiles(config.profiles)
+
+
+_OPERATOR = {
+    "role": "operator",
+    "defense": {"provider": "ollama"},
+    "auth": {"bearer_token_env": "OP_TOKEN"},
+    "backends": {"web": {"url": "internal://web", "tools_allow": ["fetch_tool"]}},
+}
+
+
+def _with_peers(peers: dict[str, Any]) -> dict[str, Any]:
+    """A config whose ``fed`` profile is a federation ingress admitting ``peers``.
+
+    No ``auth`` block: a federation ingress authenticates a peer by its primary
+    JWT, so a static bearer there is refused. ``role`` is left at its default
+    agent, and the ingress offers only remote backends, as the directed-link
+    rule requires.
+    """
+    return {
+        "profiles": {
+            "op": _OPERATOR,
+            "fed": {
+                "federation": {"peers": peers},
+                "backends": {"memory": {"url": "https://memory.example/mcp", "tools_allow": ["*"]}},
+            },
+        }
+    }
+
+
+class TestAdmittingAFederationPeer:
+    """`federation.peers` decides WHO may authenticate to an ingress as a
+    primary gateway, which is an access grant and was deliberately left
+    unguarded in #633 — on the ground that refusing it would make an ingress
+    impossible to build through the API. Since #637 a grant is proposed rather
+    than refused, so that ground no longer holds and the grant is visible."""
+
+    async def test_adding_a_peer_is_staged_not_applied(self, gateway: pathlib.Path) -> None:
+        _rewrite(gateway, _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}}))
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await _hash(),
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "federation peers"
+        shown = result["shown_for_approval"]
+        assert shown["fed.beta"].startswith("sha256:")
+        # The peer already admitted is not re-proposed: a page listing it would
+        # ask a person to approve what they approved before.
+        assert "fed.alpha" not in shown
+        assert "may authenticate to that ingress" in shown["What this means"]
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_changing_a_peers_key_under_its_name_is_staged(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The sneaky one. The peer list looks the same afterwards and a
+        different gateway holds the seat, so a rule comparing names would see
+        nothing."""
+        _rewrite(gateway, _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}}))
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set",
+            "profiles.fed.federation.peers.alpha.public_key",
+            _SECOND_PUBLIC,
+            await _hash(),
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "federation peers"
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_removing_a_peer_applies_at_once(self, gateway: pathlib.Path) -> None:
+        """Withdrawing a grant only makes this gateway stricter. A gate in front
+        of that teaches an operator that the page is something to get past."""
+        _rewrite(
+            gateway,
+            _with_peers(
+                {
+                    "alpha": {"public_key": _ED25519_PUBLIC},
+                    "beta": {"public_key": _SECOND_PUBLIC},
+                }
+            ),
+        )
+
+        result = await _as_operator(
+            "unset", "profiles.fed.federation.peers.beta", None, await _hash()
+        )
+
+        assert result["applied"] is True
+        running = (get_active_config() or pytest.fail("gone")).config.profiles["fed"]
+        assert running.federation is not None
+        assert set(running.federation.peers) == {"alpha"}
+
+    async def test_a_parent_key_write_of_the_same_grant_still_stages(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """Every rule is computed on the LOADED candidate, so reaching a peer by
+        writing the block above it changes nothing about whether it is seen."""
+        _rewrite(gateway, _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}}))
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set",
+            "profiles.fed.federation",
+            {
+                "peers": {
+                    "alpha": {"public_key": _ED25519_PUBLIC},
+                    "beta": {"public_key": _SECOND_PUBLIC},
+                }
+            },
+            await _hash(),
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "federation peers"
+        assert gateway.read_text(encoding="utf-8") == before
+
+
+class TestStandingAPerimeterDown:
+    """`flag` delivers exactly the bytes that arrived. It is the only setting
+    besides `trust_verdict` that decides whether this gateway's perimeter
+    enforces anything, and an operator could apply it to any profile with
+    nobody watching."""
+
+    async def test_moving_enforcement_to_flag_is_staged(self, gateway: pathlib.Path) -> None:
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator("set", "profiles.ag.defense.enforcement", "flag", await _hash())
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "defense downgrade"
+        shown = result["shown_for_approval"]
+        assert shown["ag.enforcement"] == "block  ->  flag"
+        assert "will still DETECT" in shown["What this means"]
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_unsetting_an_enforcing_value_is_staged(self, gateway: pathlib.Path) -> None:
+        """`unset` is immediate for trust because removing trust only scans
+        more. Removing `enforcement: block` is the opposite: the schema default
+        is `flag`, so deleting the line stands the perimeter down."""
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator("unset", "profiles.ag.defense.enforcement", None, await _hash())
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "defense downgrade"
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_offering_flag_as_a_choosable_mode_is_staged(self, gateway: pathlib.Path) -> None:
+        """`modes` is what the agent may pick per call. Guarding the default an
+        omitted mode resolves to and not the list it may choose from would be a
+        gate with its own door open."""
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set", "profiles.ag.defense.modes", ["block", "flag"], await _hash()
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "defense downgrade"
+        shown = result["shown_for_approval"]
+        # The loader fills an unset `modes` with `[enforcement]`, so the
+        # comparison is against the effective set rather than the literal file.
+        assert shown["ag.modes"] == "block  ->  block, flag"
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_making_a_streamed_completion_detect_only_is_staged(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """`llm_completion` is the same decision on the response edge of
+        /proxy/llm. Its own default is already `flag`, so only a profile moved
+        OFF `block` is a downgrade."""
+        _rewrite(
+            gateway,
+            {
+                "profiles": {
+                    "op": _OPERATOR,
+                    "ag": {
+                        "auth": {"bearer_token_env": "AG_TOKEN"},
+                        "backends": {
+                            "web": {"url": "internal://web", "tools_allow": ["fetch_tool"]}
+                        },
+                        "defense": {"enforcement": "block", "llm_completion": "block"},
+                    },
+                }
+            },
+        )
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set", "profiles.ag.defense.llm_completion", "flag", await _hash()
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "defense downgrade"
+        assert result["shown_for_approval"]["ag.llm_completion"] == "block  ->  flag"
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_tightening_applies_at_once(self, gateway: pathlib.Path) -> None:
+        """A write that takes `flag` away and makes the default a refusal. Both
+        fields move at once because a validator refuses `modes` that does not
+        contain `enforcement`, so they cannot be tightened one at a time."""
+        _rewrite(
+            gateway,
+            {
+                "profiles": {
+                    "op": _OPERATOR,
+                    "ag": {
+                        "auth": {"bearer_token_env": "AG_TOKEN"},
+                        "backends": {
+                            "web": {"url": "internal://web", "tools_allow": ["fetch_tool"]}
+                        },
+                        "defense": {"enforcement": "flag", "modes": ["block", "flag"]},
+                    },
+                }
+            },
+        )
+
+        result = await _as_operator(
+            "set",
+            "profiles.ag.defense",
+            {"enforcement": "block", "modes": ["block"]},
+            await _hash(),
+        )
+
+        assert result["applied"] is True
+        running = (get_active_config() or pytest.fail("gone")).config.profiles["ag"]
+        assert running.defense.modes == ["block"]
+
+    def test_more_changed_settings_than_a_page_can_show_is_refused(self) -> None:
+        """The defense page counts ROWS, not profiles: each profile can
+        contribute three, so a limit on profiles would let it run to three
+        times the stated length. Called directly — building nine profiles
+        through the tool to prove an arithmetic bound is a slower test that
+        asserts less."""
+        from trentina.gateway.config_guard import ConfigWriteError
+        from trentina.tools.config import _MAX_PROPOSAL_ROWS, _defense_facts
+
+        def downgrades(count: int) -> dict[str, Any]:
+            return {
+                f"p{n}": {
+                    "before": {
+                        "modes": ["block"],
+                        "enforcement": "block",
+                        "llm_completion": "block",
+                    },
+                    "after": {"modes": ["flag"], "enforcement": "flag", "llm_completion": "flag"},
+                }
+                for n in range(count)
+            }
+
+        # Three rows each, so the limit lands mid-profile either way.
+        fits = _defense_facts(downgrades(_MAX_PROPOSAL_ROWS // 3))
+        assert len(fits) == _MAX_PROPOSAL_ROWS + 1  # the rows, plus "What this means"
+
+        with pytest.raises(ConfigWriteError) as refused:
+            _defense_facts(downgrades(_MAX_PROPOSAL_ROWS // 3 + 1))
+        assert "more than an approval page can show" in refused.value.payload["error"]
+
+    async def test_a_new_profile_at_the_schema_default_is_not_a_downgrade(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The shipped default is `flag` on both edges. Reading that as a
+        downgrade would stage an approval for every profile ever created, and a
+        page a person learns to click through protects nothing."""
+        result = await _as_operator(
+            "set",
+            "profiles.new",
+            {
+                "auth": {"bearer_token_env": "AG_TOKEN"},
+                "backends": {"web": {"url": "internal://web", "tools_allow": ["fetch_tool"]}},
+            },
+            await _hash(),
+        )
+
+        assert result["applied"] is True
+
+
+class TestGrantingAWayOut:
+    """Each of these three is a route out of `--network=none`, and the blast
+    radius beats trusting a peer: a trusted peer has at least run three layers
+    over the response, while known gap 26 says nothing reads a CONNECT tunnel's
+    bytes at all."""
+
+    def _with_egress(self, hosts: list[str]) -> dict[str, Any]:
+        return {
+            "profiles": {
+                "op": _OPERATOR,
+                "ag": {
+                    "auth": {"bearer_token_env": "AG_TOKEN"},
+                    "backends": {"web": {"url": "internal://web", "tools_allow": ["fetch_tool"]}},
+                    "defense": {"enforcement": "block"},
+                    "client_egress": {"source_networks": ["10.9.0.0/24"], "hosts": hosts},
+                },
+            }
+        }
+
+    async def test_adding_an_egress_host_is_staged(self, gateway: pathlib.Path) -> None:
+        _rewrite(gateway, self._with_egress(["api.anthropic.com"]))
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set",
+            "profiles.ag.client_egress.hosts",
+            ["api.anthropic.com", "exfil.example"],
+            await _hash(),
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "egress grant"
+        shown = result["shown_for_approval"]
+        assert shown["client_egress:ag.exfil.example"] == "exfil.example:443, tunnelled and unread"
+        assert "client_egress:ag.api.anthropic.com" not in shown
+        assert "UNREAD channel out" in shown["What this means"]
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_removing_an_egress_host_applies_at_once(self, gateway: pathlib.Path) -> None:
+        _rewrite(gateway, self._with_egress(["api.anthropic.com", "files.example"]))
+
+        result = await _as_operator(
+            "set", "profiles.ag.client_egress.hosts", ["api.anthropic.com"], await _hash()
+        )
+
+        assert result["applied"] is True
+
+    async def test_a_parent_key_write_of_the_same_host_still_stages(
+        self, gateway: pathlib.Path
+    ) -> None:
+        _rewrite(gateway, self._with_egress(["api.anthropic.com"]))
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set",
+            "profiles.ag.client_egress",
+            {"source_networks": ["10.9.0.0/24"], "hosts": ["api.anthropic.com", "exfil.example"]},
+            await _hash(),
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "egress grant"
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_widening_who_may_open_a_tunnel_is_staged(self, gateway: pathlib.Path) -> None:
+        """A `client_egress` block grants two things: where the tunnel may go,
+        and who may open one. The peer address is what picks the profile, so
+        widening the networks hands the same unread channel out to more clients
+        without naming a new destination. Gatehouse caught the first cut
+        watching only `hosts`."""
+        _rewrite(gateway, self._with_egress(["api.anthropic.com"]))
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set",
+            "profiles.ag.client_egress.source_networks",
+            ["10.9.0.0/24", "10.0.0.0/8"],
+            await _hash(),
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "egress grant"
+        shown = result["shown_for_approval"]
+        assert "may open that profile's tunnels" in shown["client_egress:ag.from.10.0.0.0/8"]
+        assert "client_egress:ag.from.10.9.0.0/24" not in shown
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_narrowing_who_may_open_a_tunnel_applies_at_once(
+        self, gateway: pathlib.Path
+    ) -> None:
+        _rewrite(
+            gateway,
+            {
+                "profiles": {
+                    "op": _OPERATOR,
+                    "ag": {
+                        "auth": {"bearer_token_env": "AG_TOKEN"},
+                        "backends": {
+                            "web": {"url": "internal://web", "tools_allow": ["fetch_tool"]}
+                        },
+                        "defense": {"enforcement": "block"},
+                        "client_egress": {
+                            "source_networks": ["10.9.0.0/24", "10.0.0.0/8"],
+                            "hosts": ["api.anthropic.com"],
+                        },
+                    },
+                }
+            },
+        )
+
+        result = await _as_operator(
+            "set", "profiles.ag.client_egress.source_networks", ["10.9.0.0/24"], await _hash()
+        )
+
+        assert result["applied"] is True
+
+    async def test_repointing_an_approved_upstream_is_staged(self, gateway: pathlib.Path) -> None:
+        """The key is unchanged and the destination is not. Replacing an
+        already-approved origin is a new grant, not a no-op, so `widened`
+        compares values and not only keys."""
+        _rewrite(
+            gateway,
+            {
+                "egress_upstreams": {"reports": {"upstream": "https://reports.example"}},
+                "profiles": {"op": _OPERATOR},
+            },
+        )
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set", "egress_upstreams.reports.upstream", "https://elsewhere.example", await _hash()
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "egress grant"
+        assert result["shown_for_approval"]["egress_upstreams:reports"] == (
+            "https://elsewhere.example"
+        )
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_adding_an_egress_upstream_is_staged(self, gateway: pathlib.Path) -> None:
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set",
+            "egress_upstreams.reports",
+            {"upstream": "https://reports.example"},
+            await _hash(),
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "egress grant"
+        assert result["shown_for_approval"]["egress_upstreams:reports"] == (
+            "https://reports.example"
+        )
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_adding_an_llm_provider_says_it_is_not_live_yet(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """`llm_providers` binds at startup, so `reload_profiles` cannot apply
+        it. The page has to say so rather than let a reader assume the approval
+        opened the route."""
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set",
+            "llm_providers.anthropic",
+            {
+                "enabled": True,
+                "upstream": "https://api.anthropic.com",
+                "api_key_env": "ANTHROPIC_API_KEY",
+            },
+            await _hash(),
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "egress grant"
+        shown = result["shown_for_approval"]
+        assert shown["llm_providers:anthropic"] == "https://api.anthropic.com"
+        assert "until this gateway is restarted" in shown["Not live until a restart"]
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_disabling_a_provider_applies_at_once(self, gateway: pathlib.Path) -> None:
+        """Turning a provider off withdraws the route, so it must not wait for
+        a person. It did: the grant's value carried `(on)`/`(off)`, so
+        `widened` read the change as a new grant and staged a WITHDRAWAL —
+        exactly what the narrowing rule forbids. Gatehouse caught it. A
+        provider that is not enabled is now absent from the grants entirely,
+        because absence is the only spelling `widened` reads correctly."""
+        _rewrite(
+            gateway,
+            {
+                "llm_providers": {
+                    "openrouter": {
+                        "enabled": True,
+                        "upstream": "https://openrouter.ai/api",
+                        "api_key_env": "OP_TOKEN",
+                    }
+                },
+                "profiles": {"op": _OPERATOR},
+            },
+        )
+
+        result = await _as_operator("set", "llm_providers.openrouter.enabled", False, await _hash())
+
+        assert result["applied"] is True
+
+    async def test_approving_a_file_level_grant_persists_it(self, gateway: pathlib.Path) -> None:
+        """`egress_upstreams` is a file-level section, not a profile block, so
+        the candidate loader had to start returning the whole config. The
+        approval has to reach the file, which is the half staging does not
+        prove."""
+        read = await _as_operator("get")
+        staged = await _as_operator(
+            "set", "egress_upstreams.reports", {"upstream": "https://reports.example"}, read["hash"]
+        )
+        assert staged["staged"] is True
+
+        shown = pending.outstanding()[pending.Kind.EGRESS_GRANT]
+        await pending.approve(pending.Kind.EGRESS_GRANT, pending.digest_of(shown))
+
+        assert "reports.example" in gateway.read_text(encoding="utf-8")
+        active = get_active_config() or pytest.fail("gone")
+        assert "reports" in active.config.egress_upstreams
+
+    async def test_more_grants_than_a_page_can_show_is_refused_untouched(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """A write adding one host nobody recognises among forty familiar ones
+        is a way to get it approved. Past the limit the write is refused and
+        the operator is told to make it in the file, where a person reads a
+        diff."""
+        from trentina.tools.config import _MAX_PROPOSAL_ROWS
+
+        _rewrite(gateway, self._with_egress(["kept.example"]))
+        before = gateway.read_text(encoding="utf-8")
+        # The host already granted is not re-proposed, so the new ones are
+        # exactly as many as the limit allows.
+        at_limit = ["kept.example", *(f"host{n}.example" for n in range(_MAX_PROPOSAL_ROWS))]
+
+        fits = await _as_operator("set", "profiles.ag.client_egress.hosts", at_limit, await _hash())
+        assert fits["staged"] is True
+        # The granted rows, plus the one "What this means" line beneath them.
+        assert len(fits["shown_for_approval"]) == _MAX_PROPOSAL_ROWS + 1
+        assert "client_egress:ag.kept.example" not in fits["shown_for_approval"]
+
+        over = await _as_operator(
+            "set",
+            "profiles.ag.client_egress.hosts",
+            [*at_limit, "one.too.many.example"],
+            await _hash(),
+        )
+        assert "more than an approval page can show" in over["error"]
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_narrowing_a_source_network_applies_at_once(self, gateway: pathlib.Path) -> None:
+        """`10.0.0.0/8` to `10.9.0.0/24` is a new CIDR string and strictly less
+        access. Diffing the written networks as a set stages that tightening,
+        which the narrowing rule forbids, so they are compared as address
+        ranges. Gatehouse caught the string version."""
+        _rewrite(
+            gateway,
+            {
+                "profiles": {
+                    "op": _OPERATOR,
+                    "ag": {
+                        "auth": {"bearer_token_env": "AG_TOKEN"},
+                        "backends": {
+                            "web": {"url": "internal://web", "tools_allow": ["fetch_tool"]}
+                        },
+                        "defense": {"enforcement": "block"},
+                        "client_egress": {
+                            "source_networks": ["10.0.0.0/8"],
+                            "hosts": ["api.anthropic.com"],
+                        },
+                    },
+                }
+            },
+        )
+
+        result = await _as_operator(
+            "set", "profiles.ag.client_egress.source_networks", ["10.9.0.0/24"], await _hash()
+        )
+
+        assert result["applied"] is True
+
+    async def test_the_operator_seats_own_networks_stay_with_the_seat_rule(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """On an operator profile the same field decides who is ROOT, so
+        `operator_seat` owns it. Counting it as an egress grant too would make
+        one unsplittable field need two approvals, and the write would be
+        refused with no way to comply."""
+        _rewrite(
+            gateway,
+            {
+                "profiles": {
+                    "op": {
+                        **_OPERATOR,
+                        "client_egress": {
+                            "source_networks": ["10.9.0.0/24"],
+                            "hosts": ["api.anthropic.com"],
+                        },
+                    }
+                }
+            },
+        )
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set", "profiles.op.client_egress.source_networks", ["10.0.0.0/8"], await _hash()
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "operator seat"
+        assert gateway.read_text(encoding="utf-8") == before
+
+    def test_an_upstream_cannot_carry_a_credential_to_the_page(self) -> None:
+        """`egress_grants` renders an `egress_upstreams` origin as the model
+        reduced it. That is only safe because the validator refuses userinfo
+        and a query, so the premise is asserted rather than trusted: loosening
+        it would publish a credential to an approval page."""
+        from pydantic import ValidationError
+
+        from trentina.gateway.profile import EgressUpstream
+
+        for bad in (
+            "https://user:pw@reports.example",
+            "https://reports.example/?token=sk-real",
+            "https://reports.example/path#frag",
+        ):
+            with pytest.raises(ValidationError):
+                EgressUpstream(upstream=bad)
+        assert EgressUpstream(upstream="https://reports.example").upstream == (
+            "https://reports.example"
+        )
+
+    @pytest.mark.parametrize("upstream", ["not-a-url", "https://x.example:bad", ""])
+    async def test_a_grant_with_no_checkable_destination_is_refused(
+        self, gateway: pathlib.Path, upstream: str
+    ) -> None:
+        """The constitution requires an approval to state the change in values
+        a person can CHECK. A placeholder is not one — it asks someone to grant
+        a route out without saying where to — so the write is refused instead
+        of staged. `https://x.example:bad` is the case that also used to raise:
+        urlparse defers validating the port until it is read."""
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set", "llm_providers.vague", {"enabled": True, "upstream": upstream}, await _hash()
+        )
+
+        assert "no destination a person could check" in result["error"]
+        assert "llm_providers:vague" in result["error"]
+        assert gateway.read_text(encoding="utf-8") == before
+        assert pending.outstanding() == {}
+
+    async def test_an_unshowable_entry_already_in_the_file_blocks_nothing_else(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """`egress_grants` runs over the config as it already is as well as the
+        candidate, so refusing inside it would let one malformed provider
+        already on disk refuse every later write — including the one that fixes
+        it."""
+        _rewrite(
+            gateway,
+            {
+                "llm_providers": {"broken": {"enabled": True, "upstream": "not-a-url"}},
+                "profiles": {
+                    "op": _OPERATOR,
+                    "ag": {
+                        "auth": {"bearer_token_env": "AG_TOKEN"},
+                        "backends": {
+                            "web": {"url": "internal://web", "tools_allow": ["fetch_tool"]}
+                        },
+                        "defense": {"enforcement": "block"},
+                    },
+                },
+            },
+        )
+
+        result = await _as_operator("set", ORDINARY_PATH, ORDINARY_VALUE, await _hash())
+
+        assert result["applied"] is True
+
+    async def test_no_inline_provider_credential_reaches_the_page(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """`llm_providers` is `dict[str, Any]` straight from the file, so it can
+        hold whatever a writer put there — an inline key, or a credential in
+        the upstream URL itself. Nothing but the origin is carried, and the
+        origin is reduced to scheme, host and port: a page is the one place a
+        credential must never be rendered. The URL half of this was a Gatehouse
+        HIGH, in the same commit whose comment said the section is unvalidated.
+        """
+        result = await _as_operator(
+            "set",
+            "llm_providers.sneaky",
+            {
+                "enabled": True,
+                "upstream": "https://user:sk-in-the-url@x.example/v1?token=sk-in-the-query",
+                "api_key": "sk-the-real-secret",
+            },
+            await _hash(),
+        )
+
+        shown = result["shown_for_approval"]
+        assert shown["llm_providers:sneaky"] == "https://x.example"
+        rendered = " ".join(shown.values())
+        for secret in ("sk-the-real-secret", "sk-in-the-url", "sk-in-the-query", "user:"):
+            assert secret not in rendered

@@ -1858,6 +1858,12 @@ CLIENT_EGRESS_PORT = 443
 
 _MAX_EGRESS_HOSTS = 64
 
+#: As many source networks as hosts. Each is one decision an operator made, so
+#: the same bound applies for the same reason; and the approval rule compares
+#: them as address ranges, which costs a containment test per pair, so an
+#: unbounded list would be a write an operator could make slow for itself.
+_MAX_EGRESS_NETWORKS = 64
+
 
 class ClientEgressConfig(BaseModel):
     """Per-profile CONNECT tunnel for the agent's own client (#442).
@@ -1881,6 +1887,7 @@ class ClientEgressConfig(BaseModel):
     source_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = Field(
         ...,
         min_length=1,
+        max_length=_MAX_EGRESS_NETWORKS,
         description=(
             "CIDRs the agent's connections come from; the peer address resolves "
             "the profile. One agent per network, so no two profiles may overlap."
