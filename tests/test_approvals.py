@@ -1023,9 +1023,16 @@ class TestADecisionNamesItsProposal:
         body = page.post(approval_routes.PATH, data={"password": PASSWORD}).text
         assert f'name="facts" value="{pending.digest_of(FACTS)}"' in body
 
-    def test_a_swap_through_the_page_is_refused_in_the_usual_words(self, page: TestClient) -> None:
+    def test_a_swap_through_the_page_applies_nothing_and_says_so(self, page: TestClient) -> None:
         """End to end: the hidden field the page gave is replayed after the
-        agent re-staged, and the answer is the one every refusal gives."""
+        agent re-staged.
+
+        This person has already proved they hold the password, so the
+        "an unauthenticated visitor learns nothing" rule has done its job and
+        the useful answer is the truth. Answering with the generic
+        "nothing to approve" hid the one thing they most need to know — that
+        what they agreed to is not what is staged — and left them to guess.
+        """
         record: list[str] = []
         pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied(record))
         body = page.post(approval_routes.PATH, data={"password": PASSWORD}).text
@@ -1041,8 +1048,27 @@ class TestADecisionNamesItsProposal:
                 "facts": shown,
             },
         )
+        assert answer.status_code == 200
+        assert record == []  # nothing applied, which is the point
+        assert "Nothing was applied" in answer.text
+        # And they are shown what IS staged, so they can decide on the real one.
+        assert "evil.example" in answer.text
+        assert pending.outstanding() == {pending.Kind.FEDERATION_TRUST: self.OTHER}
+
+    def test_an_unauthenticated_visitor_still_learns_nothing(self, page: TestClient) -> None:
+        """The rule the above does not weaken: without the password, a guessed
+        kind and an idle gateway answer identically."""
+        pending.stage(pending.Kind.FEDERATION_TRUST, self.OTHER, _applied([]))
+        answer = page.post(
+            approval_routes.PATH,
+            data={
+                "password": "wrong",
+                "kind": "federation trust",
+                "decision": "approve",
+                "facts": "0" * 64,
+            },
+        )
         assert answer.status_code == 404
-        assert record == []
         assert "evil.example" not in answer.text
 
     def test_declining_needs_no_digest(self, page: TestClient) -> None:

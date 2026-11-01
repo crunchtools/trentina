@@ -65,6 +65,12 @@ MAX_OPEN_PER_OWNER = 4
 owner, not the profile: see ``Owner``."""
 
 MAX_BYTES_PER_OWNER = 32 * 1024 * 1024
+MAX_BYTES_PER_PROFILE = 32 * 1024 * 1024
+"""One tenant's ceiling, whatever its callers. An owner carries a peer-chosen
+``sub``, so owners are not a bounded resource and the owner cap alone is not a
+bound on a profile: this is. Same number, because it is the bound a profile had
+before the owner key existed."""
+
 MAX_BYTES = 128 * 1024 * 1024
 """Text held for one owner and for the gateway. The remainder of a paged
 response is content nobody has judged yet, kept for a caller that may never
@@ -293,16 +299,39 @@ def owner_of(paged: Paged) -> Owner:
     return (paged.profile, paged.caller)
 
 
+def _counts_against(paged: Paged, budget: Owner | str | None) -> bool:
+    """Whether ``paged`` counts against ``budget``: an owner, a profile, or
+    (None) the whole gateway. The three ``_evict`` enforces.
+
+    Not named ``scope``: ``tests/test_standalone_parity`` statically forbids a
+    ``scope is None`` branch in ``src/``, the shape of the standalone
+    fall-throughs #579 retired. Nothing to do with this, and the guard is
+    right to be blunt about a name that once meant that.
+    """
+    if budget is None:
+        return True
+    if isinstance(budget, str):
+        return paged.profile == budget
+    return owner_of(paged) == budget
+
+
 def _evict(owner: Owner, incoming: int) -> None:
     """Make room for ``incoming`` bytes: the least recently read goes first.
 
     One pass per limit: the candidates are ordered once and dropped from the
-    oldest while the count or the bytes are over. The first pass is the
-    OWNER's, not the profile's: a federation ingress is one profile for every
-    primary that calls it, so a per-profile cap would let one peer evict
-    another's held parts.
+    oldest while the count or the bytes are over.
 
-    The SECOND pass, the gateway-wide byte cap, does still evict across owners,
+    Three passes, and the middle one is why. The first is the OWNER's, because
+    a federation ingress is one profile for every primary that calls it and a
+    per-profile cap alone would let one peer evict another's parts. But `sub`
+    is PEER-CHOSEN, so an owner is not a bounded resource: a peer rotating it
+    mints a fresh budget per call and, with only an owner and a gateway pass,
+    walks up to the whole 128 MiB and evicts every other profile's parts. The
+    profile pass caps a tenant at `MAX_BYTES_PER_PROFILE` however many callers
+    it arrives as, which is the bound an ingress had before the owner key
+    existed.
+
+    The LAST pass, the gateway-wide byte cap, does still evict across tenants,
     deliberately and as it always has (``MAX_BYTES`` is the last bound on
     memory nobody has asked for yet). Availability, not confidentiality: an
     evicted handle is the same indistinguishable None as an expired one and the
@@ -310,12 +339,14 @@ def _evict(owner: Owner, incoming: int) -> None:
     evicting — denies a caller its own response because of someone else's
     usage, which is worse. Nothing here lets one owner READ another's parts.
     """
-    for only, count, limit in (
+    profile, _caller = owner
+    for budget, count, limit in (
         (owner, MAX_OPEN_PER_OWNER, MAX_BYTES_PER_OWNER),
+        (profile, None, MAX_BYTES_PER_PROFILE),
         (None, None, MAX_BYTES),
     ):
         kept = sorted(
-            (p for p in _store.values() if only is None or owner_of(p) == only),
+            (p for p in _store.values() if _counts_against(p, budget)),
             key=lambda p: p.used,
             reverse=True,
         )

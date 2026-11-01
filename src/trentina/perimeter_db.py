@@ -149,6 +149,20 @@ def get_perimeter_db(db_path: str | None = None) -> sqlite3.Connection:
         _db.executescript(SCHEMA)
         upgraded = had_pins is None and had_verdicts is not None
         pins_upgraded_at = time.monotonic() if upgraded else None
+        if had_pins is None and had_verdicts is None:
+            # A store with neither table is a store this gateway has never had.
+            # Worth a line: every remote tool is about to be held for approval,
+            # and a FEDERATED backend's whole offered set is about to be
+            # approved unreviewed as a first connect (`tool_pins.check_tools`).
+            # Expected on a new deployment; on an old one it means the volume
+            # is missing, and the quiet version of that cost the trust it was
+            # protecting.
+            logger.warning(
+                "gateway: the perimeter store was created empty, so this gateway holds "
+                "no tool approvals and no cached verdicts. Expected on a first run. "
+                "Otherwise its volume is not mounted: every remote tool will be held, "
+                "and each federated peer's offered set approved as a first connect"
+            )
     return _db
 
 

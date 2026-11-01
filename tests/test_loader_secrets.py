@@ -401,22 +401,25 @@ class TestAHeaderCannotNameTheFilesOwnSecrets:
         headers = loaded.profiles["relay"].backends["self"].headers
         assert headers["Authorization"] == "Bearer value-of-unrelated_token"
 
-    def test_removing_the_declaration_does_not_lift_the_refusal(
+    def test_removing_a_declaration_a_load_accepted_does_not_lift_the_refusal(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The protected set only grows within a process.
+        """A name any SUCCESSFUL load declared stays protected for the life of
+        the process, so one write cannot retire a credential and forward it in
+        the same breath.
 
-        Rebuilding it per load would let one write remove a profile's
-        `bearer_token_env` and reference that variable in a header in the same
-        breath — laundering a credential out through the declaration that was
-        protecting it. A genuinely retired secret stays refused until a
-        restart, which is the fail-closed direction and not something an agent
-        can do.
+        The load that remembers it has to have succeeded: a refused candidate
+        leaves the history alone, or `config_tool` validating a candidate
+        would lock out the live file (`TestARefusedLoadLeavesTheHistoryAlone`).
         """
         self._env(monkeypatch)
-        cfg = self._write(tmp_path, "SPARE_TOKEN")
-        with pytest.raises(ProfileConfigError):
-            load_profiles(cfg)
+        # A file that declares SPARE_TOKEN and does not reference it: loads.
+        clean = tmp_path / "clean.yaml"
+        clean.write_text(ESCALATION_YAML % "UNRELATED_TOKEN")
+        assert "spare" in load_profiles(clean).profiles
+
+        # Now drop the declaration and reference it in a header.
+        cfg = tmp_path / "profiles.yaml"
         cfg.write_text((ESCALATION_YAML % "SPARE_TOKEN").replace(_SPARE_BLOCK, ""))
         with pytest.raises(ProfileConfigError, match="holds a secret of this gateway's own"):
             load_profiles(cfg)
@@ -494,8 +497,94 @@ class TestTheProtectedSetOnlyGrows:
         from trentina.gateway import loader
 
         loader._reset_protected_secret_envs()
-        loader._protect({"FIRST_TOKEN"}, Path("x"))
-        loader._protect({"SECOND_TOKEN"}, Path("x"))
+        loader._commit_protected({"FIRST_TOKEN"})
+        loader._commit_protected({"SECOND_TOKEN"})
         assert {"FIRST_TOKEN", "SECOND_TOKEN"} <= loader._protected_secret_envs
         assert "TRENTINA_OAUTH_JWT_SIGNING_KEY" in loader._protected_secret_envs
         loader._reset_protected_secret_envs()
+
+
+class TestARefusedLoadLeavesTheHistoryAlone:
+    """`config_tool` validates a candidate by LOADING it, so a refused
+    candidate must not change what the live file is allowed to say.
+
+    The first cut committed the candidate's declarations before building the
+    registry. A candidate declaring `bearer_token_env: GITHUB_TOKEN` while the
+    live file reads `${GITHUB_TOKEN}` in a header was correctly refused — and
+    then the live file refused too, so every later `reload_profiles` failed
+    until the process restarted.
+    """
+
+    LIVE = """\
+profiles:
+  op:
+    role: operator
+    auth:
+      bearer_token_env: OP_TOKEN
+    llm_keys:
+      gemini:
+        api_key_env: GEM_KEY
+    backends:
+      web:
+        url: internal://web
+  ag:
+    auth:
+      bearer_token_env: AG_TOKEN
+    backends:
+      api:
+        url: https://api.example/mcp
+        headers:
+          Authorization: "Bearer ${SHARED_TOKEN}"
+"""
+
+    #: The same file, plus a profile that DECLARES the variable the live
+    #: header merely references. Refused: the header now names a secret.
+    CANDIDATE = (
+        LIVE
+        + """\
+  other:
+    auth:
+      bearer_token_env: SHARED_TOKEN
+    backends:
+      web:
+        url: internal://web
+"""
+    )
+
+    @pytest.fixture(autouse=True)
+    def _env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trentina.gateway import loader
+
+        for name in ("OP_TOKEN", "AG_TOKEN", "GEM_KEY", "SHARED_TOKEN"):
+            monkeypatch.setenv(name, f"v-{name.lower()}")
+        loader._reset_protected_secret_envs()
+
+    def test_the_live_file_still_loads_after_a_refused_candidate(self, tmp_path: Path) -> None:
+        live = tmp_path / "profiles.yaml"
+        live.write_text(self.LIVE)
+        candidate = tmp_path / "candidate.yaml"
+        candidate.write_text(self.CANDIDATE)
+
+        assert "ag" in load_profiles(live).profiles  # the baseline
+
+        with pytest.raises(ProfileConfigError, match="holds a secret of this gateway's own"):
+            load_profiles(candidate)
+
+        # The reload that used to fail for the rest of the process.
+        assert "ag" in load_profiles(live).profiles
+
+    def test_a_declaration_that_did_load_is_still_remembered(self, tmp_path: Path) -> None:
+        """The history survives: only a load that RETURNED contributes, and
+        one that did is not forgotten."""
+        first = tmp_path / "first.yaml"
+        first.write_text(
+            self.CANDIDATE.replace('Authorization: "Bearer ${SHARED_TOKEN}"', 'X: "1"')
+        )
+        assert "other" in load_profiles(first).profiles  # declares SHARED_TOKEN, loads fine
+
+        # Now a file that drops the declaration and references it in a header:
+        # refused, because the earlier successful load remembered the name.
+        later = tmp_path / "later.yaml"
+        later.write_text(self.LIVE)
+        with pytest.raises(ProfileConfigError, match="holds a secret of this gateway's own"):
+            load_profiles(later)

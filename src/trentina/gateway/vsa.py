@@ -80,12 +80,22 @@ def verdict_summary(warning: dict[str, Any] | None, mode: str) -> dict[str, Any]
     delivered response, which summarises as not-flagged, no gaps.
     """
     w = warning or {}
+    # Typed, not merely read: on the TRUST side this summarises an assertion a
+    # peer signed, and `check_trust` types only the verdict mapping itself. A
+    # `flagged_by` of `["L1"]` made the caller's `in LAYER_NAMES` raise
+    # TypeError, and a non-iterable `unread_kinds` raised in `sorted` — a 500
+    # where the answer is `uninterpretable`.
+    flagged_by = w.get("flagged_by")
+    risk_level = w.get("risk_level")
+    unread = w.get("unread_kinds") or []
     return {
-        "flagged_by": w.get("flagged_by"),
-        "risk_level": w.get("risk_level"),
+        "flagged_by": flagged_by if isinstance(flagged_by, str) else None,
+        "risk_level": risk_level if isinstance(risk_level, str) else None,
         "gaps": sorted(flag for flag in _GAP_FLAGS if w.get(flag)),
         "oversize": bool(w.get("oversize")),
-        "unread_kinds": sorted(w.get("unread_kinds") or []),
+        "unread_kinds": sorted(k for k in unread if isinstance(k, str))
+        if isinstance(unread, list)
+        else [],
         "mode": mode,
     }
 

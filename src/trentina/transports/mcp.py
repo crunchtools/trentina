@@ -315,7 +315,9 @@ _warned_stamps: set[tuple[str, str, str, str]] = set()
 _DEDUPED_UNTRUSTED = frozenset({"stamp_mismatch", "judge_mismatch"})
 
 
-def _log_untrusted(profile: Profile, backend_name: str, reason: str, peer_stamp: str) -> None:
+def _log_untrusted(
+    profile: Profile, backend_name: str, reason: str, envelope: Any, public_key: str
+) -> None:
     """Note why a federated response was NOT trusted and will be re-judged (#592).
 
     A bad signature (a peer whose key does not verify), a stamp mismatch (the
@@ -332,7 +334,9 @@ def _log_untrusted(profile: Profile, backend_name: str, reason: str, peer_stamp:
     if reason not in _LOGGED_UNTRUSTED:
         return
     if reason in _DEDUPED_UNTRUSTED:
-        key = (profile.name, backend_name, reason, peer_stamp)
+        # Only here: `_peer_stamp` verifies the envelope a SECOND time, and the
+        # other reasons neither need it nor (for a bad signature) could use it.
+        key = (profile.name, backend_name, reason, _peer_stamp(envelope, reason, public_key))
         if key in _warned_stamps:
             return
         # A log-dedup, not state anything reads: if it grows past a sane bound
@@ -535,17 +539,19 @@ def _federated_trust(
     )
     if assertion is None:
         current_federated_verdict.set(reason)
-        _log_untrusted(profile, backend_name, reason, _peer_stamp(envelope, reason, tv.public_key))
+        _log_untrusted(profile, backend_name, reason, envelope, tv.public_key)
         return None
     verdict = assertion["verdict"]
     # A layer name this gateway does not know is a verdict it cannot read, and
     # the peer chose the string. Reading an unknown layer as "not flagged"
     # would deliver, under block, content whose own signed verdict says a layer
-    # flagged it — a sanitization turned into a bypass.
-    flagged_by = verdict.get("flagged_by")
-    if flagged_by is not None and flagged_by not in vsa.LAYER_NAMES:
+    # flagged it — a sanitization turned into a bypass. Read through
+    # `verdict_summary`, which types the field: a signed `["L1"]` would
+    # otherwise raise TypeError out of the membership test.
+    flagged_by = vsa.verdict_summary(verdict, resolved.value)["flagged_by"]
+    if verdict.get("flagged_by") is not None and flagged_by not in vsa.LAYER_NAMES:
         current_federated_verdict.set(vsa.UNINTERPRETABLE)
-        _log_untrusted(profile, backend_name, vsa.UNINTERPRETABLE, "")
+        _log_untrusted(profile, backend_name, vsa.UNINTERPRETABLE, envelope, tv.public_key)
         return None
     # An INCOMPLETE secondary judgment is never trust-delivered (#592): a gap, an
     # oversize refusal or unread binary means the secondary could not fully read
@@ -555,9 +561,6 @@ def _federated_trust(
     # decides, instead of delivering clean on the peer's weaker gap handling.
     if verdict.get("gaps") or verdict.get("oversize") or verdict.get("unread_kinds"):
         current_federated_verdict.set(vsa.INCOMPLETE)
-        # Not in `_LOGGED_UNTRUSTED`, so this is a no-op kept for the day it is
-        # added: an incomplete verdict is the peer's own, not a drift to dedupe.
-        _log_untrusted(profile, backend_name, "incomplete_verdict", "")
         return None
     current_federated_verdict.set(vsa.TRUSTED)
     return _deliver_trusted(

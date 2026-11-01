@@ -150,7 +150,10 @@ def stage(
     staging is the last step before a human, not a way to defer validation to
     one.
     """
-    _staged[kind] = Staged(kind=kind, facts=facts, apply=apply)
+    # Copied: the caller keeps its reference, and the digest a person's
+    # decision is checked against must be of what they were SHOWN, not of
+    # whatever the mapping says by then.
+    _staged[kind] = Staged(kind=kind, facts=dict(facts), apply=apply)
     logger.info("approval: staged %s, awaiting a person", kind.value)
 
 

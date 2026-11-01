@@ -395,7 +395,12 @@ class TestCallerIsolation:
     ALICE = ("breetai", "josui")
     BOB = ("other-primary", "kagetora")
 
-    def _hold(self, caller: tuple[str, str] | None, words: int = 1_000) -> paging.Paged:
+    def _hold(
+        self,
+        caller: tuple[str, str] | None,
+        words: int = 1_000,
+        profile: str | None = None,
+    ) -> paging.Paged:
         from trentina.defense import Provenance
         from trentina.modes import Mode
 
@@ -403,7 +408,13 @@ class TestCallerIsolation:
         assert parts is not None
         return paging.hold(
             paging.Origin(
-                self.INGRESS, "docs", GET, GET, is_error=False, acted=False, caller=caller
+                profile or self.INGRESS,
+                "docs",
+                GET,
+                GET,
+                is_error=False,
+                acted=False,
+                caller=caller,
             ),
             parts,
             mode=Mode.BLOCK,
@@ -479,6 +490,28 @@ class TestCallerIsolation:
         with _as_caller(self.ALICE):
             mine = await gateway.read(handle=handle, part=2)
         assert mine[paging.PART_KEY]["part"] == 2
+
+    def test_one_peer_rotating_subs_cannot_take_the_gateway(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`sub` is PEER-CHOSEN, so an owner is not a bounded resource.
+
+        With only an owner cap and a gateway cap, a peer minting a new `sub`
+        per call gets a fresh 32 MiB budget each time and walks up to the whole
+        128 MiB, evicting every other profile's parts. The profile pass is what
+        keeps a tenant to its own ceiling however many callers it arrives as.
+        """
+        neighbour = self._hold(None, words=500, profile="someone-else")
+        monkeypatch.setattr(paging, "MAX_BYTES_PER_PROFILE", neighbour.size * 2 + 10)
+
+        # The ingress arrives as a new caller every time.
+        held = [self._hold(("peer", f"sub-{i}"), words=500) for i in range(8)]
+
+        mine = [p for p in paging._store.values() if p.profile == self.INGRESS]
+        assert sum(p.size for p in mine) <= paging.MAX_BYTES_PER_PROFILE
+        assert len(mine) < len(held)  # the profile's own cap bit
+        # And the neighbour is untouched.
+        assert paging.find(("someone-else", None), neighbour.handle) is neighbour
 
     def test_origin_takes_the_caller_from_the_request_context(self) -> None:
         """A hold site cannot forget the caller: ``Origin`` reads it, so a new

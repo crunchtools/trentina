@@ -7,6 +7,7 @@ gateway routes if loading fails.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -42,6 +43,7 @@ from .transform import resolve
 
 if TYPE_CHECKING:
     import ipaddress
+    from collections.abc import Iterator
 
 
 @dataclass(frozen=True)
@@ -97,8 +99,41 @@ _protected_secret_envs: set[str] = set(_GATEWAY_SECRET_ENVS)
 _MAX_DECLARED_PER_LOAD = 512
 
 
-def _protect(declared: set[str], where: Path) -> None:
-    """Add ``declared`` to the protected set, keeping what earlier loads named.
+#: The protected set in force for the load in progress, or None outside one.
+#: A load refuses against this; only a load that RETURNED adds to the history.
+_load_protected: set[str] | None = None
+
+
+@contextlib.contextmanager
+def _protecting(declared: set[str], where: Path) -> Iterator[None]:
+    """Put this file's declarations in force for the duration of its load.
+
+    Restored on the way out, whether the load returned or raised, so a refused
+    candidate leaves the history exactly as it found it.
+    """
+    global _load_protected
+    previous = _load_protected
+    _load_protected = _protected_for(declared, where)
+    try:
+        yield
+    finally:
+        _load_protected = previous
+
+
+def _protected_for(declared: set[str], where: Path) -> set[str]:
+    """What this load must refuse a header from naming: the protected history
+    plus what this file declares. Returned, not committed — see ``_commit_protected``.
+    """
+    if len(declared) > _MAX_DECLARED_PER_LOAD:
+        raise ProfileConfigError(
+            f"Profiles file {where} declares {len(declared)} distinct secret env "
+            f"vars, more than the {_MAX_DECLARED_PER_LOAD} allowed"
+        )
+    return _protected_secret_envs | declared
+
+
+def _commit_protected(declared: set[str]) -> None:
+    """Keep what this load declared, now that the load has SUCCEEDED.
 
     The history is the point. Rebuilding per load would let one write remove a
     profile's ``bearer_token_env`` and reference that variable in a header in
@@ -107,15 +142,14 @@ def _protect(declared: set[str], where: Path) -> None:
     stays refused until the process restarts, which is the fail-closed
     direction and is not something an agent can do.
 
-    The set therefore only grows, and nothing sheds it: it holds short names,
-    gains one only when a config names a secret no earlier load named, and a
-    restart empties it.
+    Only a load that RETURNED contributes, which is what separates this from
+    the first cut. `config_tool` validates a candidate by loading it, so a
+    candidate declaring `bearer_token_env: GITHUB_TOKEN` while the live file
+    reads `${GITHUB_TOKEN}` in a header was correctly refused — and then
+    poisoned the set, so the LIVE file refused too and every later
+    `reload_profiles` failed until the process restarted. A refusal before the
+    replace must touch nothing, including this.
     """
-    if len(declared) > _MAX_DECLARED_PER_LOAD:
-        raise ProfileConfigError(
-            f"Profiles file {where} declares {len(declared)} distinct secret env "
-            f"vars, more than the {_MAX_DECLARED_PER_LOAD} allowed"
-        )
     _protected_secret_envs.update(declared)
 
 
@@ -177,7 +211,15 @@ def _expand_env_refs(value: str, *, context: str) -> str:
 
     def _replace(match: re.Match[str]) -> str:
         var_name = match.group(1)
-        if var_name in _protected_secret_envs:
+        # Every production path reaches here inside `_protecting`: this runs
+        # only from `_expand_backend_url` / `_expand_backend_env_refs`, only
+        # from `_build_profile`, only from `load_profiles`. The fallback is for
+        # a direct unit call, and is the committed history — stricter than
+        # nothing, weaker than a load's own set by exactly the names the file
+        # being loaded declares. A new call site outside a load would get that
+        # weaker set, so put it inside one.
+        protected = _protected_secret_envs if _load_protected is None else _load_protected
+        if var_name in protected:
             raise ProfileConfigError(
                 f"{context}: env var {var_name} holds a secret of this gateway's "
                 "own, so it may not be referenced here; a backend's own credential "
@@ -1223,20 +1265,23 @@ def load_profiles(path: Path | str) -> GatewayConfig:
     # refuses a reference into this set, and which names are in it is a
     # property of the WHOLE file, not of the profile being built. Collected
     # here rather than as profiles load, which would make the refusal depend
-    # on the order profiles appear in. Unioned, never replaced: see
-    # `_protected_secret_envs`.
-    _protect(_declared_secret_env_names(cfg_data), config_path)
+    # on the order profiles appear in. In force for this load only until the
+    # load succeeds — `_commit_protected` says why.
+    declared = _declared_secret_env_names(cfg_data)
 
-    registry: dict[str, Profile] = {
-        name: _build_profile(name, body) for name, body in profiles_section.items()
-    }
-    _check_operator(registry)
-    _check_federation_audience(registry)
-    _check_judges(registry)
-    _check_matrix_networks(registry)
-    _check_egress_networks(registry)
-    git_remotes = _load_git_remotes(cfg_data.get("git_remotes"), registry)
-    egress_upstreams = _load_egress_upstreams(cfg_data.get("egress_upstreams"), registry)
+    with _protecting(declared, config_path):
+        registry: dict[str, Profile] = {
+            name: _build_profile(name, body) for name, body in profiles_section.items()
+        }
+        _check_operator(registry)
+        _check_federation_audience(registry)
+        _check_judges(registry)
+        _check_matrix_networks(registry)
+        _check_egress_networks(registry)
+        git_remotes = _load_git_remotes(cfg_data.get("git_remotes"), registry)
+        egress_upstreams = _load_egress_upstreams(cfg_data.get("egress_upstreams"), registry)
+
+    _commit_protected(declared)
 
     logger.info(
         "gateway: loaded %d profile(s): %s",

@@ -235,6 +235,31 @@ def test_an_unknown_flagging_layer_re_judges(mode: Mode) -> None:
     assert current_federated_verdict.get() == vsa.UNINTERPRETABLE
 
 
+@pytest.mark.parametrize(
+    "flagged_by",
+    [
+        pytest.param(["L1"], id="list"),
+        pytest.param({"layer": "L1"}, id="dict"),
+        pytest.param(7, id="int"),
+    ],
+)
+def test_an_unreadable_flagging_layer_re_judges_rather_than_raising(flagged_by: Any) -> None:
+    """The peer signs the mapping and chooses its contents. An unhashable
+    `flagged_by` made the membership test raise TypeError — a 500 where the
+    answer is `uninterpretable`."""
+    priv, pub = _keypair()
+    verdict = {**vsa.verdict_summary(None, "flag"), "flagged_by": flagged_by}
+    assembled = _decide(_primary(pub), {vsa.VSA_KEY: _envelope(priv, verdict=verdict)})
+    assert assembled is None
+    assert current_federated_verdict.get() == vsa.UNINTERPRETABLE
+
+
+def test_an_unreadable_unread_kinds_does_not_raise() -> None:
+    """`sorted` on a non-iterable raised out of `verdict_summary`."""
+    assert vsa.verdict_summary({"unread_kinds": 7}, "flag")["unread_kinds"] == []
+    assert vsa.verdict_summary({"unread_kinds": ["a", 2]}, "flag")["unread_kinds"] == ["a"]
+
+
 def test_uninterpretable_is_an_audited_verdict() -> None:
     assert vsa.UNINTERPRETABLE in vsa.AUDITED_VERDICTS
 
@@ -647,20 +672,22 @@ class TestTheEmitSideWhenThereIsNoDigest:
 
 class TestTheMismatchLogDedupesOnThePeersStamp:
     """It deduped on the PIN, so a peer that drifted twice was reported once
-    for the life of the process."""
+    for the life of the process. The peer's stamp comes from verifying its
+    envelope a second time, which only these two reasons need."""
 
-    def _warn(self, reason: str, peer_stamp: str) -> int:
+    def _warn(self, reason: str, stamps: list[str]) -> int:
         _warned_stamps.clear()
-        profile = _primary(_keypair()[1])
+        priv, pub = _keypair()
+        profile = _primary(pub)
         with patch.object(mcp_mod.logger, "info") as logged:
-            _log_untrusted(profile, "fed", reason, peer_stamp)
-            _log_untrusted(profile, "fed", reason, peer_stamp)
-            _log_untrusted(profile, "fed", reason, peer_stamp + "-changed")
+            for stamp in stamps:
+                envelope = _envelope(priv, stamp=stamp, judge=stamp)
+                _log_untrusted(profile, "fed", reason, envelope, pub)
         return int(logged.call_count)
 
     @pytest.mark.parametrize("reason", ["stamp_mismatch", "judge_mismatch"])
     def test_one_line_per_distinct_peer_stamp(self, reason: str) -> None:
-        assert self._warn(reason, "peer-v1") == 2  # once each, not three times
+        assert self._warn(reason, ["peer-v1", "peer-v1", "peer-v2"]) == 2
 
     def test_a_judge_mismatch_is_logged_at_all(self) -> None:
         """The judge is pinned apart from the stamp precisely to catch a peer
@@ -668,7 +695,7 @@ class TestTheMismatchLogDedupesOnThePeersStamp:
         assert "judge_mismatch" in _LOGGED_UNTRUSTED
 
     def test_a_quiet_reason_logs_nothing(self) -> None:
-        assert self._warn("hash_mismatch", "peer-v1") == 0
+        assert self._warn("hash_mismatch", ["peer-v1"]) == 0
 
     def test_an_unverifiable_envelope_does_not_raise(self) -> None:
         """`_peer_stamp` verifies a second time and may get nothing back."""
@@ -676,11 +703,24 @@ class TestTheMismatchLogDedupesOnThePeersStamp:
         assert _peer_stamp(None, "stamp_mismatch", pub) == ""
         assert _peer_stamp({"nonsense": 1}, "judge_mismatch", pub) == ""
 
+    def test_a_bad_signature_does_not_pay_for_a_second_verify(self) -> None:
+        """Only the deduped reasons reach `_peer_stamp`; the rest neither need
+        it nor, for a forged envelope, could use it."""
+        _warned_stamps.clear()
+        priv, pub = _keypair()
+        profile = _primary(pub)
+        with patch.object(mcp_mod, "_peer_stamp") as stamped:
+            _log_untrusted(profile, "fed", "bad_signature", _envelope(priv), pub)
+        stamped.assert_not_called()
+
     def test_the_peers_stamp_is_never_in_the_message(self) -> None:
         """#262: it is a dedup key, not something logged."""
         _warned_stamps.clear()
-        profile = _primary(_keypair()[1])
+        priv, pub = _keypair()
+        profile = _primary(pub)
         with patch.object(mcp_mod.logger, "info") as logged:
-            _log_untrusted(profile, "fed", "stamp_mismatch", "peer-chose-this")
+            _log_untrusted(
+                profile, "fed", "stamp_mismatch", _envelope(priv, stamp="peer-chose-this"), pub
+            )
         printed = " ".join(str(a) for a in logged.call_args.args)
         assert "peer-chose-this" not in printed

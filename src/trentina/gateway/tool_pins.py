@@ -119,6 +119,12 @@ def check_tools(
     persisted marker (``FIRST_SEEN_SENTINEL``), not by whether any tool row
     exists, so an empty first list still records the connect and a later-added
     tool is held one at a time. The marker is read once, before the pass writes.
+
+    It is the one place this gateway trusts a tool set it never showed anyone,
+    so it is REPORTED (``_report_first_connect``). Holds wrote a log line and a
+    detections row and approvals wrote nothing, which left the quieter path the
+    one that trusts more: a container brought up without its perimeter volume
+    re-approved every peer's whole offered set and said nothing at all.
     """
     bid = backend_id(url)
     first_connect = federated and not perimeter_db.has_pins(bid)
@@ -133,7 +139,36 @@ def check_tools(
         perimeter_db.put_pin(
             bid, FIRST_SEEN_SENTINEL, approved=sentinel, pending=None, rejected=False
         )
+        _report_first_connect(backend, len(served))
     return served
+
+
+def _report_first_connect(backend: str, count: int) -> None:
+    """Say that a federated peer's whole offered set was approved unasked.
+
+    The backend NAME is config and loggable; the tool names are not (#262), so
+    the count stands for them and the audit holds the rest. ``blocked=False``:
+    nothing was withheld, which is the point of recording it.
+    """
+    logger.warning(
+        "gateway: federated backend=%s first connect — approved its offered set of %d "
+        "tool(s) as a unit, unreviewed. Expected when the link is new; if it is not, "
+        "the perimeter store was lost or the backend URL changed, and every tool the "
+        "peer now offers has just been trusted. Check tool_pins.",
+        backend,
+        count,
+    )
+    record_detection(
+        source_type="tool_pin",
+        source=f"{backend}/{FIRST_SEEN_SENTINEL}",
+        domain=None,
+        layer1_stats={"first_connect": True, "approved_unreviewed": count},
+        risk_level="medium",
+        backend=backend,
+        tool=FIRST_SEEN_SENTINEL,
+        direction="ingress",
+        blocked=False,
+    )
 
 
 def _pin_one(bid: str, backend: str, tool: dict[str, Any], baseline: bool) -> bool:

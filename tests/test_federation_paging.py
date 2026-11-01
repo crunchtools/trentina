@@ -345,30 +345,53 @@ class TestThePeersReaderIsNotOffered:
             tools_allow=["*"],
         )
 
-    def _names(self, backend: Backend) -> list[str]:
-        offered = [{"name": paging.READ_PART_TOOL}, {"name": "echo"}]
+    def _names(self, backend: Backend, reader: str = "read_part") -> list[str]:
+        offered = [{"name": reader}, {"name": "echo"}]
         return [t["name"] for t in filter_tools(offered, backend)]
 
-    def test_a_federated_peers_reader_is_withheld(self) -> None:
-        assert self._names(self._backend(federated=True)) == ["echo"]
+    @pytest.mark.parametrize(
+        "reader",
+        [
+            # What a peer ACTUALLY serves it as: `short_names` is on by
+            # default and `names.base_names` strips `_tool`.
+            pytest.param("read_part", id="short-name"),
+            # `short_names` off.
+            pytest.param("internal__read_part_tool", id="namespaced"),
+            # The real internal name, for a peer that serves it unchanged.
+            pytest.param(paging.READ_PART_TOOL, id="raw"),
+        ],
+    )
+    def test_a_federated_peers_reader_is_withheld(self, reader: str) -> None:
+        """The first cut compared to the literal `read_part_tool` and matched
+        none of the forms a peer serves, while its test offered that literal —
+        so it passed and withheld nothing."""
+        assert self._names(self._backend(federated=True), reader) == ["echo"]
 
     def test_an_ordinary_backends_tool_of_that_name_is_untouched(self) -> None:
         """Only a FEDERATED backend: an unrelated server may legitimately
-        serve a tool of this name."""
-        assert self._names(self._backend(federated=False)) == [paging.READ_PART_TOOL, "echo"]
+        serve a tool called `read_part`."""
+        assert self._names(self._backend(federated=False)) == ["read_part", "echo"]
 
     def test_a_wildcard_allowlist_does_not_reach_it(self) -> None:
-        """The withholding is not an allow/deny pattern, so ``*`` cannot
-        match it and a profile cannot opt back in."""
+        """The withholding is not an allow/deny pattern, so `*` cannot match
+        it and a profile cannot opt back in."""
         backend = self._backend(federated=True)
         backend.tools_allow = ["*"]
         backend.tools_deny = []
-        assert paging.READ_PART_TOOL not in self._names(backend)
+        assert "read_part" not in self._names(backend)
 
     def test_naming_it_explicitly_does_not_reach_it_either(self) -> None:
         backend = self._backend(federated=True)
-        backend.tools_allow = [paging.READ_PART_TOOL]
+        backend.tools_allow = ["read_part"]
         assert self._names(backend) == []
+
+    def test_a_tool_that_merely_ends_in_read_part_is_not_withheld(self) -> None:
+        """The match is on the whole name after the namespace tag, not a
+        suffix: a peer's `bulk_read_part` is its own tool."""
+        assert self._names(self._backend(federated=True), "bulk_read_part") == [
+            "bulk_read_part",
+            "echo",
+        ]
 
     def test_the_proxy_still_reaches_the_peers_reader(self) -> None:
         """The refusal is at the router's allowlist, not on the backend call,
