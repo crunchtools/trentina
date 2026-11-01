@@ -744,8 +744,8 @@ The agent drives it with one admin tool, `backend_auth`:
 
 Every call to an `auth` backend carries the calling profile's grant, and only
 that profile's. A profile with no grant gets an error naming the fix
-(`backend_auth` with `start`) instead of a call, and never counts against the
-backend's circuit breaker. A grant the backend refuses (401) is refreshed once
+(`backend_auth` with `start`) as a refusal instead of a call, and never counts
+against the backend's circuit breaker. A grant the backend refuses (401) is refreshed once
 and the request sent again, but only a request the backend never ran: a call
 it accepted is never sent twice. If the refreshed grant is refused too, the
 profile is told to sign in again, and the gateway stops refreshing for a

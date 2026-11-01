@@ -95,14 +95,19 @@ HONEYTOKEN_MIN_CHARS = 16
 #: own disk, is not something to hand an agent meant to be hijacked.
 HONEYPOT_READS = frozenset({"fetch_tool", "search_tool", "content_tool"})
 
-# The only internal tool a federation ingress may offer a peer (#592, C2).
-# ``internal://<label>`` is one FastMCP server that serves the whole native
-# surface — the reading tools AND the admin tools (quarantine_stats, cache_flush,
-# reload_profiles, tool_pins, reconnect_backend) — so the rule is an exact-name
-# ALLOWLIST, not a denylist of today's egress tools: a denylist would offer a
-# peer cache_flush, and would federate every internal tool added later. A peer
-# reaches nothing of this gateway but a paging continuation.
-FEDERATION_INTERNAL_ALLOW = frozenset({"read_part_tool"})
+#: The sign-in tool, named because the directed-ingress rule needs it twice:
+#: in the allowlist, and again to refuse it on an ingress with more than one
+#: peer, where a grant belonging to the profile is shared by every peer.
+SIGN_IN_TOOL = "backend_auth_tool"
+
+# The only internal tools a federation ingress may offer a peer (#592, C2).
+# ``internal://<label>`` is one FastMCP server serving the whole native surface
+# — the reading tools AND the admin tools (quarantine_stats, cache_flush,
+# reload_profiles, tool_pins, reconnect_backend) — so this is an exact-name
+# ALLOWLIST, not a denylist: a denylist would offer a peer cache_flush, and
+# would federate every internal tool added later. A peer reaches a paging
+# continuation and, on a single-peer link, the ingress's own OAuth sign-in.
+FEDERATION_INTERNAL_ALLOW = frozenset({"read_part_tool", SIGN_IN_TOOL})
 #: Characters: the longest description and canned result a decoy tool may carry.
 DECOY_DESCRIPTION_MAX_CHARS = 1024
 DECOY_RESULT_MAX_CHARS = 4096
@@ -3330,7 +3335,7 @@ class Profile(BaseModel):
         honeypot's: the profile is ``role: agent`` — an operator ingress would
         offer the gateway's admin tools to a peer — and its internal backend's
         ``tools_allow`` is an exact subset of ``FEDERATION_INTERNAL_ALLOW``
-        (``read_part_tool`` only). A glob such as ``read_*`` or ``*`` is refused
+        (``read_part_tool``, ``backend_auth_tool``). A glob such as ``read_*`` or ``*`` is refused
         as written, before it can match the whole native surface. The offered
         set itself is the profile's own remote backends; no second list.
 
@@ -3349,6 +3354,25 @@ class Profile(BaseModel):
         profile, and since held parts are owned by ``(profile, peer, sub)``
         every such caller would share one paging owner — the isolation hole
         this release closed, reopened through the front door.
+
+        And ``backend_auth_tool`` is offered only on a SINGLE-peer ingress. A
+        backend grant belongs to ``(profile, backend)``, and a federated call
+        runs as the ingress profile — which is one identity for every peer. So
+        on an ingress with two peers, that tool is a shared capability:
+
+        * ``revoke`` drops the grant every other peer's calls depend on, and
+          asks the authorization server to revoke the tokens, so it is not even
+          locally repairable.
+        * ``start`` is worse. A peer sends the link to ITS human, and whatever
+          account that human chooses becomes the account the ingress uses for
+          that backend — for every peer. One peer can silently repoint
+          another's reads and writes at a mailbox it controls.
+
+        Both are the same root cause as the paging hole: a per-profile
+        capability shared by N callers. Making it safe needs grants keyed by
+        ``(profile, peer, sub)``, which is a different design from the one
+        ``backend_tokens`` has; until then the single-peer link this shipped
+        for is the configuration it is allowed in.
         """
         if self.federation is None:
             return self
@@ -3362,6 +3386,16 @@ class Profile(BaseModel):
                     "authenticates here, and a second way in would admit a caller "
                     "with no peer and no sub"
                 )
+        if len(self.federation.peers) > 1 and any(
+            SIGN_IN_TOOL in backend.tools_allow
+            for backend in self.backends.values()
+            if backend.is_internal
+        ):
+            problems.append(
+                f"{SIGN_IN_TOOL} needs an ingress with ONE peer: a backend grant "
+                "belongs to the profile, so on a shared ingress any peer could "
+                "revoke another's sign-in or repoint it at its own account"
+            )
         for name, backend in self.backends.items():
             extra = sorted(set(backend.tools_allow) - FEDERATION_INTERNAL_ALLOW)
             if backend.is_internal and extra:

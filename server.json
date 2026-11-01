@@ -7,13 +7,13 @@
     "url": "https://github.com/crunchtools/trentina",
     "source": "github"
   },
-  "version": "4.2.3",
+  "version": "4.3.0",
   "packages": [
     {
       "registryType": "oci",
       "registryBaseUrl": "https://quay.io",
       "identifier": "quay.io/crunchtools/trentina",
-      "version": "4.2.3",
+      "version": "4.3.0",
       "runtimeHint": "docker",
       "transport": {
         "type": "streamable-http",

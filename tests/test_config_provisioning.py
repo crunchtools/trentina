@@ -155,8 +155,8 @@ async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_rest
                 "secondary_key_name": "ingress-signing",
             },
             # What the ingress actually offers a peer: a real backend, plus
-            # read_part so a paged response can be collected. An ingress may
-            # offer no other internal tool (FEDERATION_INTERNAL_ALLOW).
+            # read_part so a paged response can be collected. An ingress's
+            # internal tools are limited to FEDERATION_INTERNAL_ALLOW.
             "backends": {
                 "shared": {"url": "http://shared:8000/mcp", "tools_allow": ["*"]},
                 "web": {"url": "internal://web", "tools_allow": ["read_part_tool"]},

@@ -54,6 +54,20 @@ first four, so a missed one is loud rather than silent.
    configuration keeps working untouched — this bites the next write, not the
    current file.
 
+### Added
+
+- **A federated profile can sign in to the secondary's OAuth backends.** A grant
+  belongs to one profile, and a federated call runs as the ingress profile, so
+  an OAuth backend on the secondary could not be reached through the link and
+  nothing could start its sign-in. `backend_auth_tool` is now allowed on an
+  ingress when its internal backend lists it; it acts only on that profile's
+  own backends. On the primary it is served with the peer's tag, for example
+  `lotor_backend_auth`. **Only on an ingress with one peer**: a grant belongs
+  to `(profile, backend)` and a federated call runs as the ingress, so on a
+  shared ingress any peer could revoke another's sign-in, or start a fresh one
+  and make its own human's account the one every peer's calls use. Two peers
+  plus `backend_auth_tool` is refused at load.
+
 ### Removed
 
 - **BREAKING: the interim static-bearer federation path.** A backend pointing
@@ -123,6 +137,19 @@ first four, so a missed one is loud rather than silent.
 
 ### Fixed
 
+- **One missing OAuth grant took down a whole federated peer.** "Not authorized"
+  was a JSON-RPC error, so the primary lost the message and counted it against
+  the breaker, and every other tool on that peer went with it. It is now a
+  refusal for every caller; a primary maps it to `needs_auth_secondary` in its
+  own words, naming the sign-in tool as served there.
+- **An image built from a branch labelled itself with the branch name.**
+  `docker/metadata-action`'s `version` output is the ref, so every
+  `:latest` published from a main push carried
+  `org.opencontainers.image.version=main` while the Containerfile's own
+  `version` label — read from `pyproject.toml` through the `VERSION`
+  build-arg — said 4.2.3. One image, two answers, and only a tag build was
+  right. The `pkgver` step now runs before the metadata and overwrites the
+  OCI label, so the two agree on every build.
 - **A federated peer could read another peer's held response parts.** A held
   paged response was owned by the profile name alone, and a federation ingress
   is one profile for every primary that calls it; meanwhile the peer's own
