@@ -51,3 +51,35 @@ async def test_a_custom_secondary_tool_set_is_federated() -> None:
     assert not any(n.endswith("echo") for n in names), names
     # default_tools is still importable for the common case.
     assert {t.__name__ for t in default_tools()} == {"echo", "emit", "lines"}
+
+
+async def test_a_second_pair_is_not_served_the_first_pairs_tool_list() -> None:
+    """The harness must stand up more than one pair per test.
+
+    Two pairs reuse the profile NAMES, and a profile aggregate is cached by
+    name, so the second pair's ``tools/list`` was answered out of the first
+    one's cache. That is not a visible failure — it is the same list twice, so
+    every assertion comparing a seat's offering before a change against after
+    it compared a list with itself and passed. It read as a harness that could
+    only stand up one pair per process; it was a cache. ``federated_pair`` now
+    resets the profile aggregates on the way in and out.
+    """
+
+    def alpha_only() -> str:
+        """The first pair's only tool."""
+        return "first"
+
+    def beta_only() -> str:
+        """The second pair's only tool."""
+        return "second"
+
+    async with federated_pair(tools=[alpha_only]) as fed, fed.primary_client() as client:
+        first = {t["name"] for t in await client.list_tools()}
+    async with federated_pair(tools=[beta_only]) as fed, fed.primary_client() as client:
+        second = {t["name"] for t in await client.list_tools()}
+
+    assert any("alpha_only" in name for name in first), first
+    assert any("beta_only" in name for name in second), second
+    assert not any("alpha_only" in name for name in second), (
+        f"the second pair was served the first pair's list: {second}"
+    )
