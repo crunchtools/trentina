@@ -59,7 +59,11 @@ are rate-limited and body-capped like the OAuth write paths, they are no oracle
 password set nothing can be approved at all. The one residual is worth stating:
 a profile that holds a code-execution backend can make an HTTP request to the
 gateway, and such a profile has already defeated every other control here, so
-treat an operator profile's backends as part of this boundary.
+treat an operator profile's backends as part of this boundary. A gateway with
+no inbound route of its own — a laptop, which is the ordinary shape for a
+primary — should not hold a standing public door for this:
+`contrib/tunnel/trentina-tunnel.service` is a reverse tunnel for it, shipped
+deliberately un-enabled, and its header carries the vhost the far side needs.
 
 The writable surface is then one directory holding one file. The rootfs stays
 read-only, nothing in it is on `sys.path` and nothing in it is imported, so a
