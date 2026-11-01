@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 from trentina import config as config_mod
-from trentina.gateway import approver, config_patch, config_store, pending
+from trentina.gateway import approver, config_guard, config_patch, config_store, pending
 from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
 from trentina.gateway.loader import get_active_config, load_profiles, register_active_config
@@ -841,7 +841,12 @@ class TestAdmittingAFederationPeer:
         # The peer already admitted is not re-proposed: a page listing it would
         # ask a person to approve what they approved before.
         assert "fed.alpha" not in shown
-        assert "may authenticate to that ingress" in shown["What this means"]
+        assert "may authenticate to that seat's federation ingress" in shown["What this means"]
+        # And what the link actually hands over, not just the key fingerprints:
+        # a derived ingress spends the SEAT's grants, so admitting a peer to a
+        # seat holding one sends that peer's calls out as the account a person
+        # authorized here. That is the consent this page takes.
+        assert shown["Tools shared from fed"] == "memory"
         assert gateway.read_text(encoding="utf-8") == before
 
     async def test_changing_a_peers_key_under_its_name_is_staged(
@@ -909,6 +914,84 @@ class TestAdmittingAFederationPeer:
         assert result["staged"] is True
         assert result["awaiting"] == "federation peers"
         assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_sharing_a_seat_for_the_first_time_is_staged(self, gateway: pathlib.Path) -> None:
+        """A seat that was not shared at all becoming shared is the widest form
+        of this write, and the one Fable called the consent moment that actually
+        moves: it creates the link AND hands the peer the seat's sign-ins."""
+        unshared = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
+        del unshared["profiles"]["fed"]["federation"]
+        _rewrite(gateway, unshared)
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set",
+            "profiles.fed.federation",
+            {"peers": {"alpha": {"public_key": _ED25519_PUBLIC}}},
+            await _hash(),
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "federation peers"
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_the_page_says_the_seats_sign_in_will_serve_the_link(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """A derived ingress spends the SEAT's grant, so admitting a peer to a
+        seat holding one sends that peer's calls out as the account a person
+        authorized here. A page showing only key fingerprints would take that
+        consent without asking for it."""
+        document = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
+        document["profiles"]["fed"]["backends"]["era"] = {
+            "url": "https://context.era.app/mcp",
+            "tools_allow": ["*"],
+            "auth": {"type": "oauth"},
+        }
+        _rewrite(gateway, document)
+
+        await _as_operator(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await _hash(),
+        )
+        shown = pending.outstanding()[pending.Kind.FEDERATION_PEERS]
+
+        assert shown["Tools shared from fed"] == "era, memory"
+        assert "era" in shown["Runs as your sign-in on fed"]
+        assert "will serve the link" in shown["Runs as your sign-in on fed"]
+
+    async def test_the_page_says_none_when_no_sign_in_is_involved(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """An explicit "none" rather than a missing row: absence reads as "the
+        page did not mention it", which is the wrong thing to make a person
+        resolve for themselves."""
+        _rewrite(gateway, _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}}))
+
+        await _as_operator(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await _hash(),
+        )
+        shown = pending.outstanding()[pending.Kind.FEDERATION_PEERS]
+
+        assert shown["Runs as your sign-in on fed"] == "none"
+
+    async def test_a_derived_ingress_does_not_double_count_its_seats_peers(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The ingress carries the seat's block verbatim, so counting both would
+        show every peer twice and make a one-peer write look like two."""
+        _rewrite(gateway, _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}}))
+        config = (get_active_config() or pytest.fail("gone")).config
+
+        peers = config_guard.federation_peers(config.profiles)
+
+        assert "fed-federation" in config.profiles  # the ingress is live
+        assert sorted(peers) == ["fed.alpha"]
 
 
 class TestStandingAPerimeterDown:

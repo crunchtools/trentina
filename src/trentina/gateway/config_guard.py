@@ -201,11 +201,16 @@ def federation_peers(profiles: dict[str, Profile]) -> dict[str, str]:
     the second no longer does: since #637 a grant like this is PROPOSED rather
     than refused, so the ingress can still be built by an agent and a person
     still sees who was let in.
+
+    Seats only. A derived ingress carries its seat's ``federation`` block
+    verbatim, so counting both would show a person every peer twice — once
+    under ``josui`` and once under ``josui-federation`` — and make a two-peer
+    write look like four decisions.
     """
     return {
         f"{name}.{peer_name}": peer.public_key
         for name, profile in profiles.items()
-        if profile.federation is not None
+        if profile.federation is not None and profile.federation_of is None
         for peer_name, peer in profile.federation.peers.items()
     }
 

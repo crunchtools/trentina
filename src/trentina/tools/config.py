@@ -35,7 +35,14 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from ..gateway import approver, config_guard, config_patch, config_store, pending
+from ..gateway import (
+    approver,
+    config_guard,
+    config_patch,
+    config_store,
+    federation_link,
+    pending,
+)
 from ..gateway.audit import _audit
 from ..gateway.config_guard import ConfigWriteError
 from ..gateway.errors import ProfileConfigError, ScopeError
@@ -362,8 +369,8 @@ def _granted_facts(rendered: dict[str, str], *, naming: str, meaning: str) -> di
     return facts
 
 
-def _peer_facts(added: dict[str, str]) -> dict[str, str]:
-    """What a person needs to see about peers being admitted to an ingress.
+def _peer_facts(added: dict[str, str], after: GatewayConfig) -> dict[str, str]:
+    """What a person needs to see about peers being admitted to a shared seat.
 
     One proposal for the whole write rather than one per peer, unlike a trust
     pin: a peer list is a list an operator legitimately writes in one go, and
@@ -373,18 +380,57 @@ def _peer_facts(added: dict[str, str]) -> dict[str, str]:
     The key is shown as a fingerprint, which is the thing the operator at the
     other end can read down a phone. The whole PEM is a wall of base64 nobody
     checks by eye.
+
+    Beside the keys, what the link actually hands over: which of the seat's
+    backends cross, and which of those run on the seat's own sign-in. A derived
+    ingress spends the SEAT's OAuth grants, so admitting a peer to a seat that
+    holds one means that peer's calls go out as the account a person authorized
+    here. That is the consent this page exists to take, and a page showing only
+    key fingerprints would not have asked for it.
+
+    Stated from the configuration rather than from the grant store: "this
+    backend runs on your sign-in" is true of the link whether or not a grant
+    happens to exist at the moment someone reads the page, and reading the
+    store here would make the description a race.
     """
     if len(added) > _MAX_PROPOSAL_ROWS:
         raise _too_many("federation peers", len(added))
-    return _granted_facts(
+    facts = _granted_facts(
         {where: _fingerprint(key) for where, key in added.items()},
         naming="a federation peer name",
         meaning=(
-            "Each key above may authenticate to that ingress as that peer, and reach "
-            "whatever that profile's backends reach. It does NOT let the peer's own "
-            "scan be believed in place of this gateway's - that is a separate approval."
+            "Each key above may authenticate to that seat's federation ingress as "
+            "that peer, and reach whatever that seat's backends reach. It does NOT "
+            "let the peer's own scan be believed in place of this gateway's - that "
+            "is a separate approval."
         ),
     )
+    shared = {where.partition(".")[0] for where in added}
+    for seat in sorted(shared):
+        facts.update(_shared_seat_facts(seat, after))
+    return facts
+
+
+def _shared_seat_facts(seat: str, after: GatewayConfig) -> dict[str, str]:
+    """What crosses the link for one seat: its backends, and its sign-ins.
+
+    Both rows are always present, "none" included. A missing row reads as "the
+    page did not mention it", which is exactly the ambiguity a person deciding
+    this should not have to resolve.
+    """
+    profile = after.profiles[seat]
+    offered = federation_link.offerable_backends(profile)
+    signed_in = sorted(name for name, backend in offered.items() if backend.auth is not None)
+    label = pending.checked_display(seat, what="a profile name")
+    return {
+        f"Tools shared from {label}": ", ".join(sorted(offered)) or "none",
+        f"Runs as your sign-in on {label}": (
+            f"{', '.join(signed_in)} - this seat's sign-ins will serve the link, so "
+            "the peer's calls go out as the account authorized here"
+        )
+        if signed_in
+        else "none",
+    }
 
 
 def _defense_facts(downgraded: dict[str, dict[str, Any]]) -> dict[str, str]:
@@ -517,7 +563,7 @@ def _peer_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Propos
         config_guard.federation_peers(before.profiles),
         config_guard.federation_peers(after.profiles),
     )
-    return [(pending.Kind.FEDERATION_PEERS, _peer_facts(admitted))] if admitted else []
+    return [(pending.Kind.FEDERATION_PEERS, _peer_facts(admitted, after))] if admitted else []
 
 
 def _defense_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Proposal]:
