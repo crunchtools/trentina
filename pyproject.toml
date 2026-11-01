@@ -104,6 +104,9 @@ bridge = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    # Runs the suite across every core: addopts sets -n auto, and -n0 runs a
+    # single test in-process.
+    "pytest-xdist>=3.6",
     "ruff>=0.8",
     "mypy>=1.13",
     # A benign out-of-tree transform plugin, the test fixture + worked example
@@ -271,6 +274,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "-n auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [

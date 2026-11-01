@@ -15,6 +15,7 @@ from trentina import config as config_mod
 from trentina import database as database_mod
 from trentina import logsafe
 from trentina import perimeter_db as perimeter_db_mod
+from trentina.gateway import upstream as upstream_mod
 from trentina.gateway.aggregate import reset_profile_tools_cache
 from trentina.gateway.backend import reset_tool_list_cache
 from trentina.gateway.circuit import breaker
@@ -59,6 +60,12 @@ def _reset_singletons() -> None:
         with contextlib.suppress(Exception):
             perimeter_db_mod._db.close()
         perimeter_db_mod._db = None
+    # The upstream pool holds httpx clients bound to the event loop of the
+    # test that opened them. A later test on the same worker that closes the
+    # pool (a gateway lifespan exit) then closes them on a dead loop, and
+    # raises "Event loop is closed". Dropping the references is enough: the
+    # loop that owned them is gone.
+    upstream_mod._pool.clear()
 
 
 @pytest.fixture(autouse=True)

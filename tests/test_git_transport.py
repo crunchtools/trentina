@@ -575,7 +575,9 @@ class TestFetchNegotiation:
         assert stack.forge.requests == []
 
     @pytest.mark.parametrize(
-        "body", [b"not gzip at all", gzip.compress(FLUSH)[:-6], gzip.compress(FLUSH) + b"more"]
+        "body",
+        [b"not gzip at all", gzip.compress(FLUSH)[:-6], gzip.compress(FLUSH) + b"more"],
+        ids=["not-gzip", "truncated", "trailing-bytes"],
     )
     async def test_a_broken_gzip_body_is_malformed(
         self, stack: _Stack, audit_db: Path, body: bytes
