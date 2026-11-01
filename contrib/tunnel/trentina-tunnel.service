@@ -52,10 +52,23 @@
 #     way, where an edit to that one key line cannot quietly widen it:
 #     AllowTcpForwarding remote (permits -R, refuses -L), PermitOpen none,
 #     ForceCommand /usr/bin/false.
-#   - A vhost that proxies an ANCHORED ^/approve$ and ^/approve/(.*)$ with a
-#     default-deny <Location />. A prefix ProxyPass would also match
-#     /approveanything, and a bare ProxyPass / would publish the gateway's
-#     whole surface: its MCP route, /health, /authorize, /token, /register.
+#   - A vhost that proxies an ANCHORED path with a default-deny <Location />.
+#     A prefix ProxyPass would also match /approveanything, and a bare
+#     ProxyPass / would publish the gateway's whole surface: its MCP route,
+#     /health, /authorize, /token, /register. In Apache:
+#
+#       <Location />        Require all denied   </Location>
+#       <Location /approve> Require all granted  </Location>
+#       ProxyPassMatch ^(/approve(?:/.*)?)$ http://127.0.0.1:8119$1 disablereuse=On
+#       ProxyPassReverse /approve http://127.0.0.1:8119/approve
+#
+#     The capture is load-bearing. ProxyPassMatch APPENDS the matched URL to
+#     the target when the target carries no backreference, so the obvious
+#     spelling -- `^/approve$ http://127.0.0.1:8119/approve` -- forwards
+#     /approve as /approve/approve and the gateway answers 404. Written as
+#     two rules it half-works, because the one with a $1 in it is correct:
+#     the enrolment page is reachable and the approval page never is, which
+#     is not a failure anyone notices until they need to approve something.
 #
 # Worth testing rather than assuming, once: a second -R on another port is
 # refused, -L is administratively prohibited, and a shell attempt says the

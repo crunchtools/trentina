@@ -10,6 +10,31 @@ under that name.
 
 ## [Unreleased]
 
+## [4.2.1] - 2026-11-01
+
+### Fixed
+
+- **`config_tool`'s own description was a release behind, and it withdrew a
+  feature.** It still told callers that the operator seat and `trust_verdict`
+  are refused and "stays a human edit of the file" — the 3.3.x behaviour. Since
+  4.1.0 a write carrying either is staged for a person to approve at
+  `/approve`. A tool's description is how an operator agent decides what is
+  possible, so a stale one is not a documentation defect: an operator reading
+  it would never attempt either change, and would reach for the shell this
+  feature exists to remove. `tests/test_server.py` now holds the description to
+  saying staged rather than refused.
+
+- **`contrib/tunnel/trentina-tunnel.service` shipped a vhost recipe that could
+  not serve `/approve`.** It gave the anchored pair `^/approve$` and
+  `^/approve/(.*)$`. Apache's `ProxyPassMatch` APPENDS the matched URL to the
+  target when the target carries no backreference, so the first rule forwarded
+  `/approve` as `/approve/approve` and the gateway correctly answered 404. The
+  pair half-works, which is what hides it: the second rule has a `$1` and is
+  right, so the enrolment page is reachable and the approval page never is —
+  found only when someone finally has something to approve. Replaced with one
+  anchored rule that captures the path, and the trap is now written down beside
+  it.
+
 ## [4.2.0] - 2026-10-31
 
 ### Changed
