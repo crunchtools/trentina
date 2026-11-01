@@ -720,8 +720,7 @@ class TrustVerdict(BaseModel):
         ...,
         min_length=1,
         description=(
-            "The exact perimeter_stamp the secondary must have scanned under "
-            "(L2 + version)"
+            "The exact perimeter_stamp the secondary must have scanned under (L2 + version)"
         ),
     )
     judge: str = Field(
@@ -951,6 +950,42 @@ class FederationConfig(BaseModel):
     @model_validator(mode="after")
     def one_secondary_key_source(self) -> FederationConfig:
         _one_key_source(self.secondary_key_env, self.secondary_key_name, "secondary_key")
+        return self
+
+    @model_validator(mode="after")
+    def an_ingress_names_its_peers(self) -> FederationConfig:
+        """A `federation` block means a federation ingress, so it names peers.
+
+        `peers_names_are_well_formed` only runs when the field is PRESENT, so a
+        block carrying just `secondary_key_name` passed. That left "is this an
+        ingress?" with two answers: the auth path and the directed-ingress rule
+        read `federation.peers`, while the topology check, the refusal mirror
+        and the VSA emit site read `federation is not None`. A profile in the
+        gap skipped the directed-ingress rule entirely — it could be
+        `role: operator` with unrestricted internal tools — and still signed
+        verdict assertions over its responses.
+        """
+        if not self.peers:
+            raise ValueError("federation.peers must name at least one peer")
+        return self
+
+    @model_validator(mode="after")
+    def peer_keys_are_distinct(self) -> FederationConfig:
+        """Two peers may not share a public key.
+
+        `verify_primary_jwt` returns the first peer whose key verifies, so a
+        shared key made the audited actor a matter of YAML order while both
+        peers authenticated — an audit that names the wrong caller is worse
+        than one that names none.
+        """
+        seen: dict[str, str] = {}
+        for name, peer in self.peers.items():
+            first = seen.setdefault(peer.public_key, name)
+            if first != name:
+                raise ValueError(
+                    f"federation peers {first!r} and {name!r} share a public key; "
+                    "each peer needs its own, or the audited caller is YAML order"
+                )
         return self
 
 
@@ -3246,7 +3281,7 @@ class Profile(BaseModel):
     def a_federation_ingress_is_directed(self) -> Profile:
         """Refuse a federation ingress that is not a directed link (#592, C2).
 
-        A profile with ``federation.peers`` offers a declared set to a primary
+        A profile with a ``federation`` block offers a declared set to a primary
         peer and can never reach past it. The rule is structural, like a
         honeypot's: the profile is ``role: agent`` — an operator ingress would
         offer the gateway's admin tools to a peer — and its internal backend's
@@ -3254,8 +3289,14 @@ class Profile(BaseModel):
         (``read_part_tool`` only). A glob such as ``read_*`` or ``*`` is refused
         as written, before it can match the whole native surface. The offered
         set itself is the profile's own remote backends; no second list.
+
+        Keyed on ``federation is not None``, as the topology check and the VSA
+        emit site are. Keying it on ``peers`` instead left a block with only a
+        ``secondary_key_name`` outside the rule while still signing assertions;
+        ``an_ingress_names_its_peers`` now makes the two spellings mean the same
+        thing, and this one no longer has to guess which it meant.
         """
-        if self.federation is None or not self.federation.peers:
+        if self.federation is None:
             return self
         problems: list[str] = []
         if self.role != "agent":

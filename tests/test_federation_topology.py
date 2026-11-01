@@ -8,9 +8,13 @@ backend must be reached over https (the 60 s primary JWT has no replay nonce).
 from __future__ import annotations
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from pydantic import SecretStr, ValidationError
 
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.loader import (
+    _check_federation_audience,
     _check_federation_topology,
     _check_renamed_federation_keys,
 )
@@ -19,11 +23,24 @@ from trentina.gateway.profile import (
     Backend,
     FederatedConfig,
     FederationConfig,
+    FederationPeer,
     Profile,
 )
 
 HTTPS = "https://lotor.example/gateway/josui/mcp"
 HTTP = "http://lotor.example/gateway/josui/mcp"
+
+
+def _peers() -> dict[str, FederationPeer]:
+    """An ingress names at least one peer: `peers` IS what authenticates a
+    primary, so a block without one is not an ingress (`profile.py`)."""
+    priv = Ed25519PrivateKey.generate()
+    pem = (
+        priv.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+    return {"breetai": FederationPeer(public_key=pem)}
 
 
 def _profile(*, ingress: bool, federated_url: str | None) -> Profile:
@@ -33,7 +50,7 @@ def _profile(*, ingress: bool, federated_url: str | None) -> Profile:
     return Profile(
         name="breetai",
         auth=AuthConfig(bearer_token_env="B"),
-        federation=FederationConfig() if ingress else None,
+        federation=FederationConfig(peers=_peers()) if ingress else None,
         backends=backends,
     )
 
@@ -75,9 +92,7 @@ def test_http_is_allowed_with_the_insecure_opt_in(monkeypatch: pytest.MonkeyPatc
         ("edge_key_name", "primary_key_name"),
     ],
 )
-def test_a_pre_4_0_0_backend_key_name_is_refused_with_its_replacement(
-    old: str, new: str
-) -> None:
+def test_a_pre_4_0_0_backend_key_name_is_refused_with_its_replacement(old: str, new: str) -> None:
     """Scott chose no deprecation shim, so the error IS the migration aid.
 
     ``extra="forbid"`` already refuses these, but pydantic's own message is
@@ -99,9 +114,7 @@ def test_a_pre_4_0_0_backend_key_name_is_refused_with_its_replacement(
         ("signing_key_name", "secondary_key_name"),
     ],
 )
-def test_a_pre_4_0_0_ingress_key_name_is_refused_with_its_replacement(
-    old: str, new: str
-) -> None:
+def test_a_pre_4_0_0_ingress_key_name_is_refused_with_its_replacement(old: str, new: str) -> None:
     body = {"auth": {"bearer_token_env": "T"}, "federation": {old: "A_KEY"}}
     with pytest.raises(ProfileConfigError, match=f"{old!r} was renamed to {new!r}"):
         _check_renamed_federation_keys("breetai", body)
@@ -123,3 +136,153 @@ def test_the_check_does_not_fire_on_an_unrelated_block() -> None:
     _check_renamed_federation_keys(
         "breetai", {"backends": {"plain": {"url": HTTPS, "headers": {"edge_key_env": "x"}}}}
     )
+
+
+class TestOneDefinitionOfAnIngress:
+    """ "Is this a federation ingress?" had two answers.
+
+    The auth path and the directed-ingress rule read `federation.peers`; the
+    topology check, the refusal mirror and the VSA emit site read
+    `federation is not None`. A block carrying only a `secondary_key_name`
+    fell in the gap: outside the directed-ingress rule, so it could be
+    `role: operator` with unrestricted internal tools, and still signing
+    verdict assertions over its responses.
+    """
+
+    def test_a_federation_block_without_peers_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="must name at least one peer"):
+            FederationConfig()
+
+    def test_an_operator_ingress_is_refused(self) -> None:
+        """What the gap allowed: an ingress offering the gateway's admin tools."""
+        with pytest.raises(ValidationError, match="role must be agent"):
+            Profile(
+                name="op",
+                role="operator",
+                auth=AuthConfig(bearer_token_env="B"),
+                federation=FederationConfig(peers=_peers()),
+                backends={},
+            )
+
+    def test_an_ingress_may_not_widen_its_internal_tools(self) -> None:
+        with pytest.raises(ValidationError, match="may offer a peer only"):
+            Profile(
+                name="fed",
+                auth=AuthConfig(bearer_token_env="B"),
+                federation=FederationConfig(peers=_peers()),
+                backends={"web": Backend(url="internal://web", tools_allow=["*"])},
+            )
+
+    def test_two_peers_may_not_share_a_key(self) -> None:
+        """`verify_primary_jwt` returns the first peer whose key verifies, so a
+        shared key made the audited actor a matter of YAML order."""
+        peers = _peers()
+        shared = next(iter(peers.values())).public_key
+        peers["other"] = FederationPeer(public_key=shared)
+        with pytest.raises(ValidationError, match="share a public key"):
+            FederationConfig(peers=peers)
+
+
+class TestOnePrimaryKeyPerSecondary:
+    """The primary JWT's audience is the ingress PROFILE NAME, and nothing in
+    it names which gateway it was minted for. Two federated backends sharing a
+    primary key and deriving the same audience therefore mint tokens each
+    secondary accepts: secondary B replays one at secondary A inside the
+    60-second window and A audits a call the primary never made. No on-path
+    position, and HTTPS does not help.
+    """
+
+    def _profile(self, urls: dict[str, str], *, keys: dict[str, str]) -> Profile:
+        profile = Profile(
+            name="breetai",
+            auth=AuthConfig(bearer_token_env="B"),
+            backends={
+                name: Backend(url=url, tools_allow=["*"], federated=FederatedConfig())
+                for name, url in urls.items()
+            },
+        )
+        for name, key in keys.items():
+            federated = profile.backends[name].federated
+            assert federated is not None
+            federated.primary_key = SecretStr(key)
+        return profile
+
+    def test_the_pair_split_across_profiles_is_refused(self) -> None:
+        """Two profiles can each hold one half, and a per-profile pass sees
+        one backend and accepts it."""
+        prod = self._profile({"prod": "https://prod.example/gateway/fed/mcp"}, keys={"prod": "K"})
+        staging = Profile(
+            name="other",
+            auth=AuthConfig(bearer_token_env="B"),
+            backends={
+                "staging": Backend(
+                    url="https://staging.example/gateway/fed/mcp",
+                    tools_allow=["*"],
+                    federated=FederatedConfig(),
+                )
+            },
+        )
+        federated = staging.backends["staging"].federated
+        assert federated is not None
+        federated.primary_key = SecretStr("K")
+        with pytest.raises(ProfileConfigError, match="could replay the other's token"):
+            _check_federation_audience({"breetai": prod, "other": staging})
+
+    def test_one_host_with_two_path_prefixes_is_refused(self) -> None:
+        """Comparing origins would read two independent gateways behind one
+        host as the same gateway."""
+        profile = self._profile(
+            {
+                "a": "https://shared.example/one/gateway/fed/mcp",
+                "b": "https://shared.example/two/gateway/fed/mcp",
+            },
+            keys={"a": "K", "b": "K"},
+        )
+        with pytest.raises(ProfileConfigError, match="could replay the other's token"):
+            _check_federation_audience({"breetai": profile})
+
+    def test_the_same_key_to_two_gateways_with_one_audience_is_refused(self) -> None:
+        profile = self._profile(
+            {
+                "prod": "https://prod.example/gateway/fed/mcp",
+                "staging": "https://staging.example/gateway/fed/mcp",
+            },
+            keys={"prod": "K", "staging": "K"},
+        )
+        with pytest.raises(ProfileConfigError, match="could replay the other's token"):
+            _check_federation_audience({"breetai": profile})
+
+    def test_a_key_each_is_fine(self) -> None:
+        """Different keys already fail at the secondary: A holds only its own
+        peer key, so B's token does not verify."""
+        profile = self._profile(
+            {
+                "prod": "https://prod.example/gateway/fed/mcp",
+                "staging": "https://staging.example/gateway/fed/mcp",
+            },
+            keys={"prod": "K1", "staging": "K2"},
+        )
+        _check_federation_audience({"breetai": profile})
+
+    def test_different_ingress_names_are_fine(self) -> None:
+        """A distinct audience is the other way out: the token names the
+        profile it was minted for and the wrong secondary refuses it."""
+        profile = self._profile(
+            {
+                "prod": "https://prod.example/gateway/fed-prod/mcp",
+                "staging": "https://staging.example/gateway/fed-staging/mcp",
+            },
+            keys={"prod": "K", "staging": "K"},
+        )
+        _check_federation_audience({"breetai": profile})
+
+    def test_two_backends_at_one_gateway_are_fine(self) -> None:
+        """The same gateway twice is not a replay: it is the audience it is."""
+        profile = self._profile(
+            {
+                "a": "https://prod.example/gateway/fed/mcp",
+                "b": "https://prod.example/gateway/fed/mcp",
+            },
+            keys={"a": "K", "b": "K"},
+        )
+        _check_federation_audience({"breetai": profile})

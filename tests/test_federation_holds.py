@@ -18,6 +18,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from trentina.gateway import aggregate, surface, tool_pins
 from trentina.gateway import backend as backend_mod
@@ -28,6 +30,7 @@ from trentina.gateway.profile import (
     DefenseConfig,
     FederatedConfig,
     FederationConfig,
+    FederationPeer,
     Profile,
 )
 from trentina.gateway.surface import BackendSurface, Stage, Surface
@@ -98,7 +101,21 @@ def _ingress() -> Profile:
         name="lotor",
         auth=AuthConfig(bearer_token_env="UP"),
         defense=DefenseConfig(provider="ollama"),
-        federation=FederationConfig(),
+        # An ingress names at least one peer: `peers` IS what authenticates a
+        # primary, so a block without one is not an ingress (`profile.py`).
+        federation=FederationConfig(
+            peers={
+                "breetai": FederationPeer(
+                    public_key=Ed25519PrivateKey.generate()
+                    .public_key()
+                    .public_bytes(
+                        serialization.Encoding.PEM,
+                        serialization.PublicFormat.SubjectPublicKeyInfo,
+                    )
+                    .decode()
+                )
+            }
+        ),
         backends={},
     )
 

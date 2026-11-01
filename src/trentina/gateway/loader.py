@@ -35,6 +35,7 @@ from .profile import (
     MatrixIngressConfig,
     ProcessorChainConfig,
     Profile,
+    federation_audience,
     is_matrix_user_id,
 )
 from .transform import resolve
@@ -342,6 +343,47 @@ def _check_renamed_federation_keys(name: str, body: dict[str, Any]) -> None:
                     f"Profile {name!r}: {old!r} was renamed to {new!r} in 4.0.0, when "
                     "federation's roles became primary (uses the tools) and secondary "
                     "(offers them). Rename the field; the value is unchanged."
+                )
+
+
+def _check_federation_audience(registry: dict[str, Profile]) -> None:
+    """One primary key may not serve two secondaries with the same audience.
+
+    The primary JWT's audience is the ingress PROFILE NAME — the path segment
+    before ``/mcp`` (``profile.federation_audience``) — and the secondary
+    checks it against its own name. Nothing in it names which gateway it was
+    minted for, so two federated backends sharing a primary key and deriving
+    the same audience mint tokens each secondary accepts. Secondary B replays
+    one at secondary A inside the 60-second window and A audits a call the
+    primary never made; HTTPS does not help and no on-path position is needed.
+
+    Refused here rather than fixed in the token, because this configuration is
+    the whole precondition. Different keys per secondary already fail: A holds
+    only its own peer key, so B's token does not verify. Same key AND same
+    audience is the one shape that works, and no deployment needs it.
+
+    Over the WHOLE file, not one profile: two profiles can each hold one half
+    of the pair, and a per-profile pass sees one backend and accepts it.
+    Grouped by (key, audience), and any group holding more than one distinct
+    URL is refused — comparing origins would read two independent gateways
+    behind one host on different path prefixes as the same gateway.
+    """
+    seen: dict[tuple[str, str], tuple[str, str, str]] = {}
+    for profile_name, profile in sorted(registry.items()):
+        for backend_name, backend in sorted(profile.backends.items()):
+            federated = backend.federated
+            if federated is None or federated.primary_key is None:
+                continue
+            audience = federation_audience(backend.url) or ""
+            group = (federated.primary_key.get_secret_value(), audience)
+            first = seen.setdefault(group, (profile_name, backend_name, backend.url))
+            if first[2] != backend.url:
+                raise ProfileConfigError(
+                    f"Federated backends {first[0]}.{first[1]} and "
+                    f"{profile_name}.{backend_name} share a primary key and both derive "
+                    f"the audience {audience!r} while pointing at different URLs: either "
+                    "secondary could replay the other's token. Give each secondary its own "
+                    "primary key, or ingress profiles with different names."
                 )
 
 
@@ -1179,6 +1221,7 @@ def load_profiles(path: Path | str) -> GatewayConfig:
         name: _build_profile(name, body) for name, body in profiles_section.items()
     }
     _check_operator(registry)
+    _check_federation_audience(registry)
     _check_judges(registry)
     _check_matrix_networks(registry)
     _check_egress_networks(registry)
