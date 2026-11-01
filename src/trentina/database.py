@@ -8,6 +8,7 @@ deterministic code, which decides whether to record a detection.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -18,10 +19,13 @@ from urllib.parse import quote
 
 from . import audit_chain, telemetry
 from .config import get_config, int_env
+from .logsafe import exc_kind
 from .outcomes import Outcome, group_of
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+logger = logging.getLogger(__name__)
 
 _db: sqlite3.Connection | None = None
 _db_path = ""  # set by get_db on every open
@@ -486,11 +490,21 @@ def _maybe_sweep(db: sqlite3.Connection) -> None:
 
     Run from ``is_blocked`` and ``record_gateway_call``, the first time on the
     first call after start.
+
+    Housekeeping, and it runs INSIDE the two calls that matter most: deleting
+    an expired row is never a reason to lose the row being written or to fail
+    the blocklist answer the perimeter is waiting on. A failed pass leaves the
+    sweep due, so the next call retries it, and the rows it meant to delete
+    stay — which is the harmless direction.
     """
     global _last_sweep
     if _last_sweep is not None and time.monotonic() - _last_sweep < _SWEEP_INTERVAL_SECONDS:
         return
-    removed = max(sweep_expired_blocks(db), sweep_old_gateway_calls(db))
+    try:
+        removed = max(sweep_expired_blocks(db), sweep_old_gateway_calls(db))
+    except Exception as exc:
+        logger.warning("database: a retention sweep did not finish err=%s", exc_kind(exc))
+        return
     if removed < SWEEP_BATCH:
         _last_sweep = time.monotonic()
 

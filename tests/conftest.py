@@ -54,6 +54,12 @@ def _reset_singletons() -> None:
             # part that matters.
             database_mod._db.close()
         database_mod._db = None
+    # The sweep clock is a module global, and "already swept" is the lenient
+    # state: a test that leaves it set makes the next test's first audit write
+    # skip the retention sweep entirely. Clearing it leaves every test with
+    # the sweep DUE, which is the strict reading and the one production has on
+    # its first call after start.
+    database_mod._last_sweep = None
     # Same for the perimeter store, which is a second connection with the
     # same thread affinity.
     if perimeter_db_mod._db is not None:
