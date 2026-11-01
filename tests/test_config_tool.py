@@ -117,9 +117,7 @@ class TestReading:
         read = await _as_operator("get", "profiles.nope")
         assert "not set" in read["error"]
 
-    async def test_a_hand_broken_file_is_reported_not_raised(
-        self, gateway: pathlib.Path
-    ) -> None:
+    async def test_a_hand_broken_file_is_reported_not_raised(self, gateway: pathlib.Path) -> None:
         """A person can edit the file while the gateway runs, so a read has to
         say the file is broken rather than raise out of the tool."""
         gateway.write_text("profiles:\n  a: [unclosed\n", encoding="utf-8")
@@ -273,9 +271,7 @@ class TestRefusals:
         assert "op" in shown and "ag" in shown
         assert gateway.read_text(encoding="utf-8") == before
 
-    async def test_changing_the_operators_own_auth_is_staged(
-        self, gateway: pathlib.Path
-    ) -> None:
+    async def test_changing_the_operators_own_auth_is_staged(self, gateway: pathlib.Path) -> None:
         """How a caller BECOMES the operator is the seat too, not just who holds it."""
         before = gateway.read_text(encoding="utf-8")
         result = await _as_operator(
@@ -283,6 +279,81 @@ class TestRefusals:
         )
         assert result["awaiting"] == "operator seat"
         assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_a_credential_swap_on_an_unchanged_seat_is_visible(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """Staging it is only half the job: the page has to SAY what moved.
+
+        The facts used to be the set of profile names holding the seat, before
+        and after. A write that swaps the credential behind an unchanged name
+        leaves that set identical, so the most dangerous shape of this change —
+        a different key making someone root, same seat — reached a person as
+        "op, then op" and read as a no-op. Found in QE by a reviewer who was
+        told to decline, saw that page, and approved.
+        """
+        result = await _as_operator(
+            "set", "profiles.op.auth.bearer_token_env", "AG_TOKEN", await _hash()
+        )
+        facts = result["shown_for_approval"]
+        assert result["awaiting"] == "operator seat"
+
+        held = [v for k, v in facts.items() if "Holds" in k or "Would hold" in k]
+        assert held == ["op", "op"], "the seat itself does not move — that is the point"
+
+        now = facts["op.auth now"]
+        after = facts["op.auth after this change"]
+        assert now != after, f"a credential swap must not render identically: {facts}"
+        assert "OP_TOKEN" in now
+        assert "AG_TOKEN" in after
+
+    async def test_a_seat_field_too_long_to_read_is_refused_not_truncated(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """Every fragment is length-checked, but the operator writes how many
+        fragments there are. Burying the one line that matters under a thousand
+        that do not would get a change approved by exhausting the reader, so
+        past the limit the write is refused and nothing is staged."""
+        from trentina.tools.config import _SEAT_VALUE_CHARS, _seat_facts
+
+        seat = {"op": {"auth": {"bearer_token_env": "OP_TOKEN"}}}
+        flooded = {"op": {"auth": {f"f{n}": "x" * 40 for n in range(_SEAT_VALUE_CHARS // 10)}}}
+        with pytest.raises(pending.PendingError, match="too long to show"):
+            _seat_facts(seat, flooded)
+
+    def test_an_absent_seat_field_is_not_shown_as_an_unset_one(self) -> None:
+        """``dict.get`` alone reports a missing key and a key set to ``None``
+        identically, so a change between them would vanish from the page."""
+        from trentina.tools.config import _seat_facts
+
+        facts = _seat_facts({"op": {}}, {"op": {"auth": None}})
+        assert facts["op.auth now"] == "absent"
+        assert facts["op.auth after this change"] == "not set"
+
+    def test_no_secret_bearing_field_reaches_the_seat_comparison(self) -> None:
+        """What the seat facts render is whatever ``operator_seat`` dumped, and
+        that is now shown on a web page rather than merely compared.
+
+        ``auth`` and ``oauth`` each carry a resolved ``SecretStr``. Both are
+        ``Field(exclude=True)``, so neither appears in ``model_dump`` — which
+        is the only reason rendering the dump is safe. A new secret field added
+        without that marker would be published to the approval page, so the
+        marker is asserted rather than trusted.
+        """
+        from trentina.gateway.profile import AuthConfig, OAuthConfig
+
+        for model in (AuthConfig, OAuthConfig):
+            secrets = [
+                name
+                for name, field in model.model_fields.items()
+                if "SecretStr" in str(field.annotation)
+            ]
+            assert secrets, f"{model.__name__} should still hold a secret to exclude"
+            for name in secrets:
+                assert model.model_fields[name].exclude is True, (
+                    f"{model.__name__}.{name} holds a credential and is not excluded "
+                    "from model_dump, so it would reach the approval page"
+                )
 
     async def test_turning_on_scan_once_trust_is_staged_not_applied(
         self, gateway: pathlib.Path
@@ -349,9 +420,7 @@ class TestRefusals:
         mixed = YAML + "mixed:\n  a:\n  - x\n  b:\n    - y\n"
         gateway.write_text(mixed, encoding="utf-8")
 
-        result = await _as_operator(
-            "set", "profiles.ag.defense.enforcement", "flag", await _hash()
-        )
+        result = await _as_operator("set", "profiles.ag.defense.enforcement", "flag", await _hash())
 
         assert "without reformatting the rest of it" in result["error"]
         assert gateway.read_text(encoding="utf-8") == mixed
@@ -435,9 +504,7 @@ profiles:
 
 
 class TestNormalize:
-    async def test_a_file_that_already_round_trips_is_refused(
-        self, gateway: pathlib.Path
-    ) -> None:
+    async def test_a_file_that_already_round_trips_is_refused(self, gateway: pathlib.Path) -> None:
         """Nothing to do is said plainly, not reported as a successful rewrite."""
         result = await _as_operator("normalize", None, None, await _hash())
         assert "already reproduces itself" in result["error"]
@@ -463,9 +530,7 @@ class TestNormalize:
         assert "operator" in result["error"]
         assert gateway.read_text(encoding="utf-8") == YAML
 
-    async def test_it_rewrites_a_file_that_does_not_round_trip(
-        self, gateway: pathlib.Path
-    ) -> None:
+    async def test_it_rewrites_a_file_that_does_not_round_trip(self, gateway: pathlib.Path) -> None:
         gateway.write_text(UNNORMALIZED, encoding="utf-8")
         register_active_config(gateway, load_profiles(gateway), {})
 
@@ -482,9 +547,7 @@ class TestNormalize:
         assert "# an alias, and a comment riding on it" in after
         assert "# The gateway's profiles." in after
 
-    async def test_the_previous_version_is_kept(
-        self, gateway: pathlib.Path
-    ) -> None:
+    async def test_the_previous_version_is_kept(self, gateway: pathlib.Path) -> None:
         gateway.write_text(UNNORMALIZED, encoding="utf-8")
         register_active_config(gateway, load_profiles(gateway), {})
 
@@ -493,9 +556,7 @@ class TestNormalize:
         kept = pathlib.Path(result["backup"])
         assert kept.read_text(encoding="utf-8") == UNNORMALIZED
 
-    async def test_a_set_that_was_refused_before_applies_after(
-        self, gateway: pathlib.Path
-    ) -> None:
+    async def test_a_set_that_was_refused_before_applies_after(self, gateway: pathlib.Path) -> None:
         """The acceptance for C1, end to end."""
         gateway.write_text(UNNORMALIZED, encoding="utf-8")
         register_active_config(gateway, load_profiles(gateway), {})
@@ -518,9 +579,7 @@ class TestWithNoApprover:
     an approval anyone can give."""
 
     @pytest.fixture(autouse=True)
-    def _no_approver(
-        self, gateway: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def _no_approver(self, gateway: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Depends on `gateway` so it runs AFTER it: that fixture configures an
         # approver, and an autouse fixture would otherwise be undone by it.
         del gateway
@@ -544,9 +603,7 @@ class TestWithNoApprover:
     async def test_an_ordinary_write_still_applies(self, gateway: pathlib.Path) -> None:
         """Only the two guarded writes need a person; everything else is the
         operator's as it always was."""
-        result = await _as_operator(
-            "set", "profiles.ag.defense.enforcement", "flag", await _hash()
-        )
+        result = await _as_operator("set", "profiles.ag.defense.enforcement", "flag", await _hash())
         assert result["applied"] is True
 
 
@@ -555,9 +612,7 @@ class TestOneApprovalPerWrite:
     pin trust, or pin two backends, while the page showed one of them — so the
     rest would be applied unseen on the back of the one a person read."""
 
-    async def test_a_write_needing_two_approvals_is_refused(
-        self, gateway: pathlib.Path
-    ) -> None:
+    async def test_a_write_needing_two_approvals_is_refused(self, gateway: pathlib.Path) -> None:
         before = gateway.read_text(encoding="utf-8")
         result = await _as_operator(
             "set",
@@ -567,9 +622,7 @@ class TestOneApprovalPerWrite:
                     "role": "operator",
                     "defense": {"provider": "ollama"},
                     "auth": {"bearer_token_env": "AG_TOKEN"},
-                    "backends": {
-                        "web": {"url": "internal://web", "tools_allow": ["fetch_tool"]}
-                    },
+                    "backends": {"web": {"url": "internal://web", "tools_allow": ["fetch_tool"]}},
                 },
                 "ag": {
                     "auth": {"bearer_token_env": "AG_TOKEN"},

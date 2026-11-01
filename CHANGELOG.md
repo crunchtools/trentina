@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [4.2.2] - 2026-11-01
+
 ### Changed
 
 - **The test suite runs on every core.** `pytest-xdist` joins the `dev` extra
@@ -25,6 +27,41 @@ under that name.
   `container.yml` built the same Containerfile with one. It now uses
   `docker/build-push-action` with the same `type=gha` cache. The L2
   integration tests in the image run four workers with one ONNX thread each.
+
+### Fixed
+
+- **The operator-seat approval page did not say what was changing.**
+  `config_guard.operator_seat` compares everything that decides who the
+  operator is *and how a caller becomes one* — `auth`, `oauth`, and the source
+  networks that pick the profile — and the guard used all of it, which is why
+  a credential swap staged correctly. But `_seat_facts` then discarded those
+  values and displayed only the set of profile *names* holding the seat. A
+  write that swaps the bearer credential behind an unchanged seat therefore
+  reached a person as "josui, then josui": a no-op, with nothing to decline.
+
+  That is the shape that matters most. Moving the seat to a new profile is
+  visible on the page; leaving the name alone and changing the key that makes
+  someone that name is the quiet version, and it rendered as nothing. The
+  constitution's Human Approval rule requires the approval to state what is
+  being changed, and for this case it did not.
+
+  Found in QE: a reviewer who had been told to decline, with the page in front
+  of them, approved it — because the page showed no change. Every differing
+  aspect of the seat is now named with its before and its after, and
+  `tests/test_config_tool.py` fails if a credential swap renders identically.
+
+  Rendering the comparison on a page is only safe because the two
+  secret-bearing fields it could reach, `auth.bearer_token` and
+  `oauth.client_secret`, are declared `Field(exclude=True)` and never appear
+  in the dump. That is now asserted rather than assumed, so a new secret field
+  added without the marker fails the suite instead of reaching a web page.
+
+  Showing more also means bounding it. Each fragment was already held to a
+  displayable shape, but the operator writes how many fragments there are — an
+  OAuth allowlist is a list it controls — and burying the one line that
+  matters under a thousand that do not is its own way to get a change
+  approved. A rendered field past 2000 characters refuses the write instead,
+  the way an undisplayable value already did.
 
 ## [4.2.1] - 2026-11-01
 

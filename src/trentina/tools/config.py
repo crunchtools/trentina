@@ -191,19 +191,103 @@ def _fingerprint(pem: str) -> str:
     return f"sha256:{hashlib.sha256(pem.encode('utf-8')).hexdigest()[:16]}"
 
 
+#: A key absent from one side's seat, told apart from a key that is present
+#: and ``None``. ``operator_seat`` emits the same four keys for every profile
+#: today, so the two cannot differ — but this loop reads the union of both key
+#: sets, which is a promise that they may, and ``dict.get`` alone would show
+#: "absent" and "set to nothing" as the same unchanged field.
+_MISSING = object()
+
+#: The most one rendered seat field may run to. Every fragment inside it is
+#: already held to ``checked_display``'s length, but it is the operator who
+#: writes how MANY fragments there are — an OAuth allowlist is a list it
+#: controls. Burying the one line that matters under a thousand that do not is
+#: a way to get a change approved, so past this the write is refused rather
+#: than shown unreadably.
+_SEAT_VALUE_CHARS = 2000
+
+
+def _seat_value(value: Any) -> str:
+    """One field of the seat, as something a person can read off a page.
+
+    Each fragment that came out of the file is checked on its own and the
+    punctuation between them is ours. Checking the joined line instead would
+    refuse a long but perfectly legitimate value — an OAuth allowlist with a
+    dozen addresses — for being longer than one displayable string may be.
+    """
+    if value is None:
+        return "not set"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, list):
+        return ", ".join(_seat_value(item) for item in value) if value else "empty"
+    if isinstance(value, dict):
+        shown = [
+            f"{pending.checked_display(str(key), what='an operator seat field')}"
+            f"={_seat_value(item)}"
+            for key, item in sorted(value.items())
+            if item is not None
+        ]
+        return ", ".join(shown) if shown else "nothing set"
+    return pending.checked_display(str(value), what="an operator seat value")
+
+
+def _seat_shown(value: Any, aspect: str) -> str:
+    """One side of a changed aspect, or a refusal if it cannot be read."""
+    if value is _MISSING:
+        return "absent"
+    rendered = _seat_value(value)
+    if len(rendered) > _SEAT_VALUE_CHARS:
+        raise pending.PendingError(
+            f"the operator seat's {aspect} is too long to show for approval; "
+            "change it in the file, where a person can read the diff"
+        )
+    return rendered
+
+
 def _seat_facts(before: dict[str, Any], after: dict[str, Any]) -> dict[str, str]:
-    """What a person needs to see about a seat change: who holds it now, and
-    who would. The names come from a file the operator can write, so they go
-    through ``checked_display`` like anything else it chose."""
-    return {
+    """What a person needs to see about a seat change.
+
+    Who holds it is not enough, and saying only that was a real hole.
+    ``config_guard.operator_seat`` compares how a caller BECOMES the operator
+    as well — ``auth``, ``oauth``, and the source networks that pick the
+    profile — so a write can swap the credential that makes someone root
+    while the seat's name never moves. Rendered as names alone that reaches a
+    person as "josui, then josui": a no-op they have no reason to decline.
+    It is also the shape that matters most, because moving the seat to a new
+    profile is visible and changing the key behind an unchanged name is not.
+    QE found it the hard way — told to decline, shown that page, approved.
+
+    So every aspect that differs is named, with its before and its after. A
+    profile that only enters or only leaves the seat is already carried by the
+    two lines above.
+
+    No credential VALUE can arrive here. The two secret-bearing fields in
+    these models, ``auth.bearer_token`` and ``oauth.client_secret``, are
+    declared ``Field(exclude=True)`` and so are absent from the dump
+    ``operator_seat`` compares — asserted in ``tests/test_config_tool.py``,
+    because a new secret field without that marker would otherwise reach a
+    web page.
+    """
+    facts = {
         "Holds the operator seat now": pending.checked_display(
             ", ".join(sorted(before)) or "nobody", what="the current operator seat"
         ),
         "Would hold it after this change": pending.checked_display(
             ", ".join(sorted(after)) or "nobody", what="the proposed operator seat"
         ),
-        "What this means": "Whoever holds the seat is root on this gateway.",
     }
+    for name in sorted(set(before) & set(after)):
+        shown = pending.checked_display(name, what="an operator seat name")
+        was, now = before[name], after[name]
+        for aspect in sorted(set(was) | set(now)):
+            had, has = was.get(aspect, _MISSING), now.get(aspect, _MISSING)
+            if had == has:
+                continue
+            facts[f"{shown}.{aspect} now"] = _seat_shown(had, aspect)
+            facts[f"{shown}.{aspect} after this change"] = _seat_shown(has, aspect)
+    facts["What this means"] = "Whoever holds the seat is root on this gateway."
+    return facts
 
 
 def _trust_facts(where: str, pin: dict[str, str]) -> dict[str, str]:
