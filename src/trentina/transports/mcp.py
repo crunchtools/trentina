@@ -67,7 +67,7 @@ from ..gateway.context import (
 )
 from ..gateway.decoy import leaked_tokens
 from ..gateway.destination import Destination, destination_of
-from ..gateway.errors import BackendCallError
+from ..gateway.errors import NEEDS_AUTH_REASON, NEEDS_AUTH_SECONDARY_REASON, BackendCallError
 from ..gateway.filter import filter_tools
 from ..gateway.guards import _response_text as _response_guard_text
 from ..gateway.guards import check_response_guards
@@ -371,6 +371,67 @@ def _deliver_trusted(
     return Assembled(result, ok, warning=warning, stripped=stripped)
 
 
+#: The peer's tool a primary names when a peer backend needs a sign-in.
+_BACKEND_AUTH_TOOL = "backend_auth_tool"
+
+
+def _peer_refusal(backend: Backend, call_result: BackendCall) -> dict[str, Any] | None:
+    """The refusal a federated peer mirrored into ``_meta``, if there is one."""
+    if backend.federated is None:
+        return None
+    meta = call_result.meta if isinstance(call_result.meta, dict) else None
+    refusal = meta.get(REFUSAL_KEY) if meta else None
+    return refusal if isinstance(refusal, dict) else None
+
+
+def _federated_needs_auth_refusal(
+    profile: Profile,
+    backend: Backend,
+    backend_name: str,
+    call_result: BackendCall,
+    *,
+    stripped: int,
+) -> Assembled | None:
+    """A federated peer has no grant for the profile this primary calls it as.
+
+    Authored here for the same reason as the hold refusal, and because only this
+    gateway knows what the peer's ``backend_auth`` is served as: the peer's own
+    wording names a tool that, here, signs in to something else. Nothing of the
+    peer's reaches this text, since it skips the layers. ``status`` names the
+    backend, through the pipeline.
+    """
+    refusal = _peer_refusal(backend, call_result)
+    if refusal is None or refusal.get("reason") != NEEDS_AUTH_REASON:
+        return None
+    tool = served_name(profile, backend_name, _BACKEND_AUTH_TOOL)
+    if tool is None:
+        fix = (
+            "Its sign-in tool is not available here: the secondary's ingress must "
+            f"list {_BACKEND_AUTH_TOOL}, and this gateway must approve it."
+        )
+    else:
+        fix = (
+            f'Call {tool} with action="status" to see which backend needs it, then '
+            'action="start" for that backend, and send the link it returns to your human.'
+        )
+    detail = f"This tool's backend on {backend_name!r} is not authorized for this gateway's link."
+    result = {
+        "content": [
+            {
+                "type": "text",
+                "text": f"[TRENTINA] Refused ({NEEDS_AUTH_SECONDARY_REASON}). {detail} {fix}",
+            }
+        ],
+        "isError": False,
+        REFUSAL_KEY: {
+            "reason": NEEDS_AUTH_SECONDARY_REASON,
+            "detail": detail,
+            "alternatives": [],
+        },
+    }
+    return Assembled(result, Outcome.NEEDS_AUTH, stripped=stripped)
+
+
 def _federated_hold_refusal(
     backend: Backend, call_result: BackendCall, *, stripped: int
 ) -> Assembled | None:
@@ -384,11 +445,8 @@ def _federated_hold_refusal(
     ``detail``, and author our OWN refusal so the agent reads primary words.
     Only a federated backend; a non-federated one never sets ``backend.federated``.
     """
-    if backend.federated is None:
-        return None
-    meta = call_result.meta if isinstance(call_result.meta, dict) else None
-    refusal = meta.get(REFUSAL_KEY) if meta else None
-    if not isinstance(refusal, dict) or refusal.get("reason") != tool_pins.TOOL_HELD_REASON:
+    refusal = _peer_refusal(backend, call_result)
+    if refusal is None or refusal.get("reason") != tool_pins.TOOL_HELD_REASON:
         return None
     result = {
         "content": [
@@ -422,13 +480,18 @@ def _federated_early(
     stripped: int,
     ok: Outcome,
 ) -> Assembled | None:
-    """The two federated response-edge early exits, checked before the transform
-    (#592): the peer's pin-gate ``tool_held`` refusal mapped to our own words
-    (E1c), then the peer's trusted signed verdict (D2a). None when neither
-    applies and the local pipeline must run."""
+    """The federated response-edge early exits, checked before the transform
+    (#592): the peer's closed ``tool_held`` (E1c) and ``needs_auth`` refusals
+    mapped to our own words, then the peer's trusted signed verdict (D2a). None
+    when none applies and the local pipeline must run."""
     held = _federated_hold_refusal(backend, call_result, stripped=stripped)
     if held is not None:
         return held
+    needs_auth = _federated_needs_auth_refusal(
+        profile, backend, backend_name, call_result, stripped=stripped
+    )
+    if needs_auth is not None:
+        return needs_auth
     return _federated_trust(
         profile, backend, backend_name, arrived, call_result,
         mode=mode, policy=policy, stripped=stripped, ok=ok,

@@ -82,6 +82,16 @@ class BackendRejectedCallError(BackendCallError):
     outcome_hint = "tool_error"
 
 
+#: The closed reason a call is refused with when the calling profile holds no
+#: usable grant. A federation ingress mirrors it so its primary can write its
+#: own refusal (#592).
+NEEDS_AUTH_REASON = "needs_auth"
+
+#: The closed reason a federated primary refuses with when its secondary peer
+#: answered a call with ``NEEDS_AUTH_REASON``.
+NEEDS_AUTH_SECONDARY_REASON = "needs_auth_secondary"
+
+
 class BackendNeedsAuthError(BackendCallError):
     """The calling profile holds no usable grant for an ``auth`` backend (#479).
 

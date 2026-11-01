@@ -10,8 +10,25 @@ under that name.
 
 ## [Unreleased]
 
+## [4.3.0] - 2026-11-01
+
+### Added
+
+- **A federated profile can sign in to the secondary's OAuth backends.** A grant
+  belongs to one profile, and a federated call runs as the ingress profile, so
+  an OAuth backend on the secondary could not be reached through the link and
+  nothing could start its sign-in. `backend_auth_tool` is now allowed on an
+  ingress when its internal backend lists it; it acts only on that profile's
+  own backends. On the primary it is served with the peer's tag, for example
+  `lotor_backend_auth`.
+
 ### Fixed
 
+- **One missing OAuth grant took down a whole federated peer.** "Not authorized"
+  was a JSON-RPC error, so the primary lost the message and counted it against
+  the breaker, and every other tool on that peer went with it. It is now a
+  refusal for every caller; a primary maps it to `needs_auth_secondary` in its
+  own words, naming the sign-in tool as served there.
 - **An image built from a branch labelled itself with the branch name.**
   `docker/metadata-action`'s `version` output is the ref, so every
   `:latest` published from a main push carried

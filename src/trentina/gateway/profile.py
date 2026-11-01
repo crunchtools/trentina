@@ -95,14 +95,15 @@ HONEYTOKEN_MIN_CHARS = 16
 #: own disk, is not something to hand an agent meant to be hijacked.
 HONEYPOT_READS = frozenset({"fetch_tool", "search_tool", "content_tool"})
 
-# The only internal tool a federation ingress may offer a peer (#592, C2).
+# The only internal tools a federation ingress may offer a peer (#592, C2).
 # ``internal://<label>`` is one FastMCP server that serves the whole native
 # surface — the reading tools AND the admin tools (quarantine_stats, cache_flush,
 # reload_profiles, tool_pins, reconnect_backend) — so the rule is an exact-name
 # ALLOWLIST, not a denylist of today's egress tools: a denylist would offer a
 # peer cache_flush, and would federate every internal tool added later. A peer
-# reaches nothing of this gateway but a paging continuation.
-FEDERATION_INTERNAL_ALLOW = frozenset({"read_part_tool"})
+# reaches only a paging continuation and the ingress's sign-in to its own OAuth
+# backends, which no other seat can start: a federated call runs as the ingress.
+FEDERATION_INTERNAL_ALLOW = frozenset({"read_part_tool", "backend_auth_tool"})
 #: Characters: the longest description and canned result a decoy tool may carry.
 DECOY_DESCRIPTION_MAX_CHARS = 1024
 DECOY_RESULT_MAX_CHARS = 4096
@@ -3251,7 +3252,7 @@ class Profile(BaseModel):
         honeypot's: the profile is ``role: agent`` — an operator ingress would
         offer the gateway's admin tools to a peer — and its internal backend's
         ``tools_allow`` is an exact subset of ``FEDERATION_INTERNAL_ALLOW``
-        (``read_part_tool`` only). A glob such as ``read_*`` or ``*`` is refused
+        (``read_part_tool``, ``backend_auth_tool``). A glob such as ``read_*`` or ``*`` is refused
         as written, before it can match the whole native surface. The offered
         set itself is the profile's own remote backends; no second list.
         """
