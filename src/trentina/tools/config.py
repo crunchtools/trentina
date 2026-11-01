@@ -32,6 +32,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -50,7 +51,7 @@ from ..gateway.llm_proxy import validate_profile_llm_keys
 from ..gateway.loader import get_active_config, load_profiles
 from ..gateway.scope import require_caller, require_operator
 from ..gateway.service import service_context, service_profile
-from ..logsafe import exc_kind
+from ..logsafe import exc_kind, redact_source
 from ..outcomes import Outcome
 from ..perimeter_db import perimeter_stamp
 from .reload import reload_profiles
@@ -412,18 +413,59 @@ def _peer_facts(added: dict[str, str], after: GatewayConfig) -> dict[str, str]:
 
 
 def _shared_seat_facts(seat: str, after: GatewayConfig) -> dict[str, str]:
-    """What crosses the link for one seat: its backends, and its sign-ins.
+    """What crosses the link for one seat: its backends, where they point, and
+    its sign-ins.
 
     Both rows are always present, "none" included. A missing row reads as "the
     page did not mention it", which is exactly the ambiguity a person deciding
     this should not have to resolve.
+
+    Each backend is named WITH its destination, because a person's approval is
+    bound to the facts they were shown (``pending.digest_of``) and so covers
+    nothing that is not in them. Backend names alone meant two candidates that
+    shared a name list were the same proposal to that digest, and an operator
+    is root over its own ``url`` fields — so "share era and wiki with this
+    peer" could be agreed while ``wiki`` pointed somewhere the person never
+    read. It is not a privilege the peer gains (it reaches a strict subset of
+    what the seat's own agent does, and the agent could call a repointed
+    backend itself) but it is consent given against an incomplete description,
+    which is the one thing this page exists not to do.
+
+    Scheme, host, port and path, because each of them changes where a call
+    goes: the same host at ``/admin`` instead of ``/mcp``, or over ``http``
+    instead of ``https``, is a different destination and has to read as one.
+    What is NOT printed is a ``netloc``'s userinfo and a query, either of which
+    can carry a credential — those are fingerprinted instead, so the digest
+    still covers them even though the page does not show them.
     """
     profile = after.profiles[seat]
     offered = federation_link.offerable_backends(profile)
     signed_in = sorted(name for name, backend in offered.items() if backend.auth is not None)
     label = pending.checked_display(seat, what="a profile name")
+    destinations = []
+    for name in sorted(offered):
+        url = offered[name].url
+        split = urlsplit(url)
+        host = split.hostname or "?"
+        # `hostname` strips an IPv6 literal's brackets, and `port` can be 0.
+        # Without both of these, two different destinations render the same
+        # string — and a rendering that collides is a digest that collides.
+        if ":" in host:
+            host = f"[{host}]"
+        authority = f"{host}:{split.port}" if split.port is not None else host
+        where = f"{split.scheme}://{authority}{split.path}"
+        # `urlsplit` reports a missing query or fragment as "" and missing
+        # userinfo as None, so the two halves of this cannot be tested the
+        # same way: `https://:secret@host/mcp` has `username == ""`, which is
+        # falsy, and a password that would then never be fingerprinted.
+        userinfo = split.username is not None or split.password is not None
+        if split.query or split.fragment or userinfo:
+            where = f"{where} ({redact_source(url)})"
+        destinations.append(
+            f"{name} -> {pending.checked_display(where, what='a backend destination')}"
+        )
     return {
-        f"Tools shared from {label}": ", ".join(sorted(offered)) or "none",
+        f"Tools shared from {label}": ", ".join(destinations) or "none",
         f"Runs as your sign-in on {label}": (
             f"{', '.join(signed_in)} - this seat's sign-ins will serve the link, so "
             "the peer's calls go out as the account authorized here"

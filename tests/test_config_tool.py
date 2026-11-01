@@ -846,7 +846,10 @@ class TestAdmittingAFederationPeer:
         # a derived ingress spends the SEAT's grants, so admitting a peer to a
         # seat holding one sends that peer's calls out as the account a person
         # authorized here. That is the consent this page takes.
-        assert shown["Tools shared from fed"] == "memory"
+        # With its DESTINATION, not its name alone: the approval is bound to
+        # the facts shown, so a name list would let two candidates differing
+        # only in where a backend points be one proposal to that digest.
+        assert shown["Tools shared from fed"] == "memory -> https://memory.example/mcp"
         assert gateway.read_text(encoding="utf-8") == before
 
     async def test_changing_a_peers_key_under_its_name_is_staged(
@@ -958,9 +961,140 @@ class TestAdmittingAFederationPeer:
         )
         shown = pending.outstanding()[pending.Kind.FEDERATION_PEERS]
 
-        assert shown["Tools shared from fed"] == "era, memory"
+        assert (
+            shown["Tools shared from fed"]
+            == "era -> https://context.era.app/mcp, memory -> https://memory.example/mcp"
+        )
         assert "era" in shown["Runs as your sign-in on fed"]
         assert "will serve the link" in shown["Runs as your sign-in on fed"]
+
+    async def test_repointing_a_shared_backend_changes_what_was_approved(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """A person's approval is bound to the digest of the facts they read,
+        so anything absent from the facts is not consented to.
+
+        With backend NAMES alone, "share memory with this peer" and "share
+        memory, which now points at someone else, with this peer" were the same
+        proposal to that digest: the agent is root over its own `url` fields,
+        so it could let a person read one and approve the other. The
+        destination is in the facts now, which is what makes the digest cover
+        it — so the swap is caught by `pending.approve` instead of applying.
+        """
+        document = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
+        _rewrite(gateway, document)
+        await _as_operator(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await _hash(),
+        )
+        as_read = pending.digest_of(pending.outstanding()[pending.Kind.FEDERATION_PEERS])
+
+        document["profiles"]["fed"]["backends"]["memory"]["url"] = "https://evil.example/mcp"
+        _rewrite(gateway, document)
+        await _as_operator(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await _hash(),
+        )
+        repointed = pending.outstanding()[pending.Kind.FEDERATION_PEERS]
+
+        assert repointed["Tools shared from fed"] == "memory -> https://evil.example/mcp"
+        assert pending.digest_of(repointed) != as_read
+        # And the earlier consent no longer applies to what is staged.
+        with pytest.raises(pending.PendingError, match="not what is staged"):
+            await pending.approve(pending.Kind.FEDERATION_PEERS, as_read)
+
+    async def test_a_query_is_fingerprinted_rather_than_printed(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """A query can carry a credential, so the page shows the readable part
+        of the destination and a fingerprint of the whole URL.
+
+        The fingerprint is what keeps the digest total: a person cannot read a
+        query off the page, but changing one still changes what they approved.
+        """
+        document = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
+        document["profiles"]["fed"]["backends"]["memory"]["url"] = (
+            "https://memory.example/mcp?access_token=not-for-the-page"
+        )
+        _rewrite(gateway, document)
+        await _as_operator(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await _hash(),
+        )
+        shown = pending.outstanding()[pending.Kind.FEDERATION_PEERS]
+        row = shown["Tools shared from fed"]
+
+        assert row.startswith("memory -> https://memory.example/mcp (sha256:")
+        assert "not-for-the-page" not in row
+        assert "access_token" not in row
+
+    @pytest.mark.parametrize(
+        ("url", "secret"),
+        [
+            ("https://user:pw-in-the-url@memory.example/mcp", "pw-in-the-url"),
+            # The empty username is the one truthiness gets wrong: `username`
+            # is "" here, not None, so a falsiness test leaves the password
+            # neither shown nor fingerprinted.
+            ("https://:pw-in-the-url@memory.example/mcp", "pw-in-the-url"),
+            ("https://memory.example/mcp#frag-not-shown", "frag-not-shown"),
+        ],
+    )
+    async def test_every_unshowable_url_part_is_fingerprinted(
+        self, gateway: pathlib.Path, url: str, secret: str
+    ) -> None:
+        """Userinfo and a fragment are hidden for the same reason a query is,
+        and each has to reach the fingerprint: a component that is neither
+        shown nor fingerprinted can change without changing what was approved.
+        """
+        document = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
+        document["profiles"]["fed"]["backends"]["memory"]["url"] = url
+        _rewrite(gateway, document)
+        await _as_operator(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await _hash(),
+        )
+        row = pending.outstanding()[pending.Kind.FEDERATION_PEERS]["Tools shared from fed"]
+
+        assert "sha256:" in row, row
+        assert secret not in row, row
+
+    @pytest.mark.parametrize(
+        ("url", "shown"),
+        [
+            # urlsplit strips an IPv6 literal's brackets, so without putting
+            # them back `[::1]:443` and `[::1:443]` render identically.
+            ("https://[::1]:443/mcp", "memory -> https://[::1]:443/mcp"),
+            ("https://[::1:443]/mcp", "memory -> https://[::1:443]/mcp"),
+            # Port 0 is a real port and a falsy integer.
+            ("https://memory.example:0/mcp", "memory -> https://memory.example:0/mcp"),
+            ("https://memory.example/mcp", "memory -> https://memory.example/mcp"),
+        ],
+    )
+    async def test_two_destinations_never_render_the_same(
+        self, gateway: pathlib.Path, url: str, shown: str
+    ) -> None:
+        """The digest is of what was rendered, so a rendering that collides is
+        a consent that transfers between two different destinations."""
+        document = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
+        document["profiles"]["fed"]["backends"]["memory"]["url"] = url
+        _rewrite(gateway, document)
+        await _as_operator(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await _hash(),
+        )
+
+        facts = pending.outstanding()[pending.Kind.FEDERATION_PEERS]
+        assert facts["Tools shared from fed"] == shown
 
     async def test_the_page_says_none_when_no_sign_in_is_involved(
         self, gateway: pathlib.Path

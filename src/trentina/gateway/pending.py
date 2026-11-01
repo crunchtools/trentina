@@ -83,8 +83,10 @@ TTL_SECONDS = 900
 #: which the PEER chose, and which this bound keeps to a shape. A value that
 #: does not match is refused rather than displayed: rendering a peer's text to
 #: the person deciding whether to trust that peer is the one place this feature
-#: could be turned against its own purpose.
-_DISPLAYABLE = re.compile(r"^[A-Za-z0-9 ._:/@+=,'()-]{1,200}$")
+#: could be turned against its own purpose. Square brackets are in the set for
+#: an IPv6 authority (``[::1]:443``), since a backend destination reaches this
+#: page since #592 and a refusal there would admit no peer at all.
+_DISPLAYABLE = re.compile(r"^[A-Za-z0-9 ._:/@+=,'()\[\]-]{1,200}$")
 
 
 class PendingError(ValueError):
