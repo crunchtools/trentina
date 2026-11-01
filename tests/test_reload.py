@@ -33,6 +33,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from trentina import perimeter_db
 from trentina.gateway import compress
 from trentina.gateway.aggregate import (
     _profile_tools_cache,
@@ -50,6 +51,12 @@ from trentina.gateway.loader import (
     reset_active_config,
 )
 from trentina.gateway.sessions import session_registry
+
+# Bound here at import time on purpose: conftest's autouse `_tools_not_pinned`
+# replaces `tool_pins.check_tools` with a pass-through, so a name resolved
+# inside a test body would be the stub. This is the same bypass
+# test_tool_pins.py uses.
+from trentina.gateway.tool_pins import backend_id, check_tools
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.tools.reload import AGENT_SCOPE_NOTE, reload_profiles
 from trentina.transports.mcp import route_jsonrpc
@@ -1257,13 +1264,6 @@ class TestResponseGuardIsOperatorOnly:
         assert result["reloaded"] is True
         assert _registry()["beta"].semantic_response_guards is not None
 
-
-# Bound at import time on purpose: conftest's autouse `_tools_not_pinned`
-# replaces `tool_pins.check_tools` with a pass-through, so a name resolved
-# inside a test would be the stub. This is the same bypass test_tool_pins.py
-# uses.
-from trentina import perimeter_db  # noqa: E402
-from trentina.gateway.tool_pins import backend_id, check_tools  # noqa: E402
 
 FED_URL = "https://peer.example/gateway/shared/mcp"
 

@@ -188,10 +188,15 @@ def _run_with_gateway(mcp_server: FastMCP, *, host: str, port: int, log_level: s
     from .gateway.loader import matrix_other_agents, register_active_config
     from .gateway.service import log_service_identity
     from .gateway.sessions import session_registry
+    from .stability import warn_preview_surfaces
 
     profiles_path = Path(os.environ.get("TRENTINA_PROFILES_PATH", "/etc/trentina/profiles.yaml"))
     logger.info("gateway: loading profiles from %s", profiles_path)
     gateway_config = load_profiles(profiles_path)
+    # Before anything else reads the config: an operator should learn that this
+    # deployment uses a preview surface at the top of the log, not by finding a
+    # minor release that broke it.
+    warn_preview_surfaces(gateway_config)
     # Before _ready_to_serve scrubs the environment: the key is read once, here.
     configure_backend_tokens(gateway_config.profiles)
 

@@ -1,6 +1,6 @@
 # trentina Constitution
 
-> **Version:** 2.12.0
+> **Version:** 2.13.0
 > **Ratified:** 2026-09-22
 > **Amended:** 2026-11-01
 > **Status:** Active
@@ -318,6 +318,35 @@ tool pins and a restart can re-hold every remote tool at once; routing those
 through a person would push operators toward turning pinning off, which costs
 more than it protects.
 
+## Stability Tiers
+
+Trentina is one program with one version, so a breaking change anywhere used to
+force a major bump for everything. An operator reading a version number could
+not tell whether the break landed in the defense pipeline they depend on or in
+a feature they do not use.
+
+Most of the gateway is **stable**: its configuration keys, wire formats and
+tool shapes change only in a major release. A small, named set of features is
+**preview**, declared in `src/trentina/stability.py` and documented in
+`docs/stability.md`. A breaking change CONFINED to a preview surface is a MINOR
+bump, listed in the changelog under a `### Preview` heading naming the surface.
+
+Three rules, and the tier is worth nothing without all three:
+
+1. A change reaching anything outside every declared preview surface is a
+   major. "Mostly confined" is not confined.
+2. A surface is declared BEFORE the release that relies on it, never during
+   one. Declaring a feature preview in the same release that breaks it is
+   re-characterising the break after the fact, which is what a version number
+   exists to prevent.
+3. A preview surface carries the same test, lint, review and documentation bar
+   as everything else. The tier is a promise about BLAST RADIUS, not a licence
+   for churn, and not a place to put work that is not finished.
+
+Leaving preview is a deliberate decision, not a reward for surviving long
+enough. The reverse does not exist: a shape that has been promised cannot be
+un-promised, only broken in a major release.
+
 ## Python Version Coverage
 
 Two rules, not negotiable independently; the second only works because the
@@ -414,3 +443,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.10.0 | 2026-10-30 | Gateway-to-gateway federation (#592): a declared trust boundary added to the Layer Contract. Where an operator pins a federated upstream's key, perimeter stamp and judge, a response the upstream already scanned is delivered on its signed verdict instead of being re-judged — bound to the exact bytes, stamp and judge, fail-closed, carved out in the response edge not a layer. The promise reads "at every ingress — or at a trusted boundary you declare". Known gap 33: the stamp binds the upstream's model, gates and judge, not its defense-policy block. `PERIMETER_VERSION` does not move: the local pipeline's conclusions are unchanged |
 | 2.11.0 | 2026-10-31 | Human Approval (#637): the Trust Allowlist clause is about the allowlist, and had been read as governing every trust decision in the product. Federation's scan-once trust is a different mechanism and does decide whether a layer runs, so what governs it is stated rather than inferred. Two decisions — who holds the operator seat, and turning on a trust that stops a layer running — may be PROPOSED by an operator agent and applied only on a person's approval. Three requirements: the approval capability is something the agent cannot read, the approval states what is being changed in values a person can check, and no approver configured means both decisions stay refused. High-volume approvals (tool pins) deliberately stay out. `PERIMETER_VERSION` does not move: no verdict changes |
 | 2.12.0 | 2026-11-01 | Human Approval extended by the federation security hardening pass: three more decisions an operator agent may propose and not apply — who may authenticate to a federation ingress (`federation.peers`), standing a profile's perimeter down to detect-only (`defense.modes`, `enforcement`, `llm_completion` reaching `flag`), and opening a way out of network isolation (`client_egress.hosts`, `egress_upstreams`, `llm_providers`). The last is the widest of the five: a trusted peer has run three layers over its response, while nothing reads a CONNECT tunnel's bytes (known gap 26). Two rules stated rather than left to each rule's author: only WIDENING needs a person, since narrowing only makes the gateway stricter and a gate in front of tightening teaches an operator to click through; and each approval is ONE decision, a write needing two being refused rather than shown as one. `PERIMETER_VERSION` does not move: no verdict changes |
+| 2.13.0 | 2026-11-01 | Stability Tiers: one program with one version meant a break anywhere forced a major bump for everything, so a version number could not say whether the break landed in the defense pipeline or in a feature the operator does not use. Most of the gateway is stable; a named set of surfaces is preview (`src/trentina/stability.py`, `docs/stability.md`), and a break CONFINED to one is a minor. Three rules: a change reaching outside every declared surface is still a major, since "mostly confined" is not confined; a surface is declared BEFORE the release that relies on it, never during one, because declaring a feature preview in the release that breaks it re-characterises the break after the fact; and a preview surface carries the full test, lint, review and documentation bar, since the tier promises blast radius and not permission to churn. Federation (#592) is the first and only surface — API-driven config (#633) and human approval (#637) stay stable precisely because they break in this release. `PERIMETER_VERSION` does not move: no verdict changes |

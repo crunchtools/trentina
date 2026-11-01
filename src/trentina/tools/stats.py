@@ -197,8 +197,34 @@ def _gateway_stats() -> dict[str, Any]:
         "compression": get_compression_stats(),
         "surface": {name: surface_report(name) for name in surface_profiles()},
         "plugins": _plugins(),
+        "preview_surfaces": _preview_surfaces(),
         "token_note": TOKEN_NOTE,
     }
+
+
+def _preview_surfaces() -> list[dict[str, str]]:
+    """The preview surfaces this deployment uses, so "am I running preview
+    code" is answerable from the gateway rather than from the CHANGELOG.
+
+    Each entry names the surface, its issue and its doc — module constants, not
+    anything a profile chose. Empty on a deployment that uses none, which is the
+    answer an operator wants most.
+    """
+    from ..gateway.loader import get_active_config
+    from ..stability import PREVIEW_SURFACES, in_use
+
+    active = get_active_config()
+    if active is None:
+        return []
+    return [
+        {
+            "surface": PREVIEW_SURFACES[name].name,
+            "issue": PREVIEW_SURFACES[name].issue,
+            "doc": PREVIEW_SURFACES[name].doc,
+            "summary": PREVIEW_SURFACES[name].summary,
+        }
+        for name in in_use(active.config)
+    ]
 
 
 def _plugins() -> list[dict[str, Any]]:
