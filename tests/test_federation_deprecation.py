@@ -75,9 +75,10 @@ def test_the_re_export_that_made_this_worth_removing() -> None:
         .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
         .decode()
     )
+    # No `auth`: an ingress is authenticated by `peers` and the model refuses
+    # a second way in.
     profile = Profile(
         name="middle",
-        auth=AuthConfig(bearer_token_env="B"),
         federation=FederationConfig(peers={"a": FederationPeer(public_key=pem)}),
         backends={"onward": Backend(url="https://c.example/gateway/fed/mcp", tools_allow=["*"])},
     )

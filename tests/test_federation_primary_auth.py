@@ -20,6 +20,11 @@ from tests.federation_harness import (
     federated_pair,
     serving_mcp_backend,
 )
+from trentina.gateway import backend as backend_mod
+from trentina.gateway.backend import ResponseCap, call_backend_tool, list_backend_tools
+from trentina.gateway.circuit import DEFAULT_FAILURE_THRESHOLD, State, breaker
+from trentina.gateway.context import profile_context
+from trentina.gateway.errors import FederationUnauthorizedError
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -154,13 +159,112 @@ class TestReloadHolds:
             auth=AuthConfig(bearer_token_env="A"),
         )
         before.auth.bearer_token = SecretStr("t")
+        # Becoming an ingress means losing `auth`: `peers` replaces it, and
+        # the model refuses both at once.
         after = Profile(
             name="up",
             federation=FederationConfig(peers={"breetai": FederationPeer(public_key=pub)}),
             backends={"x": Backend(url="internal://web", tools_allow=["read_part_tool"])},
-            auth=AuthConfig(bearer_token_env="A"),
         )
-        after.auth.bearer_token = SecretStr("t")
         held = _hold_perimeter_fields(before, after)
         assert "federation" in held
         assert after.federation is None
+
+
+class TestAPeersRefusalDoesNotOpenTheCircuit:
+    """A federated 401 is a signature or a clock, not an unreachable peer.
+
+    `_with_reauth` only excuses a 401 when there is an OAuth grant to refresh,
+    and a federated backend has none — it signs a primary JWT per call. So the
+    refusal used to fall through to `record_failure` on a breaker keyed by URL,
+    which means one rotated key or a little clock drift took the peer down for
+    EVERY profile federating to it, reported as unreachability.
+    """
+
+    @staticmethod
+    def _primary(url: str) -> Profile:
+        """A primary with a REAL signing key: `_down` carries a placeholder, and
+        the JWT is signed before the call is made, so the call would never reach
+        the peer to be refused."""
+        private_pem, _ = _keypair()
+        profile = _down(url)
+        federated = profile.backends["fed"].federated
+        assert federated is not None
+        federated.primary_key = SecretStr(private_pem)
+        return profile
+
+    @pytest.fixture
+    def refusing_peer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def refuse(
+            _url: str,
+            _headers: dict[str, str] | None,
+            *_: object,
+            cap: ResponseCap | None = None,
+            **__: object,
+        ) -> object:
+            # What a 401 looks like from the session layer: the cap records it,
+            # the transport raises.
+            if cap is not None:
+                cap.unauthorized = True
+            raise RuntimeError("Server returned an error response")
+
+        monkeypatch.setattr(backend_mod, "_do_call_tool", refuse)
+        breaker.reset()
+
+    async def test_the_breaker_stays_closed_however_often_the_peer_refuses(
+        self, refusing_peer: None
+    ) -> None:
+        del refusing_peer
+        profile = self._primary("https://peer.example/gateway/fed/mcp")
+        fed = profile.backends["fed"]
+
+        # More refusals than the failure threshold, so a counted failure would
+        # have opened it well before the loop ended.
+        for _ in range(DEFAULT_FAILURE_THRESHOLD + 2):
+            with profile_context(profile), pytest.raises(FederationUnauthorizedError):
+                await call_backend_tool("fed", fed, "echo", {})
+
+        assert breaker.get_state(fed.url) is State.CLOSED
+        assert breaker.allow(fed.url)
+
+    async def test_the_reason_names_the_three_causes_and_not_the_peer(
+        self, refusing_peer: None
+    ) -> None:
+        """A reason code is a closed set, not a relay for what the other end
+        said, and the message is what an operator reads to fix it."""
+        del refusing_peer
+        profile = self._primary("https://peer.example/gateway/fed/mcp")
+
+        with profile_context(profile), pytest.raises(FederationUnauthorizedError) as refused:
+            await call_backend_tool("fed", profile.backends["fed"], "echo", {})
+
+        message = str(refused.value)
+        assert "federation_unauthorized" in message
+        assert "public key" in message and "audience" in message and "clocks" in message
+        assert "peer.example" not in message
+
+    async def test_a_refusal_on_tools_list_does_not_count_either(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 401 arrives on tools/list as readily as on a call, and
+        `list_backend_tools` has its own broad catch that re-wraps and records
+        a failure. The re-raise clause had to be added in BOTH places."""
+
+        async def refuse(
+            _url: str, _headers: dict[str, str] | None, cap: ResponseCap | None = None
+        ) -> object:
+            if cap is not None:
+                cap.unauthorized = True
+            raise RuntimeError("Server returned an error response")
+
+        monkeypatch.setattr(backend_mod, "_do_list_tools", refuse)
+        breaker.reset()
+        backend_mod._tool_list_cache.clear()
+        profile = self._primary("https://peer.example/gateway/fed/mcp")
+        fed = profile.backends["fed"]
+
+        for _ in range(DEFAULT_FAILURE_THRESHOLD + 2):
+            with profile_context(profile), pytest.raises(FederationUnauthorizedError):
+                await list_backend_tools("fed", fed, profile)
+
+        assert breaker.get_state(fed.url) is State.CLOSED

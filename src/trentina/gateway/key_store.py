@@ -30,7 +30,7 @@ from . import secret_file
 
 #: A key name, shaped like a backend or profile name. It becomes a filename, so
 #: the shape is what keeps it one: no dot, no slash, no traversal.
-KEY_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+KEY_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}\Z")
 
 #: Re-exported so the tests that check the mode bits, and token_store, have
 #: one spelling of them.

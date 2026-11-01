@@ -639,9 +639,10 @@ class TestTheEmitSideWhenThereIsNoDigest:
 
     def _signing_ingress(self) -> Profile:
         priv, _ = _keypair()
+        # No `auth`: a federation ingress is authenticated by `peers`, and a
+        # second way in is refused since it admits a caller with no peer.
         return Profile(
             name="lotor",
-            auth=AuthConfig(bearer_token_env="D"),
             federation=FederationConfig(
                 peers={"breetai": FederationPeer(public_key=_keypair()[1])},
                 secondary_key=SecretStr(priv),

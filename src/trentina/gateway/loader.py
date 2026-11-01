@@ -38,6 +38,7 @@ from .profile import (
     Profile,
     federation_audience,
     is_matrix_user_id,
+    same_gateway_key,
 )
 from .transform import resolve
 
@@ -390,33 +391,6 @@ def _check_renamed_federation_keys(name: str, body: dict[str, Any]) -> None:
 
 #: Default ports, so one secondary spelled with and without its own is one
 #: secondary rather than two.
-_DEFAULT_PORTS = {"https": 443, "http": 80}
-
-
-def _same_gateway_key(url: str) -> str:
-    """A URL reduced to "which gateway endpoint is this", for comparison only.
-
-    Scheme and host lower-cased, a default port dropped, a trailing slash
-    dropped. Without this, ONE secondary written two ways — `:443`, a trailing
-    slash, a capitalised host — was refused as two gateways sharing an
-    audience, which is a confusing load error for a correct configuration.
-
-    The path AND QUERY are kept. Two gateways can live behind one host on
-    different prefixes, and a token-in-URL backend carries its credential in
-    the query (`_expand_backend_url`), so two URLs differing only there can be
-    two endpoints. Reading those as one is the mistake in the other direction,
-    and it is the dangerous one: it would skip the refusal this feeds.
-    """
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower()
-    port = parts.port
-    if port is not None and _DEFAULT_PORTS.get(parts.scheme.lower()) == port:
-        port = None
-    authority = f"{host}:{port}" if port is not None else host
-    query = f"?{parts.query}" if parts.query else ""
-    return f"{parts.scheme.lower()}://{authority}{parts.path.rstrip('/')}{query}"
-
-
 def _check_federation_audience(registry: dict[str, Profile]) -> None:
     """One primary key may not serve two secondaries with the same audience.
 
@@ -447,7 +421,7 @@ def _check_federation_audience(registry: dict[str, Profile]) -> None:
                 continue
             audience = federation_audience(backend.url) or ""
             group = (federated.primary_key.get_secret_value(), audience)
-            target = _same_gateway_key(backend.url)
+            target = same_gateway_key(backend.url)
             first = seen.setdefault(group, (profile_name, backend_name, target))
             if first[2] != target:
                 raise ProfileConfigError(
@@ -460,13 +434,20 @@ def _check_federation_audience(registry: dict[str, Profile]) -> None:
 
 
 def _check_interim_federation(name: str, profile: Profile) -> None:
-    """Refuse the interim static-bearer federation path (#592, D2b; removed in 5.0.0).
+    """Refuse the interim static-bearer federation path (#592, D2b).
+
+    Refused since 5.0.0. This docstring used to carry a deadline notice naming
+    that release, which was a promise while it was one and became a false one
+    the moment 5.0.0 was cut — ``tests/test_deprecation_deadlines.py`` fails
+    any notice naming a shipped release, because a reader who sees a past
+    release concludes the removal already happened and stops looking. Here it
+    did happen, so this says so in the past tense instead of promising it.
 
     A backend that points at a Trentina gateway's federation endpoint
     (``.../gateway/<profile>/mcp``) without a ``federated:`` block is the
     pre-3.1 arrangement: it mounts another gateway over a shared static bearer
     and re-judges everything. First-class federation superseded it in 3.1.0,
-    it was deprecated with a removal announced for 3.2.0, and it only ever
+    it was deprecated with a deadline announced for 3.2.0, and it only ever
     warned — through 4.2.3.
 
     It is refused now because the warning was load-bearing for a promise it

@@ -40,6 +40,7 @@ from .errors import (
     BackendNeedsAuthError,
     BackendRejectedCallError,
     BackendResponseTooLargeError,
+    FederationUnauthorizedError,
     GatewayError,
 )
 from .profile import federation_audience
@@ -302,6 +303,7 @@ def _read_federated_held(backend: Backend, tools_result: Any) -> None:
     if isinstance(held, bool) or not isinstance(held, int) or held < 0:
         return
     _federated_held_secondary[backend.url] = held
+
 
 # JSON-RPC errors that mean "your request was wrong", said by a backend that
 # is up. Each is named in the refusal by our own words, never the backend's:
@@ -579,7 +581,7 @@ async def _fetch_and_cache(
                 _do_list_tools(backend.url, sent, cap), timeout=backend.list_timeout_seconds
             ),
         )
-    except BackendNeedsAuthError:
+    except (BackendNeedsAuthError, FederationUnauthorizedError):
         raise
     except Exception as exc:
         breaker.record_failure(backend.url)
@@ -684,10 +686,21 @@ async def _with_reauth(
     Only a 401 to the session's ``initialize``, ``tools/list`` or a
     ``tools/call`` the backend never accepted is retried: that request did
     nothing. A call the backend accepted is never sent twice.
+
+    A FEDERATED backend is answered here and not retried. It holds no grant to
+    refresh — it signs a primary JWT per call — so it used to fall past this
+    function to ``record_failure`` and open a breaker keyed by URL, taking the
+    peer down for every profile federating to it over what is a signature or a
+    clock. The peer answered, so the circuit records a success and the caller
+    gets a reason that says so.
     """
     try:
         return await run(headers)
-    except Exception:
+    except Exception as exc:
+        if backend.federated is not None and cap.unauthorized:
+            breaker.record_success(backend.url)
+            logger.warning("gateway: federated backend=%s refused our primary JWT", backend_name)
+            raise FederationUnauthorizedError(backend_name) from exc
         if grant is None or profile is None or not cap.unauthorized or cap.call_accepted:
             raise
     from .backend_oauth import fresh_grant
@@ -758,7 +771,7 @@ async def call_backend_tool(
                 timeout=backend.timeout_seconds,
             ),
         )
-    except BackendNeedsAuthError:
+    except (BackendNeedsAuthError, FederationUnauthorizedError):
         raise
     except Exception as exc:
         if cap.overflowed:

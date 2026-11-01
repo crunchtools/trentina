@@ -24,6 +24,7 @@ from trentina.gateway.profile import (
     FederatedConfig,
     FederationConfig,
     FederationPeer,
+    OAuthConfig,
     Profile,
 )
 
@@ -47,9 +48,11 @@ def _profile(*, ingress: bool, federated_url: str | None) -> Profile:
     backends = {}
     if federated_url is not None:
         backends["up"] = Backend(url=federated_url, tools_allow=["*"], federated=FederatedConfig())
+    # An ingress carries no `auth`: `peers` is its authentication, and the
+    # profile model refuses a second way in. A consumer still needs one.
     return Profile(
         name="breetai",
-        auth=AuthConfig(bearer_token_env="B"),
+        auth=None if ingress else AuthConfig(bearer_token_env="B"),
         federation=FederationConfig(peers=_peers()) if ingress else None,
         backends=backends,
     )
@@ -332,3 +335,33 @@ class TestOneSecondarySpelledTwoWays:
         )
         with pytest.raises(ProfileConfigError, match="could replay the other's token"):
             _check_federation_audience({"breetai": profile})
+
+
+def test_an_ingress_may_not_also_take_a_static_bearer() -> None:
+    """`peers` IS a federation ingress's authentication, and `app.py` tries a
+    static bearer FIRST — so an ingress carrying `auth` as well would admit a
+    caller through that instead, with no peer and no `sub`.
+
+    Everything downstream then reads a null caller: the audit records no actor,
+    docs/federation.md's claim that every federated call names its peer is
+    false for that profile, and since a held part is owned by
+    `(profile, peer, sub)` every such caller shares ONE paging owner — the
+    isolation hole this release closed, reopened through the front door.
+    """
+    with pytest.raises(ValidationError, match="auth does not apply"):
+        Profile(
+            name="breetai",
+            auth=AuthConfig(bearer_token_env="B"),
+            federation=FederationConfig(peers=_peers()),
+            backends={},
+        )
+
+
+def test_an_ingress_may_not_take_oauth_either() -> None:
+    with pytest.raises(ValidationError, match="oauth does not apply"):
+        Profile(
+            name="breetai",
+            oauth=OAuthConfig(enabled=True, allowed_emails=["alice@example.com"]),
+            federation=FederationConfig(peers=_peers()),
+            backends={},
+        )

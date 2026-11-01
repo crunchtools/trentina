@@ -54,9 +54,9 @@ def _is_key_name(v: str | None, field: str) -> str | None:
     return v
 
 
-PROFILE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
-BACKEND_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
-PROVIDER_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+PROFILE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}\Z")
+BACKEND_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}\Z")
+PROVIDER_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}\Z")
 GLOB_PATTERN_RE = re.compile(r"^[a-zA-Z0-9_*][a-zA-Z0-9_*-]*$")
 # A tool or parameter name in destination_params: exact, never a glob (#266).
 DESTINATION_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,127}")
@@ -987,6 +987,43 @@ class FederationConfig(BaseModel):
                     "each peer needs its own, or the audited caller is YAML order"
                 )
         return self
+
+
+_DEFAULT_PORTS = {"https": 443, "http": 80}
+
+
+def same_gateway_key(url: str) -> str:
+    """A URL reduced to "which gateway endpoint is this", for comparison only.
+
+    Scheme and host lower-cased, a default port dropped, a trailing slash
+    dropped. Without this, ONE secondary written two ways — `:443`, a trailing
+    slash, a capitalised host — was refused as two gateways sharing an
+    audience, which is a confusing load error for a correct configuration.
+
+    The path AND QUERY are kept. Two gateways can live behind one host on
+    different prefixes, and a token-in-URL backend carries its credential in
+    the query (`_expand_backend_url`), so two URLs differing only there can be
+    two endpoints. Reading those as one is the mistake in the other direction,
+    and it is the dangerous one: it would skip the refusal this feeds.
+
+    It lives here rather than in ``loader.py``, where it started, because the
+    pin migration needs the same question answered — and answered the same way.
+    Two normalisations would be two opinions about which URLs are one gateway,
+    and the looser one would decide.
+    """
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    port = parts.port
+    if port is not None and _DEFAULT_PORTS.get(parts.scheme.lower()) == port:
+        port = None
+    authority = f"{host}:{port}" if port is not None else host
+    query = f"?{parts.query}" if parts.query else ""
+    return f"{parts.scheme.lower()}://{authority}{parts.path.rstrip('/')}{query}"
+
+
+def same_gateway_endpoint(one: str, other: str) -> bool:
+    """Whether two URLs name the same gateway endpoint, spelled differently."""
+    return same_gateway_key(one) == same_gateway_key(other)
 
 
 def federation_audience(url: str) -> str | None:
@@ -3302,12 +3339,29 @@ class Profile(BaseModel):
         ``secondary_key_name`` outside the rule while still signing assertions;
         ``an_ingress_names_its_peers`` now makes the two spellings mean the same
         thing, and this one no longer has to guess which it meant.
+
+        It also carries NO other way in. ``peers`` IS this profile's
+        authentication, and ``app.py`` tries a static bearer first — so a
+        federation ingress that also had ``auth`` or ``oauth`` would admit a
+        caller through that instead, with no peer and no ``sub``. Everything
+        downstream then reads a null caller: the audit records no actor, the
+        docs' claim that every federated call names its peer is false for that
+        profile, and since held parts are owned by ``(profile, peer, sub)``
+        every such caller would share one paging owner — the isolation hole
+        this release closed, reopened through the front door.
         """
         if self.federation is None:
             return self
         problems: list[str] = []
         if self.role != "agent":
             problems.append("role must be agent")
+        for field in ("auth", "oauth"):
+            if getattr(self, field) is not None:
+                problems.append(
+                    f"{field} does not apply: federation.peers is how a primary "
+                    "authenticates here, and a second way in would admit a caller "
+                    "with no peer and no sub"
+                )
         for name, backend in self.backends.items():
             extra = sorted(set(backend.tools_allow) - FEDERATION_INTERNAL_ALLOW)
             if backend.is_internal and extra:

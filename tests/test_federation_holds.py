@@ -97,9 +97,10 @@ def test_only_the_exact_tool_held_reason_maps(meta: dict[str, Any] | None) -> No
 
 
 def _ingress() -> Profile:
+    # No `auth`: `peers` is a federation ingress's authentication, and a second
+    # way in is refused since it admits a caller with no peer and no sub.
     return Profile(
         name="lotor",
-        auth=AuthConfig(bearer_token_env="UP"),
         defense=DefenseConfig(provider="ollama"),
         # An ingress names at least one peer: `peers` IS what authenticates a
         # primary, so a block without one is not an ingress (`profile.py`).

@@ -242,6 +242,36 @@ def put_pin(
     db.commit()
 
 
+def move_pins(old_backend_id: str, new_backend_id: str) -> int:
+    """Re-key a backend's pins when its URL moves, returning how many moved.
+
+    ``backend_id`` is a hash of the URL, so a trailing slash, a port or a host
+    spelled differently is a DIFFERENT backend to this table — and a federated
+    backend with no rows is treated as a first connect, which auto-approves the
+    peer's whole offered set as a unit (#592, E1b). An operator editing a URL
+    therefore re-trusted the peer wholesale without asking for it.
+
+    Refuses to move onto an id that already has rows and returns 0: two
+    backends can legitimately name one URL, and ``(backend_id, tool)`` is the
+    primary key, so an UPDATE would collide on the shared tools and the pins
+    already there are not this edit's to overwrite.
+    """
+    db = get_perimeter_db()
+    if (
+        db.execute(
+            "SELECT 1 FROM tool_pins WHERE backend_id = ? LIMIT 1", (new_backend_id,)
+        ).fetchone()
+        is not None
+    ):
+        return 0
+    moved = db.execute(
+        "UPDATE tool_pins SET backend_id = ? WHERE backend_id = ?",
+        (new_backend_id, old_backend_id),
+    ).rowcount
+    db.commit()
+    return int(moved)
+
+
 def list_pending_pins(backend_id: str) -> list[sqlite3.Row]:
     rows: list[sqlite3.Row] = (
         get_perimeter_db()

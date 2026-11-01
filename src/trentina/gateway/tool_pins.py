@@ -21,11 +21,15 @@ import hashlib
 import json
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .. import perimeter_db
 from ..database import record_detection
 from ..logsafe import redact_source
+from .profile import same_gateway_endpoint
+
+if TYPE_CHECKING:
+    from .profile import Profile
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +173,56 @@ def _report_first_connect(backend: str, count: int) -> None:
         direction="ingress",
         blocked=False,
     )
+
+
+def migrate_federated_pins(before: dict[str, Profile], after: dict[str, Profile]) -> list[str]:
+    """Carry a federated backend's pins across a URL change, naming what moved.
+
+    The other half of making a first connect honest. ``_report_first_connect``
+    made the re-trust loud; this stops the common cause of it being a re-trust
+    at all. A pin is keyed by a hash of the URL, so an operator normalising a
+    trailing slash or adding an explicit ``:443`` presented the peer as new and
+    had its whole offered set approved as a unit.
+
+    Only a backend that is federated on BOTH sides is moved. A backend that
+    gained or lost its ``federated`` block changed what it IS, not where it
+    lives, and its pins are not this function's to carry over.
+
+    And only a URL that still names the SAME ENDPOINT. The first cut of this
+    moved pins on any URL change, which Gatehouse caught and which is worse
+    than the problem it was fixing: repointing a federated backend at a server
+    the writer controls would have inherited the real peer's approvals, with no
+    first connect and no review. ``same_gateway_endpoint`` is the narrow
+    normalisation — scheme and host case, a default port, a trailing slash —
+    and it keeps the path and the query, because two gateways live behind one
+    host on different prefixes and a token-in-URL backend carries its
+    credential in the query. A genuinely new endpoint gets the first connect it
+    should, loudly.
+    """
+    moved: list[str] = []
+    for name, profile in after.items():
+        was = before.get(name)
+        if was is None:
+            continue
+        for backend_name, backend in profile.backends.items():
+            old = was.backends.get(backend_name)
+            if old is None or old.url == backend.url:
+                continue
+            if backend.federated is None or old.federated is None:
+                continue
+            if not same_gateway_endpoint(old.url, backend.url):
+                continue
+            if perimeter_db.move_pins(backend_id(old.url), backend_id(backend.url)):
+                moved.append(f"{name}.{backend_name}")
+    if moved:
+        # Names only: a profile and a backend name are config, the URLs are not
+        # (#262), and the point of the line is that no first connect follows.
+        logger.warning(
+            "gateway: federated backend URL changed for %s — carried its tool pins "
+            "across, so this is not a first connect and nothing was re-approved",
+            ", ".join(sorted(moved)),
+        )
+    return moved
 
 
 def _pin_one(bid: str, backend: str, tool: dict[str, Any], baseline: bool) -> bool:

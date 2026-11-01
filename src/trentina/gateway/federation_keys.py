@@ -65,7 +65,7 @@ _CLAIMS = frozenset({"sub", "aud", "iat", "exp"})
 
 #: `sub` is a profile name the secondary has not resolved yet (C2 does); bound its
 #: shape here and never log it raw (#262).
-_SUB_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_SUB_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}\Z")
 
 
 @functools.lru_cache(maxsize=256)

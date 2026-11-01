@@ -8,7 +8,7 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 This project was previously named `mcp-airlock`; releases before 0.5.0 were cut
 under that name.
 
-## [Unreleased]
+## [5.0.0] - 2026-11-01
 
 ### Upgrading
 
@@ -41,6 +41,18 @@ first four, so a missed one is loud rather than silent.
    (`federated_part_oversize`) rather than re-cut, because re-cutting orphaned
    the peer's remaining parts. Keep `TRENTINA_PART_TOKENS` equal on both, or
    higher on the primary.
+7. **Delete `auth` and `oauth` from any federation ingress.** A profile with a
+   `federation` block may no longer carry either, and the gateway refuses to
+   start if one does. `peers` was already doing the work; a bearer on an
+   ingress was tried FIRST and admitted a caller with no peer and no `sub`.
+8. **Set an approval password before your operator agent needs one.** Three
+   more writes now wait for a person, so without
+   `TRENTINA_APPROVAL_PASSWORD_HASH[_FILE]` they are REFUSED rather than
+   applied: adding or changing a `federation.peers` entry, moving a profile's
+   `defense` to `flag`, and widening `client_egress`, `egress_upstreams` or
+   `llm_providers`. Narrowing any of them still applies at once. Existing
+   configuration keeps working untouched — this bites the next write, not the
+   current file.
 
 ### Removed
 
@@ -75,6 +87,39 @@ first four, so a missed one is loud rather than silent.
   or `TRENTINA_OAUTH_JWT_SIGNING_KEY` — to an endpoint it chose, with no seat
   change and no approval. A backend's own credential still works: that variable
   is referenced, not declared. See docs/profiles.md.
+- **BREAKING: three more config writes are staged for a person** (#637
+  extended): `federation.peers`, a `defense` block reaching `flag`, and the
+  three settings that open a way out of network isolation
+  (`client_egress.hosts` and `.source_networks`, `egress_upstreams`,
+  `llm_providers`). Each was a grant an operator agent could make with nobody
+  watching, and the last is the widest of the five decisions: a trusted peer
+  has at least run three layers over its response, while nothing reads a
+  CONNECT tunnel's bytes at all. Only WIDENING stages — withdrawing a peer,
+  dropping `flag`, removing a host applies at once — and a write needing two
+  approvals is refused rather than shown as one. `federation.peers` was
+  deliberately unguarded in #633 because refusing it would have made an
+  ingress impossible to build through the API; proposing it does not.
+- **BREAKING: a federation ingress may not carry `auth` or `oauth`.** `peers`
+  is its authentication and the gateway tries a static bearer first, so a
+  bearer there admitted a caller with no peer and no `sub` — a null caller in
+  the audit, and, now that held parts belong to `(profile, peer, sub)`, one
+  shared paging owner for every such caller.
+- **A federated `401` no longer opens the circuit breaker.** A federated
+  backend holds no OAuth grant to refresh, so a refusal fell through to
+  `record_failure` on a breaker keyed by URL: one rotated key or a little
+  clock drift took the peer down for every profile federating to it, reported
+  as unreachability. It is now `federation_unauthorized`, the circuit records
+  the success the peer's answer is, and the message names the three causes.
+- **A federated backend's tool pins move with its URL.** Normalising a
+  trailing slash or writing `:443` explicitly presented the peer as new, and a
+  federated first connect approves its whole offered set as a unit. The reload
+  carries the pins across and reports `federated_pins_migrated`. Only the same
+  endpoint spelled differently: a different host is a different peer and gets
+  the first connect it should.
+- **Four name patterns are anchored.** `^...$` with `re.match` admits a
+  trailing newline, so a key name, a profile name, a backend name, a provider
+  name and a federation `sub` all accepted one. A `sub` is the audited actor
+  and part of a paging owner's identity; a key name becomes a filename.
 
 ### Fixed
 

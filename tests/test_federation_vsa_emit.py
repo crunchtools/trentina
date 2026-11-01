@@ -59,18 +59,16 @@ def _ingress(*, private_pem: str | None) -> Profile:
     federation = FederationConfig(peers={"breetai": FederationPeer(public_key=_PEER_PUB)})
     if private_pem is not None:
         federation.secondary_key = SecretStr(private_pem)
-    profile = Profile(
+    # No `auth`: `peers` IS a federation ingress's authentication, and a
+    # second way in is refused since it would admit a caller with no peer.
+    return Profile(
         name="lotor",
-        auth=AuthConfig(bearer_token_env="UP"),
         federation=federation,
         backends={
             "demo": Backend(url="https://peer.invalid/mcp"),
             "web": Backend(url="internal://web", tools_allow=["read_part_tool"]),
         },
     )
-    assert profile.auth is not None
-    profile.auth.bearer_token = SecretStr("t")
-    return profile
 
 
 def _deliver(profile: Profile, result: dict, *, warning=None, mode=Mode.FLAG):
@@ -128,8 +126,10 @@ def test_a_flagged_warning_is_summarised_into_the_verdict() -> None:
     private_pem, public_pem = _keypair()
     warning = {"flagged_by": "l2", "risk_level": "high", "l3_truncated": True}
     out = _deliver(
-        _ingress(private_pem=private_pem), {"content": [], "isError": False},
-        warning=warning, mode=Mode.BLOCK,
+        _ingress(private_pem=private_pem),
+        {"content": [], "isError": False},
+        warning=warning,
+        mode=Mode.BLOCK,
     )
     assertion = verify_assertion(out["_meta"][VSA_KEY], public_pem)
     assert assertion is not None
@@ -171,16 +171,12 @@ def _served_ingress(private_pem: str) -> Profile:
     # remote backend so the response is judged (an internal tool would not be).
     federation = FederationConfig(peers={"breetai": FederationPeer(public_key=_PEER_PUB)})
     federation.secondary_key = SecretStr(private_pem)
-    profile = Profile(
+    return Profile(
         name="lotor",
         short_names=False,
-        auth=AuthConfig(bearer_token_env="UP"),
         federation=federation,
         backends={"remote": Backend(url="http://peer:8000/mcp", tools_allow=["*"])},
     )
-    assert profile.auth is not None
-    profile.auth.bearer_token = SecretStr("t")
-    return profile
 
 
 @pytest.mark.asyncio
@@ -189,8 +185,9 @@ async def test_the_transport_delivers_the_assertion_on_a_real_call() -> None:
     profile = _served_ingress(private_pem)
 
     async def fake_call(_b: str, _be: Any, _t: str, _a: dict[str, Any]) -> BackendCall:
-        return BackendCall(content=[{"type": "text", "text": "ok"}], is_error=False,
-                           structured_content=None)
+        return BackendCall(
+            content=[{"type": "text", "text": "ok"}], is_error=False, structured_content=None
+        )
 
     clean = AsyncMock(return_value=IngressDecision(warning=None))
     with (

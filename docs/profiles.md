@@ -311,6 +311,27 @@ client can do, and the choice is per profile.
 All four mechanisms, the `oauth` keys each one needs, and the security rules that
 go with them are in **[Authentication](authentication.md)**.
 
+### A federation ingress authenticates differently
+
+A profile with a `federation` block is a *federation ingress*: another Trentina
+gateway calls it, and the caller proves who it is with a short-lived signed
+token rather than a bearer. Three rules come with the shape, and all three are
+refused at load rather than warned about:
+
+| Rule | Why |
+|---|---|
+| At least one `federation.peers` entry | The peer list *is* this profile's authentication. A `federation` block without one is not an ingress, and would still sign verdict assertions over its responses. |
+| `role: agent` | An operator ingress would offer the gateway's own admin tools to a peer. |
+| No `auth` and no `oauth` | A second way in. The gateway tries a static bearer first, so a bearer here admits a caller with no peer and no `sub` — a null caller in the audit, and one shared owner for every held response part. |
+
+Its internal backend may offer only `read_part_tool`, so a paged response can
+be collected and nothing else native is reachable. The offered set is the
+profile's own remote backends; there is no second list.
+
+Adding or changing a peer is staged for a person since 5.0.0 — it hands another
+gateway a seat. Removing one applies at once. **[Federation](federation.md)** is
+the whole statement; **[Approvals](approvals.md)** covers the decision.
+
 ## Multi-Agent Deployment
 
 A typical deployment serves multiple agents with different trust levels:
