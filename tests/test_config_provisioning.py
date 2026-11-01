@@ -226,9 +226,12 @@ async def test_turning_on_scan_once_trust_waits_for_a_person(
     assert gateway.read_text(encoding="utf-8") == before
 
     # And approving it is what applies it — the whole point of the mechanism.
+    # The decision names the proposal a person was shown, which here is
+    # whatever the staging built, so the digest comes from the staged facts.
     from trentina.gateway import pending
 
-    await pending.approve(pending.Kind.FEDERATION_TRUST)
+    shown = pending.outstanding()[pending.Kind.FEDERATION_TRUST]
+    await pending.approve(pending.Kind.FEDERATION_TRUST, pending.digest_of(shown))
     assert gateway.read_text(encoding="utf-8") != before
     assert "trust_verdict" in gateway.read_text(encoding="utf-8")
 

@@ -96,13 +96,21 @@ def _facts_table(facts: dict[str, str]) -> str:
 def _review(
     request: Request, password: str, staged: dict[pending.Kind, dict[str, str]]
 ) -> Response:
-    """What is staged, with the password carried forward for the decision."""
+    """What is staged, with the password carried forward for the decision.
+
+    Each form also carries a fingerprint of the facts rendered above it, so the
+    decision that comes back names the PROPOSAL and not merely its kind. The
+    agent stages when it likes and staging replaces silently; without this, it
+    could let a person read one proposal and have their click apply the next
+    one (see ``pending.approve``).
+    """
     sections = "".join(
         f"<h2>{html.escape(kind.value)}</h2>"
         f"{_facts_table(facts)}"
         f'<form method="post" action="{html.escape(PATH)}">'
         f'<input type="hidden" name="password" value="{html.escape(password)}">'
         f'<input type="hidden" name="kind" value="{html.escape(kind.value)}">'
+        f'<input type="hidden" name="facts" value="{html.escape(pending.digest_of(facts))}">'
         '<button name="decision" value="approve">Approve</button> '
         '<button name="decision" value="decline">Decline</button>'
         "</form>"
@@ -154,8 +162,13 @@ _BUSY_PAGE = (
 )
 
 
-async def _act(request: Request, kind: pending.Kind, decision: str) -> Response:
-    """Carry out a decision a verified person made."""
+async def _act(request: Request, kind: pending.Kind, decision: str, facts_digest: str) -> Response:
+    """Carry out a decision a verified person made.
+
+    ``facts_digest`` is what the review page showed them. A decline needs none:
+    dropping whatever is staged of that kind is what a person who did not
+    expect it wants, whichever proposal is sitting there now.
+    """
     if decision == "decline":
         return (
             _page(request, "Declined", "<p>Declined. Nothing was changed.</p>")
@@ -163,7 +176,7 @@ async def _act(request: Request, kind: pending.Kind, decision: str) -> Response:
             else _page(request, *_NOTHING_PAGE)
         )
     try:
-        await pending.approve(kind)
+        await pending.approve(kind, facts_digest)
     except pending.PendingError:
         return _page(request, *_NOTHING_PAGE)
     except Exception as exc:
@@ -201,7 +214,7 @@ async def _decide(request: Request) -> Response:
     decision = str(form.get("decision") or "")
     if kind is None or decision not in ("approve", "decline"):
         return _review(request, password, staged) if staged else _page(request, *_NOTHING_PAGE)
-    return await _act(request, kind, decision)
+    return await _act(request, kind, decision, str(form.get("facts") or ""))
 
 
 def register_approval_routes(mcp_server: Any) -> None:

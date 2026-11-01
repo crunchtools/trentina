@@ -18,7 +18,7 @@ import asyncio
 import os
 import pathlib
 import time
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from starlette.applications import Starlette
@@ -59,6 +59,8 @@ def _applied(record: list[str]) -> Any:
 
 
 FACTS = {"Backend to trust": "ag.lotor", "What this means": "Responses are not scanned here."}
+#: What the review page puts in its hidden ``facts`` field for ``FACTS``.
+_FACTS_DIGEST = pending.digest_of(FACTS)
 
 
 class TestTheVerifier:
@@ -137,22 +139,22 @@ class TestApproving:
     async def test_approving_applies_the_action(self) -> None:
         record: list[str] = []
         pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
-        await pending.approve(pending.Kind.OPERATOR_SEAT)
+        await pending.approve(pending.Kind.OPERATOR_SEAT, pending.digest_of(FACTS))
         assert record == ["applied"]
 
     async def test_approving_twice_applies_once(self) -> None:
         record: list[str] = []
         pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
-        await pending.approve(pending.Kind.OPERATOR_SEAT)
+        await pending.approve(pending.Kind.OPERATOR_SEAT, pending.digest_of(FACTS))
         with pytest.raises(pending.PendingError):
-            await pending.approve(pending.Kind.OPERATOR_SEAT)
+            await pending.approve(pending.Kind.OPERATOR_SEAT, pending.digest_of(FACTS))
         assert record == ["applied"]
 
     async def test_approving_a_kind_that_is_not_staged_applies_nothing(self) -> None:
         record: list[str] = []
         pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
         with pytest.raises(pending.PendingError):
-            await pending.approve(pending.Kind.FEDERATION_TRUST)
+            await pending.approve(pending.Kind.FEDERATION_TRUST, pending.digest_of(FACTS))
         assert record == []
 
     def test_declining_applies_nothing_and_drops_it(self) -> None:
@@ -235,7 +237,12 @@ class TestThePage:
         pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
         answer = client.post(
             approval_routes.PATH,
-            data={"password": PASSWORD, "kind": "operator seat", "decision": "approve"},
+            data={
+                "password": PASSWORD,
+                "kind": "operator seat",
+                "decision": "approve",
+                "facts": _FACTS_DIGEST,
+            },
         )
         assert answer.status_code == 404
         assert record == []
@@ -273,7 +280,12 @@ class TestThePage:
             page.post(approval_routes.PATH, data={"password": PASSWORD}),
             page.post(
                 approval_routes.PATH,
-                data={"password": PASSWORD, "kind": "operator seat", "decision": "approve"},
+                data={
+                    "password": PASSWORD,
+                    "kind": "operator seat",
+                    "decision": "approve",
+                    "facts": _FACTS_DIGEST,
+                },
             ),
         ]
         first, *rest = answers
@@ -308,7 +320,12 @@ class TestThePage:
         pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
         answer = page.post(
             approval_routes.PATH,
-            data={"password": "wrong", "kind": "operator seat", "decision": "approve"},
+            data={
+                "password": "wrong",
+                "kind": "operator seat",
+                "decision": "approve",
+                "facts": _FACTS_DIGEST,
+            },
         )
         assert answer.status_code == 404
         assert record == []
@@ -318,7 +335,12 @@ class TestThePage:
         pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
         answer = page.post(
             approval_routes.PATH,
-            data={"password": PASSWORD, "kind": "operator seat", "decision": "approve"},
+            data={
+                "password": PASSWORD,
+                "kind": "operator seat",
+                "decision": "approve",
+                "facts": _FACTS_DIGEST,
+            },
         )
         assert answer.status_code == 200
         assert record == ["applied"]
@@ -336,7 +358,12 @@ class TestThePage:
     def test_a_double_submit_applies_once(self, page: TestClient) -> None:
         record: list[str] = []
         pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
-        form = {"password": PASSWORD, "kind": "operator seat", "decision": "approve"}
+        form = {
+            "password": PASSWORD,
+            "kind": "operator seat",
+            "decision": "approve",
+            "facts": _FACTS_DIGEST,
+        }
         page.post(approval_routes.PATH, data=form)
         second = page.post(approval_routes.PATH, data=form)
         assert record == ["applied"]
@@ -360,7 +387,12 @@ class TestThePage:
         pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, boom)
         answer = page.post(
             approval_routes.PATH,
-            data={"password": PASSWORD, "kind": "operator seat", "decision": "approve"},
+            data={
+                "password": PASSWORD,
+                "kind": "operator seat",
+                "decision": "approve",
+                "facts": _FACTS_DIGEST,
+            },
         )
         assert answer.status_code == 500
         assert "nothing was changed" in answer.text
@@ -924,3 +956,102 @@ class TestCompetingPasswordChanges:
         assert sorted(r is None for r in results) == [False, True]
         assert approver.verify(wanted) is True
         assert approver.verify("the-other-one") is False
+
+
+class TestADecisionNamesItsProposal:
+    """An approval must answer the proposal a person READ, not merely its kind.
+
+    The agent chooses when to stage and `stage` replaces silently, so before
+    this the sequence "stage K1 → person reads K1 → stage K2 → person clicks"
+    applied K2. It needs no code execution on the operator seat, only
+    `config_tool`, which is exactly the "can it be talked into it" threat the
+    feature exists for.
+    """
+
+    OTHER: ClassVar[dict[str, str]] = {
+        "Backend to trust": "evil.example",
+        "What this means": "Responses are not scanned here.",
+    }
+
+    async def test_a_proposal_swapped_after_it_was_read_is_not_applied(self) -> None:
+        first: list[str] = []
+        second: list[str] = []
+        pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied(first))
+        shown = pending.digest_of(FACTS)  # what the review page carried
+        pending.stage(pending.Kind.FEDERATION_TRUST, self.OTHER, _applied(second))
+
+        with pytest.raises(pending.PendingError):
+            await pending.approve(pending.Kind.FEDERATION_TRUST, shown)
+        assert first == [] and second == []
+
+    async def test_the_swapped_in_proposal_is_left_staged(self) -> None:
+        """Not consumed and not dropped: a person comes back to the real
+        thing rather than to an empty page."""
+        pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied([]))
+        shown = pending.digest_of(FACTS)
+        pending.stage(pending.Kind.FEDERATION_TRUST, self.OTHER, _applied([]))
+        with pytest.raises(pending.PendingError):
+            await pending.approve(pending.Kind.FEDERATION_TRUST, shown)
+        assert pending.outstanding() == {pending.Kind.FEDERATION_TRUST: self.OTHER}
+
+    async def test_the_proposal_that_is_staged_still_applies(self) -> None:
+        record: list[str] = []
+        pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied(record))
+        await pending.approve(pending.Kind.FEDERATION_TRUST, pending.digest_of(FACTS))
+        assert record == ["applied"]
+
+    @pytest.mark.parametrize("digest", ["", "0" * 64, "not-a-digest"])
+    async def test_a_decision_carrying_no_usable_digest_applies_nothing(self, digest: str) -> None:
+        """A hand-made form, or one from before this field existed."""
+        record: list[str] = []
+        pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied(record))
+        with pytest.raises(pending.PendingError):
+            await pending.approve(pending.Kind.FEDERATION_TRUST, digest)
+        assert record == []
+
+    def test_the_digest_does_not_depend_on_the_label_order(self) -> None:
+        """The page renders in insertion order; the fingerprint is canonical,
+        so re-ordered labels are the same proposal and not a mismatch."""
+        reordered = dict(reversed(list(FACTS.items())))
+        assert list(reordered) != list(FACTS)  # a different render order
+        assert pending.digest_of(reordered) == pending.digest_of(FACTS)
+
+    def test_the_review_page_carries_the_fingerprint_of_what_it_shows(
+        self, page: TestClient
+    ) -> None:
+        pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied([]))
+        body = page.post(approval_routes.PATH, data={"password": PASSWORD}).text
+        assert f'name="facts" value="{pending.digest_of(FACTS)}"' in body
+
+    def test_a_swap_through_the_page_is_refused_in_the_usual_words(self, page: TestClient) -> None:
+        """End to end: the hidden field the page gave is replayed after the
+        agent re-staged, and the answer is the one every refusal gives."""
+        record: list[str] = []
+        pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied(record))
+        body = page.post(approval_routes.PATH, data={"password": PASSWORD}).text
+        shown = body.split('name="facts" value="')[1].split('"')[0]
+        pending.stage(pending.Kind.FEDERATION_TRUST, self.OTHER, _applied(record))
+
+        answer = page.post(
+            approval_routes.PATH,
+            data={
+                "password": PASSWORD,
+                "kind": "federation trust",
+                "decision": "approve",
+                "facts": shown,
+            },
+        )
+        assert answer.status_code == 404
+        assert record == []
+        assert "evil.example" not in answer.text
+
+    def test_declining_needs_no_digest(self, page: TestClient) -> None:
+        """A person who did not expect this wants whatever is staged gone,
+        whichever proposal is sitting there now."""
+        pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied([]))
+        answer = page.post(
+            approval_routes.PATH,
+            data={"password": PASSWORD, "kind": "federation trust", "decision": "decline"},
+        )
+        assert answer.status_code == 200
+        assert pending.outstanding() == {}

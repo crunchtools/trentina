@@ -37,12 +37,16 @@ watching any more.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
+
+from .. import audit_chain
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -101,6 +105,17 @@ class Staged:
 
     def expired(self, *, now: float | None = None) -> bool:
         return (time.time() if now is None else now) - self.staged_at > TTL_SECONDS
+
+
+def digest_of(facts: dict[str, str]) -> str:
+    """The fingerprint of one proposal's facts.
+
+    Over the RFC 8785 canonical form, so the label order a page rendered in
+    cannot change it. ``facts`` is label-to-display-string by construction
+    (every value through ``checked_display``), which is why canonicalizing it
+    cannot raise.
+    """
+    return hashlib.sha256(audit_chain.canonical(facts)).hexdigest()
 
 
 #: At most one outstanding action per kind. Staging a second replaces the
@@ -168,8 +183,19 @@ def kind_named(name: str) -> Kind | None:
     return next((kind for kind in Kind if kind.value == name), None)
 
 
-async def approve(kind: Kind) -> dict[str, Any]:
-    """Apply the staged action of ``kind``, once.
+async def approve(kind: Kind, facts_digest: str) -> dict[str, Any]:
+    """Apply the staged action of ``kind``, once, if it is still the one a
+    person was shown.
+
+    ``facts_digest`` is the fingerprint the review page carried, and it must
+    still match what is staged. Without it a decision named only a ``Kind``,
+    and staging replaces silently — so the agent could propose one thing, let a
+    person read it, re-stage another, and have the click apply the second. The
+    agent chooses when to stage and cannot read the password, but it did not
+    need to: the consent was for a kind, not for a proposal. A mismatch raises
+    like an empty store, so the page says the same "nothing to approve" as a
+    wrong password, and the newer proposal is LEFT staged rather than consumed
+    or dropped — a person comes back to the real thing instead of to nothing.
 
     Removed from the store BEFORE it is applied, so a double submit cannot run
     it twice even if applying is slow — and so a failure does not leave
@@ -179,6 +205,12 @@ async def approve(kind: Kind) -> dict[str, Any]:
     action = _staged.get(kind)
     if action is None:
         raise PendingError("there is nothing of that kind waiting to be approved")
+    if not hmac.compare_digest(digest_of(action.facts), facts_digest):
+        logger.warning(
+            "approval: %s was decided against a proposal that is no longer staged; not applied",
+            kind.value,
+        )
+        raise PendingError("what was approved is not what is staged now")
     del _staged[kind]
     logger.info("approval: %s approved by a person", kind.value)
     return await action.apply()
