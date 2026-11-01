@@ -1,13 +1,21 @@
 """C1: a federated link authenticates with an primary JWT, no shared bearer (#592).
 
-End to end on the two-gateway harness: the primary signs a primary JWT, the
-secondary (a federation ingress with the peer's public key and NO static bearer)
-verifies it, and a tool call crosses the link. A wrong key is refused.
+The happy path — a primary JWT verified by the secondary and a tool call
+crossing the link — is asserted end to end in
+`test_federation_seat_link.py`, through the ingress DERIVED from a seat, which
+is the shape 5.0.0 ships. It lives there rather than here because only one
+test per process may stand up a gateway pair in front of a real remote MCP
+backend (#657), and a second one reports coverage it does not have.
+
+What is here is the refusal and the two reload holds. The refusal is asserted
+POSITIVELY, on the error the gateway raises, and needs no remote backend: a
+wrong primary key is refused by the secondary's ingress before any backend is
+reached. It used to be an end-to-end assertion that no tool was served — which
+is satisfied by a link that failed for any reason at all, including the #657
+defect, so for most of its life it passed without testing anything.
 """
 
 from __future__ import annotations
-
-import json
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -18,7 +26,6 @@ from tests.federation_harness import (
     INTERNAL_KEY,
     SECONDARY_PROFILE,
     federated_pair,
-    serving_mcp_backend,
 )
 from trentina.gateway import backend as backend_mod
 from trentina.gateway.backend import ResponseCap, call_backend_tool, list_backend_tools
@@ -59,22 +66,10 @@ def _keypair() -> tuple[str, str]:
 #: derived rather than hand-written, which is what the model now requires.
 SECONDARY_SEAT = "shared-seat"
 
-
-def _secondary(public_pem: str, demo_port: int) -> Profile:
-    # The ingress DERIVED from a shared seat: peers only, NO static bearer
-    # (peers-only authenticates). Its offered tools are the seat's real REMOTE
-    # backend (the demo server, behind the secondary's perimeter), and its
-    # internal surface is the paging reader — never the gateway's own
-    # fetch/search/admin tools, which the seat itself still has.
-    return Profile(
-        name=SECONDARY_PROFILE,
-        federation_of=SECONDARY_SEAT,
-        federation=FederationConfig(peers={"breetai": FederationPeer(public_key=public_pem)}),
-        backends={
-            "demo": Backend(url=f"http://127.0.0.1:{demo_port}/mcp"),
-            INTERNAL_KEY: Backend(url="internal://web", tools_allow=["read_part_tool"]),
-        },
-    )
+#: A loopback port nothing listens on. The secondary's offered backend has to
+#: exist for the profile to be valid, and this file never dials it: a refused
+#: primary key is refused at the ingress, before any backend is reached.
+_DEAD_PORT = 1
 
 
 def _primary_factory(private_pem: str):
@@ -95,38 +90,39 @@ def _primary_factory(private_pem: str):
     return down
 
 
-async def test_a_federated_call_authenticates_with_an_edge_jwt() -> None:
-    private_pem, public_pem = _keypair()
-    async with (
-        serving_mcp_backend() as demo_port,
-        federated_pair(
-            secondary=_secondary(public_pem, demo_port), primary=_primary_factory(private_pem)
-        ) as fed,
-        fed.primary_client() as client,
-    ):
-        names = {t["name"] for t in await client.list_tools()}
-        assert any(n.endswith("echo") for n in names), names
-        echo = next(t["name"] for t in (await client.list_tools()) if t["name"].endswith("echo"))
-        result = await client.call_tool(echo, {"text": "signed-hello"})
-    # The whole round trip was authenticated by the primary JWT; the secondary holds
-    # no shared bearer for the primary.
-    assert "echo:signed-hello" in json.dumps(result), result
-
-
 async def test_a_wrong_primary_key_is_refused() -> None:
-    # The primary signs with a key whose public half the secondary does not trust.
+    """The secondary refuses a primary JWT it cannot verify, and the primary
+    says so rather than reporting an empty offering.
+
+    The assertion is on `FederationUnauthorizedError` from the primary's own
+    listing call, not on the peer's served tool list: an empty list is what a
+    refusal looks like AND what every other failure looks like, so it told the
+    two apart only by luck. The secondary's backend is deliberately a port
+    nothing listens on — the refusal happens at its ingress, before a backend
+    is reached, which this test now also proves by never needing one.
+    """
     _, trusted_pub = _keypair()
     wrong_priv, _ = _keypair()
-    async with (
-        serving_mcp_backend() as demo_port,
-        federated_pair(
-            secondary=_secondary(trusted_pub, demo_port), primary=_primary_factory(wrong_priv)
-        ) as fed,
-        fed.primary_client() as client,
-    ):
-        names = {t["name"] for t in await client.list_tools()}
-    # The secondary rejected the primary JWT, so the federated backend served nothing.
-    assert not any(n.endswith("echo") for n in names), names
+    # The ingress DERIVED from a shared seat: peers only, NO static bearer,
+    # since the peer list is what authenticates. Its internal surface is the
+    # paging reader — never the gateway's own fetch/search/admin tools, which
+    # the seat itself still has.
+    secondary = Profile(
+        name=SECONDARY_PROFILE,
+        federation_of=SECONDARY_SEAT,
+        federation=FederationConfig(peers={"breetai": FederationPeer(public_key=trusted_pub)}),
+        backends={
+            "demo": Backend(url=f"http://127.0.0.1:{_DEAD_PORT}/mcp"),
+            INTERNAL_KEY: Backend(url="internal://web", tools_allow=["read_part_tool"]),
+        },
+    )
+    async with federated_pair(secondary=secondary, primary=_primary_factory(wrong_priv)) as fed:
+        primary = _primary_factory(wrong_priv)(fed.secondary_port)
+        backend = primary.backends["fed"]
+        with profile_context(primary), pytest.raises(FederationUnauthorizedError) as refused:
+            await list_backend_tools("fed", backend, primary)
+
+    assert "federation_unauthorized" in str(refused.value)
 
 
 # --- reload holds (#592, C1): url and federation.peers are perimeter ---
