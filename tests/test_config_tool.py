@@ -265,7 +265,16 @@ class TestRefusals:
         # #637 handed back a capability URL, which an agent reads out of its own
         # tool result and an operator with code execution can POST.
         assert "approve_url" not in result
-        assert "token" not in repr(result)
+        assert not {"approve_url", "handle", "token", "password"} & set(result)
+        # This read `"token" not in repr(result)` until #652, as a proxy for
+        # "nothing here approves anything". The facts now name how a caller
+        # BECOMES the operator, so they legitimately carry
+        # `bearer_token_env=AG_TOKEN` — the name of a variable, out of the file
+        # this caller just wrote, and no more a capability than the profile
+        # name beside it. What must never appear is the resolved secret, and
+        # it cannot: `auth.bearer_token` is `Field(exclude=True)`, asserted
+        # directly in test_no_secret_bearing_field_reaches_the_seat_comparison.
+        assert "bearer_token=" not in repr(result)
         # The facts a person is shown name who holds root now and who would.
         shown = " ".join(result["shown_for_approval"].values())
         assert "op" in shown and "ag" in shown
@@ -320,6 +329,24 @@ class TestRefusals:
         flooded = {"op": {"auth": {f"f{n}": "x" * 40 for n in range(_SEAT_VALUE_CHARS // 10)}}}
         with pytest.raises(pending.PendingError, match="too long to show"):
             _seat_facts(seat, flooded)
+
+    def test_a_new_operator_shows_how_it_becomes_root(self) -> None:
+        """A seat MOVE has the same blindness as a credential swap if only the
+        names are shown. "josui, then ops" says the seat moved and nothing
+        about how ops authenticates — and an allowlist admitting an address
+        nobody recognises is exactly what that line would hide."""
+        from trentina.tools.config import _seat_facts
+
+        facts = _seat_facts(
+            {"josui": {"auth": {"bearer_token_env": "JOSUI_TOKEN"}, "oauth": None}},
+            {"ops": {"auth": None, "oauth": {"allowed_emails": ["stranger@example.com"]}}},
+        )
+        assert facts["Holds the operator seat now"] == "josui"
+        assert facts["Would hold it after this change"] == "ops"
+        assert facts["ops.oauth now"] == "absent"
+        assert "stranger@example.com" in facts["ops.oauth after this change"]
+        assert "JOSUI_TOKEN" in facts["josui.auth now"]
+        assert facts["josui.auth after this change"] == "absent"
 
     def test_an_absent_seat_field_is_not_shown_as_an_unset_one(self) -> None:
         """``dict.get`` alone reports a missing key and a key set to ``None``

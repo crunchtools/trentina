@@ -258,9 +258,12 @@ def _seat_facts(before: dict[str, Any], after: dict[str, Any]) -> dict[str, str]
     profile is visible and changing the key behind an unchanged name is not.
     QE found it the hard way — told to decline, shown that page, approved.
 
-    So every aspect that differs is named, with its before and its after. A
-    profile that only enters or only leaves the seat is already carried by the
-    two lines above.
+    So every aspect that differs is named, with its before and its after,
+    across the UNION of both sides. A profile entering the seat needs that as
+    much as one already in it: "josui, then ops" says the seat moved and
+    nothing about how ops becomes root, and an OAuth block admitting an
+    address nobody recognises is exactly the payload that line would hide.
+    A side not holding the profile at all renders as ``absent``.
 
     No credential VALUE can arrive here. The two secret-bearing fields in
     these models, ``auth.bearer_token`` and ``oauth.client_secret``, are
@@ -277,9 +280,9 @@ def _seat_facts(before: dict[str, Any], after: dict[str, Any]) -> dict[str, str]
             ", ".join(sorted(after)) or "nobody", what="the proposed operator seat"
         ),
     }
-    for name in sorted(set(before) & set(after)):
+    for name in sorted(set(before) | set(after)):
         shown = pending.checked_display(name, what="an operator seat name")
-        was, now = before[name], after[name]
+        was, now = before.get(name, {}), after.get(name, {})
         for aspect in sorted(set(was) | set(now)):
             had, has = was.get(aspect, _MISSING), now.get(aspect, _MISSING)
             if had == has:
