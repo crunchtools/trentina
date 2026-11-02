@@ -98,16 +98,32 @@ class TestLoadRules:
     def test_an_operator_without_a_key_for_its_provider_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Refused for the admin surface, not for anyone else's bill (6.1.1).
+
+        Since 6.1.0 the operator pays for nobody else's judging, so the reason
+        this is stricter than the warning every other keyless profile gets is
+        that the operator's own tools are the ADMIN set: withheld under block,
+        and then there is no way to repair the gateway through the API. The
+        message is asserted, not just the failure, because the rule outlived
+        the reason it was written for and a reader needs the live one.
+        """
         keyless = _OPERATOR.replace("    llm_keys:\n      gemini:\n        api_key: ops-key\n", "")
         path = _load(tmp_path, monkeypatch, keyless)
 
-        with pytest.raises(ProfileConfigError, match="no llm_keys"):
+        with pytest.raises(ProfileConfigError, match="no llm_keys") as caught:
             load_profiles(path)
+
+        message = str(caught.value)
+        assert "config_tool" in message
+        assert "administered through the API" in message
+        # The pre-6.1.0 reason, which stopped being true when judging went
+        # per profile. It must not come back.
+        assert "gateway's own model calls" not in message
 
     def test_a_key_for_another_provider_does_not_count(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The key must be for the provider the service identity RESOLVES to."""
+        """The key must be for the provider the operator's judge RESOLVES to."""
         elsewhere = _OPERATOR.replace("    defense:\n", "    defense:\n      provider: openai\n")
         path = _load(tmp_path, monkeypatch, elsewhere)
 

@@ -169,6 +169,35 @@ def test_a_profile_without_its_own_key_is_warned_about(
     assert ("has no llm_keys" in caplog.text) is warns
 
 
+def test_the_keyless_warning_does_not_claim_the_operator_case(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A keyless operator never reaches this warning, so it must not promise it.
+
+    Through 6.1.0 the warning ended "so an operator profile loses
+    quarantine_stats and config_tool too", and 6.1.0's own Upgrading notes led
+    with that consequence. Both were unreachable: ``_check_operator`` refuses a
+    keyless operator and runs BEFORE ``_check_judges``, and a derived ingress
+    carries its source's ``llm_keys`` so it cannot be keyless either. Someone
+    reading the warning would have gone looking for degraded admin tools when
+    what they would actually meet is a refused file.
+    """
+    from trentina.gateway.loader import _check_judges
+
+    profile = Profile(
+        name="agent1",
+        auth=AuthConfig(bearer_token_env="TEST"),
+        defense=DefenseConfig(enforcement="flag", provider="openrouter"),
+        llm_keys={},
+    )
+
+    _check_judges({"agent1": profile})
+
+    assert "has no llm_keys" in caplog.text
+    assert "quarantine_stats" not in caplog.text
+    assert "config_tool" not in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_a_profile_without_its_key_never_falls_back_to_the_global_one(
     judged: list[tuple[str, str | None]],
