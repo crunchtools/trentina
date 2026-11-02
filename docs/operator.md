@@ -9,8 +9,9 @@ It is the one identity that owns the gateway.
 
 Every other agent is a **tenant** (`role: agent`, the default). A tenant sees
 its own tools, its own audit rows and its own section of the config, and
-nothing about its neighbours. The operator sees the whole gateway, and the
-gateway's own model work runs as the operator.
+nothing about its neighbours. The operator sees the whole gateway, and holds
+what is left of the gateway's service identity — a short list, and since 6.1.0
+no model call is on it.
 
 ## What the profile is for
 
@@ -144,14 +145,18 @@ operator declared** the remaining service-identity work uses the env-global
 provider, model and key, and the gateway says so at startup:
 
 ```
-service identity: no operator profile declared — centralized model calls (...) use the env-global key, ...
+service identity: no operator profile declared — an approved config write binds the env-global identity, provider=... model=... No model call runs as the service identity: ...
 ```
 
 With an operator, the same line names it:
 
 ```
-service identity: centralized model calls run as operator profile=ops provider=gemini model=...
+service identity: operator profile=ops, its own judge provider=gemini model=... It binds the approved-config apply; no model call runs as it
 ```
+
+The judge in that line is the operator's **own** — what judges the operator's
+own tool descriptions. It says nothing about any other profile's, and nothing
+about who pays for them.
 
 ## Declaring one
 
@@ -195,11 +200,17 @@ profiles:
 - **At most one operator.** Two would make "whose identity" depend on file
   order again, so a second one refuses the whole file. On a reload the running
   config stays in force.
-- **The operator pays for its own work.** It must hold `llm_keys` for the
-  provider its service identity resolves to (Ollama excepted, which is
-  keyless). Without that key, every description would come back
-  `l3_unavailable`, and under `block` every tool would be quietly withheld from
-  every profile. Failing at load is the better outcome.
+- **The operator must hold a key for its own judge.** `llm_keys` for the
+  provider its `defense` resolves to (Ollama excepted, which is keyless).
+  Since 6.1.0 it pays for nobody else's judging, so a missing key costs only
+  its own tools — but its tools are the **admin set**, served by `internal://`
+  and judged like any other description. Under the default `block` a keyless
+  operator would be served no `quarantine_stats`, no `config_tool` and no
+  `reload_profiles`: a gateway nobody can repair through the API, which is how
+  configs are written since #633. Every other keyless
+  profile degrades to something its operator can still fix; this one degrades
+  to a hand edit and a restart. So it fails at load, which on a reload keeps
+  the running config.
 - **No self-promotion.** A tenant's reload that finds its own `role` changed
   on disk refuses and applies nothing. A promotion takes effect only through an
   operator reload or a restart.
@@ -232,9 +243,17 @@ profiles:
 
 ## Changing the operator
 
-Moving the role, or changing the operator's `defense.model`, moves every
-centralized call to the new identity at the next reload. Descriptions are then
-judged again under the new model: that's the verdict cache doing its job, not a
-bug. Verdicts reached by the env-default model keep their cache keys, so an
+Moving the role takes effect at the next reload, and from 6.1.0 it moves very
+little: the admin scope, and the binding for an approved config write. No
+model call and nobody's bill moves with it.
+
+Changing the operator's `defense.model` re-judges **the operator's own**
+descriptions and nobody else's — that's the verdict cache doing its job, not a
+bug. Through 6.0.0 it re-judged every profile's, because the operator judged
+for all of them; `reload_profiles` reported that as `service_identity_moved`,
+a result key dropped in 6.1.1 along with the behaviour. A reload now
+invalidates exactly the profiles it names in `changed`.
+
+Verdicts reached by the env-default model keep their cache keys, so an
 operator that runs the default model inherits everything judged before
 operators existed.

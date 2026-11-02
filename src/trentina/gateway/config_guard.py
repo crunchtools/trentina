@@ -146,9 +146,10 @@ def operator_profile(profiles: dict[str, Profile]) -> dict[str, Any]:
     """Everything that decides WHO the operator is and how a caller becomes one.
 
     Compared before and after a write. Deliberately not ``llm_keys`` or
-    ``defense``: those move which judge the gateway's own calls run on, which is
-    a real change but one ``reload_profiles`` already reports as
-    ``service_identity_moved`` rather than something to forbid.
+    ``defense``: those move which judge a profile's OWN L3 runs on (6.1.0), so
+    the blast radius is that one profile, which ``reload_profiles`` re-judges
+    by naming it in ``changed``. A real change, and not one to forbid — it
+    neither widens who may administer the gateway nor moves anyone's bill.
     """
     return {
         name: {

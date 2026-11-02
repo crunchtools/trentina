@@ -127,8 +127,10 @@ def resolve_profile_llm(
     Ollama is the sole exception: it is keyless. The model is None when the
     profile does not override it, and ``get_provider`` supplies the default.
 
-    One rule for every caller: the Q-Agent, and the gateway's centralized work
-    running as the operator (``gateway/service.py``, #138).
+    One rule for every caller, whichever profile is bound: a tool response's
+    judge, and since 6.1.0 a tool description's judge and its compressor too —
+    all of them the listing or calling profile's own (``gateway/service.py``
+    holds what is left of the service identity, which makes no model call).
     """
     resolved = provider_name or profile.defense.provider or get_config().provider
     if resolved == "ollama":

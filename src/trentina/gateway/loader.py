@@ -1209,8 +1209,7 @@ def _check_judges(registry: dict[str, Profile]) -> None:
             "profile %r judges with provider %r but has no llm_keys.%s: its L3 will "
             "report l3_unavailable, for its tool DESCRIPTIONS as well as its "
             "responses, so under block it is served NO tools — internal:// ones "
-            "included, so an operator profile loses quarantine_stats and "
-            "config_tool too. An l3_unavailable verdict is never persisted "
+            "included. An l3_unavailable verdict is never persisted "
             "either, so it re-runs L1 and L2 over every description on every "
             "list. Add the key, or set defense.provider to one it holds",
             name,
@@ -1220,17 +1219,24 @@ def _check_judges(registry: dict[str, Profile]) -> None:
 
 
 def _check_operator(registry: dict[str, Profile]) -> None:
-    """At most one operator, and it must be able to pay for its own work.
+    """At most one operator, and it must hold a key for its own judge.
 
-    The operator is the gateway's service identity (``service.py``, #138):
-    centralized model calls run on its provider and its key. Two operators
-    would make "whose identity" a matter of file order again, which is the
-    thing #138 removed — so it is a load error, not a tiebreak.
+    The operator is the gateway's service identity (``service.py``, #138), and
+    two of them would make "whose identity" a matter of file order again, which
+    is the thing #138 removed — so it is a load error, not a tiebreak.
 
-    An operator with no key for its own provider does not fail loudly at call
-    time: L3 reports ``l3_unavailable`` on every tool description, and under
-    block every tool is quietly withheld from every profile. Refusing the
-    file here keeps the running config instead (``reload_profiles``).
+    The key requirement outlives the reason it was written for. Since 6.1.0 the
+    operator pays for nobody else's judging, so a missing key costs only its own
+    tools — but the operator's tools are the ADMIN set, served by ``internal://``
+    and judged like any other description (only a decoy's are exempt). Under the
+    default ``block`` a keyless operator is therefore served no
+    ``quarantine_stats``, no ``config_tool`` and no ``reload_profiles``: a
+    gateway nobody can repair through the API, when an API is how configs are
+    written since #633. Every other keyless profile degrades to something its
+    operator can still fix; this one degrades to a hand edit and a restart. So
+    it stays a refusal, which on a reload keeps the running config
+    (``reload_profiles``) and puts the reason in the one message a person
+    running the container is sure to read.
     """
     from .service import judge_of
 
@@ -1252,9 +1258,12 @@ def _check_operator(registry: dict[str, Profile]) -> None:
     provider, _model = judge_of(operator)
     if provider != "ollama" and provider not in operator.llm_keys:
         raise ProfileConfigError(
-            f"operator profile {operator.name!r} runs the gateway's own model calls on "
-            f"provider {provider!r} but has no llm_keys.{provider}; add the key, or set "
-            f"defense.provider to one it holds"
+            f"operator profile {operator.name!r} judges with provider {provider!r} but has "
+            f"no llm_keys.{provider}; its own admin tools are internal:// and are judged "
+            f"like any other description, so under block it would be served no "
+            f"quarantine_stats, config_tool or reload_profiles and the gateway could not "
+            f"be administered through the API. Add the key, or set defense.provider to one "
+            f"it holds"
         )
 
 

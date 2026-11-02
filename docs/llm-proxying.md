@@ -36,7 +36,7 @@ unauthenticated request is `401` whether or not `{provider}` exists — the `404
 is only ever returned to a caller with a valid token, and 404-vs-401 cannot be
 used to enumerate configured provider names.
 
-The caller's token (`Authorization` or `x-api-key`) is never forwarded upstream. Trentina's own Q-Agent does not go through `/proxy/llm/`; it calls providers directly, but with the same `llm_keys`. Judging a profile's tool response bills that profile's key. Judging a shared tool description, or compressing one, is the gateway's own work, and bills the operator's key ([operator.md](operator.md#service-identity)). The global `GEMINI_API_KEY` applies only when no operator is declared.
+The caller's token (`Authorization` or `x-api-key`) is never forwarded upstream. Trentina's own Q-Agent does not go through `/proxy/llm/`; it calls providers directly, but with the same `llm_keys`. Judging a profile's tool response bills that profile's key, and since 6.1.0 so does judging or compressing a tool DESCRIPTION: a tenant's tool list is its own work, on its own key, cached in its own partition ([operator.md](operator.md#service-identity)). Both were the operator's through 6.0.0. There is no fallback in either direction: `resolve_profile_llm` raises rather than reach for another profile's key or the global one, so a profile with no `llm_keys` for its resolved provider judges nothing. The global `GEMINI_API_KEY` reaches L3 only on a standalone server, through the operator profile synthesized from the environment (#579).
 
 ### What the Proxy Admits
 

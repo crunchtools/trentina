@@ -1178,10 +1178,11 @@ class Backend(BaseModel):
         default_factory=ProcessorChainConfig,
         description=(
             "Transforms for this backend's tool and parameter descriptions "
-            "(#176). {processors: [summarize]} compresses them with the "
-            "operator's model in the background, cached; until a description "
-            "is compressed it is served as the backend wrote it. Replaced "
-            "compress_descriptions: true (gone since 0.40.0)."
+            "(#176). {processors: [summarize]} compresses them with this "
+            "profile's own model in the background, cached in this profile's "
+            "partition (6.1.0; it was the operator's model, shared); until a "
+            "description is compressed it is served as the backend wrote it. "
+            "Replaced compress_descriptions: true (gone since 0.40.0)."
         ),
     )
     compact_schemas: bool = Field(

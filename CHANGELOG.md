@@ -10,9 +10,62 @@ under that name.
 
 ## [Unreleased]
 
+## [6.1.1] - 2026-11-02
+
+6.1.0 moved tool-description judging onto each profile's own key and left a set
+of statements behind saying the opposite, including one in its own release
+notes. This corrects them, and fixes the one place where the code still decided
+something from the operator's judge.
+
 ### Added
 
-- `quarantine_stats` `federation.shared[]` entries carry `judge`, the stamp the link asserts and a peer pins (#666). `perimeter.judge` remains the operator's own and was the wrong value to give a peer when the shared profile is not the operator.
+- `quarantine_stats` `federation.shared[]` entries carry `judge`, the stamp the
+  link asserts and a peer pins (#666). `perimeter.judge` remains the operator's
+  own and was the wrong value to give a peer when the shared profile is not the
+  operator.
+
+### Fixed
+
+- **A reload re-judged every profile's tool descriptions when the OPERATOR's
+  model changed.** `reload_profiles` decided staleness from whether the
+  operator's judge had moved and then invalidated every profile's aggregate,
+  which was right while the operator judged for everyone and became
+  over-invalidation in 6.1.0 — on a lotor-shaped config, 1,456 descriptions
+  re-judged on nine profiles' own keys because one unrelated profile changed
+  model. It also pushed `notifications/tools/list_changed` to every session.
+  A profile's judge can only move by a change to its own `defense`, which a
+  reload already reports in `changed`, so the check is gone rather than
+  rewritten: derivations are covered because the registry compared is
+  post-`derive_all` and `defense` is carried, and the env default a judge falls
+  back to is not re-read by a reload.
+
+### Changed
+
+- **`reload_profiles` no longer returns `service_identity_moved`.** It reported
+  that the operator's judge had moved, which through 6.0.0 meant every profile
+  was about to be re-judged on the operator's key. Nothing follows from it now:
+  no spend moves, and the operator's own re-judge is already visible in
+  `profiles.changed` and `caches_invalidated`. An operator-only, informational
+  key whose name described a mechanism 6.1.0 removed.
+- The refusal of a keyless operator profile gives its real reason. The rule is
+  unchanged and predates 6.1.0, but it used to be justified by the operator
+  paying for every profile's judging; what justifies it now is that the admin
+  tools are `internal://` and judged like any other description, so a keyless
+  operator under `block` would be served no `quarantine_stats`, `config_tool`
+  or `reload_profiles` — a gateway nobody could repair through the API.
+- The two `service identity:` startup lines no longer say centralized model
+  calls run as the operator, because none do. The judge they name is the
+  operator's own. `docs/operator.md` quotes both and was updated with them.
+- 6.1.0's Upgrading note 3 corrected in place: it claimed a keyless operator
+  would lose its admin tools, a state `load_profiles` refuses outright. The
+  note now says so, and the published 6.1.0 release notes were corrected to
+  match.
+- Documentation and comments that still said the operator pays for the
+  gateway's model work: `docs/operator.md`, `docs/profiles.md`,
+  `docs/llm-proxying.md`, `docs/federation.md`,
+  `docs/internal/gateway-design.md`, and docstrings in `gateway/service.py`,
+  `gateway/loader.py`, `gateway/config_guard.py`, `gateway/profile.py`,
+  `orchestrator.py`, `quarantine/agent.py` and `tools/config.py`.
 
 ## [6.1.0] - 2026-11-02
 
@@ -41,15 +94,12 @@ stops loading. Two operational notes:
    `trust_verdict.perimeter_stamp`. Nothing is unsafe in the meantime; it is
    twice the work, quietly.
 
-3. **Give every profile its own `llm_keys`, and check the ones that have
+3. **Give every AGENT profile its own `llm_keys`, and check the ones that have
    none.** A profile judges its own tool descriptions now, so one with no key
    for the provider its `defense` resolves to judges nothing — and under
    `enforcement: block` a description that cannot be judged is withheld, so
    that profile is served **no tools at all**. Not only its remote ones:
-   `internal://` tool descriptions are judged too (only a decoy's are not), so
-   a keyless OPERATOR profile loses `quarantine_stats`, `config_tool` and the
-   rest of the admin set — which worked before, because the operator's own key
-   paid for every profile's descriptions.
+   `internal://` tool descriptions are judged too (only a decoy's are not).
 
    Such a profile was already half-broken: every tool RESPONSE reported
    `l3_unavailable` and block refused it, and the loader has warned about it
@@ -57,6 +107,12 @@ stops loading. Two operational notes:
    instead of at the first call. The loader still only warns, so nothing stops
    loading; `config_tool` now reports it as `no_llm_key` in the write result as
    well. Ollama is keyless and exempt.
+
+   The OPERATOR profile is not affected and never was: `load_profiles` has
+   refused a keyless operator since #138, so it cannot reach this state.
+   (This paragraph originally said a keyless operator would lose
+   `quarantine_stats` and `config_tool`. That was wrong — the file is refused
+   outright — and it was corrected in 6.1.1.)
 
 4. **`pending_pins` may not return to zero on its own.** A tool that reverts to
    an approved definition is served again, and the definition that was held

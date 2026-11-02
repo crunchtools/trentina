@@ -170,8 +170,9 @@ async def judge_tool_description(
     surface text here to be judged for poisoning. The ``defend()`` call lives
     here, in the orchestration layer (Trentina 3.0 Phase 7), so
     ``gateway/tool_list_edge.py`` no longer reaches the layers; the caller keeps
-    the verdict cache, the single-flight, the service-identity binding (active
-    across this await, so L3 runs as the operator) and the briefing it passes as
+    the verdict cache, the single-flight, the profile binding (active across this
+    await, so since 6.1.0 L3 runs as the LISTING profile, on its own key) and the
+    briefing it passes as
     ``l3_context``. ``records_block`` is the caller's ``posture.records_block()``
     — whether a flag here feeds the blocklist.
     """

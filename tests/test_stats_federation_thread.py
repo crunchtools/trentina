@@ -58,7 +58,7 @@ profiles:
   ops:
     role: operator
     defense:
-      provider: ollama  # keyless; the operator runs the gateway's own calls
+      provider: ollama  # keyless, so the operator needs no llm_keys
     auth:
       bearer_token_env: TEST_OPS_TOKEN
     backends:
