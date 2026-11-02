@@ -411,18 +411,24 @@ def loggable_tool(url: str, tool_name: str) -> str:
     typed, unlisted (#262), and a listed name is one the backend already
     publishes to every agent through tools/list.
 
-    Deliberately NOT partitioned by owner, unlike the two readers above. The
-    question here is whether the BACKEND publishes this name — a name listed in
-    any partition of the URL is one it published, and the answer goes to the
-    journal rather than to a tenant, so reading across partitions reveals
-    nothing to anybody. Owner-keying it would thread a parameter through nine
-    call sites to buy nothing.
+    Two partitions are consulted, not every one: the CALLER's, taken from the
+    bound context, and the anonymous one a credential-free backend shares. That
+    covers both shapes in two dict lookups, where scanning every partition of
+    the URL would cost one pass per tenant holding it — on a logging path, per
+    line. The owner comes from the context rather than a parameter because nine
+    call sites would otherwise each carry one for a single lookup, and every
+    one of them sits inside a call that has a profile bound.
+
+    It is also tighter than scanning everything: a name absent from the list
+    the caller was served is one it was not offered, and fingerprinting that is
+    the right answer.
     """
+    profile = get_current_profile()
+    owners = {"", profile.grant_owner if profile is not None else ""}
     listed = any(
         tool.get("name") == tool_name
-        for key, tools in _tool_list_cache.items()
-        if key[0] == url
-        for tool in tools
+        for owner in owners
+        for tool in _tool_list_cache.get((url, owner), ())
     )
     if listed and _TOOL_NAME.fullmatch(tool_name):
         return tool_name

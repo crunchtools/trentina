@@ -317,14 +317,14 @@ def pending(url: str) -> list[dict[str, Any]]:
     definition of that tool, since there may now be several.
     """
     bid = backend_id(url)
-    approved: dict[str, str | None] = {}
+    rows = perimeter_db.list_pending_pins(bid)
+    # One read for every held tool's approved definition, not one per tool: a
+    # backend can hold dozens, and this is what each is diffed against.
+    approved = perimeter_db.approved_by_tool(bid, {row["tool"] for row in rows})
     out: list[dict[str, Any]] = []
-    for row in perimeter_db.list_pending_pins(bid):
+    for row in rows:
         tool = row["tool"]
-        if tool not in approved:
-            previous = perimeter_db.last_approved(bid, tool)
-            approved[tool] = previous["definition_json"] if previous else None
-        before = approved[tool]
+        before = approved.get(tool)
         out.append(
             {
                 "tool": tool,

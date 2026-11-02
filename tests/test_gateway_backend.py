@@ -23,6 +23,7 @@ from trentina.gateway.backend import (
     _tool_list_cache,
     cached_tool_read_only,
     call_backend_tool,
+    evict_backend_cache_url,
     list_backend_tools,
     revalidate_backend_tools,
 )
@@ -682,3 +683,144 @@ class TestCachedToolReadOnly:
         _tool_list_cache[(URL, "")] = [tool]
 
         assert cached_tool_read_only(URL, "", "t") is read_only
+
+
+class TestOneTenantNeverReadsAnothersToolList:
+    """The leak this release exists to close (6.1.0).
+
+    `_tool_list_cache` was keyed by backend URL alone, so whichever profile
+    missed first fetched the list with its OWN credential and every other
+    profile on that URL was handed the result — without presenting a credential
+    of its own, and for an `auth` backend without holding a grant at all. For a
+    backend whose tool list or schemas depend on the account, that is one
+    tenant reading another tenant's data.
+    """
+
+    @staticmethod
+    def _with_headers(token: str) -> Backend:
+        return Backend(url=URL, headers={"Authorization": f"Bearer {token}"})
+
+    @staticmethod
+    def _profile(name: str) -> Profile:
+        return Profile(name=name, auth=AuthConfig(bearer_token_env="T"))
+
+    async def test_each_credential_gets_its_own_list(self) -> None:
+        """Two profiles, two tokens, one URL: two fetches and two partitions.
+        Before this release the second profile was served the first's list."""
+        alice, bob = self._profile("alice"), self._profile("bob")
+        seen: list[str | None] = []
+
+        async def per_credential(_url: str, headers: Any, *_: Any) -> Any:
+            seen.append((headers or {}).get("Authorization"))
+            # A backend that answers per account: the tool name says whose.
+            whose = "alice" if "alice-token" in str(headers) else "bob"
+            return _tools_result([f"{whose}_only_tool"])
+
+        with patch("trentina.gateway.backend._do_list_tools", side_effect=per_credential):
+            mine = await list_backend_tools("b", self._with_headers("alice-token"), alice)
+            theirs = await list_backend_tools("b", self._with_headers("bob-token"), bob)
+
+        assert [t["name"] for t in mine] == ["alice_only_tool"]
+        assert [t["name"] for t in theirs] == ["bob_only_tool"]
+        # Two fetches, each under its own credential — not one shared answer.
+        assert seen == ["Bearer alice-token", "Bearer bob-token"]
+
+    async def test_a_profile_with_no_credential_is_not_served_anothers_list(self) -> None:
+        """The sharpest form: a profile that presents nothing used to be handed
+        a warm list that another profile's token had earned."""
+        alice = self._profile("alice")
+
+        with patch(
+            "trentina.gateway.backend._do_list_tools",
+            side_effect=lambda *_a: _tools_result(["alice_only_tool"]),
+        ):
+            await list_backend_tools("b", self._with_headers("alice-token"), alice)
+
+        # Bob's own partition is empty, so a cache HIT is impossible for him.
+        assert (URL, "alice") in _tool_list_cache
+        assert (URL, "bob") not in _tool_list_cache
+
+    async def test_a_backend_with_no_credential_is_still_fetched_once(self) -> None:
+        """The partition costs nothing where nothing is at stake: an anonymous
+        list is the same for everyone, so one row serves every profile."""
+        calls = 0
+
+        async def once(*_a: Any) -> Any:
+            nonlocal calls
+            calls += 1
+            return _tools_result(["public_tool"])
+
+        with patch("trentina.gateway.backend._do_list_tools", side_effect=once):
+            await list_backend_tools("b", _backend(), self._profile("alice"))
+            await list_backend_tools("b", _backend(), self._profile("bob"))
+
+        assert calls == 1
+        assert list(_tool_list_cache) == [(URL, "")]
+
+    async def test_a_derived_ingress_shares_its_sources_partition(self) -> None:
+        """One tenant reached two ways, spending one credential — so the
+        ingress reads the profile's row rather than fetching its own."""
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        from trentina.gateway.profile import FederationConfig, FederationPeer
+
+        pem = (
+            Ed25519PrivateKey.generate()
+            .public_key()
+            .public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            .decode()
+        )
+        source = self._profile("alice")
+        # A derivation authenticates through `federation.peers`, never `auth`,
+        # so that is what makes this shaped like a real one.
+        derived = Profile(
+            name="alice-federation",
+            federation_of="alice",
+            federation=FederationConfig(peers={"peer": FederationPeer(public_key=pem)}),
+        )
+        calls = 0
+
+        async def once(*_a: Any) -> Any:
+            nonlocal calls
+            calls += 1
+            return _tools_result(["alice_only_tool"])
+
+        backend = self._with_headers("alice-token")
+        with patch("trentina.gateway.backend._do_list_tools", side_effect=once):
+            await list_backend_tools("b", backend, source)
+            await list_backend_tools("b", backend, derived)
+
+        assert calls == 1
+        assert list(_tool_list_cache) == [(URL, "alice")]
+
+    async def test_an_agent_eviction_reaches_only_its_own_partition(self) -> None:
+        alice, bob = self._profile("alice"), self._profile("bob")
+        with patch(
+            "trentina.gateway.backend._do_list_tools",
+            side_effect=lambda *_a: _tools_result(["t"]),
+        ):
+            await list_backend_tools("b", self._with_headers("alice-token"), alice)
+            await list_backend_tools("b", self._with_headers("bob-token"), bob)
+
+        evict_backend_cache_url(URL, "alice")
+
+        assert (URL, "alice") not in _tool_list_cache
+        assert (URL, "bob") in _tool_list_cache
+
+    async def test_an_operator_eviction_reaches_every_partition(self) -> None:
+        """An operator flushing a backend means the backend may have changed,
+        which is true for every tenant holding it."""
+        alice, bob = self._profile("alice"), self._profile("bob")
+        with patch(
+            "trentina.gateway.backend._do_list_tools",
+            side_effect=lambda *_a: _tools_result(["t"]),
+        ):
+            await list_backend_tools("b", self._with_headers("alice-token"), alice)
+            await list_backend_tools("b", self._with_headers("bob-token"), bob)
+
+        evict_backend_cache_url(URL)
+
+        assert not [key for key in _tool_list_cache if key[0] == URL]

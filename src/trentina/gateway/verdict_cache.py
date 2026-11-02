@@ -46,17 +46,21 @@ _CACHE_MAX = 4096
 # not expire. It used to, on a 900-second TTL, which meant fifteen quiet
 # minutes re-armed a full rescan of every tool description.
 
-#: Tool-description verdicts, held whole: the set is bounded by the
-#: configuration and is what a restart pays for.
-_descriptions: dict[str, dict[str, Any] | None] = {}
+#: Tool-description verdicts. Its own LRU, generously bounded: the LIVE set is
+#: every backend's tool list per owner, but the keys are content hashes, so a
+#: backend whose descriptions churn mints a new one every time and the set of
+#: descriptions ever SEEN is unbounded. "Bounded by the configuration" is true
+#: of an instant and false of a process lifetime.
+_DESCRIPTION_MAX = 16384
+_descriptions: OrderedDict[str, dict[str, Any] | None] = OrderedDict()
 
-#: Tool-response verdicts, LRU-bounded: unbounded and mostly seen once.
+#: Tool-response verdicts, on a tighter LRU: unbounded and mostly seen once.
 #:
 #: Two stores since 6.1.0, and the split is isolation, not tidiness. Sharing one
 #: LRU let a profile reading enough responses evict every profile's
 #: descriptions, which the next rebuild re-judged on the victim's key — and
 #: keying per owner cannot help, because eviction pressure is shared however the
-#: keys are spelled.
+#: keys are spelled. Two bounded caches, neither able to evict the other.
 _responses: OrderedDict[str, dict[str, Any] | None] = OrderedDict()
 
 # Set when the store refuses a write. A read-only or full disk fails the
@@ -85,10 +89,13 @@ def load_verdict_cache() -> int:
     _persist_broken = False
 
     loaded = get_all_verdicts(perimeter_stamp())
-    # Only descriptions are ever persisted, so this only fills that store, and
-    # it is not LRU-trimmed: the set is bounded by the configuration and
-    # dropping part of it just means re-judging part of it on the first list.
+    # Only descriptions are ever persisted, so this fills that store alone, and
+    # it is trimmed to the same bound a running gateway holds: dropping the
+    # oldest of a store larger than the cap costs a re-judge of what is dropped,
+    # where not trimming costs memory that never comes back.
     _descriptions.update(loaded)
+    while len(_descriptions) > _DESCRIPTION_MAX:
+        _descriptions.popitem(last=False)
     logger.info("perimeter: loaded %d cached verdict(s)", len(_descriptions))
     return len(_descriptions)
 
@@ -145,7 +152,10 @@ def _cache_get(key: str, *, persist: bool = False) -> tuple[bool, dict[str, Any]
     """A cached verdict. ``persist`` picks the store, as it does on the put:
     true for a tool description, false for a tool response."""
     if persist:
-        return key in _descriptions, _descriptions.get(key)
+        hit = key in _descriptions
+        if hit:
+            _descriptions.move_to_end(key)
+        return hit, _descriptions.get(key)
     hit = key in _responses
     if hit:
         _responses.move_to_end(key)
@@ -182,6 +192,9 @@ def _cache_put(key: str, value: dict[str, Any] | None, *, persist: bool = False)
 
     if persist:
         _descriptions[key] = value
+        _descriptions.move_to_end(key)
+        while len(_descriptions) > _DESCRIPTION_MAX:
+            _descriptions.popitem(last=False)
     else:
         _responses[key] = value
         _responses.move_to_end(key)

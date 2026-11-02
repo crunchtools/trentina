@@ -423,3 +423,87 @@ class TestFederatedVerdictStats:
         ):
             assert database.get_federated_verdict_stats(days=30) == {}
             assert database.get_federated_verdict_stats(days=50) != {}
+
+
+class TestTheOwnerKeyedCacheMigration:
+    """6.1.0 keys `tool_compressions` and `tool_list_cache` by grant owner.
+
+    SQLite cannot ALTER a primary key, and a row written before the column
+    existed cannot be attributed to anyone — adopting it into one tenant's
+    cache would grandfather exactly the cross-tenant read and the cross-tenant
+    spend the release removes. So each table is rebuilt empty and refills on
+    the first list, which costs one re-compression per owner and no model calls
+    for the lists themselves (they are re-fetched on every boot anyway, #335).
+    """
+
+    @staticmethod
+    def _old_schema(path: Path) -> None:
+        con = sqlite3.connect(path)
+        con.executescript(
+            "CREATE TABLE tool_compressions (description_hash TEXT PRIMARY KEY, "
+            "original_description TEXT NOT NULL, compressed_description TEXT NOT NULL, "
+            "model TEXT NOT NULL, compressed_at TEXT NOT NULL, "
+            "original_length INTEGER NOT NULL, compressed_length INTEGER NOT NULL);"
+            "CREATE TABLE tool_list_cache (backend_url TEXT PRIMARY KEY, "
+            "tools_json TEXT NOT NULL, cached_at TEXT NOT NULL);"
+            "INSERT INTO tool_compressions VALUES "
+            "('h1', 'a long original', 'short', 'm', 'now', 15, 5);"
+            "INSERT INTO tool_list_cache VALUES ('https://x/mcp', '[{\"name\": \"t\"}]', 'now');"
+        )
+        con.commit()
+        con.close()
+
+    def test_an_old_database_opens_and_is_re_keyed(self, tmp_path: Path) -> None:
+        path = tmp_path / "old.db"
+        self._old_schema(path)
+        database._db = None
+
+        db = database.get_db(str(path))
+
+        for table in ("tool_compressions", "tool_list_cache"):
+            columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+            assert "owner" in columns, table
+
+    def test_the_unattributable_rows_are_not_served_to_anyone(self, tmp_path: Path) -> None:
+        path = tmp_path / "old.db"
+        self._old_schema(path)
+        database._db = None
+        database.get_db(str(path))
+
+        assert database.get_all_compressions() == {}
+        assert database.get_all_tool_lists() == {}
+
+    def test_owner_scoped_writes_and_reads_work_afterwards(self, tmp_path: Path) -> None:
+        path = tmp_path / "old.db"
+        self._old_schema(path)
+        database._db = None
+        database.get_db(str(path))
+
+        database.save_compression("alice", "h", "a long original", "short", "m")
+        database.save_compression("bob", "h", "a long original", "theirs", "m")
+        database.save_tool_list("https://x/mcp", "alice", [{"name": "mine"}])
+        database.save_tool_list("https://x/mcp", "bob", [{"name": "theirs"}])
+
+        # The same hash and the same URL under two owners: two rows each, and
+        # neither owner reads the other's.
+        assert database.get_all_compressions() == {
+            "alice": {"h": "short"},
+            "bob": {"h": "theirs"},
+        }
+        assert database.get_all_tool_lists() == {
+            ("https://x/mcp", "alice"): [{"name": "mine"}],
+            ("https://x/mcp", "bob"): [{"name": "theirs"}],
+        }
+
+    def test_a_current_database_is_left_alone(self, tmp_path: Path) -> None:
+        """The re-key must not fire twice, or every restart would empty the
+        caches it is meant to preserve."""
+        path = tmp_path / "new.db"
+        database._db = None
+        database.get_db(str(path))
+        database.save_compression("alice", "h", "a long original", "short", "m")
+        database._db = None
+
+        database.get_db(str(path))
+
+        assert database.get_all_compressions() == {"alice": {"h": "short"}}

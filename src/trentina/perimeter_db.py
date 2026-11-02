@@ -340,6 +340,32 @@ def last_approved(backend_id: str, tool: str) -> sqlite3.Row | None:
     return row
 
 
+def approved_by_tool(backend_id: str, tools: Collection[str]) -> dict[str, str]:
+    """The most recently approved definition of each named tool, in ONE read.
+
+    What a list of held definitions is diffed against. Per-tool it would be a
+    round trip each, and ``tool_pins list`` asks about every held tool at once.
+    Newest first, so the first row seen for a tool is the one kept.
+    """
+    if not tools:
+        return {}
+    rows = (
+        _read_db()
+        .execute(
+            "SELECT tool, definition_json FROM tool_pins WHERE backend_id = ? "
+            "AND state = ? ORDER BY last_seen DESC",
+            (backend_id, PIN_APPROVED),
+        )
+        .fetchall()
+    )
+    wanted = set(tools)
+    out: dict[str, str] = {}
+    for row in rows:
+        if row["tool"] in wanted and row["tool"] not in out:
+            out[row["tool"]] = row["definition_json"]
+    return out
+
+
 def pending_hashes(backend_id: str, tool: str) -> list[str]:
     """Every definition of a tool now held awaiting an operator.
 

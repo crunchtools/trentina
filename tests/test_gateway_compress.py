@@ -8,6 +8,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from trentina.errors import QuarantineAgentError
 from trentina.gateway import compress as compress_mod
@@ -42,6 +44,13 @@ PROF = Profile(
     llm_keys={"gemini": LlmKeyOverride(api_key_env="GEMINI_API_KEY")},
 )
 OWNER = PROF.grant_owner
+
+#: A second tenant, to prove nothing of PROF's reaches it.
+NEIGHBOUR = Profile(
+    name="neighbour",
+    auth=AuthConfig(bearer_token_env="T"),
+    llm_keys={"gemini": LlmKeyOverride(api_key_env="GEMINI_API_KEY")},
+)
 
 pytestmark = pytest.mark.usefixtures("standalone_l3")
 
@@ -620,3 +629,59 @@ class TestPrecompressForwardsProfile:
             await _precompress_backend("up", backend, prof)
 
         assert captured["profile"] is prof
+
+
+class TestOneOwnerNeverReadsAnothersCompression:
+    """A shortened description is a model rewrite one tenant's key paid for
+    (6.1.0). Serving it to another both spends across tenants and tells the
+    second that the first holds the same backend.
+    """
+
+    def test_a_neighbours_entry_is_not_substituted(self) -> None:
+        original = "A very long tool description that would be shortened."
+        _cache.setdefault(OWNER, {})[_hash_description(original)] = "Short."
+
+        mine = compress_tools(PROF, [_tool("t", original)])
+        theirs = compress_tools(NEIGHBOUR, [_tool("t", original)])
+
+        assert mine[0]["description"] == "Short."
+        # Same bytes, same hash, different owner: the original stands.
+        assert theirs[0]["description"] == original
+
+    def test_a_parameter_description_is_partitioned_too(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"page": {"type": "integer", "description": "Page number."}},
+        }
+        key = compress_mod._param_key("Page number.", ...)
+        _cache.setdefault(OWNER, {})[key] = "Page."
+
+        mine = compress_tools(PROF, [_tool("t", "", schema)])[0]["inputSchema"]
+        theirs = compress_tools(NEIGHBOUR, [_tool("t", "", schema)])[0]["inputSchema"]
+
+        assert mine["properties"]["page"]["description"] == "Page."
+        assert theirs["properties"]["page"]["description"] == "Page number."
+
+    def test_a_derived_ingress_reads_its_sources_entries(self) -> None:
+        """One tenant reached two ways, spending one credential."""
+        from trentina.gateway.profile import FederationConfig, FederationPeer
+
+        pem = (
+            Ed25519PrivateKey.generate()
+            .public_key()
+            .public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            .decode()
+        )
+        derived = Profile(
+            name=f"{PROF.name}-federation",
+            federation_of=PROF.name,
+            federation=FederationConfig(peers={"peer": FederationPeer(public_key=pem)}),
+        )
+        original = "A very long tool description that would be shortened."
+        _cache.setdefault(OWNER, {})[_hash_description(original)] = "Short."
+
+        through_the_link = compress_tools(derived, [_tool("t", original)])
+
+        assert through_the_link[0]["description"] == "Short."
