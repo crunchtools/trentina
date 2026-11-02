@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from .gateway.profile import Profile
     from .gateway.sessions import SessionRegistry
 
-__version__ = "4.3.0"
+__version__ = "5.0.0"
 
 DEFAULT_PORT = 8019
 DEFAULT_EGRESS_PORT = 8021
@@ -188,10 +188,15 @@ def _run_with_gateway(mcp_server: FastMCP, *, host: str, port: int, log_level: s
     from .gateway.loader import matrix_other_agents, register_active_config
     from .gateway.service import log_service_identity
     from .gateway.sessions import session_registry
+    from .stability import warn_preview_surfaces
 
     profiles_path = Path(os.environ.get("TRENTINA_PROFILES_PATH", "/etc/trentina/profiles.yaml"))
     logger.info("gateway: loading profiles from %s", profiles_path)
     gateway_config = load_profiles(profiles_path)
+    # Before anything else reads the config: an operator should learn that this
+    # deployment uses a preview surface at the top of the log, not by finding a
+    # minor release that broke it.
+    warn_preview_surfaces(gateway_config)
     # Before _ready_to_serve scrubs the environment: the key is read once, here.
     configure_backend_tokens(gateway_config.profiles)
 
@@ -1274,13 +1279,28 @@ def _wire_login_notifications(session_registry: Any) -> None:
     A backend with ``auth`` is skipped from a profile's tools/list while the
     profile has no grant; once the human signs in, the client must hear that
     the list changed or it keeps the old one until it reconnects (#479).
+
+    And the grant belongs to the SEAT, so a sign-in there is also a sign-in for
+    every ingress derived from it (#592): those profiles were skipping the same
+    backend for want of the same grant. Without this the link kept answering
+    ``needs_auth`` after a successful sign-in until something flushed the
+    cache, which is the symptom seat-owned grants exist to remove.
     """
     from .gateway.aggregate import invalidate_profile_cache
     from .gateway.backend_oauth import on_grant_stored
+    from .gateway.loader import get_active_config
 
     async def _after_login(profile_name: str) -> None:
-        invalidate_profile_cache(profile_name)
-        await session_registry.broadcast_tools_changed(profile_name)
+        active = get_active_config()
+        profiles = active.config.profiles if active else {}
+        spenders = [
+            name
+            for name, profile in profiles.items()
+            if profile.grant_owner == profile_name and name != profile_name
+        ]
+        for name in (profile_name, *spenders):
+            invalidate_profile_cache(name)
+            await session_registry.broadcast_tools_changed(name)
 
     on_grant_stored(_after_login)
 

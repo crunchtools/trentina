@@ -17,11 +17,14 @@ gateway's security verdict.
 
 from __future__ import annotations
 
+import ipaddress
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import yaml
 
 from . import config_patch
+from .profile import DefenseConfig
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -180,6 +183,288 @@ def trust_pins(profiles: dict[str, Profile]) -> dict[str, dict[str, str]]:
                     "judge": verdict.judge,
                 }
     return pins
+
+
+def federation_peers(profiles: dict[str, Profile]) -> dict[str, str]:
+    """Every federation ingress's peers, by ``<profile>.<peer>`` to public key.
+
+    Compared before and after a write, like ``trust_pins`` and for the same
+    reason: a peer can be reached by setting a parent key, and the loaded
+    candidate is the only place the resulting grant is unambiguous.
+
+    A peer is what AUTHENTICATES a primary gateway to this one — adding one
+    hands another gateway a seat on this ingress, with whatever that profile's
+    backends reach. It was deliberately left out of the rules in #633, on the
+    ground that it is an access grant rather than a decision to believe
+    someone's scan, and that refusing it would make a federation ingress
+    impossible to create through the API. The first half of that still holds and
+    the second no longer does: since #637 a grant like this is PROPOSED rather
+    than refused, so the ingress can still be built by an agent and a person
+    still sees who was let in.
+
+    Seats only. A derived ingress carries its seat's ``federation`` block
+    verbatim, so counting both would show a person every peer twice — once
+    under ``josui`` and once under ``josui-federation`` — and make a two-peer
+    write look like four decisions.
+    """
+    return {
+        f"{name}.{peer_name}": peer.public_key
+        for name, profile in profiles.items()
+        if profile.federation is not None and profile.federation_of is None
+        for peer_name, peer in profile.federation.peers.items()
+    }
+
+
+#: The mode that delivers what arrived. ``flag`` returns the response byte for
+#: byte as it came in, with the verdict attached and nothing withheld, so a
+#: profile that can reach it has a perimeter that detects and does not enforce.
+UNENFORCED_MODE = "flag"
+
+
+def _posture_of(defense: DefenseConfig) -> dict[str, Any]:
+    """One ``defense`` block as the three fields that decide what it enforces.
+
+    ``modes`` is what the agent may choose per call, ``enforcement`` is what an
+    omitted mode resolves to, and ``llm_completion`` is the same decision on a
+    streamed completion. The plan named ``modes`` alone; the other two are the
+    same question asked of the same block, and a rule that watched the list an
+    agent may choose from while leaving the value an omitted choice resolves to
+    unguarded would be a gate with the gate's own door open.
+
+    Read off the LOADED model, where ``modes`` is never unset: a validator
+    fills it with ``[enforcement]`` and refuses a list that does not contain
+    ``enforcement``. So this is the effective set, not the literal file, which
+    is the right thing to compare — and it means an edit that moves
+    ``enforcement`` alone shows up in both fields. Both rows are true and say
+    different things (the set the agent may choose from, and what an omitted
+    choice resolves to), so neither is suppressed to make the page tidier.
+    """
+    return {
+        "modes": sorted(defense.modes or []),
+        "enforcement": defense.enforcement,
+        "llm_completion": defense.llm_completion,
+    }
+
+
+def default_posture() -> dict[str, Any]:
+    """What a profile with no ``defense`` block at all enforces.
+
+    Read off the schema rather than written down here, because it is the
+    schema's to decide and today it is ``flag`` on both edges — a profile is
+    detect-only until someone says otherwise. That is why this is the baseline
+    a NEW profile is judged against: treating the default as a downgrade would
+    stage an approval for every profile ever created, and an approval page a
+    person learns to click through protects nothing.
+    """
+    return _posture_of(DefenseConfig())
+
+
+def defense_posture(profiles: dict[str, Profile]) -> dict[str, dict[str, Any]]:
+    """What each profile's perimeter still enforces, by profile."""
+    return {name: _posture_of(profile.defense) for name, profile in profiles.items()}
+
+
+def defense_downgraded(
+    before: dict[str, dict[str, Any]], after: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """The profiles whose perimeter would stop enforcing, with both sides.
+
+    Only a downgrade. Dropping ``flag``, or moving an edge off it, makes this
+    gateway stricter and applies at once — narrowing never waits for a person,
+    which is what keeps the approval page a place where something is being
+    granted rather than a dialog in the way of routine work.
+    """
+    baseline = default_posture()
+    downgraded: dict[str, dict[str, Any]] = {}
+    for name, now in after.items():
+        was = before.get(name, baseline)
+        if (
+            (UNENFORCED_MODE in now["modes"] and UNENFORCED_MODE not in was["modes"])
+            or (now["enforcement"] == UNENFORCED_MODE and was["enforcement"] != UNENFORCED_MODE)
+            or (
+                now["llm_completion"] == UNENFORCED_MODE
+                and was["llm_completion"] != UNENFORCED_MODE
+            )
+        ):
+            downgraded[name] = {"before": was, "after": now}
+    return downgraded
+
+
+#: What ``_origin_only`` yields for a value it cannot reduce to an origin.
+#:
+#: A value, not an exception: ``egress_grants`` reads the config as it ALREADY
+#: IS as well as the candidate, so raising would let one malformed provider on
+#: disk refuse every later write, including the one that fixes it. The refusal
+#: lives where such a grant is about to reach a person (``tools/config.py``).
+#: NUL-prefixed, so it matches no real URL and no displayable string.
+UNSHOWABLE_DESTINATION = "\0unshowable"
+
+
+def _origin_only(value: Any) -> str:
+    """``value`` reduced to scheme, host and port, or ``UNSHOWABLE_DESTINATION``.
+
+    For a URL nothing has validated. The approval page is the one place a
+    credential must never be rendered, and a destination is identified by its
+    origin — userinfo, path, query and fragment identify nothing a person is
+    deciding about and are exactly where a secret would be.
+
+    ``urlparse`` defers validating the port until ``.port`` is read, so that
+    read is inside the guard too: ``https://x.example:bad`` parses happily and
+    then raises while a page is being built.
+    """
+    try:
+        parts = urlparse(str(value))
+        if not parts.scheme or not parts.hostname:
+            return UNSHOWABLE_DESTINATION
+        port = f":{parts.port}" if parts.port else ""
+    except ValueError:
+        return UNSHOWABLE_DESTINATION
+    return f"{parts.scheme}://{parts.hostname}{port}"
+
+
+def egress_grants(
+    profiles: dict[str, Profile],
+    egress_upstreams: dict[str, Any],
+    llm_providers: dict[str, Any],
+) -> dict[str, str]:
+    """Every destination this gateway may carry an agent's traffic to.
+
+    Three settings, one question. Each is a way out of ``--network=none``, and
+    the blast radius is larger than trusting a peer's scan: a trusted peer has
+    still run three layers over the response, while known gap 26 says nothing
+    reads a CONNECT tunnel's bytes at all. Adding a host grants an UNREAD
+    channel out.
+
+    Keyed by what is being granted and where, so a write is diffed as a set of
+    grants rather than as three differently-shaped blocks. The value is only
+    ever an operator-written destination; nothing from an ``llm_providers``
+    entry is carried but its origin, because that mapping is ``dict[str, Any]``
+    straight from the file and could hold an inline ``api_key``, which must
+    never reach a web page.
+
+    A provider that is not ``enabled`` is not a grant and is left out
+    ENTIRELY, rather than listed as off. Carrying its state in the value made
+    disabling one read as a changed grant and staged it — a withdrawal waiting
+    on a person, which is the one thing the narrowing rule forbids. Absence is
+    the only spelling of "not granted" that ``widened`` reads correctly.
+
+    Only the DESTINATIONS are here. Who may open a tunnel is the other half of
+    a ``client_egress`` grant and lives in ``source_networks_widened``, because
+    a network is not comparable as a string: replacing ``10.0.0.0/8`` with
+    ``10.9.0.0/24`` changes the key and narrows the grant, and a set difference
+    would stage a tightening.
+
+    An ``egress_upstreams`` origin is safe to render because the model has
+    already reduced it: its validator refuses userinfo, a port, a path, a query
+    and a fragment, and returns ``https://<netloc>``. That is a premise, not an
+    assumption — ``tests/test_config_tool.py`` asserts the validator still
+    refuses a credential-bearing URL, so loosening it cannot quietly publish
+    one to an approval page.
+
+    An ``llm_providers`` origin has NO such model behind it: that section is
+    ``dict[str, Any]`` straight from the file, so its ``upstream`` is whatever
+    a writer typed and may carry userinfo or a query. It goes through
+    ``_origin_only`` rather than being rendered as written.
+
+    A provider is dropped from the grants when it is disabled, so disabling one
+    narrows and applies at once — but the route itself binds at startup and
+    outlives the write. That is not this rule claiming otherwise: ``reload``
+    already reports every ``llm_providers`` change as "restart to apply"
+    (``tools/reload.py``), so the operator is told the withdrawal is not live
+    yet by the same answer that says the write applied.
+    """
+    grants: dict[str, str] = {}
+    for name, profile in profiles.items():
+        if profile.client_egress is not None:
+            for host in profile.client_egress.hosts:
+                grants[f"client_egress:{name}.{host}"] = f"{host}:443, tunnelled and unread"
+    for name, upstream in egress_upstreams.items():
+        grants[f"egress_upstreams:{name}"] = str(getattr(upstream, "upstream", upstream))
+    for name, provider in llm_providers.items():
+        if isinstance(provider, dict) and provider.get("enabled"):
+            grants[f"llm_providers:{name}"] = _origin_only(provider.get("upstream"))
+    return grants
+
+
+#: The networks that may open a profile's tunnels, by profile. A
+#: ``client_egress`` block's ``source_networks`` decides who may open one,
+#: because the peer address is what picks the profile and nothing secret is on
+#: the wire (#330).
+_Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+_Networks = dict[str, list[_Network]]
+
+
+def client_egress_networks(profiles: dict[str, Profile]) -> _Networks:
+    """Who may open each profile's tunnels, by profile.
+
+    An OPERATOR profile is left out, and left to ``operator_seat``, which
+    already compares the same field: there, widening the networks makes another
+    caller the operator, so it is a seat change rather than an egress grant.
+    Counting one unsplittable field in both rules would make the write need two
+    approvals with no way to comply.
+    """
+    return {
+        name: list(profile.client_egress.source_networks)
+        for name, profile in profiles.items()
+        if profile.client_egress is not None and profile.role != "operator"
+    }
+
+
+def source_networks_widened(before: _Networks, after: _Networks) -> dict[str, str]:
+    """The networks that would reach addresses they could not reach before.
+
+    Compared as ADDRESS RANGES, not as strings. A profile moving from
+    ``10.0.0.0/8`` to ``10.9.0.0/24`` has a new key and a strictly smaller
+    grant; a set difference over the written CIDRs reads that as widening and
+    stages a tightening, which is the one thing the narrowing rule forbids. A
+    network already inside one that was granted is therefore not a grant at
+    all.
+
+    ``subnet_of`` raises on a mismatched family, so the families are kept
+    apart: an IPv6 range is never contained in an IPv4 one. The prior networks
+    are collapsed first, which merges adjacent and nested ranges — there is no
+    ``max_length`` on ``source_networks``, so without it a long list would cost
+    one containment test per pair on every config write.
+    """
+    reaching: dict[str, str] = {}
+    for name, nets in after.items():
+        had_v4, had_v6 = _collapsed(before.get(name, []))
+        for net in nets:
+            covered = (
+                any(net.subnet_of(old) for old in had_v4)
+                if isinstance(net, ipaddress.IPv4Network)
+                else any(net.subnet_of(old) for old in had_v6)
+            )
+            if not covered:
+                reaching[f"client_egress:{name}.from.{net}"] = (
+                    f"clients in {net} may open that profile's tunnels"
+                )
+    return reaching
+
+
+def _collapsed(
+    networks: list[_Network],
+) -> tuple[list[ipaddress.IPv4Network], list[ipaddress.IPv6Network]]:
+    """``networks`` merged into the fewest ranges covering the same addresses.
+
+    Returned as two concretely typed lists rather than one keyed by family:
+    ``collapse_addresses`` and ``subnet_of`` are both family-specific, so a
+    union would have to be re-narrowed at every use.
+    """
+    v4 = [net for net in networks if isinstance(net, ipaddress.IPv4Network)]
+    v6 = [net for net in networks if isinstance(net, ipaddress.IPv6Network)]
+    return (
+        list(ipaddress.collapse_addresses(v4)) if v4 else [],
+        list(ipaddress.collapse_addresses(v6)) if v6 else [],
+    )
+
+
+def widened(before: dict[str, str], after: dict[str, str]) -> dict[str, str]:
+    """The grants ``after`` adds or changes, by the same keys both sides use.
+
+    A grant only in ``before`` has been withdrawn, which needs no approval.
+    """
+    return {where: what for where, what in after.items() if before.get(where) != what}
 
 
 def _nodes(root: Any) -> Any:

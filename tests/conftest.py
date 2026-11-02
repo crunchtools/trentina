@@ -90,6 +90,35 @@ def _isolated_perimeter_store(tmp_path: pathlib.Path, monkeypatch: pytest.Monkey
 
 
 @pytest.fixture(autouse=True)
+def _isolated_blocklist(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Never let a test write the developer's real blocklist and audit database.
+
+    The perimeter store next door has had this since it was written; this one
+    did not, and only the opt-in ``env`` fixture below set ``QUARANTINE_DB``.
+    Everything else — every ``record_gateway_call``, every block refusal — went
+    to ~/.local/share/trentina/trentina.db, the real one. On this machine that
+    had reached 20 MB of ``agent1`` and ``testp`` rows, which is a suite writing
+    audit history for profiles that never existed.
+
+    It also made the suite flaky rather than merely dirty: pytest runs under
+    xdist here, so several workers opened that one file at once and a migration
+    taking ``BEGIN IMMEDIATE`` raised ``OperationalError`` in whichever worker
+    lost. Those failures land in federation and backend tests that have nothing
+    to do with SQLite, and they pass on a serial re-run, which is the worst
+    shape a failure can have.
+
+    The DB handle is a module global, so it is dropped on the way in as well as
+    out: a cached connection to a previous test's file is the same leak with a
+    shorter reach.
+    """
+    monkeypatch.setenv("QUARANTINE_DB", str(tmp_path / "state" / "trentina.db"))
+    config_mod._config = None
+    database_mod._db = None
+    yield
+    database_mod._db = None
+
+
+@pytest.fixture(autouse=True)
 def _isolated_fastmcp_home(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Never let a test write the developer's real FastMCP data dir.
 

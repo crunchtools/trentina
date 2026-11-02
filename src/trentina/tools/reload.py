@@ -67,6 +67,7 @@ from ..gateway.profile import PREPROCESS_AGENT_FIELDS
 from ..gateway.scope import CallerScope, require_caller
 from ..gateway.service import find_operator, judge_of, log_service_identity
 from ..gateway.sessions import session_registry
+from ..gateway.tool_pins import migrate_federated_pins
 from ..gateway.upstream import close_profile
 from ..logsafe import exc_kind, exc_where
 
@@ -783,6 +784,13 @@ async def reload_profiles() -> dict[str, Any]:
     # Read the startup wiring facts before the swap replaces the holder.
     not_applied = _unapplied(active, new_config)
 
+    # Before the swap, while both URLs are still in hand: a federated backend
+    # whose URL moved keeps its pins. The pin store is keyed by a hash of the
+    # URL, so a trailing slash or an explicit port read as a FIRST CONNECT, and
+    # a first connect approves the peer's whole offered set as a unit (#592,
+    # E1b). Loud since the hardening pass; this stops it happening at all.
+    migrated = migrate_federated_pins(before, after)
+
     # The swap. Every route handler, the compression module and the
     # circuit-breaker wiring hold THIS dict object and read it per request, so
     # refilling it in place is what makes the new config live everywhere at
@@ -847,4 +855,8 @@ async def reload_profiles() -> dict[str, Any]:
         "sessions_notified": {k: v for k, v in notified.items() if v},
         "sessions_dropped": dropped_sessions,
         "not_applied": not_applied,
+        # Named rather than counted: an operator who moved a federated URL
+        # needs to see that the pins came with it, because the alternative
+        # outcome is a silent re-trust of everything that peer offers.
+        "federated_pins_migrated": migrated,
     }

@@ -10,6 +10,240 @@ under that name.
 
 ## [Unreleased]
 
+## [5.0.0] - 2026-11-01
+
+### Upgrading
+
+Breaking, so read this before deploying. The gateway refuses to START on items
+1 to 4 and 7, so a missed one is loud rather than silent.
+
+1. **Migrate any interim federation backend.** A backend pointing at
+   `.../gateway/<profile>/mcp` with no `federated:` block is now a load error.
+   Add `federated:` with a `primary_key_name`, use https (or set
+   `TRENTINA_FEDERATION_ALLOW_INSECURE=1` on a trusted network), and add a
+   matching `peers` entry on the secondary.
+2. **Every `federation:` block names at least one peer**, and no two peers
+   share a public key.
+3. **One primary key per secondary**, or ingress profiles with different names.
+   Two federated backends sharing a key and deriving the same audience while
+   pointing at different gateways is refused.
+4. **Rename any backend header or URL variable that the same file also
+   declares under a `*_env` key**, and any that names a gateway secret such as
+   `TRENTINA_OAUTH_JWT_SIGNING_KEY`. Give each backend a variable nothing else
+   in the file names. Note that a name stays protected for the life of the
+   process once any successful load has seen it declared, so retiring one takes
+   a restart.
+5. **Upgrade the secondary first, or both together.** The flagged-response
+   digest fix is on the SECONDARY's emit side, so a 5.0 primary against a
+   4.2.3 secondary keeps auditing `hash_mismatch` for flagged responses and
+   re-judging them — the same (safe) behaviour as before, not a regression.
+   Clean responses are unaffected in either direction.
+6. **The primary's part budget must be at least the secondary's.** A federated
+   part larger than this gateway can judge in one call is now refused
+   (`federated_part_oversize`) rather than re-cut, because re-cutting orphaned
+   the peer's remaining parts. Keep `TRENTINA_PART_TOKENS` equal on both, or
+   higher on the primary.
+7. **Move each federation ingress's `federation` block onto the seat it
+   shares, and delete the ingress profile.** Federation is declared on the
+   SEAT whose tools are shared and the gateway derives the
+   `<seat>-federation` ingress from it, so a standalone ingress profile that
+   hand-lists its backends no longer loads. Point the primary at
+   `/gateway/<seat>-federation/mcp`. The path changes, so the audience and the
+   tool-pin key change: expect ONE first connect on each side, which is now
+   reported with its count rather than silent. A shared seat keeps its own
+   `auth` or `oauth` — that is what makes it a seat — and the derived ingress
+   carries neither, since `peers` is its authentication and a bearer there
+   would be tried FIRST and admit a caller with no peer and no `sub`.
+8. **Stop using `backend_auth_tool` across a link.** It is no longer offerable
+   to a peer, and does not need to be: a derived ingress spends its SEAT's
+   OAuth grants, so one sign-in on the seat serves both sides. If you signed
+   the ingress in separately, that grant is now unused; sign in on the seat
+   instead. This also retires the rule that `backend_auth_tool` needed a
+   single-peer ingress, so **several peers on one seat is an ordinary
+   configuration again**.
+9. **Set an approval password before your operator agent needs one.** Three
+   more writes now wait for a person, so without
+   `TRENTINA_APPROVAL_PASSWORD_HASH[_FILE]` they are REFUSED rather than
+   applied: adding or changing a `federation.peers` entry, moving a profile's
+   `defense` to `flag`, and widening `client_egress`, `egress_upstreams` or
+   `llm_providers`. Narrowing any of them still applies at once. Existing
+   configuration keeps working untouched — this bites the next write, not the
+   current file.
+
+### Added — this phase
+
+- **Stability tiers** (`src/trentina/stability.py`,
+  [docs/stability.md](docs/stability.md)). A named set of features is
+  *preview*: a breaking change confined to one is a minor release, so the next
+  federation change does not move the whole program's version. Two surfaces are
+  declared — **federation** (#592) and **`config-api`** (#633), the latter being
+  `config_tool`'s action names, arguments and result keys and NOT the
+  `config_guard` rules deciding what a person must approve. Human approval
+  (#637) stays stable on purpose: it is the one gate an operator agent cannot
+  talk its way past. One `WARNING` per surface in use at startup, and
+  `preview_surfaces` in `quarantine_stats`' operator slice.
+- **`quarantine_stats` carries a `federation` section for an operator**: per
+  shared seat, the derived ingress, peers by key fingerprint, which backends
+  cross, which run on the seat's sign-in, whether the link signs verdicts, and
+  tools held for approval; per federated backend, the audience, whether trust
+  is pinned, how responses were handled and the commonest reason one was
+  re-judged. A `trusted` count of zero beside a climbing `hash_mismatch` is a
+  pin that has quietly stopped matching, which nothing reported before.
+- **The peer approval page says whose account the link will use, and where the
+  tools are**: which of the seat's backends cross, each with its destination,
+  and which run as your sign-in. An approval is bound to the facts a person
+  read, so a destination absent from them was not consented to — and the
+  operator is root over its own `url` fields. Userinfo and a query are
+  fingerprinted rather than printed, either being somewhere a credential can
+  sit, so the binding still covers them.
+- **`profile_lint`**: `federation-no-secondary-key` (a link that signs nothing
+  re-judges everything, invisibly) and `federation-shares-write-tools`.
+
+### Preview
+
+Breaking changes confined to the **federation** preview surface (#592). See
+[docs/stability.md](docs/stability.md): a break inside a declared preview
+surface is a minor release. This one rides a major because the release carries
+breaking changes outside it as well.
+
+- **Federation is declared on the seat that shares it.** `federation` goes on
+  the seat whose tools are shared and the gateway derives the ingress
+  (`<seat>-federation`) from it: the seat's own non-federated remote backends
+  with the seat's guards, defense posture and `llm_keys`, plus an internal
+  backend offering `read_part_tool` alone. A standalone ingress profile that
+  hand-lists its backends no longer loads. Upgrading note 7.
+- **The link spends the seat's OAuth grants**, so `backend_auth_tool` is no
+  longer offerable to a peer and the single-peer rule it needed is gone.
+  Upgrading note 8.
+- **`FEDERATION_INTERNAL_ALLOW` is `read_part_tool` alone.**
+- **One seat may both consume a peer and share itself.** "One profile is one
+  role" existed because a single `Profile` serving both roles deadlocked its
+  own aggregate build; the ingress is a separate object now, and derivation
+  excludes every federated backend, so A→B→C is unsayable rather than refused.
+
+### Added
+
+- **A federated link reaches the secondary's OAuth backends, on one sign-in.**
+  A grant belongs to one profile and a federated call runs as the ingress, so
+  an OAuth backend on the secondary could not be reached through the link at
+  all. The link now spends its SEAT's grants (`Profile.grant_owner`), so a
+  person signs in once — on the seat, with the seat's own `backend_auth` — and
+  both sides are signed in. #656 first solved this by offering
+  `backend_auth_tool` across the link, which made it a shared capability on a
+  multi-peer ingress and needed a further rule refusing it there; neither the
+  tool nor the rule survives, and several peers on one seat is ordinary again.
+
+### Removed
+
+- **BREAKING: the interim static-bearer federation path.** A backend pointing
+  at a gateway's federation endpoint (`.../gateway/<profile>/mcp`) without a
+  `federated:` block is refused at load instead of warned about. It was
+  superseded in 3.1.0, deprecated with a removal announced for 3.2.0, and
+  still only warned through 4.2.3. It goes now because the warning was
+  load-bearing for a promise it could not keep: `_check_federation_topology`
+  refuses an ingress that also mounts a `federated:` backend, which this shape
+  is not, so an ingress could mount the next gateway over a bearer and
+  re-export it — A to B to C, the loop docs/federation.md says cannot exist by
+  construction. Add a `federated:` block with a primary key to migrate.
+
+### Changed
+
+- **BREAKING: a federation block must name at least one peer**, and two peers
+  may not share a public key. `peers` is what authenticates a primary, so a
+  block without one was never an ingress; a shared key left the audited caller
+  a matter of which peer was written first, since `verify_primary_jwt` returns
+  the first key that verifies.
+- **BREAKING: one primary key may not serve two secondaries whose ingress
+  profiles share a name.** The per-request token's audience is the ingress
+  profile name and says nothing about which gateway it was minted for, so that
+  configuration let either secondary replay the other's token inside the
+  60-second window. Refused across the whole file, since two profiles can each
+  hold one half of the pair. Give each secondary its own primary key, or the
+  ingress profiles different names.
+- **BREAKING: a backend header or URL may not reference an env var this file
+  declares as a secret, or one of the gateway's own.** It could resolve any
+  `${VAR}`, so an operator agent could forward this gateway's operator bearer —
+  or `TRENTINA_OAUTH_JWT_SIGNING_KEY` — to an endpoint it chose, with no seat
+  change and no approval. A backend's own credential still works: that variable
+  is referenced, not declared. See docs/profiles.md.
+- **BREAKING: three more config writes are staged for a person** (#637
+  extended): `federation.peers`, a `defense` block reaching `flag`, and the
+  three settings that open a way out of network isolation
+  (`client_egress.hosts` and `.source_networks`, `egress_upstreams`,
+  `llm_providers`). Each was a grant an operator agent could make with nobody
+  watching, and the last is the widest of the five decisions: a trusted peer
+  has at least run three layers over its response, while nothing reads a
+  CONNECT tunnel's bytes at all. Only WIDENING stages — withdrawing a peer,
+  dropping `flag`, removing a host applies at once — and a write needing two
+  approvals is refused rather than shown as one. `federation.peers` was
+  deliberately unguarded in #633 because refusing it would have made an
+  ingress impossible to build through the API; proposing it does not.
+- **BREAKING: a federation ingress may not carry `auth` or `oauth`.** `peers`
+  is its authentication and the gateway tries a static bearer first, so a
+  bearer there admitted a caller with no peer and no `sub` — a null caller in
+  the audit, and, now that held parts belong to `(profile, peer, sub)`, one
+  shared paging owner for every such caller.
+- **A federated `401` no longer opens the circuit breaker.** A federated
+  backend holds no OAuth grant to refresh, so a refusal fell through to
+  `record_failure` on a breaker keyed by URL: one rotated key or a little
+  clock drift took the peer down for every profile federating to it, reported
+  as unreachability. It is now `federation_unauthorized`, the circuit records
+  the success the peer's answer is, and the message names the three causes.
+- **A federated backend's tool pins move with its URL.** Normalising a
+  trailing slash or writing `:443` explicitly presented the peer as new, and a
+  federated first connect approves its whole offered set as a unit. The reload
+  carries the pins across and reports `federated_pins_migrated`. Only the same
+  endpoint spelled differently: a different host is a different peer and gets
+  the first connect it should.
+- **Four name patterns are anchored.** `^...$` with `re.match` admits a
+  trailing newline, so a key name, a profile name, a backend name, a provider
+  name and a federation `sub` all accepted one. A `sub` is the audited actor
+  and part of a paging owner's identity; a key name becomes a filename.
+
+### Fixed
+
+- **Flushing a backend's tool list stopped dropping the profile lists built
+  from it.** `aggregate` registers that cascade when it is imported, and
+  `reset_tool_list_cache` — the test reset — cleared the listener along with
+  the cached data. The suite calls it before every test, so the first test in
+  a process unwired the cascade for the rest of the session: every later test
+  of `cache_flush`, `reconnect_backend` and tool pinning ran against a gateway
+  whose caches cannot cascade, which is not the gateway that ships. The reset
+  now clears cached data only, and two tests hold the wiring.
+- **A federated peer could read another peer's held response parts.** A held
+  paged response was owned by the profile name alone, and a federation ingress
+  is one profile for every primary that calls it; meanwhile the peer's own
+  `read_part` was served to agents as an ordinary tool. One primary could list
+  every handle on the ingress and read another's parts, around the proxy's
+  ordering, its lead-in and its rule that a flagged part withholds the rest.
+  The owner is now `(profile, caller)`, the per-owner caps with it, and a
+  federated backend's `read_part` is withheld from `tools/list` and refused as
+  a direct call.
+- **An approval could be swapped between reading it and agreeing to it.** The
+  review form carried only the `Kind`, and staging replaces silently, so an
+  agent could propose one trust pin, let a person read it, re-stage another,
+  and have the click apply the second. The page now carries a fingerprint of
+  the facts it showed and `approve` requires it to still match.
+- **A flagged federated response could never be trusted.** The emit side
+  digested the content blocks before the `[TRENTINA WARNING]` block was
+  appended, so the signature covered one fewer block than the wire carried and
+  every flagged response was `hash_mismatch` — silently re-judged, and audited
+  as exactly the symptom that is documented to mean a pin has stopped matching.
+- **A 64-bit id broke a federated tool outright.** `content_digest` canonicalized
+  unguarded, and RFC 8785 has no form for an integer past ±(2^53−1), so a leaf
+  returning a GitHub, Discord or Slack id made response assembly raise whether
+  trust was pinned or not. It now yields no digest, the response is delivered
+  unsigned, and the caller re-judges under a new audited reason,
+  `undigestable`.
+- **A trusted verdict's fields reached the agent as the peer wrote them**, and
+  an unknown `flagged_by` was read as "not flagged" — which under `block` would
+  have delivered content the verdict said was flagged. The warning is
+  re-projected through the closed summary, and a layer name this gateway does
+  not know re-judges as `uninterpretable`.
+- `judge_mismatch` is now logged, and the mismatch log dedupes on the peer's
+  own signed stamp rather than on the pin, so a peer that drifts twice is
+  reported twice.
+
 ## [4.3.0] - 2026-11-01
 
 ### Added

@@ -311,6 +311,36 @@ client can do, and the choice is per profile.
 All four mechanisms, the `oauth` keys each one needs, and the security rules that
 go with them are in **[Authentication](authentication.md)**.
 
+### A shared seat, and the ingress derived from it
+
+`federation` is declared on the **seat whose tools you are sharing**, and the
+gateway derives the ingress from it: a profile named `<seat>-federation` that
+offers that seat's own non-federated remote backends, with that seat's guards,
+defense posture and `llm_keys`. You do not write the ingress, and a profile name
+ending `-federation` is reserved for a derived one.
+
+Four rules come with sharing a seat, all refused at load rather than warned
+about:
+
+| Rule | Why |
+|---|---|
+| At least one `federation.peers` entry | The peer list *is* the link's authentication. A `federation` block without one would still sign verdict assertions over its responses. |
+| `role: agent` | A shared operator seat would offer a peer the gateway's own admin tools. |
+| `auth` or `oauth` of its own | A seat is something an agent signs in to; a profile no agent can reach has no tools of its own to share. It is also how the pre-5.0.0 standalone ingress profile — which carried neither — is refused. |
+| At least one non-federated remote backend | An empty link admits a peer and costs an approval, then serves it nothing. An `internal://` backend is the gateway's own surface and a federated one would re-export the next gateway, so neither can be offered. |
+
+The derived ingress carries no `auth` and no `oauth`. The gateway tries a static
+bearer first, so a bearer there would admit a caller with no peer and no `sub` —
+a null caller in the audit, and one shared owner for every held response part.
+Its internal backend offers only `read_part_tool`, so a paged response can be
+collected and nothing else native is reachable.
+
+The seat's OAuth grants serve the link: sign in once, on the seat. Adding or
+changing a peer is staged for a person — it hands another gateway a seat, and
+the accounts that seat signed in to. Removing one applies at once.
+**[Federation](federation.md)** is the whole statement;
+**[Approvals](approvals.md)** covers the decision.
+
 ## Multi-Agent Deployment
 
 A typical deployment serves multiple agents with different trust levels:
@@ -623,6 +653,31 @@ allowed only after the host, and its value must be URL-safe
 ```yaml
     url: "http://rotv:8080/mcp?token=${ROTV_TOKEN}"
 ```
+
+### What a reference may not name
+
+A header or `url` may reference a backend's own credential, and nothing else.
+A `${VAR}` naming a secret the gateway itself holds is a load error:
+
+- any variable this file declares under a `*_env` key — a profile's
+  `auth.bearer_token_env`, an `llm_keys.*.api_key_env`, a federation key, a
+  bridge or ingress secret, anywhere in the file, not only in this profile;
+- the gateway's own secrets, such as `TRENTINA_OAUTH_JWT_SIGNING_KEY`,
+  `TRENTINA_BACKEND_TOKEN_KEY` and the provider API keys.
+
+Without this, a backend header was a way to send one of those to whatever
+endpoint the backend pointed at — including this gateway's own operator
+endpoint, which needs no approval to configure and hands the other side
+`config_tool`. Naming the variable was enough; nothing had to read its value.
+
+The variable your backend authenticates with is referenced and not declared,
+so it is unaffected. Give each backend a variable nothing else in the file
+names.
+
+A name stays protected for the life of the process once any load has seen it
+declared, so removing a declaration does not make it referenceable — otherwise
+one write could retire a credential and forward it in the same breath. A
+secret you genuinely retire is referenceable again after a restart.
 
 ## Backend OAuth
 

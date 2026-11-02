@@ -7,6 +7,7 @@ gateway routes if loading fails.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -24,10 +25,12 @@ from . import key_store, token_store
 from .approver import DEFAULT_ENROL_WINDOW_SECONDS, clamped_enrol_window
 from .drivers import build_transforms
 from .errors import ProfileConfigError
+from .federation_link import derive_all
 from .filter import filter_tools
 from .profile import (
     GIT_REMOTE_NAME_RE,
     HONEYTOKEN_MIN_CHARS,
+    INGRESS_SUFFIX,
     MATRIX_CHANNEL,
     AlertIngressConfig,
     EgressUpstream,
@@ -35,12 +38,15 @@ from .profile import (
     MatrixIngressConfig,
     ProcessorChainConfig,
     Profile,
+    federation_audience,
     is_matrix_user_id,
+    same_gateway_key,
 )
 from .transform import resolve
 
 if TYPE_CHECKING:
     import ipaddress
+    from collections.abc import Iterator
 
 
 @dataclass(frozen=True)
@@ -62,17 +68,166 @@ logger = logging.getLogger(__name__)
 _ENV_REF_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 _URL_SAFE_VALUE_RE = re.compile(r"[A-Za-z0-9._~%-]+")
 
+#: The gateway's OWN secret env vars: read by name through ``read_secret_env``
+#: and never declared in profiles.yaml, so the file-derived set cannot hold
+#: them. A header resolving the token-signing key is worse than any profile's
+#: bearer. Held to the literal call sites by ``test_loader_secrets``.
+_GATEWAY_SECRET_ENVS = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "BRIDGE_OLD_ACCESS_TOKEN",
+        "BRIDGE_PICKLE_KEY",
+        "BRIDGE_RECOVERY_KEY",
+        "GEMINI_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "TRENTINA_APPROVAL_PASSWORD_HASH",
+        "TRENTINA_BACKEND_TOKEN_KEY",
+        "TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET",
+        "TRENTINA_OAUTH_JWT_SIGNING_KEY",
+    }
+)
+
+#: Every env var a backend header or URL may NOT reference: the gateway's own
+#: secrets, plus every ``*_env`` any config loaded in this process has named.
+#: Written by ``_protect``, which says why the history is kept.
+_protected_secret_envs: set[str] = set(_GATEWAY_SECRET_ENVS)
+
+#: Distinct ``*_env`` names ONE config may declare. The bound is on the input,
+#: not on what has been protected: no real file comes near it, and bounding the
+#: protected set instead means shedding protection, which a write can provoke
+#: on purpose (omit a credential's declaration, pad with enough new names to
+#: force the shed, reference the omitted one in a header, all in one write).
+#: Refusing a pathological file cannot be turned into that.
+_MAX_DECLARED_PER_LOAD = 512
+
+
+#: The protected set in force for the load in progress, or None outside one.
+#: A load refuses against this; only a load that RETURNED adds to the history.
+_load_protected: set[str] | None = None
+
+
+@contextlib.contextmanager
+def _protecting(declared: set[str], where: Path) -> Iterator[None]:
+    """Put this file's declarations in force for the duration of its load.
+
+    Restored on the way out, whether the load returned or raised, so a refused
+    candidate leaves the history exactly as it found it.
+    """
+    global _load_protected
+    previous = _load_protected
+    _load_protected = _protected_for(declared, where)
+    try:
+        yield
+    finally:
+        _load_protected = previous
+
+
+def _protected_for(declared: set[str], where: Path) -> set[str]:
+    """What this load must refuse a header from naming: the protected history
+    plus what this file declares. Returned, not committed — see ``_commit_protected``.
+    """
+    if len(declared) > _MAX_DECLARED_PER_LOAD:
+        raise ProfileConfigError(
+            f"Profiles file {where} declares {len(declared)} distinct secret env "
+            f"vars, more than the {_MAX_DECLARED_PER_LOAD} allowed"
+        )
+    return _protected_secret_envs | declared
+
+
+def _commit_protected(declared: set[str]) -> None:
+    """Keep what this load declared, now that the load has SUCCEEDED.
+
+    The history is the point. Rebuilding per load would let one write remove a
+    profile's ``bearer_token_env`` and reference that variable in a header in
+    the same breath — or in the next write — laundering a credential out
+    through the declaration that was protecting it. A secret genuinely retired
+    stays refused until the process restarts, which is the fail-closed
+    direction and is not something an agent can do.
+
+    Only a load that RETURNED contributes, which is what separates this from
+    the first cut. `config_tool` validates a candidate by loading it, so a
+    candidate declaring `bearer_token_env: GITHUB_TOKEN` while the live file
+    reads `${GITHUB_TOKEN}` in a header was correctly refused — and then
+    poisoned the set, so the LIVE file refused too and every later
+    `reload_profiles` failed until the process restarted. A refusal before the
+    replace must touch nothing, including this.
+    """
+    _protected_secret_envs.update(declared)
+
+
+def _reset_protected_secret_envs() -> None:
+    """Forget what earlier loads declared (for tests loading many configs).
+
+    Nothing in the gateway calls this: the growth is the property.
+    """
+    _protected_secret_envs.clear()
+    _protected_secret_envs.update(_GATEWAY_SECRET_ENVS)
+
+
+def _declared_secret_env_names(node: Any) -> set[str]:
+    """Every ``*_env`` value anywhere in the raw config.
+
+    The suffix is the schema's own marker for "this names an env var holding a
+    secret", so a field added later is covered without an edit here. Broader
+    than strictly-credentials by a field or two (``audience_env``), which is
+    the safe direction: none of them belongs in a header.
+
+    What this is for: a backend may legitimately carry its own credential in a
+    header (``Authorization: "Bearer ${SOME_API_TOKEN}"``), and that variable
+    is referenced without being declared, so it is not collected. What is
+    refused is a header naming a variable the file declares as a credential of
+    its own — an operator agent writing a remote backend that points at this
+    gateway's operator endpoint with ``Bearer ${OP_TOKEN}``, which is no seat
+    change and no ``trust_verdict``, so it applied unwatched and handed an
+    outside gateway ``config_tool``. Naming the variable was enough; the agent
+    never had to read its value.
+    """
+    found: set[str] = set()
+    _collect_secret_env_names(node, found)
+    return found
+
+
+def _collect_secret_env_names(node: Any, found: set[str]) -> None:
+    """Walk ``node``, adding into ``found``. One set for the whole walk: a
+    union per child made collection quadratic in the number of names."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(key, str) and key.endswith("_env") and isinstance(value, str) and value:
+                found.add(value)
+            else:
+                _collect_secret_env_names(value, found)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_secret_env_names(item, found)
+
 
 def _expand_env_refs(value: str, *, context: str) -> str:
     """Substitute ${VAR} references in a header value or URL from os.environ.
 
     Fails closed (raises ProfileConfigError) if a referenced var is unset or
     empty — a missing auth secret must not silently become an unauthenticated
-    backend call.
+    backend call — or if it names a protected secret
+    (``_protected_secret_envs``), which is how a backend header reached
+    credentials it was never given.
     """
 
     def _replace(match: re.Match[str]) -> str:
         var_name = match.group(1)
+        # Every production path reaches here inside `_protecting`: this runs
+        # only from `_expand_backend_url` / `_expand_backend_env_refs`, only
+        # from `_build_profile`, only from `load_profiles`. The fallback is for
+        # a direct unit call, and is the committed history — stricter than
+        # nothing, weaker than a load's own set by exactly the names the file
+        # being loaded declares. A new call site outside a load would get that
+        # weaker set, so put it inside one.
+        protected = _protected_secret_envs if _load_protected is None else _load_protected
+        if var_name in protected:
+            raise ProfileConfigError(
+                f"{context}: env var {var_name} holds a secret of this gateway's "
+                "own, so it may not be referenced here; a backend's own credential "
+                "belongs in an env var nothing else names"
+            )
         resolved = read_secret_env(var_name)
         if not resolved:
             raise ProfileConfigError(
@@ -236,17 +391,113 @@ def _check_renamed_federation_keys(name: str, body: dict[str, Any]) -> None:
                 )
 
 
+#: Default ports, so one secondary spelled with and without its own is one
+#: secondary rather than two.
+def _refuse_derived_fields(config_path: Path, profiles_section: dict[str, Any]) -> None:
+    """Refuse a file that writes a field only the loader may set.
+
+    ``federation_of`` names the seat whose OAuth grants a derived ingress
+    spends. A hand-written profile setting it would claim another seat's grants
+    — the field is privilege, so it has to be loader-derived and never
+    caller-chosen. Checked on the RAW mapping, before any profile is built,
+    because ``exclude=True`` keeps it out of a dump but not out of an input.
+    """
+    for name, body in profiles_section.items():
+        if isinstance(body, dict) and "federation_of" in body:
+            raise ProfileConfigError(
+                f"Profile {name!r}: 'federation_of' is set by the gateway, not by "
+                f"{config_path}. It names the seat a derived federation ingress "
+                "acts for, including whose OAuth grants it spends. Declare "
+                "`federation` on the seat instead and the ingress is derived."
+            )
+
+
+def _add_derived_ingresses(registry: dict[str, Profile]) -> None:
+    """Add each shared seat's derived federation ingress to ``registry``.
+
+    A collision is refused rather than resolved: whichever way it went, an
+    operator would have one profile named after another's link, and the
+    derived one carries the authority to spend that seat's grants.
+    """
+    for name, ingress in derive_all(registry).items():
+        if name in registry:
+            raise ProfileConfigError(
+                f"Profile {name!r} collides with the ingress derived from seat "
+                f"{ingress.federation_of!r}. A profile name ending "
+                f"{INGRESS_SUFFIX!r} is reserved for a derived federation ingress."
+            )
+        registry[name] = ingress
+
+
+def _check_federation_audience(registry: dict[str, Profile]) -> None:
+    """One primary key may not serve two secondaries with the same audience.
+
+    The primary JWT's audience is the ingress PROFILE NAME — the path segment
+    before ``/mcp`` (``profile.federation_audience``) — and the secondary
+    checks it against its own name. Nothing in it names which gateway it was
+    minted for, so two federated backends sharing a primary key and deriving
+    the same audience mint tokens each secondary accepts. Secondary B replays
+    one at secondary A inside the 60-second window and A audits a call the
+    primary never made; HTTPS does not help and no on-path position is needed.
+
+    Refused here rather than fixed in the token, because this configuration is
+    the whole precondition. Different keys per secondary already fail: A holds
+    only its own peer key, so B's token does not verify. Same key AND same
+    audience is the one shape that works, and no deployment needs it.
+
+    Over the WHOLE file, not one profile: two profiles can each hold one half
+    of the pair, and a per-profile pass sees one backend and accepts it.
+    Grouped by (key, audience), and any group holding more than one distinct
+    URL is refused — comparing origins would read two independent gateways
+    behind one host on different path prefixes as the same gateway.
+    """
+    seen: dict[tuple[str, str], tuple[str, str, str]] = {}
+    for profile_name, profile in sorted(registry.items()):
+        for backend_name, backend in sorted(profile.backends.items()):
+            federated = backend.federated
+            if federated is None or federated.primary_key is None:
+                continue
+            audience = federation_audience(backend.url) or ""
+            group = (federated.primary_key.get_secret_value(), audience)
+            target = same_gateway_key(backend.url)
+            first = seen.setdefault(group, (profile_name, backend_name, target))
+            if first[2] != target:
+                raise ProfileConfigError(
+                    f"Federated backends {first[0]}.{first[1]} and "
+                    f"{profile_name}.{backend_name} share a primary key and both derive "
+                    f"the audience {audience!r} while pointing at different URLs: either "
+                    "secondary could replay the other's token. Give each secondary its own "
+                    "primary key, or ingress profiles with different names."
+                )
+
+
 def _check_interim_federation(name: str, profile: Profile) -> None:
-    """Warn on the interim static-bearer federation path (#592, D2b).
+    """Refuse the interim static-bearer federation path (#592, D2b).
+
+    Refused since 5.0.0. This docstring used to carry a deadline notice naming
+    that release, which was a promise while it was one and became a false one
+    the moment 5.0.0 was cut — ``tests/test_deprecation_deadlines.py`` fails
+    any notice naming a shipped release, because a reader who sees a past
+    release concludes the removal already happened and stops looking. Here it
+    did happen, so this says so in the past tense instead of promising it.
 
     A backend that points at a Trentina gateway's federation endpoint
     (``.../gateway/<profile>/mcp``) without a ``federated:`` block is the
     pre-3.1 arrangement: it mounts another gateway over a shared static bearer
-    and re-judges everything. First-class federation (primary-key auth +
-    scan-once trust) supersedes it; the interim path still works but is
-    deprecated; it is superseded by the first-class ``federated:`` block and
-    will be removed in a future release. Warned by profile and backend name only,
-    never the URL (#262).
+    and re-judges everything. First-class federation superseded it in 3.1.0,
+    it was deprecated with a deadline announced for 3.2.0, and it only ever
+    warned — through 4.2.3.
+
+    It is refused now because the warning was load-bearing for a promise it
+    could not keep. docs/federation.md says federation is loop-free by
+    construction, and ``_check_federation_topology`` enforces that by refusing
+    an ingress that also mounts a ``federated:`` backend — which this shape is
+    not. So an ingress profile could mount the next gateway's ingress over a
+    bearer and re-export it: A to B to C, with a ring self-joining
+    ``_profile_inflight`` until the list timeout. "No routing" was a property
+    of the first-class path only, and the prose did not say so.
+
+    Named by profile and backend, never the URL (#262).
     """
     for backend_name, backend in profile.backends.items():
         if backend.federated is not None or not backend.is_remote:
@@ -257,35 +508,36 @@ def _check_interim_federation(name: str, profile: Profile) -> None:
         # mentions "gateway" and ends /mcp, so an ordinary MCP server is not
         # mistaken for the interim path.
         if len(parts) >= 3 and parts[-1] == "mcp" and parts[-3] == "gateway":
-            logger.warning(
-                "gateway: profile=%s backend=%s uses the interim static-bearer "
-                "federation path; migrate to a federated: block "
-                "(deprecated; superseded by a federated: block) — see docs/federation.md",
-                name,
-                backend_name,
+            raise ProfileConfigError(
+                f"Profile {name!r} backend {backend_name!r} points at a Trentina "
+                "federation endpoint without a 'federated:' block. That interim "
+                "static-bearer arrangement was deprecated in 3.1.0 and is removed: it "
+                "re-judges every response and, on an ingress profile, re-exports the "
+                "next gateway, which is the loop federation is meant not to have. Add a "
+                "'federated:' block with a primary key — see docs/federation.md."
             )
 
 
 def _check_federation_topology(name: str, profile: Profile) -> None:
     """Hold the federation topology at load (#592): loop-free, and a secure link.
 
-    - A profile that is a federation INGRESS (``federation.peers``) must not also
-      CONSUME a federated secondary (a backend with ``federated``). A gateway
-      consumes, it does not route, so one profile is one role; a two-way pair is
-      two profiles. One profile that is both would have its single-flight
-      aggregate build wait on a peer whose build waits back — a deadlock.
-    - A federated backend must be reached over https. The 60 s primary JWT carries
-      no replay nonce, so over plain http an on-path peer could replay it within
-      the window. ``TRENTINA_FEDERATION_ALLOW_INSECURE=1`` lifts this for a
-      trusted local network (warned), as fetch's private-address rule is lifted.
+    A federated backend must be reached over https. The 60 s primary JWT carries
+    no replay nonce, so over plain http an on-path peer could replay it within
+    the window. ``TRENTINA_FEDERATION_ALLOW_INSECURE=1`` lifts this for a
+    trusted local network (warned), as fetch's private-address rule is lifted.
+
+    Loop-freedom used to be the other half of this check: a profile with
+    ``federation.peers`` could not also mount a ``federated`` backend, because
+    one ``Profile`` serving both roles would have its single-flight aggregate
+    build wait on a peer whose build waited back. Since 5.0.0 a seat's ingress
+    is DERIVED, so those are two objects and there is no deadlock — and
+    ``federation_link.offerable_backends`` excludes every ``federated`` backend,
+    so a link cannot re-export the next gateway whatever the seat mounts. A to B
+    to C is now unsayable rather than refused, which is what
+    ``docs/federation.md`` always claimed. One seat may therefore both consume a
+    peer's tools and share its own, which is what an operator wanted all along.
     """
     federated = {bn: b for bn, b in profile.backends.items() if b.federated is not None}
-    if profile.federation is not None and federated:
-        raise ProfileConfigError(
-            f"Profile {name!r} is a federation ingress and also mounts federated "
-            f"backend(s) {sorted(federated)!r}: one profile is one role (ingress or "
-            f"consumer); a two-way pair uses two profiles."
-        )
     from ..config import get_config
 
     allow_insecure = get_config().federation_allow_insecure
@@ -1058,15 +1310,33 @@ def load_profiles(path: Path | str) -> GatewayConfig:
             f"Profiles file {config_path} must contain a non-empty 'profiles' mapping"
         )
 
-    registry: dict[str, Profile] = {
-        name: _build_profile(name, body) for name, body in profiles_section.items()
-    }
-    _check_operator(registry)
-    _check_judges(registry)
-    _check_matrix_networks(registry)
-    _check_egress_networks(registry)
-    git_remotes = _load_git_remotes(cfg_data.get("git_remotes"), registry)
-    egress_upstreams = _load_egress_upstreams(cfg_data.get("egress_upstreams"), registry)
+    # Before a single profile is built: expanding a backend header or URL
+    # refuses a reference into this set, and which names are in it is a
+    # property of the WHOLE file, not of the profile being built. Collected
+    # here rather than as profiles load, which would make the refusal depend
+    # on the order profiles appear in. In force for this load only until the
+    # load succeeds — `_commit_protected` says why.
+    declared = _declared_secret_env_names(cfg_data)
+    _refuse_derived_fields(config_path, profiles_section)
+
+    with _protecting(declared, config_path):
+        registry: dict[str, Profile] = {
+            name: _build_profile(name, body) for name, body in profiles_section.items()
+        }
+        # Derived BEFORE every registry-wide check, so an ingress is held to the
+        # audience rule, the judge rule and the rest exactly as a written
+        # profile is. A derived name that collides with a written one is
+        # refused rather than silently winning either way.
+        _add_derived_ingresses(registry)
+        _check_operator(registry)
+        _check_federation_audience(registry)
+        _check_judges(registry)
+        _check_matrix_networks(registry)
+        _check_egress_networks(registry)
+        git_remotes = _load_git_remotes(cfg_data.get("git_remotes"), registry)
+        egress_upstreams = _load_egress_upstreams(cfg_data.get("egress_upstreams"), registry)
+
+    _commit_protected(declared)
 
     logger.info(
         "gateway: loaded %d profile(s): %s",

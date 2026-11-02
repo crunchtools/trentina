@@ -282,6 +282,7 @@ gaps below.
 | Any of those three under `unjudged: annotate` | as it arrived, media with the warning header | nothing | forwarded unjudged, by the operator's choice |
 | A proxied response that is only text, or an internal tool's (`fetch`, `read`, `content`) behind the gateway, over 16K L2 tokens and within 16 parts (192K) | one part of about 12K tokens per call, the first from the call itself and the rest from `read_part` (#340, #446) | each part whole, behind the last 64 tokens of the part before | judged a part at a time; block withholds a flagged part and every later one |
 | Over the admission cap (`CLASSIFIER_MAX_TOKENS`, 32,768 L2 tokens) and not delivered in parts: a response with an image or blob in it, one over 16 parts, any response to a profile without `read_part`, a honeypot's, an internal tool's standalone | block and redact: a refusal; flag: as it arrived | flag: the head only | refused |
+| A FEDERATED peer's part that is larger than this gateway's own whole-response budget (#592, B2) | nothing: a refusal (`federated_part_oversize`) | nothing | refused in every mode. It is not re-cut: the peer holds parts 2..n behind a handle only the proxy can reach, and cutting part 1 again returns before that proxy is built, so the agent would be handed a fragment and told it was the whole. Only reachable when the primary's `TRENTINA_PART_TOKENS` is below the secondary's, which is a misconfiguration the refusal names |
 
 ### Known gaps
 
@@ -629,12 +630,24 @@ one does; the rest name the benchmark that measured them.
     re-pins. It does NOT bind the peer profile's `defense` block — its threshold
     overrides, allowlists and which modes it runs — so a primary trusts that the peer
     scanned under the stamped model and judge, not that the peer's policy around
-    them is as strict as its own. Fail-closed: a missing, forged, stale, or
-    hash-, stamp-, judge- or mode-mismatched assertion is re-judged locally,
-    never trusted. The trust is a deliberate exception to rule 1 of the
-    [layer contract](#layer-contract), stated here so that rule is not read as
-    covering it. Tested (`tests/test_federation_trust.py`,
-    `tests/test_coverage_gaps.py`).
+    them is as strict as its own. Fail-closed: a missing, forged, stale,
+    undigestable, uninterpretable, or hash-, stamp-, judge- or mode-mismatched
+    assertion is re-judged locally, never trusted. The trust is a deliberate
+    exception to rule 1 of the [layer contract](#layer-contract), stated here
+    so that rule is not read as covering it.
+
+    Two things it does not reach. **A PAGED response is never trusted**: the
+    secondary signs a delivered response, and a response it delivers in parts
+    is not one — part 1 arrives at the primary with no assertion (`absent`) and
+    every part is judged here, as its own source. So a link whose responses are
+    mostly large runs the layers twice however well the pin matches, and
+    `absent` rather than `trusted` is the honest reading of that, not a broken
+    pin. **The peer's own warning block** rides inside the signature and is
+    delivered once: it is gateway-authored fixed text from the peer's
+    `results._attach_warning`, not an L3 assessment, which is why §III is
+    satisfied by a block this gateway did not write.
+
+    Tested (`tests/test_federation_trust.py`, `tests/test_coverage_gaps.py`).
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 

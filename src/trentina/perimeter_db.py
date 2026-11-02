@@ -149,6 +149,20 @@ def get_perimeter_db(db_path: str | None = None) -> sqlite3.Connection:
         _db.executescript(SCHEMA)
         upgraded = had_pins is None and had_verdicts is not None
         pins_upgraded_at = time.monotonic() if upgraded else None
+        if had_pins is None and had_verdicts is None:
+            # A store with neither table is a store this gateway has never had.
+            # Worth a line: every remote tool is about to be held for approval,
+            # and a FEDERATED backend's whole offered set is about to be
+            # approved unreviewed as a first connect (`tool_pins.check_tools`).
+            # Expected on a new deployment; on an old one it means the volume
+            # is missing, and the quiet version of that cost the trust it was
+            # protecting.
+            logger.warning(
+                "gateway: the perimeter store was created empty, so this gateway holds "
+                "no tool approvals and no cached verdicts. Expected on a first run. "
+                "Otherwise its volume is not mounted: every remote tool will be held, "
+                "and each federated peer's offered set approved as a first connect"
+            )
     return _db
 
 
@@ -226,6 +240,36 @@ def put_pin(
         ),
     )
     db.commit()
+
+
+def move_pins(old_backend_id: str, new_backend_id: str) -> int:
+    """Re-key a backend's pins when its URL moves, returning how many moved.
+
+    ``backend_id`` is a hash of the URL, so a trailing slash, a port or a host
+    spelled differently is a DIFFERENT backend to this table — and a federated
+    backend with no rows is treated as a first connect, which auto-approves the
+    peer's whole offered set as a unit (#592, E1b). An operator editing a URL
+    therefore re-trusted the peer wholesale without asking for it.
+
+    Refuses to move onto an id that already has rows and returns 0: two
+    backends can legitimately name one URL, and ``(backend_id, tool)`` is the
+    primary key, so an UPDATE would collide on the shared tools and the pins
+    already there are not this edit's to overwrite.
+    """
+    db = get_perimeter_db()
+    if (
+        db.execute(
+            "SELECT 1 FROM tool_pins WHERE backend_id = ? LIMIT 1", (new_backend_id,)
+        ).fetchone()
+        is not None
+    ):
+        return 0
+    moved = db.execute(
+        "UPDATE tool_pins SET backend_id = ? WHERE backend_id = ?",
+        (new_backend_id, old_backend_id),
+    ).rowcount
+    db.commit()
+    return int(moved)
 
 
 def list_pending_pins(backend_id: str) -> list[sqlite3.Row]:

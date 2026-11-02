@@ -26,6 +26,7 @@ from ..reserved import REFUSAL_KEY, WARNING_KEY
 from ..transports.jsonrpc import JSONRPC_INVALID_PARAMS, _err, _ok
 from . import audit, paging, session_marks
 from .backend import call_backend_tool, loggable_tool
+from .context import current_caller
 from .errors import BackendCallError
 from .filter import filter_tools
 from .modes_policy import MODE_PARAM, effective_mode, policy_for
@@ -430,8 +431,11 @@ async def _read_part(
     """
     t0 = time.monotonic()
     handle = arguments.get("handle")
+    # The owner of a held response, not merely the profile: on a federation
+    # ingress every primary calls as the same profile (#592).
+    owner = (profile.name, current_caller.get())
     if handle is None:
-        open_now = paging.listing(profile.name)
+        open_now = paging.listing(owner)
         audit._audit(profile.name, reader_backend, paging.READ_PART_TOOL, Outcome.OK, 0, "listing")
         text = (
             f"{len(open_now)} response(s) held for this profile."
@@ -447,7 +451,7 @@ async def _read_part(
             },
         )
 
-    paged = paging.find(profile.name, handle)
+    paged = paging.find(owner, handle)
     backend = profile.backends.get(paged.backend) if paged is not None else None
     # The tool that produced it must still be this profile's to call: a reload
     # that took the tool away takes the rest of its response too. A proxied

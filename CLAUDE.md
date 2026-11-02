@@ -511,10 +511,29 @@ not the mapping the caller sent), and masking `llm_keys.*.api_key`, the one fiel
 credential value rather than the name of one. These are not a privilege
 boundary: the operator is root. They exist because the operator is a model, so
 the question is "can it be talked into it" — and since #637 the answer is that
-it may ask and a person decides, rather than being refused. `federation.peers` is deliberately
-NOT in the rule: it is an access grant, and refusing it would make a federation
-ingress impossible to create through the API, since `peers` is what
-authenticates one.
+it may ask and a person decides, rather than being refused.
+
+Three more rules joined them in 5.0.0, in the same shape and the same file:
+`federation_peers` (who may authenticate to a shared seat; SEATS only, since a
+derived ingress carries its seat's block verbatim and counting both would show a
+person every peer twice),
+`defense_posture` + `defense_downgraded` (`modes`, `enforcement` or
+`llm_completion` reaching `flag`) and `egress_grants` (`client_egress.hosts`,
+`egress_upstreams`, `llm_providers`). `federation.peers` was deliberately NOT in
+the rule before then, on the ground that refusing an access grant would make a
+federation ingress impossible to create through the API. The second half of that
+stopped being true at #637: a grant is PROPOSED rather than refused, so the
+ingress is still built by an agent in one write and a person still sees who was
+let in.
+
+Two rules hold across all five, and a sixth follows them rather than deciding
+for itself. Each is computed on the LOADED candidate, never on the mapping the
+caller sent, because a write reaches any of them by setting a parent key. And
+only WIDENING stages: withdrawing a peer, dropping `flag`, removing an egress
+host each apply at once, since a gate in front of tightening teaches an operator
+that the page is something to get past. `config_guard.widened` is the shared
+diff; `defense_downgraded` is its own because "stricter" there is not a subset
+test.
 
 `federation_keygen` (`tools/keygen.py`, store in `gateway/key_store.py`) mints
 an Ed25519 pair into `<data>/keys/<name>.pem` (`O_EXCL`, 0600) and returns only
@@ -525,10 +544,14 @@ a check naming one source only is how #633 found a gap.
 
 ## Human approval (#637)
 
-Two changes an operator may PROPOSE and not apply: the operator seat, and
-`trust_verdict`. `config_tool` stages them instead of refusing them, and a
-person approves at `/approve`. `docs/approvals.md` is the statement; the
-constitution's Human Approval section is the rule.
+Five changes an operator may PROPOSE and not apply: the operator seat,
+`trust_verdict`, `federation.peers`, a `defense` block reaching `flag`, and the
+three settings that open a way out of network isolation. `config_tool` stages
+them instead of refusing them, and a person approves at `/approve`.
+`docs/approvals.md` is the statement; the constitution's Human Approval section
+is the rule. Only widening stages — narrowing any of them applies at once — and
+a write needing two approvals is refused rather than shown as one, since a page
+can put one decision in front of a person and the rest would ride along unread.
 
 One mechanism, deliberately. `gateway/pending.py` holds what is staged — in
 memory only, one per `Kind`, expiring, and it RETURNS NOTHING when it stages,
@@ -571,10 +594,51 @@ Federation's two gateway roles are **primary** (uses the tools) and
 **secondary** (offers them), renamed from downstream/upstream in 4.0.0 (#637).
 "Upstream" now means only an HTTP origin the gateway dials — egress, the LLM
 proxy, the git transport, the bridge, `egress_upstreams`. A federated backend
-names its own key with `primary_key_env`/`primary_key_name`; a federation
-ingress names its own with `secondary_key_env`/`secondary_key_name`. The wire
-format was deliberately left alone, so gateways on either side of the rename
-still federate.
+names its own key with `primary_key_env`/`primary_key_name`; a shared seat
+names its own with `secondary_key_env`/`secondary_key_name`. The wire format
+was deliberately left alone, so gateways on either side of the rename still
+federate.
+
+## Federation is a property of a seat (#592, 5.0.0)
+
+`federation` is declared on the SEAT whose tools are shared and
+`gateway/federation_link.py` DERIVES the ingress: `<seat>-federation`
+(`INGRESS_SUFFIX`, which lives in `profile.py` because the seat validator needs
+it and `federation_link` imports that module, not the reverse), offering
+`offerable_backends(seat)` — remote, not `federated`, not `decoy://` — plus one
+`internal://` backend allowing `READ_PART_TOOL` alone. `load_profiles` calls
+`derive_all` right after building the registry and before every registry-wide
+check, so an ingress is held to the audience rule like any written profile; a
+derived name colliding with a written one is refused.
+
+Every `Profile` field is decided by name in `CARRIED`, `DROPPED` or
+`CONSTRUCTED`, and `test_every_profile_field_is_decided` fails on a field in
+none of them. Deriving the offered set removes drift; the risk that replaces it
+is a field added later reaching a peer because nobody thought about it, and
+that test is the whole mitigation. Put a new field in one of the sets.
+
+`federation_of` names the seat an ingress was derived from, and
+`Profile.grant_owner` is `federation_of or name`: a derived ingress spends the
+SEAT's OAuth grants, so a person signs in once. It is a FIELD, not a name
+match, because deriving privilege from `name` would make a hand-written
+`josui-federation` a way to claim josui's grants; `load_profiles` refuses a file
+that sets it. Every grant call site passes `grant_owner`, held by an AST test in
+`tests/test_federation_grants.py`; `_audit` keeps the ACTING profile.
+`_after_login` refreshes every profile spending the grant, or the link answers
+`needs_auth` after a successful sign-in until a cache flush.
+
+Two properties are structural, not checked: the derived set excludes every
+`federated` backend, so A→B→C is unsayable and ONE SEAT MAY BOTH CONSUME A PEER
+AND SHARE ITSELF (`_check_federation_topology` lost its one-profile-one-role
+clause, which existed because a single `Profile` deadlocked its own
+single-flight aggregate build); and the ingress's internal backend is
+constructed rather than filtered, so the seat keeps its full native surface.
+`FEDERATION_INTERNAL_ALLOW` is `read_part_tool` alone — `backend_auth_tool`
+(#656) and the single-peer rule it needed are both gone.
+
+Federation is a declared PREVIEW surface (`src/trentina/stability.py`,
+`docs/stability.md`): a breaking change confined to it is a MINOR bump. A
+surface is declared BEFORE the release that relies on it, never during one.
 
 The deployment needs the config DIRECTORY bound writable (a rename needs the
 directory). `TRENTINA_REQUIRE_HARDENED` still passes: its checks are

@@ -149,7 +149,8 @@ class TestAFetchTooLargeToJudgeInOneCall:
         assert (marker["part"], marker["parts"], marker["next"]) == (1, 4, 2)
         assert f'{READER}(handle="{marker["handle"]}", part=2)' in marker["read_next"]
         assert FETCH in marker["read_next"]
-        assert first["content"] == "".join(part.text for part in paging.held("agent1")[0].parts[:1])
+        one = paging.held(("agent1", None))[0]
+        assert first["content"] == "".join(part.text for part in one.parts[:1])
         assert first["scan"] == {"layers": "complete", "disposition": "delivered"}
 
     async def test_the_parts_read_in_order_are_the_page(self, env: Path) -> None:
@@ -160,7 +161,7 @@ class TestAFetchTooLargeToJudgeInOneCall:
             rest = [await gateway.read(handle=handle) for _ in range(3)]
         assert first["content"] + "".join(_body(part) for part in rest) == LONG
         assert rest[-1][paging.PART_KEY] == {"part": 4, "parts": 4, "delivered": [1, 2, 3, 4]}
-        assert paging.held("agent1") == []
+        assert paging.held(("agent1", None)) == []
         # Every part is audited as the fetch it is part of.
         assert gateway.outcomes() == [("web", "fetch_tool", Outcome.OK)] * 4
 
@@ -187,7 +188,7 @@ class TestAFetchTooLargeToJudgeInOneCall:
             first = await _Gateway(_profile(reader=False)).fetch()
         assert paging.PART_KEY not in first
         assert first["content"] == LONG
-        assert paging.held("agent1") == []
+        assert paging.held(("agent1", None)) == []
 
     async def test_standalone_nothing_is_cut(self, env: Path) -> None:
         with layers(env, payload=LONG):
@@ -301,7 +302,7 @@ class TestAFlaggedPart:
             _where(fakes, "w7")
             resp = await gateway.send(FETCH, url=URL, trentina_preprocess=False)
         assert "flagged by" in json.dumps(refused(resp))
-        assert paging.held("agent1") == []
+        assert paging.held(("agent1", None)) == []
         assert _blocklist_rows() == [(URL, 1)]
 
     async def test_flag_delivers_it_with_its_warning_and_blocklists_nothing(

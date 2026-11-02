@@ -1,21 +1,39 @@
 # Approvals
 
-Your agent runs this gateway. Two things it cannot do alone:
+Your agent runs this gateway. Five things it cannot do alone:
 
 - **Move the operator seat** — who is root here.
 - **Turn on federation trust** — serve another gateway's answers without
   scanning them.
+- **Let another gateway in** — add a peer that may authenticate to a seat you
+  share, and use that seat's sign-ins.
+- **Stand a perimeter down** — let a profile detect injections without
+  refusing them.
+- **Open a way out** — let an agent's traffic reach somewhere new on the
+  internet.
 
 For those it asks, and you decide in a browser. Everything else — backends,
-guards, defense settings, credentials, whole new profiles — it just does.
+guards, thresholds, credentials, whole new profiles — it just does.
 
-## Why those two
+**Taking any of them away never asks.** Removing a peer, turning enforcement
+back on, dropping an egress host: your agent does that on its own, because
+each one only makes the gateway stricter. You are asked when something is being
+*granted*.
+
+## Why these five
 
 Your operator agent has the authority; it is root on its gateway. The problem
 is that it is a *model*, so the question was never whether it may, but whether
-it can be talked into it. These are the two changes where a plausible-sounding
-request does the most damage: one hands root to someone else, the other turns
-off the scanning this product exists to do.
+it can be talked into it. These are the changes where a plausible-sounding
+request does the most damage: one hands root to someone else, one turns off the
+scanning this product exists to do, one hands a seat — and the accounts it is signed in to —
+to a gateway you have never met, one leaves a profile detecting attacks and permitting them, and one
+gives an agent a route off your network.
+
+That last one has the widest blast radius of the five, which is easy to get
+backwards. A gateway you trust has at least *scanned* the answer it hands you.
+A tunnel out has no scan at all — nothing reads what crosses it, by design,
+because it is someone else's TLS.
 
 ## What to tell your agent
 
@@ -35,8 +53,17 @@ After that, just say what you want:
 
 > Move the operator seat to <profile>.
 
+> Let breetai federate into the shared ingress.
+
+> This agent's client needs to reach api.example.com.
+
 It makes the change, the gateway stages it instead of applying it, and your
 agent hands you a URL.
+
+**One question at a time.** If a single change would need two of your
+approvals — moving the seat *and* trusting a peer, say — the gateway refuses it
+outright and tells your agent to do them separately. A page can only put one
+decision in front of you, and the other would have ridden along unread.
 
 ## Deciding
 
@@ -50,6 +77,25 @@ actually check:
   judge it must keep presenting; it does not bind how that peer actually
   defends, so a weaker setting on its side is not something this page can
   catch.
+- **Federation peers** — each gateway being let in, by name, with its key as a
+  short fingerprint. A peer whose *name* you already approved but whose key
+  has changed shows up here too: same name, different gateway. Beside the keys,
+  what the link actually hands over: which of that seat's backends cross, and
+  which of those **run as your sign-in**. A federated call runs as the seat, so
+  the seat's OAuth grants serve the link — admitting a peer to a seat signed in
+  to a mailbox means that peer's calls read and write that mailbox. Both rows
+  are always there, "none" included, so a missing one never has to be read as
+  "the page did not mention it".
+- **Defense downgrade** — which profile, and each setting's before and after.
+  `flag` means that profile still detects an injection and no longer refuses
+  one.
+- **Egress grant** — each destination being opened. A `client_egress` row
+  names the profile it belongs to, and there are two kinds: a host that
+  profile's client may be tunnelled to, and a network its clients may connect
+  *from*. An `egress_upstreams` or `llm_providers` row is the whole gateway's,
+  not one profile's — any profile configured to use it reaches it. An
+  `llm_providers` entry also says it will not be live until the gateway
+  restarts, because that section is read only at startup.
 
 Approve or decline. Declining changes nothing, and so does ignoring it: a
 proposal expires on its own and a restart cancels it.
@@ -61,7 +107,7 @@ it; you are the part that does not have to.
 ## Two things worth knowing
 
 **Set the password promptly on a new gateway.** Until it is set nothing can be
-approved, so both changes stay blocked — but the enrolment window is also the
+approved, so all five stay blocked — but the enrolment window is also the
 one moment this gateway's approver could be claimed by whoever holds the code.
 
 **Keep code execution off the operator seat.** An agent with a backend that can

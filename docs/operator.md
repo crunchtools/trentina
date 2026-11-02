@@ -21,7 +21,7 @@ seat:
 
 | Tool | As the operator |
 |---|---|
-| `quarantine_stats` | Every profile's calls, detections, destinations and fan-out, plus compression savings |
+| `quarantine_stats` | Every profile's calls, detections, destinations and fan-out, compression savings, and every federation link in both directions (`federation`) |
 | `cache_flush` | Every cache, by exact name |
 | `reconnect_backend` | Any backend, wherever it is configured, and which profiles share it |
 | `reload_profiles` | Applies the whole `profiles.yaml`, gateway-wide settings included |
@@ -41,6 +41,14 @@ hand-edited the file in between, the write is refused instead of overwriting
 them. The file is the source of truth, not a view over anything, and it stays a
 file a person can read, diff and keep in git. Every successful write returns
 the next hash, so a run of changes needs one read at the start.
+
+> **`config_tool`'s shape is a preview surface** (`config-api`, #633). Its
+> action names, its arguments and the keys in its result may change in a minor
+> release — more of the gateway becomes configurable by tool call each time, and
+> that shape has not finished settling. Which writes a person must approve is
+> *not* in the surface: those rules are stable, and so is the approval flow
+> below. See [stability.md](stability.md). Nothing else on this page is preview —
+> the operator seat, `reload_profiles` and `cache_flush` are stable.
 
 Two things the operator can propose and cannot apply, and they are not about
 authority — the operator *is* root on this gateway. They exist because the

@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..config import PART_SLACK, get_config
 from ..quarantine.classifier import GUARD_TOKENS, token_starts
+from .context import current_caller
 
 if TYPE_CHECKING:
     from ..defense import Provenance
@@ -59,12 +60,19 @@ BOUNDARY_SLACK = PART_SLACK
 paragraph, line or word boundary. Past it the cut is made at the token.
 ``Config.part_target_tokens`` reserves the same share of the admission cap."""
 
-MAX_OPEN_PER_PROFILE = 4
-"""Paged responses one profile holds at once; the least recently read goes."""
+MAX_OPEN_PER_OWNER = 4
+"""Paged responses one OWNER holds at once; the least recently read goes. The
+owner, not the profile: see ``Owner``."""
 
+MAX_BYTES_PER_OWNER = 32 * 1024 * 1024
 MAX_BYTES_PER_PROFILE = 32 * 1024 * 1024
+"""One tenant's ceiling, whatever its callers. An owner carries a peer-chosen
+``sub``, so owners are not a bounded resource and the owner cap alone is not a
+bound on a profile: this is. Same number, because it is the bound a profile had
+before the owner key existed."""
+
 MAX_BYTES = 128 * 1024 * 1024
-"""Text held for one profile and for the gateway. The remainder of a paged
+"""Text held for one owner and for the gateway. The remainder of a paged
 response is content nobody has judged yet, kept for a caller that may never
 come back for it, so it is bounded before anything else is."""
 
@@ -96,7 +104,11 @@ class Secondary:
     Attributes:
         backend: the primary's federated backend name, to address the peer.
         reader: the tool name the peer serves ``read_part`` under, called
-            directly by the proxy (hidden from this profile's own tool list).
+            directly by the proxy. It is withheld from this profile's own tool
+            list and refused as a direct ``tools/call``
+            (``tool_list_edge``/``_tools_call``), so the proxy is the only
+            caller: a direct call would reach the peer's own reader with this
+            profile's credential and read parts the proxy never judged.
         handle: the secondary's handle for this response.
         count: the number of parts the secondary declared.
         tail: the last delivered part's trailing tokens, read in front of the
@@ -118,6 +130,14 @@ class Paged:
         handle: what the agent passes to ``read_part``; random, 128 bits.
         profile: the profile that made the call, and the only one that may
             read the rest.
+        caller: the federated caller behind that profile, ``(peer, sub)``, or
+            None for an ordinary request. Part of the OWNER of this response
+            together with ``profile``: a federation ingress is one profile for
+            every primary that calls it, so the profile alone would make every
+            peer's held parts readable by every other peer. The whole tuple is
+            used, not ``sub`` alone, because two peers may assert the same
+            ``sub``. This is an isolation key and nothing else — it never
+            selects a scope, a role, a policy or a guard (cto ruling, #592 C2).
         backend, tool: what produced the response. Each part is judged,
             audited and policed as that tool's response.
         label: the name the agent called the tool by, for the text it reads.
@@ -146,6 +166,7 @@ class Paged:
 
     handle: str
     profile: str
+    caller: tuple[str, str] | None
     backend: str
     tool: str
     label: str  # the name the agent called, for the text it reads
@@ -267,18 +288,65 @@ def expire(now: float | None = None) -> None:
         del _store[handle]
 
 
-def _evict(profile: str, incoming: int) -> None:
+#: Who owns a held response: the profile, and the federated caller behind it.
+#: The per-owner caps and every lookup key on the pair, so one peer calling a
+#: federation ingress can neither read nor evict another peer's parts (#592).
+Owner = tuple[str, tuple[str, str] | None]
+
+
+def owner_of(paged: Paged) -> Owner:
+    """The ``(profile, caller)`` a held response belongs to."""
+    return (paged.profile, paged.caller)
+
+
+def _counts_against(paged: Paged, budget: Owner | str | None) -> bool:
+    """Whether ``paged`` counts against ``budget``: an owner, a profile, or
+    (None) the whole gateway. The three ``_evict`` enforces.
+
+    Not named ``scope``: ``tests/test_standalone_parity`` statically forbids a
+    ``scope is None`` branch in ``src/``, the shape of the standalone
+    fall-throughs #579 retired. Nothing to do with this, and the guard is
+    right to be blunt about a name that once meant that.
+    """
+    if budget is None:
+        return True
+    if isinstance(budget, str):
+        return paged.profile == budget
+    return owner_of(paged) == budget
+
+
+def _evict(owner: Owner, incoming: int) -> None:
     """Make room for ``incoming`` bytes: the least recently read goes first.
 
     One pass per limit: the candidates are ordered once and dropped from the
     oldest while the count or the bytes are over.
+
+    Three passes, and the middle one is why. The first is the OWNER's, because
+    a federation ingress is one profile for every primary that calls it and a
+    per-profile cap alone would let one peer evict another's parts. But `sub`
+    is PEER-CHOSEN, so an owner is not a bounded resource: a peer rotating it
+    mints a fresh budget per call and, with only an owner and a gateway pass,
+    walks up to the whole 128 MiB and evicts every other profile's parts. The
+    profile pass caps a tenant at `MAX_BYTES_PER_PROFILE` however many callers
+    it arrives as, which is the bound an ingress had before the owner key
+    existed.
+
+    The LAST pass, the gateway-wide byte cap, does still evict across tenants,
+    deliberately and as it always has (``MAX_BYTES`` is the last bound on
+    memory nobody has asked for yet). Availability, not confidentiality: an
+    evicted handle is the same indistinguishable None as an expired one and the
+    agent calls the tool again. The alternative — refusing to hold rather than
+    evicting — denies a caller its own response because of someone else's
+    usage, which is worse. Nothing here lets one owner READ another's parts.
     """
-    for only, count, limit in (
-        (profile, MAX_OPEN_PER_PROFILE, MAX_BYTES_PER_PROFILE),
+    profile, _caller = owner
+    for budget, count, limit in (
+        (owner, MAX_OPEN_PER_OWNER, MAX_BYTES_PER_OWNER),
+        (profile, None, MAX_BYTES_PER_PROFILE),
         (None, None, MAX_BYTES),
     ):
         kept = sorted(
-            (p for p in _store.values() if only is None or p.profile == only),
+            (p for p in _store.values() if _counts_against(p, budget)),
             key=lambda p: p.used,
             reverse=True,
         )
@@ -299,6 +367,12 @@ class Origin:
     label: str  # the name the agent called, for the text it reads
     is_error: bool
     acted: bool  # the backend may have written: never tell the agent to call again
+    #: The federated caller behind ``profile``, read from the request context
+    #: rather than passed, so a hold site cannot forget it and silently widen
+    #: the owner to the whole profile (see ``Paged.caller``). Every production
+    #: hold runs inside a request, where this is already bound; outside one it
+    #: is None, which is its own owner.
+    caller: tuple[str, str] | None = field(default_factory=current_caller.get)
 
 
 def hold(
@@ -319,10 +393,11 @@ def hold(
     now = time.monotonic()
     expire(now)
     size = sum(len(part.text.encode("utf-8", "surrogatepass")) for part in parts)
-    _evict(origin.profile, size)
+    _evict((origin.profile, origin.caller), size)
     paged = Paged(
         handle=secrets.token_hex(16),
         profile=origin.profile,
+        caller=origin.caller,
         backend=origin.backend,
         tool=origin.tool,
         label=origin.label,
@@ -384,10 +459,11 @@ def hold_federated(origin: Origin, secondary: Secondary, **judged: Any) -> Paged
     expire(now)
     if secondary.handle in _store:
         return None
-    _evict(origin.profile, 0)
+    _evict((origin.profile, origin.caller), 0)
     paged = Paged(
         handle=secondary.handle,
         profile=origin.profile,
+        caller=origin.caller,
         backend=origin.backend,
         tool=origin.tool,
         label=origin.label,
@@ -403,16 +479,20 @@ def hold_federated(origin: Origin, secondary: Secondary, **judged: Any) -> Paged
     return paged
 
 
-def find(profile: str, handle: object) -> Paged | None:
-    """The response ``handle`` names, if this profile holds it and it has not expired.
+def find(owner: Owner, handle: object) -> Paged | None:
+    """The response ``handle`` names, if ``owner`` holds it and it has not expired.
 
     One answer, None, for a handle that expired, was released, was evicted,
-    belongs to another profile or was never issued (#263): the caller cannot
-    tell which, so a handle is no way to learn what another profile read.
+    belongs to another owner or was never issued (#263): the caller cannot
+    tell which, so a handle is no way to learn what another owner read.
+
+    The owner is ``(profile, caller)``, not the profile: on a federation
+    ingress every primary arrives as the same profile, so comparing the profile
+    alone would answer one peer's handle for another (#592).
     """
     expire()
     paged = _store.get(handle) if isinstance(handle, str) else None
-    if paged is None or paged.profile != profile:
+    if paged is None or owner_of(paged) != owner:
         return None
     paged.used = time.monotonic()
     return paged
@@ -423,11 +503,11 @@ def release(paged: Paged) -> None:
     _store.pop(paged.handle, None)
 
 
-def held(profile: str) -> list[Paged]:
-    """What this profile holds, least recently read last."""
+def held(owner: Owner) -> list[Paged]:
+    """What ``owner`` holds, least recently read last."""
     expire()
     return sorted(
-        (p for p in _store.values() if p.profile == profile), key=lambda p: p.used, reverse=True
+        (p for p in _store.values() if owner_of(p) == owner), key=lambda p: p.used, reverse=True
     )
 
 
@@ -596,8 +676,12 @@ def with_part_marker(
     return {PART_KEY: body, **result, "_meta": meta}
 
 
-def listing(profile: str) -> list[dict[str, Any]]:
-    """The profile's held responses, for an agent that lost its handle."""
+def listing(owner: Owner) -> list[dict[str, Any]]:
+    """The owner's held responses, for an agent that lost its handle.
+
+    Keyed on the owner, not the profile: this is the listing that handed one
+    federated peer every other peer's handles (#592).
+    """
     now = time.monotonic()
     ttl = get_config().part_ttl_seconds
     return [
@@ -608,5 +692,5 @@ def listing(profile: str) -> list[dict[str, Any]]:
             "delivered": sorted(paged.delivered),
             "expires_in_seconds": max(int(ttl - (now - paged.used)), 0),
         }
-        for paged in held(profile)
+        for paged in held(owner)
     ]

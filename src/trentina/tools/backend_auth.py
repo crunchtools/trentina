@@ -115,7 +115,7 @@ async def backend_auth_status(backend: str | None = None) -> dict[str, Any]:
         cfg = scope.backends[name]
         if cfg.auth is None:
             continue
-        grant = await store.get_grant(scope.profile.name, name, cfg) if store else None
+        grant = await store.get_grant(scope.profile.grant_owner, name, cfg) if store else None
         report.append(
             {
                 "backend": name,
@@ -150,10 +150,10 @@ async def backend_auth_revoke(backend: str) -> dict[str, Any]:
     try:
         # Snapshot and delete under the lock, so no refresh can rotate the tokens
         # we revoke; the network call runs after it is released.
-        async with store.locked(profile.name, backend):
+        async with store.locked(profile.grant_owner, backend):
             cfg = profile.backends[backend]
-            grant = await store.get_grant(profile.name, backend, cfg)
-            revoked = await store.delete_grant(profile.name, backend)
+            grant = await store.get_grant(profile.grant_owner, backend, cfg)
+            revoked = await store.delete_grant(profile.grant_owner, backend)
         if grant is not None:
             remote = await revoke_remote(store, profile, backend, cfg, grant)
     except Exception as exc:

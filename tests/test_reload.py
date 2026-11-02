@@ -33,6 +33,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from trentina import perimeter_db
 from trentina.gateway import compress
 from trentina.gateway.aggregate import (
     _profile_tools_cache,
@@ -50,6 +51,12 @@ from trentina.gateway.loader import (
     reset_active_config,
 )
 from trentina.gateway.sessions import session_registry
+
+# Bound here at import time on purpose: conftest's autouse `_tools_not_pinned`
+# replaces `tool_pins.check_tools` with a pass-through, so a name resolved
+# inside a test body would be the stub. This is the same bypass
+# test_tool_pins.py uses.
+from trentina.gateway.tool_pins import backend_id, check_tools
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.tools.reload import AGENT_SCOPE_NOTE, reload_profiles
 from trentina.transports.mcp import route_jsonrpc
@@ -1256,3 +1263,43 @@ class TestResponseGuardIsOperatorOnly:
 
         assert result["reloaded"] is True
         assert _registry()["beta"].semantic_response_guards is not None
+
+
+FED_URL = "https://peer.example/gateway/shared/mcp"
+
+FED_YAML = BASE_YAML.replace(
+    '      wiki:\n        url: http://wiki:1/mcp\n        tools_allow: ["*"]\n',
+    "      wiki:\n"
+    f"        url: {FED_URL}\n"
+    '        tools_allow: ["*"]\n'
+    "        federated:\n"
+    "          primary_key_env: TEST_BETA_TOKEN\n",
+)
+
+
+class TestAFederatedUrlEditKeepsItsPins:
+    """The reload is where the migration has to be wired, not only where the
+    helper is correct. A pin is keyed by a hash of the URL, so without this an
+    operator normalising a trailing slash presents the peer as new — and a
+    federated first connect approves its whole offered set as a unit."""
+
+    async def test_the_reload_carries_the_pins_and_names_what_moved(
+        self, profiles_path: Path
+    ) -> None:
+        profiles_path.write_text(FED_YAML, encoding="utf-8")
+        assert (await _reload_as("alpha"))["reloaded"] is True
+
+        # The peer's first list, approved as a unit at the URL as written.
+        check_tools(FED_URL, "wiki", _tools_result(["echo"]), federated=True)
+        assert perimeter_db.has_pins(backend_id(FED_URL))
+
+        moved_to = FED_URL + "/"
+        profiles_path.write_text(FED_YAML.replace(FED_URL, moved_to), encoding="utf-8")
+        result = await _reload_as("alpha")
+
+        assert result["federated_pins_migrated"] == ["beta.wiki"]
+        assert perimeter_db.has_pins(backend_id(moved_to))
+        assert not perimeter_db.has_pins(backend_id(FED_URL))
+
+    async def test_an_ordinary_reload_reports_nothing_moved(self, profiles_path: Path) -> None:
+        assert (await _reload_as("alpha"))["federated_pins_migrated"] == []

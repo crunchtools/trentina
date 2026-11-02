@@ -94,24 +94,44 @@ def _facts_table(facts: dict[str, str]) -> str:
 
 
 def _review(
-    request: Request, password: str, staged: dict[pending.Kind, dict[str, str]]
+    request: Request,
+    password: str,
+    staged: dict[pending.Kind, dict[str, str]],
+    *,
+    swapped: bool = False,
 ) -> Response:
-    """What is staged, with the password carried forward for the decision."""
+    """What is staged, with the password carried forward for the decision.
+
+    Each form also carries a fingerprint of the facts rendered above it, so the
+    decision that comes back names the PROPOSAL and not merely its kind. The
+    agent stages when it likes and staging replaces silently; without this, it
+    could let a person read one proposal and have their click apply the next
+    one (see ``pending.approve``).
+    """
     sections = "".join(
         f"<h2>{html.escape(kind.value)}</h2>"
         f"{_facts_table(facts)}"
         f'<form method="post" action="{html.escape(PATH)}">'
         f'<input type="hidden" name="password" value="{html.escape(password)}">'
         f'<input type="hidden" name="kind" value="{html.escape(kind.value)}">'
+        f'<input type="hidden" name="facts" value="{html.escape(pending.digest_of(facts))}">'
         '<button name="decision" value="approve">Approve</button> '
         '<button name="decision" value="decline">Decline</button>'
         "</form>"
         for kind, facts in staged.items()
     )
+    warning = (
+        "<p class='note'><strong>Nothing was applied.</strong> What you agreed to is "
+        "not what is staged now — the agent replaced its proposal after this page "
+        "was drawn. Read what is below before deciding again, and if you did not "
+        "expect it to change, decline it.</p>"
+        if swapped
+        else ""
+    )
     return _page(
         request,
         "Approve a change",
-        f"<h1>Approve this change?</h1><p>Nothing has changed yet.</p>{sections}"
+        f"<h1>Approve this change?</h1><p>Nothing has changed yet.</p>{warning}{sections}"
         "<p class='note'>Each of these expires on its own if you do nothing. "
         "If you did not expect it, decline it.</p>",
     )
@@ -154,8 +174,15 @@ _BUSY_PAGE = (
 )
 
 
-async def _act(request: Request, kind: pending.Kind, decision: str) -> Response:
-    """Carry out a decision a verified person made."""
+async def _act(
+    request: Request, kind: pending.Kind, decision: str, facts_digest: str, password: str
+) -> Response:
+    """Carry out a decision a verified person made.
+
+    ``facts_digest`` is what the review page showed them. A decline needs none:
+    dropping whatever is staged of that kind is what a person who did not
+    expect it wants, whichever proposal is sitting there now.
+    """
     if decision == "decline":
         return (
             _page(request, "Declined", "<p>Declined. Nothing was changed.</p>")
@@ -163,9 +190,19 @@ async def _act(request: Request, kind: pending.Kind, decision: str) -> Response:
             else _page(request, *_NOTHING_PAGE)
         )
     try:
-        await pending.approve(kind)
+        await pending.approve(kind, facts_digest)
     except pending.PendingError:
-        return _page(request, *_NOTHING_PAGE)
+        # This person has already proved they hold the password, so the
+        # "learn nothing" rule has done its job and showing them the current
+        # proposal tells an attacker nothing new. Answering _NOTHING_PAGE here
+        # hid the one thing they most need to know: what they agreed to is not
+        # what is staged. Re-render, and let them read it and decide again.
+        staged = pending.outstanding()
+        return (
+            _review(request, password, staged, swapped=True)
+            if staged
+            else _page(request, *_NOTHING_PAGE)
+        )
     except Exception as exc:
         # The action's own failure. It reports the detail to the agent that
         # staged it; a person is told it did not happen, never the exception
@@ -201,7 +238,7 @@ async def _decide(request: Request) -> Response:
     decision = str(form.get("decision") or "")
     if kind is None or decision not in ("approve", "decline"):
         return _review(request, password, staged) if staged else _page(request, *_NOTHING_PAGE)
-    return await _act(request, kind, decision)
+    return await _act(request, kind, decision, str(form.get("facts") or ""), password)
 
 
 def register_approval_routes(mcp_server: Any) -> None:

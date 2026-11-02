@@ -29,6 +29,20 @@ high-volume: a gateway holds hundreds of tool pins and a restart can re-hold
 every remote tool at once, so routing those through a human would push people
 toward turning pinning off, which is worse than the thing it protects.
 
+Three more came in with the security hardening pass, once the mechanism was
+sound enough to carry them (a decision used to name only its ``Kind``, so
+consent given to one proposal applied to whatever was staged by the time it was
+clicked). All three are grants an operator could make with nobody watching:
+**who may authenticate** to a federation ingress, a profile's perimeter going
+**detect-only**, and a **way out of network isolation**. The last is the widest
+of the five — a trusted peer has at least run three layers over the response,
+while nothing reads a CONNECT tunnel's bytes at all.
+
+**Only widening stages.** Removing a peer, dropping ``flag``, withdrawing an
+egress host: each makes this gateway stricter, and each applies at once. A gate
+that also stood in front of tightening would teach an operator that the page is
+something to get past.
+
 Nothing is written to disk. A staged action lives in this process only, so a
 restart cancels every one of them. That is the fail-closed direction: a staged
 change that outlives the process that proposed it is a change nobody is
@@ -37,12 +51,16 @@ watching any more.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
+
+from .. import audit_chain
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -60,13 +78,15 @@ ENROL_PATH = "/approve/password"
 #: made.
 TTL_SECONDS = 900
 
-#: What may be shown on the approval page. Every value a person reads is either
-#: authored here or a config name — except a federated peer's stamp and judge,
-#: which the PEER chose, and which this bound keeps to a shape. A value that
-#: does not match is refused rather than displayed: rendering a peer's text to
-#: the person deciding whether to trust that peer is the one place this feature
-#: could be turned against its own purpose.
-_DISPLAYABLE = re.compile(r"^[A-Za-z0-9 ._:/@+=,'()-]{1,200}$")
+#: What may be shown on the approval page. Every value is authored here or is a
+#: config name, except a federated peer's stamp and judge, which the PEER chose
+#: — rendering a peer's text to the person deciding whether to trust it is the
+#: one place this feature could be turned against its purpose, so a value that
+#: does not match is refused rather than displayed. ``[]``, ``~`` and ``%`` are
+#: in the set because a backend destination reaches this page since #592: an
+#: IPv6 authority and a percent-encoded path are spelled with them, and leaving
+#: them out refused the peer rather than the character.
+_DISPLAYABLE = re.compile(r"^[A-Za-z0-9 ._:/@+=,'()\[\]~%-]{1,200}$")
 
 
 class PendingError(ValueError):
@@ -83,6 +103,12 @@ class Kind(Enum):
 
     OPERATOR_SEAT = "operator seat"
     FEDERATION_TRUST = "federation trust"
+    #: Who may authenticate to a federation ingress as a primary gateway.
+    FEDERATION_PEERS = "federation peers"
+    #: A profile's perimeter going from enforcing to detect-only.
+    DEFENSE_DOWNGRADE = "defense downgrade"
+    #: A new way out of network isolation, read by no layer.
+    EGRESS_GRANT = "egress grant"
 
 
 @dataclass(frozen=True)
@@ -101,6 +127,17 @@ class Staged:
 
     def expired(self, *, now: float | None = None) -> bool:
         return (time.time() if now is None else now) - self.staged_at > TTL_SECONDS
+
+
+def digest_of(facts: dict[str, str]) -> str:
+    """The fingerprint of one proposal's facts.
+
+    Over the RFC 8785 canonical form, so the label order a page rendered in
+    cannot change it. ``facts`` is label-to-display-string by construction
+    (every value through ``checked_display``), which is why canonicalizing it
+    cannot raise.
+    """
+    return hashlib.sha256(audit_chain.canonical(facts)).hexdigest()
 
 
 #: At most one outstanding action per kind. Staging a second replaces the
@@ -135,7 +172,10 @@ def stage(
     staging is the last step before a human, not a way to defer validation to
     one.
     """
-    _staged[kind] = Staged(kind=kind, facts=facts, apply=apply)
+    # Copied: the caller keeps its reference, and the digest a person's
+    # decision is checked against must be of what they were SHOWN, not of
+    # whatever the mapping says by then.
+    _staged[kind] = Staged(kind=kind, facts=dict(facts), apply=apply)
     logger.info("approval: staged %s, awaiting a person", kind.value)
 
 
@@ -168,8 +208,19 @@ def kind_named(name: str) -> Kind | None:
     return next((kind for kind in Kind if kind.value == name), None)
 
 
-async def approve(kind: Kind) -> dict[str, Any]:
-    """Apply the staged action of ``kind``, once.
+async def approve(kind: Kind, facts_digest: str) -> dict[str, Any]:
+    """Apply the staged action of ``kind``, once, if it is still the one a
+    person was shown.
+
+    ``facts_digest`` is the fingerprint the review page carried, and it must
+    still match what is staged. Without it a decision named only a ``Kind``,
+    and staging replaces silently — so the agent could propose one thing, let a
+    person read it, re-stage another, and have the click apply the second. The
+    agent chooses when to stage and cannot read the password, but it did not
+    need to: the consent was for a kind, not for a proposal. A mismatch raises
+    like an empty store, so the page says the same "nothing to approve" as a
+    wrong password, and the newer proposal is LEFT staged rather than consumed
+    or dropped — a person comes back to the real thing instead of to nothing.
 
     Removed from the store BEFORE it is applied, so a double submit cannot run
     it twice even if applying is slow — and so a failure does not leave
@@ -179,6 +230,12 @@ async def approve(kind: Kind) -> dict[str, Any]:
     action = _staged.get(kind)
     if action is None:
         raise PendingError("there is nothing of that kind waiting to be approved")
+    if not hmac.compare_digest(digest_of(action.facts), facts_digest):
+        logger.warning(
+            "approval: %s was decided against a proposal that is no longer staged; not applied",
+            kind.value,
+        )
+        raise PendingError("what was approved is not what is staged now")
     del _staged[kind]
     logger.info("approval: %s approved by a person", kind.value)
     return await action.apply()

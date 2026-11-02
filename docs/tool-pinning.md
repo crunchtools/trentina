@@ -78,6 +78,14 @@ declared link:
   count of tools pending approval, for monitoring. Approving a federated hold is
   done on the **secondary** that holds it.
 
+Renaming the seat a link shares changes the URL path, hence the pin key, so the
+peer's pins do not move and its next list is a first connect: the whole offered
+set is approved as a unit again, loudly, once. There is deliberately no way to
+carry pins across a rename — a one-time re-approval an operator can read beats a
+setting that would migrate trust across a renamed link forever. Rewriting the
+same endpoint a different way (a trailing slash, an explicit `:443`) is not a
+rename and does carry its pins, reported as `federated_pins_migrated`.
+
 ## The call gate: detection at list time, enforcement at call time (#469)
 
 A held tool is withheld from `tools/list` AND refused if called: a call to a

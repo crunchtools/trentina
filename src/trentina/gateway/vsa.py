@@ -33,19 +33,28 @@ VSA_KEY = "_trentina_vsa"
 MAX_AGE_SECONDS = 300
 
 
-def content_digest(blocks: list[Any] | None, structured: Any, is_error: bool) -> str:
-    """The sha256 of a response's delivered form, computed the same on both sides.
+def content_digest(blocks: list[Any] | None, structured: Any, is_error: bool) -> str | None:
+    """The sha256 of a response's DELIVERED form, computed the same on both sides.
 
-    Over the content blocks as ``_serialize_content_block`` shapes them, the
-    structured content, and ``isError`` — the bytes the agent receives, so the
-    primary can bind the signature to exactly what it got. NOT over
+    Over the content blocks as ``_serialize_content_block`` shapes them — the
+    blocks as delivered, so a flag-mode warning block appended to them is
+    inside the signature — the structured content, and ``isError``. NOT over
     ``_trentina_warning``/``_meta`` (the SDK and the reserved-key strip alter
-    those), and NOT over ``DefenseVerdict.read`` (the primary cannot
-    reproduce the unpacked text without reading it, which is the work being
-    skipped).
+    those), and NOT over ``DefenseVerdict.read`` (the primary cannot reproduce
+    the unpacked text without reading it, which is the work being skipped).
+
+    None when the response cannot be canonicalized: RFC 8785 has no form for
+    an integer outside +/-(2^53 - 1) or for a non-finite number, and a deeply
+    nested one exhausts the stack. A backend returning a 64-bit id — GitHub,
+    Discord and Slack all do — is ordinary, so this is a fact about the
+    response and not an error. Emit then signs nothing and the caller
+    re-judges under ``undigestable``, rather than the whole call failing.
     """
     payload = {"content": blocks or [], "structuredContent": structured, "isError": bool(is_error)}
-    return hashlib.sha256(audit_chain.canonical(payload)).hexdigest()
+    try:
+        return hashlib.sha256(audit_chain.canonical(payload)).hexdigest()
+    except (ValueError, TypeError, RecursionError):
+        return None
 
 
 #: The gap/truncation flags a warning carries (warning.py), all closed-set
@@ -71,12 +80,22 @@ def verdict_summary(warning: dict[str, Any] | None, mode: str) -> dict[str, Any]
     delivered response, which summarises as not-flagged, no gaps.
     """
     w = warning or {}
+    # Typed, not merely read: on the TRUST side this summarises an assertion a
+    # peer signed, and `check_trust` types only the verdict mapping itself. A
+    # `flagged_by` of `["L1"]` made the caller's `in LAYER_NAMES` raise
+    # TypeError, and a non-iterable `unread_kinds` raised in `sorted` — a 500
+    # where the answer is `uninterpretable`.
+    flagged_by = w.get("flagged_by")
+    risk_level = w.get("risk_level")
+    unread = w.get("unread_kinds") or []
     return {
-        "flagged_by": w.get("flagged_by"),
-        "risk_level": w.get("risk_level"),
+        "flagged_by": flagged_by if isinstance(flagged_by, str) else None,
+        "risk_level": risk_level if isinstance(risk_level, str) else None,
         "gaps": sorted(flag for flag in _GAP_FLAGS if w.get(flag)),
         "oversize": bool(w.get("oversize")),
-        "unread_kinds": sorted(w.get("unread_kinds") or []),
+        "unread_kinds": sorted(k for k in unread if isinstance(k, str))
+        if isinstance(unread, list)
+        else [],
         "mode": mode,
     }
 
@@ -127,6 +146,7 @@ TRUST_REASONS = (
     "judge_mismatch",
     "mode_mismatch",
     "stale",
+    "undigestable",
 )
 
 #: A response delivered on the secondary's verdict, this gateway's own layers
@@ -139,16 +159,28 @@ TRUSTED = "trusted"
 #: assertion — the shortfall is in what it attests.
 INCOMPLETE = "incomplete"
 
+#: Verifiable, and it attests something this gateway cannot read: a
+#: ``flagged_by`` that is not one of the three layer names. The peer chose that
+#: string, so the only safe reading of a verdict we cannot interpret is to
+#: re-judge. Treating an unknown layer as "not flagged" would deliver, under
+#: block, content whose own verdict says it was flagged.
+UNINTERPRETABLE = "uninterpretable"
+
 #: Every value the audit's ``federated_verdict`` column may hold. Closed, so a
 #: reader can count them, and never the peer's own text (#262).
-AUDITED_VERDICTS = (TRUSTED, INCOMPLETE, *TRUST_REASONS)
+AUDITED_VERDICTS = (TRUSTED, INCOMPLETE, UNINTERPRETABLE, *TRUST_REASONS)
+
+#: What ``flagged_by`` may say: the ``defense.Layer`` values. Spelled here
+#: rather than imported so this module stays free of gateway state, and
+#: checked against the enum by ``test_vsa``.
+LAYER_NAMES = frozenset({"L1", "L2", "L3"})
 
 
 def check_trust(
     envelope: Any,
     *,
     public_key: str,
-    content_sha256: str,
+    content_sha256: str | None,
     perimeter_stamp: str,
     judge: str,
     mode: str,
@@ -164,7 +196,14 @@ def check_trust(
     no older than ``MAX_AGE_SECONDS``; otherwise ``(None, reason)`` with a closed
     reason (``TRUST_REASONS``) so the primary re-judges and audits WHY it did
     not trust. Pure and fail-closed: any shortfall is a re-judge, never a trust.
+
+    ``content_sha256`` is None for a response this gateway cannot canonicalize
+    (``content_digest``), which is nothing to bind a signature to: that is
+    ``undigestable`` and it is checked FIRST, so a missing assertion is not
+    reported as the reason when the digest was never computable either.
     """
+    if content_sha256 is None:
+        return None, "undigestable"
     if envelope is None:
         return None, "absent"
     assertion = verify_assertion(envelope, public_key)
@@ -204,11 +243,12 @@ def verify_assertion(envelope: Any, public_key_pem: str) -> dict[str, Any] | Non
     try:
         key = federation_keys.load_public_key(public_key_pem)
         # Canonicalizing an attacker-supplied assertion can raise — RFC 8785 has
-        # no form for a non-finite number, and JSON parses NaN/Infinity by
-        # default — so it is inside the guard: a malformed assertion fails
-        # closed to None, it does not raise into the caller.
+        # no form for a non-finite number or an integer past +/-(2^53 - 1), JSON
+        # parses NaN/Infinity by default, and a deeply nested one exhausts the
+        # stack — so it is inside the guard: a malformed assertion fails closed
+        # to None, it does not raise into the caller.
         payload = audit_chain.canonical(assertion)
-    except (federation_keys.FederationKeyError, ValueError, TypeError):
+    except (federation_keys.FederationKeyError, ValueError, TypeError, RecursionError):
         return None
     if not federation_keys.verify(key, raw, payload):
         return None

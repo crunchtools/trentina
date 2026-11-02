@@ -239,3 +239,69 @@ class TestSelfAuthorize:
         profiles_file = self._file()
         profiles_file["profiles"]["seat"]["backends"]["era"]["auth"]["self_authorize"] = False
         assert profile_lint.check_self_authorize(profiles_file) == []
+
+
+class TestFederationLinks:
+    """What a shared seat hands a peer, where it was probably not meant."""
+
+    @staticmethod
+    def _file(federation: dict[str, Any] | None = None, **backend: Any) -> dict[str, Any]:
+        wiki = {"url": "https://wiki.example/mcp", "tools_allow": ["read_page"], **backend}
+        return {
+            "profiles": {
+                "josui": {
+                    "federation": federation
+                    if federation is not None
+                    else {
+                        "peers": {"breetai": {"public_key": "x"}},
+                        "secondary_key_name": "josui-secondary",
+                    },
+                    "backends": {"wiki": wiki},
+                }
+            }
+        }
+
+    def test_a_link_that_signs_nothing_is_a_finding(self) -> None:
+        """It works and costs double: the primary re-judges what this gateway
+        already judged. Invisible unless someone says so."""
+        (finding,) = profile_lint.check_federation_links(
+            self._file({"peers": {"breetai": {"public_key": "x"}}})
+        )
+        assert finding.code == "federation-no-secondary-key"
+        assert "'josui'" in finding.message
+
+    def test_a_signing_link_with_read_only_tools_is_clean(self) -> None:
+        assert profile_lint.check_federation_links(self._file()) == []
+
+    def test_sharing_unguarded_write_tools_is_a_finding(self) -> None:
+        (finding,) = profile_lint.check_federation_links(self._file(tools_allow=["send_message"]))
+        assert finding.code == "federation-shares-write-tools"
+        assert "'wiki'" in finding.message
+
+    def test_a_guarded_write_tool_is_clean(self) -> None:
+        guarded = self._file(
+            tools_allow=["send_message"],
+            literal_request_guards={"send_message": {"to": {"allow": ["ops@example.com"]}}},
+        )
+        assert profile_lint.check_federation_links(guarded) == []
+
+    def test_what_a_peer_never_sees_is_not_linted(self) -> None:
+        """Derivation offers no internal, decoy or federated backend, so a
+        write tool on one of those is not a finding here."""
+        for hidden in (
+            {"url": "internal://web", "tools_allow": ["send_message"]},
+            {"url": "decoy://bait", "tools_allow": ["send_message"]},
+            {
+                "url": "https://c.example/gateway/x-federation/mcp",
+                "tools_allow": ["send_message"],
+                "federated": {"primary_key_name": "k"},
+            },
+        ):
+            profiles_file = self._file()
+            profiles_file["profiles"]["josui"]["backends"]["wiki"] = hidden
+            assert profile_lint.check_federation_links(profiles_file) == [], hidden
+
+    def test_a_profile_that_shares_nothing_is_not_linted(self) -> None:
+        profiles_file = self._file(tools_allow=["send_message"])
+        del profiles_file["profiles"]["josui"]["federation"]
+        assert profile_lint.check_federation_links(profiles_file) == []

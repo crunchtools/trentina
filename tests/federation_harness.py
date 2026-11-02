@@ -37,6 +37,15 @@ circuit breaker and tool-list cache, the profile-name-keyed name and aggregate
 caches, the perimeter SQLite store). The harness keeps them legible the only way
 that works: **distinct profile names and distinct ports (hence distinct backend
 URLs) for the two gateways, and a separate SessionRegistry each.**
+
+That holds the two gateways of ONE pair apart. It does not hold two pairs
+apart, and `federated_pair` is a context manager a test may enter twice —
+which is the only way to assert that a change to a seat changes what a peer is
+served. The second pair reuses the profile NAMES, so without
+`reset_profile_tools_cache` on the way in it is answered out of the first
+pair's aggregate: `tools/list` returns the first pair's tool list, and a test
+comparing before against after compares a list with itself. That read as a
+harness that could only stand up one pair per process. It was a cache.
 """
 
 from __future__ import annotations
@@ -56,9 +65,11 @@ from mcp_types.version import LATEST_HANDSHAKE_VERSION
 from pydantic import SecretStr
 
 from trentina.gateway import internal
+from trentina.gateway.aggregate import reset_profile_tools_cache
 from trentina.gateway.app import MCP_SESSION_ID_HEADER, gateway_app
+from trentina.gateway.federation_link import derive_all
 from trentina.gateway.internal import register_internal_server
-from trentina.gateway.profile import AuthConfig, Backend, Profile
+from trentina.gateway.profile import AuthConfig, Backend, FederatedConfig, Profile
 from trentina.gateway.sessions import SessionRegistry
 
 if TYPE_CHECKING:
@@ -146,9 +157,18 @@ def primary_profile(
 ) -> Profile:
     """The primary: a profile that mounts the secondary gateway as a backend.
 
-    The interim federation (#592): a plain MCP backend at the secondary's route
-    with the secondary's bearer in ``headers``. B1 replaces this with a
-    ``federated:`` block; pass a different profile to the harness to exercise it.
+    A first-class `federated:` block, which is what production runs. It carries
+    no `primary_key`, so the link authenticates with the secondary's bearer in
+    `headers` — a federated backend without a key falls back to it
+    (`backend._auth_headers`) — which keeps the harness key-free while still
+    being the shape the loader accepts.
+
+    It used to be the interim arrangement: a plain MCP backend at the
+    secondary's route with that bearer and no `federated:` block. Production
+    refuses that shape as of 5.0.0, and a harness whose default certifies a
+    refused link is a harness that tests the wrong thing. The loader never
+    caught it here because these profiles are built directly and the route is
+    `/<profile>/mcp` rather than `/gateway/<profile>/mcp`.
     """
     profile = Profile(
         name=name,
@@ -157,6 +177,7 @@ def primary_profile(
             backend_key: Backend(
                 url=f"http://127.0.0.1:{secondary_port}/{secondary_name}/mcp",
                 headers={"Authorization": f"Bearer {secondary_token}"},
+                federated=FederatedConfig(),
             )
         },
     )
@@ -355,10 +376,29 @@ async def federated_pair(
     Yields a :class:`Federation` whose ``primary_client()`` drives the
     consumer gateway.
     """
+    # Profile aggregates are keyed by profile NAME and two pairs in one test
+    # reuse the names, so the second pair would be answered out of the first
+    # one's cache. Both ends, because a pair left standing while the next one
+    # is built is the same collision from the other side. The URL-keyed backend
+    # cache is deliberately left alone: a backend at the same URL in both pairs
+    # is one backend, and reusing its list is what production does.
+    # Profile aggregates are keyed by profile NAME and two pairs in one test
+    # reuse the names, so the second pair would be answered out of the first
+    # one's cache. Both ends, because a pair left standing while the next one
+    # is built is the same collision from the other side. The URL-keyed backend
+    # cache is deliberately left alone: a backend at the same URL in both pairs
+    # is one backend, and reusing its list is what production does.
+    reset_profile_tools_cache()
     up_profile = secondary or secondary_profile()
+    # The secondary's registry the way `load_profiles` builds it: a SEAT
+    # carrying `federation` also serves the ingress derived from it. Passing a
+    # seat here is how a test exercises the shape production runs; passing an
+    # already-derived ingress (one with `federation_of`) derives nothing.
+    up_registry = {up_profile.name: up_profile}
+    up_registry.update(derive_all(up_registry))
     with bound_internal_server(internal_server(tools)):
         up_sessions = SessionRegistry()
-        up_app = gateway_app({up_profile.name: up_profile}, sessions=up_sessions)
+        up_app = gateway_app(up_registry, sessions=up_sessions)
         async with serving(up_app) as up_port:
             if primary is not None:
                 down_profile = primary(up_port)
@@ -384,3 +424,4 @@ async def federated_pair(
                 finally:
                     for client in fed.clients:
                         await client.close()
+                    reset_profile_tools_cache()

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import io
 import re
 from collections.abc import AsyncIterator
@@ -436,8 +437,56 @@ def test_a_trusted_federated_verdict_does_not_bind_the_peer_defense_block() -> N
 
     summary = vsa.verdict_summary({"flagged_by": "l2", "risk_level": "high"}, "flag")
     assert set(summary) == {
-        "flagged_by", "risk_level", "gaps", "oversize", "unread_kinds", "mode",
+        "flagged_by",
+        "risk_level",
+        "gaps",
+        "oversize",
+        "unread_kinds",
+        "mode",
     }
 
     page = Path(__file__).parents[1].joinpath("docs/defense-pipeline.md").read_text()
     assert "33. **A trusted federated verdict does not bind the peer's defense block" in page
+
+
+def test_a_paged_federated_response_is_never_trusted() -> None:
+    """Gap 33's second limb (#592, B2).
+
+    The secondary signs a DELIVERED response, and one it delivers in parts is
+    not one: the emit site is past `_deliver_part`'s early return, so part 1
+    reaches the primary with no assertion and every part is judged locally.
+    Scan-once therefore never applies to a large response, and `absent` rather
+    than `trusted` is the honest audit value for one.
+
+    Closing this — signing a part — would mean the digest covering a fragment
+    and the primary trusting a response it has only seen a piece of. If it is
+    ever closed, the emit site moves and this test fails.
+    """
+    from trentina.transports import mcp
+
+    body = inspect.getsource(mcp.McpServerFace._assemble)
+    first_part = body.index("_first_part_or_refusal")
+    emit = body.index("_federated_vsa(")
+    assert first_part < emit, "the VSA emit now runs before the paging return"
+
+    page = Path(__file__).parents[1].joinpath("docs/defense-pipeline.md").read_text()
+    assert "**A PAGED response is never trusted**" in page
+
+
+def test_an_oversize_federated_part_is_refused_rather_than_re_cut() -> None:
+    """Declared coverage, not a gap (constitution, Security Gateway §V).
+
+    The Coverage table's rule for a large proxied text response is "deliver it
+    in parts". A peer's part is the one exception: the peer holds parts 2..n
+    behind a handle only the proxy can reach, and `_hold_paged` returns before
+    that proxy is built, so cutting again hands the agent a fragment described
+    as the whole and orphans the rest. Refusing is fail-closed and names the
+    misconfiguration that causes it.
+
+    The departure is written into the table on purpose. Delivering such a part
+    in locally judged parts WHILE keeping the proxy for the rest is two paging
+    layers chained; if that is ever built, this row moves and this test fails.
+    """
+    page = Path(__file__).parents[1].joinpath("docs/defense-pipeline.md").read_text()
+    assert "A FEDERATED peer's part that is larger than this gateway's own" in page
+    assert "federated_part_oversize" in page

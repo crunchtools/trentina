@@ -40,6 +40,7 @@ from .errors import (
     BackendNeedsAuthError,
     BackendRejectedCallError,
     BackendResponseTooLargeError,
+    FederationUnauthorizedError,
     GatewayError,
 )
 from .profile import federation_audience
@@ -303,6 +304,7 @@ def _read_federated_held(backend: Backend, tools_result: Any) -> None:
         return
     _federated_held_secondary[backend.url] = held
 
+
 # JSON-RPC errors that mean "your request was wrong", said by a backend that
 # is up. Each is named in the refusal by our own words, never the backend's:
 # its message text has not crossed the perimeter.
@@ -380,7 +382,13 @@ _on_evict_callbacks: list[Any] = []
 
 
 def on_backend_cache_evict(callback: Any) -> None:
-    """Register a callback(url) to fire when a backend cache entry is evicted."""
+    """Register a callback(url) to fire when a backend cache entry is evicted.
+
+    Registration is IMPORT-TIME wiring, not per-request state: ``aggregate``
+    registers its one listener when the module loads, and nothing unregisters.
+    That is why ``reset_tool_list_cache`` leaves this list alone — see its
+    docstring for what clearing it cost.
+    """
     _on_evict_callbacks.append(callback)
 
 
@@ -434,10 +442,21 @@ def load_tool_list_cache() -> int:
 
 
 def reset_tool_list_cache() -> None:
-    """Clear the in-memory cache without touching SQLite (for testing)."""
+    """Clear the in-memory cache without touching SQLite (for testing).
+
+    It clears CACHED DATA and nothing else. It used to clear
+    ``_on_evict_callbacks`` as well, and that list is not data: ``aggregate``
+    registers ``_on_backend_evicted`` once, when the module is imported, and
+    nothing ever re-registers it. ``tests/conftest.py`` calls this before every
+    test, so the first test in a process unwired the eviction cascade for the
+    whole session — after it, evicting a backend's tool list no longer dropped
+    the profile aggregates built from it. Every test of ``cache_flush``,
+    ``reconnect_backend`` and tool pinning that ran second or later was
+    therefore testing a gateway whose caches cannot cascade, which is not the
+    gateway that ships.
+    """
     _tool_list_cache.clear()
     _inflight.clear()
-    _on_evict_callbacks.clear()
 
 
 async def list_backend_tools(
@@ -579,7 +598,7 @@ async def _fetch_and_cache(
                 _do_list_tools(backend.url, sent, cap), timeout=backend.list_timeout_seconds
             ),
         )
-    except BackendNeedsAuthError:
+    except (BackendNeedsAuthError, FederationUnauthorizedError):
         raise
     except Exception as exc:
         breaker.record_failure(backend.url)
@@ -608,7 +627,12 @@ AUTH_COOLDOWN_SECONDS = 60.0
 
 
 def _cooldown_key(profile: Profile | None, backend_name: str) -> str:
-    return f"{profile.name if profile else ''}:{backend_name}"
+    """The reauth cooldown is per GRANT, so it keys on the grant's owner.
+
+    A derived ingress and the seat it was derived from spend one grant, so one
+    failed refresh should hold both off rather than letting each spend its own
+    attempt against the same authorization server."""
+    return f"{profile.grant_owner if profile else ''}:{backend_name}"
 
 
 def _primary_jwt(url: str, private_key_pem: str, caller: str) -> str:
@@ -684,10 +708,21 @@ async def _with_reauth(
     Only a 401 to the session's ``initialize``, ``tools/list`` or a
     ``tools/call`` the backend never accepted is retried: that request did
     nothing. A call the backend accepted is never sent twice.
+
+    A FEDERATED backend is answered here and not retried. It holds no grant to
+    refresh — it signs a primary JWT per call — so it used to fall past this
+    function to ``record_failure`` and open a breaker keyed by URL, taking the
+    peer down for every profile federating to it over what is a signature or a
+    clock. The peer answered, so the circuit records a success and the caller
+    gets a reason that says so.
     """
     try:
         return await run(headers)
-    except Exception:
+    except Exception as exc:
+        if backend.federated is not None and cap.unauthorized:
+            breaker.record_success(backend.url)
+            logger.warning("gateway: federated backend=%s refused our primary JWT", backend_name)
+            raise FederationUnauthorizedError(backend_name) from exc
         if grant is None or profile is None or not cap.unauthorized or cap.call_accepted:
             raise
     from .backend_oauth import fresh_grant
@@ -758,7 +793,7 @@ async def call_backend_tool(
                 timeout=backend.timeout_seconds,
             ),
         )
-    except BackendNeedsAuthError:
+    except (BackendNeedsAuthError, FederationUnauthorizedError):
         raise
     except Exception as exc:
         if cap.overflowed:

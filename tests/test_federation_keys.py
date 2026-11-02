@@ -201,9 +201,11 @@ def test_the_loaders_memoize_by_pem() -> None:
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     ).decode()
-    public_pem = priv.public_key().public_bytes(
-        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-    ).decode()
+    public_pem = (
+        priv.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
     assert load_private_key(private_pem) is load_private_key(private_pem)
     assert load_public_key(public_pem) is load_public_key(public_pem)
 
@@ -214,3 +216,23 @@ def test_the_loaders_memoize_by_pem() -> None:
         serialization.NoEncryption(),
     ).decode()
     assert load_private_key(other_pem) is not load_private_key(private_pem)
+
+
+def test_a_name_cannot_carry_a_trailing_newline() -> None:
+    """`^...$` with `re.match` admits a trailing newline, because `$` matches
+    before one. Four names were spelled that way: a key name, a profile name,
+    a backend name and a federation `sub`.
+
+    A `sub` is the audited actor and part of a paging owner's identity, and a
+    key name becomes a filename under `<data>/keys/`, so "name" and "name\\n"
+    reading as the same shape is a way to write two records that look like one
+    in anything that renders them. `\\Z` matches only at the end.
+    """
+    from trentina.gateway.federation_keys import _SUB_RE
+    from trentina.gateway.key_store import KEY_NAME_RE
+    from trentina.gateway.profile import BACKEND_NAME_RE, PROFILE_NAME_RE
+
+    for pattern in (_SUB_RE, KEY_NAME_RE, PROFILE_NAME_RE, BACKEND_NAME_RE):
+        assert pattern.match("agent1"), pattern.pattern
+        assert not pattern.match("agent1\n"), pattern.pattern
+        assert not pattern.match("agent1\nagent2"), pattern.pattern

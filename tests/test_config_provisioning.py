@@ -37,9 +37,12 @@ from trentina.tools.token import profile_token
 
 pytestmark = pytest.mark.anyio
 
-#: The primary reaches the secondary's ingress profile here, and the edge
-#: JWT's audience is taken from the profile name in this URL.
-SECONDARY_URL = "https://secondary.example/gateway/fed-ingress/mcp"
+#: The primary reaches the secondary's DERIVED ingress here, and the edge JWT's
+#: audience is taken from the profile name in this URL. The name follows from
+#: the seat being shared (`shared` -> `shared-federation`) rather than being
+#: invented, which is what stops the two sides drifting apart.
+SECONDARY_SEAT = "shared"
+SECONDARY_URL = "https://secondary.example/gateway/shared-federation/mcp"
 
 #: A gateway that knows nothing about federation yet: one operator seat, and a
 #: consumer profile with no backends but its own tools.
@@ -111,6 +114,22 @@ async def _set(path: str, value: Any) -> dict[str, Any]:
     return result
 
 
+async def _set_approving(path: str, value: Any, kind: pending.Kind) -> dict[str, Any]:
+    """A write a person has to agree to: staged, then approved, then applied.
+
+    Two assertions in the middle rather than one at the end, because the thing
+    worth proving is that the file did NOT move while the proposal stood. The
+    digest is taken from the staged facts, which is what a person's form
+    carries, so a swap between the render and the click would refuse here too.
+    """
+    read = await _op("get")
+    staged = await _op("set", path, value, read["hash"])
+    assert staged.get("staged") is True, staged
+    assert staged["awaiting"] == kind.value, staged
+    shown = pending.outstanding()[kind]
+    return await pending.approve(kind, pending.digest_of(shown))
+
+
 async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_restart(
     gateway: pathlib.Path,
 ) -> None:
@@ -121,26 +140,38 @@ async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_rest
     edge = await _op("keygen", "edge-to-secondary")
     assert "PRIVATE" not in str(signing) + str(edge)
 
-    # 2. The secondary ingress: who may authenticate, and the key it vouches
-    #    for responses with. `federation.peers` IS this profile's
-    #    authentication, so it has to be writable in one go — a profile with
-    #    neither auth nor peers does not load.
-    await _set(
-        "profiles.fed-ingress",
+    # 2. The SEAT being shared. A seat is a thing an agent signs in to, so it
+    #    gets its own minted token — no shell, nobody copying a secret.
+    await _op("mint-token", SECONDARY_SEAT)
+
+    #    Then `federation` on that seat: who may authenticate as a primary, and
+    #    the key the seat vouches for its responses with. There is no ingress
+    #    profile to write. The gateway derives `shared-federation` from this
+    #    seat, offering the seat's own non-federated remote backends with the
+    #    seat's guards and posture, so the two can never drift.
+    #
+    #    This step needs one person. `peers` is who may authenticate as a
+    #    primary gateway, which is an access grant, so the operator proposes it
+    #    and a human agrees: still no shell and still no restart, which is what
+    #    the title claims.
+    await _set_approving(
+        f"profiles.{SECONDARY_SEAT}",
         {
+            "auth": {"bearer_token_name": SECONDARY_SEAT},
             "federation": {
                 "peers": {"down": {"public_key": edge["public_key"]}},
                 "secondary_key_name": "ingress-signing",
             },
-            # What the ingress actually offers a peer: a real backend, plus
-            # read_part so a paged response can be collected. An ingress's
-            # internal tools are limited to FEDERATION_INTERNAL_ALLOW.
+            # The seat's own tools. Its internal surface is NOT offered — the
+            # derived ingress gets a fresh one with the paging reader alone —
+            # so the seat can keep whatever it needs for itself.
             "backends": {
-                "shared": {"url": "http://shared:8000/mcp", "tools_allow": ["*"]},
-                "web": {"url": "internal://web", "tools_allow": ["read_part_tool"]},
+                "wiki": {"url": "http://shared:8000/mcp", "tools_allow": ["*"]},
+                "web": {"url": "internal://web", "tools_allow": ["fetch_tool"]},
             },
             "defense": {"enforcement": "block"},
         },
+        pending.Kind.FEDERATION_PEERS,
     )
 
     # 3. The primary side: a federated backend pointing at that ingress,
@@ -154,9 +185,17 @@ async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_rest
         },
     )
 
-    # Both sides are live in the running gateway, with no restart.
+    # Both sides are live in the running gateway, with no restart — and the
+    # ingress nobody wrote is serving.
     running = (get_active_config() or pytest.fail("no gateway")).config.profiles
-    ingress = running["fed-ingress"].federation
+    derived = running["shared-federation"]
+    assert derived.federation_of == SECONDARY_SEAT
+    # The seat's remote backend crossed; its internal surface did not.
+    assert set(derived.backends) == {"wiki", "trentina"}
+    assert derived.backends["trentina"].tools_allow == ["read_part_tool"]
+    assert derived.auth is None  # `peers` is its authentication
+
+    ingress = derived.federation
     backend = running["down"].backends["secondary"].federated
     assert ingress is not None and ingress.secondary_key is not None
     assert backend is not None and backend.primary_key is not None
@@ -165,7 +204,7 @@ async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_rest
     # verifies against the peer key the secondary really holds, and names the
     # peer as the actor.
     audience = federation_audience(SECONDARY_URL)
-    assert audience == "fed-ingress"
+    assert audience == "shared-federation"
     token = sign_primary_jwt(
         load_private_key(backend.primary_key.get_secret_value()), sub="down", aud=audience
     )
@@ -226,9 +265,12 @@ async def test_turning_on_scan_once_trust_waits_for_a_person(
     assert gateway.read_text(encoding="utf-8") == before
 
     # And approving it is what applies it — the whole point of the mechanism.
+    # The decision names the proposal a person was shown, which here is
+    # whatever the staging built, so the digest comes from the staged facts.
     from trentina.gateway import pending
 
-    await pending.approve(pending.Kind.FEDERATION_TRUST)
+    shown = pending.outstanding()[pending.Kind.FEDERATION_TRUST]
+    await pending.approve(pending.Kind.FEDERATION_TRUST, pending.digest_of(shown))
     assert gateway.read_text(encoding="utf-8") != before
     assert "trust_verdict" in gateway.read_text(encoding="utf-8")
 

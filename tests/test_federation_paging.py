@@ -14,6 +14,7 @@ relay-not-reframe, teardown and shape-checks are verified without a model.
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,10 +25,13 @@ from trentina.core.stages import Arrived
 from trentina.defense import Provenance
 from trentina.gateway import paging, parts
 from trentina.gateway.backend import BackendCall
+from trentina.gateway.filter import filter_tools
 from trentina.gateway.modes_policy import policy_for
 from trentina.gateway.profile import AuthConfig, Backend, FederatedConfig, Profile
 from trentina.modes import Mode
-from trentina.transports.mcp import _federated_continuation
+from trentina.outcomes import Outcome
+from trentina.reserved import REFUSAL_KEY
+from trentina.transports.mcp import _federated_continuation, _first_part_or_refusal
 
 HANDLE = "a" * 32
 
@@ -51,8 +55,12 @@ def _profile() -> Profile:
 
 def _origin() -> paging.Origin:
     return paging.Origin(
-        profile="primary", backend="fed", tool="echo", label="echo",
-        is_error=False, acted=False,
+        profile="primary",
+        backend="fed",
+        tool="echo",
+        label="echo",
+        is_error=False,
+        acted=False,
     )
 
 
@@ -140,7 +148,11 @@ def test_hold_federated_uses_the_peer_handle_and_refuses_a_collision() -> None:
     again = paging.hold_federated(
         _origin(),
         paging.Secondary(backend="fed", reader="read_part", handle=HANDLE, count=3),
-        mode=Mode.FLAG, prompt=None, provenance=Provenance.EXTERNAL, l3_context=None, hidden=None,
+        mode=Mode.FLAG,
+        prompt=None,
+        provenance=Provenance.EXTERNAL,
+        l3_context=None,
+        hidden=None,
     )
     assert again is None
 
@@ -151,7 +163,8 @@ def test_hold_federated_uses_the_peer_handle_and_refuses_a_collision() -> None:
 async def test_a_proxied_part_relays_the_peer_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
     _clean_scan(monkeypatch)
     monkeypatch.setattr(
-        parts, "call_backend_tool",
+        parts,
+        "call_backend_tool",
         lambda *a, **k: _done(_peer_part(2, 3, text="[part 2 of 3] body-two", last=False)),
     )
     profile, paged = _profile(), _proxied()
@@ -167,7 +180,8 @@ async def test_a_proxied_part_relays_the_peer_blocks(monkeypatch: pytest.MonkeyP
 async def test_the_last_proxied_part_releases_the_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
     _clean_scan(monkeypatch)
     monkeypatch.setattr(
-        parts, "call_backend_tool",
+        parts,
+        "call_backend_tool",
         lambda *a, **k: _done(_peer_part(3, 3, text="[part 3 of 3] body-three", last=True)),
     )
     profile, paged = _profile(), _proxied()
@@ -175,7 +189,7 @@ async def test_the_last_proxied_part_releases_the_proxy(monkeypatch: pytest.Monk
     await parts._deliver_part(
         profile, paged, 3, mode=Mode.FLAG, prompt=None, policy=_policy(profile)
     )
-    assert paging.find("primary", HANDLE) is None  # released on the last part
+    assert paging.find(("primary", None), HANDLE) is None  # released on the last part
 
 
 async def test_an_expired_secondary_is_a_clean_unknown_handle(
@@ -183,15 +197,19 @@ async def test_an_expired_secondary_is_a_clean_unknown_handle(
 ) -> None:
     _clean_scan(monkeypatch)
     # The peer answers without a part marker — it no longer holds the rest.
-    gone = BackendCall(content=[{"type": "text", "text": "[trentina] unknown handle"}],
-                       is_error=False, structured_content=None, meta={})
+    gone = BackendCall(
+        content=[{"type": "text", "text": "[trentina] unknown handle"}],
+        is_error=False,
+        structured_content=None,
+        meta={},
+    )
     monkeypatch.setattr(parts, "call_backend_tool", lambda *a, **k: _done(gone))
     profile, paged = _profile(), _proxied()
     assembled = await parts._deliver_part(
         profile, paged, 2, mode=Mode.FLAG, prompt=None, policy=_policy(profile)
     )
     assert paging.UNKNOWN_HANDLE in json.dumps(assembled.result)
-    assert paging.find("primary", HANDLE) is None  # released
+    assert paging.find(("primary", None), HANDLE) is None  # released
 
 
 async def _done(value: Any) -> Any:
@@ -257,9 +275,17 @@ def _continuation(profile: Profile, meta: dict[str, Any] | None) -> dict[str, An
     )
     arrived = Arrived(content_blocks=[], structured=None, stripped=0, is_error=False, acted=False)
     return _federated_continuation(
-        profile, profile.backends["fed"], "fed", "echo", call, result,
-        mode=Mode.FLAG, prompt=None, provenance=Provenance.EXTERNAL,
-        reduced=None, arrived=arrived,
+        profile,
+        profile.backends["fed"],
+        "fed",
+        "echo",
+        call,
+        result,
+        mode=Mode.FLAG,
+        prompt=None,
+        provenance=Provenance.EXTERNAL,
+        reduced=None,
+        arrived=arrived,
     )
 
 
@@ -274,7 +300,7 @@ def test_a_federated_part_one_holds_a_proxy_and_is_marked() -> None:
     assert out[paging.PART_KEY]["handle"] == HANDLE  # our continuation marker, at root
     served = f"web__{paging.READ_PART_TOOL}"
     assert out["_meta"][paging.PART_KEY]["reader"] == served  # our reader, not the peer's
-    held = paging.find("primary", HANDLE)
+    held = paging.find(("primary", None), HANDLE)
     assert held is not None and held.secondary is not None  # a proxy, under the peer's handle
     assert held.secondary.reader == "rp"  # the peer's reader, for the forwarded call
 
@@ -284,14 +310,14 @@ def test_a_non_federated_backend_is_left_alone() -> None:
     profile.backends["fed"].federated = None
     out = _continuation(profile, _marker())
     assert paging.PART_KEY not in out  # not recognized as federated; untouched
-    assert paging.find("primary", HANDLE) is None
+    assert paging.find(("primary", None), HANDLE) is None
 
 
 def test_a_response_without_a_peer_marker_is_left_alone() -> None:
     profile = _served_profile()
     out = _continuation(profile, {})
     assert paging.PART_KEY not in out
-    assert paging.find("primary", HANDLE) is None
+    assert paging.find(("primary", None), HANDLE) is None
 
 
 def test_a_profile_that_cannot_read_a_part_does_not_proxy() -> None:
@@ -300,4 +326,152 @@ def test_a_profile_that_cannot_read_a_part_does_not_proxy() -> None:
     profile = _profile()  # only the federated backend
     out = _continuation(profile, _marker())
     assert paging.PART_KEY not in out
-    assert paging.find("primary", HANDLE) is None
+    assert paging.find(("primary", None), HANDLE) is None
+
+
+class TestThePeersReaderIsNotOffered:
+    """A federated peer's own ``read_part`` is withheld from the agent (#592).
+
+    The parts of a peer's paged response are PROXIED: ``parts.py`` calls the
+    peer's reader itself, in order, with the lead-in, and stops at a flagged
+    part. Offering the peer's reader as an ordinary tool was a second way to
+    the same parts that skipped all of that — and the peer answered it against
+    its own view of who was asking, which before the owner fix meant another
+    primary's parts. ``filter_tools`` is re-checked by the router before
+    dispatch, so withholding it there refuses the direct call too.
+    """
+
+    def _backend(self, *, federated: bool) -> Backend:
+        return Backend(
+            url="https://lotor/gateway/up/mcp",
+            federated=FederatedConfig() if federated else None,
+            tools_allow=["*"],
+        )
+
+    def _names(self, backend: Backend, reader: str = "read_part") -> list[str]:
+        offered = [{"name": reader}, {"name": "echo"}]
+        return [t["name"] for t in filter_tools(offered, backend)]
+
+    @pytest.mark.parametrize(
+        "reader",
+        [
+            # What a peer ACTUALLY serves it as: `short_names` is on by
+            # default and `names.base_names` strips `_tool`.
+            pytest.param("read_part", id="short-name"),
+            # `short_names` off.
+            pytest.param("internal__read_part_tool", id="namespaced"),
+            # The real internal name, for a peer that serves it unchanged.
+            pytest.param(paging.READ_PART_TOOL, id="raw"),
+        ],
+    )
+    def test_a_federated_peers_reader_is_withheld(self, reader: str) -> None:
+        """The first cut compared to the literal `read_part_tool` and matched
+        none of the forms a peer serves, while its test offered that literal —
+        so it passed and withheld nothing."""
+        assert self._names(self._backend(federated=True), reader) == ["echo"]
+
+    def test_an_ordinary_backends_tool_of_that_name_is_untouched(self) -> None:
+        """Only a FEDERATED backend: an unrelated server may legitimately
+        serve a tool called `read_part`."""
+        assert self._names(self._backend(federated=False)) == ["read_part", "echo"]
+
+    def test_a_wildcard_allowlist_does_not_reach_it(self) -> None:
+        """The withholding is not an allow/deny pattern, so `*` cannot match
+        it and a profile cannot opt back in."""
+        backend = self._backend(federated=True)
+        backend.tools_allow = ["*"]
+        backend.tools_deny = []
+        assert "read_part" not in self._names(backend)
+
+    def test_naming_it_explicitly_does_not_reach_it_either(self) -> None:
+        backend = self._backend(federated=True)
+        backend.tools_allow = ["read_part"]
+        assert self._names(backend) == []
+
+    def test_a_tool_that_merely_ends_in_read_part_is_not_withheld(self) -> None:
+        """The match is on the whole name after the namespace tag, not a
+        suffix: a peer's `bulk_read_part` is its own tool."""
+        assert self._names(self._backend(federated=True), "bulk_read_part") == [
+            "bulk_read_part",
+            "echo",
+        ]
+
+    def test_the_proxy_still_reaches_the_peers_reader(self) -> None:
+        """The refusal is at the router's allowlist, not on the backend call,
+        so ``parts.py`` can still drive the peer (the held proxy names it)."""
+        paged = _proxied()
+        assert paged.secondary is not None
+        assert paged.secondary.reader == "read_part"
+
+
+class TestAPeersPartIsNeverReCut:
+    """The primary must not cut a response the peer already cut.
+
+    `_hold_paged` runs before `_federated_continuation`, so a peer part larger
+    than this gateway's whole-response budget was cut AGAIN and returned early:
+    the agent got "part 1 of 2" and was told part 2 was the last, while the
+    peer's parts 2..n were orphaned. Withholding the peer's own reader removed
+    the last route to them, so this had to become a refusal.
+    """
+
+    async def _assembled(self, marker: dict[str, Any], text: str) -> Any:
+        profile = _served_profile()
+        call = BackendCall(
+            content=[{"type": "text", "text": text}],
+            is_error=False,
+            structured_content=None,
+            meta=marker,
+        )
+        paged = paging.hold(
+            _origin(),
+            paging.cut(text) or (paging.Part(text),),
+            mode=Mode.FLAG,
+            prompt=None,
+            provenance=Provenance.EXTERNAL,
+            l3_context=None,
+            hidden=None,
+        )
+        arrived = Arrived(
+            content_blocks=list(call.content),
+            structured=None,
+            stripped=0,
+            is_error=False,
+            acted=False,
+        )
+        return await _first_part_or_refusal(
+            profile,
+            profile.backends["fed"],
+            "fed",
+            "echo",
+            paged,
+            arrived,
+            call,
+            prompt=None,
+            policy=None,
+            stripped=0,
+        )
+
+    async def test_a_peer_marked_response_is_refused_rather_than_re_cut(self) -> None:
+        out = await self._assembled(_marker(), "body " * 4_000)
+        assert out.outcome is Outcome.DENIED_GUARD
+        assert out.result[REFUSAL_KEY]["reason"] == "federated_part_oversize"
+        # Nothing of the response is delivered, and no handle is left behind.
+        assert "body" not in out.result["content"][0]["text"]
+        assert paging.find(("primary", None), HANDLE) is None
+
+    async def test_the_refusal_names_the_knob_and_not_the_peer(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING):
+            out = await self._assembled(_marker(), "body " * 4_000)
+        line = next(
+            r.getMessage() for r in caplog.records if "federated part exceeds" in r.getMessage()
+        )
+        assert "TRENTINA_PART_TOKENS" in line
+        assert "lotor" not in line  # the peer's URL is never logged (#262)
+        assert "align the two gateways' part budgets" in out.result["content"][0]["text"]
+
+    async def test_an_unmarked_response_still_pages_normally(self) -> None:
+        """Only a peer-marked response. This gateway's own paging is untouched."""
+        out = await self._assembled({}, "body " * 4_000)
+        assert out.result[paging.PART_KEY]["part"] == 1
