@@ -109,9 +109,16 @@ def shared_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     perimeter_db.put_pin(
         backend_id(WIKI_URL),
         "wiki_read",
-        approved=("hash-of-the-approved-definition", '{"name": "wiki_read"}'),
-        pending=("hash-of-the-changed-definition", '{"name": "wiki_read", "v": 2}'),
-        rejected=False,
+        "hash-of-the-approved-definition",
+        perimeter_db.PIN_APPROVED,
+        '{"name": "wiki_read"}',
+    )
+    perimeter_db.put_pin(
+        backend_id(WIKI_URL),
+        "wiki_read",
+        "hash-of-the-changed-definition",
+        perimeter_db.PIN_PENDING,
+        '{"name": "wiki_read", "v": 2}',
     )
     return config.profiles
 

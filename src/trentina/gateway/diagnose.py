@@ -75,10 +75,12 @@ async def diagnose_tool_visibility(
     if tool is None:
         return {"visible": False, "reason": NOT_OFFERED, "backend": backend_name}
 
-    # A pin hold withholds it (read-only: get_pin, never check_tools).
+    # A pin hold withholds it (read-only: never check_tools). Per tool rather
+    # than per definition — the question is whether this tool is withheld from
+    # the caller, and any held definition of it is a reason it might be.
     if not (backend.is_internal or backend.is_decoy):
-        row = perimeter_db.get_pin(backend_id(backend.url), tool_name)
-        if row is not None and row["pending_hash"]:
+        flags = perimeter_db.pin_hold_flags(backend_id(backend.url), tool_name)
+        if flags is not None and flags[0]:
             return {"visible": False, "reason": HELD_PENDING_PIN, "backend": backend_name}
 
     if not filter_tools([tool], backend):

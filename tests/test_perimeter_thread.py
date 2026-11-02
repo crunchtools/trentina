@@ -36,9 +36,9 @@ def _one_pending_pin() -> str:
     perimeter_db.put_pin(
         bid,
         "wiki_read",
-        approved=None,
-        pending=("hash-of-the-new-definition", '{"name": "wiki_read"}'),
-        rejected=False,
+        "hash-of-the-new-definition",
+        perimeter_db.PIN_PENDING,
+        '{"name": "wiki_read"}',
     )
     return bid
 

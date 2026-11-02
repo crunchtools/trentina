@@ -64,9 +64,7 @@ def _drop_profiles() -> object:
 
 async def test_a_held_federated_tool_is_listed(gateway: dict[str, Profile]) -> None:
     # lotor's tool is held primary under backend_id(the federated backend url).
-    perimeter_db.put_pin(
-        backend_id(LOTOR_URL), "send_message", approved=None, pending=("h", "{}"), rejected=False
-    )
+    perimeter_db.put_pin(backend_id(LOTOR_URL), "send_message", "h", perimeter_db.PIN_PENDING, "{}")
     with profile_context(gateway["op"]):
         result = await manage_tool_pins("list", "lotor")
     assert "error" not in result, result
@@ -74,13 +72,18 @@ async def test_a_held_federated_tool_is_listed(gateway: dict[str, Profile]) -> N
 
 
 async def test_approve_by_name_releases_a_federated_hold(gateway: dict[str, Profile]) -> None:
-    perimeter_db.put_pin(
-        backend_id(LOTOR_URL), "send_message", approved=None, pending=("h", "{}"), rejected=False
-    )
+    perimeter_db.put_pin(backend_id(LOTOR_URL), "send_message", "h", perimeter_db.PIN_PENDING, "{}")
     with profile_context(gateway["op"]):
         approved = await manage_tool_pins("approve", "lotor", "send_message")
         after = await manage_tool_pins("list", "lotor")
-    assert approved == {"backend": "lotor", "tool": "send_message", "action": "approve"}
+    assert approved == {
+        "backend": "lotor",
+        "tool": "send_message",
+        "action": "approve",
+        # One held definition, so the hash is implied and the operator
+        # need not name it.
+        "hash": None,
+    }
     assert not any(h["tool"] == "send_message" for h in after["held"]), after
 
 

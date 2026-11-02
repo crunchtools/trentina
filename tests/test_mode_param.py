@@ -375,9 +375,9 @@ class TestRouter:
         perimeter_db.put_pin(
             backend_id("http://jira:8000/mcp"),
             "jira_get_issue",
-            approved=None,
-            pending=("h", "{}"),
-            rejected=False,
+            "h",
+            perimeter_db.PIN_PENDING,
+            "{}",
         )
         resp, forwarded, scan = await self._call(_profile(["block"]), {"issue_key": "X-1"})
         assert refused(resp)["reason"] == tool_pins.TOOL_HELD_REASON
