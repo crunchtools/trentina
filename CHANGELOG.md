@@ -31,9 +31,19 @@ makes the set, rather than the operator's patience, the unit of decision.
   `description` and `inputSchema`, the two the gateway's own description
   compressor rewrites. `annotations`, `name`, `title`, `outputSchema` and a tool
   with no approved definition at all (`new`) each refuse the whole batch, name
-  the tool responsible, and stay one approval at a time. Nothing is approved
-  unless all of it qualifies, and a `rejected` definition is outside the digest
-  so the batch neither trips over it nor reverses it. It returns the manifest of
+  the tool responsible, and stay one approval at a time.
+
+  `inputSchema` qualifies because the compressor rewrites the descriptions
+  inside a schema too, so a third gate keeps it honest: **a schema that grew
+  refuses the batch.** A new key path under `inputSchema`, or a new `required`
+  entry, is something the compressor never produces — it is the backend adding
+  an input, which is the rug pull pinning exists to catch. Held entries now
+  carry `schema_grew` alongside `safety_loosened`.
+
+  Nothing is approved unless all of it qualifies, and the write is one
+  transaction (`perimeter_db.set_pin_states`): if any pair no longer matches a
+  row, nothing is committed. A `rejected` definition is outside the digest, so
+  the batch neither trips over it nor reverses it. It returns the manifest of
   what it released and writes one `detections` row (`approved_bulk`).
 
 ### Fixed

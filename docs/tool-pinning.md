@@ -105,10 +105,25 @@ deliberate approval at a time. A tool with no approved definition at all is
 exactly what pinning exists to put in front of a person; that does not change
 because forty-nine of them arrived together.
 
-Nothing is approved unless every row qualifies. A batch that released most of
-itself and reported the rest would be read as a success, and the rows it
-skipped are the ones that needed reading. A `rejected` definition is outside
-the digest entirely: it neither blocks the batch nor is reversed by it.
+`inputSchema` is in that set because the compressor rewrites the descriptions
+**inside** a schema as well as the tool's own
+(`compress._compressed_properties`) — which is why a re-compression reports
+`description,inputSchema` on hundreds of tools at once, 278 of breetai's 582.
+What keeps that honest is the third gate: **a schema that GREW refuses the
+batch.** The compressor rewrites values and never adds a property, so a new key
+path under `inputSchema`, or a new `required` entry, is the backend's doing —
+and "a schema that grows a `recipient` or `url` parameter" is the rug pull at
+the top of this page. `required` is compared by value rather than by path,
+since making an existing optional mandatory adds no key and still changes what
+a call must carry. Each held entry carries `schema_grew` so a listing shows it.
+
+Nothing is approved unless every row qualifies, and the write itself is one
+transaction (`perimeter_db.set_pin_states`): if any pair no longer matches a
+row, nothing is committed and the operator is told to list again. A batch that
+released most of itself and reported the rest would be read as a success, and
+the rows it skipped are the ones that needed reading. A `rejected` definition
+is outside the digest entirely: it neither blocks the batch nor is reversed by
+it.
 
 What comes back is the manifest — every tool, hash and changed-field list it
 released — and one `detections` row (`approved_bulk`, with the count) so the

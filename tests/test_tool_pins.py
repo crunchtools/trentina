@@ -491,3 +491,33 @@ class TestDefinitionsAreBounded:
             check_tools(URL, "b", [_tool(name="churn", description=f"v{i}")])
 
         assert _names(check_tools(URL, "b", [_tool(name="keep")])) == ["keep"]
+
+
+class TestTheBatchWriteIsAllOrNothing:
+    """`set_pin_states` is one transaction, because `approve_all` promises the
+    set moves or nothing does."""
+
+    def _hold(self, tool: str, body: str) -> str:
+        h = tool_pins.digest(body)
+        perimeter_db.put_pin(backend_id(URL), tool, h, perimeter_db.PIN_PENDING, body)
+        return h
+
+    def test_every_pair_present_moves_them_all(self) -> None:
+        pairs = [("a", self._hold("a", '{"v":1}')), ("b", self._hold("b", '{"v":2}'))]
+
+        moved = perimeter_db.set_pin_states(backend_id(URL), pairs, perimeter_db.PIN_APPROVED)
+
+        assert moved == 2
+        assert perimeter_db.list_pending_pins(backend_id(URL)) == []
+
+    def test_one_missing_pair_rolls_the_whole_write_back(self) -> None:
+        """A partial release reported as a success is worse than a refusal: the
+        rows that quietly failed are the ones nothing has reviewed."""
+        pairs = [("a", self._hold("a", '{"v":1}')), ("gone", "no-such-definition-hash")]
+
+        moved = perimeter_db.set_pin_states(backend_id(URL), pairs, perimeter_db.PIN_APPROVED)
+
+        assert moved is None
+        # `a` was updated by the executemany and must not have stuck.
+        still = {row["tool"] for row in perimeter_db.list_pending_pins(backend_id(URL))}
+        assert still == {"a"}

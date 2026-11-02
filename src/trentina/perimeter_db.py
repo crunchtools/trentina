@@ -482,6 +482,32 @@ def set_pin_state(backend_id: str, tool: str, definition_hash: str, state: str) 
     return bool(changed)
 
 
+def set_pin_states(backend_id: str, pairs: Collection[tuple[str, str]], state: str) -> int | None:
+    """Move every ``(tool, definition_hash)`` to ``state`` in ONE transaction.
+
+    Returns how many rows moved, or None if any pair matched no row — in which
+    case nothing is committed. A batch approval is all-or-nothing by contract
+    (``tool_pins.decide_all``), and a partial one reported as a success would be
+    worse than a refusal: the operator would believe a set was released and the
+    rows that quietly failed are the ones nothing has reviewed.
+
+    One ``executemany`` rather than an UPDATE per definition, because the case
+    this exists for is hundreds of them at once.
+    """
+    db = get_perimeter_db()
+    now = datetime.now(UTC).isoformat()
+    moved = db.executemany(
+        "UPDATE tool_pins SET state = ?, last_seen = ? WHERE backend_id = ? "
+        "AND tool = ? AND definition_hash = ?",
+        [(state, now, backend_id, tool, h) for tool, h in pairs],
+    ).rowcount
+    if moved != len(pairs):
+        db.rollback()
+        return None
+    db.commit()
+    return int(moved)
+
+
 def move_pins(old_backend_id: str, new_backend_id: str) -> int:
     """Re-key a backend's pins when its URL moves, returning how many moved.
 

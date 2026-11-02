@@ -90,6 +90,63 @@ def loosens_safety(old_json: str | None, new_json: str) -> bool:
     return read_only or destructive
 
 
+def _key_paths(node: Any, prefix: str = "") -> set[str]:
+    """Every key path in a JSON document, so two can be compared structurally."""
+    paths: set[str] = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            here = f"{prefix}.{key}"
+            paths.add(here)
+            paths |= _key_paths(value, here)
+    elif isinstance(node, list):
+        for item in node:
+            paths |= _key_paths(item, f"{prefix}[]")
+    return paths
+
+
+def schema_grew(old_json: str | None, new_json: str) -> bool:
+    """True when the new ``inputSchema`` has a key, or a ``required`` entry, the
+    approved one did not.
+
+    This is what makes ``inputSchema`` safe to batch. The gateway's own
+    compressor rewrites the DESCRIPTIONS inside a schema as well as the tool's
+    own (``compress._compressed_properties``), which is why a re-compression
+    reports ``description,inputSchema`` on hundreds of tools at once — 278 of
+    breetai's 582. It never adds a property, so a schema that GREW is the
+    backend's doing, and "a schema that grows a ``recipient`` or ``url``
+    parameter" is the rug pull this whole module exists to catch
+    (``docs/tool-pinning.md``). Values may change; shape may not.
+
+    ``required`` is compared by VALUE, not by path, because its entries are
+    strings in a list: a new one makes an existing optional parameter
+    mandatory, which changes what a call must carry.
+    """
+    if old_json is None:
+        return True
+    old, new = json.loads(old_json), json.loads(new_json)
+    if _key_paths(new.get("inputSchema")) - _key_paths(old.get("inputSchema")):
+        return True
+    return bool(_required_names(new) - _required_names(old))
+
+
+def _required_names(definition: dict[str, Any]) -> set[str]:
+    """Every ``required`` entry anywhere in a definition's ``inputSchema``."""
+    found: set[str] = set()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if isinstance(req := node.get("required"), list):
+                found.update(str(name) for name in req)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(definition.get("inputSchema"))
+    return found
+
+
 def _baseline_open() -> bool:
     perimeter_db.get_perimeter_db()  # opening the store is what detects the upgrade
     upgraded_at = perimeter_db.pins_upgraded_at
@@ -346,6 +403,7 @@ def pending(url: str) -> list[dict[str, Any]]:
                 "hash": row["definition_hash"],
                 "changed": changed_fields(before, row["definition_json"]),
                 "safety_loosened": loosens_safety(before, row["definition_json"]),
+                "schema_grew": schema_grew(before, row["definition_json"]),
                 "rejected": bool(row["state"] == perimeter_db.PIN_REJECTED),
             }
         )
@@ -367,6 +425,32 @@ def pending_digest(rows: Iterable[Mapping[str, Any]]) -> str:
     pairs = sorted((row["tool"], row["hash"]) for row in rows if not row["rejected"])
     body = json.dumps(pairs, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(body.encode()).hexdigest()
+
+
+def unbatchable_reason(rows: Iterable[Mapping[str, Any]]) -> str:
+    """Why this held set may not go as a batch, or ``""`` if it may.
+
+    The rule, in one place, so what ``approve_all`` enforces is the same thing
+    a listing could explain. Each clause names the tool responsible, because a
+    refusal an operator cannot act on is a refusal they will work around.
+    """
+    for row in rows:
+        if outside := sorted(set(row["changed"]) - BULK_FIELDS):
+            return (
+                f"{row['tool']} changed in {','.join(outside)}, which a batch will not "
+                "release; approve or reject it on its own first"
+            )
+        if row["safety_loosened"]:
+            # The hint lives in ``annotations``, which BULK_FIELDS excludes, so
+            # this is unreachable today. Kept, and tested with the field rule
+            # widened, so widening it later cannot quietly pass one.
+            return f"{row['tool']} loosened a safety hint; approve it on its own"
+        if row["schema_grew"]:
+            return (
+                f"{row['tool']} gained an input the approved definition had no name for, "
+                "which the gateway's own compressor never does; approve it on its own"
+            )
+    return ""
 
 
 #: A reserved pin key for the detection row a batch approval writes. NUL is not
@@ -412,9 +496,11 @@ def decide_all(
     of itself and reported the rest would be read as a success, and the rows it
     skipped are the ones that needed reading.
 
-    The two gates are ``set_digest`` — the bytes ``pending`` showed, so a
-    concurrent re-list cannot ride along — and ``BULK_FIELDS``, which keeps
-    every rug-pull shape on the one-at-a-time path. The digest is required
+    The three gates are ``set_digest`` — the bytes ``pending`` showed, so a
+    concurrent re-list cannot ride along — ``BULK_FIELDS``, which keeps every
+    rug-pull shape on the one-at-a-time path, and ``schema_grew``, which keeps
+    ``inputSchema`` in the batch honest: the compressor rewrites the
+    descriptions inside a schema but never adds to one. The digest is required
     HERE rather than at the tool, so no caller can reach a batch without one.
     """
     if not set_digest:
@@ -425,22 +511,20 @@ def decide_all(
     holding = [row for row in rows if not row["rejected"]]
     if not holding:
         return [], "nothing is held under that backend"
-    for row in holding:
-        if not set(row["changed"]) <= BULK_FIELDS:
-            outside = ",".join(sorted(set(row["changed"]) - BULK_FIELDS))
-            return [], (
-                f"{row['tool']} changed in {outside}, which a batch will not release; "
-                "approve or reject it on its own first"
-            )
-        if row["safety_loosened"]:
-            # Unreachable while BULK_FIELDS excludes ``annotations`` — kept so
-            # that widening it later cannot quietly pass a loosened hint.
-            return [], f"{row['tool']} loosened a safety hint; approve it on its own"
-    bid = backend_id(url)
-    approved = [
-        {"tool": row["tool"], "hash": row["hash"], "changed": row["changed"]}
-        for row in holding
-        if perimeter_db.set_pin_state(bid, row["tool"], row["hash"], perimeter_db.PIN_APPROVED)
-    ]
-    _report_bulk(backend, len(approved))
-    return approved, ""
+    if refused := unbatchable_reason(holding):
+        return [], refused
+    moved = perimeter_db.set_pin_states(
+        backend_id(url),
+        [(row["tool"], row["hash"]) for row in holding],
+        perimeter_db.PIN_APPROVED,
+    )
+    if moved is None:
+        # One transaction, so nothing was written. A set that moved under the
+        # write is the digest's case arriving a moment later than it could be
+        # checked; the operator lists again rather than being told a partial
+        # release succeeded.
+        return [], "the held set moved while it was being approved; list it again"
+    _report_bulk(backend, moved)
+    return [
+        {"tool": row["tool"], "hash": row["hash"], "changed": row["changed"]} for row in holding
+    ], ""

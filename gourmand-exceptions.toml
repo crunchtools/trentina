@@ -1063,3 +1063,18 @@ path = "src/trentina/gateway/pending.py"
 symbol = "Kind"
 justification = "Both members are read in production, through the module rather than a direct import: tools/config._needs_approval returns pending.Kind.OPERATOR_SEAT at config.py:251 and pending.Kind.FEDERATION_TRUST at config.py:261, and approval_routes resolves them by value through pending.kind_named. The check does not appear to resolve a module.Class.MEMBER access."
 classification = "gourmand_bug"
+
+# --- The (value, reason) guard-clause idiom is a convention, not duplication ---
+# `tool_pins.decide_all` and `matrix_bridge.core._sent_attachment` both read as
+# a run of guard clauses each returning (nothing, why) and a final (result, "").
+# The STRUCTURE matches; nothing else does. One approves pin rows after checking
+# a set digest and a field rule, the other decodes Matrix media bytes after
+# checking a status and a size cap. Extracting the shape they share would couple
+# attachment handling to pin approval to save no logic at all.
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/tool_pins.py"
+pattern = "decide_all"
+justification = "Structural match on the (value, reason) guard-clause idiom with matrix_bridge/core.py _sent_attachment; no shared logic, and extracting it would couple unrelated subsystems"
+classification = "by_design"

@@ -613,3 +613,102 @@ class TestApprovingAWholeHeldSet:
         assert "needs the set_digest" in result["error"]
         with profile_context(gateway["op"]):
             assert len((await manage_tool_pins("list", "lotor"))["held"]) == 3
+
+    async def test_a_schema_that_gained_an_input_refuses_the_batch(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        """What keeps `inputSchema` safe to batch at all.
+
+        The compressor rewrites the descriptions INSIDE a schema as well as the
+        tool's own (`compress._compressed_properties`), which is why 278 of
+        breetai's 582 rows reported `description,inputSchema`. It never adds a
+        property — so a schema that grew is the backend's doing, and "a schema
+        that grows a `recipient` or `url` parameter" is the rug pull this module
+        exists to catch.
+        """
+        old = {
+            "name": "send_message",
+            "inputSchema": {"properties": {"body": {"description": "the text"}}},
+        }
+        new = {
+            "name": "send_message",
+            "inputSchema": {
+                "properties": {
+                    "body": {"description": "text"},
+                    "recipient": {"description": "who"},
+                }
+            },
+        }
+        self._approved("send_message", tool_pins.canonical(old))
+        self._held("send_message", tool_pins.canonical(new))
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert listed["held"][0]["changed"] == ["inputSchema"]
+        assert listed["held"][0]["schema_grew"] is True
+        assert "gained an input" in result["error"]
+        assert perimeter_db.pending_hashes(backend_id(LOTOR_URL), "send_message")
+
+    async def test_a_rewritten_property_description_still_batches(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        """The other side of the same rule: the compressor's actual output."""
+        old = {
+            "name": "send_message",
+            "inputSchema": {"properties": {"body": {"description": "the text to send"}}},
+        }
+        new = {
+            "name": "send_message",
+            "inputSchema": {"properties": {"body": {"description": "text"}}},
+        }
+        self._approved("send_message", tool_pins.canonical(old))
+        self._held("send_message", tool_pins.canonical(new))
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert listed["held"][0]["schema_grew"] is False
+        assert result["approved"] == 1
+
+    async def test_a_new_required_entry_refuses_the_batch(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        """Making an existing optional mandatory changes what a call must carry,
+        and adds no key path, so `required` is compared by value."""
+        props = {"properties": {"body": {"description": "d"}, "to": {"description": "d"}}}
+        self._approved(
+            "send_message",
+            tool_pins.canonical({"name": "send_message", "inputSchema": {**props, "required": []}}),
+        )
+        self._held(
+            "send_message",
+            tool_pins.canonical(
+                {"name": "send_message", "inputSchema": {**props, "required": ["to"]}}
+            ),
+        )
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert "gained an input" in result["error"]
+
+    async def test_a_write_that_cannot_move_every_row_moves_none(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        """All-or-nothing, in one transaction.
+
+        A partial release reported as a success is worse than a refusal: the
+        operator believes the set went, and the rows that quietly failed are
+        the ones nothing has reviewed.
+        """
+        self._recompressed()
+        bid = backend_id(LOTOR_URL)
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            # One row vanishes between the digest check and the write.
+            with patch.object(perimeter_db, "set_pin_states", side_effect=lambda *a, **k: None):
+                result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert "moved while it was being approved" in result["error"]
+        assert len(perimeter_db.list_pending_pins(bid)) == 3  # nothing released
