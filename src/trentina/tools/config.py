@@ -48,7 +48,7 @@ from ..gateway.audit import _audit
 from ..gateway.config_guard import ConfigWriteError
 from ..gateway.errors import ProfileConfigError, ScopeError
 from ..gateway.llm_proxy import validate_profile_llm_keys
-from ..gateway.loader import get_active_config, load_profiles
+from ..gateway.loader import get_active_config, keyless_profiles, load_profiles
 from ..gateway.scope import require_caller, require_operator
 from ..gateway.service import service_context, service_profile
 from ..logsafe import exc_kind, redact_source, scrub
@@ -1033,6 +1033,23 @@ async def _apply(
         # What to expect in the file's own git diff, so the rewrite can be
         # checked against a number rather than taken on trust.
         answer["reshaped"] = reshaped
+    # A profile with no key for its own provider judges nothing — not its
+    # responses and, since 6.1.0, not its tool descriptions either, so under
+    # `block` it is served no tool list. `_check_judges` warns, but a warning
+    # goes to the journal and the thing writing configs since #633 is an agent
+    # that never reads one. So the write that leaves a profile in that state
+    # says so to the caller that made it.
+    active = get_active_config()
+    if active is not None and (keyless := keyless_profiles(active.config.profiles)):
+        answer["no_llm_key"] = {
+            "profiles": keyless,
+            "effect": (
+                "each judges nothing: its tool descriptions and its responses both "
+                "report l3_unavailable, so under enforcement block it is served no "
+                "tool list. Add llm_keys for the provider its defense resolves to, "
+                "or point defense.provider at one it holds"
+            ),
+        }
     return answer
 
 

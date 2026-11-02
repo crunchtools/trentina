@@ -2068,3 +2068,85 @@ class TestAPeerBecomingAnOperator:
         with pytest.raises(ConfigWriteError) as refused:
             _operator_peer_facts(granted, after)
         assert "more than an approval page can show" in refused.value.payload["error"]
+
+
+class TestAProfileWithNoKeyOfItsOwn:
+    """6.1.0: a profile judges its own tool descriptions on its own key, so one
+    with no `llm_keys` for its provider judges nothing at all — under `block`
+    it is served no tool list.
+
+    `_check_judges` has warned about this since RT #1505, and a warning goes to
+    the journal. Since #633 the thing writing configs is an agent, which never
+    reads one, so the write that leaves a profile in that state says so to the
+    caller that made it.
+    """
+
+    @staticmethod
+    def _with_keyless(provider: str = "gemini") -> dict[str, Any]:
+        return {
+            "profiles": {
+                "op": _OPERATOR,
+                "ag": {
+                    "auth": {"bearer_token_env": "AG_TOKEN"},
+                    "defense": {"provider": provider},
+                    "backends": {
+                        "memory": {"url": "https://memory.example/mcp", "tools_allow": ["*"]}
+                    },
+                },
+            }
+        }
+
+    async def test_the_write_result_names_it(self, gateway: pathlib.Path) -> None:
+        _rewrite(gateway, self._with_keyless())
+
+        result = await _as_operator(
+            "set", "profiles.ag.backends.memory.timeout_seconds", 30, await _hash()
+        )
+
+        assert result["applied"] is True
+        assert result["no_llm_key"]["profiles"] == ["ag"]
+        assert "no tool list" in result["no_llm_key"]["effect"]
+
+    def test_a_profile_holding_its_own_key_is_not_named(self, gateway: pathlib.Path) -> None:
+        """Asserted on the predicate rather than through a write: this file's
+        `_rewrite` registers an EMPTY provider set, so no profile can hold
+        `llm_keys` through the tool here — `llm_keys` may only name a
+        configured provider."""
+        from trentina.gateway.loader import keyless_profiles
+
+        document = self._with_keyless()
+        document["profiles"]["ag"]["llm_keys"] = {"gemini": {"api_key": "ag-key"}}
+        document["llm_providers"] = {
+            "gemini": {
+                "enabled": True,
+                "upstream": "https://generativelanguage.googleapis.com",
+                "api_key_env": "OP_TOKEN",
+            }
+        }
+        gateway.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+        assert keyless_profiles(load_profiles(gateway).profiles) == []
+
+    async def test_ollama_needs_no_key(self, gateway: pathlib.Path) -> None:
+        """The one keyless provider, and the reason this is not a load error:
+        a config can be legitimately keyless."""
+        _rewrite(gateway, self._with_keyless(provider="ollama"))
+
+        result = await _as_operator(
+            "set", "profiles.ag.backends.memory.timeout_seconds", 30, await _hash()
+        )
+
+        assert result["applied"] is True
+        assert "no_llm_key" not in result
+
+    async def test_the_file_still_loads(self, gateway: pathlib.Path) -> None:
+        """Deliberately a warning, not a refusal. Such a profile was already
+        non-functional under block — every response reported l3_unavailable —
+        so refusing the file surfaces an existing breakage rather than
+        preventing a new one, and a config that never set llm_keys should learn
+        why before it stops loading."""
+        _rewrite(gateway, self._with_keyless())
+
+        config = load_profiles(gateway)
+
+        assert "ag" in config.profiles
