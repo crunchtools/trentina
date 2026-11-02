@@ -1100,7 +1100,9 @@ class TestToolDescriptionBriefing:
         key = ing._cache_key(
             profile, "tool:external", ing._tool_surface_text(tools[0]), ing.judge_of(None)
         )
-        ing._cache_put(key, {"flagged_by": "L3", "l3_finding_types": ["tool_invocation"]})
+        ing._cache_put(
+            key, {"flagged_by": "L3", "l3_finding_types": ["tool_invocation"]}, description=True
+        )
         with patch(f"{_O}.defend", new_callable=AsyncMock) as mock_defend:
             mock_defend.return_value.flagged = False
             mock_defend.return_value.flagged_by = None
@@ -1123,7 +1125,9 @@ class TestToolDescriptionBriefing:
         key = ing._cache_key(
             profile, "tool:external", ing._tool_surface_text(tools[0]), ing.judge_of(None)
         )
-        ing._cache_put(key, {"flagged_by": "L3", "l3_briefing": ing.TOOL_BRIEFING_VERSION})
+        ing._cache_put(
+            key, {"flagged_by": "L3", "l3_briefing": ing.TOOL_BRIEFING_VERSION}, description=True
+        )
         with patch(f"{_O}.defend", new_callable=AsyncMock) as mock_defend:
             result = await scan_tool_list(profile, "jira", tools, tools)
         mock_defend.assert_not_called()
@@ -1142,7 +1146,7 @@ class TestToolDescriptionBriefing:
         key = ing._cache_key(
             profile, "tool:external", ing._tool_surface_text(tools[0]), ing.judge_of(None)
         )
-        hit, cached = ing._cache_get(key)
+        hit, cached = ing._cache_get(key, description=True)
         assert hit
         assert cached is not None
         assert cached["l3_briefing"] == ing.TOOL_BRIEFING_VERSION
@@ -1176,7 +1180,7 @@ class TestToolDescriptionBriefing:
         key = ing._cache_key(
             profile, "tool:external", ing._tool_surface_text(tools[0]), ing.judge_of(None)
         )
-        ing._cache_put(key, warning)
+        ing._cache_put(key, warning, description=True)
         with patch(f"{_O}.defend", new_callable=AsyncMock) as mock_defend:
             mock_defend.return_value.flagged = False
             mock_defend.return_value.flagged_by = None

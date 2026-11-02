@@ -90,8 +90,8 @@ def gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     register_active_config(path, config, {})
     set_profiles(config.profiles)
 
-    _tool_list_cache[ALPHA_URL] = [{"name": "alpha_only_tool"}]
-    _tool_list_cache[BETA_URL] = [{"name": "beta_tool"}]
+    _tool_list_cache[(ALPHA_URL, "")] = [{"name": "alpha_only_tool"}]
+    _tool_list_cache[(BETA_URL, "")] = [{"name": "beta_tool"}]
     _profile_tools_cache["alpha"] = [{"name": "alpha-only-backend__alpha_only_tool"}]
     _profile_tools_cache["beta"] = [{"name": "beta-backend__beta_tool"}]
 

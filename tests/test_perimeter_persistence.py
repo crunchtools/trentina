@@ -95,42 +95,45 @@ class TestDegradedScansAreNeverKept:
     rather than stored and aged out."""
 
     def test_l3_outage_verdict_is_not_cached_in_memory(self) -> None:
-        _cache_put("k", {"l3_unavailable": True}, persist=True)
-        hit, _ = _cache_get("k")
+        _cache_put("k", {"l3_unavailable": True}, description=True)
+        hit, _ = _cache_get("k", description=True)
         assert not hit, "a verdict reached during an L3 outage must be re-judged"
 
     def test_l3_outage_verdict_is_not_persisted(self) -> None:
         """Otherwise an outage's 'clean' survives the restart that fixed
         the outage — indefinitely, since nothing expires any more."""
-        _cache_put("k", {"l3_unavailable": True}, persist=True)
+        _cache_put("k", {"l3_unavailable": True}, description=True)
         assert get_all_verdicts(perimeter_stamp()) == {}
 
     def test_truncated_l2_verdict_is_not_cached(self) -> None:
-        _cache_put("k", {"l2_truncated": True}, persist=True)
-        hit, _ = _cache_get("k")
+        _cache_put("k", {"l2_truncated": True}, description=True)
+        hit, _ = _cache_get("k", description=True)
         assert not hit
         assert get_all_verdicts(perimeter_stamp()) == {}
 
     def test_an_ordinary_flag_is_kept(self) -> None:
-        _cache_put("k", FLAG, persist=True)
-        hit, value = _cache_get("k")
+        _cache_put("k", FLAG, description=True)
+        hit, value = _cache_get("k", description=True)
         assert hit and value == FLAG
 
     def test_a_clean_verdict_is_kept(self) -> None:
-        _cache_put("k", None, persist=True)
-        hit, value = _cache_get("k")
+        _cache_put("k", None, description=True)
+        hit, value = _cache_get("k", description=True)
         assert hit and value is None
 
 
 class TestCachePut:
     def test_persist_writes_to_the_store(self) -> None:
-        _cache_put("k", FLAG, persist=True)
+        _cache_put("k", FLAG, description=True)
         assert get_all_verdicts(perimeter_stamp())["k"] == FLAG
 
     def test_responses_are_not_persisted(self) -> None:
         """The default. Tool responses are unbounded and mostly seen once;
         a disk write per proxied call buys nothing."""
         _cache_put("k", FLAG)
+        # In the RESPONSE store, not the description one: the two are separate
+        # since 6.1.0 so response volume cannot evict descriptions.
+        assert _cache_get("k", description=True) == (False, None)
         hit, value = _cache_get("k")
         assert hit and value == FLAG
         assert get_all_verdicts(perimeter_stamp()) == {}
@@ -141,8 +144,8 @@ class TestCachePut:
         with patch.object(
             perimeter_db, "save_verdict", side_effect=sqlite3.OperationalError("disk")
         ):
-            _cache_put("k", FLAG, persist=True)
-        hit, value = _cache_get("k")
+            _cache_put("k", FLAG, description=True)
+        hit, value = _cache_get("k", description=True)
         assert hit and value == FLAG, "the in-memory cache still took it"
 
     def test_a_failed_write_stops_further_attempts(self) -> None:
@@ -151,9 +154,9 @@ class TestCachePut:
         with patch.object(
             perimeter_db, "save_verdict", side_effect=sqlite3.OperationalError("disk")
         ) as save:
-            _cache_put("a", FLAG, persist=True)
-            _cache_put("b", FLAG, persist=True)
-            _cache_put("c", FLAG, persist=True)
+            _cache_put("a", FLAG, description=True)
+            _cache_put("b", FLAG, description=True)
+            _cache_put("c", FLAG, description=True)
         assert save.call_count == 1
 
     def test_a_restart_re_arms_persistence(self) -> None:
@@ -161,9 +164,9 @@ class TestCachePut:
         with patch.object(
             perimeter_db, "save_verdict", side_effect=sqlite3.OperationalError("disk")
         ):
-            _cache_put("a", FLAG, persist=True)
+            _cache_put("a", FLAG, description=True)
         load_verdict_cache()
-        _cache_put("b", FLAG, persist=True)
+        _cache_put("b", FLAG, description=True)
         assert "b" in get_all_verdicts(perimeter_stamp())
 
 
@@ -172,15 +175,22 @@ class TestStartupLoad:
         save_verdict("k", FLAG, perimeter_stamp())
         reset_verdict_cache()
         assert load_verdict_cache() == 1
-        hit, value = _cache_get("k")
+        hit, value = _cache_get("k", description=True)
         assert hit and value == FLAG
 
-    def test_load_respects_the_memory_bound(self) -> None:
-        """A store larger than the LRU must not push the process over it."""
+    def test_load_takes_the_whole_store(self) -> None:
+        """Descriptions are no longer LRU-trimmed on load (6.1.0).
+
+        They share no store with responses any more, and the set is bounded by
+        the configuration — every backend's tool list — rather than by traffic.
+        Trimming it here only meant re-judging the trimmed part on the first
+        `tools/list`, at the expense of whichever profile asked first. The LRU
+        still bounds tool RESPONSES, which are unbounded and mostly seen once.
+        """
         for i in range(verdict_cache._CACHE_MAX + 10):
             save_verdict(f"k{i}", None, perimeter_stamp())
         reset_verdict_cache()
-        assert load_verdict_cache() == verdict_cache._CACHE_MAX
+        assert load_verdict_cache() == verdict_cache._CACHE_MAX + 10
 
     def test_reset_does_not_touch_the_store(self) -> None:
         """reset_verdict_cache is the test hook; forgetting a verdict in
@@ -212,14 +222,14 @@ class TestSurvivesARestart:
     def test_a_verdict_written_before_a_restart_is_reused_after(self) -> None:
         """The whole point, end to end: judge once, then simulate the
         process dying and coming back."""
-        _cache_put("tool:sha", None, persist=True)
+        _cache_put("tool:sha", None, description=True)
 
         # The restart: memory gone, connection gone, store untouched.
         reset_verdict_cache()
         perimeter_db._db = None
 
         load_verdict_cache()
-        hit, value = _cache_get("tool:sha")
+        hit, value = _cache_get("tool:sha", description=True)
         assert hit, "a restart must not re-judge what the last boot judged"
         assert value is None
 

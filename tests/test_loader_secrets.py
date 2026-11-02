@@ -245,7 +245,7 @@ class TestBackendUrlSecrets:
         breaker.record_failure(url)
         breaker.allow(url)
         breaker.record_success(url)
-        backend._tool_list_cache[url] = []
+        backend._tool_list_cache[(url, "")] = []
         backend._evict_backend_cache(url)
         assert caplog.records
         assert "zqx7canary" not in caplog.text

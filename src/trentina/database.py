@@ -105,14 +105,21 @@ CREATE TABLE IF NOT EXISTS gateway_calls (
 CREATE INDEX IF NOT EXISTS idx_gateway_calls_timestamp ON gateway_calls(timestamp);
 CREATE INDEX IF NOT EXISTS idx_gateway_calls_profile_tool ON gateway_calls(profile, backend, tool);
 
+-- Keyed by owner as well as hash since 6.1.0: a compressed description is a
+-- model rewrite one profile's key paid for, and it is served only back to that
+-- owner. The migration below drops rows written before the column existed —
+-- they cannot be attributed to an owner, and adopting them into a tenant's
+-- cache is the cross-tenant spend this release removes.
 CREATE TABLE IF NOT EXISTS tool_compressions (
-    description_hash TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    description_hash TEXT NOT NULL,
     original_description TEXT NOT NULL,
     compressed_description TEXT NOT NULL,
     model TEXT NOT NULL,
     compressed_at TEXT NOT NULL,
     original_length INTEGER NOT NULL,
-    compressed_length INTEGER NOT NULL
+    compressed_length INTEGER NOT NULL,
+    PRIMARY KEY (owner, description_hash)
 );
 
 CREATE TABLE IF NOT EXISTS tool_names (
@@ -125,10 +132,16 @@ CREATE TABLE IF NOT EXISTS tool_names (
     UNIQUE (profile, backend, tool)
 );
 
+-- One row per (URL, owner) since 6.1.0. A tool list is whatever the backend
+-- returned to the credential that asked for it, so a single row per URL served
+-- one holder the list another holder's token had earned. A backend that carries
+-- no credential uses the empty owner, which every profile reads.
 CREATE TABLE IF NOT EXISTS tool_list_cache (
-    backend_url TEXT PRIMARY KEY,
+    backend_url TEXT NOT NULL,
+    owner TEXT NOT NULL,
     tools_json TEXT NOT NULL,
-    cached_at TEXT NOT NULL
+    cached_at TEXT NOT NULL,
+    PRIMARY KEY (backend_url, owner)
 );
 
 -- What a honeypot profile was delivered, whole, with every layer's verdict
@@ -261,13 +274,52 @@ _CALL_COLUMNS = (
 )
 
 
+#: The two caches 6.1.0 partitions by grant owner, and the column that says a
+#: table has already been rebuilt.
+_OWNER_KEYED = ("tool_compressions", "tool_list_cache")
+
+
+def _rekey_by_owner(db: sqlite3.Connection) -> None:
+    """Rebuild a pre-6.1.0 cache table that had no ``owner`` column.
+
+    Dropped rather than migrated. A row written before the column existed was
+    reached by any profile, so there is no owner to assign it: adopting it into
+    one tenant's cache would grandfather exactly the cross-tenant read and the
+    cross-tenant spend this release removes. Each table refills on the first
+    list, which costs one re-compression per owner and nothing else — the tool
+    lists themselves are re-fetched on every boot anyway (#335).
+
+    ``SCHEMA`` has already run by the time this is called, and its
+    ``CREATE TABLE IF NOT EXISTS`` was a no-op against the old table — so the
+    drop has to be followed by running it again, or the next query meets no
+    table at all.
+    """
+    dropped = []
+    for table in _OWNER_KEYED:
+        present = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+        if present and "owner" not in present:
+            db.execute(f"DROP TABLE {table}")
+            dropped.append(table)
+    if dropped:
+        db.executescript(SCHEMA)
+        logger.info(
+            "db: rebuilt %d cache table(s) for per-owner caching; each refills on the "
+            "next tool list",
+            len(dropped),
+        )
+
+
 def _migrate(db: sqlite3.Connection) -> None:
-    """Apply additive schema migrations to a database created by an older build.
+    """Apply schema migrations to a database created by an older build.
 
     ``CREATE TABLE IF NOT EXISTS`` leaves a pre-existing table untouched, so a
     column added to SCHEMA never reaches an existing deployment without this.
-    Additive only — no column is dropped and no row is rewritten.
+    Additive wherever it can be: no column is dropped and no row rewritten. The
+    two owner-keyed caches in 6.1.0 are the exception — SQLite cannot ALTER a
+    primary key, and their rows cannot be attributed to an owner after the
+    fact, so each is rebuilt empty and refills on the first list.
     """
+    _rekey_by_owner(db)
     columns = {row["name"] for row in db.execute("PRAGMA table_info(gateway_calls)")}
     for column, sql_type in _CALL_COLUMNS:
         if column not in columns:
@@ -1070,30 +1122,47 @@ def get_recent_destinations(
     return grouped
 
 
-def get_all_compressions() -> dict[str, str]:
-    """Load all cached compressions as {description_hash: compressed_description}."""
+def get_all_compressions() -> dict[str, dict[str, str]]:
+    """Load all cached compressions as {owner: {description_hash: compressed}}.
+
+    Keyed by grant owner since 6.1.0: a compressed description is a rewrite one
+    profile's key paid for, and it is served only back to that owner.
+    """
     db = get_db()
     rows = db.execute(
-        "SELECT description_hash, compressed_description FROM tool_compressions"
+        "SELECT owner, description_hash, compressed_description FROM tool_compressions"
     ).fetchall()
-    return {row["description_hash"]: row["compressed_description"] for row in rows}
+    result: dict[str, dict[str, str]] = {}
+    for row in rows:
+        result.setdefault(row["owner"], {})[row["description_hash"]] = row["compressed_description"]
+    return result
 
 
 def save_compression(
+    owner: str,
     description_hash: str,
     original: str,
     compressed: str,
     model: str,
 ) -> None:
-    """Persist a compressed description to SQLite."""
+    """Persist a compressed description to SQLite, under its owner."""
     db = get_db()
     now = datetime.now(UTC).isoformat()
     db.execute(
         "INSERT OR REPLACE INTO tool_compressions "
-        "(description_hash, original_description, compressed_description, "
+        "(owner, description_hash, original_description, compressed_description, "
         "model, compressed_at, original_length, compressed_length) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (description_hash, original, compressed, model, now, len(original), len(compressed)),
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            owner,
+            description_hash,
+            original,
+            compressed,
+            model,
+            now,
+            len(original),
+            len(compressed),
+        ),
     )
     db.commit()
 
@@ -1120,38 +1189,52 @@ def get_compression_stats() -> dict[str, Any]:
     }
 
 
-def get_all_tool_lists() -> dict[str, list[dict[str, Any]]]:
-    """Load all cached tool lists as {backend_url: tools_list}."""
+def get_all_tool_lists() -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """Load all cached tool lists as {(backend_url, owner): tools_list}.
+
+    Keyed by owner as well as URL since 6.1.0. A tool list is whatever the
+    backend returned to the credential that asked, so serving one holder's list
+    to another handed it data a credential it does not hold had earned. An
+    unauthenticated backend uses the empty owner, which every profile shares.
+    """
     db = get_db()
-    rows = db.execute("SELECT backend_url, tools_json FROM tool_list_cache").fetchall()
-    result: dict[str, list[dict[str, Any]]] = {}
+    rows = db.execute("SELECT backend_url, owner, tools_json FROM tool_list_cache").fetchall()
+    result: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in rows:
-        result[row["backend_url"]] = json.loads(row["tools_json"])
+        result[(row["backend_url"], row["owner"])] = json.loads(row["tools_json"])
     return result
 
 
 def save_tool_list(
     backend_url: str,
+    owner: str,
     tools: list[dict[str, Any]],
 ) -> None:
-    """Persist a tool list to SQLite."""
+    """Persist a tool list to SQLite, under the owner whose credential fetched it."""
     db = get_db()
     now = datetime.now(UTC).isoformat()
     db.execute(
         "INSERT OR REPLACE INTO tool_list_cache "
-        "(backend_url, tools_json, cached_at) VALUES (?, ?, ?)",
-        (backend_url, json.dumps(tools), now),
+        "(backend_url, owner, tools_json, cached_at) VALUES (?, ?, ?, ?)",
+        (backend_url, owner, json.dumps(tools), now),
     )
     db.commit()
 
 
-def delete_tool_list(backend_url: str) -> None:
-    """Delete one backend's cached tool list."""
+def delete_tool_list(backend_url: str, owner: str | None = None) -> None:
+    """Delete a backend's cached tool list: one owner's, or every owner's.
+
+    ``owner=None`` is the operator's flush, which drops every partition for
+    that URL; an agent passes its own owner and reaches only its own.
+    """
     db = get_db()
-    db.execute(
-        "DELETE FROM tool_list_cache WHERE backend_url = ?",
-        (backend_url,),
-    )
+    if owner is None:
+        db.execute("DELETE FROM tool_list_cache WHERE backend_url = ?", (backend_url,))
+    else:
+        db.execute(
+            "DELETE FROM tool_list_cache WHERE backend_url = ? AND owner = ?",
+            (backend_url, owner),
+        )
     db.commit()
 
 

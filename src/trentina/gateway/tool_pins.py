@@ -139,9 +139,12 @@ def check_tools(
         if isinstance(tool.get("name"), str) and _pin_one(bid, backend, tool, baseline)
     ]
     if first_connect:
-        sentinel = (digest(FIRST_SEEN_SENTINEL), FIRST_SEEN_SENTINEL)
         perimeter_db.put_pin(
-            bid, FIRST_SEEN_SENTINEL, approved=sentinel, pending=None, rejected=False
+            bid,
+            FIRST_SEEN_SENTINEL,
+            digest(FIRST_SEEN_SENTINEL),
+            perimeter_db.PIN_APPROVED,
+            FIRST_SEEN_SENTINEL,
         )
         _report_first_connect(backend, len(served))
     return served
@@ -226,43 +229,55 @@ def migrate_federated_pins(before: dict[str, Profile], after: dict[str, Profile]
 
 
 def _pin_one(bid: str, backend: str, tool: dict[str, Any], baseline: bool) -> bool:
-    """Pin one tool; True when it is served."""
+    """Pin one DEFINITION of one tool; True when it is served.
+
+    One row per definition since 6.1.0, which makes this a lookup rather than a
+    reconciliation. The old shape held one row per tool with an approved and a
+    pending hash in it, and with tool lists partitioned per credential that
+    could not represent two tenants served different definitions: the second
+    listing overwrote the first's pending hash, and worse, a re-list matching
+    the approved hash CLEARED the other tenant's hold as a "revert", so the two
+    builds flapped the pin and wrote a fresh detection row on alternate passes.
+
+    Now: an approved definition is served, a pending or rejected one is held,
+    and one never seen is recorded pending and reported. Nothing a tenant lists
+    can disturb what another tenant's definition is.
+    """
     name = tool["name"]
     body = canonical(tool)
-    current = (digest(body), body)
-    row = perimeter_db.get_pin(bid, name)
-    if row is None:
-        if baseline:
-            perimeter_db.put_pin(bid, name, approved=current, pending=None, rejected=False)
-            return True
-        perimeter_db.put_pin(bid, name, approved=None, pending=current, rejected=False)
-        _report(backend, name, None, body)
-        return False
-    approved = (row["approved_hash"], row["approved_json"]) if row["approved_hash"] else None
-    if approved and approved[0] == current[0]:
-        if row["pending_hash"]:
-            # Reverted to what was approved: the held version is gone.
-            perimeter_db.put_pin(bid, name, approved=approved, pending=None, rejected=False)
+    current = digest(body)
+    row = perimeter_db.get_pin(bid, name, current)
+    if row is not None:
+        return bool(row["state"] == perimeter_db.PIN_APPROVED)
+    if baseline:
+        perimeter_db.put_pin(bid, name, current, perimeter_db.PIN_APPROVED, body)
         return True
-    if row["pending_hash"] != current[0]:
-        perimeter_db.put_pin(bid, name, approved=approved, pending=current, rejected=False)
-        _report(backend, name, approved[1] if approved else None, body)
+    perimeter_db.put_pin(bid, name, current, perimeter_db.PIN_PENDING, body)
+    previous = perimeter_db.last_approved(bid, name)
+    _report(backend, name, previous["definition_json"] if previous else None, body)
     return False
 
 
-def decide(url: str, tool: str, *, approve: bool) -> bool:
-    """Approve or reject a held tool. False when nothing is held under that name."""
+def decide(url: str, tool: str, *, approve: bool, definition_hash: str | None = None) -> bool:
+    """Approve or reject one held definition. False when nothing is held.
+
+    ``definition_hash`` names WHICH held definition, and is needed only where a
+    tool has more than one — two tenants served different bytes. With exactly
+    one held definition it is implied, which keeps the one-argument call every
+    operator has been making correct. With several and no hash there is no
+    single thing "approve this tool" could mean, so it refuses rather than
+    guessing; ``tool_pins list`` carries each hash for that case.
+    """
     bid = backend_id(url)
-    row = perimeter_db.get_pin(bid, tool)
-    if row is None or not row["pending_hash"]:
+    held_hashes = perimeter_db.pending_hashes(bid, tool)
+    if definition_hash is None:
+        if len(held_hashes) != 1:
+            return False
+        definition_hash = held_hashes[0]
+    elif definition_hash not in held_hashes:
         return False
-    approved = (row["approved_hash"], row["approved_json"]) if row["approved_hash"] else None
-    pending = (row["pending_hash"], row["pending_json"])
-    if approve:
-        perimeter_db.put_pin(bid, tool, approved=pending, pending=None, rejected=False)
-    else:
-        perimeter_db.put_pin(bid, tool, approved=approved, pending=pending, rejected=True)
-    return True
+    state = perimeter_db.PIN_APPROVED if approve else perimeter_db.PIN_REJECTED
+    return perimeter_db.set_pin_state(bid, tool, definition_hash, state)
 
 
 #: The closed reason code the call gate refuses a held tool with (#469), in the
@@ -294,15 +309,29 @@ def held(url: str, tool: str) -> bool:
 
 
 def pending(url: str) -> list[dict[str, Any]]:
-    """What is held under ``url``: tool, changed fields, whether rejected."""
+    """What is held under ``url``: tool, its hash, changed fields, rejected.
+
+    A tool can appear more than once since 6.1.0, which is why each entry
+    carries ``hash``: that is what ``tool_pins approve`` needs to name one of
+    two definitions. Each is diffed against the most recently APPROVED
+    definition of that tool, since there may now be several.
+    """
+    bid = backend_id(url)
+    rows = perimeter_db.list_pending_pins(bid)
+    # One read for every held tool's approved definition, not one per tool: a
+    # backend can hold dozens, and this is what each is diffed against.
+    approved = perimeter_db.approved_by_tool(bid, {row["tool"] for row in rows})
     out: list[dict[str, Any]] = []
-    for row in perimeter_db.list_pending_pins(backend_id(url)):
+    for row in rows:
+        tool = row["tool"]
+        before = approved.get(tool)
         out.append(
             {
-                "tool": row["tool"],
-                "changed": changed_fields(row["approved_json"], row["pending_json"]),
-                "safety_loosened": loosens_safety(row["approved_json"], row["pending_json"]),
-                "rejected": bool(row["rejected"]),
+                "tool": tool,
+                "hash": row["definition_hash"],
+                "changed": changed_fields(before, row["definition_json"]),
+                "safety_loosened": loosens_safety(before, row["definition_json"]),
+                "rejected": bool(row["state"] == perimeter_db.PIN_REJECTED),
             }
         )
     return out

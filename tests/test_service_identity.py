@@ -42,10 +42,17 @@ from trentina.gateway.sessions import SessionRegistry
 from trentina.quarantine.providers.base import ProviderResult
 from trentina.transports import mcp
 
+# A tenant holds its OWN key since 6.1.0: it pays to judge and compress its
+# own tool descriptions, and `resolve_profile_llm` refuses to bill the
+# operator's on its behalf. Through 6.0.0 this section had no `llm_keys` at
+# all, because the operator covered it.
 _TENANT = """\
   tenant:
     auth:
       bearer_token_env: TEST_TENANT_TOKEN
+    llm_keys:
+      gemini:
+        api_key: tenant-key
     defense:
       model: tenant-model
 """
@@ -179,8 +186,17 @@ class TestServiceContext:
         assert service_profile().role == "operator"
 
 
-class TestPerimeterRunsAsTheOperator:
-    async def test_description_l3_sees_the_operator(
+class TestPerimeterRunsAsTheListingProfile:
+    """6.1.0: a tool description is judged for the profile listing it, on that
+    profile's own key.
+
+    It ran as the service identity through 6.0.0, which meant one tenant's key
+    paid to judge another tenant's tool list and the verdict was shareable.
+    Scott's instruction: "Everything that a user's account touches should be
+    done by its own key."
+    """
+
+    async def test_description_l3_sees_the_listing_profile(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         profiles = _live(tmp_path, monkeypatch, _TENANT, _OPERATOR)
@@ -194,19 +210,19 @@ class TestPerimeterRunsAsTheOperator:
         with (
             patch.object(orch, "defend", fake_defend),
             patch.object(ing, "build_warning", return_value=None),
-            profile_context(profiles["tenant"]),
         ):
             tools = [{"name": "t", "description": "Lists things."}]
             await ing.scan_tool_list(profiles["tenant"], "b", tools, tools)
 
-        assert seen == ["ops"]
+        assert seen == ["tenant"]
 
-    async def test_a_reload_mid_scan_does_not_split_key_and_judge(
+    async def test_the_operator_is_not_bound_even_when_it_is_the_caller(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The operator is resolved once per list; a later resolution is ignored."""
+        """A caller bound further up does not decide whose key pays: the profile
+        whose list is being judged does, and it is bound here explicitly because
+        warm-up reaches the same build with nothing bound at all."""
         profiles = _live(tmp_path, monkeypatch, _TENANT, _OPERATOR)
-        first, second = profiles["ops"], profiles["tenant"]
         seen: list[str | None] = []
 
         async def fake_defend(*_a: Any, **_k: Any) -> Any:
@@ -215,7 +231,30 @@ class TestPerimeterRunsAsTheOperator:
             return MagicMock(flagged=False)
 
         with (
-            patch.object(ing, "service_profile", side_effect=[first, second, second]),
+            patch.object(orch, "defend", fake_defend),
+            patch.object(ing, "build_warning", return_value=None),
+            profile_context(profiles["ops"]),
+        ):
+            tools = [{"name": "t", "description": "Lists things."}]
+            await ing.scan_tool_list(profiles["tenant"], "b", tools, tools)
+
+        assert seen == ["tenant"]
+
+    async def test_the_judge_is_the_listing_profiles_and_the_key_agrees(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One judge per list, and the verdict is filed under the judge that
+        reached it — the listing profile's, not the operator's."""
+        profiles = _live(tmp_path, monkeypatch, _TENANT, _OPERATOR)
+        tenant = profiles["tenant"]
+        seen: list[str | None] = []
+
+        async def fake_defend(*_a: Any, **_k: Any) -> Any:
+            bound = get_current_profile()
+            seen.append(bound.name if bound else None)
+            return MagicMock(flagged=False)
+
+        with (
             patch.object(orch, "defend", fake_defend),
             patch.object(ing, "build_warning", return_value=None),
         ):
@@ -223,16 +262,18 @@ class TestPerimeterRunsAsTheOperator:
                 {"name": "a", "description": "Lists things."},
                 {"name": "b", "description": "Counts things."},
             ]
-            await ing.scan_tool_list(profiles["tenant"], "b", tools, tools)
+            await ing.scan_tool_list(tenant, "b", tools, tools)
 
-        assert seen == ["ops", "ops"]
-        # ...and the verdicts are filed under the same judge that reached them.
+        assert seen == ["tenant", "tenant"]
         for tool in tools:
             surface = ing._tool_surface_text(tool)
-            filed = ing._cache_key(profiles["tenant"], "tool:external", surface, judge_of(first))
-            assert filed in vc._verdicts
+            filed = ing._cache_key(tenant, "tool:external", surface, judge_of(tenant))
+            assert filed in vc._descriptions
+            # And NOT under the operator's judge, which is what used to pay.
+            stale = ing._cache_key(tenant, "tool:external", surface, judge_of(profiles["ops"]))
+            assert stale not in vc._descriptions
 
-    def test_description_verdicts_are_keyed_by_the_operators_model(
+    def test_description_verdicts_are_keyed_by_the_listing_profiles_model(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         profiles = _live(tmp_path, monkeypatch, _TENANT, _OPERATOR)
@@ -240,14 +281,33 @@ class TestPerimeterRunsAsTheOperator:
         assert judge_of(service_profile()) == (get_config().provider, "ops-model")
         assert judge_of(profiles["tenant"]) == (get_config().provider, "tenant-model")
 
+    def test_no_verdict_crosses_between_two_profiles(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same text, the same thresholds and the same judge still key
+        apart, because the owner is in the key. This is the isolation Scott
+        asked for: "These caches need to be insulated from each other."
+        """
+        profiles = _live(tmp_path, monkeypatch, _TENANT, _OPERATOR)
+        tenant, ops = profiles["tenant"], profiles["ops"]
+        judge = judge_of(tenant)
+
+        mine = vc._cache_key(tenant, "tool:external", "Lists things.", judge)
+        theirs = vc._cache_key(ops, "tool:external", "Lists things.", judge)
+
+        assert mine != theirs
+
 
 class TestVerdictKey:
     def _profile(self) -> Profile:
         return Profile(name="p", auth=AuthConfig(bearer_token_env="T"))
 
-    def test_the_env_default_judge_keeps_the_legacy_key(self) -> None:
-        """The env-default judge adds nothing to the key, as before #137."""
-        legacy = hashlib.sha256(b"tool:external:0.5:some text").hexdigest()
+    def test_the_judge_is_always_written_now(self) -> None:
+        """The env-default judge used to be left out of the key so that rows
+        persisted before #137 stayed reachable. 6.1.0 drops that: the owner
+        makes every key new anyway and ``PERIMETER_VERSION`` sweeps the old
+        rows, so a conditional spelling would only hide what the key holds."""
+        provider, model = judge_of(None)
         explicit = Profile(
             name="p",
             auth=AuthConfig(bearer_token_env="T"),
@@ -256,10 +316,16 @@ class TestVerdictKey:
 
         key = ing._cache_key(explicit, "tool:external", "some text", judge_of(None))
 
-        assert key == legacy
+        assert (
+            key
+            == hashlib.sha256(
+                f"tool:external:owner=p:0.5:{provider}/{model}:some text".encode()
+            ).hexdigest()
+        )
 
     def test_an_unset_l2_threshold_is_keyed_apart_from_an_explicit_one(self) -> None:
         """Unset means the model's own threshold (#350), not 0.5."""
+        provider, model = judge_of(None)
         unset = ing._cache_key(self._profile(), "tool:external", "x", judge_of(None))
         explicit = ing._cache_key(
             Profile(
@@ -272,8 +338,54 @@ class TestVerdictKey:
             judge_of(None),
         )
 
-        assert unset == hashlib.sha256(b"tool:external:model:x").hexdigest()
+        assert (
+            unset
+            == hashlib.sha256(
+                f"tool:external:owner=p:model:{provider}/{model}:x".encode()
+            ).hexdigest()
+        )
         assert unset != explicit
+
+    def test_the_owner_is_in_the_key_and_a_derivation_shares_it(self) -> None:
+        """A derived federation ingress spends its source's credential and key,
+        so it reads its source's verdicts; anything else is its own.
+
+        Built by the real ``derive_ingress`` rather than by hand — a derivation
+        carries no ``auth`` of its own (``federation.peers`` is how a primary
+        authenticates), so a hand-built one does not validate.
+        """
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        from trentina.gateway.federation_link import derive_ingress
+        from trentina.gateway.profile import FederationConfig, FederationPeer
+
+        peer_pem = (
+            Ed25519PrivateKey.generate()
+            .public_key()
+            .public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            .decode()
+        )
+        source = Profile(
+            name="p",
+            auth=AuthConfig(bearer_token_env="T"),
+            # A shared source needs at least one offerable remote backend, or
+            # the derivation is an empty link and `derive_ingress` refuses it.
+            backends={"wiki": Backend(url="https://wiki.example/mcp", tools_allow=["*"])},
+            federation=FederationConfig(peers={"peer": FederationPeer(public_key=peer_pem)}),
+        )
+        derived = derive_ingress(source)
+        other = Profile(name="q", auth=AuthConfig(bearer_token_env="T"))
+
+        mine = ing._cache_key(source, "tool:external", "x", judge_of(source))
+        theirs = ing._cache_key(derived, "tool:external", "x", judge_of(derived))
+        stranger = ing._cache_key(other, "tool:external", "x", judge_of(other))
+
+        assert derived.grant_owner == source.name
+        assert mine == theirs
+        assert mine != stranger
 
     def test_a_different_model_is_a_different_verdict(self) -> None:
         provider, model = judge_of(None)
@@ -295,7 +407,10 @@ class TestVerdictKey:
         )
 
 
-class TestCompressionRunsAsTheOperator:
+class TestCompressionRunsAsTheListingProfile:
+    """6.1.0: shortening a description is the listing profile's work, on its
+    key, and the result lands in its own partition."""
+
     def _mock_provider(self) -> MagicMock:
         prov = MagicMock()
         prov.generate = AsyncMock(
@@ -307,37 +422,56 @@ class TestCompressionRunsAsTheOperator:
         )
         return prov
 
-    async def test_the_operators_key_and_model(
+    async def test_the_listing_profiles_key_and_model(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The tenant sorts first; that must not matter any more.
-        _live(tmp_path, monkeypatch, _TENANT, _OPERATOR)
+        profiles = _live(tmp_path, monkeypatch, _TENANT, _OPERATOR)
 
         with patch(
             "trentina.gateway.compress.get_provider",
             return_value=self._mock_provider(),
         ) as get:
-            await _call_compress_model([("h", "A long description.")])
+            await _call_compress_model([("h", "A long description.")], profiles["tenant"])
 
         (name,), kwargs = get.call_args
         assert name == get_config().provider
-        assert kwargs["model"] == "ops-model"
-        assert kwargs["api_key"].get_secret_value() == "ops-key"
+        assert kwargs["model"] == "tenant-model"
+        assert kwargs["api_key"].get_secret_value() == "tenant-key"
 
-    async def test_no_operator_uses_the_synthesized_operator(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, standalone_l3: None
+    async def test_two_profiles_each_bill_their_own_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """No file operator: compression runs as the operator synthesized from the environment."""
-        _live(tmp_path, monkeypatch, _TENANT)
+        """The same description, two profiles, two keys — not one key twice.
+        This is the billing half of Scott's instruction."""
+        profiles = _live(tmp_path, monkeypatch, _TENANT, _OPERATOR)
 
         with patch(
             "trentina.gateway.compress.get_provider",
             return_value=self._mock_provider(),
         ) as get:
-            await _call_compress_model([("h", "A long description.")])
+            await _call_compress_model([("h", "A long description.")], profiles["tenant"])
+            await _call_compress_model([("h", "A long description.")], profiles["ops"])
 
-        get.assert_called_once()
-        assert get.call_args.args[0] == "gemini"
+        billed = [call.kwargs["api_key"].get_secret_value() for call in get.call_args_list]
+        assert billed == ["tenant-key", "ops-key"]
+
+    async def test_a_profile_with_no_key_of_its_own_compresses_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``resolve_profile_llm`` refuses to bill anyone else's key, so there is
+        no quiet fallback to the operator's — the batch simply comes back
+        empty and the original description is kept."""
+        _live(tmp_path, monkeypatch, _TENANT, _OPERATOR)
+        keyless = Profile(name="broke", auth=AuthConfig(bearer_token_env="T"))
+
+        with patch(
+            "trentina.gateway.compress.get_provider",
+            return_value=self._mock_provider(),
+        ) as get:
+            result = await _call_compress_model([("h", "A long description.")], keyless)
+
+        assert result == []
+        get.assert_not_called()
 
 
 class TestPerProfileGeneration:

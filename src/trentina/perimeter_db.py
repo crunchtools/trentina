@@ -55,21 +55,35 @@ CREATE TABLE IF NOT EXISTS verdict_cache (
     perimeter_version TEXT NOT NULL,
     cached_at TEXT NOT NULL
 );
+-- One row per DEFINITION since 6.1.0, not one per tool. An approval was always
+-- a decision about a definition — the hash is that definition, and the URL was
+-- only ever the row's address. With tool lists partitioned per credential
+-- (`backend.cache_owner`), two tenants can legitimately be served different
+-- definitions of the same tool, and one row per (backend, tool) could hold only
+-- one of them: the second listing overwrote the first's pending hash, an
+-- approval given for one tenant's definition appeared to cover the other's, and
+-- the two builds then flapped the hold and logged a detection on alternate
+-- passes. Keyed by hash, both coexist, an approval covers every tenant served
+-- those exact bytes, and anything else stays held.
 CREATE TABLE IF NOT EXISTS tool_pins (
     backend_id TEXT NOT NULL,
     tool TEXT NOT NULL,
-    approved_hash TEXT,
-    approved_json TEXT,
-    pending_hash TEXT,
-    pending_json TEXT,
-    rejected INTEGER NOT NULL DEFAULT 0,
+    definition_hash TEXT NOT NULL,
+    state TEXT NOT NULL,
+    definition_json TEXT NOT NULL,
     first_seen TEXT NOT NULL,
     last_seen TEXT NOT NULL,
-    PRIMARY KEY (backend_id, tool)
+    PRIMARY KEY (backend_id, tool, definition_hash)
 );
 """
 
-PERIMETER_VERSION = "21"
+#: What a ``tool_pins.state`` may hold. ``pending`` is held awaiting an
+#: operator, ``rejected`` is held permanently, ``approved`` is served.
+PIN_APPROVED = "approved"
+PIN_PENDING = "pending"
+PIN_REJECTED = "rejected"
+
+PERIMETER_VERSION = "22"
 """Bump whenever a change could alter what a scan CONCLUDES: a new detector, a
 retuned L3 prompt, a different L2 model or threshold set. Rows stamped with any
 other value are swept on load, so an older perimeter's verdict is unusable
@@ -153,6 +167,7 @@ def get_perimeter_db(db_path: str | None = None) -> sqlite3.Connection:
         had_verdicts = _db.execute(
             "SELECT 1 FROM sqlite_master WHERE name = 'verdict_cache'"
         ).fetchone()
+        _rekey_pins_by_definition(_db)
         _db.executescript(SCHEMA)
         upgraded = had_pins is None and had_verdicts is not None
         pins_upgraded_at = time.monotonic() if upgraded else None
@@ -171,6 +186,72 @@ def get_perimeter_db(db_path: str | None = None) -> sqlite3.Connection:
                 "and each federated peer's offered set approved as a first connect"
             )
     return _db
+
+
+#: Where the pre-6.1.0 pins are kept after the re-key. Not dropped: a rollback
+#: to 6.0.x finds them and re-holds nothing it had already approved, and a
+#: rollback that found an empty table would hold every remote tool on this
+#: gateway at once.
+_LEGACY_PINS = "tool_pins_pre_6_1"
+
+
+def _rekey_pins_by_definition(db: sqlite3.Connection) -> None:
+    """Re-key a pre-6.1.0 ``tool_pins`` from one row per tool to one per definition.
+
+    Runs BEFORE ``SCHEMA``, because ``CREATE TABLE IF NOT EXISTS`` would leave
+    the old table in place and every read would then look for columns it does
+    not have.
+
+    Each old row becomes up to two: its approved definition, and its pending
+    one — the latter as ``rejected`` when the old row's flag was set, since the
+    flag described the pending definition and nothing else. An old row carried
+    the rejection on the TOOL, so a rejected tool that later offered different
+    bytes was still refused; now the rejection names the bytes that earned it,
+    which is both narrower and what an operator was deciding about.
+    """
+    present = {row["name"] for row in db.execute("PRAGMA table_info(tool_pins)")}
+    if not present or "definition_hash" in present:
+        return
+    rows = db.execute(
+        "SELECT backend_id, tool, approved_hash, approved_json, pending_hash, "
+        "pending_json, rejected, first_seen, last_seen FROM tool_pins"
+    ).fetchall()
+    db.execute("ALTER TABLE tool_pins RENAME TO tool_pins_pre_6_1")
+    db.executescript(SCHEMA)
+    carried = 0
+    for row in rows:
+        for hash_, json_, state in (
+            (row["approved_hash"], row["approved_json"], PIN_APPROVED),
+            (
+                row["pending_hash"],
+                row["pending_json"],
+                PIN_REJECTED if row["rejected"] else PIN_PENDING,
+            ),
+        ):
+            if not hash_ or not json_:
+                continue
+            db.execute(
+                "INSERT OR REPLACE INTO tool_pins (backend_id, tool, definition_hash, "
+                "state, definition_json, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["backend_id"],
+                    row["tool"],
+                    hash_,
+                    state,
+                    json_,
+                    row["first_seen"],
+                    row["last_seen"],
+                ),
+            )
+            carried += 1
+    db.commit()
+    logger.info(
+        "gateway: re-keyed %d tool pin(s) from %d row(s) by definition hash; the old "
+        "table is kept as %s",
+        carried,
+        len(rows),
+        _LEGACY_PINS,
+    )
 
 
 def opened_path() -> str:
@@ -221,17 +302,92 @@ def _read_db() -> sqlite3.Connection:
     return reader if reader is not None else get_perimeter_db()
 
 
-def get_pin(backend_id: str, tool: str) -> sqlite3.Row | None:
+def get_pin(backend_id: str, tool: str, definition_hash: str) -> sqlite3.Row | None:
+    """The row for ONE definition of a tool, or None when it has never been seen.
+
+    None means held: a definition with no row is one no operator has decided
+    about, which is the fail-closed direction and the whole point of the store.
+    """
     row: sqlite3.Row | None = (
         _read_db()
         .execute(
-            "SELECT approved_hash, approved_json, pending_hash, pending_json "
-            "FROM tool_pins WHERE backend_id = ? AND tool = ?",
-            (backend_id, tool),
+            "SELECT definition_hash, state, definition_json FROM tool_pins "
+            "WHERE backend_id = ? AND tool = ? AND definition_hash = ?",
+            (backend_id, tool, definition_hash),
         )
         .fetchone()
     )
     return row
+
+
+def last_approved(backend_id: str, tool: str) -> sqlite3.Row | None:
+    """The most recently seen APPROVED definition of a tool, for diffing against.
+
+    What a changed-definition report compares a new one to. Most recent rather
+    than only: with lists partitioned per credential, a tool can have several
+    approved definitions at once, and the newest is the best available answer
+    to "what changed".
+    """
+    row: sqlite3.Row | None = (
+        _read_db()
+        .execute(
+            "SELECT definition_hash, definition_json FROM tool_pins WHERE backend_id = ? "
+            "AND tool = ? AND state = ? ORDER BY last_seen DESC LIMIT 1",
+            (backend_id, tool, PIN_APPROVED),
+        )
+        .fetchone()
+    )
+    return row
+
+
+def approved_by_tool(backend_id: str, tools: Collection[str]) -> dict[str, str]:
+    """The most recently approved definition of each named tool, in ONE read.
+
+    What a list of held definitions is diffed against. Per-tool it would be a
+    round trip each, and ``tool_pins list`` asks about every held tool at once.
+    Newest first, so the first row seen for a tool is the one kept.
+    """
+    wanted = sorted(set(tools))
+    if not wanted:
+        return {}
+    # Narrowed in SQL, not in Python: a backend with a long approved history
+    # would otherwise have every definition body loaded and discarded on each
+    # `tool_pins list`. The tool names ride as ONE bound JSON array through
+    # `json_each`, so the statement is a constant — an IN clause built from a
+    # run of '?' would have needed interpolation and a lint suppression to say
+    # it was harmless, and a query nobody has to take on trust is better.
+    rows = (
+        _read_db()
+        .execute(
+            "SELECT tool, definition_json FROM tool_pins WHERE backend_id = ? AND state = ? "
+            "AND tool IN (SELECT value FROM json_each(?)) ORDER BY last_seen DESC",
+            (backend_id, PIN_APPROVED, json.dumps(wanted)),
+        )
+        .fetchall()
+    )
+    out: dict[str, str] = {}
+    for row in rows:
+        out.setdefault(row["tool"], row["definition_json"])
+    return out
+
+
+def pending_hashes(backend_id: str, tool: str) -> list[str]:
+    """Every definition of a tool now held awaiting an operator.
+
+    More than one is possible since 6.1.0, and that is why ``tool_pins
+    approve`` takes an optional hash: with two held definitions there is no
+    single thing "approve this tool" could mean.
+    """
+    rows = (
+        _read_db()
+        .execute(
+            "SELECT definition_hash FROM tool_pins WHERE backend_id = ? AND tool = ? "
+            "AND state = ? ORDER BY last_seen DESC",
+            (backend_id, tool, PIN_PENDING),
+        )
+        .fetchall()
+    )
+    return [row["definition_hash"] for row in rows]
 
 
 def has_pins(backend_id: str) -> bool:
@@ -250,51 +406,80 @@ def has_pins(backend_id: str) -> bool:
 
 
 def pin_hold_flags(backend_id: str, tool: str) -> tuple[bool, bool] | None:
-    """``(pending, rejected)`` for a pin, or None when there is no row — the two
-    flags the call gate needs, read WITHOUT the approved/pending JSON (#469)."""
+    """``(pending, rejected)`` for a TOOL, or None when it has no rows at all.
+
+    The two flags the call gate needs, read without any definition JSON (#469).
+    Still per tool rather than per definition, because the gate is asked about
+    a call and a call names no definition: anything held under this tool is a
+    reason to refuse it, whichever tenant's bytes earned the hold.
+    """
     row = (
         _read_db()
         .execute(
-            "SELECT pending_hash, rejected FROM tool_pins WHERE backend_id = ? AND tool = ?",
-            (backend_id, tool),
+            "SELECT "
+            "SUM(state = ?) AS pending, SUM(state = ?) AS rejected "
+            "FROM tool_pins WHERE backend_id = ? AND tool = ?",
+            (PIN_PENDING, PIN_REJECTED, backend_id, tool),
         )
         .fetchone()
     )
-    return (bool(row["pending_hash"]), bool(row["rejected"])) if row is not None else None
+    # SUM over no rows is NULL, which is how "this tool has no pins" reads.
+    if row is None or (row["pending"] is None and row["rejected"] is None):
+        return None
+    return (bool(row["pending"]), bool(row["rejected"]))
 
 
-def put_pin(
-    backend_id: str,
-    tool: str,
-    *,
-    approved: tuple[str, str] | None,
-    pending: tuple[str, str] | None,
-    rejected: bool,
-) -> None:
-    """Write one pin. ``approved`` and ``pending`` are (hash, canonical JSON)."""
+#: Definitions kept per (backend, tool), least recently seen dropped. Without a
+#: bound, a backend whose descriptions churn keeps every version it has ever
+#: sent, JSON and all, for the life of the store.
+#:
+#: A plain LRU is safe because eviction is FAIL-CLOSED: a dropped row reads as
+#: never seen, and never seen is held. Thirty-two is far past legitimate churn,
+#: so a rejection needs that many distinct definitions to be pushed out.
+MAX_DEFINITIONS_PER_TOOL = 32
+
+
+def put_pin(backend_id: str, tool: str, definition_hash: str, state: str, body: str) -> None:
+    """Record what one definition of a tool is: approved, pending or rejected.
+
+    One row per definition, so writing a new one never disturbs another
+    tenant's. ``last_seen`` moves on every write, which is what makes
+    ``last_approved`` mean "most recent" and what orders the eviction below.
+    """
     now = datetime.now(UTC).isoformat()
     db = get_perimeter_db()
     db.execute(
-        "INSERT INTO tool_pins (backend_id, tool, approved_hash, approved_json, "
-        "pending_hash, pending_json, rejected, first_seen, last_seen) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
-        "ON CONFLICT (backend_id, tool) DO UPDATE SET "
-        "approved_hash = excluded.approved_hash, approved_json = excluded.approved_json, "
-        "pending_hash = excluded.pending_hash, pending_json = excluded.pending_json, "
-        "rejected = excluded.rejected, last_seen = excluded.last_seen",
-        (
-            backend_id,
-            tool,
-            approved[0] if approved else None,
-            approved[1] if approved else None,
-            pending[0] if pending else None,
-            pending[1] if pending else None,
-            int(rejected),
-            now,
-            now,
-        ),
+        "INSERT INTO tool_pins (backend_id, tool, definition_hash, state, "
+        "definition_json, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT (backend_id, tool, definition_hash) DO UPDATE SET "
+        "state = excluded.state, definition_json = excluded.definition_json, "
+        "last_seen = excluded.last_seen",
+        (backend_id, tool, definition_hash, state, body, now, now),
+    )
+    db.execute(
+        "DELETE FROM tool_pins WHERE backend_id = ? AND tool = ? AND definition_hash NOT IN "
+        "(SELECT definition_hash FROM tool_pins WHERE backend_id = ? AND tool = ? "
+        "ORDER BY last_seen DESC LIMIT ?)",
+        (backend_id, tool, backend_id, tool, MAX_DEFINITIONS_PER_TOOL),
     )
     db.commit()
+
+
+def set_pin_state(backend_id: str, tool: str, definition_hash: str, state: str) -> bool:
+    """Move one definition to ``state``; False when there is no such row.
+
+    An operator's decision changes nothing but the state, so it is one UPDATE
+    rather than a read and a rewrite — the definition JSON it would have had to
+    carry back is already in the row.
+    """
+    db = get_perimeter_db()
+    changed = db.execute(
+        "UPDATE tool_pins SET state = ?, last_seen = ? WHERE backend_id = ? "
+        "AND tool = ? AND definition_hash = ?",
+        (state, datetime.now(UTC).isoformat(), backend_id, tool, definition_hash),
+    ).rowcount
+    db.commit()
+    return bool(changed)
 
 
 def move_pins(old_backend_id: str, new_backend_id: str) -> int:
@@ -307,9 +492,9 @@ def move_pins(old_backend_id: str, new_backend_id: str) -> int:
     therefore re-trusted the peer wholesale without asking for it.
 
     Refuses to move onto an id that already has rows and returns 0: two
-    backends can legitimately name one URL, and ``(backend_id, tool)`` is the
-    primary key, so an UPDATE would collide on the shared tools and the pins
-    already there are not this edit's to overwrite.
+    backends can legitimately name one URL, and the primary key leads with
+    ``backend_id``, so an UPDATE would collide on the shared definitions and
+    the pins already there are not this edit's to overwrite.
     """
     db = get_perimeter_db()
     if (
@@ -328,12 +513,17 @@ def move_pins(old_backend_id: str, new_backend_id: str) -> int:
 
 
 def list_pending_pins(backend_id: str) -> list[sqlite3.Row]:
+    """Every held definition on a backend, newest first within each tool.
+
+    One tool can appear more than once since 6.1.0 — two tenants served
+    different definitions of it — which is why each row carries its hash.
+    """
     rows: list[sqlite3.Row] = (
         _read_db()
         .execute(
-            "SELECT tool, approved_json, pending_json, rejected FROM tool_pins "
-            "WHERE backend_id = ? AND pending_hash IS NOT NULL ORDER BY tool",
-            (backend_id,),
+            "SELECT tool, definition_hash, definition_json, state FROM tool_pins "
+            "WHERE backend_id = ? AND state IN (?, ?) ORDER BY tool, last_seen DESC",
+            (backend_id, PIN_PENDING, PIN_REJECTED),
         )
         .fetchall()
     )
@@ -359,9 +549,14 @@ def count_pending_pins(backend_ids: Collection[str]) -> int:
     if not backend_ids:
         return 0
     live = set(backend_ids)
+    # DISTINCT tool, not rows: since 6.1.0 one tool can be held under several
+    # definitions, and this number is an alert threshold Nagios watches. Had it
+    # counted rows, partitioning the tool lists would have moved it on its own
+    # and read as a backlog appearing out of nowhere.
     rows = _read_db().execute(
-        "SELECT backend_id, COUNT(*) FROM tool_pins "
-        "WHERE pending_hash IS NOT NULL GROUP BY backend_id"
+        "SELECT backend_id, COUNT(DISTINCT tool) FROM tool_pins "
+        "WHERE state = ? GROUP BY backend_id",
+        (PIN_PENDING,),
     )
     return sum(int(count) for backend_id, count in rows if backend_id in live)
 

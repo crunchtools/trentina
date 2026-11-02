@@ -21,7 +21,7 @@ from ..outcomes import Outcome
 from ..transports.jsonrpc import JSONRPC_INVALID_PARAMS, _err, _ok, _refused
 from . import audit, discovery
 from .args import Normalized, normalize_arguments
-from .backend import cached_tool_read_only, cached_tool_schema, loggable_tool
+from .backend import cache_owner, cached_tool_read_only, cached_tool_schema, loggable_tool
 from .decoy import canned_result, keep_arguments, leaked_tokens, record_trip
 from .destination import Destination, destination_of
 from .filter import filter_tools
@@ -65,10 +65,13 @@ def _normalize_arguments(
     """
     if backend.is_internal:
         return Normalized(forwarded)
+    # This profile's own partition of the list (6.1.0): the schema a call is
+    # checked against must be the one THIS caller was served, not a neighbour's.
+    owner = cache_owner(backend, profile)
     normalized = normalize_arguments(
         forwarded,
-        cached_tool_schema(backend.url, tool_name),
-        read_only=cached_tool_read_only(backend.url, tool_name),
+        cached_tool_schema(backend.url, owner, tool_name),
+        read_only=cached_tool_read_only(backend.url, owner, tool_name),
     )
     if normalized.dropped:
         # How many and why, never which: a name is the caller's (#262).

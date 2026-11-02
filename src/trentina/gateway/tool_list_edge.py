@@ -10,9 +10,10 @@ SQLite caches are judged exactly like live ones — the poisoned-cache ingress
 closes structurally rather than by a deploy-time flush.
 
 The verdict cache (``verdict_cache``) keeps the cost sane and persists
-tool-description verdicts across restarts; the ``defend`` call itself lives in
-the orchestration layer (``orchestrator.judge_tool_description``), briefed with
-``TOOL_BRIEFING`` and bound to the service identity.
+tool-description verdicts across restarts, scoped to one grant owner since
+6.1.0; the ``defend`` call itself lives in the orchestration layer
+(``orchestrator.judge_tool_description``), briefed with ``TOOL_BRIEFING`` and
+bound to the profile whose list is being judged.
 """
 
 from __future__ import annotations
@@ -27,8 +28,9 @@ from ..defense import Provenance
 from ..modes import Gaps, Mode, ModePolicy
 from ..warning import build_warning
 from .collect import _collect_strings
+from .context import profile_context
 from .modes_policy import effective_mode
-from .service import judge_of, service_context, service_profile
+from .service import judge_of
 from .verdict_cache import _cache_get, _cache_key, _cache_put, _single_flight, perimeter_counts
 
 if TYPE_CHECKING:
@@ -101,7 +103,6 @@ def _judged_before_briefing(warning: dict[str, Any] | None) -> bool:
 async def _judge_description(
     key: str,
     profile: Profile,
-    operator: Profile,
     backend_name: str,
     tool: dict[str, Any],
     surface: str,
@@ -114,18 +115,16 @@ async def _judge_description(
     """
     perimeter_counts["judged"] += 1
     mode = effective_mode(profile)
-    # A shared description is the gateway's own work, judged as the service
-    # identity (#138); the thresholds stay the requester's. The defend() call
-    # itself lives in the orchestration layer (Trentina 3.0 Phase 7) — the
-    # service identity bound here stays in force across the await, and this
-    # coroutine (the single-flight work) still owns the cache write and the
-    # journal line below. Deferred import: the orchestrator imports this module.
+    # Deferred import: the orchestrator imports this module. The profile bound
+    # below stays in force across the await, and this coroutine (the
+    # single-flight work) owns the cache write and the journal line.
     from ..orchestrator import judge_tool_description
 
-    # posture() reads the honeypot flag from the bound scope, so it is built
-    # inside service_context — warm-up and the tools/list path bind the operator
-    # only here, and current_scope would otherwise refuse an unbound call.
-    with service_context(operator):
+    # Bound explicitly, not taken from the caller: warm-up reaches this with
+    # nothing bound, and posture() reads the honeypot flag from the bound
+    # scope. Binding the LISTING profile is also what makes its own key pay
+    # (6.1.0) and its own honeypot posture apply.
+    with profile_context(profile):
         posture = identity.posture(mode, ModePolicy((mode,), mode))
         verdict = await judge_tool_description(
             surface,
@@ -139,7 +138,7 @@ async def _judge_description(
     warning = build_warning(verdict)
     if warning is not None and warning.get("flagged_by") == "L3":
         warning["l3_briefing"] = TOOL_BRIEFING_VERSION
-    _cache_put(key, warning, persist=True)
+    _cache_put(key, warning, description=True)
     if warning is not None:
         # Here, once per judgement, and never on a cache hit: logging hits
         # made the journal read as though nothing were cached at all, which
@@ -175,10 +174,18 @@ async def scan_tool_list(
     an L3 flag that predates the briefing (no matching ``l3_briefing``
     stamp), which is judged again once and re-cached with the stamp. Clean
     verdicts and L1/L2 flags stand: the briefing changes only what L3 reads.
+
+    The verdict cache was shared by every profile with equal thresholds and
+    judge through 6.0.0, justified in the ``# TRUST:`` block below as "no agent
+    chooses the text, so a hit is no channel". True for one person's gateway
+    and insufficient for a service, where a hit is evidence that a neighbour
+    holds the same backend and one tenant's key had paid to judge it. The key
+    carries ``grant_owner`` now.
     """
-    # Resolved once per list: the key and the call must name the same judge.
-    operator = service_profile()
-    judge = judge_of(operator)
+    # Resolved once per list: the key and the call must name the same judge. A
+    # reload between the two would file a verdict under one judge that another
+    # one reached.
+    judge = judge_of(profile)
 
     async def _verdict(tool: dict[str, Any], before: dict[str, Any]) -> dict[str, Any] | None:
         surface = _tool_surface_text(tool)
@@ -191,15 +198,16 @@ async def scan_tool_list(
         )
         provenance = Provenance.MODEL_OUTPUT if compressed else Provenance.EXTERNAL
 
-        # TRUST: a verdict cache shared by every profile (#291)
+        # TRUST: a verdict cache scoped to one grant owner (6.1.0)
         #   untrusted: `surface`, the tool list a backend announces
-        #   judged-by: none needed; no agent chooses the text, so a hit is no channel
+        #   judged-by: none needed; the cache is per owner, so a hit is a fact
+        #     about this tenant's own earlier listing and nobody else's
         #   on-failure: n/a; a miss judges the description afresh
         #   owner: tool_list_edge.scan_tool_list
         #   evidence: T4 surface is the backend's tools/list, not a call argument;
-        #     T3 #263 residual: the per-URL tool-list cache already says a URL is shared
+        #     T4 the key carries grant_owner, so no verdict crosses a tenant
         key = _cache_key(profile, f"tool:{provenance.value}", surface, judge)
-        hit, warning = _cache_get(key)
+        hit, warning = _cache_get(key, description=True)
         if hit and _judged_before_briefing(warning):
             hit = False
         if hit:
@@ -211,7 +219,6 @@ async def scan_tool_list(
                 _judge_description,
                 key,
                 profile,
-                operator,
                 backend_name,
                 tool,
                 surface,

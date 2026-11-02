@@ -19,7 +19,8 @@ from typing import TYPE_CHECKING, Any
 from ..outcomes import refusal_of
 from ..reserved import REFUSAL_KEY, WARNING_KEY, strip_content_blocks, strip_reserved
 from ..transports.jsonrpc import JSONRPC_INTERNAL_ERROR, _err, _ok, _refused
-from .backend import cached_tool_read_only
+from .backend import cache_owner, cached_tool_read_only
+from .context import get_current_profile
 from .errors import (
     NEEDS_AUTH_REASON,
     BackendCallError,
@@ -65,8 +66,16 @@ def _may_have_acted(backend: Backend, tool_name: str) -> bool:
 
     The backend's own ``readOnlyHint`` is the only thing that says it did not,
     as in ``args.py``: an unannotated tool may write. The internal tools read.
+
+    The hint is read from the CALLER's own partition of the tool list (6.1.0).
+    The caller comes from the bound context rather than a parameter: every path
+    here is inside a tools/call, which binds it, and the four call sites in
+    ``transports.mcp`` would otherwise each have to carry it for one lookup.
+    Unbound (standalone) resolves to the synthesized operator, which holds the
+    only list there is.
     """
-    return not backend.is_internal and not cached_tool_read_only(backend.url, tool_name)
+    owner = cache_owner(backend, get_current_profile())
+    return not backend.is_internal and not cached_tool_read_only(backend.url, owner, tool_name)
 
 
 def _executed(refused: dict[str, Any], backend_error: bool | None) -> dict[str, Any]:

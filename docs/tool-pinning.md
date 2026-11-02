@@ -11,8 +11,12 @@ grows a `recipient` or `url` parameter. Pinning (#469) notices that a tool
 Every tool a remote backend lists is hashed whole: SHA-256 of the canonical
 JSON of the tool object (name, title, description, inputSchema, outputSchema,
 annotations, and any other field the backend sends; `_trentina_*` keys
-excluded). The pin is keyed on the backend (a hash of its URL) and the tool
-name, so it belongs to the backend and not to a profile.
+excluded). The pin is keyed on the backend (a hash of its URL), the tool name
+and **that hash**, so it belongs to the backend and not to a profile — and
+since 6.1.0 one tool can hold several pins, one per definition it has been seen
+with. That is because tool lists are fetched per credential: a backend whose
+schemas depend on the account answers two profiles differently, and both
+answers are real.
 
 The check runs every time a profile's tool list is built, which includes the
 rebuild after a `notifications/tools/list_changed` re-list.
@@ -27,15 +31,35 @@ mode. A change that loosens a safety hint (`readOnlyHint` to true,
 row (`source_type` `tool_pin`) and a warning log naming the backend, the tool
 and the changed fields. Nothing the backend wrote is logged.
 
-A held tool that reverts to the approved definition is released. A tool that
-disappears keeps its pin.
+A tool that reverts to an approved definition is served again — but any OTHER
+definition that was held stays held. Through 6.0.0 the revert cleared it, which
+is unsound once lists are partitioned: "the backend went back to X" is only
+true for the profile that listed X, and another profile may still be served Y.
+Clearing Y on one profile's say-so was how two of them flapped the hold and
+logged a detection on alternate passes. `tool_pins reject` is how an unwanted
+definition goes away. A tool that disappears keeps its pins.
 
 ## Releasing
 
 The operator profile's `tool_pins` tool takes `action` (`list`, `approve`,
 `reject`), `backend` and, for the last two, `tool`. `list` shows what is held,
-the fields that changed and whether a safety hint loosened. `reject` keeps the
-tool withheld and quiet until it changes again.
+each entry's `hash`, the fields that changed against the most recently approved
+definition, and whether a safety hint loosened. `reject` keeps that definition
+withheld and quiet.
+
+`approve` and `reject` also take an optional `hash`, which names WHICH held
+definition. It is needed only where a tool has more than one — two profiles
+served different bytes. With exactly one it is implied, so the two-argument
+call stays correct; with several and no hash the tool refuses and lists the
+hashes on offer, because there is no single thing "approve this tool" could
+mean.
+
+**One approval per distinct definition, not per profile.** A thousand profiles
+on a backend that answers them identically is one decision. A backend that
+bakes account state into a schema — an enum of that account's projects — is the
+costly case: it will hold one definition per profile, and hold again whenever
+that account's data changes. Nothing here can fix that; it is the backend's
+shape.
 
 ## First boot, and a lost store
 
@@ -53,8 +77,11 @@ whole offered set is auto-approved as a unit rather than held — the trust ther
 is in the declared edge, not the store. `cache_flush` and `reconnect_backend` rebuild a profile's
 aggregate from the in-memory config and do **not** touch pins — a pin is cleared
 only by `tool_pins reject`/`approve` or by losing the store. The held tools for
-a backend are the rows in `perimeter.db`'s `tool_pins` table with a non-null
-`pending_hash`, keyed by the backend's URL hash.
+a backend are the rows in `perimeter.db`'s `tool_pins` table whose `state` is
+`pending`, keyed by the backend's URL hash, the tool and the definition hash. A
+store written before 6.1.0 is re-keyed on first open and the old table is kept
+as `tool_pins_pre_6_1`, so a rollback finds its approvals instead of holding
+every remote tool at once.
 
 ## Federation: first connect, and held on the secondary
 

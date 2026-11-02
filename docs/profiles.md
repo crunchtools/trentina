@@ -259,8 +259,8 @@ What remains, with its rate:
 
 | Residual | Bound |
 |---|---|
-| Circuit breaker, healed by any profile holding the URL (#263) | 1 bit per probe, only for profiles sharing that backend |
-| Tool-description verdicts, shared across profiles | 0: the text is the backend's tools/list, which no agent writes through the gateway |
+| Circuit breaker, healed by any profile holding the URL (#263) | 1 bit per probe, only for profiles sharing that backend. Deliberately shared: it measures whether a URL is reachable, and partitioning it would hide a down backend from the profiles that share it |
+| Tool-description verdicts | 0 since 6.1.0: the cache is keyed per grant owner, so a hit is a fact about this profile's own earlier listing. It was shared across profiles with equal thresholds and judge, justified on the ground that no agent writes a backend's tools/list — true for one person's gateway, and not the answer for a service, where a hit told a profile that a neighbour held the same backend |
 | DNS backstop | Takes 16 profiles stalling 4 lookups each; then 1 bit per stalled lookup's lifetime (the OS resolver timeout) |
 | L2 turn-taking | A backlog delays another profile by at most one scan per profile waiting, each under `admission_tokens`; under 1 bit per scan, and noisy |
 | L3 provider quota on a shared key | Profiles given the same `llm_keys` value share the provider's quota for it, which no gateway can split. Give each agent its own key |

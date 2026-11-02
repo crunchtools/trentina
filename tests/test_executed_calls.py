@@ -63,7 +63,7 @@ def _profile(modes: list[str] | None = None, **backend: Any) -> Profile:
 @pytest.fixture(autouse=True)
 def _listed_tools() -> None:
     """One tool that says it only reads, one that says nothing."""
-    _tool_list_cache[URL] = [
+    _tool_list_cache[(URL, "")] = [
         {"name": SEND},
         {"name": SEARCH, "annotations": {"readOnlyHint": True}},
     ]

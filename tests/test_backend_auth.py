@@ -249,7 +249,7 @@ class TestLists:
         profiles: dict[str, Profile],
     ) -> None:
         era = profiles["josui"].backends["era"]
-        backend._tool_list_cache[era.url] = [{"name": "spend"}]
+        backend._tool_list_cache[(era.url, "")] = [{"name": "spend"}]
         assert await revalidate_backend_tools("era", era) is False
         assert fake.headers == []
 

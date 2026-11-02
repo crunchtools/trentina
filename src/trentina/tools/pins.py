@@ -21,14 +21,20 @@ from ..logsafe import exc_kind
 logger = logging.getLogger(__name__)
 
 
-async def manage_tool_pins(action: str, backend: str, tool: str | None = None) -> dict[str, Any]:
-    """List, approve or reject the tools held under a backend name.
+async def manage_tool_pins(
+    action: str, backend: str, tool: str | None = None, hash: str | None = None
+) -> dict[str, Any]:
+    """List, approve or reject the tool definitions held under a backend name.
 
     Args:
         action: ``list``, ``approve`` or ``reject``.
         backend: Backend name, wherever it is configured.
-        tool: The held tool, for ``approve`` and ``reject``. A rejected tool
-            stays withheld and is not reported again until it changes.
+        tool: The held tool, for ``approve`` and ``reject``. A rejected
+            definition stays withheld and is not reported again.
+        hash: Which held DEFINITION of that tool, from ``list``. Needed only
+            where a tool has more than one — two profiles served different
+            bytes by a backend that answers per credential. With one held
+            definition it is implied.
     """
     try:
         require_operator(require_caller("tool_pins"), "tool_pins")
@@ -53,7 +59,19 @@ async def manage_tool_pins(action: str, backend: str, tool: str | None = None) -
     if action not in ("approve", "reject") or not tool:
         return {"error": "action is list, approve or reject; the last two need a tool"}
 
-    if not tool_pins.decide(urls[0], tool, approve=action == "approve"):
-        return {"error": "no such held tool"}
+    if not tool_pins.decide(urls[0], tool, approve=action == "approve", definition_hash=hash):
+        # Two tenants served different definitions is the interesting refusal:
+        # there is no single thing "approve this tool" could mean then, so name
+        # the hashes on offer rather than deciding one by accident.
+        held = [row["hash"] for row in tool_pins.pending(urls[0]) if row["tool"] == tool]
+        ambiguous = hash is None and len(held) > 1
+        return (
+            {
+                "error": "that tool has more than one held definition; name one with hash",
+                "held": held,
+            }
+            if ambiguous
+            else {"error": "no such held tool"}
+        )
     invalidate_profile_cache_for_backend(urls[0])
-    return {"backend": backend, "tool": tool, "action": action}
+    return {"backend": backend, "tool": tool, "action": action, "hash": hash}

@@ -79,7 +79,7 @@ async def test_excluded_by_denylist(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_held_pending_pin(monkeypatch: pytest.MonkeyPatch) -> None:
     _offer(monkeypatch, [_tool("foo")])
     # A pin hold is read-only state the diagnostic must notice without writing.
-    perimeter_db.put_pin(backend_id(URL), "foo", approved=None, pending=("h", "{}"), rejected=False)
+    perimeter_db.put_pin(backend_id(URL), "foo", "h", perimeter_db.PIN_PENDING, "{}")
     result = await diagnose_tool_visibility(_profile(Backend(url=URL)), "b", "foo")
     assert result["reason"] == diagnose.HELD_PENDING_PIN
 

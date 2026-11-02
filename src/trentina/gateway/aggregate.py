@@ -302,7 +302,7 @@ async def _build_profile_tools(
         allowed = await asyncio.to_thread(Stage.of, filtered)
         pre_compress = filtered
         if backend.compresses_descriptions:
-            filtered = compress_tools(filtered)
+            filtered = compress_tools(profile, filtered)
         # The perimeter, on the post-compression text — compressed
         # descriptions are LLM output and it is the OUTPUT that reaches the
         # agent. This runs whether the list came from the backend live or

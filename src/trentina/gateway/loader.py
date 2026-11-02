@@ -1167,30 +1167,56 @@ def _resolve_alert_ingress_secrets(name: str, alert_ingress: AlertIngressConfig)
         alert_ingress.forward_secret = SecretStr(fwd_secret)
 
 
+def keyless_profiles(registry: dict[str, Profile]) -> list[str]:
+    """Every profile with no key for the provider its own L3 runs on.
+
+    Returned as well as warned about, so ``config_tool`` can put it in a write
+    result: a warning reaches the journal, and since #633 the thing writing
+    configs is an agent that never reads one.
+    """
+    from .service import judge_of
+
+    out = []
+    for name, profile in registry.items():
+        provider, _model = judge_of(profile)
+        if provider != "ollama" and provider not in profile.llm_keys:
+            out.append(name)
+    return out
+
+
 def _check_judges(registry: dict[str, Profile]) -> None:
     """Warn about a profile with no key for the provider its L3 runs on.
 
     Each gateway ingress binds the calling profile (RT #1505), and
     ``resolve_profile_llm`` refuses to bill any key but the profile's own, so
     such a profile's L3 reports ``l3_unavailable`` and block refuses what it
-    judges. Its internal tools always behaved that way; before RT #1505 its
-    proxied responses ran unbound on the global key and hid it. A warning,
-    not a load error: a config that never set ``llm_keys`` should learn why
-    before it stops loading.
+    judges. Since 6.1.0 that includes its TOOL DESCRIPTIONS, which the operator
+    used to judge on its behalf — so under ``block`` such a profile is served
+    no tool list at all, not merely unjudged responses.
+
+    Still a warning rather than a load error. The profile was already
+    non-functional under ``block``, so refusing the file surfaces an existing
+    breakage rather than preventing a new one, and a config that never set
+    ``llm_keys`` should learn why before it stops loading. What closes the gap
+    the warning leaves is ``config_tool`` reporting it in the write result
+    (``keyless_profiles``), where the agent that wrote the config will see it.
     """
     from .service import judge_of
 
-    for name, profile in registry.items():
-        provider, _model = judge_of(profile)
-        if provider != "ollama" and provider not in profile.llm_keys:
-            logger.warning(
-                "profile %r judges with provider %r but has no llm_keys.%s: its L3 "
-                "will report l3_unavailable; add the key, or set defense.provider "
-                "to one it holds",
-                name,
-                provider,
-                provider,
-            )
+    for name in keyless_profiles(registry):
+        provider, _model = judge_of(registry[name])
+        logger.warning(
+            "profile %r judges with provider %r but has no llm_keys.%s: its L3 will "
+            "report l3_unavailable, for its tool DESCRIPTIONS as well as its "
+            "responses, so under block it is served NO tools — internal:// ones "
+            "included, so an operator profile loses quarantine_stats and "
+            "config_tool too. An l3_unavailable verdict is never persisted "
+            "either, so it re-runs L1 and L2 over every description on every "
+            "list. Add the key, or set defense.provider to one it holds",
+            name,
+            provider,
+            provider,
+        )
 
 
 def _check_operator(registry: dict[str, Profile]) -> None:

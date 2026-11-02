@@ -259,7 +259,7 @@ def _profile() -> Profile:
 class TestProxiedTools:
     async def test_backend_that_fails(self, captured: _Capture) -> None:
         profile = _profile()
-        backend_mod._tool_list_cache["http://mcp-slack:8000/mcp"] = [
+        backend_mod._tool_list_cache[("http://mcp-slack:8000/mcp", "")] = [
             {
                 "name": "post",
                 "inputSchema": {
@@ -297,7 +297,7 @@ class TestProxiedTools:
             literal_request_guards={"send_message": {"text": ParameterConstraint(deny=["*"])}},
         )
         profile.backends["web"] = Backend(url="internal://web")
-        backend_mod._tool_list_cache["http://mcp-slack:8000/mcp"] = [
+        backend_mod._tool_list_cache[("http://mcp-slack:8000/mcp", "")] = [
             {"name": "send_message", "inputSchema": {}}
         ]
         with patch.object(
@@ -356,7 +356,7 @@ class TestProxiedTools:
 )
 def test_loggable_tool(listed: str, name: str, verbatim: bool) -> None:
     url = "http://mcp-slack:8000/mcp"
-    backend_mod._tool_list_cache[url] = [{"name": listed, "inputSchema": {}}]
+    backend_mod._tool_list_cache[(url, "")] = [{"name": listed, "inputSchema": {}}]
     assert (backend_mod.loggable_tool(url, name) == name) is verbatim
 
 
