@@ -62,15 +62,32 @@ def _federation_in_use(config: GatewayConfig) -> bool:
     )
 
 
+def _config_api_in_use(config: GatewayConfig) -> bool:
+    """``config_tool`` is operator-only, so a file with no operator cannot
+    reach it and is not using the surface."""
+    return any(profile.role == "operator" for profile in config.profiles.values())
+
+
 #: The declared preview surfaces, by name.
 #:
-#: Federation alone. The other two features that have churned recently —
-#: API-driven configuration (#633) and human approval (#637) — are deliberately
-#: NOT here: both carry breaking changes in the release that introduces this
-#: module, and declaring them preview in the same breath would re-characterise
-#: those changes after the fact. Adding a surface is a product decision, made
-#: before the release that would rely on it, never during one.
+#: Human approval (#637) is deliberately NOT here. It is the one mechanism in
+#: the gateway that an operator agent cannot talk its way past, and a preview
+#: declaration says "this may change in a minor" — the wrong thing to tell an
+#: operator about the gate they are relying on. Adding a staged ``Kind`` or a
+#: ``config_guard`` rule needs no surface anyway: it TIGHTENS, moving something
+#: an operator could do alone behind a person, and that is not a break.
 PREVIEW_SURFACES: Mapping[str, PreviewSurface] = {
+    "config-api": PreviewSurface(
+        name="config-api",
+        issue="#633",
+        doc="docs/operator.md",
+        summary=(
+            "the config_tool write API: its action names, its arguments and the "
+            "keys in its result — not the guard rules deciding what a person "
+            "must approve, which are stable"
+        ),
+        detect=_config_api_in_use,
+    ),
     "federation": PreviewSurface(
         name="federation",
         issue="#592",

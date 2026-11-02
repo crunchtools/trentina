@@ -64,16 +64,22 @@ def test_changelog_preview_sections_name_declared_surfaces() -> None:
         )
 
 
-def test_api_config_and_approval_are_not_preview() -> None:
-    """Both break in 5.0.0, so declaring them preview would be retroactive.
+def test_human_approval_is_not_preview() -> None:
+    """The approval page is the one gate an operator agent cannot talk its way
+    past, so "this may change in a minor" is the wrong thing to say about it.
 
-    The constitution's second rule: a surface is declared BEFORE the release
-    that relies on it. This pins the decision so a later edit has to argue
-    with it rather than quietly reverse it.
+    Scott's call, 2026-11-01. This pins it so a later edit has to argue with
+    the decision rather than quietly reverse it. Every spelling, because the
+    point is the feature and not one key: an assertion naming only
+    ``"approval"`` would pass against a surface keyed ``"approvals"``.
     """
-    assert "config" not in PREVIEW_SURFACES
-    assert "approval" not in PREVIEW_SURFACES
-    assert "human_approval" not in PREVIEW_SURFACES
+    for spelling in ("approval", "approvals", "human_approval", "human-approval"):
+        assert spelling not in PREVIEW_SURFACES
+
+    # And the surface that IS declared covers the tool's shape, not the rules
+    # deciding what a person must approve.
+    assert "config_guard" not in PREVIEW_SURFACES["config-api"].summary
+    assert "stable" in PREVIEW_SURFACES["config-api"].summary
 
 
 #: A real Ed25519 public key, so `FederationPeer` validates rather than being
@@ -89,12 +95,15 @@ def _config(**profiles: Profile) -> GatewayConfig:
     return GatewayConfig(profiles=dict(profiles))
 
 
-def _seat(name: str, *, offers: bool = False, consumes: bool = False) -> Profile:
+def _seat(
+    name: str, *, offers: bool = False, consumes: bool = False, operator: bool = False
+) -> Profile:
     """A real `Profile`: either half of a link, neither, or both.
 
     Built through the real models rather than a stub, so a field rename in
     `Profile` or `FederationConfig` fails this file instead of letting
-    `in_use` silently stop detecting anything.
+    `in_use` silently stop detecting anything. `operator` is what makes
+    `config_tool` reachable, and so what puts `config-api` in use.
     """
     federation = (
         FederationConfig(peers={"peer": FederationPeer(public_key=PEER_KEY)}) if offers else None
@@ -112,6 +121,7 @@ def _seat(name: str, *, offers: bool = False, consumes: bool = False) -> Profile
     )
     return Profile(
         name=name,
+        role="operator" if operator else "agent",
         auth=AuthConfig(bearer_token_env="TEST_TOKEN"),
         defense=DefenseConfig(enforcement="block"),
         backends=backends,
@@ -127,11 +137,21 @@ def _seat(name: str, *, offers: bool = False, consumes: bool = False) -> Profile
         (_config(a=_seat("a", offers=True)), ["federation"]),
         (_config(a=_seat("a", consumes=True)), ["federation"]),
         (_config(a=_seat("a"), b=_seat("b", offers=True)), ["federation"]),
+        # `config_tool` is operator-only, so a file with no operator cannot
+        # reach the surface at all.
+        (_config(a=_seat("a", operator=True)), ["config-api"]),
+        (
+            _config(a=_seat("a", operator=True), b=_seat("b", offers=True)),
+            ["config-api", "federation"],
+        ),
     ],
-    ids=["empty", "neither", "offers", "consumes", "one-of-two"],
+    ids=["empty", "neither", "offers", "consumes", "one-of-two", "operator", "both-surfaces"],
 )
-def test_in_use_detects_either_half_of_a_link(config: GatewayConfig, expected: list[str]) -> None:
-    """Offering a link and consuming one both count as using the surface."""
+def test_in_use_detects_the_surfaces_a_config_actually_uses(
+    config: GatewayConfig, expected: list[str]
+) -> None:
+    """Offering a link and consuming one both count as the federation surface;
+    an operator seat is what makes `config-api` reachable."""
     assert in_use(config) == expected
 
 
