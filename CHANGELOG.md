@@ -37,6 +37,31 @@ stops loading. Two operational notes:
    `trust_verdict.perimeter_stamp`. Nothing is unsafe in the meantime; it is
    twice the work, quietly.
 
+3. **Give every profile its own `llm_keys`, and check the ones that have
+   none.** A profile judges its own tool descriptions now, so one with no key
+   for the provider its `defense` resolves to judges nothing — and under
+   `enforcement: block` a description that cannot be judged is withheld, so
+   that profile is served **no tools at all**. Not only its remote ones:
+   `internal://` tool descriptions are judged too (only a decoy's are not), so
+   a keyless OPERATOR profile loses `quarantine_stats`, `config_tool` and the
+   rest of the admin set — which worked before, because the operator's own key
+   paid for every profile's descriptions.
+
+   Such a profile was already half-broken: every tool RESPONSE reported
+   `l3_unavailable` and block refused it, and the loader has warned about it
+   since RT #1505. What changes is that the failure arrives at `tools/list`
+   instead of at the first call. The loader still only warns, so nothing stops
+   loading; `config_tool` now reports it as `no_llm_key` in the write result as
+   well. Ollama is keyless and exempt.
+
+4. **`pending_pins` may not return to zero on its own.** A tool that reverts to
+   an approved definition is served again, and the definition that was held
+   stays held — the "revert" that used to clear it is gone, because with
+   partitioned lists one profile's re-list is no evidence about what another is
+   being served. So `tool_pins list` and `/health`'s `pending_pins` keep
+   carrying it until an operator runs `tool_pins reject`. Expected, and worth
+   knowing before it reads as a stuck counter.
+
 ### Preview
 
 Federation (`federation`): the `trust_verdict` re-pin above. The pin mechanism

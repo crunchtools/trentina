@@ -1046,8 +1046,10 @@ async def _apply(
             "effect": (
                 "each judges nothing: its tool descriptions and its responses both "
                 "report l3_unavailable, so under enforcement block it is served no "
-                "tool list. Add llm_keys for the provider its defense resolves to, "
-                "or point defense.provider at one it holds"
+                "tools at all — internal:// ones included, so an operator profile "
+                "loses quarantine_stats and config_tool. Add llm_keys for the "
+                "provider its defense resolves to, or point defense.provider at one "
+                "it holds"
             ),
         }
     return answer

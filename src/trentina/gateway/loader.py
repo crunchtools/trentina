@@ -1208,10 +1208,11 @@ def _check_judges(registry: dict[str, Profile]) -> None:
         logger.warning(
             "profile %r judges with provider %r but has no llm_keys.%s: its L3 will "
             "report l3_unavailable, for its tool DESCRIPTIONS as well as its "
-            "responses, so under block it is served no tool list. An "
-            "l3_unavailable verdict is never persisted either, so it re-runs L1 "
-            "and L2 over every description on every list. Add the key, or set "
-            "defense.provider to one it holds",
+            "responses, so under block it is served NO tools — internal:// ones "
+            "included, so an operator profile loses quarantine_stats and "
+            "config_tool too. An l3_unavailable verdict is never persisted "
+            "either, so it re-runs L1 and L2 over every description on every "
+            "list. Add the key, or set defense.provider to one it holds",
             name,
             provider,
             provider,

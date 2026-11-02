@@ -2105,7 +2105,11 @@ class TestAProfileWithNoKeyOfItsOwn:
 
         assert result["applied"] is True
         assert result["no_llm_key"]["profiles"] == ["ag"]
-        assert "no tool list" in result["no_llm_key"]["effect"]
+        effect = result["no_llm_key"]["effect"]
+        assert "no tools at all" in effect
+        # The part an operator most needs: it loses its own admin tools,
+        # because internal:// descriptions are judged too.
+        assert "config_tool" in effect
 
     def test_a_profile_holding_its_own_key_is_not_named(self, gateway: pathlib.Path) -> None:
         """Asserted on the predicate rather than through a write: this file's
