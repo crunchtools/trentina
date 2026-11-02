@@ -90,61 +90,54 @@ def loosens_safety(old_json: str | None, new_json: str) -> bool:
     return read_only or destructive
 
 
-def _key_paths(node: Any, prefix: str = "") -> set[str]:
-    """Every key path in a JSON document, so two can be compared structurally."""
-    paths: set[str] = set()
+#: Keys whose own keys are NAMES an author chose, not schema vocabulary. A
+#: property may legitimately be called ``description``, and that key is part of
+#: the schema's shape where the annotation of the same name is not.
+_NAME_MAPS = frozenset({"properties", "patternProperties", "definitions", "$defs"})
+
+
+def _schema_shape(node: Any, *, names: bool = False) -> Any:
+    """``node`` with every schema ``description`` ANNOTATION removed.
+
+    ``names`` says the dict being walked is one whose keys are author-chosen
+    names, so a key spelled ``description`` there is a property and is kept.
+    Its values are subschemas, so the recursion drops back to vocabulary.
+    """
     if isinstance(node, dict):
+        out: dict[str, Any] = {}
         for key, value in node.items():
-            here = f"{prefix}.{key}"
-            paths.add(here)
-            paths |= _key_paths(value, here)
-    elif isinstance(node, list):
-        for item in node:
-            paths |= _key_paths(item, f"{prefix}[]")
-    return paths
+            if not names and key == "description" and isinstance(value, str):
+                continue
+            out[key] = _schema_shape(value, names=not names and key in _NAME_MAPS)
+        return out
+    if isinstance(node, list):
+        return [_schema_shape(item) for item in node]
+    return node
 
 
-def schema_grew(old_json: str | None, new_json: str) -> bool:
-    """True when the new ``inputSchema`` has a key, or a ``required`` entry, the
-    approved one did not.
+def schema_shape_changed(old_json: str | None, new_json: str) -> bool:
+    """True unless the new ``inputSchema`` is the approved one with its
+    descriptions rewritten.
 
     This is what makes ``inputSchema`` safe to batch. The gateway's own
     compressor rewrites the DESCRIPTIONS inside a schema as well as the tool's
     own (``compress._compressed_properties``), which is why a re-compression
     reports ``description,inputSchema`` on hundreds of tools at once — 278 of
-    breetai's 582. It never adds a property, so a schema that GREW is the
-    backend's doing, and "a schema that grows a ``recipient`` or ``url``
-    parameter" is the rug pull this whole module exists to catch
-    (``docs/tool-pinning.md``). Values may change; shape may not.
+    breetai's 582. Those strings are the ONLY thing it touches, so the test is
+    equality once they are taken out: anything else that moved is the backend's
+    doing and goes in front of a person.
 
-    ``required`` is compared by VALUE, not by path, because its entries are
-    strings in a list: a new one makes an existing optional parameter
-    mandatory, which changes what a call must carry.
+    It is deliberately not a "did it grow" check. That was the first cut, and
+    Gatehouse was right that it let through every change which adds no key —
+    a widened ``enum``, a changed ``type``, a relaxed
+    ``additionalProperties``, or a ``required`` entry added to one nested
+    object that another already had. Comparing what must not change beats
+    enumerating the ways it could.
     """
     if old_json is None:
         return True
     old, new = json.loads(old_json), json.loads(new_json)
-    if _key_paths(new.get("inputSchema")) - _key_paths(old.get("inputSchema")):
-        return True
-    return bool(_required_names(new) - _required_names(old))
-
-
-def _required_names(definition: dict[str, Any]) -> set[str]:
-    """Every ``required`` entry anywhere in a definition's ``inputSchema``."""
-    found: set[str] = set()
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            if isinstance(req := node.get("required"), list):
-                found.update(str(name) for name in req)
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    walk(definition.get("inputSchema"))
-    return found
+    return bool(_schema_shape(old.get("inputSchema")) != _schema_shape(new.get("inputSchema")))
 
 
 def _baseline_open() -> bool:
@@ -403,7 +396,7 @@ def pending(url: str) -> list[dict[str, Any]]:
                 "hash": row["definition_hash"],
                 "changed": changed_fields(before, row["definition_json"]),
                 "safety_loosened": loosens_safety(before, row["definition_json"]),
-                "schema_grew": schema_grew(before, row["definition_json"]),
+                "schema_shape_changed": schema_shape_changed(before, row["definition_json"]),
                 "rejected": bool(row["state"] == perimeter_db.PIN_REJECTED),
             }
         )
@@ -445,10 +438,10 @@ def unbatchable_reason(rows: Iterable[Mapping[str, Any]]) -> str:
             # this is unreachable today. Kept, and tested with the field rule
             # widened, so widening it later cannot quietly pass one.
             return f"{row['tool']} loosened a safety hint; approve it on its own"
-        if row["schema_grew"]:
+        if row["schema_shape_changed"]:
             return (
-                f"{row['tool']} gained an input the approved definition had no name for, "
-                "which the gateway's own compressor never does; approve it on its own"
+                f"{row['tool']} changed its input schema beyond the descriptions the "
+                "gateway's own compressor rewrites; approve it on its own"
             )
     return ""
 
@@ -498,9 +491,9 @@ def decide_all(
 
     The three gates are ``set_digest`` — the bytes ``pending`` showed, so a
     concurrent re-list cannot ride along — ``BULK_FIELDS``, which keeps every
-    rug-pull shape on the one-at-a-time path, and ``schema_grew``, which keeps
-    ``inputSchema`` in the batch honest: the compressor rewrites the
-    descriptions inside a schema but never adds to one. The digest is required
+    rug-pull shape on the one-at-a-time path, and ``schema_shape_changed``,
+    which keeps ``inputSchema`` in the batch honest: a schema may differ from
+    the approved one only in the descriptions the compressor rewrites. The digest is required
     HERE rather than at the tool, so no caller can reach a batch without one.
     """
     if not set_digest:

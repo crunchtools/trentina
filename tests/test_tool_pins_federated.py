@@ -418,10 +418,19 @@ class TestApprovingAWholeHeldSet:
         """What a re-compression looks like: the description rewritten, and for
         some tools the schema compacted differently too."""
         for i, tool in enumerate(("send_message", "read_entry", "list_feeds")):
-            old = {"name": tool, "description": "original prose", "inputSchema": {"a": 1}}
-            new = {"name": tool, "description": "tighter prose", "inputSchema": {"a": 1}}
+            schema = {"properties": {"body": {"type": "string", "description": "the full text"}}}
+            old = {"name": tool, "description": "original prose", "inputSchema": schema}
+            new: dict[str, Any] = {
+                "name": tool,
+                "description": "tighter prose",
+                "inputSchema": schema,
+            }
             if i == 2:
-                new["inputSchema"] = {"a": 2}
+                # The compressor rewrites the descriptions INSIDE a schema too,
+                # which is the only way inputSchema may differ in a batch.
+                new["inputSchema"] = {
+                    "properties": {"body": {"type": "string", "description": "text"}}
+                }
             self._approved(tool, tool_pins.canonical(old))
             self._held(tool, tool_pins.canonical(new))
 
@@ -646,8 +655,8 @@ class TestApprovingAWholeHeldSet:
             result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
 
         assert listed["held"][0]["changed"] == ["inputSchema"]
-        assert listed["held"][0]["schema_grew"] is True
-        assert "gained an input" in result["error"]
+        assert listed["held"][0]["schema_shape_changed"] is True
+        assert "beyond the descriptions" in result["error"]
         assert perimeter_db.pending_hashes(backend_id(LOTOR_URL), "send_message")
 
     async def test_a_rewritten_property_description_still_batches(
@@ -668,7 +677,7 @@ class TestApprovingAWholeHeldSet:
             listed = await manage_tool_pins("list", "lotor")
             result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
 
-        assert listed["held"][0]["schema_grew"] is False
+        assert listed["held"][0]["schema_shape_changed"] is False
         assert result["approved"] == 1
 
     async def test_a_new_required_entry_refuses_the_batch(
@@ -691,7 +700,7 @@ class TestApprovingAWholeHeldSet:
             listed = await manage_tool_pins("list", "lotor")
             result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
 
-        assert "gained an input" in result["error"]
+        assert "beyond the descriptions" in result["error"]
 
     async def test_a_write_that_cannot_move_every_row_moves_none(
         self, gateway: dict[str, Profile]
@@ -712,3 +721,102 @@ class TestApprovingAWholeHeldSet:
 
         assert "moved while it was being approved" in result["error"]
         assert len(perimeter_db.list_pending_pins(bid)) == 3  # nothing released
+
+    @pytest.mark.parametrize(
+        ("old_schema", "new_schema", "what"),
+        [
+            (
+                {"properties": {"to": {"enum": ["alice"]}}},
+                {"properties": {"to": {"enum": ["alice", "anyone"]}}},
+                "a widened enum",
+            ),
+            (
+                {"properties": {"body": {"type": "string"}}},
+                {"properties": {"body": {"type": "object"}}},
+                "a changed type",
+            ),
+            (
+                {"properties": {"body": {"type": "string"}}, "additionalProperties": False},
+                {"properties": {"body": {"type": "string"}}, "additionalProperties": True},
+                "relaxed additionalProperties",
+            ),
+            (
+                {
+                    "properties": {
+                        "a": {"required": ["id"], "properties": {"id": {"type": "string"}}},
+                        "b": {"required": [], "properties": {"id": {"type": "string"}}},
+                    }
+                },
+                {
+                    "properties": {
+                        "a": {"required": ["id"], "properties": {"id": {"type": "string"}}},
+                        "b": {"required": ["id"], "properties": {"id": {"type": "string"}}},
+                    }
+                },
+                "a required entry added where a sibling already had it",
+            ),
+        ],
+    )
+    async def test_a_change_that_adds_no_key_still_refuses_the_batch(
+        self,
+        gateway: dict[str, Profile],
+        old_schema: dict[str, Any],
+        new_schema: dict[str, Any],
+        what: str,
+    ) -> None:
+        """Why the rule is equality-apart-from-descriptions, not "did it grow".
+
+        The first cut asked whether the schema gained a key path or a `required`
+        name. Gatehouse pointed out that every case here adds neither, and all
+        four change what a call means. Comparing what must NOT change beats
+        enumerating the ways it could.
+        """
+        self._approved(
+            "send_message", tool_pins.canonical({"name": "send_message", "inputSchema": old_schema})
+        )
+        self._held(
+            "send_message", tool_pins.canonical({"name": "send_message", "inputSchema": new_schema})
+        )
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert listed["held"][0]["schema_shape_changed"] is True, what
+        assert "beyond the descriptions" in result["error"], what
+
+    async def test_a_property_actually_named_description_is_part_of_the_shape(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        """The annotation is dropped before comparing; a property of that name
+        is not. `_NAME_MAPS` is what tells them apart."""
+        old = {"properties": {"description": {"type": "string"}}}
+        new = {"properties": {"description": {"type": "integer"}}}
+        self._approved(
+            "send_message", tool_pins.canonical({"name": "send_message", "inputSchema": old})
+        )
+        self._held(
+            "send_message", tool_pins.canonical({"name": "send_message", "inputSchema": new})
+        )
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+
+        assert listed["held"][0]["schema_shape_changed"] is True
+
+    async def test_dropping_a_property_also_refuses_the_batch(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        """Equality is symmetric, so a schema that SHRANK is reviewed too. The
+        growth check passed this silently."""
+        old = {"properties": {"body": {"type": "string"}, "to": {"type": "string"}}}
+        new = {"properties": {"body": {"type": "string"}}}
+        self._approved(
+            "send_message", tool_pins.canonical({"name": "send_message", "inputSchema": old})
+        )
+        self._held(
+            "send_message", tool_pins.canonical({"name": "send_message", "inputSchema": new})
+        )
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert "beyond the descriptions" in result["error"]

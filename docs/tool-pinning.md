@@ -109,13 +109,19 @@ because forty-nine of them arrived together.
 **inside** a schema as well as the tool's own
 (`compress._compressed_properties`) — which is why a re-compression reports
 `description,inputSchema` on hundreds of tools at once, 278 of breetai's 582.
-What keeps that honest is the third gate: **a schema that GREW refuses the
-batch.** The compressor rewrites values and never adds a property, so a new key
-path under `inputSchema`, or a new `required` entry, is the backend's doing —
-and "a schema that grows a `recipient` or `url` parameter" is the rug pull at
-the top of this page. `required` is compared by value rather than by path,
-since making an existing optional mandatory adds no key and still changes what
-a call must carry. Each held entry carries `schema_grew` so a listing shows it.
+What keeps that honest is the third gate: **a schema may differ from the
+approved one only in its descriptions.** Both are compared with every
+`description` annotation taken out, and anything else that moved refuses the
+batch. Each held entry carries `schema_shape_changed` so a listing shows it.
+
+It is deliberately an equality test and not a "did it grow" test. Growth was
+the first design, and it would have passed a widened `enum`, a changed `type`,
+a relaxed `additionalProperties`, a dropped property, and a `required` entry
+added to one nested object that a sibling already had — none of which add a key
+or a name, all of which change what a call means. Comparing what must not
+change beats enumerating the ways it could. A property genuinely *named*
+`description` is part of the shape and is kept: `_NAME_MAPS` is what tells an
+author's name from the schema's own vocabulary.
 
 Nothing is approved unless every row qualifies, and the write itself is one
 transaction (`perimeter_db.set_pin_states`): if any pair no longer matches a

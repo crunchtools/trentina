@@ -34,11 +34,13 @@ makes the set, rather than the operator's patience, the unit of decision.
   the tool responsible, and stay one approval at a time.
 
   `inputSchema` qualifies because the compressor rewrites the descriptions
-  inside a schema too, so a third gate keeps it honest: **a schema that grew
-  refuses the batch.** A new key path under `inputSchema`, or a new `required`
-  entry, is something the compressor never produces — it is the backend adding
-  an input, which is the rug pull pinning exists to catch. Held entries now
-  carry `schema_grew` alongside `safety_loosened`.
+  inside a schema too, so a third gate keeps it honest: **a schema may differ
+  from the approved one only in its descriptions.** The two are compared with
+  every `description` annotation removed, so a widened `enum`, a changed
+  `type`, a relaxed `additionalProperties`, a dropped property or a new
+  `required` entry each refuse the batch — none of them add a key, and all of
+  them change what a call means. Held entries now carry `schema_shape_changed`
+  alongside `safety_loosened`.
 
   Nothing is approved unless all of it qualifies, and the write is one
   transaction (`perimeter_db.set_pin_states`): if any pair no longer matches a
