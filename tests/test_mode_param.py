@@ -100,7 +100,7 @@ def _profile(
 ) -> Profile:
     p = Profile(
         short_names=False,  # calls below use <backend>__<tool>
-        name="agent",
+        name="tenant",
         auth=AuthConfig(bearer_token_env="TEST"),
         defense=DefenseConfig(enforcement=enforcement, modes=modes),
         backends={"jira": Backend(url="http://jira:8000/mcp", **(backend or {}))},
@@ -270,7 +270,7 @@ class TestInstructions:
         p = _profile(["block", "flag", "redact"])
         resp = await route_jsonrpc(p, {"jsonrpc": "2.0", "id": 1, "method": "initialize"})
         text = resp["result"]["instructions"]
-        assert text.startswith("trentina gateway, profile=agent.")
+        assert text.startswith("trentina gateway, profile=tenant.")
         assert text.endswith(mode_instructions(p))
 
 

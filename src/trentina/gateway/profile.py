@@ -15,7 +15,7 @@ import ipaddress
 import logging
 import re
 from fnmatch import fnmatchcase
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 from urllib.parse import parse_qsl, urlparse, urlsplit
 
 from pydantic import (
@@ -3623,6 +3623,36 @@ class Profile(BaseModel):
         """Profile name must be a URL-safe slug (matches PROFILE_NAME_RE)."""
         if not PROFILE_NAME_RE.match(v):
             raise ValueError(f"Profile name {v!r} must match ^[a-z][a-z0-9-]*$")
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def name_is_not_a_role(cls, v: str) -> str:
+        """A profile may not be NAMED after a role (Scott, 2026-11-02).
+
+        ``role: operator`` says what a profile may do; a profile named
+        ``operator`` says nothing and reads as though it did. Both appear in
+        the same sentences -- "the operator profile", "an operator reload",
+        ``/gateway/operator/mcp`` -- and once one deployment has a profile with
+        that name, every such sentence is ambiguous between the role and the
+        name. Reserving the words is cheaper than disambiguating them forever.
+
+        Derived from ``get_args(ProfileRole)`` rather than a second list, so a
+        role added later is reserved by having been added. A hand-maintained
+        copy is the version that drifts, which is the same argument that put
+        ``INGRESS_SUFFIX`` in this module.
+
+        Case-insensitive even though ``PROFILE_NAME_RE`` already forbids upper
+        case: the two rules are independent, and this one should not quietly
+        stop working if that one is ever loosened.
+        """
+        if v.casefold() in {role.casefold() for role in get_args(ProfileRole)}:
+            raise ValueError(
+                f"Profile name {v!r} is a role name, which is reserved. Roles "
+                "are what a profile HOLDS (`role: " + v.casefold() + "`), so a "
+                "profile of that name makes every sentence about it ambiguous. "
+                "Name it for what it is -- its agent, its owner, or its job."
+            )
         return v
 
     @field_validator("backends")

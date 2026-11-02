@@ -183,6 +183,14 @@ profiles:
 - **No self-promotion.** A tenant's reload that finds its own `role` changed
   on disk refuses and applies nothing. A promotion takes effect only through an
   operator reload or a restart.
+- **No profile may be NAMED after a role.** `agent` and `operator` are
+  reserved, and so is any role added later — the rule reads the role enum
+  rather than carrying its own list. `role: operator` says what a profile may
+  do; a profile called `operator` says nothing and reads as though it did, and
+  the two appear in the same sentences ("the operator profile", "an operator
+  reload", `/gateway/operator/mcp`). The rule is equality, not a substring, so
+  `operator-prime` and `agents` are fine. **This refuses the whole file**, so a
+  deployment with such a profile must rename it before upgrading.
 - **No duplicate key, anywhere in the file.** A key written twice in one
   mapping refuses the whole file, naming each repeat and its line. YAML keeps
   the LAST one and discards the earlier one silently, so the block a reader

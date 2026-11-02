@@ -52,7 +52,7 @@ def _profile(
     tools_deny: list[str] | None = None,
 ) -> Profile:
     p = Profile(
-        name="agent",
+        name="tenant",
         short_names=False,  # calls use <backend>__<tool>
         auth=AuthConfig(bearer_token_env="TEST"),
         defense=DefenseConfig(enforcement=enforcement, modes=modes or [enforcement]),

@@ -10,6 +10,60 @@ under that name.
 
 ## [Unreleased]
 
+## [6.0.0] - 2026-11-02
+
+A major because of the two config rules below, not because of their size. Both
+refuse a file that loaded before, and profile naming and YAML parsing are
+outside every declared preview surface — constitution rule 1: a change reaching
+outside them is a major, and "mostly confined" is not confined. The federation
+work in this release would have been a minor on its own.
+
+### Upgrading
+
+The gateway refuses to START on either of these, so a missed one is loud rather
+than silent. Neither is caught by `profile_lint` alone for the reason in item 2.
+
+1. **Rename any profile named `agent` or `operator`.** Role names are reserved
+   as profile names, and so is any role added later. `role: operator` says what
+   a profile may do; a profile *called* `operator` says nothing and reads as
+   though it did, and both appear in the same sentences — "the operator
+   profile", "an operator reload", `/gateway/operator/mcp`. The rule is
+   equality, not a substring, so `operator-prime` and `agents` still load.
+2. **Remove any duplicate key from `profiles.yaml`.** A key written twice in
+   one mapping now refuses the whole file, naming each repeat and its line.
+   `yaml.safe_load` kept the LAST one and said nothing, so the block a reader
+   sees first was not the block that ran. A key arriving through a
+   `<<: *anchor` merge AND written explicitly is *not* a duplicate — that is
+   the override merge keys exist for, and it keeps working.
+
+   `python -m trentina.gateway.profile_lint <profiles.yaml>` now reports this as
+   `duplicate-key`. But the lint works on raw YAML and never calls
+   `load_profiles`, so a clean lint has never been a guarantee the gateway will
+   start. The pre-flight that is, is a real load inside the image being
+   deployed, with the unit's mounts and user:
+
+   ```
+   podman run --rm -v <config>:/config:ro --userns keep-id:uid=65532,gid=65532 \
+     --env-file <env> quay.io/crunchtools/trentina:6.0.0 \
+     python -c "from trentina.gateway.loader import load_profiles; \
+                print(len(load_profiles('/config/profiles.yaml').profiles))"
+   ```
+
+### Changed
+
+- **A duplicate key in `profiles.yaml` is refused instead of silently
+  resolved.** One of mine reached production: a profile carried `defense:`
+  twice, the gateway ran the second, and the comment on the first explained a
+  block that had already lost. They happened to agree, and nothing anywhere
+  would have said so if they had not. `config_tool`'s contract is that the file
+  a person maintains and reviews in a diff is the file in force, and a
+  duplicate key broke that quietly. The scan walks the YAML node tree rather
+  than the loaded mapping, because the evidence is gone by the time there is a
+  mapping and because constructing one trips over merge keys.
+- **A profile may not be named after a role.** Reserved set read from the role
+  enum rather than a hand-kept list, so a role added later is reserved by
+  having been added.
+
 ## [5.0.1] - 2026-11-01
 
 ### Fixed

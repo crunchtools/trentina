@@ -127,7 +127,7 @@ def test_a_derived_ingress_may_not_widen_its_internal_tools(allow: list[str]) ->
 def test_a_profile_without_peers_is_unconstrained() -> None:
     # No federation block: an internal backend may serve everything, as ever.
     profile = Profile(
-        name="agent",
+        name="tenant",
         auth=AuthConfig(bearer_token_env="A"),
         backends={"web": Backend(url="internal://web", tools_allow=["*"])},
     )
@@ -180,12 +180,12 @@ def test_a_federated_call_records_its_caller(db: Any) -> None:
 
 def test_a_non_federated_call_has_a_null_caller(db: Any) -> None:
     # current_caller defaults to None; the columns stay NULL.
-    audit._audit("agent", "web", "echo", Outcome.OK, 1)
+    audit._audit("tenant", "web", "echo", Outcome.OK, 1)
     assert _caller_of(db, 1) == (None, None)
 
 
 def test_the_chain_verifies_with_and_without_a_caller(db: Any) -> None:
-    audit._audit("agent", "web", "plain", Outcome.OK, 1)  # no caller
+    audit._audit("tenant", "web", "plain", Outcome.OK, 1)  # no caller
     token = current_caller.set(("breetai", "primary"))
     try:
         audit._audit("up", "web", "echo", Outcome.OK, 1)  # federated
@@ -328,12 +328,12 @@ def test_a_trusted_response_records_its_verdict(db: Any) -> None:
 
 
 def test_a_non_federated_call_has_a_null_verdict(db: Any) -> None:
-    audit._audit("agent", "web", "echo", Outcome.OK, 1)
+    audit._audit("tenant", "web", "echo", Outcome.OK, 1)
     assert _verdict_of(db, 1) is None
 
 
 def test_the_chain_verifies_with_and_without_a_verdict(db: Any) -> None:
-    audit._audit("agent", "web", "plain", Outcome.OK, 1)
+    audit._audit("tenant", "web", "plain", Outcome.OK, 1)
     token = current_federated_verdict.set("stamp_mismatch")
     try:
         audit._audit("down", "fed", "echo", Outcome.OK, 1)
