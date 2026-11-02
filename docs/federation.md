@@ -125,9 +125,10 @@ already the operator. That is the one that arrives looking like something else
 Two things do *not* follow the role. The derivation still constructs the
 internal backend under its own label, so a peer cannot reach `internal://` by
 whatever name the operator gave it. And the service identity — the profile the
-gateway's own model calls run as — is always a profile somebody **wrote**, never
-a derivation, because taking the first `role: operator` match out of the
-registry would let dict order decide it.
+gateway binds for its own work, which since 6.1.0 means an approved config
+write and no model call — is always a profile somebody **wrote**, never a
+derivation, because taking the first `role: operator` match out of the registry
+would let dict order decide it.
 
 ## Operating concepts
 

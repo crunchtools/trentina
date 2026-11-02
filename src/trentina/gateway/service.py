@@ -1,27 +1,30 @@
 """The gateway's service identity: the operator profile (#138).
 
-Some model calls belong to no tenant. Compressing a shared tool description
-and judging it at the perimeter are the gateway's own work, done once for
-every profile that lists the tool. Until #138 that work ran as whoever was
-nearby: compression took the FIRST profile's provider for a shared backend
-URL, so reordering ``profiles.yaml`` changed the model, and the ``tools/list``
-path had no profile bound at all, so L3 fell through to the env-global key.
-Neither was a decision; both were fall-through.
+Work that belongs to no tenant runs as the ``role: operator`` profile rather
+than as whoever happened to be nearby. Until #138 it ran as the latter:
+compression took the FIRST profile's provider for a shared backend URL, so
+reordering ``profiles.yaml`` changed the model, and the ``tools/list`` path had
+no profile bound at all, so L3 fell through to the env-global key. Neither was
+a decision; both were fall-through.
 
-The rule now: centralized work runs AS the ``role: operator`` profile — its
-provider, its model, its ``llm_keys``, its bill. The operator is the profile the
-Operator agent holds (``docs/operator.md``), so the identity that installs and
-configures Trentina is also the one its own overhead runs under.
+**Since 6.1.0 no MODEL call runs here.** Judging and compressing a tool
+description were the two, and they are the listing profile's own work now, on
+its key (``tool_list_edge``, ``compress``) — one tenant's key never pays to
+read another's tool list. What is left binding the operator is the
+approved-config-write apply (``tools/config.py``), which spends nothing: an
+approval arrives from a browser with no bound caller, and ``reload_profiles``
+applies a whole file only for an operator, so without the binding an approved
+change would be written and then refused by the reload.
 
-Binding the operator into ``context._current_profile`` is the whole mechanism
-for L3: the Q-Agent already resolves provider, model, key and fallback chain
-from the bound profile, and already refuses to fall back to someone else's
-key. Compression resolves through the same rule (``resolve_profile_llm``).
+Binding into ``context._current_profile`` remains the mechanism, and it is why
+no model call can leak across a tenant if one is added back here: the Q-Agent
+resolves provider, model, key and fallback chain from the bound profile, and
+refuses to fall back to anyone else's key (``resolve_profile_llm``).
 
-No operator declared keeps the env-global path, which is where every call
-went before — logged at startup so the fallback is a stated fact rather than
-an inherited one. ``load_profiles`` refuses a second operator and an operator
-with no key for its own provider.
+No operator declared keeps the env-global path — logged at startup so the
+fallback is a stated fact rather than an inherited one. ``load_profiles``
+refuses a second operator, and an operator with no key for its own judge,
+because the admin tools it would lose are the ones that repair the gateway.
 """
 
 from __future__ import annotations
@@ -53,8 +56,8 @@ def find_operator(profiles: Mapping[str, Profile]) -> Profile | None:
     Derived ingresses are skipped, and that is load-bearing rather than tidy.
     Since 6.0.0 a derived ingress carries its source's role, so a shared
     operator profile and its derivation both match — and taking the first match
-    would let dict order decide which identity the gateway's own model calls run
-    as. That is exactly the defect #138 removed when it made the operator an
+    would let dict order decide which identity the gateway binds as its own.
+    That is exactly the defect #138 removed when it made the operator an
     explicit profile instead of a search. The service identity is the profile
     somebody wrote, never the one this code derived from it.
     """
@@ -65,18 +68,18 @@ def find_operator(profiles: Mapping[str, Profile]) -> Profile | None:
 
 
 def service_profile() -> Profile:
-    """The identity the gateway's own model calls run as. Never None.
+    """The identity the gateway binds for its own work. Never None.
 
     A declared ``role: operator`` profile when the file names one; otherwise the
     environment operator (``standalone.standalone_profile``) — the whole identity
     for a standalone server, and the env-global fallback for a live gateway that
-    declares no operator. Centralized work always has a profile, so nothing is ever
-    bound as None and ``get_current_profile`` never has to answer "unknown" on a
-    gateway's own call.
+    declares no operator. The gateway's own work always has a profile, so nothing
+    is ever bound as None and ``get_current_profile`` never has to answer
+    "unknown" on a gateway's own call.
 
     Read from the active config on every call rather than cached: a reload
     refills that dict in place, and a promoted or demoted operator has to take
-    effect on the next centralized call, not the next restart.
+    effect on the next such call, not the next restart.
     """
     from .loader import get_active_config
     from .standalone import environment_operator
@@ -152,18 +155,23 @@ def judge_stamp(profile: Profile | None) -> str:
 
 
 def log_service_identity(profiles: Mapping[str, Profile]) -> None:
-    """Say, once, whose identity the gateway's own model calls run under.
+    """Say, once, which profile the gateway binds for its own work.
 
     WARNING for the same reason as the startup cache line: production logs at
-    WARNING, and this is the line that answers "who pays for compression".
+    WARNING, and this is the line that answers "who holds the admin role".
+
+    It no longer answers "who pays for compression" — since 6.1.0 that is each
+    listing profile, on its own key, so the judge named here is the operator's
+    OWN and says nothing about anyone else's bill.
     """
     operator = find_operator(profiles)
     if operator is None:
         provider, model = judge_of(None)
         logger.warning(
-            "service identity: no operator profile declared — centralized model "
-            "calls (compression, perimeter L3 on tool descriptions) use the "
-            "env-global key, provider=%s model=%s",
+            "service identity: no operator profile declared — an approved config write "
+            "binds the env-global identity, provider=%s model=%s. No model call runs as "
+            "the service identity: each profile judges its own tool descriptions on its "
+            "own key",
             provider,
             model,
         )
@@ -171,7 +179,8 @@ def log_service_identity(profiles: Mapping[str, Profile]) -> None:
         return
     provider, model = judge_of(operator)
     logger.warning(
-        "service identity: centralized model calls run as operator profile=%s provider=%s model=%s",
+        "service identity: operator profile=%s, its own judge provider=%s model=%s. It "
+        "binds the approved-config apply; no model call runs as it",
         operator.name,
         provider,
         model,

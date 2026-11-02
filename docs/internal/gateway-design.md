@@ -119,7 +119,7 @@ profiles:
     role: operator                      # default: agent — see docs/operator.md
     auth:
       bearer_token_env: TRENTINA_GATEWAY_AGENT2_TOKEN
-    llm_keys:                           # service identity: pays for compression + perimeter L3
+    llm_keys:                           # its own judge; every profile pays for its own (6.1.0)
       gemini:
         api_key_env: TRENTINA_GATEWAY_AGENT2_GEMINI_API_KEY
     backends:

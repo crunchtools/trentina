@@ -25,7 +25,7 @@ profiles:
     role: operator          # default: agent (see Roles and operator.md)
     auth:
       bearer_token_env: TRENTINA_PROFILE_AGENT2_TOKEN
-    llm_keys:               # the operator pays for the gateway's own model calls
+    llm_keys:               # every profile judges on its own key, operator included
       gemini:
         api_key_env: TRENTINA_OPERATOR_GEMINI_API_KEY
     backends:
@@ -218,9 +218,10 @@ through the gateway's own admin tools — `cache_flush`, `reconnect_backend`,
 Omit `role` and the profile is an agent. There is at most one operator, and it
 belongs to the **Operator agent**: the agent that installs, configures and runs
 Trentina. Every other agent, supervised or not, is a tenant and stays
-`role: agent`. The operator is also the gateway's service identity, so the
-gateway's own model calls run on its key. [operator.md](operator.md) covers the
-whole profile.
+`role: agent`. The operator is also the gateway's service identity, which since
+6.1.0 binds an approved config write and nothing else — no model call runs on
+its key for anyone but itself. [operator.md](operator.md) covers the whole
+profile.
 
 An agent profile is not told what it cannot act on. Another profile's backend
 names, allowlist deltas, guarded parameter names, call volumes and blocked URLs

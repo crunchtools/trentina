@@ -988,9 +988,10 @@ async def _apply(
     ``reload_profiles`` applies the WHOLE file only for an operator, and an
     approved action is applied from the approval route, where there is no bound
     caller at all — a person's browser holds no profile. So the apply runs as
-    the service identity, which is the operator this gateway already runs its
-    own work as. Without it an approval would replace the file and then be
-    refused by the reload, restoring it: approved, and silently not applied.
+    the service identity, the operator profile. Since 6.1.0 this is the ONLY
+    thing that binds it, and it spends nothing: no model call runs here.
+    Without the binding an approval would replace the file and then be refused
+    by the reload, restoring it: approved, and silently not applied.
     """
     kept = await asyncio.to_thread(_commit, live, current, candidate_text)
     after_hash = config_store.config_hash(candidate_text)
