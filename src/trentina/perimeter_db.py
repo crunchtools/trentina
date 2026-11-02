@@ -29,18 +29,24 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import time
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from .config import get_config
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Collection, Iterator
 
 logger = logging.getLogger(__name__)
 
 _db: sqlite3.Connection | None = None
+_db_path: str = ""
+
+_local = threading.local()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS verdict_cache (
@@ -131,12 +137,13 @@ store, else None (#469). The baseline window runs from here."""
 
 def get_perimeter_db(db_path: str | None = None) -> sqlite3.Connection:
     """Get or create the perimeter store's connection."""
-    global _db, pins_upgraded_at
+    global _db, _db_path, pins_upgraded_at
     if _db is None:
         config = get_config()
         path = db_path or config.perimeter_db_path
         config.ensure_perimeter_db_dir()
         _db = sqlite3.connect(path)
+        _db_path = path
         _db.row_factory = sqlite3.Row
         _db.execute("PRAGMA journal_mode=WAL")
         # An existing store from before pins is an upgrade: its tools were
@@ -166,9 +173,57 @@ def get_perimeter_db(db_path: str | None = None) -> sqlite3.Connection:
     return _db
 
 
+def opened_path() -> str:
+    """The store's file, opening it (schema, migration detection) if nothing has.
+
+    Call on the event loop, where the singleton lives; the result is what a
+    worker hands ``snapshot_reader``. Mirrors ``database.opened_path``.
+    """
+    get_perimeter_db()
+    return _db_path
+
+
+@contextmanager
+def snapshot_reader(path: str) -> Iterator[None]:
+    """Route this thread's perimeter reads to a read-only connection of its own.
+
+    ``database.py`` has had this since #295; this store did not, and 5.0.0 added
+    a reader on a worker thread. ``quarantine_stats`` runs its aggregates under
+    ``asyncio.to_thread`` because they cost seconds on a large audit table, and
+    an operator's slice reaches ``federation_report.link_report`` ->
+    ``tool_pins.pending`` -> ``list_pending_pins`` here. The singleton
+    connection is bound to the loop's thread, so that read raised
+    ``sqlite3.ProgrammingError`` and the whole tool failed for every operator on
+    a gateway with a federation link.
+
+    ``check_same_thread=False`` on the singleton would have been the short fix
+    and the wrong one: it shares one connection between the loop's writes and a
+    multi-second read, which serializes them. A second connection under WAL
+    reads a consistent snapshot while the loop keeps writing, and read-only
+    means a worker cannot write by accident.
+
+    Args:
+        path: the store's file, from ``opened_path()``.
+    """
+    conn = sqlite3.connect(f"file:{quote(path)}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    _local.reader = conn
+    try:
+        yield
+    finally:
+        _local.reader = None
+        conn.close()
+
+
+def _read_db() -> sqlite3.Connection:
+    """This thread's ``snapshot_reader`` connection, else the singleton."""
+    reader: sqlite3.Connection | None = getattr(_local, "reader", None)
+    return reader if reader is not None else get_perimeter_db()
+
+
 def get_pin(backend_id: str, tool: str) -> sqlite3.Row | None:
     row: sqlite3.Row | None = (
-        get_perimeter_db()
+        _read_db()
         .execute(
             "SELECT approved_hash, approved_json, pending_hash, pending_json "
             "FROM tool_pins WHERE backend_id = ? AND tool = ?",
@@ -187,7 +242,7 @@ def has_pins(backend_id: str) -> bool:
     new or changed tool is held one at a time as usual.
     """
     row = (
-        get_perimeter_db()
+        _read_db()
         .execute("SELECT 1 FROM tool_pins WHERE backend_id = ? LIMIT 1", (backend_id,))
         .fetchone()
     )
@@ -198,7 +253,7 @@ def pin_hold_flags(backend_id: str, tool: str) -> tuple[bool, bool] | None:
     """``(pending, rejected)`` for a pin, or None when there is no row — the two
     flags the call gate needs, read WITHOUT the approved/pending JSON (#469)."""
     row = (
-        get_perimeter_db()
+        _read_db()
         .execute(
             "SELECT pending_hash, rejected FROM tool_pins WHERE backend_id = ? AND tool = ?",
             (backend_id, tool),
@@ -274,7 +329,7 @@ def move_pins(old_backend_id: str, new_backend_id: str) -> int:
 
 def list_pending_pins(backend_id: str) -> list[sqlite3.Row]:
     rows: list[sqlite3.Row] = (
-        get_perimeter_db()
+        _read_db()
         .execute(
             "SELECT tool, approved_json, pending_json, rejected FROM tool_pins "
             "WHERE backend_id = ? AND pending_hash IS NOT NULL ORDER BY tool",
@@ -304,7 +359,7 @@ def count_pending_pins(backend_ids: Collection[str]) -> int:
     if not backend_ids:
         return 0
     live = set(backend_ids)
-    rows = get_perimeter_db().execute(
+    rows = _read_db().execute(
         "SELECT backend_id, COUNT(*) FROM tool_pins "
         "WHERE pending_hash IS NOT NULL GROUP BY backend_id"
     )
@@ -316,6 +371,10 @@ def get_all_verdicts(perimeter_version: str) -> dict[str, dict[str, Any] | None]
 
     Rows from any other version are deleted rather than returned: a verdict
     is only meaningful for the detector set that produced it.
+
+    On the singleton, not ``_read_db()``, because it WRITES: a sweep and, for an
+    unreadable row, a delete. It runs once at startup on the event loop. A
+    reader in a worker that needed these would need the sweep moved out first.
     """
     db = get_perimeter_db()
     swept = db.execute(
