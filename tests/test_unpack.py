@@ -315,17 +315,23 @@ class TestShape:
     def test_linear(self, make: Callable[[int], str]) -> None:
         """Twice the input must not take much more than twice the time.
 
-        Best of three per size: a single sample measures the machine as much
-        as the code, and the suite runs on every core at once.
+        The claim is about the CODE's complexity, so the clock is this
+        thread's CPU time, not wall clock: `unpack` is pure single-threaded
+        CPU, and the suite runs on every core at once, so wall clock also
+        counts the time the scheduler gave the other workers. Best of three
+        per size on top of that, for cache and page-fault effects. Measured
+        on wall clock the 80k case landed at 0.0514 s against a 0.05 s floor
+        on a saturated CI runner — a failure that said nothing about the
+        regex it guards.
         """
         timings = []
         for n in (40_000, 80_000):
             text = make(n)
             best = float("inf")
             for _ in range(3):
-                start = time.perf_counter()
+                start = time.thread_time()
                 unpack(text)
-                best = min(best, time.perf_counter() - start)
+                best = min(best, time.thread_time() - start)
             timings.append(best)
         assert timings[1] < max(timings[0] * 4, 0.05)
 
