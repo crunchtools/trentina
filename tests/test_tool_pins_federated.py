@@ -820,3 +820,35 @@ class TestApprovingAWholeHeldSet:
             result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
 
         assert "beyond the descriptions" in result["error"]
+
+    @pytest.mark.parametrize("keyword", ["const", "default", "examples", "enum"])
+    async def test_a_description_inside_a_literal_value_is_data(
+        self, gateway: dict[str, Profile], keyword: str
+    ) -> None:
+        """`description` is only an annotation at a schema position.
+
+        Inside `const`, `default`, `examples` or `enum` it is part of the value
+        a call must send, so changing it changes what the schema accepts. The
+        first cut of `_schema_shape` stripped every string-valued `description`
+        key at any depth and would have batched this.
+        """
+        payload = (
+            [{"description": "old"}] if keyword in ("examples", "enum") else {"description": "old"}
+        )
+        newer = (
+            [{"description": "new"}] if keyword in ("examples", "enum") else {"description": "new"}
+        )
+        old = {"properties": {"body": {"type": "object", keyword: payload}}}
+        new = {"properties": {"body": {"type": "object", keyword: newer}}}
+        self._approved(
+            "send_message", tool_pins.canonical({"name": "send_message", "inputSchema": old})
+        )
+        self._held(
+            "send_message", tool_pins.canonical({"name": "send_message", "inputSchema": new})
+        )
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert listed["held"][0]["schema_shape_changed"] is True, keyword
+        assert "beyond the descriptions" in result["error"], keyword

@@ -95,6 +95,12 @@ def loosens_safety(old_json: str | None, new_json: str) -> bool:
 #: the schema's shape where the annotation of the same name is not.
 _NAME_MAPS = frozenset({"properties", "patternProperties", "definitions", "$defs"})
 
+#: Keywords whose value is DATA rather than a subschema. They are compared
+#: verbatim and never walked: a ``description`` key inside a ``const`` or a
+#: ``default`` is part of the value a call must send, not an annotation about
+#: it, and stripping it would hide a change to what the schema accepts.
+_LITERALS = frozenset({"const", "default", "examples", "enum"})
+
 
 def _schema_shape(node: Any, *, names: bool = False) -> Any:
     """``node`` with every schema ``description`` ANNOTATION removed.
@@ -102,11 +108,17 @@ def _schema_shape(node: Any, *, names: bool = False) -> Any:
     ``names`` says the dict being walked is one whose keys are author-chosen
     names, so a key spelled ``description`` there is a property and is kept.
     Its values are subschemas, so the recursion drops back to vocabulary.
+
+    A ``_LITERALS`` keyword's value is data and is kept whole: ``description``
+    inside a ``const`` or a ``default`` is part of what a call must send.
     """
     if isinstance(node, dict):
         out: dict[str, Any] = {}
         for key, value in node.items():
             if not names and key == "description" and isinstance(value, str):
+                continue
+            if not names and key in _LITERALS:
+                out[key] = value  # data: compared whole, never walked
                 continue
             out[key] = _schema_shape(value, names=not names and key in _NAME_MAPS)
         return out

@@ -119,9 +119,13 @@ the first design, and it would have passed a widened `enum`, a changed `type`,
 a relaxed `additionalProperties`, a dropped property, and a `required` entry
 added to one nested object that a sibling already had — none of which add a key
 or a name, all of which change what a call means. Comparing what must not
-change beats enumerating the ways it could. A property genuinely *named*
-`description` is part of the shape and is kept: `_NAME_MAPS` is what tells an
-author's name from the schema's own vocabulary.
+change beats enumerating the ways it could.
+
+Two positions where `description` is *not* an annotation are kept, because
+there it is part of what a call must send: a property genuinely **named**
+`description` (`_NAME_MAPS` tells an author's name from the schema's own
+vocabulary), and a `description` key inside a `const`, `default`, `examples` or
+`enum` value (`_LITERALS`, whose values are compared whole and never walked).
 
 Nothing is approved unless every row qualifies, and the write itself is one
 transaction (`perimeter_db.set_pin_states`): if any pair no longer matches a
