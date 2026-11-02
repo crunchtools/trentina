@@ -73,7 +73,7 @@ three modes run all three layers; they differ only in what is delivered (see
 
 ```yaml
 profiles:
-  web-seat:
+  web-profile:
     auth:
       bearer_token_env: TRENTINA_PROFILE_WEB_SEAT_TOKEN
     defense:
@@ -220,7 +220,7 @@ belongs to the **Operator agent**: the agent that installs, configures and runs
 Trentina. Every other agent, supervised or not, is a tenant and stays
 `role: agent`. The operator is also the gateway's service identity, so the
 gateway's own model calls run on its key. [operator.md](operator.md) covers the
-whole seat.
+whole profile.
 
 An agent profile is not told what it cannot act on. Another profile's backend
 names, allowlist deltas, guarded parameter names, call volumes and blocked URLs
@@ -311,33 +311,38 @@ client can do, and the choice is per profile.
 All four mechanisms, the `oauth` keys each one needs, and the security rules that
 go with them are in **[Authentication](authentication.md)**.
 
-### A shared seat, and the ingress derived from it
+### A shared profile, and the ingress derived from it
 
-`federation` is declared on the **seat whose tools you are sharing**, and the
-gateway derives the ingress from it: a profile named `<seat>-federation` that
-offers that seat's own non-federated remote backends, with that seat's guards,
+`federation` is declared on the **profile whose tools you are sharing**, and the
+gateway derives the ingress from it: a profile named `<profile>-federation` that
+offers that profile's own non-federated remote backends, with that profile's guards,
 defense posture and `llm_keys`. You do not write the ingress, and a profile name
 ending `-federation` is reserved for a derived one.
 
-Four rules come with sharing a seat, all refused at load rather than warned
+Four rules come with sharing a profile, all refused at load rather than warned
 about:
 
 | Rule | Why |
 |---|---|
 | At least one `federation.peers` entry | The peer list *is* the link's authentication. A `federation` block without one would still sign verdict assertions over its responses. |
-| `role: agent` | A shared operator seat would offer a peer the gateway's own admin tools. |
-| `auth` or `oauth` of its own | A seat is something an agent signs in to; a profile no agent can reach has no tools of its own to share. It is also how the pre-5.0.0 standalone ingress profile — which carried neither — is refused. |
+| Exact internal tool names, if `role: operator` | A shared operator profile's `internal://` allowlist crosses to its peers, and `tools_allow` entries are fnmatch patterns. `*` or `read_*` names no tool a person can approve and silently covers every tool a later release adds. |
+| `auth` or `oauth` of its own | A profile is something an agent signs in to; a profile no agent can reach has no tools of its own to share. It is also how the pre-5.0.0 standalone ingress profile — which carried neither — is refused. |
 | At least one non-federated remote backend | An empty link admits a peer and costs an approval, then serves it nothing. An `internal://` backend is the gateway's own surface and a federated one would re-export the next gateway, so neither can be offered. |
 
 The derived ingress carries no `auth` and no `oauth`. The gateway tries a static
 bearer first, so a bearer there would admit a caller with no peer and no `sub` —
 a null caller in the audit, and one shared owner for every held response part.
-Its internal backend offers only `read_part_tool`, so a paged response can be
-collected and nothing else native is reachable.
 
-The seat's OAuth grants serve the link: sign in once, on the seat. Adding or
-changing a peer is staged for a person — it hands another gateway a seat, and
-the accounts that seat signed in to. Removing one applies at once.
+For a shared **agent** profile its internal backend offers only
+`read_part_tool`, so a paged response can be collected and nothing else native
+is reachable. A shared **operator** profile is different since 6.0.0: the
+ingress carries its role and its internal allowlist, so its peers administer
+this gateway. See [Sharing the operator role](federation.md) for what that
+costs and for the alternative that keeps the old property.
+
+The profile's OAuth grants serve the link: sign in once, on the profile. Adding or
+changing a peer is staged for a person — it hands another gateway a profile, and
+the accounts that profile signed in to. Removing one applies at once.
 **[Federation](federation.md)** is the whole statement;
 **[Approvals](approvals.md)** covers the decision.
 
@@ -472,7 +477,7 @@ English (#456). Anything but an explicit allow refuses the call.
 
 Guarded tools are exact names on backends the profile has, each allowed by
 that backend's `tools_allow`, or the file does not load. Add
-`refuse_when_flagged: true` on an unattended seat to refuse its guarded calls
+`refuse_when_flagged: true` on an unattended profile to refuse its guarded calls
 outright once the session has been delivered flagged content (#457). The block is
 perimeter: an agent's own reload cannot change it, and a honeypot cannot
 have one. Scenarios, the policy-writing guide, refusal codes and what it

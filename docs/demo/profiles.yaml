@@ -13,7 +13,7 @@ llm_providers:               # a profile's llm_keys must name one of these
     api_key_env: OPENROUTER_API_KEY
 
 profiles:
-  # render.sh approves the workspace tools the tape uses from this seat: the
+  # render.sh approves the workspace tools the tape uses from this profile: the
   # demo starts on an empty store, and an empty store holds every remote tool
   # until an operator releases it (#469).
   ops:

@@ -85,7 +85,7 @@ profiles:
       tools:
         memory: [search_memory, read_note]
       timeout_seconds: 30         # optional, 5 to 120
-      refuse_when_flagged: false  # optional; true for unattended seats
+      refuse_when_flagged: false  # optional; true for unattended profiles
 ```
 
 | Field | Required | Meaning |
@@ -141,7 +141,7 @@ answer.
 `refuse_when_flagged: true` withholds every guarded response in a session once
 that session has been delivered flagged or partly judged content, without
 asking the judge, with the code `session_flagged` (#457). A session the gateway
-cannot identify is treated the same way. Turn it on for unattended seats; leave
+cannot identify is treated the same way. Turn it on for unattended profiles; leave
 it off for an assistant a person talks to, which reads flagged content
 routinely. Unguarded tools are untouched.
 

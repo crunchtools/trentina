@@ -179,7 +179,7 @@ def _declared_secret_env_names(node: Any) -> set[str]:
     is referenced without being declared, so it is not collected. What is
     refused is a header naming a variable the file declares as a credential of
     its own — an operator agent writing a remote backend that points at this
-    gateway's operator endpoint with ``Bearer ${OP_TOKEN}``, which is no seat
+    gateway's operator endpoint with ``Bearer ${OP_TOKEN}``, which is no profile
     change and no ``trust_verdict``, so it applied unwatched and handed an
     outside gateway ``config_tool``. Naming the variable was enough; the agent
     never had to read its value.
@@ -465,8 +465,8 @@ def duplicate_keys(raw_text: str) -> list[tuple[str, int]]:
 def _refuse_derived_fields(config_path: Path, profiles_section: dict[str, Any]) -> None:
     """Refuse a file that writes a field only the loader may set.
 
-    ``federation_of`` names the seat whose OAuth grants a derived ingress
-    spends. A hand-written profile setting it would claim another seat's grants
+    ``federation_of`` names the profile whose OAuth grants a derived ingress
+    spends. A hand-written profile setting it would claim another profile's grants
     — the field is privilege, so it has to be loader-derived and never
     caller-chosen. Checked on the RAW mapping, before any profile is built,
     because ``exclude=True`` keeps it out of a dump but not out of an input.
@@ -475,23 +475,23 @@ def _refuse_derived_fields(config_path: Path, profiles_section: dict[str, Any]) 
         if isinstance(body, dict) and "federation_of" in body:
             raise ProfileConfigError(
                 f"Profile {name!r}: 'federation_of' is set by the gateway, not by "
-                f"{config_path}. It names the seat a derived federation ingress "
+                f"{config_path}. It names the profile a derived federation ingress "
                 "acts for, including whose OAuth grants it spends. Declare "
-                "`federation` on the seat instead and the ingress is derived."
+                "`federation` on the profile instead and the ingress is derived."
             )
 
 
 def _add_derived_ingresses(registry: dict[str, Profile]) -> None:
-    """Add each shared seat's derived federation ingress to ``registry``.
+    """Add each shared profile's derived federation ingress to ``registry``.
 
     A collision is refused rather than resolved: whichever way it went, an
     operator would have one profile named after another's link, and the
-    derived one carries the authority to spend that seat's grants.
+    derived one carries the authority to spend that profile's grants.
     """
     for name, ingress in derive_all(registry).items():
         if name in registry:
             raise ProfileConfigError(
-                f"Profile {name!r} collides with the ingress derived from seat "
+                f"Profile {name!r} collides with the ingress derived from profile "
                 f"{ingress.federation_of!r}. A profile name ending "
                 f"{INGRESS_SUFFIX!r} is reserved for a derived federation ingress."
             )
@@ -642,12 +642,12 @@ def _check_federation_topology(name: str, profile: Profile) -> None:
     Loop-freedom used to be the other half of this check: a profile with
     ``federation.peers`` could not also mount a ``federated`` backend, because
     one ``Profile`` serving both roles would have its single-flight aggregate
-    build wait on a peer whose build waited back. Since 5.0.0 a seat's ingress
+    build wait on a peer whose build waited back. Since 5.0.0 a profile's ingress
     is DERIVED, so those are two objects and there is no deadlock — and
     ``federation_link.offerable_backends`` excludes every ``federated`` backend,
-    so a link cannot re-export the next gateway whatever the seat mounts. A to B
+    so a link cannot re-export the next gateway whatever the profile mounts. A to B
     to C is now unsayable rather than refused, which is what
-    ``docs/federation.md`` always claimed. One seat may therefore both consume a
+    ``docs/federation.md`` always claimed. One profile may therefore both consume a
     peer's tools and share its own, which is what an operator wanted all along.
     """
     federated = {bn: b for bn, b in profile.backends.items() if b.federated is not None}

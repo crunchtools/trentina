@@ -250,12 +250,12 @@ def register_approval_routes(mcp_server: Any) -> None:
     """
     if not approver.configured():
         logger.warning(
-            "gateway: no approval password is set, so the operator seat and federation "
+            "gateway: no approval password is set, so the operator profile and federation "
             "trust stay unwritable. An operator agent can ask for one with "
             "approval_enrol, which opens %s for a person to set it. Until it is set, an "
             "operator profile holding a backend that can make arbitrary HTTP requests "
             "could enrol itself — set it promptly, and keep such a backend off the "
-            "operator seat (docs/deployment-hardening.md)",
+            "operator profile (docs/deployment-hardening.md)",
             ENROL_PATH,
         )
 

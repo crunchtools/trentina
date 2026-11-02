@@ -29,7 +29,15 @@ than silent. Neither is caught by `profile_lint` alone for the reason in item 2.
    though it did, and both appear in the same sentences — "the operator
    profile", "an operator reload", `/gateway/operator/mcp`. The rule is
    equality, not a substring, so `operator-prime` and `agents` still load.
-2. **Remove any duplicate key from `profiles.yaml`.** A key written twice in
+2. **Anything reading `quarantine_stats` or the audit by these names needs
+   updating.** Three strings a consumer can key on have changed, and the
+   gateway does not emit the old ones: `federation.shared[].seat` is now
+   `federation.shared[].profile`; the staged approval kind `operator seat` is
+   now `operator profile`, which appears in approval requests and in
+   `gateway_calls`; and the approval page's row `Holds the operator seat now`
+   is now `Holds the operator role now`. Rows already in the audit are not
+   rewritten, so a query spanning the upgrade sees both spellings.
+3. **Remove any duplicate key from `profiles.yaml`.** A key written twice in
    one mapping now refuses the whole file, naming each repeat and its line.
    `yaml.safe_load` kept the LAST one and said nothing, so the block a reader
    sees first was not the block that ran. A key arriving through a
@@ -51,6 +59,22 @@ than silent. Neither is caught by `profile_lint` alone for the reason in item 2.
 
 ### Changed
 
+- **"Seat" is gone; everything is a "profile".** One word for one concept, at
+  Scott's instruction — the two words meant the same thing and turned up in the
+  same sentences. Three of the renames are visible rather than internal:
+
+  - `quarantine_stats`'s `federation.shared` rows name the sharing profile
+    under `profile` where they said `seat`.
+  - The approval page and the audit spell the staged kind `operator profile`
+    where they said `operator seat`.
+  - The approval page's operator row reads `Holds the operator role now`,
+    because "seat" there meant the **role** rather than a profile — one of
+    several places where a mechanical rename would have produced nonsense
+    ("moving the profile to a new profile"). Where the old word meant the role,
+    it now says role.
+
+  Released CHANGELOG sections keep the word they shipped with: they describe
+  what was released, and rewriting them would be revisionism.
 - **The operator role crosses a federation link.** A profile may now hold
   `role: operator` and share itself, and the derived ingress carries both the
   role and that profile's own `internal://` allowlist — so one agent

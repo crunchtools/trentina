@@ -945,7 +945,7 @@ class TestMultiProfileResourceIndicator:
     """Two OAuth profiles on one gateway (RT #1502).
 
     OAuthProxy stores a single `_resource_url` and refuses every other RFC 8707
-    indicator with `invalid_target`. That is correct for one OAuth seat and an
+    indicator with `invalid_target`. That is correct for one OAuth profile and an
     outage for two: the pin goes to whichever profile sorts first and the other
     one's every login fails — the 0.8.3 incident. Both Claude and Gemini send
     the indicator, so this is not hypothetical.

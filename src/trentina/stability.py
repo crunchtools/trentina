@@ -93,7 +93,7 @@ PREVIEW_SURFACES: Mapping[str, PreviewSurface] = {
         issue="#592",
         doc="docs/federation.md",
         summary=(
-            "gateway-to-gateway links: a seat's federation block, the derived "
+            "gateway-to-gateway links: a profile's federation block, the derived "
             "ingress, the primary JWT and the signed verdict assertion"
         ),
         detect=_federation_in_use,

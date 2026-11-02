@@ -494,7 +494,7 @@ class TestInternalBackend:
 
     def _profile(self, modes: list[ModeName]) -> Profile:
         p = Profile(
-            name="webseat",
+            name="webtenant",
             short_names=False,
             declare_modes=True,
             auth=AuthConfig(bearer_token_env="TEST"),
@@ -529,7 +529,7 @@ class TestInternalBackend:
         stats = tools[f"web{NAMESPACE_SEP}quarantine_stats_tool"]["inputSchema"]
         assert MODE_PARAM not in (stats.get("properties") or {})
 
-    async def test_block_only_seat_sees_no_parameter(self) -> None:
+    async def test_block_only_profile_sees_no_parameter(self) -> None:
         with patch(f"{AGGREGATE}.scan_tool_list", new=_identity):
             resp = await self._route(
                 self._profile(["block"]), {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}

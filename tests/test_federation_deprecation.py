@@ -75,7 +75,7 @@ def test_the_re_export_that_made_this_worth_removing() -> None:
         .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
         .decode()
     )
-    # A shared SEAT mounting the next gateway over a bearer. The seat may now
+    # A shared PROFILE mounting the next gateway over a bearer. The profile may now
     # legitimately both share itself and consume a peer — derivation excludes
     # `federated` backends, so a real link cannot be re-exported — but this
     # backend carries NO `federated:` block, which is exactly the interim path

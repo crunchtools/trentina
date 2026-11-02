@@ -1,4 +1,4 @@
-# One seat with a Matrix inbox, unguarded fetch and an unguarded way out.
+# One profile with a Matrix inbox, unguarded fetch and an unguarded way out.
 # `guarded` has the same shape with fetch_tool's url and the send guarded.
 profiles:
   toxic:

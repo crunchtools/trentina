@@ -1,6 +1,6 @@
 """Asking a person to set the approval password (#637): operator only.
 
-The operator seat can bring a gateway up on its own, and this is the last
+The operator profile can bring a gateway up on its own, and this is the last
 thing that was not true of. Approving a staged change needs a password a
 person holds; setting that password needed a script and a config edit, which
 is a shell, which is the thing this product exists to remove.
@@ -65,7 +65,7 @@ async def approval_enrol() -> dict[str, Any]:
             "because setting it is a form submission and none of your tools makes one. "
             "The code is what stops anyone else who can reach the page claiming this "
             "gateway's approver while the window is open. Until a password is set, a "
-            "change to the operator seat or to federation trust cannot be approved, so "
+            "change to the operator profile or to federation trust cannot be approved, so "
             "both stay refused."
         ),
     }

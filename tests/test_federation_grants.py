@@ -1,15 +1,15 @@
-"""A derived federation ingress spends its SEAT's OAuth grants (#479, #592).
+"""A derived federation ingress spends its PROFILE's OAuth grants (#479, #592).
 
 Before this, a grant belonged to ``(profile, backend)`` and a federated call
-ran as the ingress, so a seat already signed in to a backend held nothing for
+ran as the ingress, so a profile already signed in to a backend held nothing for
 the link: the same person authorized the same account twice, and the second
 sign-in had to be driven through a tool offered across the link — which on a
 multi-peer ingress let one peer revoke another's grant, or start one that
 repointed every peer's calls at its own human's account.
 
 Fable ruled GO-WITH-CONDITIONS on the privilege model. The peer reaches a
-strict subset of what the seat's own agent already can, since the offered set
-IS the seat's backends with the seat's guards; what spending the seat's grant
+strict subset of what the profile's own agent already can, since the offered set
+IS the profile's backends with the profile's guards; what spending the profile's grant
 removes is a ``needs_auth`` refusal, not a boundary. Its four conditions are
 the tests marked below.
 """
@@ -60,7 +60,7 @@ GRANT = BackendGrant(
 )
 
 
-def _seat(name: str = "josui") -> Profile:
+def _profile(name: str = "josui") -> Profile:
     public_pem = (
         Ed25519PrivateKey.generate()
         .public_key()
@@ -84,14 +84,14 @@ def _store(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> BackendTo
 
 class TestWhoOwnsTheGrant:
     def test_an_ordinary_profile_owns_its_own(self) -> None:
-        assert _seat().grant_owner == "josui"
+        assert _profile().grant_owner == "josui"
 
-    def test_a_derived_ingress_owns_its_seats(self) -> None:
-        ingress = derive_ingress(_seat())
+    def test_a_derived_ingress_owns_its_profiles(self) -> None:
+        ingress = derive_ingress(_profile())
         assert ingress.name == "josui-federation"
         assert ingress.grant_owner == "josui"
 
-    async def test_the_seats_sign_in_is_the_links_sign_in(
+    async def test_the_profiles_sign_in_is_the_links_sign_in(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The whole point: one human sign-in serves both sides.
@@ -100,35 +100,35 @@ class TestWhoOwnsTheGrant:
         reasoning — it was that the ingress named itself when reading a slot.
         """
         store = _store(tmp_path, monkeypatch)
-        seat = _seat()
-        ingress = derive_ingress(seat)
+        profile = _profile()
+        ingress = derive_ingress(profile)
 
-        async with store.locked(seat.grant_owner, "era"):
-            await store.put_grant(seat.grant_owner, "era", ERA, GRANT, expected_generation=0)
+        async with store.locked(profile.grant_owner, "era"):
+            await store.put_grant(profile.grant_owner, "era", ERA, GRANT, expected_generation=0)
 
-        # The ingress finds it under the seat's name, and would have found
+        # The ingress finds it under the profile's name, and would have found
         # nothing under its own.
         assert await store.get_grant(ingress.grant_owner, "era", ERA) is not None
         assert await store.get_grant(ingress.name, "era", ERA) is None
 
-    async def test_an_unrelated_seat_still_sees_nothing(
+    async def test_an_unrelated_profile_still_sees_nothing(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Seat-owned grants are not shared grants: the isolation `(profile,
+        """Profile-owned grants are not shared grants: the isolation `(profile,
         backend)` keying exists for is untouched for everyone else."""
         store = _store(tmp_path, monkeypatch)
         async with store.locked("josui", "era"):
             await store.put_grant("josui", "era", ERA, GRANT, expected_generation=0)
 
-        other = derive_ingress(_seat("takeda"))
+        other = derive_ingress(_profile("takeda"))
         assert await store.get_grant(other.grant_owner, "era", ERA) is None
 
 
-def test_the_reauth_cooldown_is_shared_with_the_seat() -> None:
-    """One grant, one cooldown. Keying it per profile would let the seat and
+def test_the_reauth_cooldown_is_shared_with_the_profile() -> None:
+    """One grant, one cooldown. Keying it per profile would let the profile and
     the link each spend a failed refresh against the same server."""
-    seat = _seat()
-    assert _cooldown_key(derive_ingress(seat), "era") == _cooldown_key(seat, "era")
+    profile = _profile()
+    assert _cooldown_key(derive_ingress(profile), "era") == _cooldown_key(profile, "era")
 
 
 # --- Fable's conditions ---
@@ -168,7 +168,7 @@ def test_no_grant_call_site_names_the_acting_profile() -> None:
     An AST check rather than review, in the shape of `test_log_scrub.py`'s
     single-`basicConfig` check: this converted four modules, and the failure
     mode of missing one is that a link silently answers `needs_auth` forever
-    while the seat is signed in. A new call site gets this for free.
+    while the profile is signed in. A new call site gets this for free.
     """
     offenders = []
     for path in sorted(SRC.rglob("*.py")):
@@ -187,7 +187,7 @@ def test_at_least_one_call_site_is_checked() -> None:
     assert len(calls) >= 8, f"the grant-call matcher found only {len(calls)}"
 
 
-async def test_a_sign_in_at_the_seat_refreshes_the_links_tool_list(
+async def test_a_sign_in_at_the_profile_refreshes_the_links_tool_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """**[C]** A backend with `auth` is skipped from a tools/list while its
@@ -198,8 +198,8 @@ async def test_a_sign_in_at_the_seat_refreshes_the_links_tool_list(
     import trentina
     from trentina.gateway.loader import GatewayConfig, register_active_config, reset_active_config
 
-    seat = _seat()
-    config = GatewayConfig(profiles={"josui": seat, "josui-federation": derive_ingress(seat)})
+    profile = _profile()
+    config = GatewayConfig(profiles={"josui": profile, "josui-federation": derive_ingress(profile)})
     register_active_config(pathlib.Path("/nonexistent/profiles.yaml"), config, {})
 
     invalidated: list[str] = []
@@ -236,10 +236,10 @@ async def test_a_grant_spending_call_records_which_peer_spent_it(
 ) -> None:
     """**[C]** The audit names the peer and sub, not just the ingress.
 
-    Fable's condition, and the only place the "the peers are the seat owner's
+    Fable's condition, and the only place the "the peers are the profile owner's
     own gateways" assumption is checkable after the fact. One account answers
     at the backend for every peer on a link, so if that assumption is ever
-    wrong, this row is what says which peer spent the seat's grant.
+    wrong, this row is what says which peer spent the profile's grant.
 
     The actor stays the INGRESS, deliberately: the grant owner is derivable
     from the ingress name and would be a second column saying the same thing.
@@ -261,7 +261,7 @@ async def test_a_grant_spending_call_records_which_peer_spent_it(
     )()
     monkeypatch.setattr(db_mod, "get_config", lambda: cfg)
 
-    ingress = derive_ingress(_seat())
+    ingress = derive_ingress(_profile())
     token = current_caller.set(("breetai", "primary-sub"))
     try:
         audit._audit(ingress.name, "era", "search", Outcome.OK, 1)

@@ -611,7 +611,7 @@ class TestProfileNeedsAnAuthenticationMethod:
     """A profile must have at least one way to authenticate (0.15.0).
 
     `auth` was required until now, so every profile carried a static bearer and
-    this property held by accident. The cost was that adding OAuth to a seat
+    this property held by accident. The cost was that adding OAuth to a profile
     forced a permanent anonymous credential alongside it — and because the
     bearer is checked first, that credential bypassed the OAuth entirely.
     """

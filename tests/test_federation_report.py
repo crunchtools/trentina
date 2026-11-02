@@ -40,7 +40,7 @@ PEER_PEM = (
 )
 
 
-def _seat(*, signs: bool = True, with_oauth_backend: bool = True) -> Profile:
+def _profile(*, signs: bool = True, with_oauth_backend: bool = True) -> Profile:
     federation = FederationConfig(peers={"breetai": FederationPeer(public_key=PEER_PEM)})
     if signs:
         federation.secondary_key = SecretStr(
@@ -83,21 +83,21 @@ def _consumer(*, pinned: bool) -> Profile:
 
 
 class TestWhatAmISharing:
-    def test_the_link_names_its_seat_its_ingress_and_its_peers(self) -> None:
-        seat = _seat()
-        profiles = {"josui": seat, "josui-federation": derive_ingress(seat)}
+    def test_the_link_names_its_profile_its_ingress_and_its_peers(self) -> None:
+        profile = _profile()
+        profiles = {"josui": profile, "josui-federation": derive_ingress(profile)}
 
         (shared,) = link_report(profiles, {})["shared"]
 
-        assert shared["seat"] == "josui"
+        assert shared["profile"] == "josui"
         assert shared["ingress"] == "josui-federation"
         assert shared["peers"] == [{"peer": "breetai", "key": key_fingerprint(PEER_PEM)}]
 
     def test_it_says_which_backends_cross_and_which_use_the_sign_in(self) -> None:
-        """A derived ingress spends the SEAT's grant, so `uses_sign_in` is where
+        """A derived ingress spends the PROFILE's grant, so `uses_sign_in` is where
         a peer's calls go out as the account a person authorized here."""
-        seat = _seat()
-        profiles = {"josui": seat, "josui-federation": derive_ingress(seat)}
+        profile = _profile()
+        profiles = {"josui": profile, "josui-federation": derive_ingress(profile)}
 
         (shared,) = link_report(profiles, {})["shared"]
 
@@ -107,8 +107,8 @@ class TestWhatAmISharing:
     def test_a_link_that_signs_nothing_says_so(self) -> None:
         """It authenticates and costs double: the primary re-judges everything
         this gateway already judged. Nothing else reports it."""
-        seat = _seat(signs=False)
-        profiles = {"josui": seat, "josui-federation": derive_ingress(seat)}
+        profile = _profile(signs=False)
+        profiles = {"josui": profile, "josui-federation": derive_ingress(profile)}
 
         (shared,) = link_report(profiles, {})["shared"]
 
@@ -117,8 +117,8 @@ class TestWhatAmISharing:
     def test_the_whole_pem_is_never_printed(self) -> None:
         """Not a secret, but a wall of base64 nobody checks. The fingerprint is
         what the operator at the other end can read down a phone."""
-        seat = _seat()
-        profiles = {"josui": seat, "josui-federation": derive_ingress(seat)}
+        profile = _profile()
+        profiles = {"josui": profile, "josui-federation": derive_ingress(profile)}
 
         assert "BEGIN PUBLIC KEY" not in repr(link_report(profiles, {}))
 
@@ -167,19 +167,19 @@ class TestIsThePinBuyingAnything:
 
 
 def test_both_directions_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    """One seat may share itself AND consume a peer since the ingress is
+    """One profile may share itself AND consume a peer since the ingress is
     derived, so a gateway can appear on both lists."""
     monkeypatch.setenv("PRIMARY_KEY", "unused-by-this-report")
-    seat = _seat()
+    profile = _profile()
     profiles = {
-        "josui": seat,
-        "josui-federation": derive_ingress(seat),
+        "josui": profile,
+        "josui-federation": derive_ingress(profile),
         "down": _consumer(pinned=True),
     }
 
     report = link_report(profiles, {})
 
-    assert [s["seat"] for s in report["shared"]] == ["josui"]
+    assert [s["profile"] for s in report["shared"]] == ["josui"]
     assert [c["backend"] for c in report["consumed"]] == ["lotor"]
 
 
@@ -192,8 +192,8 @@ class TestHeldForApproval:
     ) -> None:
         held = {"https://wiki.example/mcp": [{"tool": "edit"}], "https://context.era.app/mcp": []}
         monkeypatch.setattr("trentina.gateway.tool_pins.pending", lambda url: held.get(url, []))
-        seat = _seat()
-        profiles = {"josui": seat, "josui-federation": derive_ingress(seat)}
+        profile = _profile()
+        profiles = {"josui": profile, "josui-federation": derive_ingress(profile)}
 
         (shared,) = link_report(profiles, {})["shared"]
 
@@ -234,8 +234,10 @@ class TestTheStatsIntegration:
         )
         from trentina.tools import stats
 
-        seat = _seat()
-        config = GatewayConfig(profiles={"josui": seat, "josui-federation": derive_ingress(seat)})
+        profile = _profile()
+        config = GatewayConfig(
+            profiles={"josui": profile, "josui-federation": derive_ingress(profile)}
+        )
         register_active_config(pathlib.Path("/nonexistent/profiles.yaml"), config, {})
 
         asked: list[int] = []
@@ -251,4 +253,4 @@ class TestTheStatsIntegration:
             reset_active_config()
 
         assert asked == [30], "the report must cover the stated window"
-        assert [s["seat"] for s in report["shared"]] == ["josui"]
+        assert [s["profile"] for s in report["shared"]] == ["josui"]

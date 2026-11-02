@@ -455,7 +455,7 @@ async def judge_egress(
     ``/proxy/http``, so the flag is structurally always unknown — honouring the
     opt-in would refuse every guarded egress request, which is the same as not
     granting it, and would silently brick a block an operator copied from an
-    unattended tool seat. The judge is asked with ``session_flagged=unknown``,
+    unattended tool profile. The judge is asked with ``session_flagged=unknown``,
     which its prompt already weighs; the opt-in still governs the guarded tools
     in the same block.
     """

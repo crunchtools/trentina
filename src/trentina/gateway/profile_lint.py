@@ -14,7 +14,7 @@ is SAFE, in the ways the #90 audit and its successors found live:
           profiles: [kagetora, takeda]
           reason: "shared memory is the point of this pair (RT #1234)"
 
-- ``toxic-flow``: one seat holds open fetch, a public inbox (alert ingress or
+- ``toxic-flow``: one profile holds open fetch, a public inbox (alert ingress or
   Matrix) and an outbound-comms tool with no request guard. Untrusted input
   arrives, instructions can be fetched, and something can be sent out: the
   incident's shape in one profile.
@@ -31,7 +31,7 @@ is SAFE, in the ways the #90 audit and its successors found live:
   with ``auth.self_authorize`` on a backend (#479). It can start its own
   logins, so the operator should have meant it.
 
-Both posture checks are for seats that run unattended, such as swarm or
+Both posture checks are for profiles that run unattended, such as swarm or
 coding agents. A personal assistant that a person talks to directly holds
 broad tools on purpose, so declare it, with a reason, in an optional top-level
 ``assistants`` list, which the loader also ignores::
@@ -42,8 +42,8 @@ broad tools on purpose, so declare it, with a reason, in an optional top-level
 
 An assistant is exempt from ``toxic-flow``. A shared write backend is still
 flagged when any profile on it is not an assistant, because an unattended
-seat writing where an assistant reads is the channel this check is for.
-Every profile not listed is linted, so a new seat is checked by default.
+profile writing where an assistant reads is the channel this check is for.
+Every profile not listed is linted, so a new profile is checked by default.
 
 Tool names are judged from the allowlist alone, because the lint runs without
 the backends. A wildcard counts as holding whatever it could admit: a glob that
@@ -313,7 +313,7 @@ def _unguarded_outbound(body: dict[str, Any]) -> list[str]:
 
 
 def check_toxic_flows(profiles_file: dict[str, Any]) -> list[Finding]:
-    """A seat with open fetch, a public inbox and an unguarded outbound tool together."""
+    """A profile with open fetch, a public inbox and an unguarded outbound tool together."""
     findings = []
     exempt = assistants(profiles_file)
     for profile, body in _profiles(profiles_file).items():
@@ -357,7 +357,7 @@ def check_guarded_destinations(profiles_file: dict[str, Any]) -> list[Finding]:
 
 
 def check_oauth_subjects(profiles_file: dict[str, Any]) -> list[Finding]:
-    """An OAuth seat that admits whoever holds an address, not an account (#458)."""
+    """An OAuth profile that admits whoever holds an address, not an account (#458)."""
     findings = []
     for profile, body in _profiles(profiles_file).items():
         oauth = body.get("oauth")
@@ -376,7 +376,7 @@ def check_oauth_subjects(profiles_file: dict[str, Any]) -> list[Finding]:
 
 
 def check_self_authorize(profiles_file: dict[str, Any]) -> list[Finding]:
-    """An agent seat that can start its own backend logins (#479).
+    """An agent profile that can start its own backend logins (#479).
 
     Not an error: a human still consents at the authorization server. But an
     agent that can put an authorize link in front of that human is one more
@@ -394,7 +394,7 @@ def check_self_authorize(profiles_file: dict[str, Any]) -> list[Finding]:
                 findings.append(
                     Finding(
                         "agent-self-authorize",
-                        f"profile {profile!r} is an agent seat that can start its own "
+                        f"profile {profile!r} is an agent profile that can start its own "
                         f"login to backend {backend!r} (auth.self_authorize)",
                     )
                 )
@@ -402,9 +402,9 @@ def check_self_authorize(profiles_file: dict[str, Any]) -> list[Finding]:
 
 
 def check_federation_links(profiles_file: dict[str, Any]) -> list[Finding]:
-    """What a shared seat gives a peer, where the operator probably did not mean it.
+    """What a shared profile gives a peer, where the operator probably did not mean it.
 
-    Two findings, both specific to sharing a seat:
+    Two findings, both specific to sharing a profile:
 
     ``federation-no-secondary-key`` — the link authenticates but signs no
     verdict, so the primary re-judges every response it already judged here.
@@ -413,7 +413,7 @@ def check_federation_links(profiles_file: dict[str, Any]) -> list[Finding]:
     link works before turning trust on — but an operator who left it this way
     by accident should hear so.
 
-    ``federation-shares-write-tools`` — the seat offers a backend that can
+    ``federation-shares-write-tools`` — the profile offers a backend that can
     write, with no parameter guard on it. The peer is another gateway, so
     whatever reaches it reaches that backend; a glob is read the way
     ``check_shared_write_backends`` reads one, by asking what it could admit.
@@ -427,7 +427,7 @@ def check_federation_links(profiles_file: dict[str, Any]) -> list[Finding]:
             findings.append(
                 Finding(
                     "federation-no-secondary-key",
-                    f"seat {profile!r} is shared but signs no verdict "
+                    f"profile {profile!r} is shared but signs no verdict "
                     "(federation.secondary_key_name), so a primary re-judges every "
                     "response this gateway already judged",
                 )
@@ -445,7 +445,7 @@ def check_federation_links(profiles_file: dict[str, Any]) -> list[Finding]:
                 findings.append(
                     Finding(
                         "federation-shares-write-tools",
-                        f"seat {profile!r} shares backend {backend!r} with a peer and "
+                        f"profile {profile!r} shares backend {backend!r} with a peer and "
                         f"it can write ({', '.join(writes)}) with no parameter guard",
                     )
                 )

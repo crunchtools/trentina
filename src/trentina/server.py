@@ -402,7 +402,7 @@ async def config_tool(
     gateway. The change is applied the same way `reload_profiles` applies one;
     whatever needs a restart to take effect is reported in the result.
 
-    Two things you may propose and cannot apply: the operator seat — who holds
+    Two things you may propose and cannot apply: the operator profile — who holds
     `role: operator`, and how a caller becomes one — and `trust_verdict`, which
     makes this gateway serve another gateway's response without scanning it. A
     write carrying either is STAGED rather than applied. Nothing changes, the
@@ -547,7 +547,7 @@ async def approval_enrol_tool() -> dict[str, Any]:
     """Ask a person to set this gateway's approval password. Operator only.
 
     Two changes on this gateway need a person to agree: who holds the operator
-    seat, and turning on federation trust, which makes this gateway serve
+    profile, and turning on federation trust, which makes this gateway serve
     another gateway's response without running its own layers over it. Both are
     staged rather than refused, and a person approves them with a password.
 

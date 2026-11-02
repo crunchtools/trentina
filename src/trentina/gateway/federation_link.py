@@ -1,4 +1,4 @@
-"""Derive a federation ingress from the seat that shares it (#592).
+"""Derive a federation ingress from the source that shares it (#592).
 
 Until 5.0.0, federation had no first-class object. An operator wrote an ingress
 profile on the secondary and a federated backend on the primary, and the only
@@ -7,18 +7,18 @@ name and that two keys happened to pair. Everything that went wrong followed
 from that:
 
 * The ingress re-listed backends, so the offered set was a hand-typed expansion
-  of "this seat's tools" with no source of truth, and it drifted.
+  of "this source's tools" with no source of truth, and it drifted.
 * The profile name IS the JWT audience and nothing said so, so an invented
-  naming scheme named the peer machine rather than the seat.
+  naming scheme named the peer machine rather than the source.
 * The ingress carried its own ``defense`` block, which could be weaker than the
-  posture of the very seat whose tools it offered.
+  posture of the very source whose tools it offered.
 * A grant belongs to ``(profile, backend)`` and a federated call runs as the
-  ingress, so a seat already signed in to a backend held nothing for the link
+  ingress, so a source already signed in to a backend held nothing for the link
   and the human signed in twice.
 
-Now a SEAT carries ``federation`` and this module derives the ingress from it.
-The derived profile is ``<seat>-federation``, its offered set is exactly the
-seat's non-federated remote backends with the seat's own guards and posture,
+Now a PROFILE carries ``federation`` and this module derives the ingress from it.
+The derived profile is ``<source>-federation``, its offered set is exactly the
+source's non-federated remote backends with the source's own guards and posture,
 and it has no second way in. There is nothing to drift, nothing to name, and no
 way to express a mismatch.
 
@@ -26,14 +26,14 @@ Two properties are structural rather than checked:
 
 * **Loop-free.** The derived set excludes every ``federated`` backend, so a
   gateway can never re-export the next one — A to B to C is not refused, it is
-  unsayable. This is what lets one seat both consume a federated backend and
+  unsayable. This is what lets one source both consume a federated backend and
   offer itself to a peer, which the old "one profile is one role" rule had to
   forbid because a single ``Profile`` serving both roles deadlocked its own
   single-flight aggregate build. Two objects, no deadlock.
 * **Bounded internal surface.** ``internal://`` is one FastMCP server serving
   the whole native surface, admin tools included, so the derived ingress gets a
   fresh internal backend allowing exactly ``read_part_tool`` rather than a
-  filtered copy of the seat's.
+  filtered copy of the source's.
 
 Every field of ``Profile`` is decided here, by name, in ``CARRIED`` or
 ``DROPPED`` or by construction. ``test_federation_link.py`` fails on a field
@@ -78,13 +78,13 @@ CARRIED = frozenset(
     }
 )
 
-#: Seat fields the derived ingress does NOT inherit, each for one of three
+#: Profile fields the derived ingress does NOT inherit, each for one of three
 #: reasons: it is a second way in (``peers`` is the authentication, and
 #: ``app.py`` tries a static bearer FIRST, so a bearer here would admit a caller
 #: with no peer and no ``sub``); it is a route or listener bound at startup for
-#: the seat and unreachable as a tool over an MCP link; or it belongs to the
-#: seat as a thing it planted. A honeytoken re-planted in a second profile would
-#: make a trip ambiguous about which seat leaked it, and a honeypot is not a
+#: the source and unreachable as a tool over an MCP link; or it belongs to the
+#: source as a thing it planted. A honeytoken re-planted in a second profile would
+#: make a trip ambiguous about which source leaked it, and a honeypot is not a
 #: thing to mirror.
 DROPPED = frozenset(
     {
@@ -108,32 +108,32 @@ DROPPED = frozenset(
 CONSTRUCTED = frozenset({"name", "federation", "federation_of", "backends"})
 
 
-def ingress_name(seat: str) -> str:
-    """The derived ingress profile name for a seat, which is also its audience."""
-    return f"{seat}{INGRESS_SUFFIX}"
+def ingress_name(source: str) -> str:
+    """The derived ingress profile name for a source, which is also its audience."""
+    return f"{source}{INGRESS_SUFFIX}"
 
 
 def offers_federation(profile: Profile) -> bool:
-    """Whether this profile is a seat that shares itself with a peer."""
+    """Whether this profile is a source that shares itself with a peer."""
     return profile.federation is not None
 
 
-def offerable_backends(seat: Profile) -> dict[str, Backend]:
-    """The seat's backends a peer may reach, by name.
+def offerable_backends(source: Profile) -> dict[str, Backend]:
+    """The source's backends a peer may reach, by name.
 
     Remote only, and never a ``federated`` one. ``is_remote`` already excludes
     ``internal://`` (the whole native surface, admin tools included) and
-    ``decoy://`` (a trap that belongs to the seat that set it, and whose trip
-    should name that seat).
+    ``decoy://`` (a trap that belongs to the source that set it, and whose trip
+    should name that source).
     """
     return {
         name: backend
-        for name, backend in seat.backends.items()
+        for name, backend in source.backends.items()
         if backend.is_remote and backend.federated is None
     }
 
 
-def derive_ingress(seat: Profile) -> Profile:
+def derive_ingress(source: Profile) -> Profile:
     """Build the federation ingress a profile shares, or raise if it shares none.
 
     The shared profile keeps everything; the ingress is a second view of it.
@@ -147,38 +147,38 @@ def derive_ingress(seat: Profile) -> Profile:
     one agent administering a gateway administers its peer through the same
     link.
     """
-    if seat.federation is None:
-        raise ValueError(f"profile {seat.name!r} declares no federation block")
+    if source.federation is None:
+        raise ValueError(f"profile {source.name!r} declares no federation block")
 
-    offered = offerable_backends(seat)
+    offered = offerable_backends(source)
     if not offered:
         # An empty link is a misconfiguration, not an empty offering: it mints
         # keys, admits a peer and costs an approval to set up, and then serves
         # that peer the paging reader for parts of responses no tool produced.
         raise ValueError(
-            f"seat {seat.name!r} offers a peer no backend: a shared seat needs at "
+            f"source {source.name!r} offers a peer no backend: a shared source needs at "
             "least one non-federated remote backend. An internal:// backend is "
             "this gateway's own surface and a federated one would re-export the "
             "next gateway, so neither can be offered"
         )
 
-    carried = {field: getattr(seat, field) for field in sorted(CARRIED)}
+    carried = {field: getattr(source, field) for field in sorted(CARRIED)}
     return Profile(
-        name=ingress_name(seat.name),
-        federation=seat.federation,
-        federation_of=seat.name,
+        name=ingress_name(source.name),
+        federation=source.federation,
+        federation_of=source.name,
         backends={
             **offered,
             INTERNAL_LABEL: Backend(
                 url=f"{INTERNAL_SCHEME}{INTERNAL_LABEL}",
-                tools_allow=sorted(_internal_allow(seat)),
+                tools_allow=sorted(_internal_allow(source)),
             ),
         },
         **carried,
     )
 
 
-def _internal_allow(seat: Profile) -> set[str]:
+def _internal_allow(source: Profile) -> set[str]:
     """Which of this gateway's OWN tools the derived ingress serves a peer.
 
     Until 6.0.0 this was ``{read_part_tool}``, constructed rather than carried,
@@ -208,18 +208,18 @@ def _internal_allow(seat: Profile) -> set[str]:
     is also the safe answer.
     """
     allowed = {READ_PART_TOOL}
-    if seat.role != "operator":
+    if source.role != "operator":
         return allowed
-    for backend in seat.backends.values():
+    for backend in source.backends.values():
         if backend.is_internal:
             allowed.update(backend.tools_allow or [])
     return allowed
 
 
 def derive_all(registry: Mapping[str, Profile]) -> dict[str, Profile]:
-    """Every ingress derived from the seats in ``registry``, by derived name."""
+    """Every ingress derived from the profiles in ``registry``, by derived name."""
     return {
-        ingress_name(name): derive_ingress(seat)
-        for name, seat in registry.items()
-        if offers_federation(seat)
+        ingress_name(name): derive_ingress(source)
+        for name, source in registry.items()
+        if offers_federation(source)
     }

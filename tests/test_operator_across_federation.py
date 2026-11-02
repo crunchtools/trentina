@@ -15,7 +15,7 @@ causes them:
 * ``find_operator`` returns the first match, and the gateway's own model calls
   run as whatever it returns. With two matches, dict order decides the
   gateway's service identity — which is exactly the defect #138 removed when
-  it replaced a search with an explicit seat. This one is SILENT: the wrong
+  it replaced a search with an explicit profile. This one is SILENT: the wrong
   identity still has a provider and a key, so the calls succeed and bill to
   the wrong place with the wrong model.
 """

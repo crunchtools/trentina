@@ -1,7 +1,7 @@
 """Every token the OAuth proxy issues answers to one profile (#298).
 
 The proxy has one JWT audience for every proxied profile, so the audience
-cannot tell an agent seat's token from an operator seat's. The binding can:
+cannot tell an agent profile's token from an operator profile's. The binding can:
 ``/authorize`` records which profile the flow named, ``/token`` moves that onto
 the issued token's lineage, a refresh keeps it, and ``bound_profile`` is what
 ``verify_oauth`` asks.
@@ -107,23 +107,23 @@ async def _login(proxy: _Proxy, profile: str, challenge: str = "c1") -> _Token:
 class TestBinding:
     async def test_a_token_answers_to_the_profile_its_flow_named(self) -> None:
         proxy = _Proxy()
-        token = await _login(proxy, "agent-seat")
-        assert await proxy.bound_profile(token.access_token) == "agent-seat"
+        token = await _login(proxy, "agent-profile")
+        assert await proxy.bound_profile(token.access_token) == "agent-profile"
 
     async def test_a_refresh_stays_on_the_same_profile(self) -> None:
         proxy = _Proxy()
-        first = await _login(proxy, "agent-seat")
+        first = await _login(proxy, "agent-profile")
         second = await proxy.exchange_refresh_token(
             _Client("cid"), _Refresh(first.refresh_token), []
         )
-        assert await proxy.bound_profile(second.access_token) == "agent-seat"
+        assert await proxy.bound_profile(second.access_token) == "agent-profile"
 
     async def test_two_flows_two_profiles(self) -> None:
         proxy = _Proxy()
-        agent = await _login(proxy, "agent-seat", "c1")
-        operator = await _login(proxy, "operator-seat", "c2")
-        assert await proxy.bound_profile(agent.access_token) == "agent-seat"
-        assert await proxy.bound_profile(operator.access_token) == "operator-seat"
+        agent = await _login(proxy, "agent-profile", "c1")
+        operator = await _login(proxy, "operator-profile", "c2")
+        assert await proxy.bound_profile(agent.access_token) == "agent-profile"
+        assert await proxy.bound_profile(operator.access_token) == "operator-profile"
 
     async def test_an_unbound_flow_gets_no_token(self) -> None:
         """A code from a flow authorize never bound (pre-0.49.0) is refused."""
@@ -145,18 +145,18 @@ class TestBinding:
 
     async def test_a_refresh_token_is_not_an_access_token(self) -> None:
         proxy = _Proxy()
-        token = await _login(proxy, "agent-seat")
+        token = await _login(proxy, "agent-profile")
         assert await proxy.bound_profile(token.refresh_token) is None
 
     async def test_a_live_challenge_cannot_be_repointed(self) -> None:
         proxy = _Proxy()
-        await proxy.bind_flow("cid", "c1", "agent-seat")
+        await proxy.bind_flow("cid", "c1", "agent-profile")
         with pytest.raises(AuthorizeError):
-            await proxy.bind_flow("cid", "c1", "operator-seat")
+            await proxy.bind_flow("cid", "c1", "operator-profile")
 
     async def test_pkce_is_required(self) -> None:
         with pytest.raises(AuthorizeError):
-            await _Proxy().bind_flow("cid", None, "agent-seat")
+            await _Proxy().bind_flow("cid", None, "agent-profile")
 
 
 class TestResolveProfile:

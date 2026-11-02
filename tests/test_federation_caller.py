@@ -42,8 +42,8 @@ _PUB = (
 )
 
 
-def _seat(**over: Any) -> dict[str, Any]:
-    """A seat that shares itself: `federation` plus a way in of its own."""
+def _profile(**over: Any) -> dict[str, Any]:
+    """A profile that shares itself: `federation` plus a way in of its own."""
     base: dict[str, Any] = {
         "name": "up",
         "auth": AuthConfig(bearer_token_env="UP_TOKEN"),
@@ -54,17 +54,17 @@ def _seat(**over: Any) -> dict[str, Any]:
     return base
 
 
-# --- the shared seat and its derived ingress (validators) ---
+# --- the shared profile and its derived ingress (validators) ---
 
 
-def test_a_shared_seat_loads_and_derives_an_ingress() -> None:
-    seat = Profile(**_seat())
-    ingress = derive_ingress(seat)
+def test_a_shared_profile_loads_and_derives_an_ingress() -> None:
+    profile = Profile(**_profile())
+    ingress = derive_ingress(profile)
 
     assert ingress.name == "up-federation"
     assert ingress.role == "agent"
     assert ingress.federation_of == "up"
-    # The seat's own remote backend, plus the paging reader and nothing else.
+    # The profile's own remote backend, plus the paging reader and nothing else.
     assert ingress.backends["peer"].is_remote
     assert ingress.backends["trentina"].tools_allow == ["read_part_tool"]
 
@@ -76,15 +76,15 @@ def test_the_internal_backend_is_constructed_under_the_derived_label() -> None:
     Unchanged in 6.0.0, unlike the allowlist on it: there is still exactly one
     place the derived internal surface comes from.
     """
-    seat = Profile(
-        **_seat(
+    profile = Profile(
+        **_profile(
             backends={
                 "peer": Backend(url="https://real/mcp", tools_allow=["*"]),
                 "web": Backend(url="internal://web", tools_allow=["read_part_tool"]),
             }
         )
     )
-    ingress = derive_ingress(seat)
+    ingress = derive_ingress(profile)
 
     assert "web" not in ingress.backends
     assert ingress.backends["trentina"].tools_allow == ["read_part_tool"]
@@ -104,7 +104,7 @@ def test_an_operator_profile_may_be_shared_and_its_peer_is_an_operator() -> None
     true.
     """
     shared = Profile(
-        **_seat(
+        **_profile(
             role="operator",
             backends={
                 "peer": Backend(url="https://real/mcp", tools_allow=["*"]),
@@ -125,16 +125,16 @@ def test_an_operator_profile_may_be_shared_and_its_peer_is_an_operator() -> None
     ]
 
 
-def test_a_seat_with_no_way_in_is_the_old_ingress_shape() -> None:
+def test_a_profile_with_no_way_in_is_the_old_ingress_shape() -> None:
     """The pre-5.0.0 shape loaded with no `auth`, because `peers` WAS its
     authentication. Requiring one refuses exactly that shape."""
-    with pytest.raises(ValueError, match="a shared seat needs auth or oauth"):
-        Profile(**_seat(auth=None))
+    with pytest.raises(ValueError, match="a shared profile needs auth or oauth"):
+        Profile(**_profile(auth=None))
 
 
-def test_a_seat_may_not_take_the_ingress_suffix() -> None:
+def test_a_profile_may_not_take_the_ingress_suffix() -> None:
     with pytest.raises(ValueError, match="may not end in"):
-        Profile(**_seat(name="up-federation"))
+        Profile(**_profile(name="up-federation"))
 
 
 @pytest.mark.parametrize(
@@ -324,11 +324,11 @@ def _peer_ingress(pub: str) -> Profile:
     """The DERIVED ingress a peer authenticates to, as the gateway builds it.
 
     A primary's JWT is audience-pinned to the profile name it calls, which for
-    a derived ingress is `<seat>-federation` — so the audience now follows from
-    the seat rather than from a name an operator invented.
+    a derived ingress is `<profile>-federation` — so the audience now follows from
+    the profile rather than from a name an operator invented.
     """
     peers = {"breetai": FederationPeer(public_key=pub)}
-    return derive_ingress(Profile(**_seat(federation=FederationConfig(peers=peers))))
+    return derive_ingress(Profile(**_profile(federation=FederationConfig(peers=peers))))
 
 
 async def test_authorize_captures_the_federated_caller() -> None:

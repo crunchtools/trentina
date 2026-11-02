@@ -4,7 +4,7 @@
 
 Trentina is meant to be run by an agent. It gets installed, configured, tuned
 and kept healthy by an **Operator agent**, and humans set policy rather than
-editing YAML. The operator profile (`role: operator`) is that agent's seat.
+editing YAML. The operator profile (`role: operator`) is that agent's profile.
 It is the one identity that owns the gateway.
 
 Every other agent is a **tenant** (`role: agent`, the default). A tenant sees
@@ -12,12 +12,12 @@ its own tools, its own audit rows and its own section of the config, and
 nothing about its neighbours. The operator sees the whole gateway, and the
 gateway's own model work runs as the operator.
 
-## What the seat is for
+## What the profile is for
 
 The operator holds two things.
 
 **Administration.** The admin tools act on the whole gateway only from this
-seat:
+profile:
 
 | Tool | As the operator |
 |---|---|
@@ -48,14 +48,14 @@ the next hash, so a run of changes needs one read at the start.
 > that shape has not finished settling. Which writes a person must approve is
 > *not* in the surface: those rules are stable, and so is the approval flow
 > below. See [stability.md](stability.md). Nothing else on this page is preview —
-> the operator seat, `reload_profiles` and `cache_flush` are stable.
+> the operator profile, `reload_profiles` and `cache_flush` are stable.
 
 Two things the operator can propose and cannot apply, and they are not about
 authority — the operator *is* root on this gateway. They exist because the
 operator is a model, so what matters is not whether it may but whether it can
 be talked into it.
 
-The first is the operator seat: who holds `role: operator`, and how a caller
+The first is the operator profile: who holds `role: operator`, and how a caller
 becomes one. Minting a second root is the one change whose blast radius is
 unbounded and permanent.
 
@@ -212,7 +212,7 @@ profiles:
 
 ## Changing the operator
 
-Moving the seat, or changing the operator's `defense.model`, moves every
+Moving the role, or changing the operator's `defense.model`, moves every
 centralized call to the new identity at the next reload. Descriptions are then
 judged again under the new model: that's the verdict cache doing its job, not a
 bug. Verdicts reached by the env-default model keep their cache keys, so an

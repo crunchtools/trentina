@@ -49,7 +49,7 @@ def _profile(*, ingress: bool, federated_url: str | None) -> Profile:
     backends = {}
     if federated_url is not None:
         backends["up"] = Backend(url=federated_url, tools_allow=["*"], federated=FederatedConfig())
-    # A SEAT is shared now, and a seat has a way in of its own: `federation` on
+    # A PROFILE is shared now, and a profile has a way in of its own: `federation` on
     # it is what the gateway derives the ingress from.
     return Profile(
         name="breetai",
@@ -59,19 +59,19 @@ def _profile(*, ingress: bool, federated_url: str | None) -> Profile:
     )
 
 
-def test_a_seat_may_both_consume_and_share() -> None:
+def test_a_profile_may_both_consume_and_share() -> None:
     """The rule that forbade this is gone, and the reason is structural.
 
     One `Profile` serving both roles used to deadlock its own single-flight
     aggregate build, so "one profile is one role" refused it. The ingress is
     DERIVED now, so those are two objects — and derivation excludes every
     `federated` backend, so the peer cannot be offered the next gateway
-    whatever this seat mounts. A to B to C is unsayable, not refused.
+    whatever this profile mounts. A to B to C is unsayable, not refused.
     """
-    seat = _profile(ingress=True, federated_url=HTTPS)
-    _check_federation_topology("breetai", seat)
+    profile = _profile(ingress=True, federated_url=HTTPS)
+    _check_federation_topology("breetai", profile)
 
-    offered = derive_ingress(seat).backends
+    offered = derive_ingress(profile).backends
     assert "up" not in offered  # the federated backend is NOT re-exported
     assert "web" in offered
 
@@ -194,19 +194,19 @@ class TestOneDefinitionOfAnIngress:
         it and the derived ingress got the paging reader alone. Since 6.0.0 the
         derived surface follows the profile, so `*` crosses as `*`.
         """
-        seat = Profile(
+        profile = Profile(
             name="fed",
             auth=AuthConfig(bearer_token_env="B"),
             federation=FederationConfig(peers=_peers()),
             backends={
                 "web": Backend(url="internal://web", tools_allow=["*"]),
-                # A shared seat needs something it can actually offer.
+                # A shared profile needs something it can actually offer.
                 "wiki": Backend(url="https://wiki/mcp", tools_allow=["*"]),
             },
         )
-        assert seat.backends["web"].tools_allow == ["*"]
+        assert profile.backends["web"].tools_allow == ["*"]
 
-        offered = derive_ingress(seat).backends
+        offered = derive_ingress(profile).backends
         assert "web" not in offered
         assert offered["trentina"].tools_allow == ["read_part_tool"]
 
@@ -391,7 +391,7 @@ def test_a_derived_ingress_may_not_take_a_second_way_in(way_in: dict[str, object
     isolation hole this release closed, reopened through the front door.
 
     Derivation never writes either field, so this guards the derivation. The
-    SEAT carries a way in and must: that is `a_shared_seat_is_shareable`.
+    PROFILE carries a way in and must: that is `a_shared_profile_is_shareable`.
     """
     with pytest.raises(ValidationError, match="does not apply"):
         Profile(
@@ -403,16 +403,16 @@ def test_a_derived_ingress_may_not_take_a_second_way_in(way_in: dict[str, object
         )
 
 
-def test_derivation_drops_the_seats_ways_in() -> None:
-    """The seat has both; the ingress derived from it has neither."""
-    seat = Profile(
+def test_derivation_drops_the_profiles_ways_in() -> None:
+    """The profile has both; the ingress derived from it has neither."""
+    profile = Profile(
         name="breetai",
         auth=AuthConfig(bearer_token_env="B"),
         oauth=OAuthConfig(enabled=True, allowed_emails=["alice@example.com"]),
         federation=FederationConfig(peers=_peers()),
         backends={"web": Backend(url="https://wiki/mcp", tools_allow=["*"])},
     )
-    ingress = derive_ingress(seat)
+    ingress = derive_ingress(profile)
 
     assert ingress.auth is None
     assert ingress.oauth is None

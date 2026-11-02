@@ -101,7 +101,7 @@ class Kind(Enum):
     person rather than for the code that raises it.
     """
 
-    OPERATOR_SEAT = "operator seat"
+    OPERATOR_PROFILE = "operator profile"
     FEDERATION_TRUST = "federation trust"
     #: Who may authenticate to a federation ingress as a primary gateway.
     FEDERATION_PEERS = "federation peers"
@@ -144,7 +144,7 @@ def digest_of(facts: dict[str, str]) -> str:
 
 
 #: At most one outstanding action per kind. Staging a second replaces the
-#: first: two pending seat changes would make "approve" ambiguous to the person
+#: first: two pending profile changes would make "approve" ambiguous to the person
 #: reading the page, and the newest proposal is the live one.
 _staged: dict[Kind, Staged] = {}
 

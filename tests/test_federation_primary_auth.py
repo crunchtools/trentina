@@ -2,7 +2,7 @@
 
 The happy path — a primary JWT verified by the secondary and a tool call
 crossing the link — is asserted end to end in
-`test_federation_seat_link.py`, through the ingress DERIVED from a seat, which
+`test_federation_profile_link.py`, through the ingress DERIVED from a profile, which
 is the shape 5.0.0 ships. It lives there rather than here because only one
 test per process may stand up a gateway pair in front of a real remote MCP
 backend (#657), and a second one reports coverage it does not have.
@@ -60,12 +60,6 @@ def _keypair() -> tuple[str, str]:
     return private_pem, public_pem
 
 
-#: The seat this ingress was derived from. The harness serves the ingress at
-#: `/<SECONDARY_PROFILE>/mcp` and the audience is the profile NAME, so the two
-#: stay as they were; what `federation_of` adds is that the profile reads as
-#: derived rather than hand-written, which is what the model now requires.
-SECONDARY_SEAT = "shared-seat"
-
 #: A loopback port nothing listens on. The secondary's offered backend has to
 #: exist for the profile to be valid, and this file never dials it: a refused
 #: primary key is refused at the ingress, before any backend is reached.
@@ -103,13 +97,13 @@ async def test_a_wrong_primary_key_is_refused() -> None:
     """
     _, trusted_pub = _keypair()
     wrong_priv, _ = _keypair()
-    # The ingress DERIVED from a shared seat: peers only, NO static bearer,
+    # The ingress DERIVED from a shared profile: peers only, NO static bearer,
     # since the peer list is what authenticates. Its internal surface is the
     # paging reader — never the gateway's own fetch/search/admin tools, which
-    # the seat itself still has.
+    # the profile itself still has.
     secondary = Profile(
         name=SECONDARY_PROFILE,
-        federation_of=SECONDARY_SEAT,
+        federation_of=SECONDARY_PROFILE,
         federation=FederationConfig(peers={"breetai": FederationPeer(public_key=trusted_pub)}),
         backends={
             "demo": Backend(url=f"http://127.0.0.1:{_DEAD_PORT}/mcp"),
@@ -163,8 +157,8 @@ class TestReloadHolds:
             auth=AuthConfig(bearer_token_env="A"),
         )
         before.auth.bearer_token = SecretStr("t")
-        # A seat that starts sharing itself KEEPS its `auth`: `federation` is
-        # declared on the seat now, and the ingress is derived from it. What
+        # A profile that starts sharing itself KEEPS its `auth`: `federation` is
+        # declared on the profile now, and the ingress is derived from it. What
         # matters here is that an agent-triggered reload may not add the block.
         after = Profile(
             name="up",

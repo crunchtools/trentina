@@ -109,7 +109,7 @@ def test_only_the_exact_tool_held_reason_maps(meta: dict[str, Any] | None) -> No
 
 
 def _ingress() -> Profile:
-    # A DERIVED ingress (`federation_of` names its seat): it carries no way in
+    # A DERIVED ingress (`federation_of` names its profile): it carries no way in
     # of its own, because `peers` is its authentication and a second one would
     # admit a caller with no peer and no sub.
     return Profile(
@@ -414,8 +414,8 @@ def test_two_peers_on_one_link_are_fine_now() -> None:
     peer's calls used. So the model refused two peers plus that tool.
 
     Neither half is reachable now. The tool is not offerable, and the grant
-    belongs to the seat, so no peer can start or revoke one. Two peers is an
-    ordinary configuration again — which it has to be, since a seat shared with
+    belongs to the profile, so no peer can start or revoke one. Two peers is an
+    ordinary configuration again — which it has to be, since a profile shared with
     both a laptop and a phone is the thing a person actually wants.
     """
     second = (

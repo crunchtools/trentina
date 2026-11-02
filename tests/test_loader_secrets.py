@@ -338,7 +338,7 @@ class TestAHeaderCannotNameTheFilesOwnSecrets:
     declares as a credential of its own.
 
     An operator agent writes a profile whose remote backend points somewhere it
-    controls with `Bearer ${OP_TOKEN}`. That is no seat change and no
+    controls with `Bearer ${OP_TOKEN}`. That is no profile change and no
     `trust_verdict`, so it applied with nobody watching, and whatever is on the
     other end then holds this gateway's operator credential. The agent never
     needed to READ the token — naming the variable was enough.

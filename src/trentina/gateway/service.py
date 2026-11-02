@@ -9,7 +9,7 @@ path had no profile bound at all, so L3 fell through to the env-global key.
 Neither was a decision; both were fall-through.
 
 The rule now: centralized work runs AS the ``role: operator`` profile — its
-provider, its model, its ``llm_keys``, its bill. The operator is the seat the
+provider, its model, its ``llm_keys``, its bill. The operator is the profile the
 Operator agent holds (``docs/operator.md``), so the identity that installs and
 configures Trentina is also the one its own overhead runs under.
 
@@ -55,7 +55,7 @@ def find_operator(profiles: Mapping[str, Profile]) -> Profile | None:
     operator profile and its derivation both match — and taking the first match
     would let dict order decide which identity the gateway's own model calls run
     as. That is exactly the defect #138 removed when it made the operator an
-    explicit seat instead of a search. The service identity is the profile
+    explicit profile instead of a search. The service identity is the profile
     somebody wrote, never the one this code derived from it.
     """
     return next(
@@ -70,7 +70,7 @@ def service_profile() -> Profile:
     A declared ``role: operator`` profile when the file names one; otherwise the
     environment operator (``standalone.standalone_profile``) — the whole identity
     for a standalone server, and the env-global fallback for a live gateway that
-    declares no operator. Centralized work always has a seat, so nothing is ever
+    declares no operator. Centralized work always has a profile, so nothing is ever
     bound as None and ``get_current_profile`` never has to answer "unknown" on a
     gateway's own call.
 

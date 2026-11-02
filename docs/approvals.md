@@ -2,11 +2,11 @@
 
 Your agent runs this gateway. Five things it cannot do alone:
 
-- **Move the operator seat** — who is root here.
+- **Move the operator profile** — who is root here.
 - **Turn on federation trust** — serve another gateway's answers without
   scanning them.
-- **Let another gateway in** — add a peer that may authenticate to a seat you
-  share, and use that seat's sign-ins.
+- **Let another gateway in** — add a peer that may authenticate to a profile you
+  share, and use that profile's sign-ins.
 - **Stand a perimeter down** — let a profile detect injections without
   refusing them.
 - **Open a way out** — let an agent's traffic reach somewhere new on the
@@ -26,7 +26,7 @@ Your operator agent has the authority; it is root on its gateway. The problem
 is that it is a *model*, so the question was never whether it may, but whether
 it can be talked into it. These are the changes where a plausible-sounding
 request does the most damage: one hands root to someone else, one turns off the
-scanning this product exists to do, one hands a seat — and the accounts it is signed in to —
+scanning this product exists to do, one hands a profile — and the accounts it is signed in to —
 to a gateway you have never met, one leaves a profile detecting attacks and permitting them, and one
 gives an agent a route off your network.
 
@@ -45,13 +45,13 @@ You get a URL and a one-time code. Open it, paste the code, choose a password.
 Your agent cannot do this part — setting a password is a form submission, and
 none of Trentina's own tools makes one. That asymmetry is the whole mechanism,
 and it is why asking is safe to hand to an agent. It holds as long as the
-operator seat's backends are Trentina's own tools; see below.
+operator profile's backends are Trentina's own tools; see below.
 
 After that, just say what you want:
 
 > Trust lotor's verdicts for this backend.
 
-> Move the operator seat to <profile>.
+> Move the operator profile to <profile>.
 
 > Let breetai federate into the shared ingress.
 
@@ -61,7 +61,7 @@ It makes the change, the gateway stages it instead of applying it, and your
 agent hands you a URL.
 
 **One question at a time.** If a single change would need two of your
-approvals — moving the seat *and* trusting a peer, say — the gateway refuses it
+approvals — moving the operator role *and* trusting a peer, say — the gateway refuses it
 outright and tells your agent to do them separately. A page can only put one
 decision in front of you, and the other would have ridden along unread.
 
@@ -70,7 +70,7 @@ decision in front of you, and the other would have ridden along unread.
 Open the URL, enter the password, read what it shows — only things you can
 actually check:
 
-- **Operator seat** — who holds it now, who would hold it after.
+- **Operator role** — which profile holds it now, which would hold it after.
 - **Federation trust** — which backend, the peer's key as a short fingerprint,
   and the peer's scanner and judge beside your own, to compare. Those last two
   are the peer's claims about itself. Pinning the key binds which scanner and
@@ -80,9 +80,9 @@ actually check:
 - **Federation peers** — each gateway being let in, by name, with its key as a
   short fingerprint. A peer whose *name* you already approved but whose key
   has changed shows up here too: same name, different gateway. Beside the keys,
-  what the link actually hands over: which of that seat's backends cross, and
-  which of those **run as your sign-in**. A federated call runs as the seat, so
-  the seat's OAuth grants serve the link — admitting a peer to a seat signed in
+  what the link actually hands over: which of that profile's backends cross, and
+  which of those **run as your sign-in**. A federated call runs as the profile, so
+  the profile's OAuth grants serve the link — admitting a peer to a profile signed in
   to a mailbox means that peer's calls read and write that mailbox. Both rows
   are always there, "none" included, so a missing one never has to be read as
   "the page did not mention it".
@@ -110,7 +110,7 @@ it; you are the part that does not have to.
 approved, so all five stay blocked — but the enrolment window is also the
 one moment this gateway's approver could be claimed by whoever holds the code.
 
-**Keep code execution off the operator seat.** An agent with a backend that can
+**Keep code execution off the operator profile.** An agent with a backend that can
 run code or fetch arbitrary URLs can submit the form itself — and can rewrite
 the configuration directly anyway, so no setting inside the gateway binds it.
 If you want the guarantee unconditionally, pin the password in the gateway's

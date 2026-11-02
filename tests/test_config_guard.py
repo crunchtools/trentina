@@ -18,7 +18,7 @@ from trentina.gateway.config_guard import (
     echoes_redaction,
     equivalent,
     mask_inline_secrets,
-    operator_seat,
+    operator_profile,
     trust_stays_human,
 )
 from trentina.gateway.profile import Profile
@@ -35,32 +35,32 @@ def _profile(**overrides: object) -> Profile:
     return Profile.model_validate(body)
 
 
-class TestOperatorSeat:
+class TestOperatorProfile:
     def test_only_the_operator_is_in_it(self) -> None:
         agent = Profile.model_validate(
             {"name": "ag", "auth": {"bearer_token_env": "A"}, "backends": {}}
         )
-        seat = operator_seat({"op": _profile(), "ag": agent})
-        assert list(seat) == ["op"]
+        profile = operator_profile({"op": _profile(), "ag": agent})
+        assert list(profile) == ["op"]
 
     def test_promoting_a_profile_changes_it(self) -> None:
         """The write that matters: a second root."""
         agent = Profile.model_validate(
             {"name": "ag", "auth": {"bearer_token_env": "A"}, "backends": {}}
         )
-        before = operator_seat({"op": _profile(), "ag": agent})
-        after = operator_seat(
+        before = operator_profile({"op": _profile(), "ag": agent})
+        after = operator_profile(
             {"op": _profile(), "ag": agent.model_copy(update={"role": "operator"})}
         )
         assert before != after
 
     def test_removing_the_operator_changes_it(self) -> None:
-        before = operator_seat({"op": _profile()})
-        assert before != operator_seat({})
+        before = operator_profile({"op": _profile()})
+        assert before != operator_profile({})
 
     def test_changing_the_operators_auth_changes_it(self) -> None:
-        before = operator_seat({"op": _profile()})
-        after = operator_seat({"op": _profile(auth={"bearer_token_env": "SOMEONE_ELSES"})})
+        before = operator_profile({"op": _profile()})
+        after = operator_profile({"op": _profile(auth={"bearer_token_env": "SOMEONE_ELSES"})})
         assert before != after
 
     def test_widening_the_operators_source_networks_changes_it(self) -> None:
@@ -70,13 +70,13 @@ class TestOperatorSeat:
             client_egress={"hosts": ["example.com"], "source_networks": ["10.0.0.1/32"]}
         )
         wide = _profile(client_egress={"hosts": ["example.com"], "source_networks": ["10.0.0.0/8"]})
-        assert operator_seat({"op": narrow}) != operator_seat({"op": wide})
+        assert operator_profile({"op": narrow}) != operator_profile({"op": wide})
 
     def test_changing_the_operators_oauth_changes_it(self) -> None:
-        """`allowed_emails` is the seat for a web client that cannot hold a
+        """`allowed_emails` is the profile for a web client that cannot hold a
         static bearer."""
-        before = operator_seat({"op": _profile()})
-        after = operator_seat(
+        before = operator_profile({"op": _profile()})
+        after = operator_profile(
             {
                 "op": _profile(
                     oauth={"enabled": True, "allowed_emails": ["someone-else@example.com"]}
@@ -88,12 +88,12 @@ class TestOperatorSeat:
     def test_widening_the_operators_matrix_networks_changes_it(self) -> None:
         narrow = _profile(matrix_ingress={"source_networks": ["10.0.0.1/32"]})
         wide = _profile(matrix_ingress={"source_networks": ["10.0.0.0/8"]})
-        assert operator_seat({"op": narrow}) != operator_seat({"op": wide})
+        assert operator_profile({"op": narrow}) != operator_profile({"op": wide})
 
     def test_an_unrelated_edit_leaves_it_alone(self) -> None:
-        """Otherwise every ordinary write would be refused as a seat change."""
-        before = operator_seat({"op": _profile()})
-        after = operator_seat(
+        """Otherwise every ordinary write would be refused as a profile change."""
+        before = operator_profile({"op": _profile()})
+        after = operator_profile(
             {"op": _profile(backends={"web": {"url": "internal://web", "tools_allow": ["*"]}})}
         )
         assert before == after
