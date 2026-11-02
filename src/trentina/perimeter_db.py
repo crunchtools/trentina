@@ -350,14 +350,21 @@ def approved_by_tool(backend_id: str, tools: Collection[str]) -> dict[str, str]:
     wanted = sorted(set(tools))
     if not wanted:
         return {}
-    # Narrowed in SQL rather than in Python: a backend with a long approved
-    # history would otherwise have every one of its definition bodies loaded
-    # and discarded on each `tool_pins list`.
-    # The only interpolation is the placeholder COUNT — a run of '?', never a
-    # value. Every value, the tool names included, is bound.
-    placeholders = ",".join("?" * len(wanted))
-    query = f"SELECT tool, definition_json FROM tool_pins WHERE backend_id = ? AND state = ? AND tool IN ({placeholders}) ORDER BY last_seen DESC"  # noqa: E501, S608
-    rows = _read_db().execute(query, (backend_id, PIN_APPROVED, *wanted)).fetchall()
+    # Narrowed in SQL, not in Python: a backend with a long approved history
+    # would otherwise have every definition body loaded and discarded on each
+    # `tool_pins list`. The tool names ride as ONE bound JSON array through
+    # `json_each`, so the statement is a constant — an IN clause built from a
+    # run of '?' would have needed interpolation and a lint suppression to say
+    # it was harmless, and a query nobody has to take on trust is better.
+    rows = (
+        _read_db()
+        .execute(
+            "SELECT tool, definition_json FROM tool_pins WHERE backend_id = ? AND state = ? "
+            "AND tool IN (SELECT value FROM json_each(?)) ORDER BY last_seen DESC",
+            (backend_id, PIN_APPROVED, json.dumps(wanted)),
+        )
+        .fetchall()
+    )
     out: dict[str, str] = {}
     for row in rows:
         out.setdefault(row["tool"], row["definition_json"])
@@ -422,17 +429,13 @@ def pin_hold_flags(backend_id: str, tool: str) -> tuple[bool, bool] | None:
     return (bool(row["pending"]), bool(row["rejected"]))
 
 
-#: Definitions kept per (backend, tool) before the least recently seen are
-#: dropped. One row per definition is what lets two tenants hold independently,
-#: and without a bound a backend whose descriptions churn would keep every
-#: version it has ever sent, JSON and all, for the life of the store.
+#: Definitions kept per (backend, tool), least recently seen dropped. Without a
+#: bound, a backend whose descriptions churn keeps every version it has ever
+#: sent, JSON and all, for the life of the store.
 #:
-#: Eviction is always FAIL-CLOSED, which is what makes a plain LRU safe here: a
-#: dropped row reads as a definition never seen, and a definition never seen is
-#: held. Dropping an approved one costs a re-approval, dropping a rejected one
-#: costs a re-rejection; neither can turn into "served unapproved". Thirty-two
-#: is far past any legitimate churn for one tool, so a rejection would need
-#: thirty-two distinct definitions to push it out.
+#: A plain LRU is safe because eviction is FAIL-CLOSED: a dropped row reads as
+#: never seen, and never seen is held. Thirty-two is far past legitimate churn,
+#: so a rejection needs that many distinct definitions to be pushed out.
 MAX_DEFINITIONS_PER_TOOL = 32
 
 

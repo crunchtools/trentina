@@ -837,9 +837,11 @@ class TestAnAnonymousBackendStillOpensTheBreaker:
     """
 
     @staticmethod
-    async def _refuse(_url: str, _headers: Any, *_: Any, cap: Any = None, **__: Any) -> Any:
-        # How the transport reports a 401 it read nothing from: the cap flags
-        # it and the SDK raises. Mirrors `tests/test_backend_auth.py`.
+    async def _refuse(_url: str, _headers: Any, cap: Any = None) -> Any:
+        # How the transport reports a 401 it read nothing from: the cap flags it
+        # and the SDK raises. `_do_list_tools` passes the cap POSITIONALLY —
+        # taking it as a keyword here left it None, so the flag was never set
+        # and the test failed for the wrong reason.
         if cap is not None:
             cap.unauthorized = True
         raise RuntimeError("Server returned an error response")
