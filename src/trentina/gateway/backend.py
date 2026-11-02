@@ -674,7 +674,14 @@ async def _fetch_and_cache(
                 _do_list_tools(backend.url, sent, cap), timeout=backend.list_timeout_seconds
             ),
         )
-    except (BackendNeedsAuthError, FederationUnauthorizedError):
+    # Three the backend ANSWERED: a missing grant, a peer refusing our JWT, and
+    # a refused header credential. Each is re-raised without touching the
+    # circuit, which measures whether the URL is reachable — and all three say
+    # it is. `BackendRejectedCallError` joined them in 6.1.0, where it would
+    # otherwise have fallen through to `record_failure` below and opened the
+    # breaker for every profile on the URL over one operator's stale token,
+    # which is the thing that change exists to stop.
+    except (BackendNeedsAuthError, BackendRejectedCallError, FederationUnauthorizedError):
         raise
     except Exception as exc:
         breaker.record_failure(backend.url)
@@ -801,6 +808,12 @@ async def _with_reauth(
     operator's config. The backend answered, so the circuit records a success
     and the caller gets ``BackendRejectedCallError``, which audits as
     ``tool_error`` and never counts toward the breaker.
+
+    ``backend.headers`` is in that test deliberately. Without it the branch
+    also caught an ANONYMOUS backend, which carries no credential at all — and
+    a 401 there is not a misconfigured token but a backend refusing everyone,
+    so it must keep counting toward the breaker or persistent refusals would
+    never open it.
     """
     try:
         return await run(headers)
@@ -809,7 +822,7 @@ async def _with_reauth(
             breaker.record_success(backend.url)
             logger.warning("gateway: federated backend=%s refused our primary JWT", backend_name)
             raise FederationUnauthorizedError(backend_name) from exc
-        if grant is None and cap.unauthorized and not cap.call_accepted:
+        if backend.headers and grant is None and cap.unauthorized and not cap.call_accepted:
             breaker.record_success(backend.url)
             logger.warning(
                 "gateway: backend=%s refused our header credential; the circuit is "

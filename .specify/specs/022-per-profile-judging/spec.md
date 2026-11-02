@@ -1,7 +1,7 @@
 # Specification: A Profile Pays For Its Own Tool Descriptions
 
 > **Spec ID:** 022-per-profile-judging
-> **Status:** Draft
+> **Status:** Implemented (6.1.0)
 > **Version:** 0.1.0
 > **Author:** crunchtools
 > **Date:** 2026-11-02
@@ -51,29 +51,45 @@ operator` (#661) is not needed for this and stays open for the admin half.
 | Description **compression** | operator's key and model | the listing profile's own |
 | Verdict cache scope | every profile with equal thresholds and judge | one `grant_owner` |
 | Compression cache scope | gateway-wide, keyed by description hash | one `grant_owner` |
-| A profile with no `llm_keys` | the operator covered it | **refused at load** |
+| A profile with no `llm_keys` | the operator covered it | judges nothing; warned, and reported by `config_tool` |
 | Approved config write | operator | operator (unchanged) |
 
-## Why this is a MAJOR
+## Why this is a MINOR
 
-Outside both declared preview surfaces (`config-api`, `federation`), so
-constitution rule 1 applies: a change reaching anything outside them is a major.
-Three breaks, in order of how loudly they land:
+Scott challenged the first draft's 7.0.0 — "that feels excessive" — and he was
+right; the reasoning behind it was sloppy. Taking the candidates apart:
 
-1. **A profile holding no `llm_keys` for its resolved provider is refused at
-   load.** It used to work, because the operator judged its descriptions for it.
-   Leaving it to fail at call time instead would mean a profile under
-   `enforcement: block` silently serving an empty tool list, which is the worst
-   of the available behaviours. Fails closed and loudly, at load, naming the
-   profile.
-2. **Every persisted verdict and every persisted compression is unreachable
-   after the upgrade**, because the key gains the profile. The first boot
-   re-judges and re-compresses each profile's descriptions. On a lotor-shaped
-   config that is 1,456 descriptions across 9 profiles; it is paced by the L3
-   limiter and the warm-up, so the gateway serves throughout, but it costs real
-   money once and takes minutes.
-3. **The service identity's documented meaning narrows** to centralized work
-   that is genuinely not any tenant's.
+- **Cache invalidation is not a break.** `PERIMETER_VERSION` has been bumped
+  twenty times and `tool_list_edge.py` treats the cold start as a routine
+  documented cost. The first boot re-judges and re-compresses each profile's
+  descriptions — on lotor, 1,456 across 9 profiles, with 10 extra list fetches
+  (26 distinct URLs becoming 36 partitions). Measured, not estimated.
+- **The keyless-profile LOAD ERROR is gone.** It was this draft's main reason
+  for a major and it was never part of what Scott asked for. Such a profile is
+  already non-functional — every response reports `l3_unavailable` and block
+  refuses it, and the loader has warned since RT #1505 — so refusing the file
+  surfaces an existing breakage rather than preventing a new one. It stays a
+  warning, and `config_tool` reports it in the write result, which closes the
+  gap a warning leaves now that an agent writes the config (#633).
+- **The result-shape changes are additive**: `no_llm_key`, `tool_pins`'s
+  `hash`, and `/health`'s `pending_pins` counting distinct tools so its meaning
+  is preserved. No config key changes meaning, no wire format changes, no tool
+  is removed or renamed, and both tables are migrated rather than emptied.
+- **The one genuine break** is a federated peer's `trust_verdict` re-pin, whose
+  blast radius is inside `federation` — a declared preview surface — so it is a
+  MINOR with a `### Preview` heading naming it.
+
+CI's Gatehouse read Stability Tiers rule 1 as "any change reaching stable code
+is a major". That would make every bug fix a major and the tier meaningless:
+rule 1 is the contrapositive of the sentence above it, *a breaking change
+confined to a preview surface is a minor*, and 6.0.0 applied exactly that test
+on itself — a major for two rules that refused files which loaded before, with
+its federation work noted as "a minor on its own". Ruled by the `cto` agent
+after the version was challenged twice.
+
+The sharpest consequence, and the one the Upgrading notes lead with: because
+`internal://` descriptions are judged too, a keyless OPERATOR profile loses
+`quarantine_stats` and `config_tool`, which worked before.
 
 ## Security Considerations
 
@@ -111,7 +127,7 @@ is more correct and is asserted in a test rather than left as a side effect.
 | `gateway/compress.py` | `compress_tools` takes the profile; `_service_provider` becomes `_provider_for(profile)`; `_cache` and `_param_key` keyed per `grant_owner` |
 | `gateway/aggregate.py` | passes the profile into `compress_tools` |
 | `gateway/verdict_cache.py` | `_cache_key` gains `grant_owner`; docstring records why the pre-#137 spelling no longer buys anything here |
-| `database.py` | `tool_compressions` primary key becomes `(profile, description_hash)`; `save_compression`/`get_all_compressions` carry the profile |
+| `database.py` | `tool_compressions` and `tool_list_cache` gain an `owner` column keyed `(owner, hash)` and `(backend_url, owner)` — the grant owner, so a derived federation ingress shares its source's rows; their accessors and a rebuild migration follow |
 | `gateway/loader.py` | a new registry check: every profile holds a key for its resolved provider (ollama excepted), with the operator's existing rule folded into it |
 | `gateway/warmup.py` | binds each profile for its own build if the per-description binding is not sufficient |
 | `docs/operator.md` | the Service identity table and the Thresholds paragraph |
@@ -131,8 +147,8 @@ is more correct and is asserted in a test rather than left as a side effect.
 - [ ] Warm-up judges every profile's descriptions with that profile bound
       (assert per-profile, not one identity for the run).
 - [ ] A honeypot profile's descriptions are judged under its own posture.
-- [ ] A profile with no `llm_keys` for its provider is refused at load, naming
-      the profile; ollama stays exempt; the existing operator rule still fires.
+- [ ] A profile with no `llm_keys` for its provider still LOADS, is named in
+      `config_tool`'s `no_llm_key`, and ollama stays exempt.
 - [ ] The `tool_compressions` migration: an old-schema database opens, and the
       pre-migration rows are not served to any profile.
 - [ ] A cold-start cost measurement on a lotor-shaped config (9 profiles, 1,456

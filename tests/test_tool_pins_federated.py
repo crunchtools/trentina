@@ -314,3 +314,68 @@ class TestAUrlEditIsNotAFirstConnect:
             tool_pins.migrate_federated_pins({"josui": self._profile(LOTOR_URL)}, {"josui": plain})
             == []
         )
+
+
+class TestTheHashAtTheToolBoundary:
+    """`tool_pins approve` with two held definitions, through the tool itself.
+
+    `decide` is covered directly in `test_tool_pins.py`; this is the operator's
+    actual path, including what the refusal tells them.
+    """
+
+    @staticmethod
+    def _hold_two() -> list[str]:
+        bid = backend_id(LOTOR_URL)
+        for body in ('{"name": "send_message", "v": 1}', '{"name": "send_message", "v": 2}'):
+            perimeter_db.put_pin(
+                bid, "send_message", tool_pins.digest(body), perimeter_db.PIN_PENDING, body
+            )
+        return perimeter_db.pending_hashes(bid, "send_message")
+
+    async def test_a_hashless_approve_refuses_and_offers_both(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        held = self._hold_two()
+
+        with profile_context(gateway["op"]):
+            result = await manage_tool_pins("approve", "lotor", "send_message")
+
+        assert "more than one held definition" in result["error"]
+        assert sorted(result["held"]) == sorted(held)
+        # And nothing was decided by accident.
+        assert len(perimeter_db.pending_hashes(backend_id(LOTOR_URL), "send_message")) == 2
+
+    async def test_approving_by_hash_takes_only_that_definition(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        held = self._hold_two()
+        chosen = held[0]
+
+        with profile_context(gateway["op"]):
+            result = await manage_tool_pins("approve", "lotor", "send_message", chosen)
+
+        assert result["hash"] == chosen
+        assert result["action"] == "approve"
+        # The other one is still held, which is the whole point of the hash.
+        assert perimeter_db.pending_hashes(backend_id(LOTOR_URL), "send_message") == [held[1]]
+
+    async def test_rejecting_by_hash_takes_only_that_definition(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        held = self._hold_two()
+
+        with profile_context(gateway["op"]):
+            await manage_tool_pins("reject", "lotor", "send_message", held[1])
+            listed = await manage_tool_pins("list", "lotor")
+
+        states = {row["hash"]: row["rejected"] for row in listed["held"]}
+        assert states[held[1]] is True
+        assert states[held[0]] is False
+
+    async def test_a_hash_that_is_not_held_is_refused(self, gateway: dict[str, Profile]) -> None:
+        self._hold_two()
+
+        with profile_context(gateway["op"]):
+            result = await manage_tool_pins("approve", "lotor", "send_message", "not-a-held-hash")
+
+        assert result["error"] == "no such held tool"

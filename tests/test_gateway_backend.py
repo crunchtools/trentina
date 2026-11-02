@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 from unittest.mock import patch
 
@@ -824,3 +824,40 @@ class TestOneTenantNeverReadsAnothersToolList:
         evict_backend_cache_url(URL)
 
         assert not [key for key in _tool_list_cache if key[0] == URL]
+
+
+class TestAnAnonymousBackendStillOpensTheBreaker:
+    """The 401 carve-out is for a CONFIGURED credential only.
+
+    A stale static bearer is the operator's config problem, not a reachability
+    fact, so it records a breaker success. An anonymous backend refusing
+    everyone is a different thing: it must keep counting, or persistent
+    refusals would never open the circuit. Gatehouse caught the first version
+    of this branch firing on `grant is None` alone, which covered both.
+    """
+
+    @staticmethod
+    async def _refuse(_url: str, _headers: Any, *_: Any, cap: Any = None, **__: Any) -> Any:
+        # How the transport reports a 401 it read nothing from: the cap flags
+        # it and the SDK raises. Mirrors `tests/test_backend_auth.py`.
+        if cap is not None:
+            cap.unauthorized = True
+        raise RuntimeError("Server returned an error response")
+
+    async def _three_calls(self, backend: Backend) -> None:
+        profile = Profile(name="ag", auth=AuthConfig(bearer_token_env="T"))
+        breaker.reset(URL)
+        with patch("trentina.gateway.backend._do_list_tools", side_effect=self._refuse):
+            for _ in range(3):
+                with suppress(BackendCallError):
+                    await list_backend_tools("b", backend, profile)
+
+    async def test_an_anonymous_401_counts_toward_the_breaker(self) -> None:
+        await self._three_calls(_backend())
+
+        assert breaker.get_state(URL) is State.OPEN
+
+    async def test_a_header_credential_401_does_not(self) -> None:
+        await self._three_calls(Backend(url=URL, headers={"Authorization": "Bearer stale"}))
+
+        assert breaker.get_state(URL) is State.CLOSED

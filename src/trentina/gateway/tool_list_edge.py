@@ -138,7 +138,7 @@ async def _judge_description(
     warning = build_warning(verdict)
     if warning is not None and warning.get("flagged_by") == "L3":
         warning["l3_briefing"] = TOOL_BRIEFING_VERSION
-    _cache_put(key, warning, persist=True)
+    _cache_put(key, warning, description=True)
     if warning is not None:
         # Here, once per judgement, and never on a cache hit: logging hits
         # made the journal read as though nothing were cached at all, which
@@ -207,7 +207,7 @@ async def scan_tool_list(
         #   evidence: T4 surface is the backend's tools/list, not a call argument;
         #     T4 the key carries grant_owner, so no verdict crosses a tenant
         key = _cache_key(profile, f"tool:{provenance.value}", surface, judge)
-        hit, warning = _cache_get(key, persist=True)
+        hit, warning = _cache_get(key, description=True)
         if hit and _judged_before_briefing(warning):
             hit = False
         if hit:

@@ -148,10 +148,15 @@ def _cache_key(profile: Profile, kind: str, text: str, judge: tuple[str, str]) -
     return hashlib.sha256(f"{kind}:{cfg}:{text}".encode()).hexdigest()
 
 
-def _cache_get(key: str, *, persist: bool = False) -> tuple[bool, dict[str, Any] | None]:
-    """A cached verdict. ``persist`` picks the store, as it does on the put:
-    true for a tool description, false for a tool response."""
-    if persist:
+def _cache_get(key: str, *, description: bool = False) -> tuple[bool, dict[str, Any] | None]:
+    """A cached verdict, from the store its KIND lives in.
+
+    ``description`` says which: a tool description, held whole and written
+    down, or a tool response, in the tighter LRU. It was spelled ``persist``,
+    which described what happened to the value rather than what it was — and
+    once the flag started choosing a store too, a reader had to know that
+    "persist" meant "description" to route a call correctly."""
+    if description:
         hit = key in _descriptions
         if hit:
             _descriptions.move_to_end(key)
@@ -162,11 +167,11 @@ def _cache_get(key: str, *, persist: bool = False) -> tuple[bool, dict[str, Any]
     return hit, _responses.get(key)
 
 
-def _cache_put(key: str, value: dict[str, Any] | None, *, persist: bool = False) -> None:
+def _cache_put(key: str, value: dict[str, Any] | None, *, description: bool = False) -> None:
     """Remember one verdict, and for tool descriptions write it down.
 
-    ``persist`` is set only by ``scan_tool_list``, and since 6.1.0 it also
-    picks which of the two stores holds the verdict. Tool descriptions are
+    ``description`` is set only by ``scan_tool_list``: it says the verdict is
+    a tool description, which both picks the store and writes it down. Tool descriptions are
     what a restart pays for — a bounded set of a few hundred, judged again
     on every boot and every circuit-breaker flap — so they are kept whole and
     written down. Tool RESPONSES are unbounded and mostly seen once, so
@@ -190,7 +195,7 @@ def _cache_put(key: str, value: dict[str, Any] | None, *, persist: bool = False)
     ):
         return
 
-    if persist:
+    if description:
         _descriptions[key] = value
         _descriptions.move_to_end(key)
         while len(_descriptions) > _DESCRIPTION_MAX:
@@ -201,7 +206,7 @@ def _cache_put(key: str, value: dict[str, Any] | None, *, persist: bool = False)
         while len(_responses) > _CACHE_MAX:
             _responses.popitem(last=False)
 
-    if not persist or _persist_broken:
+    if not description or _persist_broken:
         return
     try:
         from ..perimeter_db import perimeter_stamp, save_verdict

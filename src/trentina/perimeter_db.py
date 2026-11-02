@@ -347,22 +347,20 @@ def approved_by_tool(backend_id: str, tools: Collection[str]) -> dict[str, str]:
     round trip each, and ``tool_pins list`` asks about every held tool at once.
     Newest first, so the first row seen for a tool is the one kept.
     """
-    if not tools:
+    wanted = sorted(set(tools))
+    if not wanted:
         return {}
-    rows = (
-        _read_db()
-        .execute(
-            "SELECT tool, definition_json FROM tool_pins WHERE backend_id = ? "
-            "AND state = ? ORDER BY last_seen DESC",
-            (backend_id, PIN_APPROVED),
-        )
-        .fetchall()
-    )
-    wanted = set(tools)
+    # Narrowed in SQL rather than in Python: a backend with a long approved
+    # history would otherwise have every one of its definition bodies loaded
+    # and discarded on each `tool_pins list`.
+    # The only interpolation is the placeholder COUNT — a run of '?', never a
+    # value. Every value, the tool names included, is bound.
+    placeholders = ",".join("?" * len(wanted))
+    query = f"SELECT tool, definition_json FROM tool_pins WHERE backend_id = ? AND state = ? AND tool IN ({placeholders}) ORDER BY last_seen DESC"  # noqa: E501, S608
+    rows = _read_db().execute(query, (backend_id, PIN_APPROVED, *wanted)).fetchall()
     out: dict[str, str] = {}
     for row in rows:
-        if row["tool"] in wanted and row["tool"] not in out:
-            out[row["tool"]] = row["definition_json"]
+        out.setdefault(row["tool"], row["definition_json"])
     return out
 
 
@@ -424,12 +422,26 @@ def pin_hold_flags(backend_id: str, tool: str) -> tuple[bool, bool] | None:
     return (bool(row["pending"]), bool(row["rejected"]))
 
 
+#: Definitions kept per (backend, tool) before the least recently seen are
+#: dropped. One row per definition is what lets two tenants hold independently,
+#: and without a bound a backend whose descriptions churn would keep every
+#: version it has ever sent, JSON and all, for the life of the store.
+#:
+#: Eviction is always FAIL-CLOSED, which is what makes a plain LRU safe here: a
+#: dropped row reads as a definition never seen, and a definition never seen is
+#: held. Dropping an approved one costs a re-approval, dropping a rejected one
+#: costs a re-rejection; neither can turn into "served unapproved". Thirty-two
+#: is far past any legitimate churn for one tool, so a rejection would need
+#: thirty-two distinct definitions to push it out.
+MAX_DEFINITIONS_PER_TOOL = 32
+
+
 def put_pin(backend_id: str, tool: str, definition_hash: str, state: str, body: str) -> None:
     """Record what one definition of a tool is: approved, pending or rejected.
 
     One row per definition, so writing a new one never disturbs another
     tenant's. ``last_seen`` moves on every write, which is what makes
-    ``last_approved`` mean "most recent".
+    ``last_approved`` mean "most recent" and what orders the eviction below.
     """
     now = datetime.now(UTC).isoformat()
     db = get_perimeter_db()
@@ -440,6 +452,12 @@ def put_pin(backend_id: str, tool: str, definition_hash: str, state: str, body: 
         "state = excluded.state, definition_json = excluded.definition_json, "
         "last_seen = excluded.last_seen",
         (backend_id, tool, definition_hash, state, body, now, now),
+    )
+    db.execute(
+        "DELETE FROM tool_pins WHERE backend_id = ? AND tool = ? AND definition_hash NOT IN "
+        "(SELECT definition_hash FROM tool_pins WHERE backend_id = ? AND tool = ? "
+        "ORDER BY last_seen DESC LIMIT ?)",
+        (backend_id, tool, backend_id, tool, MAX_DEFINITIONS_PER_TOOL),
     )
     db.commit()
 

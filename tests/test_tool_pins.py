@@ -439,3 +439,55 @@ class TestTheReKeyMigration:
         assert db.execute(
             "SELECT 1 FROM sqlite_master WHERE name = ?", (perimeter_db._LEGACY_PINS,)
         ).fetchone()
+
+
+class TestDefinitionsAreBounded:
+    """One row per definition is what lets two tenants hold independently, and
+    without a ceiling a backend whose descriptions churn would keep every
+    version it has ever sent, JSON and all, for the life of the store.
+
+    Gatehouse caught this; it is the same mistake as the unbounded description
+    cache, in a second place.
+    """
+
+    def test_the_oldest_definitions_are_dropped(self) -> None:
+        bid = backend_id(URL)
+        for i in range(perimeter_db.MAX_DEFINITIONS_PER_TOOL + 5):
+            check_tools(URL, "b", [_tool(description=f"version {i}")])
+
+        rows = (
+            perimeter_db.get_perimeter_db()
+            .execute(
+                "SELECT count(*) FROM tool_pins WHERE backend_id = ? AND tool = ?",
+                (bid, "send"),
+            )
+            .fetchone()[0]
+        )
+
+        assert rows == perimeter_db.MAX_DEFINITIONS_PER_TOOL
+
+    def test_eviction_is_fail_closed(self) -> None:
+        """A dropped row reads as a definition never seen, and never seen is
+        HELD — so the worst an eviction costs is a re-approval, never a tool
+        served without one. That is what makes a plain LRU safe here."""
+        first = _tool(description="the first version")
+        check_tools(URL, "b", [first])
+        assert decide(URL, "send", approve=True)
+        assert check_tools(URL, "b", [first]) == [first]
+
+        # Push it out with a flood of distinct definitions.
+        for i in range(perimeter_db.MAX_DEFINITIONS_PER_TOOL + 1):
+            check_tools(URL, "b", [_tool(description=f"version {i}")])
+
+        # Its approval is gone with its row, so it is held rather than served.
+        assert check_tools(URL, "b", [first]) == []
+        assert held(URL, "send") is True
+
+    def test_a_tools_definitions_do_not_evict_another_tools(self) -> None:
+        check_tools(URL, "b", [_tool(name="keep")])
+        assert decide(URL, "keep", approve=True)
+
+        for i in range(perimeter_db.MAX_DEFINITIONS_PER_TOOL + 5):
+            check_tools(URL, "b", [_tool(name="churn", description=f"v{i}")])
+
+        assert _names(check_tools(URL, "b", [_tool(name="keep")])) == ["keep"]
