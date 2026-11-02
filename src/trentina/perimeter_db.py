@@ -482,14 +482,25 @@ def set_pin_state(backend_id: str, tool: str, definition_hash: str, state: str) 
     return bool(changed)
 
 
-def set_pin_states(backend_id: str, pairs: Collection[tuple[str, str]], state: str) -> int | None:
-    """Move every ``(tool, definition_hash)`` to ``state`` in ONE transaction.
+def set_pin_states(
+    backend_id: str, pairs: Collection[tuple[str, str]], state: str, *, was: str
+) -> int | None:
+    """Move every ``(tool, definition_hash)`` from ``was`` to ``state``, in ONE
+    transaction.
 
-    Returns how many rows moved, or None if any pair matched no row — in which
-    case nothing is committed. A batch approval is all-or-nothing by contract
-    (``tool_pins.decide_all``), and a partial one reported as a success would be
-    worse than a refusal: the operator would believe a set was released and the
-    rows that quietly failed are the ones nothing has reviewed.
+    Returns how many rows moved, or None if any pair did not match a row IN
+    THAT STATE — in which case nothing is committed. A batch approval is
+    all-or-nothing by contract (``tool_pins.decide_all``), and a partial one
+    reported as a success would be worse than a refusal: the operator would
+    believe a set was released and the rows that quietly failed are the ones
+    nothing has reviewed.
+
+    ``was`` is why this is not a bare UPDATE by key. ``decide_all`` excludes
+    rejected definitions from the set it approves, but with the state out of the
+    WHERE clause a rejection landing between the read and the write would be
+    overwritten — reversing a standing decision to keep something withheld,
+    which is the one thing a batch must never do. With it, that row matches
+    nothing, the count falls short, and the whole batch rolls back.
 
     One ``executemany`` rather than an UPDATE per definition, because the case
     this exists for is hundreds of them at once.
@@ -498,8 +509,8 @@ def set_pin_states(backend_id: str, pairs: Collection[tuple[str, str]], state: s
     now = datetime.now(UTC).isoformat()
     moved = db.executemany(
         "UPDATE tool_pins SET state = ?, last_seen = ? WHERE backend_id = ? "
-        "AND tool = ? AND definition_hash = ?",
-        [(state, now, backend_id, tool, h) for tool, h in pairs],
+        "AND tool = ? AND definition_hash = ? AND state = ?",
+        [(state, now, backend_id, tool, h, was) for tool, h in pairs],
     ).rowcount
     if moved != len(pairs):
         db.rollback()

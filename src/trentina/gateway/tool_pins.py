@@ -69,25 +69,43 @@ def digest(canonical_json: str) -> str:
     return hashlib.sha256(canonical_json.encode()).hexdigest()
 
 
-def changed_fields(old_json: str | None, new_json: str) -> list[str]:
+def _changed_fields(old: dict[str, Any] | None, new: dict[str, Any]) -> list[str]:
     """Which top-level fields differ; ``["new"]`` when there was no approved version."""
-    if old_json is None:
+    if old is None:
         return ["new"]
-    old, new = json.loads(old_json), json.loads(new_json)
     keys = sorted(set(old) | set(new))
     return [k for k in keys if old.get(k) != new.get(k)]
 
 
-def loosens_safety(old_json: str | None, new_json: str) -> bool:
+def _loosens_safety(old: dict[str, Any] | None, new: dict[str, Any]) -> bool:
     """True when an annotation moved toward "safe to run": ``readOnlyHint`` to
     true, or ``destructiveHint`` (default true) to false."""
-    if old_json is None:
+    if old is None:
         return False
-    old = json.loads(old_json).get("annotations") or {}
-    new = json.loads(new_json).get("annotations") or {}
-    read_only = new.get("readOnlyHint") is True and old.get("readOnlyHint") is not True
-    destructive = new.get("destructiveHint") is False and old.get("destructiveHint") is not False
+    old_ann = old.get("annotations") or {}
+    new_ann = new.get("annotations") or {}
+    read_only = new_ann.get("readOnlyHint") is True and old_ann.get("readOnlyHint") is not True
+    destructive = (
+        new_ann.get("destructiveHint") is False and old_ann.get("destructiveHint") is not False
+    )
     return read_only or destructive
+
+
+# The three below take JSON because that is what the hold path has in hand
+# (``_report``); ``pending`` parses each row ONCE and calls the parsed forms,
+# since it runs over hundreds of rows on the event loop.
+
+
+def changed_fields(old_json: str | None, new_json: str) -> list[str]:
+    """``_changed_fields`` on serialized definitions."""
+    old = None if old_json is None else json.loads(old_json)
+    return _changed_fields(old, json.loads(new_json))
+
+
+def loosens_safety(old_json: str | None, new_json: str) -> bool:
+    """``_loosens_safety`` on serialized definitions."""
+    old = None if old_json is None else json.loads(old_json)
+    return _loosens_safety(old, json.loads(new_json))
 
 
 #: Keys whose own keys are NAMES an author chose, not schema vocabulary. A
@@ -128,6 +146,12 @@ def _schema_shape(node: Any, *, names: bool = False) -> Any:
 
 
 def schema_shape_changed(old_json: str | None, new_json: str) -> bool:
+    """``_schema_shape_changed`` on serialized definitions."""
+    old = None if old_json is None else json.loads(old_json)
+    return _schema_shape_changed(old, json.loads(new_json))
+
+
+def _schema_shape_changed(old: dict[str, Any] | None, new: dict[str, Any]) -> bool:
     """True unless the new ``inputSchema`` is the approved one with its
     descriptions rewritten.
 
@@ -146,9 +170,8 @@ def schema_shape_changed(old_json: str | None, new_json: str) -> bool:
     object that another already had. Comparing what must not change beats
     enumerating the ways it could.
     """
-    if old_json is None:
+    if old is None:
         return True
-    old, new = json.loads(old_json), json.loads(new_json)
     return bool(_schema_shape(old.get("inputSchema")) != _schema_shape(new.get("inputSchema")))
 
 
@@ -399,16 +422,20 @@ def pending(url: str) -> list[dict[str, Any]]:
     # backend can hold dozens, and this is what each is diffed against.
     approved = perimeter_db.approved_by_tool(bid, {row["tool"] for row in rows})
     out: list[dict[str, Any]] = []
+    # Parsed once per row, not once per comparison: a held set runs to hundreds
+    # and this walk happens on the event loop.
+    parsed = {tool: json.loads(body) for tool, body in approved.items()}
     for row in rows:
         tool = row["tool"]
-        before = approved.get(tool)
+        before = parsed.get(tool)
+        after = json.loads(row["definition_json"])
         out.append(
             {
                 "tool": tool,
                 "hash": row["definition_hash"],
-                "changed": changed_fields(before, row["definition_json"]),
-                "safety_loosened": loosens_safety(before, row["definition_json"]),
-                "schema_shape_changed": schema_shape_changed(before, row["definition_json"]),
+                "changed": _changed_fields(before, after),
+                "safety_loosened": _loosens_safety(before, after),
+                "schema_shape_changed": _schema_shape_changed(before, after),
                 "rejected": bool(row["state"] == perimeter_db.PIN_REJECTED),
             }
         )
@@ -522,6 +549,7 @@ def decide_all(
         backend_id(url),
         [(row["tool"], row["hash"]) for row in holding],
         perimeter_db.PIN_APPROVED,
+        was=perimeter_db.PIN_PENDING,
     )
     if moved is None:
         # One transaction, so nothing was written. A set that moved under the
