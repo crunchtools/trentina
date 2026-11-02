@@ -356,3 +356,55 @@ async def test_a_backend_added_to_the_seat_needs_no_second_edit() -> None:
     assert any(name.endswith("ledger_read") for name in after), sorted(after)
     # And the first backend is still there: adding one is not replacing the set.
     assert any(name.endswith("wiki_read") for name in after), sorted(after)
+
+
+async def test_an_operator_profiles_peer_calls_an_admin_tool_over_the_wire() -> None:
+    """6.0.0, Scott's instruction, and the only test that proves it reaches a
+    peer rather than merely reaching the registry.
+
+    The two halves have to arrive together. Carrying `role` alone would change
+    nothing, because the admin tools are served by `internal://` and the
+    derived backend allowed one tool; carrying the surface alone would leave
+    `require_operator` refusing the call. So this asserts the end that matters:
+    the peer lists an admin tool AND gets its answer back.
+
+    Compare `test_the_gateways_own_native_surface_does_not_cross` directly
+    above, which is the same wire with an AGENT profile and shows the admin
+    tools absent. The two together are the whole of what Scott changed.
+    """
+    private_pem, public_pem = keypair()
+    async with serving_mcp_backend(wiki_tools()) as wiki_port:
+        shared = shared_seat(
+            {PEER: public_pem}, {"wiki": Backend(url=f"http://127.0.0.1:{wiki_port}/mcp")}
+        )
+        # The one difference from the agent case next door.
+        shared = shared.model_copy(
+            update={
+                "role": "operator",
+                "backends": {
+                    **shared.backends,
+                    "web": Backend(
+                        url="internal://web",
+                        tools_allow=["read_part_tool", "reload_profiles"],
+                    ),
+                },
+            }
+        )
+
+        async with (
+            federated_pair(
+                tools=gateway_surface(), secondary=shared, primary=peer_gateway(private_pem)
+            ) as fed,
+            fed.primary_client() as peer,
+        ):
+            names = {tool["name"] for tool in await peer.list_tools()}
+            served = sorted(name for name in names if name.endswith("reload_profiles"))
+            assert len(served) == 1, f"expected one reload_profiles, got {sorted(names)}"
+            result = await peer.call_tool(served[0], {})
+
+    # The answer came back, so the call was not merely offered but admitted:
+    # `require_operator` saw an operator, and the internal backend served it.
+    assert "reloaded" in json.dumps(result), result
+    # `config` is NOT on the shared profile's internal allowlist, so it does
+    # not cross. The surface follows the profile; it is not simply opened.
+    assert not any(name.endswith("config") for name in names), sorted(names)

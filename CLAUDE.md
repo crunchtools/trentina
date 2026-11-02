@@ -627,14 +627,33 @@ that sets it. Every grant call site passes `grant_owner`, held by an AST test in
 `_after_login` refreshes every profile spending the grant, or the link answers
 `needs_auth` after a successful sign-in until a cache flush.
 
-Two properties are structural, not checked: the derived set excludes every
-`federated` backend, so A→B→C is unsayable and ONE SEAT MAY BOTH CONSUME A PEER
-AND SHARE ITSELF (`_check_federation_topology` lost its one-profile-one-role
-clause, which existed because a single `Profile` deadlocked its own
-single-flight aggregate build); and the ingress's internal backend is
-constructed rather than filtered, so the seat keeps its full native surface.
-`FEDERATION_INTERNAL_ALLOW` is `read_part_tool` alone — `backend_auth_tool`
-(#656) and the single-peer rule it needed are both gone.
+One property is structural, not checked: the derived set excludes every
+`federated` backend, so A→B→C is unsayable for TOOLS and ONE SEAT MAY BOTH
+CONSUME A PEER AND SHARE ITSELF (`_check_federation_topology` lost its
+one-profile-one-role clause, which existed because a single `Profile`
+deadlocked its own single-flight aggregate build). The ingress's internal
+backend is still CONSTRUCTED under `INTERNAL_LABEL`, so a peer cannot reach
+`internal://` by whatever name the operator gave it.
+
+**6.0.0 gave up the other half of the directed edge, at Scott's instruction.**
+`role` is now `CARRIED`, and `_internal_allow` carries an OPERATOR profile's
+own `internal://` allowlist (unioned with `read_part_tool`, which `parts.py`
+needs on every link), so its peer administers this gateway. An agent profile
+still derives the floor — the role and the surface are one change. A shared
+operator's list must be exact names: a glob names nothing a person can approve
+on the `/approve` page and covers every tool a later release adds.
+Both halves are required: carrying the role alone leaves every admin tool
+unreachable, because they are served by `internal://`. The three consequences
+— one credential for peer and admin, admin responses arriving on the
+`trust_verdict` pin, and the role going transitive — are in
+`docs/federation.md` under "Sharing the operator role", and
+`config_guard.peer_becomes_operator` stages the write that starts it.
+`FEDERATION_INTERNAL_REQUIRED` is the floor, not the ceiling it was through
+5.x. Two things that do NOT follow the role: `_check_operator` counts only
+WRITTEN operators (a profile and its derivation are both operators, and
+counting both refuses the file), and `find_operator` skips derivations, because
+taking the first match would let dict order pick the gateway's service
+identity — the defect #138 removed.
 
 Federation is a declared PREVIEW surface (`src/trentina/stability.py`,
 `docs/stability.md`): a breaking change confined to it is a MINOR bump. A

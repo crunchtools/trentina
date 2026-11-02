@@ -1755,3 +1755,244 @@ class TestGrantingAWayOut:
         rendered = " ".join(shown.values())
         for secret in ("sk-the-real-secret", "sk-in-the-url", "sk-in-the-query", "user:"):
             assert secret not in rendered
+
+
+class TestAPeerBecomingAnOperator:
+    """6.0.0: a derived ingress carries its source's `role` and its internal
+    allowlist, so a write that mentions no peer can hand every peer on a link
+    this gateway's own admin tools.
+
+    Scott asked for the capability and `docs/federation.md` records what it
+    costs. What this guard stops is the capability arriving as a side effect of
+    a write that reads like something else.
+    """
+
+    @staticmethod
+    def _shared_operator(tools: list[str]) -> dict[str, Any]:
+        """A config whose SHARED profile is also the operator -- the shape
+        Scott runs on lotor, and the only shape in which this guard can fire.
+
+        There is no separate `op` profile, because there cannot be: a file may
+        declare one operator, and here it is the shared one. That also makes
+        the shared profile the CALLER, since `config_tool` is operator-only.
+        """
+        return {
+            "profiles": {
+                "fed": {
+                    "role": "operator",
+                    "auth": {"bearer_token_env": "FED_TOKEN"},
+                    "defense": {"provider": "ollama"},
+                    "federation": {"peers": {"alpha": {"public_key": _ED25519_PUBLIC}}},
+                    "backends": {
+                        "memory": {"url": "https://memory.example/mcp", "tools_allow": ["*"]},
+                        "web": {"url": "internal://web", "tools_allow": tools},
+                    },
+                }
+            }
+        }
+
+    @staticmethod
+    async def _as_fed(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        caller = (get_active_config() or pytest.fail("no active config")).config.profiles["fed"]
+        with profile_context(caller):
+            return await manage_config(*args, **kwargs)
+
+    async def _fed_hash(self) -> str:
+        return str((await self._as_fed("get"))["hash"])
+
+    async def test_widening_the_internal_allowlist_is_staged_not_applied(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The write names a tools_allow, not a peer. It hands every peer on
+        fed's link `config_tool` on this gateway."""
+        _rewrite(gateway, self._shared_operator(["read_part_tool"]))
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await self._as_fed(
+            "set",
+            "profiles.fed.backends.web.tools_allow",
+            ["read_part_tool", "config_tool"],
+            await self._fed_hash(),
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "peer becomes operator"
+        assert gateway.read_text(encoding="utf-8") == before
+        # NAMED, because "2 admin tools" is not a thing anybody can consent to
+        # and `config_tool` is not `read_part_tool`.
+        assert "config_tool" in " ".join(result["shown_for_approval"].values())
+
+    async def test_the_page_states_all_three_consequences(self, gateway: pathlib.Path) -> None:
+        """A person deciding this should not have to have read the docs."""
+        _rewrite(gateway, self._shared_operator(["read_part_tool"]))
+
+        await self._as_fed(
+            "set",
+            "profiles.fed.backends.web.tools_allow",
+            ["read_part_tool", "config_tool"],
+            await self._fed_hash(),
+        )
+
+        meaning = pending.outstanding()[pending.Kind.PEER_BECOMES_OPERATOR]["What this means"]
+        assert "revoking admin means breaking the link" in meaning
+        assert "trust pin" in meaning
+        assert "transitive" in meaning
+
+    async def test_narrowing_the_allowlist_applies_at_once(self, gateway: pathlib.Path) -> None:
+        """Widening only. A gate in front of tightening teaches an operator
+        that the page is something to get past."""
+        _rewrite(gateway, self._shared_operator(["read_part_tool", "config_tool"]))
+
+        result = await self._as_fed(
+            "set",
+            "profiles.fed.backends.web.tools_allow",
+            ["read_part_tool"],
+            await self._fed_hash(),
+        )
+
+        assert result.get("staged") is not True
+        assert pending.Kind.PEER_BECOMES_OPERATOR not in pending.outstanding()
+
+    async def test_a_shared_agent_profile_stages_nothing_here(self, gateway: pathlib.Path) -> None:
+        """The default did not move: sharing an agent profile is the 5.x
+        decision and this guard has no opinion on it."""
+        document = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
+        document["profiles"]["fed"]["backends"]["web"] = {
+            "url": "internal://web",
+            "tools_allow": ["read_part_tool"],
+        }
+        _rewrite(gateway, document)
+
+        await _as_operator(
+            "set",
+            "profiles.fed.backends.web.tools_allow",
+            ["read_part_tool", "config_tool"],
+            await _hash(),
+        )
+
+        assert pending.Kind.PEER_BECOMES_OPERATOR not in pending.outstanding()
+
+    async def test_promoting_a_shared_profile_beside_another_operator_is_refused(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """Not by this guard -- by the one-operator rule, and that interaction
+        is worth recording.
+
+        It means a shared profile cannot be promoted in ONE write while another
+        profile holds the role: the candidate has two operators and does not
+        validate. Getting to Scott's shape takes two writes, and the state
+        between them (no operator at all) is legal.
+        """
+        document = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
+        _rewrite(gateway, document)
+
+        result = await _as_operator("set", "profiles.fed.role", "operator", await _hash())
+
+        assert "at most one profile may declare role: operator" in result["error"]
+        assert pending.Kind.PEER_BECOMES_OPERATOR not in pending.outstanding()
+
+    async def test_promoting_a_shared_profile_with_no_admin_tools_still_stages(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """Gatehouse found this: the role itself is the grant.
+
+        A shared operator profile with no internal backend still derives an
+        ingress carrying `role: operator`, and the role is transitive. Guarding
+        the proposal on a non-empty tool list let exactly that case through
+        unstaged -- the peer became an operator with no page shown.
+        """
+        document = self._shared_operator(["read_part_tool"])
+        del document["profiles"]["fed"]["backends"]["web"]
+        _rewrite(gateway, document)
+
+        result = await self._as_fed(
+            "set",
+            "profiles.fed.backends.web",
+            {"url": "internal://web", "tools_allow": ["read_part_tool"]},
+            await self._fed_hash(),
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "peer becomes operator"
+
+    async def test_admitting_a_peer_to_an_operator_profile_says_so(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """Also Gatehouse's. Adding a peer leaves the tool list unchanged, so
+        the operator proposal does not fire and the PEER page is the only thing
+        a person reads. It has to say the peer becomes an operator.
+
+        Stated on the peer page rather than as a second proposal, because a
+        write needing two approvals is refused rather than shown as one -- and
+        admitting a peer to an operator profile is a legitimate write.
+        """
+        _rewrite(gateway, self._shared_operator(["read_part_tool", "config_tool"]))
+
+        result = await self._as_fed(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await self._fed_hash(),
+        )
+
+        assert result["awaiting"] == "federation peers"
+        row = result["shown_for_approval"]["Does a peer administer this gateway through fed"]
+        assert row.startswith("YES")
+        assert "config_tool" in row
+        assert "breaking the link" in row
+
+    async def test_and_an_agent_profiles_peer_page_says_it_does_not(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The row is present either way. A missing row reads as "the page did
+        not mention it", which is the ambiguity this page exists to remove."""
+        _rewrite(gateway, _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}}))
+
+        result = await _as_operator(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await _hash(),
+        )
+
+        row = result["shown_for_approval"]["Does a peer administer this gateway through fed"]
+        assert row.startswith("No")
+
+    async def test_adding_federation_to_the_operator_needs_two_approvals_so_is_refused(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The other way a profile becomes shared-and-operator, and it cannot be
+        done in one write.
+
+        Gatehouse asked for a test of the `name not in was` branch in
+        `_operator_peer_proposals` -- the one for a profile NEWLY
+        shared-and-operator. Reaching it through `config_tool` turns out to be
+        impossible, and this records why rather than leaving the branch looking
+        testable:
+
+        * Promoting a different profile to operator is refused by the
+          one-operator rule, since the candidate declares two (tested above).
+        * Adding `federation` to the profile that is already the operator
+          raises BOTH the peer proposal and this one, and a write needing two
+          approvals is refused rather than shown as one -- a page can put one
+          decision in front of a person and the rest would ride along unread.
+
+        So the branch is a safety net on a path `config_tool` cannot currently
+        take, reached only by a hand edit. It is kept because the rule is
+        computed on the loaded candidate, so it stays correct if a future write
+        shape does reach it -- but nobody should read it as live.
+        """
+        document = self._shared_operator(["read_part_tool"])
+        del document["profiles"]["fed"]["federation"]
+        _rewrite(gateway, document)
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await self._as_fed(
+            "set",
+            "profiles.fed.federation",
+            {"peers": {"alpha": {"public_key": _ED25519_PUBLIC}}},
+            await self._fed_hash(),
+        )
+
+        assert "error" in result, result
+        assert gateway.read_text(encoding="utf-8") == before

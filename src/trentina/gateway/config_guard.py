@@ -215,6 +215,50 @@ def federation_peers(profiles: dict[str, Profile]) -> dict[str, str]:
     }
 
 
+def peer_becomes_operator(profiles: dict[str, Profile]) -> dict[str, list[str]]:
+    """Which shared profiles hand their peers the operator role, and what with.
+
+    Since 6.0.0 a derived ingress carries its source's ``role`` and its
+    internal allowlist, so writing ``role: operator`` onto a profile that
+    carries ``federation`` — or adding ``federation`` to one that is already
+    the operator, or widening that profile's own ``internal://`` allowlist —
+    hands every peer on that link this gateway's admin tools. Any of the three
+    does it, and none of them mentions a peer.
+
+    That is the widening this rule puts a person in front of. It does not stop
+    it: Scott asked for the capability and `docs/federation.md` records the
+    cost. What it stops is the capability arriving as a side effect of a write
+    that reads like something else.
+
+    Computed on the LOADED candidate, like every rule here, because all three
+    spellings reach the same state and only the loaded profiles make it
+    unambiguous. Keyed by the SHARED profile and valued by the admin tools its
+    peers can reach, so a person sees which gateway surface is being handed
+    over rather than only that something changed.
+
+    Shared profiles only, for the reason ``federation_peers`` gives: the
+    derived ingress carries the same block, and counting both would show every
+    link twice.
+    """
+    handed: dict[str, list[str]] = {}
+    for name, profile in profiles.items():
+        if profile.federation is None or profile.federation_of is not None:
+            continue
+        if profile.role != "operator":
+            continue
+        reachable: set[str] = set()
+        for backend in profile.backends.values():
+            if backend.is_internal:
+                reachable.update(backend.tools_allow)
+        # Reported whether or not any tool is reachable. An operator profile
+        # with no internal backend still derives an ingress carrying
+        # `role: operator`, and the role is transitive, so the transfer is the
+        # grant even when today's surface is empty. Guarding on a non-empty
+        # list let exactly that case through unstaged.
+        handed[name] = sorted(reachable)
+    return handed
+
+
 #: The mode that delivers what arrived. ``flag`` returns the response byte for
 #: byte as it came in, with the verdict attached and nothing withheld, so a
 #: profile that can reach it has a perimeter that detects and does not enforce.

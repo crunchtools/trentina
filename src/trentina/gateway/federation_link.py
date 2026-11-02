@@ -51,19 +51,20 @@ from .profile import INGRESS_SUFFIX, INTERNAL_SCHEME, Backend, Profile
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-#: The label of the internal backend the derived ingress gets. The seat's own
-#: internal backend is never carried over: a peer reaches the paging reader and
-#: nothing else.
+#: The label of the internal backend the derived ingress gets. Constructed
+#: under this name rather than carried, so a peer cannot reach ``internal://``
+#: by whatever name the operator gave it. What the backend ALLOWS follows the
+#: shared profile since 6.0.0 (``_internal_allow``).
 INTERNAL_LABEL = "trentina"
 
-#: Seat fields the derived ingress inherits, because they are the policy that
-#: travels with a tool. Dropping any of them would make the link LOOSER than
-#: the seat whose tools it offers, which is the one direction derivation must
-#: never go: ``defense`` is the perimeter posture, the two ``semantic_*_guards``
-#: read calls and responses against the operator's policy, ``preprocess`` shapes
-#: the bytes (and a trusted response skips the primary's chain, so the
-#: secondary's is the only one that runs), and ``llm_keys`` is what makes L3
-#: resolve at all — without it ``block`` and ``redact`` refuse every call.
+#: Shared-profile fields the derived ingress inherits, because they are the
+#: policy that travels with a tool. Dropping any would make the link LOOSER
+#: than the profile whose tools it offers, the one direction derivation must
+#: never go. ``role`` joined them in 6.0.0, which gives up half of the directed
+#: edge: see "Sharing the operator role" in ``docs/federation.md`` and
+#: ``config_guard.peer_becomes_operator``.
+#:
+#: Why each of the others, at length, is in ``derive_ingress``.
 CARRIED = frozenset(
     {
         "defense",
@@ -73,6 +74,7 @@ CARRIED = frozenset(
         "short_names",
         "semantic_request_guards",
         "semantic_response_guards",
+        "role",
     }
 )
 
@@ -103,7 +105,7 @@ DROPPED = frozenset(
 )
 
 #: Fields this module sets itself rather than carrying or dropping.
-CONSTRUCTED = frozenset({"name", "role", "federation", "federation_of", "backends"})
+CONSTRUCTED = frozenset({"name", "federation", "federation_of", "backends"})
 
 
 def ingress_name(seat: str) -> str:
@@ -132,9 +134,18 @@ def offerable_backends(seat: Profile) -> dict[str, Backend]:
 
 
 def derive_ingress(seat: Profile) -> Profile:
-    """Build the federation ingress a seat shares, or raise if it shares none.
+    """Build the federation ingress a profile shares, or raise if it shares none.
 
-    The seat keeps everything; the ingress is a second, narrower view of it.
+    The shared profile keeps everything; the ingress is a second view of it.
+
+    Why each ``CARRIED`` field is carried: ``defense`` is the perimeter
+    posture; the two ``semantic_*_guards`` read calls and responses against the
+    operator's policy; ``preprocess`` shapes the bytes, and a trusted response
+    skips the primary's chain so the secondary's is the only one that runs;
+    ``llm_keys`` is what makes L3 resolve at all, without which ``block`` and
+    ``redact`` refuse every call; and ``role`` is Scott's 6.0.0 change, so that
+    one agent administering a gateway administers its peer through the same
+    link.
     """
     if seat.federation is None:
         raise ValueError(f"profile {seat.name!r} declares no federation block")
@@ -154,22 +165,55 @@ def derive_ingress(seat: Profile) -> Profile:
     carried = {field: getattr(seat, field) for field in sorted(CARRIED)}
     return Profile(
         name=ingress_name(seat.name),
-        # Always an agent. An operator ingress would offer a peer the gateway's
-        # own admin tools, which is why this is set here rather than inherited.
-        role="agent",
         federation=seat.federation,
         federation_of=seat.name,
         backends={
             **offered,
-            # A fresh internal backend, not a filtered copy of the seat's:
-            # ``internal://`` serves ``config_tool``, ``tool_pins`` and
-            # ``reload_profiles`` from the same server as the paging reader.
             INTERNAL_LABEL: Backend(
-                url=f"{INTERNAL_SCHEME}{INTERNAL_LABEL}", tools_allow=[READ_PART_TOOL]
+                url=f"{INTERNAL_SCHEME}{INTERNAL_LABEL}",
+                tools_allow=sorted(_internal_allow(seat)),
             ),
         },
         **carried,
     )
+
+
+def _internal_allow(seat: Profile) -> set[str]:
+    """Which of this gateway's OWN tools the derived ingress serves a peer.
+
+    Until 6.0.0 this was ``{read_part_tool}``, constructed rather than carried,
+    and it was the second half of the directed edge: a peer reached no tool of
+    the gateway but a paging continuation, whatever the shared profile declared.
+
+    Scott asked for the operator role to cross the link (see ``CARRIED``), and
+    carrying the role alone would have changed nothing — ``require_operator``
+    would pass for the peer and every admin tool would still be unreachable,
+    because they are served by ``internal://`` and that backend allowed one
+    tool. So the surface has to follow the role, and this is where it does.
+
+    The paging reader is unioned in rather than assumed, because ``parts.py``
+    needs it on every link: a peer's paged response is delivered part by part
+    through the derived ingress, and a shared profile whose own internal
+    backend omits ``read_part_tool`` would otherwise break paging for its peer
+    while looking fine.
+
+    Carried ONLY for an operator profile. For an agent profile the derived
+    surface stays the 5.x floor, because the role and the surface are one
+    change: an agent profile's peer cannot call an admin tool anyway
+    (``require_operator`` refuses it), so carrying the rest would widen every
+    existing agent link -- the majority of them -- for no capability anybody
+    asked for.
+
+    A shared profile with no ``internal://`` backend gets the floor too, which
+    is also the safe answer.
+    """
+    allowed = {READ_PART_TOOL}
+    if seat.role != "operator":
+        return allowed
+    for backend in seat.backends.values():
+        if backend.is_internal:
+            allowed.update(backend.tools_allow or [])
+    return allowed
 
 
 def derive_all(registry: Mapping[str, Profile]) -> dict[str, Profile]:

@@ -61,12 +61,68 @@ Pinning the scanner's fingerprint, not just the key, is what makes trust safe: a
 
 - **HTTPS required.** The per-request token is short-lived but has no replay nonce, so a plaintext link would let an on-path attacker replay it within its window. (A local-network override exists for trusted networks, and warns loudly.)
 - **Clocks in sync.** The token is valid only for a narrow window of seconds, so NTP drift between the two gateways will reject otherwise-valid tokens. Clock sync is a requirement, not a nicety.
-- **A shared seat is a seat.** It is `role: agent` — an operator seat shared with a peer would offer that peer the gateway's own admin tools — it carries `auth` or `oauth` of its own, since a profile no agent can reach has no tools to share, it has at least one non-federated remote backend to offer, and its name does not end in `-federation`, which is reserved for the ingress derived from it.
+- **A shared profile is a profile.** It carries `auth` or `oauth` of its own, since a profile no agent can reach has no tools to share; it has at least one non-federated remote backend to offer; and its name does not end in `-federation`, which is reserved for the ingress derived from it. Since 6.0.0 it may also be the operator — see below.
 - **A peer list, and a key each.** A seat's `federation` block declares at least one peer, because the peer list *is* what authenticates a primary — a block without one is refused. Two peers may not share a public key: the caller recorded in the audit is the peer whose key verified, so a shared key would make that a matter of which peer was written first.
 - **Several peers on one seat are fine.** Each authenticates with its own key and each is named in the audit. They do share one identity at the backends — a federated call runs as the ingress — so all of them spend the seat's sign-ins. That is the point when the peers are your own laptop and phone, and the reason the peer list needs a person's approval when they are not.
 - **Adding a peer needs a person.** A write that adds or changes a `federation.peers` entry is staged for a human rather than applied. Removing one applies at once. See [approvals](approvals.md).
 - **One primary key per secondary.** The per-request token is audience-pinned to the ingress *profile name*, and nothing in it says which gateway it was minted for. So one primary key used for two secondaries whose seats share a name mints tokens either secondary accepts, and one could replay the other's within the window. That configuration is refused at load. Give each secondary its own primary key — or name the seats differently, which per-seat naming makes natural.
 - **No routing.** A gateway uses federated tools but never re-exports them onward. There's no mesh fabric or routing to configure; a single directed link is the whole primitive, and it is loop-free **by construction**: the derived offered set excludes every federated backend, so A to B to C is not refused, it is unsayable. One seat may therefore both consume a peer's tools and share its own. The pre-3.1 way of reaching a gateway — a backend pointing at its federation endpoint with no `federated:` block, over a shared bearer — is refused at load; that shape warned rather than refused until 5.0.0, and it was the hole in this promise.
+
+## Sharing the operator role, and what it costs
+
+Since 6.0.0 a profile may hold `role: operator` **and** share itself, and the
+derived ingress carries both the role and that profile's own `internal://`
+allowlist. So one agent administering a gateway can administer its peer through
+the link it already has — write `role: operator` on the shared profile and list
+the admin tools on its internal backend, and the peer reaches them.
+
+Only for an operator profile. A shared **agent** profile's peer still gets the
+paging reader and nothing else, exactly as in 5.x: the role and the surface are
+one change, an agent's peer cannot call an admin tool anyway, and carrying the
+rest would widen every existing agent link for no capability anybody asked for.
+
+And the tools must be named **exactly** — no `*`, no `read_*`. `tools_allow`
+entries are normally fnmatch patterns, but a pattern on a shared operator's
+internal backend names nothing a person can approve and silently covers every
+tool a later release adds. A shared operator profile using one is refused at
+load.
+
+Through 5.x this was refused, and the refusal was the second half of the
+directed edge: whatever the shared profile declared, a peer reached no tool of
+the gateway but the paging continuation. That property is gone when the role is
+shared, deliberately, and these are the consequences. None of them is a bug;
+all three are the trade.
+
+- **One credential does two jobs.** The peer's signing key authenticates it as
+  a peer *and* as an operator. Revoking admin means breaking the link, because
+  there is nothing else to revoke.
+- **Admin responses can arrive on the trust pin.** If the peer pins this
+  gateway's verdict (`trust_verdict`), it skips its own three layers on every
+  response — including the ones carrying this gateway's configuration. The
+  secondary judged them and the primary did not.
+- **The role is transitive.** A peer that shares a profile which consumes this
+  link passes the role on. The derived offered set still excludes federated
+  backends, so the *tools* do not chain; the role does.
+
+The alternative, which keeps all three properties, is a second ordinary
+(non-federated) backend pointing at the other gateway's operator-capable route
+with its own bearer token. Two doors, two credentials, two audit trails, and
+admin responses judged locally. It needs no federation feature at all.
+
+Promoting a shared profile is staged for a person (`peer becomes operator` — see
+[approvals](approvals.md)), and so is widening that profile's internal
+allowlist. Narrowing either applies at once. Note that the promotion cannot
+happen in one write while another profile holds the role: a file may declare one
+operator, so the candidate would have two and does not validate. Demote the
+current one first; a file with no operator is legal, and centralized work falls
+back to the environment default meanwhile.
+
+Two things do *not* follow the role. The derivation still constructs the
+internal backend under its own label, so a peer cannot reach `internal://` by
+whatever name the operator gave it. And the service identity — the profile the
+gateway's own model calls run as — is always a profile somebody **wrote**, never
+a derivation, because taking the first `role: operator` match out of the
+registry would let dict order decide it.
 
 ## Operating concepts
 

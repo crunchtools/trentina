@@ -51,6 +51,42 @@ than silent. Neither is caught by `profile_lint` alone for the reason in item 2.
 
 ### Changed
 
+- **The operator role crosses a federation link.** A profile may now hold
+  `role: operator` and share itself, and the derived ingress carries both the
+  role and that profile's own `internal://` allowlist — so one agent
+  administering a gateway administers its peer through the link it already has.
+  Both halves are required: carrying the role alone leaves every admin tool
+  unreachable, because they are served by `internal://`.
+
+  Only for an operator profile: a shared **agent** profile's peer still gets
+  the paging reader alone, as in 5.x. And a shared operator profile must list
+  its internal tools by exact name — `*` and `read_*` are refused at load,
+  because a pattern names nothing a person can approve and covers every tool a
+  later release adds.
+
+  This gives up half of the directed edge 5.0.0 established. Three
+  consequences, none of them a bug and all of them the trade — the peer's
+  signing key is now its admin credential too, so revoking admin means
+  breaking the link; admin responses arrive on the `trust_verdict` pin if the
+  peer holds one, meaning the secondary judged this gateway's configuration and
+  the primary did not; and the role is transitive, though the offered set still
+  excludes federated backends so the tools are not. `docs/federation.md` has
+  the alternative that keeps all three (a second ordinary backend with its own
+  bearer) for anyone who wants it.
+
+  Promoting a shared profile, or widening its internal allowlist, is staged for
+  a person as `peer becomes operator`; narrowing either applies at once. The
+  promotion cannot happen in one write while another profile holds the role,
+  since the candidate would declare two operators and not validate.
+
+  Two things deliberately do not follow the role. `_check_operator` counts only
+  WRITTEN operators, because a shared operator profile and its derivation are
+  both operators and counting both refuses every such file. And `find_operator`
+  skips derivations, because the gateway's own model calls run as whatever it
+  returns, and taking the first match would let dict order choose the service
+  identity — exactly the defect #138 removed. That second one is silent: the
+  wrong identity has a provider and a key, so the calls succeed and bill to the
+  wrong place.
 - **A duplicate key in `profiles.yaml` is refused instead of silently
   resolved.** One of mine reached production: a profile carried `defense:`
   twice, the gateway ran the second, and the comment on the first explained a

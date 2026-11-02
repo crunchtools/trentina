@@ -28,6 +28,7 @@ from .errors import ProfileConfigError
 from .federation_link import derive_all
 from .filter import filter_tools
 from .profile import (
+    FEDERATION_INTERNAL_REQUIRED,
     GIT_REMOTE_NAME_RE,
     HONEYTOKEN_MIN_CHARS,
     INGRESS_SUFFIX,
@@ -495,6 +496,50 @@ def _add_derived_ingresses(registry: dict[str, Profile]) -> None:
                 f"{INGRESS_SUFFIX!r} is reserved for a derived federation ingress."
             )
         registry[name] = ingress
+
+
+def _check_federation_internal_surface(registry: dict[str, Profile]) -> None:
+    """A derived ingress offers no internal tool its source does not.
+
+    The second opinion that ``profile.a_derived_ingress_is_bounded`` used to
+    give and cannot any more. Through 5.x the derivation CONSTRUCTED the
+    internal backend with the paging reader alone, so a per-profile validator
+    could hold it to a constant. Since 6.0.0 it carries the shared profile's own
+    internal allowlist, and whether that is right depends on a profile the
+    model validator cannot see.
+
+    So it is checked here, where the registry is. The cost of a derivation bug
+    is a peer holding an admin tool nobody offered it, which is worth a check
+    that does not share code with the derivation: this one re-reads both
+    profiles and compares, rather than trusting ``_internal_allow``.
+
+    Raises:
+        ProfileConfigError: an ingress offers an internal tool its source does
+            not, which can only be a bug in this package.
+    """
+    for name, ingress in registry.items():
+        source_name = ingress.federation_of
+        if source_name is None:
+            continue
+        source = registry.get(source_name)
+        if source is None:
+            continue
+        offered: set[str] = set()
+        for backend in ingress.backends.values():
+            if backend.is_internal:
+                offered.update(backend.tools_allow)
+        allowed: set[str] = set(FEDERATION_INTERNAL_REQUIRED)
+        for backend in source.backends.values():
+            if backend.is_internal:
+                allowed.update(backend.tools_allow)
+        if "*" in allowed:
+            continue
+        if extra := sorted(offered - allowed):
+            raise ProfileConfigError(
+                f"Derived ingress {name!r} offers internal tool(s) {extra} that "
+                f"profile {source_name!r} does not. This is a bug in the "
+                "derivation, not in the file."
+            )
 
 
 def _check_federation_audience(registry: dict[str, Profile]) -> None:
@@ -1154,7 +1199,13 @@ def _check_operator(registry: dict[str, Profile]) -> None:
     """
     from .service import judge_of
 
-    operators = sorted(name for name, p in registry.items() if p.role == "operator")
+    # WRITTEN profiles only. Since 6.0.0 a derived ingress carries its source's
+    # role, so a shared operator profile and its derivation are both operators
+    # and counting them would refuse every such file. The derivation is not a
+    # second identity; it is the same one reached by a peer.
+    operators = sorted(
+        name for name, p in registry.items() if p.role == "operator" and p.federation_of is None
+    )
     if len(operators) > 1:
         raise ProfileConfigError(
             f"at most one profile may declare role: operator, found {len(operators)}: "
@@ -1406,6 +1457,7 @@ def load_profiles(path: Path | str) -> GatewayConfig:
         # refused rather than silently winning either way.
         _add_derived_ingresses(registry)
         _check_operator(registry)
+        _check_federation_internal_surface(registry)
         _check_federation_audience(registry)
         _check_judges(registry)
         _check_matrix_networks(registry)

@@ -190,7 +190,10 @@ async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_rest
     running = (get_active_config() or pytest.fail("no gateway")).config.profiles
     derived = running["shared-federation"]
     assert derived.federation_of == SECONDARY_SEAT
-    # The seat's remote backend crossed; its internal surface did not.
+    # The remote backend crossed under its own name; the internal one crossed
+    # as the constructed `trentina` backend with the paging reader alone. This
+    # profile is an AGENT, and 6.0.0 carries the internal allowlist only for an
+    # operator profile -- the role and the surface are one change.
     assert set(derived.backends) == {"wiki", "trentina"}
     assert derived.backends["trentina"].tools_allow == ["read_part_tool"]
     assert derived.auth is None  # `peers` is its authentication

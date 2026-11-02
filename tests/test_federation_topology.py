@@ -168,24 +168,31 @@ class TestOneDefinitionOfAnIngress:
         with pytest.raises(ValidationError, match="must name at least one peer"):
             FederationConfig()
 
-    def test_an_operator_ingress_is_refused(self) -> None:
-        """What the gap allowed: an ingress offering the gateway's admin tools."""
-        with pytest.raises(ValidationError, match="role must be agent"):
-            Profile(
-                name="op",
-                role="operator",
-                auth=AuthConfig(bearer_token_env="B"),
-                federation=FederationConfig(peers=_peers()),
-                backends={},
-            )
+    def test_an_operator_profile_may_now_be_shared(self) -> None:
+        """Scott's call in 6.0.0, replacing the rule that refused this.
 
-    def test_a_shared_seat_keeps_its_own_internal_surface(self) -> None:
-        """The seat is unrestricted; what it OFFERS is bounded by derivation.
+        The refusal was belt and braces rather than a plugged hole: the
+        derivation set `role="agent"` itself and constructed an internal
+        backend allowing the paging reader alone, so an operator profile
+        sharing itself could not have produced an operator peer even without
+        this rule. Both of those now follow the shared profile on purpose.
+        """
+        shared = Profile(
+            name="op-shared",
+            role="operator",
+            auth=AuthConfig(bearer_token_env="B"),
+            federation=FederationConfig(peers=_peers()),
+            backends={"wiki": Backend(url="https://wiki/mcp", tools_allow=["*"])},
+        )
+        assert derive_ingress(shared).role == "operator"
 
-        This rule used to refuse the profile outright, because the profile was
-        the ingress. Now the seat keeps `internal://web` with everything on it
-        — that is the agent's own native surface — and the derived ingress gets
-        a fresh internal backend with the paging reader alone.
+    def test_a_shared_profile_keeps_its_own_internal_surface(self) -> None:
+        """The shared profile is unrestricted, and what it offers now follows.
+
+        This rule used to refuse the profile outright, because the profile WAS
+        the ingress. Then the profile kept `internal://web` with everything on
+        it and the derived ingress got the paging reader alone. Since 6.0.0 the
+        derived surface follows the profile, so `*` crosses as `*`.
         """
         seat = Profile(
             name="fed",

@@ -45,12 +45,23 @@ logger = logging.getLogger(__name__)
 
 
 def find_operator(profiles: Mapping[str, Profile]) -> Profile | None:
-    """The one ``role: operator`` profile in ``profiles``, or None.
+    """The one WRITTEN ``role: operator`` profile in ``profiles``, or None.
 
-    ``load_profiles`` guarantees there is at most one, so the first is the
-    only one.
+    ``load_profiles`` guarantees there is at most one written one, so the first
+    is the only one.
+
+    Derived ingresses are skipped, and that is load-bearing rather than tidy.
+    Since 6.0.0 a derived ingress carries its source's role, so a shared
+    operator profile and its derivation both match — and taking the first match
+    would let dict order decide which identity the gateway's own model calls run
+    as. That is exactly the defect #138 removed when it made the operator an
+    explicit seat instead of a search. The service identity is the profile
+    somebody wrote, never the one this code derived from it.
     """
-    return next((p for p in profiles.values() if p.role == "operator"), None)
+    return next(
+        (p for p in profiles.values() if p.role == "operator" and p.federation_of is None),
+        None,
+    )
 
 
 def service_profile() -> Profile:

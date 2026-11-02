@@ -105,6 +105,9 @@ class Kind(Enum):
     FEDERATION_TRUST = "federation trust"
     #: Who may authenticate to a federation ingress as a primary gateway.
     FEDERATION_PEERS = "federation peers"
+    #: A shared profile's peers gaining the operator role, and with it this
+    #: gateway's own admin tools (6.0.0).
+    PEER_BECOMES_OPERATOR = "peer becomes operator"
     #: A profile's perimeter going from enforcing to detect-only.
     DEFENSE_DOWNGRADE = "defense downgrade"
     #: A new way out of network isolation, read by no layer.

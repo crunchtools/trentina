@@ -69,14 +69,18 @@ def test_a_shared_seat_loads_and_derives_an_ingress() -> None:
     assert ingress.backends["trentina"].tools_allow == ["read_part_tool"]
 
 
-def test_the_seats_internal_surface_is_not_offered() -> None:
-    """A seat's internal backend serves the whole native surface, admin tools
-    included. The derived ingress gets a fresh one, not a filtered copy."""
+def test_the_internal_backend_is_constructed_under_the_derived_label() -> None:
+    """The peer reaches ONE internal backend, under the derived label, never
+    the shared profile's backend under the name the operator gave it.
+
+    Unchanged in 6.0.0, unlike the allowlist on it: there is still exactly one
+    place the derived internal surface comes from.
+    """
     seat = Profile(
         **_seat(
             backends={
                 "peer": Backend(url="https://real/mcp", tools_allow=["*"]),
-                "web": Backend(url="internal://web", tools_allow=["*"]),
+                "web": Backend(url="internal://web", tools_allow=["read_part_tool"]),
             }
         )
     )
@@ -86,9 +90,39 @@ def test_the_seats_internal_surface_is_not_offered() -> None:
     assert ingress.backends["trentina"].tools_allow == ["read_part_tool"]
 
 
-def test_an_operator_seat_may_not_be_shared() -> None:
-    with pytest.raises(ValueError, match="role must be agent"):
-        Profile(**_seat(role="operator"))
+def test_an_operator_profile_may_be_shared_and_its_peer_is_an_operator() -> None:
+    """6.0.0, Scott's instruction, replacing the rule that refused this.
+
+    The rule it replaces said "a derived operator ingress would offer a peer
+    this gateway's own admin tools" -- which overstated its own code, since the
+    derivation set `role="agent"` itself. Now the role follows the profile, and
+    so does the internal surface, which is the whole point: carrying the role
+    alone would change nothing, because the admin tools are served by
+    `internal://`.
+
+    `docs/federation.md` carries what it costs. This test carries that it is
+    true.
+    """
+    shared = Profile(
+        **_seat(
+            role="operator",
+            backends={
+                "peer": Backend(url="https://real/mcp", tools_allow=["*"]),
+                "web": Backend(
+                    url="internal://web",
+                    tools_allow=["read_part_tool", "reload_profiles_tool"],
+                ),
+            },
+        )
+    )
+
+    ingress = derive_ingress(shared)
+
+    assert ingress.role == "operator"
+    assert ingress.backends["trentina"].tools_allow == [
+        "read_part_tool",
+        "reload_profiles_tool",
+    ]
 
 
 def test_a_seat_with_no_way_in_is_the_old_ingress_shape() -> None:
@@ -106,22 +140,42 @@ def test_a_seat_may_not_take_the_ingress_suffix() -> None:
 @pytest.mark.parametrize(
     "allow",
     [
-        ["*"],  # the whole native surface, including admin tools
-        ["read_*"],  # a glob is refused as written, before it can match
         ["fetch_tool"],
-        ["cache_flush"],  # an admin tool: a denylist of egress tools would miss this
-        ["read_part_tool", "cache_flush"],
+        ["cache_flush"],
+        ["reload_profiles_tool", "tool_pins_tool"],
     ],
 )
-def test_a_derived_ingress_may_not_widen_its_internal_tools(allow: list[str]) -> None:
-    """Derivation builds these, so this guards the derivation, not the file."""
-    with pytest.raises(ValueError, match="may offer a peer only"):
+def test_a_derived_ingress_without_the_paging_reader_is_refused(allow: list[str]) -> None:
+    """What this rule still checks after 6.0.0 widened the allowlist.
+
+    `parts.py` proxies a peer's paged response through this backend part by
+    part, so an internal backend without the reader breaks paging for the peer
+    while every other tool keeps working -- the kind of failure that gets
+    diagnosed as a remote problem. Derivation builds these profiles, so this
+    guards the derivation rather than anything a person writes.
+    """
+    with pytest.raises(ValueError, match="does not offer 'read_part_tool'"):
         Profile(
             name="up-federation",
             federation_of="up",
             federation=FederationConfig(peers={"breetai": FederationPeer(public_key=_PUB)}),
             backends={"web": Backend(url="internal://web", tools_allow=allow)},
         )
+
+
+@pytest.mark.parametrize("allow", [["read_part_tool"], ["read_part_tool", "cache_flush"]])
+def test_a_derived_ingress_carrying_the_reader_is_accepted(allow: list[str]) -> None:
+    """Including an admin tool beside it, and including `*`. Whether THAT is
+    right depends on the profile it was derived from, which a validator seeing
+    one profile cannot know -- `loader._check_federation_internal_surface` is
+    where that comparison happens."""
+    ingress = Profile(
+        name="up-federation",
+        federation_of="up",
+        federation=FederationConfig(peers={"breetai": FederationPeer(public_key=_PUB)}),
+        backends={"web": Backend(url="internal://web", tools_allow=allow)},
+    )
+    assert ingress.backends["web"].tools_allow == allow
 
 
 def test_a_profile_without_peers_is_unconstrained() -> None:

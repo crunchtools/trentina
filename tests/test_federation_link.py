@@ -156,19 +156,109 @@ def test_a_decoy_is_not_offered_to_a_peer() -> None:
     assert "bait" not in derive_ingress(seat).backends
 
 
-def test_the_internal_surface_is_replaced_not_filtered() -> None:
-    """`internal://` is one server carrying the whole native surface, admin
-    tools included, so the peer gets a fresh backend rather than a copy."""
+def test_the_internal_surface_is_one_backend_not_the_shared_profiles_copy() -> None:
+    """The peer gets ONE internal backend under the derived label, never the
+    shared profile's backend under its own name.
+
+    That part did not change in 6.0.0 and is worth keeping separate from what
+    did: the backend is still constructed, so a peer cannot reach `internal://`
+    by the name the operator happened to give it, and there is exactly one
+    place the derived surface comes from.
+    """
     seat = _seat(
         backends={
             "wiki": Backend(url="https://wiki.example/mcp", tools_allow=["*"]),
-            "web": Backend(url="internal://web", tools_allow=["*"]),
+            "web": Backend(url="internal://web", tools_allow=["read_part_tool"]),
         }
     )
     ingress = derive_ingress(seat)
 
     assert "web" not in ingress.backends
     assert ingress.backends["trentina"].tools_allow == ["read_part_tool"]
+
+
+def test_the_internal_surface_follows_an_operator_profile() -> None:
+    """6.0.0, Scott's instruction: an OPERATOR profile's internal allowlist
+    crosses, so its peer can reach this gateway's admin tools. Through 5.x it
+    was `read_part_tool` whatever the profile declared.
+
+    `docs/federation.md` carries what this costs. The test is here because the
+    property is now a derivation behaviour rather than a constant.
+    """
+    seat = _seat(
+        role="operator",
+        backends={
+            "wiki": Backend(url="https://wiki.example/mcp", tools_allow=["*"]),
+            "web": Backend(
+                url="internal://web",
+                tools_allow=["read_part_tool", "reload_profiles_tool", "tool_pins_tool"],
+            ),
+        },
+    )
+
+    assert derive_ingress(seat).backends["trentina"].tools_allow == [
+        "read_part_tool",
+        "reload_profiles_tool",
+        "tool_pins_tool",
+    ]
+
+
+def test_the_paging_reader_is_added_even_if_the_shared_profile_omits_it() -> None:
+    """`parts.py` delivers a peer's paged response through this backend part by
+    part, so a profile whose own internal backend leaves the reader out would
+    otherwise break paging for its peer while looking fine."""
+    seat = _seat(
+        role="operator",
+        backends={
+            "wiki": Backend(url="https://wiki.example/mcp", tools_allow=["*"]),
+            "web": Backend(url="internal://web", tools_allow=["tool_pins_tool"]),
+        },
+    )
+
+    assert derive_ingress(seat).backends["trentina"].tools_allow == [
+        "read_part_tool",
+        "tool_pins_tool",
+    ]
+
+
+def test_a_glob_on_a_shared_operator_profile_is_refused() -> None:
+    """Gatehouse's constitution agent caught this: an approval page showing
+    `*` names no tool a person can check, and the pattern silently covers
+    every tool a later release adds. A shared operator lists exact names.
+    """
+    with pytest.raises(ValueError, match="List the tools by exact name"):
+        _seat(
+            role="operator",
+            backends={
+                "wiki": Backend(url="https://wiki.example/mcp", tools_allow=["*"]),
+                "web": Backend(url="internal://web", tools_allow=["*"]),
+            },
+        )
+
+
+def test_an_agent_profile_shares_the_paging_reader_and_nothing_more() -> None:
+    """The role and the surface are ONE change. An agent profile's peer cannot
+    call an admin tool anyway -- `require_operator` refuses it -- so carrying
+    the rest would widen every existing agent link, which is most of them, for
+    no capability anybody asked for. `*` included: it stays on the profile and
+    does not cross.
+    """
+    seat = _seat(
+        backends={
+            "wiki": Backend(url="https://wiki.example/mcp", tools_allow=["*"]),
+            "web": Backend(url="internal://web", tools_allow=["*"]),
+        }
+    )
+
+    assert seat.backends["web"].tools_allow == ["*"]
+    assert derive_ingress(seat).backends["trentina"].tools_allow == ["read_part_tool"]
+
+
+def test_a_shared_profile_with_no_internal_backend_gets_the_reader_alone() -> None:
+    """The floor, which is also the old behaviour."""
+    seat = _seat(backends={"wiki": Backend(url="https://wiki.example/mcp", tools_allow=["*"])})
+
+    assert derive_ingress(seat).backends["trentina"].tools_allow == ["read_part_tool"]
 
 
 def test_a_seat_that_shares_nothing_reachable_is_refused() -> None:

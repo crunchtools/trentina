@@ -95,14 +95,20 @@ HONEYTOKEN_MIN_CHARS = 16
 #: own disk, is not something to hand an agent meant to be hijacked.
 HONEYPOT_READS = frozenset({"fetch_tool", "search_tool", "content_tool"})
 
-# The only internal tools a federation ingress may offer a peer (#592, C2).
-# ``internal://<label>`` is one FastMCP server serving the whole native surface,
-# admin tools included, so this is an exact-name ALLOWLIST: a denylist would
-# offer a peer ``cache_flush`` and would federate every internal tool added
-# later. ``backend_auth_tool`` was briefly here (#656) and is not, because a
-# derived ingress spends its SEAT's grants — the human signs in once, on the
-# seat, through a tool no peer can reach.
-FEDERATION_INTERNAL_ALLOW = frozenset({"read_part_tool"})
+# What a federation ingress MUST offer a peer, and the floor for a shared
+# profile with no internal backend. A FLOOR since 6.0.0, not the ceiling it was
+# through 5.x: the derived surface follows the shared profile, so an operator's
+# peer reaches admin tools (`federation_link.CARRIED`, `docs/federation.md`).
+# The reader stays required because `parts.py` delivers a peer's paged response
+# through this backend part by part.
+FEDERATION_INTERNAL_REQUIRED = frozenset({"read_part_tool"})
+
+#: The one member of the set above, for the messages that name it singly.
+_READ_PART = "read_part_tool"
+
+#: fnmatch's metacharacters. `tools_allow` entries are patterns, so these are
+#: what makes an entry name something other than one tool.
+_GLOB_CHARS = frozenset("*?[]")
 
 #: What the ingress profile derived from a seat is named: ``<seat>-federation``.
 #: It lives here rather than in ``federation_link`` because the seat validator
@@ -3375,16 +3381,39 @@ class Profile(BaseModel):
         if self.federation is None or self.federation_of is not None:
             return self
         problems: list[str] = []
-        if self.role != "agent":
-            problems.append(
-                "role must be agent: a derived operator ingress would offer a "
-                "peer this gateway's own admin tools"
-            )
+        # A shared profile MAY be the operator since 6.0.0. The rule here used
+        # to refuse that, saying a derived operator ingress would offer a peer
+        # the gateway's own admin tools -- which overstated its own code, since
+        # `derive_ingress` set `role="agent"` itself and constructed an internal
+        # backend allowing the paging reader alone. Both of those now follow the
+        # shared profile, at Scott's instruction; `docs/federation.md` carries
+        # what it costs, and `config_guard.peer_becomes_operator` puts a person
+        # in front of the change that starts it.
         if self.name.endswith(INGRESS_SUFFIX):
             problems.append(
                 f"a seat's name may not end in {INGRESS_SUFFIX!r}, which is "
                 "reserved for the ingress derived from it"
             )
+        if self.role == "operator":
+            # A shared OPERATOR profile's internal allowlist crosses to its
+            # peers, and approving that grant means reading which admin tools
+            # are in it. `tools_allow` entries are fnmatch patterns, so `*` or
+            # `read_*` names nothing a person can check and silently covers
+            # every tool a later upgrade adds. Exact names only, here, so the
+            # approval page can enumerate the grant and a no-op widening (a
+            # name already matched by a pattern) cannot stage as a new one.
+            for backend_name, backend in self.backends.items():
+                if not backend.is_internal:
+                    continue
+                globbed = sorted(t for t in backend.tools_allow if _GLOB_CHARS & set(t))
+                if globbed:
+                    problems.append(
+                        f"internal backend {backend_name!r} allows {globbed} on an "
+                        "operator profile that is shared. A peer inherits this "
+                        "list, and a pattern names no tool a person can approve "
+                        "and covers every tool a later release adds. List the "
+                        "tools by exact name"
+                    )
         if self.auth is None and self.oauth is None:
             problems.append(
                 "a shared seat needs auth or oauth. Since 5.0.0 `federation` is "
@@ -3408,17 +3437,25 @@ class Profile(BaseModel):
         derivation bug is a peer holding a tool nobody offered it, and that is
         worth a second opinion from a different piece of code.
 
-        The internal backend is held to ``FEDERATION_INTERNAL_ALLOW`` by exact
-        name, so a glob such as ``read_*`` or ``*`` is refused as written rather
-        than at the moment it matches the whole native surface. No remote
+        The internal backend must still carry the paging reader, because
+        ``parts.py`` delivers a peer's paged response through it part by part
+        and a link without it breaks paging while looking fine. No remote
         backend may be ``federated``: that is what keeps a link from
         re-exporting the next one, A to B to C.
+
+        What this rule used to check and no longer can: that the internal
+        backend offered ``read_part_tool`` and nothing else, and
+        that the role was ``agent``. Both followed from the derivation
+        constructing them, and since 6.0.0 both follow the shared profile
+        instead (Scott's instruction; see ``federation_link.CARRIED`` and
+        ``docs/federation.md``). A validator seeing one profile cannot tell
+        whether a widened internal surface matches the profile it came from,
+        because it cannot see that profile — so the check moved to where the
+        registry is visible: ``loader._check_federation_internal_surface``.
         """
         if self.federation_of is None:
             return self
         problems: list[str] = []
-        if self.role != "agent":
-            problems.append("role must be agent")
         for field in ("auth", "oauth"):
             if getattr(self, field) is not None:
                 problems.append(
@@ -3426,12 +3463,16 @@ class Profile(BaseModel):
                     "authenticates here, and a second way in would admit a caller "
                     "with no peer and no sub"
                 )
+        # An internal backend that EXISTS must carry the paging reader. Not
+        # "must exist": `derive_ingress` always adds one, so requiring it here
+        # would only force profiles hand-built for unrelated tests to grow a
+        # backend, and would check the derivation against itself rather than
+        # against anything a bug could get wrong.
         for name, backend in self.backends.items():
-            extra = sorted(set(backend.tools_allow) - FEDERATION_INTERNAL_ALLOW)
-            if backend.is_internal and extra:
+            if backend.is_internal and _READ_PART not in backend.tools_allow:
                 problems.append(
-                    f"internal backend {name!r} may offer a peer only "
-                    f"{sorted(FEDERATION_INTERNAL_ALLOW)}, not {extra}"
+                    f"internal backend {name!r} does not offer {_READ_PART!r}: "
+                    "paging a response to a peer needs it"
                 )
             if backend.federated is not None:
                 problems.append(
