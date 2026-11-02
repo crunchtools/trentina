@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import patch
 
@@ -28,7 +28,7 @@ from trentina.gateway.backend import (
     revalidate_backend_tools,
 )
 from trentina.gateway.circuit import State, breaker
-from trentina.gateway.errors import BackendCallError
+from trentina.gateway.errors import BackendCallError, BackendRejectedCallError
 from trentina.gateway.profile import AuthConfig, Backend, Profile
 from trentina.logsafe import exc_kind
 
@@ -846,20 +846,34 @@ class TestAnAnonymousBackendStillOpensTheBreaker:
             cap.unauthorized = True
         raise RuntimeError("Server returned an error response")
 
-    async def _three_calls(self, backend: Backend) -> None:
+    async def _three_calls(self, backend: Backend) -> list[Exception]:
+        """Three refused lists, returning what each raised."""
         profile = Profile(name="ag", auth=AuthConfig(bearer_token_env="T"))
         breaker.reset(URL)
+        raised: list[Exception] = []
         with patch("trentina.gateway.backend._do_list_tools", side_effect=self._refuse):
             for _ in range(3):
-                with suppress(BackendCallError):
+                try:
                     await list_backend_tools("b", backend, profile)
+                except BackendCallError as exc:
+                    raised.append(exc)
+        return raised
 
     async def test_an_anonymous_401_counts_toward_the_breaker(self) -> None:
-        await self._three_calls(_backend())
+        raised = await self._three_calls(_backend())
 
         assert breaker.get_state(URL) is State.OPEN
+        # Not a rejection: the backend refused everyone, which is a fact about
+        # the backend rather than about one operator's token.
+        assert not any(isinstance(exc, BackendRejectedCallError) for exc in raised)
 
     async def test_a_header_credential_401_does_not(self) -> None:
-        await self._three_calls(Backend(url=URL, headers={"Authorization": "Bearer stale"}))
+        raised = await self._three_calls(
+            Backend(url=URL, headers={"Authorization": "Bearer stale"})
+        )
 
         assert breaker.get_state(URL) is State.CLOSED
+        assert breaker._get(URL).consecutive_failures == 0
+        # And the caller is told what happened, as a rejection the audit
+        # records as `tool_error` rather than a backend being unreachable.
+        assert [type(exc) for exc in raised] == [BackendRejectedCallError] * 3
