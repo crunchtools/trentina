@@ -183,6 +183,21 @@ def test_both_directions_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
     assert [c["backend"] for c in report["consumed"]] == ["lotor"]
 
 
+class TestSharedJudge:
+    """#666: the judge to pin is the ingress's, not the operator's."""
+
+    def test_shared_judge_is_what_the_ingress_asserts(self) -> None:
+        from trentina.gateway.service import judge_stamp
+
+        profile = _profile()
+        ingress = derive_ingress(profile)
+        profiles = {"josui": profile, "josui-federation": ingress}
+
+        (shared,) = link_report(profiles, {})["shared"]
+
+        assert shared["judge"] == judge_stamp(ingress)
+
+
 class TestHeldForApproval:
     """A tool waiting for a pin is one the peer is not being served, so the
     count belongs on the link rather than only in `tool_pins`."""

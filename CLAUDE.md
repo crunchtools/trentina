@@ -412,8 +412,9 @@ it.
   it runs under; an operator gets the gateway.
 - quarantine_stats — an operator also gets `perimeter`: this gateway's own
   `stamp` (`perimeter_db.perimeter_stamp()`) and `judge`
-  (`service.judge_stamp`), which are what a federated peer pins in its
-  `trust_verdict` (#637). Nothing exposed them before, so an operator had no
+  (`service.judge_stamp`), the OPERATOR's own. A peer pins `stamp` from here
+  (#637) but the `judge` on the `federation.shared[]` entry of the profile it
+  consumes, computed from the derived ingress as the link signs it (#666). Nothing exposed them before, so an operator had no
   way to read its own for comparison or to tell a peer what to pin. An agent's
   slice does not carry them: they are the gateway's, not a tenant's.
   `surface` (`gateway/surface.py`) is the tool list offered vs. served;
