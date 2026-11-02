@@ -45,19 +45,18 @@ _CACHE_MAX = 4096
 # stamp, the other two by the cache key. So it does not go stale and does
 # not expire. It used to, on a 900-second TTL, which meant fifteen quiet
 # minutes re-armed a full rescan of every tool description.
-#
-# TWO stores since 6.1.0, and the split is isolation rather than tidiness.
-# Both kinds shared one LRU of _CACHE_MAX entries, so a profile reading enough
-# distinct tool RESPONSES evicted every profile's tool DESCRIPTION verdicts —
-# and since descriptions are reloaded from the store only at boot, the next
-# aggregate rebuild re-judged them, on the victim's key and at the victim's
-# expense. Keying per owner does not help: eviction pressure is shared however
-# the keys are spelled.
-#
-# Descriptions are bounded by the configuration (every backend's tool list,
-# a few thousand at most) and are what a restart pays for, so they are held
-# whole. Responses are unbounded and mostly seen once, so they keep the LRU.
+
+#: Tool-description verdicts, held whole: the set is bounded by the
+#: configuration and is what a restart pays for.
 _descriptions: dict[str, dict[str, Any] | None] = {}
+
+#: Tool-response verdicts, LRU-bounded: unbounded and mostly seen once.
+#:
+#: Two stores since 6.1.0, and the split is isolation, not tidiness. Sharing one
+#: LRU let a profile reading enough responses evict every profile's
+#: descriptions, which the next rebuild re-judged on the victim's key — and
+#: keying per owner cannot help, because eviction pressure is shared however the
+#: keys are spelled.
 _responses: OrderedDict[str, dict[str, Any] | None] = OrderedDict()
 
 # Set when the store refuses a write. A read-only or full disk fails the

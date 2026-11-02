@@ -216,7 +216,7 @@ def _rekey_pins_by_definition(db: sqlite3.Connection) -> None:
         "SELECT backend_id, tool, approved_hash, approved_json, pending_hash, "
         "pending_json, rejected, first_seen, last_seen FROM tool_pins"
     ).fetchall()
-    db.execute(f"ALTER TABLE tool_pins RENAME TO {_LEGACY_PINS}")
+    db.execute("ALTER TABLE tool_pins RENAME TO tool_pins_pre_6_1")
     db.executescript(SCHEMA)
     carried = 0
     for row in rows:
@@ -416,6 +416,23 @@ def put_pin(backend_id: str, tool: str, definition_hash: str, state: str, body: 
         (backend_id, tool, definition_hash, state, body, now, now),
     )
     db.commit()
+
+
+def set_pin_state(backend_id: str, tool: str, definition_hash: str, state: str) -> bool:
+    """Move one definition to ``state``; False when there is no such row.
+
+    An operator's decision changes nothing but the state, so it is one UPDATE
+    rather than a read and a rewrite — the definition JSON it would have had to
+    carry back is already in the row.
+    """
+    db = get_perimeter_db()
+    changed = db.execute(
+        "UPDATE tool_pins SET state = ?, last_seen = ? WHERE backend_id = ? "
+        "AND tool = ? AND definition_hash = ?",
+        (state, datetime.now(UTC).isoformat(), backend_id, tool, definition_hash),
+    ).rowcount
+    db.commit()
+    return bool(changed)
 
 
 def move_pins(old_backend_id: str, new_backend_id: str) -> int:

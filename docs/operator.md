@@ -99,29 +99,49 @@ name is re-read on every reload, so a key minted after startup takes effect
 without a restart. A writable config directory is what `config_tool` needs from
 the deployment; see [Deployment Hardening](deployment-hardening.md#a-writable-config-directory).
 
-**Service identity.** Some model calls belong to no tenant. Compressing a
-shared tool description, and judging it at the perimeter before any profile
-sees it, is done once for everyone. That work runs **as the operator**, on the
-operator's `defense.provider`, `defense.model` and `llm_keys`, and it bills
-the operator's key.
+**Service identity.** A few model calls belong to no tenant, and those run
+**as the operator**, on the operator's `defense.provider`, `defense.model` and
+`llm_keys`.
+
+Since 6.1.0 that is a short list, and judging and compressing tool
+descriptions are not on it. A tenant's tool list is a tenant's own: it is
+judged and shortened on that tenant's key, and the results are cached where no
+other tenant reads them. Both used to run as the operator, which meant one
+tenant's key paid to read another's tool list, and the verdict and the
+shortened text were shared by every profile whose thresholds and judge
+matched.
 
 | Work | Runs as | Bills |
 |---|---|---|
 | L3 on a tool **response** | The calling tenant | The tenant's `llm_keys` |
-| L3 on a tool **description** (perimeter, `tools/list`) | The operator | The operator's `llm_keys` |
-| Description [compression](compression.md) | The operator | The operator's `llm_keys` |
-| Any future gateway-initiated model call | The operator | The operator's `llm_keys` |
+| L3 on a tool **description** (perimeter, `tools/list`) | The listing tenant | The tenant's `llm_keys` |
+| Description [compression](compression.md) | The listing tenant | The tenant's `llm_keys` |
+| Applying a config change a person approved | The operator | nothing — no model call |
 
-Thresholds are not part of the service identity. A shared description is
-judged by the operator's model, but each tenant's own `l2_threshold` and
-enforcement mode still decide what that tenant is shown. Verdicts are cached
-per (thresholds, judging model, content), so a verdict reached by one model is
-never served to a profile judged by another.
+The last row is what is left of the service identity on the request path, and
+it spends nothing: an approval arrives from a browser with no bound caller at
+all, and `reload_profiles` applies the whole file only for an operator, so
+without one the change would be written and then refused by the reload.
 
-Before 0.36 there was no declared owner: compression used the first profile's
-provider in file order, and the perimeter fell through to the env-global key.
-Now, with **no operator declared**, both use the env-global provider, model and
-key, and the gateway says so at startup:
+**So every profile needs its own `llm_keys`.** A profile with none for the
+provider its `defense` resolves to judges nothing — its responses and its tool
+descriptions both report `l3_unavailable`, and under `enforcement: block` it is
+served no tool list. The loader warns, and `config_tool` reports it in the
+write result as `no_llm_key`, because a warning reaches the journal and the
+thing writing configs is an agent. Ollama is the exception, being keyless.
+
+Thresholds were never part of the service identity and still are not: each
+tenant's own `l2_threshold` and enforcement mode decide what it is shown.
+Verdicts are cached per (owner, thresholds, judging model, content) — the owner
+being the `grant_owner`, so a derived federation ingress reads its source's
+verdicts, since it spends the same credential and the same key.
+
+Before 0.36 there was no declared owner at all: compression used the first
+profile's provider in file order, and the perimeter fell through to the
+env-global key. #138 gave that work to the operator; 6.1.0 gave it to the
+tenant whose list it is, which is where it had been heading. With **no
+operator declared** the remaining service-identity work uses the env-global
+provider, model and key, and the gateway says so at startup:
 
 ```
 service identity: no operator profile declared — centralized model calls (...) use the env-global key, ...

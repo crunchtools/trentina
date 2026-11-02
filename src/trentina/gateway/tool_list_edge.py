@@ -115,22 +115,15 @@ async def _judge_description(
     """
     perimeter_counts["judged"] += 1
     mode = effective_mode(profile)
-    # A description is judged for the profile LISTING it, on that profile's own
-    # key (6.1.0). It used to run as the service identity (#138) on the
-    # operator's, which made one tenant's key pay for another's tool list and
-    # made the verdict shareable; neither survives a gateway holding tenants.
-    # The defend() call itself lives in the orchestration layer (Trentina 3.0
-    # Phase 7) — the profile bound here stays in force across the await, and
-    # this coroutine (the single-flight work) still owns the cache write and
-    # the journal line below. Deferred import: the orchestrator imports this
-    # module.
+    # Deferred import: the orchestrator imports this module. The profile bound
+    # below stays in force across the await, and this coroutine (the
+    # single-flight work) owns the cache write and the journal line.
     from ..orchestrator import judge_tool_description
 
-    # Bound explicitly rather than relying on the caller: warm-up reaches this
-    # with nothing bound at all, and posture() reads the honeypot flag from the
-    # bound scope, which current_scope would otherwise refuse. Binding the
-    # listing profile also means a honeypot's descriptions are judged under its
-    # own posture rather than the operator's.
+    # Bound explicitly, not taken from the caller: warm-up reaches this with
+    # nothing bound, and posture() reads the honeypot flag from the bound
+    # scope. Binding the LISTING profile is also what makes its own key pay
+    # (6.1.0) and its own honeypot posture apply.
     with profile_context(profile):
         posture = identity.posture(mode, ModePolicy((mode,), mode))
         verdict = await judge_tool_description(
@@ -181,6 +174,13 @@ async def scan_tool_list(
     an L3 flag that predates the briefing (no matching ``l3_briefing``
     stamp), which is judged again once and re-cached with the stamp. Clean
     verdicts and L1/L2 flags stand: the briefing changes only what L3 reads.
+
+    The verdict cache was shared by every profile with equal thresholds and
+    judge through 6.0.0, justified in the ``# TRUST:`` block below as "no agent
+    chooses the text, so a hit is no channel". True for one person's gateway
+    and insufficient for a service, where a hit is evidence that a neighbour
+    holds the same backend and one tenant's key had paid to judge it. The key
+    carries ``grant_owner`` now.
     """
     # Resolved once per list: the key and the call must name the same judge. A
     # reload between the two would file a verdict under one judge that another
@@ -206,12 +206,6 @@ async def scan_tool_list(
         #   owner: tool_list_edge.scan_tool_list
         #   evidence: T4 surface is the backend's tools/list, not a call argument;
         #     T4 the key carries grant_owner, so no verdict crosses a tenant
-        #   note: through 6.0.0 this cache was shared by every profile with
-        #     equal thresholds and judge, justified as "no agent chooses the
-        #     text, so a hit is no channel". True for one person's gateway and
-        #     insufficient for a service, where a hit is evidence that a
-        #     neighbour is configured with the same backend and one tenant's
-        #     key had paid for it.
         key = _cache_key(profile, f"tool:{provenance.value}", surface, judge)
         hit, warning = _cache_get(key, persist=True)
         if hit and _judged_before_briefing(warning):

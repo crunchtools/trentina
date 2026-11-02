@@ -10,6 +10,124 @@ under that name.
 
 ## [Unreleased]
 
+## [6.1.0] - 2026-11-02
+
+A tenant's tool list is now entirely its own: judged on its own key, compressed
+on its own key, and cached where no other tenant can read it. Three caches were
+shared gateway-wide, and the one nobody had noticed was the worst of them.
+
+### Upgrading
+
+Nothing in a `profiles.yaml` has to change, and nothing that loaded before
+stops loading. Two operational notes:
+
+1. **The first boot after upgrading re-judges and re-compresses every tool
+   description, once per profile.** The verdict and compression keys now carry
+   the owner, and `PERIMETER_VERSION` moves to `22`, so the stored rows sweep
+   on startup. The warm-up paces this and the gateway serves throughout, but it
+   costs real model calls once — on lotor, 1,456 descriptions across 9
+   profiles. The cached tool lists are rebuilt too, which costs one extra fetch
+   per profile sharing a backend and no model calls.
+2. **A federated peer must re-pin.** `PERIMETER_VERSION` is part of
+   `perimeter_stamp()`, which is what a peer pins in `trust_verdict`. The
+   moment this gateway runs 6.1.0 its stamp changes, so the pin stops matching
+   and the link fails CLOSED — every federated response is judged locally
+   again, visible as `hash_mismatch` in `quarantine_stats`. Read the new stamp
+   from `quarantine_stats` as the operator and write it back into the peer's
+   `trust_verdict.perimeter_stamp`. Nothing is unsafe in the meantime; it is
+   twice the work, quietly.
+
+### Preview
+
+Federation (`federation`): the `trust_verdict` re-pin above. The pin mechanism
+is behaving as designed — any change to the stamp it names fails closed — but
+an operator running a federated pair has to act on it.
+
+### Security
+
+- **A profile was served tool lists that another profile's credential
+  fetched.** `_tool_list_cache` was keyed by backend URL alone, so whichever
+  profile missed the cache first fetched the list with its own token and every
+  other profile on that URL was handed the result — without presenting a
+  credential of its own, and in the case of an `auth` backend without holding
+  a grant at all. For a backend whose tool list or schemas depend on the
+  account (an enum of your projects, a per-tenant description), that is one
+  tenant reading another tenant's data. The cache is now keyed `(url, owner)`,
+  where the owner is empty only for a backend that carries no credential and
+  whose answer is therefore the same for everyone.
+
+  The rule already existed in the right form and the wrong place:
+  `_inflight_key` has keyed an `auth` or federated fetch per profile since
+  #592, while the result cache it fills did not — and header credentials, the
+  common case, were outside even that. One predicate, `carries_credential`,
+  now decides both, so the in-flight slot and the row it writes cannot
+  disagree.
+
+- **A tenant could evict every other tenant's tool-description verdicts.** The
+  verdict cache was one LRU of 4,096 entries holding both descriptions and
+  responses, and descriptions are reloaded from the store only at boot. Enough
+  distinct responses in one profile therefore pushed out another profile's
+  descriptions, which were then re-judged on that profile's key and at its
+  expense. Keying per tenant does not fix this — eviction pressure is shared
+  however the keys are spelled — so the two kinds now have separate stores.
+
+- **A stale static token stopped taking a backend down for its neighbours.** A
+  401 from a `headers:` backend was not an `MCPError` and carried no grant to
+  refresh, so it fell through to `record_failure`: three such calls opened the
+  URL-keyed circuit for 60 seconds for every profile sharing that URL, over a
+  credential only the operator can fix. It now records a success on the
+  circuit, which measures reachability, and refuses the call as
+  `BackendRejectedCallError`.
+
+### Changed
+
+- **Tool-description judging and compression run as the listing profile, on
+  its own key.** Both ran as the operator (#138) through 6.0.0, which meant one
+  tenant's key paid to judge and shorten another tenant's tool list, and made
+  the results shareable. At Scott's instruction: "Everything that a user's
+  account touches should be done by its own key."
+
+  The verdict cache and the compression cache are keyed by `grant_owner`, so a
+  derived federation ingress shares with the profile it was derived from — one
+  tenant reached two ways, spending one credential — and nothing else shares at
+  all. The `tool_compressions` and `tool_list_cache` tables gain an `owner`
+  column; rows written before it existed cannot be attributed to anyone and are
+  dropped rather than adopted into someone's cache.
+
+  Three things deliberately do **not** follow:
+
+  - The approved-`config_tool`-write apply still runs as the operator. It
+    spends nothing: an approval arrives from a browser with no bound caller,
+    and `reload_profiles` applies the whole file only for an operator.
+  - The circuit breaker stays shared. It measures whether a URL is reachable,
+    and partitioning it would hide a down backend from the tenants who share it.
+  - `loggable_tool` still reads every partition. It answers "does the backend
+    publish this name", for the journal rather than for a tenant.
+
+- **A tool pin is a decision about a definition, not about a URL.** With tool
+  lists partitioned, two tenants can legitimately be served different
+  definitions for the same tool, and one row per `(backend, tool)` could not
+  hold both: the second listing overwrote the first's pending hash, an approval
+  given for one tenant's definition appeared to cover the other's, and the two
+  builds then flapped the hold and logged a detection on alternate passes.
+  Pins are now keyed by the definition hash as well, so both coexist, an
+  approval covers every tenant served those exact bytes, and anything else
+  stays held. `tool_pins list` entries gain a `hash`; `approve` and `reject`
+  take an optional `hash`, needed only where a tool has more than one pending
+  definition. `/health`'s `pending_pins` still counts distinct
+  `(backend, tool)`.
+
+- **`precompress_all` dedupes per owner.** It skipped a URL it had already
+  seen, which with a per-owner cache filled only the first holder's partition
+  and left every other holder compressing on first use.
+
+- A profile with no `llm_keys` for its provider is still a warning rather than
+  a load error, and the warning now says that tool descriptions are included
+  and that such a profile re-runs L1 and L2 over every description on every
+  list (an `l3_unavailable` verdict is never persisted). `config_tool` reports
+  the warning in its write result, so the agent that wrote the config sees what
+  only the journal used to carry.
+
 ## [6.0.0] - 2026-11-02
 
 A major because of the two config rules below, not because of their size. Both

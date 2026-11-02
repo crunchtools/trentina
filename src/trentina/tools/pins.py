@@ -60,22 +60,18 @@ async def manage_tool_pins(
         return {"error": "action is list, approve or reject; the last two need a tool"}
 
     if not tool_pins.decide(urls[0], tool, approve=action == "approve", definition_hash=hash):
-        return _refusal(urls[0], tool, hash)
+        # Two tenants served different definitions is the interesting refusal:
+        # there is no single thing "approve this tool" could mean then, so name
+        # the hashes on offer rather than deciding one by accident.
+        held = [row["hash"] for row in tool_pins.pending(urls[0]) if row["tool"] == tool]
+        ambiguous = hash is None and len(held) > 1
+        return (
+            {
+                "error": "that tool has more than one held definition; name one with hash",
+                "held": held,
+            }
+            if ambiguous
+            else {"error": "no such held tool"}
+        )
     invalidate_profile_cache_for_backend(urls[0])
     return {"backend": backend, "tool": tool, "action": action, "hash": hash}
-
-
-def _refusal(url: str, tool: str, hash: str | None) -> dict[str, Any]:
-    """Why a decide refused: nothing held, or more than one thing held.
-
-    Two tenants served different definitions is the second case, and there is
-    no single thing "approve this tool" could mean then — so name the hashes on
-    offer rather than deciding one of them by accident.
-    """
-    held = [row for row in tool_pins.pending(url) if row["tool"] == tool]
-    if hash is None and len(held) > 1:
-        return {
-            "error": "that tool has more than one held definition; name one with hash",
-            "held": [row["hash"] for row in held],
-        }
-    return {"error": "no such held tool"}

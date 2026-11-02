@@ -20,6 +20,7 @@ from trentina.gateway.compress import (
     maybe_trigger_compression,
     set_profiles,
 )
+from trentina.gateway.profile import AuthConfig, LlmKeyOverride, Profile
 from trentina.quarantine.providers.base import ProviderResult
 
 
@@ -31,24 +32,15 @@ def _tool(name: str, description: str, schema: dict | None = None) -> dict[str, 
     }
 
 
-def _profile(name: str = "tenant") -> Any:
-    """A profile to own a compression, and to pay for it.
-
-    The cache is per grant owner since 6.1.0 and the model call runs on the
-    profile's OWN key, so a profile with no ``llm_keys`` compresses nothing —
-    ``resolve_profile_llm`` refuses to bill anyone else's. The key names the
-    provider ``standalone_l3`` configures.
-    """
-    from trentina.gateway.profile import AuthConfig, LlmKeyOverride, Profile
-
-    return Profile(
-        name=name,
-        auth=AuthConfig(bearer_token_env="T"),
-        llm_keys={"gemini": LlmKeyOverride(api_key_env="GEMINI_API_KEY")},
-    )
-
-
-PROF = _profile()
+# A profile to own a compression, and to pay for it. The cache is per grant
+# owner since 6.1.0 and the model call runs on the profile's OWN key, so a
+# profile with no `llm_keys` compresses nothing — `resolve_profile_llm` refuses
+# to bill anyone else's. The key names the provider `standalone_l3` configures.
+PROF = Profile(
+    name="tenant",
+    auth=AuthConfig(bearer_token_env="T"),
+    llm_keys={"gemini": LlmKeyOverride(api_key_env="GEMINI_API_KEY")},
+)
 OWNER = PROF.grant_owner
 
 pytestmark = pytest.mark.usefixtures("standalone_l3")

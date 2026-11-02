@@ -425,12 +425,42 @@ it.
 Trentina is AI-native: an Operator agent installs and configures it, and
 `role: operator` is that agent's profile (`docs/operator.md`). At most one per
 file, and it must hold `llm_keys` for its own provider (`loader._check_operator`).
-The gateway's own model calls — compression, perimeter L3 over tool
-descriptions, anything added later — run AS the operator via
-`gateway/service.py` (`service_context()` binds it; the Q-Agent resolves key and
-model from the bound profile). No operator: env-global, logged at startup.
-Verdict keys carry the judging (provider, model) except for the env default,
-which keeps the pre-#137 spelling so persisted verdicts stay reachable.
+`service_context()` (`gateway/service.py`) binds it, and the Q-Agent resolves
+key and model from the bound profile. No operator: env-global, logged at
+startup.
+
+**6.1.0 took the tool-description work off it.** Judging a description at the
+perimeter and compressing one run as the LISTING profile, on that profile's own
+key, and both caches are keyed by `grant_owner` — the owner so a derived
+federation ingress reads its source's entries, spending the same credential.
+They ran as the operator through 6.0.0, so one tenant's key paid to read
+another's tool list and the results were shared by every profile with matching
+thresholds and judge. Scott: "Everything that a user's account touches should
+be done by its own key." What is left of the service identity on the request
+path is applying an approved `config_tool` write, which spends nothing — an
+approval has no bound caller, and `reload_profiles` applies the whole file only
+for an operator.
+
+So EVERY profile needs its own `llm_keys`: without one for its resolved
+provider it judges nothing, and under `block` it is served no tool list.
+`loader.keyless_profiles` is the predicate, `_check_judges` warns, and
+`config_tool` reports it as `no_llm_key` because a warning reaches a journal no
+agent reads. Deliberately not a load error — such a profile was already
+non-functional, so refusing the file would surface an existing breakage rather
+than prevent a new one.
+
+Verdict keys carry the owner, the thresholds and the judging (provider, model).
+The pre-#137 spelling that omitted an env-default judge is gone: the owner
+makes every key new and `PERIMETER_VERSION` 22 sweeps the old rows.
+
+Two caches that are NOT the verdict cache follow the same rule.
+`_tool_list_cache` is keyed `(url, owner)` (`backend.carries_credential`,
+`backend.cache_owner`), because a tool list is whatever the backend returned to
+the credential that asked — one row per URL served a profile the list another
+profile's token had earned. And `tool_pins` is keyed by definition hash, so two
+tenants served different definitions of one tool each hold independently; an
+approval covers every tenant served those exact bytes. The circuit breaker
+stays shared on purpose: it measures reachability.
 
 ### Gateway admin
 
@@ -444,9 +474,12 @@ narrow for an agent; `config_tool`, `federation_keygen`, `tool_pins` and
 `audit_verify` refuse one outright (`scope.require_operator`).
 
 - cache_flush — flush tool-list caches. Agent: its own aggregate ONLY, with a
-  constant body; the per-URL cache is shared, so an agent flushing it and
-  reporting what was warm was a channel between profiles (#263).
-  Operator: every cache. A name is resolved by EXACT name, never by substring
+  constant body; a credential-free backend's row is still shared by every
+  profile, so an agent flushing it and reporting what was warm was a channel
+  between profiles (#263). Since 6.1.0 the cache is keyed `(url, owner)`, which
+  closes that structurally for any backend carrying a credential — the
+  constant body is kept so one rule covers both.
+  Operator: every cache, every partition of each URL. A name is resolved by EXACT name, never by substring
   over cached URLs — that is how `gw` used to reach `gw-work` and
   `gw-personal` both.
 - reconnect_backend — reset one backend's circuit breaker + re-probe after it

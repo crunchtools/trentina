@@ -23,8 +23,10 @@ Compression is the `summarize` transform on the tool-description channel
    whose `preprocess_tool_descriptions` names `summarize`, in the background.
 2. **Cache check**: each tool description is hashed (SHA-256); a hit is a dict
    lookup, no model call.
-3. **Batch compression**: misses go to the operator's model (the service
-   identity, [Operator](operator.md)), five tool descriptions or twenty
+3. **Batch compression**: misses go to the LISTING profile's own model and key
+   (6.1.0; it was the operator's, see [Operator](operator.md)), and the result
+   is cached in that profile's own partition — a shortened description is a
+   model rewrite one tenant paid for. Five tool descriptions or twenty
    parameter descriptions per call, with a schema-constrained response.
 4. **Cache storage**: results shorter than the original are stored in SQLite,
    keyed by hash, so the same text from any backend or profile is one entry.

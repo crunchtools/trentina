@@ -276,12 +276,8 @@ def decide(url: str, tool: str, *, approve: bool, definition_hash: str | None = 
         definition_hash = held_hashes[0]
     elif definition_hash not in held_hashes:
         return False
-    row = perimeter_db.get_pin(bid, tool, definition_hash)
-    if row is None:
-        return False
     state = perimeter_db.PIN_APPROVED if approve else perimeter_db.PIN_REJECTED
-    perimeter_db.put_pin(bid, tool, definition_hash, state, row["definition_json"])
-    return True
+    return perimeter_db.set_pin_state(bid, tool, definition_hash, state)
 
 
 #: The closed reason code the call gate refuses a held tool with (#469), in the
