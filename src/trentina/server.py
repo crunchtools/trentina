@@ -472,7 +472,11 @@ async def federation_keygen_tool(name: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def tool_pins_tool(
-    action: Literal["list", "approve", "reject"], backend: str, tool: str | None = None
+    action: Literal["list", "approve", "reject", "approve_all"],
+    backend: str,
+    tool: str | None = None,
+    hash: str | None = None,
+    set_digest: str | None = None,
 ) -> dict[str, Any]:
     """Release or keep withholding the tools a backend newly offered or changed.
 
@@ -482,11 +486,21 @@ async def tool_pins_tool(
 
     Args:
         action: ``list`` what is held (with the fields that changed and whether
-            a safety hint was loosened), ``approve`` one, or ``reject`` one.
+            a safety hint was loosened), ``approve`` one, ``reject`` one, or
+            ``approve_all`` to release a whole listed set on one decision.
         backend: Backend name, wherever it is configured.
         tool: The held tool's name, for approve and reject.
+        hash: Which held DEFINITION, from ``list``. Needed only where a tool
+            holds more than one, which happens when a backend answers two
+            profiles with different bytes. With one it is implied.
+        set_digest: The ``digest`` ``list`` returned, required by
+            ``approve_all``, which refuses if the held set changed since. A
+            batch releases only definitions whose sole changed fields are
+            ``description`` and ``inputSchema`` — what the gateway's own
+            description compressor rewrites. Anything else, a new tool
+            included, stays one approval at a time.
     """
-    return await manage_tool_pins(action, backend, tool)
+    return await manage_tool_pins(action, backend, tool, hash, set_digest)
 
 
 @mcp.tool()
