@@ -61,6 +61,23 @@ costly case: it will hold one definition per profile, and hold again whenever
 that account's data changes. Nothing here can fix that; it is the backend's
 shape.
 
+**A pin follows the COMPRESSOR, not the backend.** The hash covers the
+definition as SERVED, and under `preprocess_tool_descriptions` the served
+description is a model's rewrite. So anything that makes the gateway
+re-compress — losing `tool_compressions`, or a migration that cannot attribute
+its rows, as 6.1.0's `owner` column did — changes every compressed definition
+and holds every one of them, because re-compressing is a fresh call and not
+byte-identical. It is fail-closed and correct, and on a real deployment it was
+356 tools across one federation link.
+
+Tell it apart from a genuine upstream change by the fields: a re-compression
+reports `description` or `description,inputSchema` across a whole backend at
+once, where a rug pull is a few tools. The text in that case is your own
+gateway's output over a list its own perimeter judged, so `approve` is the
+right answer; it is still an operator's call rather than an automatic one,
+because "the whole backend changed at once" is also what a hostile re-list
+looks like.
+
 ## First boot, and a lost store
 
 Pins live in the perimeter store (`perimeter.db`), beside the verdicts, and

@@ -122,6 +122,29 @@ stops loading. Two operational notes:
    carrying it until an operator runs `tool_pins reject`. Expected, and worth
    knowing before it reads as a stuck counter.
 
+5. **Every tool whose descriptions are COMPRESSED is held for approval once,
+   and an operator has to release it.** This is the step that costs real
+   availability on the first boot, and it was missing from these notes until
+   6.1.1 — found by deploying it. The chain: `tool_compressions` gains an
+   `owner` column and the pre-migration rows are dropped rather than adopted
+   (below); a tool pin is keyed by the hash of the definition as served; a
+   served description is the COMPRESSOR's output; and re-compressing is a fresh
+   model call, so the text is not byte-identical to what was approved. Every
+   such definition therefore reads as changed, and fail-closed means held.
+
+   Measured on the deploy: 356 distinct tools held across one federation link,
+   plus 49 on a backend whose schemas carry account state. `tool_pins list`
+   shows them with `fields=description` or `description,inputSchema`, which is
+   how you tell this from a real upstream change. Release them with `tool_pins
+   approve` once you are satisfied nothing upstream moved — the new text is
+   your own gateway's, over tool lists its own perimeter judged, not a third
+   party's.
+
+   It happens once per store, not on every restart: `tool_compressions`
+   persists, so later restarts reuse the same compressed text and the hashes
+   stay put. Budget for it in the upgrade window, and expect `pending_pins` to
+   jump before it falls.
+
 ### Preview
 
 Federation (`federation`): the `trust_verdict` re-pin above. The pin mechanism
