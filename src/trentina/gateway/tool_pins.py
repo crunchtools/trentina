@@ -459,30 +459,46 @@ def pending_digest(rows: Iterable[Mapping[str, Any]]) -> str:
     return hashlib.sha256(body.encode()).hexdigest()
 
 
+#: How many disqualifying tools a refusal names before it just counts the rest.
+#: Enough to act on, bounded because the refusal is a tool result an agent reads.
+MAX_NAMED_EXCEPTIONS = 20
+
+
+def _why_not_batchable(row: Mapping[str, Any]) -> str:
+    """Why this one held definition may not go in a batch, or ``""``."""
+    if outside := sorted(set(row["changed"]) - BULK_FIELDS):
+        return f"{row['tool']} (changed in {','.join(outside)})"
+    if row["safety_loosened"]:
+        # The hint lives in ``annotations``, which BULK_FIELDS excludes, so this
+        # is unreachable today. Kept, and tested with the field rule widened, so
+        # widening it later cannot quietly pass one.
+        return f"{row['tool']} (loosened a safety hint)"
+    if row["schema_shape_changed"]:
+        return f"{row['tool']} (input schema changed beyond its descriptions)"
+    return ""
+
+
 def unbatchable_reason(rows: Iterable[Mapping[str, Any]]) -> str:
     """Why this held set may not go as a batch, or ``""`` if it may.
 
     The rule, in one place, so what ``approve_all`` enforces is the same thing
-    a listing could explain. Each clause names the tool responsible, because a
-    refusal an operator cannot act on is a refusal they will work around.
+    a listing could explain.
+
+    It names EVERY disqualifying tool, not the first. At 582 held definitions a
+    refusal that stops at one turns clearing the backlog into a round trip per
+    exception, and an operator doing that reads none of them — which is the
+    thing this whole affordance exists to avoid.
     """
-    for row in rows:
-        if outside := sorted(set(row["changed"]) - BULK_FIELDS):
-            return (
-                f"{row['tool']} changed in {','.join(outside)}, which a batch will not "
-                "release; approve or reject it on its own first"
-            )
-        if row["safety_loosened"]:
-            # The hint lives in ``annotations``, which BULK_FIELDS excludes, so
-            # this is unreachable today. Kept, and tested with the field rule
-            # widened, so widening it later cannot quietly pass one.
-            return f"{row['tool']} loosened a safety hint; approve it on its own"
-        if row["schema_shape_changed"]:
-            return (
-                f"{row['tool']} changed its input schema beyond the descriptions the "
-                "gateway's own compressor rewrites; approve it on its own"
-            )
-    return ""
+    held = list(rows)  # walked twice below; a generator would read empty
+    named = [reason for row in held if (reason := _why_not_batchable(row))]
+    if not named:
+        return ""
+    over = len(named) - MAX_NAMED_EXCEPTIONS
+    shown = ", ".join(named[:MAX_NAMED_EXCEPTIONS]) + (f" and {over} more" if over > 0 else "")
+    return (
+        f"{len(named)} of {len(held)} held definitions will not go in a batch: "
+        f"{shown}. Approve or reject each on its own, then batch the rest."
+    )
 
 
 #: A reserved pin key for the detection row a batch approval writes. NUL is not

@@ -42,9 +42,12 @@ makes the set, rather than the operator's patience, the unit of decision.
   them change what a call means. Held entries now carry `schema_shape_changed`
   alongside `safety_loosened`.
 
-  Nothing is approved unless all of it qualifies, and the write is one
-  transaction (`perimeter_db.set_pin_states`): if any pair no longer matches a
-  row, nothing is committed. A `rejected` definition is outside the digest, so
+  Nothing is approved unless all of it qualifies, and the refusal names every
+  disqualifying tool (twenty, then a count) rather than the first — stopping at
+  one would make clearing a real backlog a round trip per exception. The write
+  is one transaction (`perimeter_db.set_pin_states`) and requires each row to
+  still be `pending`: if any pair no longer matches, nothing is committed, so a
+  rejection landing mid-write cannot be overwritten. A `rejected` definition is outside the digest, so
   the batch neither trips over it nor reverses it. It returns the manifest of
   what it released and writes one `detections` row (`approved_bulk`).
 

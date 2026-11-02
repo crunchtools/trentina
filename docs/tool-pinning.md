@@ -127,9 +127,16 @@ there it is part of what a call must send: a property genuinely **named**
 vocabulary), and a `description` key inside a `const`, `default`, `examples` or
 `enum` value (`_LITERALS`, whose values are compared whole and never walked).
 
-Nothing is approved unless every row qualifies, and the write itself is one
-transaction (`perimeter_db.set_pin_states`): if any pair no longer matches a
-row, nothing is committed and the operator is told to list again. A batch that
+Nothing is approved unless every row qualifies, and the refusal names **every**
+disqualifying tool (up to twenty, then a count) rather than the first — at 582
+definitions, stopping at one would make clearing a backlog a round trip per
+exception, which is the reading-nothing failure the affordance exists to avoid.
+Clear those individually, then batch the rest.
+
+The write itself is one transaction (`perimeter_db.set_pin_states`), and it
+requires each row to still be `pending`: if any pair no longer matches, nothing
+is committed and the operator is told to list again. That is what stops a
+rejection landing mid-write from being overwritten. A batch that
 released most of itself and reported the rest would be read as a success, and
 the rows it skipped are the ones that needed reading. A `rejected` definition
 is outside the digest entirely: it neither blocks the batch nor is reversed by

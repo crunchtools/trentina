@@ -510,8 +510,8 @@ class TestApprovingAWholeHeldSet:
             listed = await manage_tool_pins("list", "lotor")
             result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
 
-        assert "brand_new_tool changed in new" in result["error"]
-        assert "on its own" in result["error"]
+        assert "1 of 4 held definitions will not go in a batch" in result["error"]
+        assert "brand_new_tool (changed in new)" in result["error"]
         # Nothing was released: a batch that took most of itself and reported
         # the rest would be read as a success.
         with profile_context(gateway["op"]):
@@ -528,7 +528,7 @@ class TestApprovingAWholeHeldSet:
             listed = await manage_tool_pins("list", "lotor")
             result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
 
-        assert "changed in annotations" in result["error"]
+        assert "send_message (changed in annotations)" in result["error"]
 
     async def test_a_loosened_hint_is_refused_even_if_the_field_rule_widens(
         self, gateway: dict[str, Profile], monkeypatch: pytest.MonkeyPatch
@@ -551,7 +551,7 @@ class TestApprovingAWholeHeldSet:
             listed = await manage_tool_pins("list", "lotor")
             result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
 
-        assert "loosened a safety hint" in result["error"]
+        assert "send_message (loosened a safety hint)" in result["error"]
 
     async def test_a_rejected_definition_stays_rejected(self, gateway: dict[str, Profile]) -> None:
         """A rejection is a standing decision. It is outside the digest, so it
@@ -656,7 +656,7 @@ class TestApprovingAWholeHeldSet:
 
         assert listed["held"][0]["changed"] == ["inputSchema"]
         assert listed["held"][0]["schema_shape_changed"] is True
-        assert "beyond the descriptions" in result["error"]
+        assert "beyond its descriptions" in result["error"]
         assert perimeter_db.pending_hashes(backend_id(LOTOR_URL), "send_message")
 
     async def test_a_rewritten_property_description_still_batches(
@@ -700,7 +700,7 @@ class TestApprovingAWholeHeldSet:
             listed = await manage_tool_pins("list", "lotor")
             result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
 
-        assert "beyond the descriptions" in result["error"]
+        assert "beyond its descriptions" in result["error"]
 
     async def test_a_write_that_cannot_move_every_row_moves_none(
         self, gateway: dict[str, Profile]
@@ -782,7 +782,7 @@ class TestApprovingAWholeHeldSet:
             result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
 
         assert listed["held"][0]["schema_shape_changed"] is True, what
-        assert "beyond the descriptions" in result["error"], what
+        assert "beyond its descriptions" in result["error"], what
 
     async def test_a_property_actually_named_description_is_part_of_the_shape(
         self, gateway: dict[str, Profile]
@@ -819,7 +819,7 @@ class TestApprovingAWholeHeldSet:
             listed = await manage_tool_pins("list", "lotor")
             result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
 
-        assert "beyond the descriptions" in result["error"]
+        assert "beyond its descriptions" in result["error"]
 
     @pytest.mark.parametrize("keyword", ["const", "default", "examples", "enum"])
     async def test_a_description_inside_a_literal_value_is_data(
@@ -851,4 +851,36 @@ class TestApprovingAWholeHeldSet:
             result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
 
         assert listed["held"][0]["schema_shape_changed"] is True, keyword
-        assert "beyond the descriptions" in result["error"], keyword
+        assert "beyond its descriptions" in result["error"], keyword
+
+    async def test_the_refusal_names_every_exception_not_the_first(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        """At 582 held definitions, a refusal that stops at the first exception
+        turns clearing a backlog into one round trip per exception — and an
+        operator doing that reads none of them, which is what this affordance
+        exists to avoid."""
+        self._recompressed()
+        for name in ("brand_new_a", "brand_new_b", "brand_new_c"):
+            self._held(name, tool_pins.canonical({"name": name, "description": "d"}))
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert "3 of 6 held definitions will not go in a batch" in result["error"]
+        for name in ("brand_new_a", "brand_new_b", "brand_new_c"):
+            assert f"{name} (changed in new)" in result["error"]
+
+    async def test_a_long_exception_list_is_counted_rather_than_printed(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        """The refusal is a tool result an agent reads, so it stays bounded."""
+        for i in range(tool_pins.MAX_NAMED_EXCEPTIONS + 5):
+            name = f"brand_new_{i:02d}"
+            self._held(name, tool_pins.canonical({"name": name, "description": "d"}))
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert f"{tool_pins.MAX_NAMED_EXCEPTIONS + 5} of " in result["error"]
+        assert "and 5 more" in result["error"]
