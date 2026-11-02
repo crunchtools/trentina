@@ -871,16 +871,27 @@ class TestApprovingAWholeHeldSet:
         for name in ("brand_new_a", "brand_new_b", "brand_new_c"):
             assert f"{name} (changed in new)" in result["error"]
 
+    @pytest.mark.parametrize("over", [-1, 0, 5])
     async def test_a_long_exception_list_is_counted_rather_than_printed(
-        self, gateway: dict[str, Profile]
+        self, gateway: dict[str, Profile], over: int
     ) -> None:
-        """The refusal is a tool result an agent reads, so it stays bounded."""
-        for i in range(tool_pins.MAX_NAMED_EXCEPTIONS + 5):
-            name = f"brand_new_{i:02d}"
+        """The refusal is a tool result an agent reads, so it stays bounded —
+        and the boundary itself is tested: just under the cap, exactly at it,
+        and over, where only the surplus is counted."""
+        count = tool_pins.MAX_NAMED_EXCEPTIONS + over
+        names = [f"brand_new_{i:02d}" for i in range(count)]
+        for name in names:
             self._held(name, tool_pins.canonical({"name": name, "description": "d"}))
         with profile_context(gateway["op"]):
             listed = await manage_tool_pins("list", "lotor")
             result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
 
-        assert f"{tool_pins.MAX_NAMED_EXCEPTIONS + 5} of " in result["error"]
-        assert "and 5 more" in result["error"]
+        error = result["error"]
+        assert f"{count} of {count} held definitions" in error
+        if over > 0:
+            assert f"and {over} more" in error
+            assert names[-1] not in error  # beyond the cap, counted not named
+        else:
+            assert "more" not in error
+            for name in names:
+                assert name in error

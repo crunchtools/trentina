@@ -484,10 +484,12 @@ def unbatchable_reason(rows: Iterable[Mapping[str, Any]]) -> str:
     The rule, in one place, so what ``approve_all`` enforces is the same thing
     a listing could explain.
 
-    It names EVERY disqualifying tool, not the first. At 582 held definitions a
-    refusal that stops at one turns clearing the backlog into a round trip per
-    exception, and an operator doing that reads none of them — which is the
-    thing this whole affordance exists to avoid.
+    It accounts for every disqualifying tool rather than stopping at the first:
+    it names up to ``MAX_NAMED_EXCEPTIONS`` of them and counts the remainder.
+    At 582 held definitions a refusal that stopped at one would turn clearing
+    the backlog into a round trip per exception, and an operator doing that
+    reads none of them — the thing this affordance exists to avoid. The cap is
+    there because the refusal is itself a tool result an agent reads.
     """
     held = list(rows)  # walked twice below; a generator would read empty
     named = [reason for row in held if (reason := _why_not_batchable(row))]
