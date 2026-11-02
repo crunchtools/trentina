@@ -29,6 +29,8 @@ from ..logsafe import redact_source
 from .profile import same_gateway_endpoint
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+
     from .profile import Profile
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,19 @@ BASELINE_SECONDS = 600.0
 """How long after an upgrade a tool seen for the first time is pinned approved."""
 
 FIELDS = ("name", "title", "description", "inputSchema", "outputSchema", "annotations")
+
+BULK_FIELDS = frozenset({"description", "inputSchema"})
+"""The only changes ``decide_all`` will release as a batch (6.2.0).
+
+These two are what the gateway's own re-compression moves: a served description
+under ``preprocess_tool_descriptions`` is the compressor's output, so anything
+that makes the gateway re-compress changes every compressed definition at once
+(``docs/tool-pinning.md``). Everything else a backend can change —
+``annotations``, ``name``, ``title``, ``outputSchema``, and ``["new"]`` for a
+tool with no approved definition at all — is a rug-pull shape, and stays one
+deliberate approval at a time. A never-approved tool is exactly what #469 exists
+to put in front of a person; it is not batch work however many of them arrive.
+"""
 
 
 def backend_id(url: str) -> str:
@@ -54,25 +69,110 @@ def digest(canonical_json: str) -> str:
     return hashlib.sha256(canonical_json.encode()).hexdigest()
 
 
-def changed_fields(old_json: str | None, new_json: str) -> list[str]:
+def _changed_fields(old: dict[str, Any] | None, new: dict[str, Any]) -> list[str]:
     """Which top-level fields differ; ``["new"]`` when there was no approved version."""
-    if old_json is None:
+    if old is None:
         return ["new"]
-    old, new = json.loads(old_json), json.loads(new_json)
     keys = sorted(set(old) | set(new))
     return [k for k in keys if old.get(k) != new.get(k)]
 
 
-def loosens_safety(old_json: str | None, new_json: str) -> bool:
+def _loosens_safety(old: dict[str, Any] | None, new: dict[str, Any]) -> bool:
     """True when an annotation moved toward "safe to run": ``readOnlyHint`` to
     true, or ``destructiveHint`` (default true) to false."""
-    if old_json is None:
+    if old is None:
         return False
-    old = json.loads(old_json).get("annotations") or {}
-    new = json.loads(new_json).get("annotations") or {}
-    read_only = new.get("readOnlyHint") is True and old.get("readOnlyHint") is not True
-    destructive = new.get("destructiveHint") is False and old.get("destructiveHint") is not False
+    old_ann = old.get("annotations") or {}
+    new_ann = new.get("annotations") or {}
+    read_only = new_ann.get("readOnlyHint") is True and old_ann.get("readOnlyHint") is not True
+    destructive = (
+        new_ann.get("destructiveHint") is False and old_ann.get("destructiveHint") is not False
+    )
     return read_only or destructive
+
+
+# The three below take JSON because that is what the hold path has in hand
+# (``_report``); ``pending`` parses each row ONCE and calls the parsed forms,
+# since it runs over hundreds of rows on the event loop.
+
+
+def changed_fields(old_json: str | None, new_json: str) -> list[str]:
+    """``_changed_fields`` on serialized definitions."""
+    old = None if old_json is None else json.loads(old_json)
+    return _changed_fields(old, json.loads(new_json))
+
+
+def loosens_safety(old_json: str | None, new_json: str) -> bool:
+    """``_loosens_safety`` on serialized definitions."""
+    old = None if old_json is None else json.loads(old_json)
+    return _loosens_safety(old, json.loads(new_json))
+
+
+#: Keys whose own keys are NAMES an author chose, not schema vocabulary. A
+#: property may legitimately be called ``description``, and that key is part of
+#: the schema's shape where the annotation of the same name is not.
+_NAME_MAPS = frozenset({"properties", "patternProperties", "definitions", "$defs"})
+
+#: Keywords whose value is DATA rather than a subschema. They are compared
+#: verbatim and never walked: a ``description`` key inside a ``const`` or a
+#: ``default`` is part of the value a call must send, not an annotation about
+#: it, and stripping it would hide a change to what the schema accepts.
+_LITERALS = frozenset({"const", "default", "examples", "enum"})
+
+
+def _schema_shape(node: Any, *, names: bool = False) -> Any:
+    """``node`` with every schema ``description`` ANNOTATION removed.
+
+    ``names`` says the dict being walked is one whose keys are author-chosen
+    names, so a key spelled ``description`` there is a property and is kept.
+    Its values are subschemas, so the recursion drops back to vocabulary.
+
+    A ``_LITERALS`` keyword's value is data and is kept whole: ``description``
+    inside a ``const`` or a ``default`` is part of what a call must send.
+    """
+    if isinstance(node, dict):
+        out: dict[str, Any] = {}
+        for key, value in node.items():
+            if not names and key == "description" and isinstance(value, str):
+                continue
+            if not names and key in _LITERALS:
+                out[key] = value  # data: compared whole, never walked
+                continue
+            out[key] = _schema_shape(value, names=not names and key in _NAME_MAPS)
+        return out
+    if isinstance(node, list):
+        return [_schema_shape(item) for item in node]
+    return node
+
+
+def schema_shape_changed(old_json: str | None, new_json: str) -> bool:
+    """``_schema_shape_changed`` on serialized definitions."""
+    old = None if old_json is None else json.loads(old_json)
+    return _schema_shape_changed(old, json.loads(new_json))
+
+
+def _schema_shape_changed(old: dict[str, Any] | None, new: dict[str, Any]) -> bool:
+    """True unless the new ``inputSchema`` is the approved one with its
+    descriptions rewritten.
+
+    This is what makes ``inputSchema`` safe to batch. The gateway's own
+    compressor rewrites the DESCRIPTIONS inside a schema as well as the tool's
+    own (``compress._compressed_properties``), which is why a re-compression
+    reports ``description,inputSchema`` on hundreds of tools at once — 278 of
+    breetai's 582. Those strings are the ONLY thing it touches, so the test is
+    equality once they are taken out: anything else that moved is the backend's
+    doing and goes in front of a person.
+
+    It is deliberately not a "did it grow" check. That was the first cut, and
+    Gatehouse was right that it let through every change which adds no key —
+    a widened ``enum``, a changed ``type``, a relaxed
+    ``additionalProperties``, or a ``required`` entry added to one nested
+    object that another already had. Comparing what must not change beats
+    enumerating the ways it could.
+    """
+    if old is None:
+        return True
+    return bool(_schema_shape(old.get("inputSchema")) != _schema_shape(new.get("inputSchema")))
 
 
 def _baseline_open() -> bool:
@@ -322,16 +422,160 @@ def pending(url: str) -> list[dict[str, Any]]:
     # backend can hold dozens, and this is what each is diffed against.
     approved = perimeter_db.approved_by_tool(bid, {row["tool"] for row in rows})
     out: list[dict[str, Any]] = []
+    # Parsed once per row, not once per comparison: a held set runs to hundreds
+    # and this walk happens on the event loop.
+    parsed = {tool: json.loads(body) for tool, body in approved.items()}
     for row in rows:
         tool = row["tool"]
-        before = approved.get(tool)
+        before = parsed.get(tool)
+        after = json.loads(row["definition_json"])
         out.append(
             {
                 "tool": tool,
                 "hash": row["definition_hash"],
-                "changed": changed_fields(before, row["definition_json"]),
-                "safety_loosened": loosens_safety(before, row["definition_json"]),
+                "changed": _changed_fields(before, after),
+                "safety_loosened": _loosens_safety(before, after),
+                "schema_shape_changed": _schema_shape_changed(before, after),
                 "rejected": bool(row["state"] == perimeter_db.PIN_REJECTED),
             }
         )
     return out
+
+
+def pending_digest(rows: Iterable[Mapping[str, Any]]) -> str:
+    """Name a pending SET by its contents, so a batch approval can be bound to it.
+
+    SHA-256 over the sorted ``(tool, hash)`` pairs still held — ``rejected`` rows
+    excluded, since a rejection is a standing decision and not the batch's to
+    reverse. A count would not do: a re-list that swapped N definitions for N
+    others would keep it, and #469's premise is that an approval names a
+    DEFINITION. This names a set of them.
+
+    Pure, and the one implementation both ``tool_pins list`` and ``decide_all``
+    read, so the digest a caller is shown cannot drift from the one it is held to.
+    """
+    pairs = sorted((row["tool"], row["hash"]) for row in rows if not row["rejected"])
+    body = json.dumps(pairs, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+#: How many disqualifying tools a refusal names before it just counts the rest.
+#: Enough to act on, bounded because the refusal is a tool result an agent reads.
+MAX_NAMED_EXCEPTIONS = 20
+
+
+def _why_not_batchable(row: Mapping[str, Any]) -> str:
+    """Why this one held definition may not go in a batch, or ``""``."""
+    if outside := sorted(set(row["changed"]) - BULK_FIELDS):
+        return f"{row['tool']} (changed in {','.join(outside)})"
+    if row["safety_loosened"]:
+        # The hint lives in ``annotations``, which BULK_FIELDS excludes, so this
+        # is unreachable today. Kept, and tested with the field rule widened, so
+        # widening it later cannot quietly pass one.
+        return f"{row['tool']} (loosened a safety hint)"
+    if row["schema_shape_changed"]:
+        return f"{row['tool']} (input schema changed beyond its descriptions)"
+    return ""
+
+
+def unbatchable_reason(rows: Iterable[Mapping[str, Any]]) -> str:
+    """Why this held set may not go as a batch, or ``""`` if it may.
+
+    The rule, in one place, so what ``approve_all`` enforces is the same thing
+    a listing could explain.
+
+    It accounts for every disqualifying tool rather than stopping at the first:
+    it names up to ``MAX_NAMED_EXCEPTIONS`` of them and counts the remainder.
+    At 582 held definitions a refusal that stopped at one would turn clearing
+    the backlog into a round trip per exception, and an operator doing that
+    reads none of them — the thing this affordance exists to avoid. The cap is
+    there because the refusal is itself a tool result an agent reads.
+    """
+    held = list(rows)  # walked twice below; a generator would read empty
+    named = [reason for row in held if (reason := _why_not_batchable(row))]
+    if not named:
+        return ""
+    over = len(named) - MAX_NAMED_EXCEPTIONS
+    shown = ", ".join(named[:MAX_NAMED_EXCEPTIONS]) + (f" and {over} more" if over > 0 else "")
+    return (
+        f"{len(named)} of {len(held)} held definitions will not go in a batch: "
+        f"{shown}. Approve or reject each on its own, then batch the rest."
+    )
+
+
+#: A reserved pin key for the detection row a batch approval writes. NUL is not
+#: a legal MCP tool name, as with ``FIRST_SEEN_SENTINEL``, so it never matches a
+#: tool, is served, or is listed as one.
+BULK_SENTINEL = "\x00bulk-approved"
+
+
+def _report_bulk(backend: str, count: int) -> None:
+    """Record that a whole held set was released on one decision.
+
+    The count stands for the tool names, which are not loggable (#262); the
+    manifest the tool returns and this detection row's ``layer1_stats`` are
+    where an auditor reads which definitions it was.
+    """
+    logger.warning(
+        "gateway: backend=%s batch approval released %d held tool definition(s) on one "
+        "decision, each changed only in fields the gateway's own compressor rewrites. "
+        "Expected after a migration that re-compressed descriptions; if nothing did, "
+        "the set an operator approved was not the set it meant to.",
+        backend,
+        count,
+    )
+    record_detection(
+        source_type="tool_pin",
+        source=f"{backend}/{BULK_SENTINEL}",
+        domain=None,
+        layer1_stats={"approved_bulk": count},
+        risk_level="medium",
+        backend=backend,
+        tool=BULK_SENTINEL,
+        direction="ingress",
+        blocked=False,
+    )
+
+
+def decide_all(
+    url: str, backend: str, *, set_digest: str | None
+) -> tuple[list[dict[str, Any]], str]:
+    """Approve every definition the digested set holds. ``([], reason)`` refuses.
+
+    Nothing is approved unless every row qualifies: a batch that released most
+    of itself and reported the rest would be read as a success, and the rows it
+    skipped are the ones that needed reading.
+
+    The three gates are ``set_digest`` — the bytes ``pending`` showed, so a
+    concurrent re-list cannot ride along — ``BULK_FIELDS``, which keeps every
+    rug-pull shape on the one-at-a-time path, and ``schema_shape_changed``,
+    which keeps ``inputSchema`` in the batch honest: a schema may differ from
+    the approved one only in the descriptions the compressor rewrites. The digest is required
+    HERE rather than at the tool, so no caller can reach a batch without one.
+    """
+    if not set_digest:
+        return [], "approve_all needs the set_digest that list returned"
+    rows = pending(url)
+    if pending_digest(rows) != set_digest:
+        return [], "the held set changed since it was listed; list it again and re-read it"
+    holding = [row for row in rows if not row["rejected"]]
+    if not holding:
+        return [], "nothing is held under that backend"
+    if refused := unbatchable_reason(holding):
+        return [], refused
+    moved = perimeter_db.set_pin_states(
+        backend_id(url),
+        [(row["tool"], row["hash"]) for row in holding],
+        perimeter_db.PIN_APPROVED,
+        was=perimeter_db.PIN_PENDING,
+    )
+    if moved is None:
+        # One transaction, so nothing was written. A set that moved under the
+        # write is the digest's case arriving a moment later than it could be
+        # checked; the operator lists again rather than being told a partial
+        # release succeeded.
+        return [], "the held set moved while it was being approved; list it again"
+    _report_bulk(backend, moved)
+    return [
+        {"tool": row["tool"], "hash": row["hash"], "changed": row["changed"]} for row in holding
+    ], ""

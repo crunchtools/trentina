@@ -42,10 +42,10 @@ definition goes away. A tool that disappears keeps its pins.
 ## Releasing
 
 The operator profile's `tool_pins` tool takes `action` (`list`, `approve`,
-`reject`), `backend` and, for the last two, `tool`. `list` shows what is held,
-each entry's `hash`, the fields that changed against the most recently approved
-definition, and whether a safety hint loosened. `reject` keeps that definition
-withheld and quiet.
+`reject`, `approve_all`), `backend` and, for the middle two, `tool`. `list`
+shows what is held, each entry's `hash`, the fields that changed against the
+most recently approved definition, and whether a safety hint loosened. `reject`
+keeps that definition withheld and quiet.
 
 `approve` and `reject` also take an optional `hash`, which names WHICH held
 definition. It is needed only where a tool has more than one — two profiles
@@ -53,6 +53,12 @@ served different bytes. With exactly one it is implied, so the two-argument
 call stays correct; with several and no hash the tool refuses and lists the
 hashes on offer, because there is no single thing "approve this tool" could
 mean.
+
+(Through 6.1.1 `hash` existed on the implementation and was never declared by
+the registered tool, so the refusal named a parameter no caller could send and
+a tool holding two definitions could not be released through the API at all.
+6.2.0 wires it through. `tests/test_server.py` now fails on any registered tool
+that drops, or silently ignores, a parameter its implementation takes.)
 
 **One approval per distinct definition, not per profile.** A thousand profiles
 on a backend that answers them identically is one decision. A backend that
@@ -68,7 +74,7 @@ re-compress — losing `tool_compressions`, or a migration that cannot attribute
 its rows, as 6.1.0's `owner` column did — changes every compressed definition
 and holds every one of them, because re-compressing is a fresh call and not
 byte-identical. It is fail-closed and correct, and on a real deployment it was
-356 tools across one federation link.
+582 definitions across 352 tools on one federation link.
 
 Tell it apart from a genuine upstream change by the fields: a re-compression
 reports `description` or `description,inputSchema` across a whole backend at
@@ -77,6 +83,69 @@ gateway's output over a list its own perimeter judged, so `approve` is the
 right answer; it is still an operator's call rather than an automatic one,
 because "the whole backend changed at once" is also what a hostile re-list
 looks like.
+
+### `approve_all`: one decision for a whole set (6.2.0)
+
+Which is why that case is a batch and not a loop. 582 individual approvals is
+not a control — it is how an operator learns to stop reading — so `approve_all`
+makes the SET the unit of decision and gates it twice.
+
+`list` returns a `digest`: SHA-256 over the sorted `(tool, hash)` pairs still
+held. `approve_all` requires it and refuses if the live set no longer matches,
+so a re-list that landed between the read and the decision cannot ride along.
+A count would not do this: a re-list swapping N definitions for N others keeps
+the count exactly, and the premise of #469 is that an approval names a
+*definition*. This names a set of them.
+
+Then the field rule: the batch refuses **unless every row's changed fields are
+a subset of `description` and `inputSchema`** — the two the gateway's own
+compressor rewrites. `annotations`, `name`, `title`, `outputSchema` and `new`
+each refuse the whole batch, naming the tool that did it, and stay one
+deliberate approval at a time. A tool with no approved definition at all is
+exactly what pinning exists to put in front of a person; that does not change
+because forty-nine of them arrived together.
+
+`inputSchema` is in that set because the compressor rewrites the descriptions
+**inside** a schema as well as the tool's own
+(`compress._compressed_properties`) — which is why a re-compression reports
+`description,inputSchema` on hundreds of tools at once, 278 of breetai's 582.
+What keeps that honest is the third gate: **a schema may differ from the
+approved one only in its descriptions.** Both are compared with every
+`description` annotation taken out, and anything else that moved refuses the
+batch. Each held entry carries `schema_shape_changed` so a listing shows it.
+
+It is deliberately an equality test and not a "did it grow" test. Growth was
+the first design, and it would have passed a widened `enum`, a changed `type`,
+a relaxed `additionalProperties`, a dropped property, and a `required` entry
+added to one nested object that a sibling already had — none of which add a key
+or a name, all of which change what a call means. Comparing what must not
+change beats enumerating the ways it could.
+
+Two positions where `description` is *not* an annotation are kept, because
+there it is part of what a call must send: a property genuinely **named**
+`description` (`_NAME_MAPS` tells an author's name from the schema's own
+vocabulary), and a `description` key inside a `const`, `default`, `examples` or
+`enum` value (`_LITERALS`, whose values are compared whole and never walked).
+
+Nothing is approved unless every row qualifies, and the refusal names **every**
+disqualifying tool (up to twenty, then a count) rather than the first — at 582
+definitions, stopping at one would make clearing a backlog a round trip per
+exception, which is the reading-nothing failure the affordance exists to avoid.
+Clear those individually, then batch the rest.
+
+The write itself is one transaction (`perimeter_db.set_pin_states`), and it
+requires each row to still be `pending`: if any pair no longer matches, nothing
+is committed and the operator is told to list again. That is what stops a
+rejection landing mid-write from being overwritten. A batch that
+released most of itself and reported the rest would be read as a success, and
+the rows it skipped are the ones that needed reading. A `rejected` definition
+is outside the digest entirely: it neither blocks the batch nor is reversed by
+it.
+
+What comes back is the manifest — every tool, hash and changed-field list it
+released — and one `detections` row (`approved_bulk`, with the count) so the
+decision is auditable after the fact and not only at the moment it was taken.
+Tool names stay out of the log (#262); the count stands for them there.
 
 ## First boot, and a lost store
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -47,6 +49,73 @@ class TestServerRegistration:
             assert "trentina_mode" in props, family
             assert "trentina_prompt" not in props, family  # removed in 0.43.0
             assert "trentina_mode" not in tools[f"{family}_tool"].parameters.get("required", [])
+
+    def test_every_wrapper_declares_every_parameter_it_forwards_to(self) -> None:
+        """A registered tool must expose every argument its implementation takes.
+
+        6.1.0 added ``hash`` to ``manage_tool_pins`` so an operator could say
+        WHICH held definition of a tool to approve, and left
+        ``tool_pins_tool`` declaring ``action``, ``backend`` and ``tool``. The
+        implementation then answered the two-definition case with "name one
+        with hash" — a parameter no MCP caller could send — so 460 of 582 held
+        definitions on a real gateway were unreleasable through the API, which
+        is the state #633 exists to prevent.
+
+        Every test reached ``manage_tool_pins`` directly, which is how a whole
+        release shipped with the feature unreachable. This reads the wrapper's
+        signature instead, resolves the implementation it returns out of the
+        source, and fails on a parameter the wrapper drops. Plumbing a wrapper
+        supplies itself goes in ``supplied_by_the_wrapper``; nothing else may.
+
+        It also fails on a parameter the wrapper DECLARES and never reads,
+        which is the worse half of the same bug: the argument is advertised,
+        accepted and silently discarded, where an undeclared one at least
+        refuses.
+        """
+        from trentina import server
+
+        #: Parameters an implementation takes that its wrapper provides rather
+        #: than accepts. ``_delivered`` is handed the coroutine to run.
+        supplied_by_the_wrapper = {"_delivered": {"coro"}}
+
+        dropped: dict[str, list[str]] = {}
+        ignored: dict[str, list[str]] = {}
+        for node in ast.parse(inspect.getsource(server)).body:
+            if not isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef):
+                continue
+            if not any(
+                isinstance(d, ast.Call) and getattr(d.func, "attr", "") == "tool"
+                for d in node.decorator_list
+            ):
+                continue
+            declared = {a.arg for a in node.args.args + node.args.kwonlyargs}
+            read = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            if unread := sorted(declared - read):
+                ignored[node.name] = unread
+            called = [
+                name
+                for n in ast.walk(node)
+                if isinstance(n, ast.Return) and isinstance(n.value, ast.Await | ast.Call)
+                for call in [n.value.value if isinstance(n.value, ast.Await) else n.value]
+                if isinstance(call, ast.Call)
+                and (name := getattr(call.func, "id", None) or getattr(call.func, "attr", None))
+            ]
+            members = vars(server)
+            impl = members.get(called[-1]) if called else None
+            if impl is None or not callable(impl):
+                continue  # answered in the wrapper itself, nothing to forward
+            exempt = supplied_by_the_wrapper.get(called[-1], set())
+            missing = [
+                p
+                for p in inspect.signature(impl).parameters
+                if p not in declared and p not in exempt
+            ]
+            if missing:
+                dropped[node.name] = missing
+        assert not dropped, f"registered tools that drop a parameter: {dropped}"
+        assert not ignored, (
+            f"registered tools that declare a parameter and never read it: {ignored}"
+        )
 
     async def test_expected_tools_registered(self) -> None:
         """Nothing delivers content except a family tool (#187, #193) and
