@@ -32,6 +32,8 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from trentina import perimeter_db
 from trentina.gateway import compress
@@ -72,7 +74,7 @@ profiles:
   alpha:
     role: operator
     defense:
-      provider: ollama  # the operator runs the gateway's own calls; keyless
+      provider: ollama  # keyless, so the operator needs no llm_keys
     auth:
       bearer_token_env: TEST_ALPHA_TOKEN
     backends:
@@ -1130,45 +1132,106 @@ class TestCacheBehaviour:
         assert "alpha" not in _profile_tools_cache
 
 
-class TestServiceIdentityMoves:
-    """Every profile's descriptions are judged on the operator's model (#138)."""
+_OPERATOR_JUDGE = "      provider: ollama  # keyless, so the operator needs no llm_keys\n"
+_MOVED_OPERATOR_JUDGE = "      provider: ollama\n      model: another-model\n"
 
-    async def test_a_new_operator_model_invalidates_every_profile(
+# Indented for the YAML block scalar below, and joined rather than interpolated
+# because an f-string may not carry a backslash on 3.11, which CI still tests.
+_PEER_PEM_BLOCK = "\n".join(
+    f"            {line}"
+    for line in Ed25519PrivateKey.generate()
+    .public_key()
+    .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    .decode()
+    .strip()
+    .splitlines()
+)
+
+#: ``beta`` shares itself, so ``load_profiles`` derives ``beta-federation``.
+_FEDERATED_YAML = BASE_YAML.replace(
+    "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n",
+    "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n"
+    "    defense:\n"
+    "      provider: ollama\n"
+    "      model: first-model\n"
+    "    federation:\n"
+    "      peers:\n"
+    "        remote:\n"
+    "          public_key: |\n" + _PEER_PEM_BLOCK + "\n",
+)
+
+
+@pytest.fixture
+def federated_profiles_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """A running gateway whose ``beta`` is shared, so an ingress is derived."""
+    monkeypatch.setenv("TEST_ALPHA_TOKEN", "alpha-secret")
+    monkeypatch.setenv("TEST_BETA_TOKEN", "beta-secret")
+    path = tmp_path / "profiles.yaml"
+    path.write_text(_FEDERATED_YAML, encoding="utf-8")
+    config = load_profiles(path)
+    register_active_config(path, config, {})
+    set_profiles(config.profiles)
+    yield path
+    reset_active_config()
+    compress._profiles = None
+    session_registry.reset()
+
+
+class TestAJudgeMoveInvalidatesOnlyItsOwnProfile:
+    """A profile judges its own descriptions on its own judge (6.1.0).
+
+    Through 6.0.0 the operator judged for everyone, so ``reload_profiles``
+    watched the OPERATOR's judge and, when it moved, invalidated every
+    profile's aggregate and notified every session. That became
+    over-invalidation the moment judging went per profile: one profile's model
+    change re-judged every other profile's descriptions on their own keys. The
+    check is gone, and ``changed`` is what names a stale profile — these tests
+    are the reason it is sufficient.
+    """
+
+    async def test_a_new_operator_model_leaves_the_other_profiles_cached(
         self, profiles_path: Path
     ) -> None:
+        # Both warm: `caches_invalidated` names only a profile that HAD one.
+        _profile_tools_cache["alpha"] = []
         _profile_tools_cache["beta"] = []
         profiles_path.write_text(
-            BASE_YAML.replace(
-                "      provider: ollama  # the operator runs the gateway's own calls; keyless\n",
-                "      provider: ollama\n      model: another-model\n",
-            ),
-            encoding="utf-8",
+            BASE_YAML.replace(_OPERATOR_JUDGE, _MOVED_OPERATOR_JUDGE), encoding="utf-8"
         )
 
         result = await _reload_as("alpha")
 
-        assert result["service_identity_moved"] is True
-        # beta's own section did not change; its verdicts' judge did.
-        assert "beta" in result["caches_invalidated"]
-        assert "beta" not in _profile_tools_cache
+        # The operator's own descriptions ARE re-judged: its defense changed.
+        assert "alpha" in result["caches_invalidated"]
+        assert "alpha" not in _profile_tools_cache
+        # beta judges on its own key and nothing of beta's moved.
+        assert "beta" not in result["caches_invalidated"]
+        assert "beta" in _profile_tools_cache
 
-    async def test_a_new_operator_model_notifies_every_profiles_sessions(
+    async def test_a_new_operator_model_notifies_only_the_operators_sessions(
         self, profiles_path: Path
     ) -> None:
-        """Withheld tools may come back, or go, under the new judge."""
-        sid = session_registry.create_session("beta")
-        queue = session_registry.subscribe(sid)
+        """beta's served list cannot change, so its client is not woken."""
+        beta = session_registry.subscribe(session_registry.create_session("beta"))
+        alpha = session_registry.subscribe(session_registry.create_session("alpha"))
         profiles_path.write_text(
-            BASE_YAML.replace(
-                "      provider: ollama  # the operator runs the gateway's own calls; keyless\n",
-                "      provider: ollama\n      model: another-model\n",
-            ),
-            encoding="utf-8",
+            BASE_YAML.replace(_OPERATOR_JUDGE, _MOVED_OPERATOR_JUDGE), encoding="utf-8"
         )
 
         await _reload_as("alpha")
 
-        assert queue.get_nowait()["method"] == "notifications/tools/list_changed"
+        assert alpha.get_nowait()["method"] == "notifications/tools/list_changed"
+        assert beta.empty()
+
+    async def test_the_dropped_result_key_is_gone(self, profiles_path: Path) -> None:
+        """``service_identity_moved`` reported a mechanism 6.1.0 removed."""
+        profiles_path.write_text(
+            BASE_YAML.replace(_OPERATOR_JUDGE, _MOVED_OPERATOR_JUDGE), encoding="utf-8"
+        )
+
+        result = await _reload_as("alpha")
+
+        assert "service_identity_moved" not in result
 
     async def test_an_unrelated_edit_leaves_the_others_cached(self, profiles_path: Path) -> None:
         _profile_tools_cache["beta"] = []
@@ -1179,8 +1242,32 @@ class TestServiceIdentityMoves:
 
         result = await _reload_as("alpha")
 
-        assert result["service_identity_moved"] is False
+        assert "beta" not in result["caches_invalidated"]
         assert "beta" in _profile_tools_cache
+
+    async def test_a_derived_ingress_follows_its_sources_judge(
+        self, federated_profiles_path: Path
+    ) -> None:
+        """The one case the deleted operator check could have been covering.
+
+        A derived federation ingress has no section in the file, so "its own
+        ``defense`` changed" is only true of it because ``defense`` is CARRIED
+        and the registry diffed by the reload is the one ``derive_all`` built.
+        Asserted rather than argued: if a later release made ``defense``
+        CONSTRUCTED, the ingress would judge on something the diff cannot see
+        and would serve descriptions from the old judge indefinitely.
+        """
+        _profile_tools_cache["beta"] = []
+        _profile_tools_cache["beta-federation"] = []
+        federated_profiles_path.write_text(
+            _FEDERATED_YAML.replace("      model: first-model\n", "      model: second-model\n"),
+            encoding="utf-8",
+        )
+
+        result = await _reload_as("alpha")
+
+        assert "beta-federation" in result["caches_invalidated"]
+        assert "beta-federation" not in _profile_tools_cache
 
 
 BETA_GUARDED_EXECUTION_YAML = BASE_YAML.replace(

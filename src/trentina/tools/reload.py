@@ -65,7 +65,7 @@ from ..gateway.loader import (
 )
 from ..gateway.profile import PREPROCESS_AGENT_FIELDS
 from ..gateway.scope import CallerScope, require_caller
-from ..gateway.service import find_operator, judge_of, log_service_identity
+from ..gateway.service import log_service_identity
 from ..gateway.sessions import session_registry
 from ..gateway.tool_pins import migrate_federated_pins
 from ..gateway.upstream import close_profile
@@ -801,15 +801,20 @@ async def reload_profiles() -> dict[str, Any]:
     session_registry.session_ttl = new_config.session_ttl_seconds
     session_registry.max_sessions_per_profile = new_config.max_sessions_per_profile
     replace_active_config(replace(new_config, profiles=registry))
-    # A reload can promote, demote or re-key the operator, which moves every
-    # centralized model call to a new identity. Say where they run now.
+    # A reload can promote, demote or re-key the operator. Say who holds the
+    # service identity now — it binds the approved-config apply, and since
+    # 6.1.0 that is the whole of it.
     log_service_identity(registry)
 
-    # Every profile's descriptions are judged by the operator's model. When
-    # that moves, every aggregate holds verdicts from the old judge, not only
-    # the aggregates of profiles whose own section changed.
-    judge_moved = judge_of(find_operator(before)) != judge_of(find_operator(after))
-    stale = sorted({*after, *removed}) if judge_moved else [*added, *removed, *changed]
+    # A profile's descriptions are judged by ITS OWN judge (6.1.0), so a judge
+    # that moved makes exactly one profile's aggregate stale, and `changed`
+    # already names it: `judge_of` reads only `profile.defense` plus the env
+    # default, the env is not re-read by a reload, and `_profile_delta` diffs
+    # every model field including `defense`. Derivations are covered too — the
+    # registry compared here is post-`derive_all` and `defense` is CARRIED.
+    # Through 6.0.0 this keyed on whether the OPERATOR's judge moved and then
+    # invalidated EVERY profile, because the operator judged for all of them.
+    stale = [*added, *removed, *changed]
     invalidated = [name for name in stale if invalidate_profile_cache(name)]
     if _compression_surface(before) != _compression_surface(after):
         retrigger_compression()
@@ -827,8 +832,7 @@ async def reload_profiles() -> dict[str, Any]:
         for session in session_registry.get_sessions_for_profile(name)
     )
     notified = {
-        name: await session_registry.broadcast_tools_changed(name)
-        for name in (sorted(after) if judge_moved else [*added, *changed])
+        name: await session_registry.broadcast_tools_changed(name) for name in [*added, *changed]
     }
 
     logger.warning(
@@ -851,7 +855,11 @@ async def reload_profiles() -> dict[str, Any]:
         },
         "changes": changed,
         "caches_invalidated": invalidated,
-        "service_identity_moved": judge_moved,
+        # `service_identity_moved` was dropped in 6.1.1. It reported that the
+        # operator's judge had moved, which through 6.0.0 meant every profile
+        # was about to be re-judged on the operator's key. Since 6.1.0 nothing
+        # follows from it: no spend moves, and the operator's own re-judge is
+        # already visible in `profiles.changed` and `caches_invalidated`.
         "sessions_notified": {k: v for k, v in notified.items() if v},
         "sessions_dropped": dropped_sessions,
         "not_applied": not_applied,
