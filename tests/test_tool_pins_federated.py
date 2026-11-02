@@ -379,3 +379,237 @@ class TestTheHashAtTheToolBoundary:
             result = await manage_tool_pins("approve", "lotor", "send_message", "not-a-held-hash")
 
         assert result["error"] == "no such held tool"
+
+
+def _defn(description: str) -> str:
+    """One tool definition differing only in the description, which is what a
+    re-compression moves."""
+    return tool_pins.canonical({"name": "send_message", "description": description})
+
+
+class TestApprovingAWholeHeldSet:
+    """`approve_all`: one decision for a set the gateway's own compressor moved.
+
+    6.1.0's `tool_compressions` `owner` column dropped pre-migration rows, and a
+    pin is keyed by the definition AS SERVED — which under
+    `preprocess_tool_descriptions` is the compressor's output. Re-compressing is
+    a fresh model call, so it is not byte-identical, and breetai held 582
+    definitions across 352 tools on one federated backend. Releasing those one
+    at a time is not a control; it is how an operator learns to stop reading.
+
+    The gate is therefore the SET, not the operator's patience: the digest binds
+    the approval to the bytes `list` showed, and `BULK_FIELDS` keeps every
+    rug-pull shape on the one-at-a-time path.
+    """
+
+    @staticmethod
+    def _approved(tool: str, body: str) -> None:
+        perimeter_db.put_pin(
+            backend_id(LOTOR_URL), tool, tool_pins.digest(body), perimeter_db.PIN_APPROVED, body
+        )
+
+    @staticmethod
+    def _held(tool: str, body: str, state: str = perimeter_db.PIN_PENDING) -> str:
+        h = tool_pins.digest(body)
+        perimeter_db.put_pin(backend_id(LOTOR_URL), tool, h, state, body)
+        return h
+
+    def _recompressed(self) -> None:
+        """What a re-compression looks like: the description rewritten, and for
+        some tools the schema compacted differently too."""
+        for i, tool in enumerate(("send_message", "read_entry", "list_feeds")):
+            old = {"name": tool, "description": "original prose", "inputSchema": {"a": 1}}
+            new = {"name": tool, "description": "tighter prose", "inputSchema": {"a": 1}}
+            if i == 2:
+                new["inputSchema"] = {"a": 2}
+            self._approved(tool, tool_pins.canonical(old))
+            self._held(tool, tool_pins.canonical(new))
+
+    async def test_the_whole_set_goes_on_one_decision(self, gateway: dict[str, Profile]) -> None:
+        self._recompressed()
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert result["approved"] == 3, result
+        assert {row["tool"] for row in result["tools"]} == {
+            "send_message",
+            "read_entry",
+            "list_feeds",
+        }
+        # The manifest says what each one changed, so the decision is auditable
+        # after the fact rather than only at the moment it was taken.
+        changed = {row["tool"]: row["changed"] for row in result["tools"]}
+        assert changed["list_feeds"] == ["description", "inputSchema"]
+        assert changed["send_message"] == ["description"]
+        with profile_context(gateway["op"]):
+            assert (await manage_tool_pins("list", "lotor"))["held"] == []
+
+    async def test_a_stale_digest_refuses_and_changes_nothing(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        self._recompressed()
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            # Another profile lists for the first time and a fourth tool is held.
+            self._approved(
+                "alert_history", tool_pins.canonical({"name": "alert_history", "description": "a"})
+            )
+            self._held(
+                "alert_history", tool_pins.canonical({"name": "alert_history", "description": "b"})
+            )
+            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert "changed since it was listed" in result["error"]
+        with profile_context(gateway["op"]):
+            assert len((await manage_tool_pins("list", "lotor"))["held"]) == 4
+
+    async def test_the_digest_moves_when_a_swap_keeps_the_count(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        """The attack a count would have missed, which is why it is a digest.
+
+        My first design required the `expect` COUNT that `list` returned. A
+        re-list that swaps N definitions for N others keeps the count exactly,
+        so the operator would have approved bytes nobody read. Fable (the `cto`
+        agent) rejected the count on this ground; the test is here so the
+        reasoning cannot be lost to a later simplification.
+        """
+        bid = backend_id(LOTOR_URL)
+        self._approved("send_message", tool_pins.canonical({"name": "send_message", "d": 0}))
+        first = self._held("send_message", tool_pins.canonical({"name": "send_message", "d": 1}))
+        with profile_context(gateway["op"]):
+            before = (await manage_tool_pins("list", "lotor"))["digest"]
+
+        perimeter_db.set_pin_state(bid, "send_message", first, perimeter_db.PIN_APPROVED)
+        self._held("send_message", tool_pins.canonical({"name": "send_message", "d": 2}))
+        with profile_context(gateway["op"]):
+            after = await manage_tool_pins("list", "lotor")
+
+        assert len(after["held"]) == 1  # the count is identical
+        assert after["digest"] != before  # the digest is not
+
+    async def test_a_tool_with_no_approved_definition_refuses_the_batch(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        """`changed == ["new"]`: nobody has ever approved this tool. That is
+        precisely what #469 exists to put in front of a person, and it is not
+        batch work however many of them arrive at once (era holds 49)."""
+        self._recompressed()
+        self._held("brand_new_tool", tool_pins.canonical({"name": "brand_new_tool", "d": 1}))
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert "brand_new_tool changed in new" in result["error"]
+        assert "on its own" in result["error"]
+        # Nothing was released: a batch that took most of itself and reported
+        # the rest would be read as a success.
+        with profile_context(gateway["op"]):
+            assert len((await manage_tool_pins("list", "lotor"))["held"]) == 4
+
+    async def test_an_annotation_change_refuses_the_batch(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        old = {"name": "send_message", "description": "d", "annotations": {"readOnlyHint": False}}
+        new = {"name": "send_message", "description": "d", "annotations": {"readOnlyHint": True}}
+        self._approved("send_message", tool_pins.canonical(old))
+        self._held("send_message", tool_pins.canonical(new))
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert "changed in annotations" in result["error"]
+
+    async def test_a_loosened_hint_is_refused_even_if_the_field_rule_widens(
+        self, gateway: dict[str, Profile], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Why the `safety_loosened` guard is there at all.
+
+        It is unreachable while `BULK_FIELDS` excludes `annotations`, since that
+        is the only field a loosened hint can live in. It is kept so that
+        widening the field rule later cannot quietly start passing one, and this
+        test widens it to prove the guard, not the subset, is what refuses.
+        """
+        monkeypatch.setattr(
+            tool_pins, "BULK_FIELDS", frozenset({"description", "inputSchema", "annotations"})
+        )
+        old = {"name": "send_message", "annotations": {"destructiveHint": True}}
+        new = {"name": "send_message", "annotations": {"destructiveHint": False}}
+        self._approved("send_message", tool_pins.canonical(old))
+        self._held("send_message", tool_pins.canonical(new))
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert "loosened a safety hint" in result["error"]
+
+    async def test_a_rejected_definition_stays_rejected(self, gateway: dict[str, Profile]) -> None:
+        """A rejection is a standing decision. It is outside the digest, so it
+        neither blocks the batch nor is reversed by it."""
+        self._approved("send_message", _defn("as approved"))
+        kept = self._held("send_message", _defn("recompressed"))
+        refused = self._held("send_message", _defn("rejected once"), perimeter_db.PIN_REJECTED)
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert [row["hash"] for row in result["tools"]] == [kept]
+        with profile_context(gateway["op"]):
+            still = (await manage_tool_pins("list", "lotor"))["held"]
+        assert [(row["hash"], row["rejected"]) for row in still] == [(refused, True)]
+
+    async def test_both_definitions_of_one_tool_are_released(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        """Two profiles served different bytes by one backend: both answers are
+        real (`docs/tool-pinning.md`), and both are the compressor's own output.
+        230 of breetai's 352 held tools were this shape."""
+        self._approved("send_message", _defn("as approved"))
+        one = self._held("send_message", _defn("as one profile reads it"))
+        two = self._held("send_message", _defn("as the other reads it"))
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert sorted(row["hash"] for row in result["tools"]) == sorted([one, two])
+        assert perimeter_db.pending_hashes(backend_id(LOTOR_URL), "send_message") == []
+
+    async def test_it_leaves_one_detections_row_for_the_batch(
+        self, gateway: dict[str, Profile]
+    ) -> None:
+        self._recompressed()
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            with patch.object(tool_pins, "record_detection") as recorded:
+                await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        assert recorded.call_count == 1
+        kwargs = recorded.call_args.kwargs
+        assert kwargs["source_type"] == "tool_pin"
+        assert kwargs["blocked"] is False
+        assert kwargs["layer1_stats"] == {"approved_bulk": 3}
+
+    async def test_the_tool_names_are_not_logged(
+        self, gateway: dict[str, Profile], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """#262: the backend name is config; the peer's tool names are not. The
+        count stands for them, and the manifest carries the rest."""
+        self._recompressed()
+        with profile_context(gateway["op"]):
+            listed = await manage_tool_pins("list", "lotor")
+            with caplog.at_level(logging.WARNING):
+                await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("released 3 held tool definition(s)" in m for m in messages)
+        assert all("send_message" not in m for m in messages)
+
+    async def test_it_refuses_without_a_digest(self, gateway: dict[str, Profile]) -> None:
+        self._recompressed()
+        with profile_context(gateway["op"]):
+            result = await manage_tool_pins("approve_all", "lotor")
+
+        assert "needs the set_digest" in result["error"]
+        with profile_context(gateway["op"]):
+            assert len((await manage_tool_pins("list", "lotor"))["held"]) == 3

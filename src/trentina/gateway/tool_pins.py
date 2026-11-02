@@ -29,6 +29,8 @@ from ..logsafe import redact_source
 from .profile import same_gateway_endpoint
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+
     from .profile import Profile
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,19 @@ BASELINE_SECONDS = 600.0
 """How long after an upgrade a tool seen for the first time is pinned approved."""
 
 FIELDS = ("name", "title", "description", "inputSchema", "outputSchema", "annotations")
+
+BULK_FIELDS = frozenset({"description", "inputSchema"})
+"""The only changes ``decide_all`` will release as a batch (6.2.0).
+
+These two are what the gateway's own re-compression moves: a served description
+under ``preprocess_tool_descriptions`` is the compressor's output, so anything
+that makes the gateway re-compress changes every compressed definition at once
+(``docs/tool-pinning.md``). Everything else a backend can change —
+``annotations``, ``name``, ``title``, ``outputSchema``, and ``["new"]`` for a
+tool with no approved definition at all — is a rug-pull shape, and stays one
+deliberate approval at a time. A never-approved tool is exactly what #469 exists
+to put in front of a person; it is not batch work however many of them arrive.
+"""
 
 
 def backend_id(url: str) -> str:
@@ -335,3 +350,97 @@ def pending(url: str) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def pending_digest(rows: Iterable[Mapping[str, Any]]) -> str:
+    """Name a pending SET by its contents, so a batch approval can be bound to it.
+
+    SHA-256 over the sorted ``(tool, hash)`` pairs still held — ``rejected`` rows
+    excluded, since a rejection is a standing decision and not the batch's to
+    reverse. A count would not do: a re-list that swapped N definitions for N
+    others would keep it, and #469's premise is that an approval names a
+    DEFINITION. This names a set of them.
+
+    Pure, and the one implementation both ``tool_pins list`` and ``decide_all``
+    read, so the digest a caller is shown cannot drift from the one it is held to.
+    """
+    pairs = sorted((row["tool"], row["hash"]) for row in rows if not row["rejected"])
+    body = json.dumps(pairs, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+#: A reserved pin key for the detection row a batch approval writes. NUL is not
+#: a legal MCP tool name, as with ``FIRST_SEEN_SENTINEL``, so it never matches a
+#: tool, is served, or is listed as one.
+BULK_SENTINEL = "\x00bulk-approved"
+
+
+def _report_bulk(backend: str, count: int) -> None:
+    """Record that a whole held set was released on one decision.
+
+    The count stands for the tool names, which are not loggable (#262); the
+    manifest the tool returns and this detection row's ``layer1_stats`` are
+    where an auditor reads which definitions it was.
+    """
+    logger.warning(
+        "gateway: backend=%s batch approval released %d held tool definition(s) on one "
+        "decision, each changed only in fields the gateway's own compressor rewrites. "
+        "Expected after a migration that re-compressed descriptions; if nothing did, "
+        "the set an operator approved was not the set it meant to.",
+        backend,
+        count,
+    )
+    record_detection(
+        source_type="tool_pin",
+        source=f"{backend}/{BULK_SENTINEL}",
+        domain=None,
+        layer1_stats={"approved_bulk": count},
+        risk_level="medium",
+        backend=backend,
+        tool=BULK_SENTINEL,
+        direction="ingress",
+        blocked=False,
+    )
+
+
+def decide_all(
+    url: str, backend: str, *, set_digest: str | None
+) -> tuple[list[dict[str, Any]], str]:
+    """Approve every definition the digested set holds. ``([], reason)`` refuses.
+
+    Nothing is approved unless every row qualifies: a batch that released most
+    of itself and reported the rest would be read as a success, and the rows it
+    skipped are the ones that needed reading.
+
+    The two gates are ``set_digest`` — the bytes ``pending`` showed, so a
+    concurrent re-list cannot ride along — and ``BULK_FIELDS``, which keeps
+    every rug-pull shape on the one-at-a-time path. The digest is required
+    HERE rather than at the tool, so no caller can reach a batch without one.
+    """
+    if not set_digest:
+        return [], "approve_all needs the set_digest that list returned"
+    rows = pending(url)
+    if pending_digest(rows) != set_digest:
+        return [], "the held set changed since it was listed; list it again and re-read it"
+    holding = [row for row in rows if not row["rejected"]]
+    if not holding:
+        return [], "nothing is held under that backend"
+    for row in holding:
+        if not set(row["changed"]) <= BULK_FIELDS:
+            outside = ",".join(sorted(set(row["changed"]) - BULK_FIELDS))
+            return [], (
+                f"{row['tool']} changed in {outside}, which a batch will not release; "
+                "approve or reject it on its own first"
+            )
+        if row["safety_loosened"]:
+            # Unreachable while BULK_FIELDS excludes ``annotations`` — kept so
+            # that widening it later cannot quietly pass a loosened hint.
+            return [], f"{row['tool']} loosened a safety hint; approve it on its own"
+    bid = backend_id(url)
+    approved = [
+        {"tool": row["tool"], "hash": row["hash"], "changed": row["changed"]}
+        for row in holding
+        if perimeter_db.set_pin_state(bid, row["tool"], row["hash"], perimeter_db.PIN_APPROVED)
+    ]
+    _report_bulk(backend, len(approved))
+    return approved, ""
