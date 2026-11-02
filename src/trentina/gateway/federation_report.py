@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 from . import tool_pins
 from .federation_link import offerable_backends
 from .profile import federation_audience
+from .service import judge_stamp
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -64,6 +65,11 @@ def _shared(source: Profile, ingress: Profile) -> dict[str, Any]:
             for name, peer in sorted(federation.peers.items())
         ],
         "offers": sorted(offered),
+        # What the ingress asserts in every signed verdict (#666): the value a
+        # peer pins as `trust_verdict.judge`. Computed from the INGRESS, as the
+        # link does, so the two cannot drift. `perimeter.judge` is the
+        # operator's own and is the wrong value here unless they coincide.
+        "judge": judge_stamp(ingress),
         # Which offered backends run on the profile's sign-in. A derived ingress
         # spends the PROFILE's grant, so these are the ones where a peer's calls
         # go out as the account a person authorized here.
@@ -125,6 +131,7 @@ def link_report(
     Returns:
         ``shared``: one entry per profile this gateway offers, with ``profile``,
         ``ingress``, ``peers`` (name and key fingerprint), ``offers``,
+        ``judge`` (the stamp the link asserts, for a peer to pin),
         ``uses_sign_in``, ``signs_verdicts`` and ``held_for_approval``.
         ``consumed``: one entry per federated backend this gateway uses, with
         ``profile``, ``backend``, ``audience``, ``trust_pinned``, ``verdicts``,

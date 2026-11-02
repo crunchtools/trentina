@@ -10,6 +10,10 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- `quarantine_stats` `federation.shared[]` entries carry `judge`, the stamp the link asserts and a peer pins (#666). `perimeter.judge` remains the operator's own and was the wrong value to give a peer when the shared profile is not the operator.
+
 ## [6.1.0] - 2026-11-02
 
 A tenant's tool list is now entirely its own: judged on its own key, compressed

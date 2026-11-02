@@ -176,6 +176,8 @@ def _gateway_stats() -> dict[str, Any]:
         # secrets: they name a model, a revision, a threshold and a judge.
         "perimeter": {
             "stamp": perimeter_stamp(),
+            # The OPERATOR's own judge. A peer pins the one on its
+            # `federation.shared[]` entry instead (#666).
             "judge": judge_stamp(service_profile()),
         },
         "config": {
