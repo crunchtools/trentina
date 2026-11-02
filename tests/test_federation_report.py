@@ -190,12 +190,20 @@ class TestSharedJudge:
         from trentina.gateway.service import judge_stamp
 
         profile = _profile()
-        ingress = derive_ingress(profile)
+        derived = derive_ingress(profile)
+        ingress = derived.model_copy(
+            update={"defense": derived.defense.model_copy(update={"model": "ingress-judge-model"})}
+        )
+        profile = profile.model_copy(
+            update={"defense": profile.defense.model_copy(update={"model": "operator-judge-model"})}
+        )
+        assert judge_stamp(ingress) != judge_stamp(profile)
         profiles = {"josui": profile, "josui-federation": ingress}
 
         (shared,) = link_report(profiles, {})["shared"]
 
         assert shared["judge"] == judge_stamp(ingress)
+        assert shared["judge"] != judge_stamp(profile)
 
 
 class TestHeldForApproval:
