@@ -54,7 +54,10 @@ def _paging(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(paging, "token_starts", lambda text: [a for a, _ in _words(text)])
     config_mod._config = None
     paging.reset()
-    _tool_list_cache[URL] = [{"name": SEND}, {"name": GET, "annotations": {"readOnlyHint": True}}]
+    _tool_list_cache[(URL, "")] = [
+        {"name": SEND},
+        {"name": GET, "annotations": {"readOnlyHint": True}},
+    ]
     yield
     paging.reset()
     config_mod._config = None

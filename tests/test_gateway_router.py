@@ -1332,7 +1332,7 @@ class TestArgumentHygiene:
         async def fake_scan(**_kwargs: Any) -> Any:
             return SimpleNamespace(blocked=False, extraction=None, warning=warning)
 
-        _tool_list_cache[backend.url] = [
+        _tool_list_cache[(backend.url, "")] = [
             {
                 "name": name,
                 "inputSchema": schema,
@@ -1369,7 +1369,7 @@ class TestArgumentHygiene:
                     .fetchone()
                 )
         finally:
-            _tool_list_cache.pop(backend.url, None)
+            _tool_list_cache.pop((backend.url, ""), None)
             db_mod._db = None
         return resp, (seen[0] if seen else None), row
 

@@ -96,7 +96,7 @@ class TestDegradedScansAreNeverKept:
 
     def test_l3_outage_verdict_is_not_cached_in_memory(self) -> None:
         _cache_put("k", {"l3_unavailable": True}, persist=True)
-        hit, _ = _cache_get("k")
+        hit, _ = _cache_get("k", persist=True)
         assert not hit, "a verdict reached during an L3 outage must be re-judged"
 
     def test_l3_outage_verdict_is_not_persisted(self) -> None:
@@ -107,18 +107,18 @@ class TestDegradedScansAreNeverKept:
 
     def test_truncated_l2_verdict_is_not_cached(self) -> None:
         _cache_put("k", {"l2_truncated": True}, persist=True)
-        hit, _ = _cache_get("k")
+        hit, _ = _cache_get("k", persist=True)
         assert not hit
         assert get_all_verdicts(perimeter_stamp()) == {}
 
     def test_an_ordinary_flag_is_kept(self) -> None:
         _cache_put("k", FLAG, persist=True)
-        hit, value = _cache_get("k")
+        hit, value = _cache_get("k", persist=True)
         assert hit and value == FLAG
 
     def test_a_clean_verdict_is_kept(self) -> None:
         _cache_put("k", None, persist=True)
-        hit, value = _cache_get("k")
+        hit, value = _cache_get("k", persist=True)
         assert hit and value is None
 
 
@@ -131,6 +131,9 @@ class TestCachePut:
         """The default. Tool responses are unbounded and mostly seen once;
         a disk write per proxied call buys nothing."""
         _cache_put("k", FLAG)
+        # In the RESPONSE store, not the description one: the two are separate
+        # since 6.1.0 so response volume cannot evict descriptions.
+        assert _cache_get("k", persist=True) == (False, None)
         hit, value = _cache_get("k")
         assert hit and value == FLAG
         assert get_all_verdicts(perimeter_stamp()) == {}
@@ -142,7 +145,7 @@ class TestCachePut:
             perimeter_db, "save_verdict", side_effect=sqlite3.OperationalError("disk")
         ):
             _cache_put("k", FLAG, persist=True)
-        hit, value = _cache_get("k")
+        hit, value = _cache_get("k", persist=True)
         assert hit and value == FLAG, "the in-memory cache still took it"
 
     def test_a_failed_write_stops_further_attempts(self) -> None:
@@ -172,15 +175,22 @@ class TestStartupLoad:
         save_verdict("k", FLAG, perimeter_stamp())
         reset_verdict_cache()
         assert load_verdict_cache() == 1
-        hit, value = _cache_get("k")
+        hit, value = _cache_get("k", persist=True)
         assert hit and value == FLAG
 
-    def test_load_respects_the_memory_bound(self) -> None:
-        """A store larger than the LRU must not push the process over it."""
+    def test_load_takes_the_whole_store(self) -> None:
+        """Descriptions are no longer LRU-trimmed on load (6.1.0).
+
+        They share no store with responses any more, and the set is bounded by
+        the configuration — every backend's tool list — rather than by traffic.
+        Trimming it here only meant re-judging the trimmed part on the first
+        `tools/list`, at the expense of whichever profile asked first. The LRU
+        still bounds tool RESPONSES, which are unbounded and mostly seen once.
+        """
         for i in range(verdict_cache._CACHE_MAX + 10):
             save_verdict(f"k{i}", None, perimeter_stamp())
         reset_verdict_cache()
-        assert load_verdict_cache() == verdict_cache._CACHE_MAX
+        assert load_verdict_cache() == verdict_cache._CACHE_MAX + 10
 
     def test_reset_does_not_touch_the_store(self) -> None:
         """reset_verdict_cache is the test hook; forgetting a verdict in
@@ -219,7 +229,7 @@ class TestSurvivesARestart:
         perimeter_db._db = None
 
         load_verdict_cache()
-        hit, value = _cache_get("tool:sha")
+        hit, value = _cache_get("tool:sha", persist=True)
         assert hit, "a restart must not re-judge what the last boot judged"
         assert value is None
 

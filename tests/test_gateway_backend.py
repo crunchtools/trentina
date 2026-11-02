@@ -300,7 +300,7 @@ class TestBackendToolListCache:
         ):
             await list_backend_tools("rotv", _backend())
 
-        assert URL in _tool_list_cache
+        assert (URL, "") in _tool_list_cache
 
         for _ in range(3):
             breaker.record_failure(URL)
@@ -316,7 +316,7 @@ class TestBackendToolListCache:
             tools = await list_backend_tools("rotv", _backend())
 
         assert len(tools) == 1
-        assert URL in _tool_list_cache
+        assert (URL, "") in _tool_list_cache
 
     async def test_call_failure_does_not_evict_list_cache(self) -> None:
         """A failed tool call must not evict the cached tool list."""
@@ -329,7 +329,7 @@ class TestBackendToolListCache:
             side_effect=ok_list,
         ):
             await list_backend_tools("rotv", _backend())
-        assert URL in _tool_list_cache
+        assert (URL, "") in _tool_list_cache
 
         async def fail_call(*_args: Any, **_kwargs: Any) -> Any:
             raise ConnectionRefusedError("backend hiccup")
@@ -343,7 +343,7 @@ class TestBackendToolListCache:
         ):
             await call_backend_tool("rotv", _backend(), "some_tool", {})
 
-        assert URL in _tool_list_cache
+        assert (URL, "") in _tool_list_cache
 
         async def should_not_be_called(_url: str, _headers: Any, *_: Any) -> Any:
             raise AssertionError("transport re-fetched after call failure")
@@ -531,7 +531,7 @@ class TestRevalidateForwardsProfile:
     async def test_profile_reaches_refresh(self) -> None:
         from trentina.gateway.backend import revalidate_backend_tools
 
-        _tool_list_cache[URL] = [{"name": "old"}]
+        _tool_list_cache[(URL, "")] = [{"name": "old"}]
         prof = Profile(name="josui", auth=AuthConfig(bearer_token_env="T"))
         captured: dict[str, Any] = {}
 
@@ -623,7 +623,7 @@ class TestRevalidatePersistedList:
     """A list loaded from SQLite is refetched at boot (#335)."""
 
     async def test_a_changed_list_replaces_the_persisted_one(self) -> None:
-        _tool_list_cache[URL] = [{"name": "old_tool", "description": "", "inputSchema": {}}]
+        _tool_list_cache[(URL, "")] = [{"name": "old_tool", "description": "", "inputSchema": {}}]
 
         with patch(
             "trentina.gateway.backend._do_list_tools",
@@ -632,7 +632,7 @@ class TestRevalidatePersistedList:
             changed = await revalidate_backend_tools("rotv", _backend())
 
         assert changed is True
-        assert [t["name"] for t in _tool_list_cache[URL]] == ["new_tool"]
+        assert [t["name"] for t in _tool_list_cache[(URL, "")]] == ["new_tool"]
 
     async def test_an_unchanged_list_reports_no_change(self) -> None:
         with patch(
@@ -646,7 +646,7 @@ class TestRevalidatePersistedList:
 
     async def test_an_unreachable_backend_keeps_its_persisted_list(self) -> None:
         persisted = [{"name": "old_tool", "description": "", "inputSchema": {}}]
-        _tool_list_cache[URL] = persisted
+        _tool_list_cache[(URL, "")] = persisted
 
         with patch(
             "trentina.gateway.backend._do_list_tools",
@@ -655,7 +655,7 @@ class TestRevalidatePersistedList:
             changed = await revalidate_backend_tools("rotv", _backend())
 
         assert changed is False
-        assert _tool_list_cache[URL] is persisted
+        assert _tool_list_cache[(URL, "")] is persisted
 
     async def test_a_backend_with_nothing_persisted_is_not_fetched(self) -> None:
         with patch(
@@ -679,6 +679,6 @@ class TestCachedToolReadOnly:
     )
     def test_only_an_explicit_true_counts(self, tool: dict[str, Any], read_only: bool) -> None:
         """A tool that did not say it only reads may write."""
-        _tool_list_cache[URL] = [tool]
+        _tool_list_cache[(URL, "")] = [tool]
 
-        assert cached_tool_read_only(URL, "t") is read_only
+        assert cached_tool_read_only(URL, "", "t") is read_only

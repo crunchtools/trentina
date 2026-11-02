@@ -275,7 +275,13 @@ class BackendCall:
     meta: dict[str, Any] | None = None
 
 
-_tool_list_cache: dict[str, list[dict[str, Any]]] = {}
+#: Served tool lists, keyed ``(url, owner)`` since 6.1.0. A tool list is
+#: whatever the backend returned to the credential that asked for it, so one
+#: row per URL served a profile the list another profile's token had earned —
+#: without that profile ever presenting a credential of its own. ``owner`` is
+#: empty for a backend that carries none, where the list is the same for
+#: everyone and one row is right.
+_tool_list_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
 # What a federated peer reported holding in its tools/list ``_meta`` (#592,
 # E1c), keyed by backend URL: the count of tools it is withholding from this
@@ -339,22 +345,56 @@ def _rejection(exc: BaseException) -> str | None:
     return None
 
 
-def cached_tool_schema(url: str, tool_name: str) -> dict[str, Any] | None:
-    """The inputSchema a backend listed for *tool_name*, if its list is cached."""
-    for tool in _tool_list_cache.get(url, ()):
+def carries_credential(backend: Backend) -> bool:
+    """Whether a list fetch of this backend goes out under a per-profile credential.
+
+    An ``auth`` grant, a federated primary key whose JWT names the caller, or
+    header credentials the profile declares. Any of them means the list is
+    whatever the backend chose to return to THAT caller, so it belongs to that
+    profile's partition and to no other. Without one the fetch is anonymous and
+    its answer is the same for everyone.
+
+    ``headers`` is in the set and was the hole: ``_inflight_key`` has keyed an
+    ``auth`` or federated fetch per profile since #592, while a static bearer
+    from the profile's own config — the common case on this fleet — kept
+    sharing.
+    """
+    return bool(
+        backend.auth is not None
+        or (backend.federated is not None and backend.federated.primary_key is not None)
+        or backend.headers
+    )
+
+
+def cache_owner(backend: Backend, profile: Profile | None) -> str:
+    """The cache partition a list of this backend belongs to.
+
+    Empty for a backend carrying no credential, which every profile then
+    shares. Otherwise the grant owner, so a derived federation ingress reads
+    its source's partition — it spends the same credential.
+    """
+    if not carries_credential(backend):
+        return ""
+    return profile.grant_owner if profile is not None else ""
+
+
+def cached_tool_schema(url: str, owner: str, tool_name: str) -> dict[str, Any] | None:
+    """The inputSchema a backend listed for *tool_name* in this owner's partition."""
+    for tool in _tool_list_cache.get((url, owner), ()):
         if tool.get("name") == tool_name:
             schema = tool.get("inputSchema")
             return schema if isinstance(schema, dict) else None
     return None
 
 
-def cached_tool_read_only(url: str, tool_name: str) -> bool:
-    """Whether the backend annotated *tool_name* ``readOnlyHint`` in its cached list.
+def cached_tool_read_only(url: str, owner: str, tool_name: str) -> bool:
+    """Whether the backend annotated *tool_name* ``readOnlyHint`` in this owner's list.
 
     Unlisted, unannotated or anything but ``true`` is False: a tool that did
-    not say it only reads may write.
+    not say it only reads may write. Read from the caller's own partition, so a
+    neighbour's annotation never decides whether this call may have acted.
     """
-    for tool in _tool_list_cache.get(url, ()):
+    for tool in _tool_list_cache.get((url, owner), ()):
         if tool.get("name") == tool_name:
             annotations = tool.get("annotations")
             return isinstance(annotations, dict) and annotations.get("readOnlyHint") is True
@@ -369,8 +409,21 @@ def loggable_tool(url: str, tool_name: str) -> str:
     """The name when the backend listed it and it is shaped like a tool name;
     otherwise a fingerprint. A long-form call can forward a name the caller
     typed, unlisted (#262), and a listed name is one the backend already
-    publishes to every agent through tools/list."""
-    listed = any(tool.get("name") == tool_name for tool in _tool_list_cache.get(url, ()))
+    publishes to every agent through tools/list.
+
+    Deliberately NOT partitioned by owner, unlike the two readers above. The
+    question here is whether the BACKEND publishes this name — a name listed in
+    any partition of the URL is one it published, and the answer goes to the
+    journal rather than to a tenant, so reading across partitions reveals
+    nothing to anybody. Owner-keying it would thread a parameter through nine
+    call sites to buy nothing.
+    """
+    listed = any(
+        tool.get("name") == tool_name
+        for key, tools in _tool_list_cache.items()
+        if key[0] == url
+        for tool in tools
+    )
     if listed and _TOOL_NAME.fullmatch(tool_name):
         return tool_name
     return redact_source(tool_name)
@@ -392,27 +445,41 @@ def on_backend_cache_evict(callback: Any) -> None:
     _on_evict_callbacks.append(callback)
 
 
-def _evict_backend_cache(url: str) -> None:
-    """Remove a backend's cached tool list and notify listeners."""
-    if _tool_list_cache.pop(url, None) is not None:
-        _federated_held_secondary.pop(url, None)
-        delete_tool_list(url)
-        for cb in _on_evict_callbacks:
-            cb(url)
-        logger.info("cache: evicted backend %s", safe_url(url))
+def _evict_backend_cache(url: str, owner: str | None = None) -> None:
+    """Remove a backend's cached tool list and notify listeners.
+
+    ``owner=None`` drops every partition of that URL — the operator's flush and
+    a reconnect, where the point is that the backend itself changed. An agent
+    passes its own owner and reaches only its own row.
+    """
+    partitions = (
+        [key for key in _tool_list_cache if key[0] == url]
+        if owner is None
+        else ([(url, owner)] if (url, owner) in _tool_list_cache else [])
+    )
+    if not partitions:
+        return
+    for key in partitions:
+        _tool_list_cache.pop(key, None)
+    _federated_held_secondary.pop(url, None)
+    delete_tool_list(url, owner)
+    for cb in _on_evict_callbacks:
+        cb(url)
+    logger.info("cache: evicted backend %s (%d partition(s))", safe_url(url), len(partitions))
 
 
-def evict_backend_cache_url(url: str) -> int:
-    """Evict one backend's cached tool list, by exact URL. Returns 1 or 0.
+def evict_backend_cache_url(url: str, owner: str | None = None) -> int:
+    """Evict a backend's cached tool list, by exact URL. Returns 1 or 0.
 
     Named for what it takes. It was ``..._by_name``, which invited its caller
     to hand it a backend NAME and match loosely — and one did, substring-wise,
     so flushing ``gw`` reached ``gw-work`` and ``gw-personal`` both. The cache
-    is keyed by URL; resolving a name to a URL belongs to whoever knows which
-    profile is asking.
+    is keyed by URL and owner; resolving a name to a URL belongs to whoever
+    knows which profile is asking.
     """
-    if url in _tool_list_cache:
-        _evict_backend_cache(url)
+    present = any(key[0] == url and (owner is None or key[1] == owner) for key in _tool_list_cache)
+    if present:
+        _evict_backend_cache(url, owner)
         return 1
     return 0
 
@@ -420,12 +487,12 @@ def evict_backend_cache_url(url: str) -> int:
 def flush_all_caches() -> int:
     """Flush all backend caches + SQLite. Returns count evicted."""
     count = len(_tool_list_cache)
-    urls = list(_tool_list_cache.keys())
-    for url in urls:
-        _tool_list_cache.pop(url, None)
-        _federated_held_secondary.pop(url, None)
+    keys = list(_tool_list_cache.keys())
+    for key in keys:
+        _tool_list_cache.pop(key, None)
+        _federated_held_secondary.pop(key[0], None)
         for cb in _on_evict_callbacks:
-            cb(url)
+            cb(key[0])
     delete_all_tool_lists()
     logger.info("cache: flushed all %d backend caches", count)
     return count
@@ -471,13 +538,15 @@ async def list_backend_tools(
     failure (only on explicit flush/reconnect), a transient backend outage can
     neither wipe nor bypass the last-known-good list: it keeps being served
     here. On a genuine miss, concurrent callers coalesce onto one in-flight
-    fetch per URL — per URL and profile for a backend with ``auth``, which is
-    fetched with that profile's own grant (#479).
+    fetch per partition.
 
-    The cache stays keyed by URL alone. For an ``auth`` backend that means the
-    list one profile fetched, with its own entitlements, is what every
-    profile on the URL is offered, each through its own allowlist; a profile
-    with no grant sees those tools and is told to authorize when it calls one.
+    The cache is keyed ``(url, owner)`` since 6.1.0, where ``owner`` is empty
+    unless the backend carries a credential (``carries_credential``). Through
+    6.0.0 it was keyed by URL alone, which meant the list one profile fetched
+    with its own entitlements was served to every other profile on that URL —
+    each filtered by its own allowlist, but none of them having presented a
+    credential. For a backend whose list depends on the account, that handed
+    one tenant another tenant's data.
 
     ``profile`` is the profile the list is for. An ``auth`` backend is never
     fetched without one: the startup warm-ups pass none, and skip it.
@@ -487,7 +556,7 @@ async def list_backend_tools(
             circuit open — only on a cold miss with nothing cached to serve.
         BackendNeedsAuthError: an ``auth`` backend, cold, with no grant.
     """
-    cached = _tool_list_cache.get(backend.url)
+    cached = _tool_list_cache.get((backend.url, cache_owner(backend, profile)))
     if cached is not None:
         return cached
     return await _joined_fetch(backend_name, backend, profile)
@@ -513,16 +582,17 @@ async def refresh_backend_tools(
 
 
 def _inflight_key(backend: Backend, profile: Profile | None) -> str:
-    """One fetch per URL; per URL and profile when the fetch carries a
-    per-profile credential — an ``auth`` grant, or a federated primary key whose
-    JWT caller is the profile. Keying a federated fetch by profile too stops a
-    no-profile fetch (e.g. pre-compression) from being joined by the
-    authenticated build, which would hand the build the secondary's 401 (#592)."""
-    if backend.auth is None and (
-        backend.federated is None or backend.federated.primary_key is None
-    ):
-        return backend.url
-    return f"{backend.url}#{profile.name if profile else ''}"
+    """One fetch per cache partition: per URL, and per owner when the fetch
+    carries a per-profile credential.
+
+    Keying a federated fetch by profile too stops a no-profile fetch (e.g.
+    pre-compression) from being joined by the authenticated build, which would
+    hand the build the secondary's 401 (#592). Since 6.1.0 the predicate is
+    ``carries_credential`` — the same one the cache partitions on, so the slot
+    and the row it fills can never disagree — which adds ``headers`` to the set
+    it already covered."""
+    owner = cache_owner(backend, profile)
+    return f"{backend.url}#{owner}" if owner else backend.url
 
 
 async def _joined_fetch(
@@ -548,7 +618,7 @@ async def revalidate_backend_tools(
     left to the first build, and one that cannot be reached keeps its list.
     An ``auth`` backend is left alone: there is no profile to fetch it as.
     """
-    before = _tool_list_cache.get(backend.url)
+    before = _tool_list_cache.get((backend.url, cache_owner(backend, profile)))
     if before is None or backend.auth is not None:
         return False
     try:
@@ -614,8 +684,9 @@ async def _fetch_and_cache(
     breaker.record_success(backend.url)
     _read_federated_held(backend, tools_result)
     tools = [_serialize_tool(tool) for tool in tools_result.tools]
-    _tool_list_cache[backend.url] = tools
-    save_tool_list(backend.url, tools)
+    owner = cache_owner(backend, profile)
+    _tool_list_cache[(backend.url, owner)] = tools
+    save_tool_list(backend.url, owner, tools)
     return tools
 
 
@@ -715,6 +786,15 @@ async def _with_reauth(
     peer down for every profile federating to it over what is a signature or a
     clock. The peer answered, so the circuit records a success and the caller
     gets a reason that says so.
+
+    A backend with HEADER credentials and no grant is answered the same way
+    since 6.1.0, for the same reason. A stale static bearer is not a
+    reachability fact: three calls with one would open the URL-keyed breaker
+    for sixty seconds for every other profile on that URL, and no retry here
+    can help, because there is nothing to refresh — the token is in the
+    operator's config. The backend answered, so the circuit records a success
+    and the caller gets ``BackendRejectedCallError``, which audits as
+    ``tool_error`` and never counts toward the breaker.
     """
     try:
         return await run(headers)
@@ -723,6 +803,16 @@ async def _with_reauth(
             breaker.record_success(backend.url)
             logger.warning("gateway: federated backend=%s refused our primary JWT", backend_name)
             raise FederationUnauthorizedError(backend_name) from exc
+        if grant is None and cap.unauthorized and not cap.call_accepted:
+            breaker.record_success(backend.url)
+            logger.warning(
+                "gateway: backend=%s refused our header credential; the circuit is "
+                "untouched and other profiles on this URL are unaffected",
+                backend_name,
+            )
+            raise BackendRejectedCallError(
+                f"backend {backend_name!r} refused the configured credential"
+            ) from exc
         if grant is None or profile is None or not cap.unauthorized or cap.call_accepted:
             raise
     from .backend_oauth import fresh_grant

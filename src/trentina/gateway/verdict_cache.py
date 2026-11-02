@@ -30,7 +30,6 @@ from typing import TYPE_CHECKING, Any
 from ..config import get_config
 from ..logsafe import exc_kind, exc_where
 from ..quarantine.packs import GENERIC_ID, pack_for
-from .service import judge_of
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -46,7 +45,20 @@ _CACHE_MAX = 4096
 # stamp, the other two by the cache key. So it does not go stale and does
 # not expire. It used to, on a 900-second TTL, which meant fifteen quiet
 # minutes re-armed a full rescan of every tool description.
-_verdicts: OrderedDict[str, dict[str, Any] | None] = OrderedDict()
+#
+# TWO stores since 6.1.0, and the split is isolation rather than tidiness.
+# Both kinds shared one LRU of _CACHE_MAX entries, so a profile reading enough
+# distinct tool RESPONSES evicted every profile's tool DESCRIPTION verdicts —
+# and since descriptions are reloaded from the store only at boot, the next
+# aggregate rebuild re-judged them, on the victim's key and at the victim's
+# expense. Keying per owner does not help: eviction pressure is shared however
+# the keys are spelled.
+#
+# Descriptions are bounded by the configuration (every backend's tool list,
+# a few thousand at most) and are what a restart pays for, so they are held
+# whole. Responses are unbounded and mostly seen once, so they keep the LRU.
+_descriptions: dict[str, dict[str, Any] | None] = {}
+_responses: OrderedDict[str, dict[str, Any] | None] = OrderedDict()
 
 # Set when the store refuses a write. A read-only or full disk fails the
 # same way for every subsequent verdict, and retrying 200 more times per
@@ -74,17 +86,19 @@ def load_verdict_cache() -> int:
     _persist_broken = False
 
     loaded = get_all_verdicts(perimeter_stamp())
-    _verdicts.update(loaded)
-    while len(_verdicts) > _CACHE_MAX:
-        _verdicts.popitem(last=False)
-    logger.info("perimeter: loaded %d cached verdict(s)", len(_verdicts))
-    return len(_verdicts)
+    # Only descriptions are ever persisted, so this only fills that store, and
+    # it is not LRU-trimmed: the set is bounded by the configuration and
+    # dropping part of it just means re-judging part of it on the first list.
+    _descriptions.update(loaded)
+    logger.info("perimeter: loaded %d cached verdict(s)", len(_descriptions))
+    return len(_descriptions)
 
 
 def reset_verdict_cache() -> None:
-    """Clear the in-memory cache without touching the store (for testing)."""
+    """Clear the in-memory caches without touching the store (for testing)."""
     global _persist_broken
-    _verdicts.clear()
+    _descriptions.clear()
+    _responses.clear()
     _inflight.clear()
     _persist_broken = False
 
@@ -92,16 +106,18 @@ def reset_verdict_cache() -> None:
 def _cache_key(profile: Profile, kind: str, text: str, judge: tuple[str, str]) -> str:
     """The verdict key: what was judged, under which thresholds, by which model.
 
-    ``profile`` supplies the thresholds — a profile's gate stays its own.
+    ``profile`` supplies the thresholds — a profile's gate stays its own — and
+    since 6.1.0 its GRANT OWNER, so no verdict is shared between tenants. The
+    owner rather than the name, because a derived federation ingress spends its
+    source's credential and key: they are one tenant reached two ways.
     ``judge`` is the (provider, model) L3 ran on (#137): without it, a verdict
     one model reached was served to a profile running another.
 
-    The judge is written into the key ONLY when it differs from the env
-    default. Every key persisted before #137 was judged by the env default —
-    the tools/list path had no profile bound, and every lotor profile ran the
-    default — so that judge keeps the old spelling and the stored verdicts
-    stay reachable. Spelling it out would have cost a cold, minutes-long
-    re-judgement of every description on the first boot of this version.
+    The judge used to be written only when it differed from the env default, so
+    that keys persisted before #137 stayed reachable. That is gone: the owner
+    makes every key new anyway, and ``PERIMETER_VERSION`` sweeps the old rows
+    on the first boot of 6.1.0, so a conditional spelling now only hides what
+    the key contains.
 
     The provider fallback chain can let a different model answer one call;
     that verdict is still filed under the primary judge. The chain is
@@ -112,13 +128,13 @@ def _cache_key(profile: Profile, kind: str, text: str, judge: tuple[str, str]) -
     # carries (#350); an explicit one keeps its pre-0.55 spelling.
     pack = pack_for(judge, d.l3_prompt_pack)
     effort = get_config().reasoning_effort
-    # Each part is written only when it differs from the default, so a key
-    # stored before that part existed still matches. The pack is named by id
-    # and text (#354): editing a prompt sweeps the verdicts it reached. How
-    # long the judge thinks changes what it concludes, so that is here too.
+    # The pack is named by id and text (#354): editing a prompt sweeps the
+    # verdicts it reached. How long the judge thinks changes what it concludes,
+    # so that is here too.
     parts = {
+        f"owner={profile.grant_owner}": True,
         "model" if d.l2_threshold is None else f"{d.l2_threshold}": True,
-        f"{judge[0]}/{judge[1]}": judge != judge_of(None),
+        f"{judge[0]}/{judge[1]}": True,
         f"pack={pack.stamp}": pack.id != GENERIC_ID,
         f"effort={effort}": effort is not None,
     }
@@ -126,22 +142,28 @@ def _cache_key(profile: Profile, kind: str, text: str, judge: tuple[str, str]) -
     return hashlib.sha256(f"{kind}:{cfg}:{text}".encode()).hexdigest()
 
 
-def _cache_get(key: str) -> tuple[bool, dict[str, Any] | None]:
-    hit = key in _verdicts
+def _cache_get(key: str, *, persist: bool = False) -> tuple[bool, dict[str, Any] | None]:
+    """A cached verdict. ``persist`` picks the store, as it does on the put:
+    true for a tool description, false for a tool response."""
+    if persist:
+        return key in _descriptions, _descriptions.get(key)
+    hit = key in _responses
     if hit:
-        _verdicts.move_to_end(key)
-    return hit, _verdicts.get(key)
+        _responses.move_to_end(key)
+    return hit, _responses.get(key)
 
 
 def _cache_put(key: str, value: dict[str, Any] | None, *, persist: bool = False) -> None:
     """Remember one verdict, and for tool descriptions write it down.
 
-    ``persist`` is set only by ``scan_tool_list``. Tool descriptions are
+    ``persist`` is set only by ``scan_tool_list``, and since 6.1.0 it also
+    picks which of the two stores holds the verdict. Tool descriptions are
     what a restart pays for — a bounded set of a few hundred, judged again
-    on every boot and every circuit-breaker flap. Tool RESPONSES are
-    unbounded and mostly seen once, so persisting them would put a disk
-    write in the hot path of every proxied call to buy a hit rate near
-    zero. They stay in memory, where the LRU already bounds them.
+    on every boot and every circuit-breaker flap — so they are kept whole and
+    written down. Tool RESPONSES are unbounded and mostly seen once, so
+    persisting them would put a disk write in the hot path of every proxied
+    call to buy a hit rate near zero; they stay in the LRU, where one tenant's
+    volume can no longer evict another tenant's descriptions.
     """
     global _persist_broken
 
@@ -159,10 +181,13 @@ def _cache_put(key: str, value: dict[str, Any] | None, *, persist: bool = False)
     ):
         return
 
-    _verdicts[key] = value
-    _verdicts.move_to_end(key)
-    while len(_verdicts) > _CACHE_MAX:
-        _verdicts.popitem(last=False)
+    if persist:
+        _descriptions[key] = value
+    else:
+        _responses[key] = value
+        _responses.move_to_end(key)
+        while len(_responses) > _CACHE_MAX:
+            _responses.popitem(last=False)
 
     if not persist or _persist_broken:
         return

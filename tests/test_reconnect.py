@@ -102,7 +102,7 @@ class TestReconnectBackend:
         assert result["targets"][0]["endpoint"] == "http://mcp-postiz:5000"
         assert "token-a" not in str(result)
         assert breaker.get_state(POSTIZ_URL) is State.CLOSED
-        assert _tool_list_cache[POSTIZ_URL]
+        assert _tool_list_cache[(POSTIZ_URL, "")]
 
     async def test_unknown_backend_reports_available(self) -> None:
         """A name in no profile returns reconnected False with the known names."""
@@ -125,7 +125,7 @@ class TestReconnectBackend:
 
         assert result["reconnected"] is False
         assert "error" in result["targets"][0]
-        assert POSTIZ_URL not in _tool_list_cache
+        assert (POSTIZ_URL, "") not in _tool_list_cache
 
     async def test_failed_operator_reconnect_keeps_the_last_good_list(self) -> None:
         """A failed operator reconnect must not strand the primary: the
@@ -138,8 +138,8 @@ class TestReconnectBackend:
 
         set_profiles({"agent2": _profile("agent2", {"postiz": Backend(url=POSTIZ_URL)})})
         good = [{"name": "integrationList"}, {"name": "listPostsTool"}]
-        _tool_list_cache[POSTIZ_URL] = good
-        save_tool_list(POSTIZ_URL, good)
+        _tool_list_cache[(POSTIZ_URL, "")] = good
+        save_tool_list(POSTIZ_URL, "", good)
 
         async def grouped_connect_error(_url: str, _headers: Any, *_: Any) -> Any:
             raise ExceptionGroup("unhandled errors in a TaskGroup", [httpx.ConnectError("boom")])
@@ -152,11 +152,11 @@ class TestReconnectBackend:
         assert "ConnectError" in error
         assert "ExceptionGroup" not in error
         # Untouched in memory ...
-        assert _tool_list_cache[POSTIZ_URL] == good
+        assert _tool_list_cache[(POSTIZ_URL, "")] == good
         # ... and still on disk: reload from SQLite and confirm it returns.
         _tool_list_cache.clear()
         load_tool_list_cache()
-        assert _tool_list_cache.get(POSTIZ_URL) == good
+        assert _tool_list_cache.get((POSTIZ_URL, "")) == good
 
     async def test_operator_reconnect_of_a_federated_backend_passes_the_profile(self) -> None:
         """A federated edge mints its JWT from the caller profile (#592 C1/C2);

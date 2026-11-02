@@ -74,7 +74,7 @@ def gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[dict]:
     register_active_config(path, config, {})
     set_profiles(config.profiles)
     for url in (WORK_URL, PERSONAL_URL, WIKI_URL):
-        _tool_list_cache[url] = [{"name": "a_tool"}]
+        _tool_list_cache[(url, "")] = [{"name": "a_tool"}]
     _profile_tools_cache["alpha"] = [{"name": "x"}]
     _profile_tools_cache["beta"] = [{"name": "y"}]
     yield config.profiles
@@ -88,7 +88,7 @@ class TestAgentScope:
             result = await cache_flush()
 
         assert result == {"flushed": "profile", "scope": "beta", "profile_cache_cleared": True}
-        assert set(_tool_list_cache) == {WORK_URL, PERSONAL_URL, WIKI_URL}
+        assert {url for url, _owner in _tool_list_cache} == {WORK_URL, PERSONAL_URL, WIKI_URL}
         assert "beta" not in _profile_tools_cache
         assert "alpha" in _profile_tools_cache
 
@@ -97,7 +97,7 @@ class TestAgentScope:
             result = await cache_flush("wiki")
 
         assert result == {"flushed": "profile", "scope": "beta", "profile_cache_cleared": True}
-        assert WIKI_URL in _tool_list_cache
+        assert (WIKI_URL, "") in _tool_list_cache
 
     async def test_a_backend_in_another_profile_is_refused(self, gateway: dict) -> None:
         """The substring bug, as the caller would have hit it."""
@@ -106,14 +106,14 @@ class TestAgentScope:
 
         assert result["flushed"] == "nothing"
         assert "not in this profile" in result["error"]
-        assert WORK_URL in _tool_list_cache
+        assert (WORK_URL, "") in _tool_list_cache
 
     async def test_a_prefix_flushes_nothing(self, gateway: dict) -> None:
         with profile_context(gateway["beta"]):
             result = await cache_flush("gw")
 
         assert result["flushed"] == "nothing"
-        assert PERSONAL_URL in _tool_list_cache
+        assert (PERSONAL_URL, "") in _tool_list_cache
 
     async def test_no_other_profile_is_named_or_counted(self, gateway: dict) -> None:
         """It used to report how many other profiles were still warm."""
@@ -151,9 +151,9 @@ class TestNoChannelBetweenAgents:
             for warm in (True, False):
                 for url in (PERSONAL_URL, WIKI_URL):
                     if warm:
-                        _tool_list_cache[url] = [{"name": "a_tool"}]
+                        _tool_list_cache[(url, "")] = [{"name": "a_tool"}]
                     else:
-                        _tool_list_cache.pop(url, None)
+                        _tool_list_cache.pop((url, ""), None)
                 _profile_tools_cache["gamma"] = [{"name": "z"}]
                 with profile_context(gateway["gamma"]):
                     await cache_flush(target)
@@ -202,7 +202,7 @@ class TestTheEvictionCascadeSurvivesATestReset:
         reset_tool_list_cache()
         # The state the cascade reads: one backend cached, and two profiles
         # whose aggregates were built from it.
-        _tool_list_cache[WIKI_URL] = [{"name": "a_tool"}]
+        _tool_list_cache[(WIKI_URL, "")] = [{"name": "a_tool"}]
         for name in ("alpha", "beta"):
             _profile_tools_cache[name] = [{"name": "x"}]
             _profile_backend_urls[name] = {WIKI_URL}
@@ -243,7 +243,7 @@ class TestOperatorScope:
             result = await cache_flush("gw-personal")
 
         assert result["evicted"] == 1
-        assert PERSONAL_URL not in _tool_list_cache
+        assert (PERSONAL_URL, "") not in _tool_list_cache
 
 
 class TestUnknownCaller:

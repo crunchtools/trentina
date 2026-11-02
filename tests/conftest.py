@@ -312,9 +312,13 @@ def read_only_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     helper in ``gateway/results.py`` (both lifted out of the router in PR3a).
     """
     monkeypatch.setattr(
-        "trentina.gateway.request_edge.cached_tool_read_only", lambda _url, _tool: True
+        "trentina.gateway.request_edge.cached_tool_read_only",
+        lambda _url, _owner, _tool: True,
     )
-    monkeypatch.setattr("trentina.gateway.results.cached_tool_read_only", lambda _url, _tool: True)
+    monkeypatch.setattr(
+        "trentina.gateway.results.cached_tool_read_only",
+        lambda _url, _owner, _tool: True,
+    )
 
 
 # ------------------------------------------------- backend OAuth (#479)
