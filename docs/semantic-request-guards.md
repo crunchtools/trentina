@@ -122,7 +122,7 @@ profiles:
       tools:
         mail: [send_message]
       timeout_seconds: 30         # optional, 5 to 120
-      refuse_when_flagged: false  # optional; true for unattended seats
+      refuse_when_flagged: false  # optional; true for unattended profiles
 ```
 
 | Field | Required | Meaning |
@@ -146,7 +146,7 @@ client that sends no session ID is refused the same way, because a session
 the gateway cannot identify is not one it knows is clean. Unguarded tools are
 untouched.
 
-Turn it on for seats that run unattended: a swarm or coding agent that reads
+Turn it on for profiles that run unattended: a swarm or coding agent that reads
 mail, tickets or web pages and nobody watches. Leave it off for an assistant
 a person talks to. Those read flagged content routinely, often because the
 person asked them to read about an attack, and would lose their guarded tools

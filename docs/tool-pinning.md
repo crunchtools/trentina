@@ -78,7 +78,7 @@ declared link:
   count of tools pending approval, for monitoring. Approving a federated hold is
   done on the **secondary** that holds it.
 
-Renaming the seat a link shares changes the URL path, hence the pin key, so the
+Renaming the profile a link shares changes the URL path, hence the pin key, so the
 peer's pins do not move and its next list is a first connect: the whole offered
 set is approved as a unit again, loudly, once. There is deliberately no way to
 carry pins across a rename — a one-time re-approval an operator can read beats a

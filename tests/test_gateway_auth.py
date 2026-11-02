@@ -210,12 +210,12 @@ class TestVerifyOAuth:
 
     async def test_a_token_bound_to_another_profile_is_challenged(self) -> None:
         """#298: one JWT audience covers every proxied profile, so the binding
-        is what keeps an agent seat's token out of an operator seat that
+        is what keeps an agent profile's token out of an operator profile that
         allowlists the same human."""
-        operator = _oauth_profile("alice@example.com", name="operator-seat")
+        operator = _oauth_profile("alice@example.com", name="operator-profile")
         provider = _StubProvider(
             {"tok": _StubAccessToken({"email": "alice@example.com", "email_verified": True})},
-            bound={"tok": "agent-seat"},
+            bound={"tok": "agent-profile"},
         )
         with pytest.raises(OAuthChallengeError, match="not issued for this profile"):
             await verify_oauth("Bearer tok", operator, provider)

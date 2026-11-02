@@ -42,8 +42,8 @@ _PUB = (
 )
 
 
-def _seat(**over: Any) -> dict[str, Any]:
-    """A seat that shares itself: `federation` plus a way in of its own."""
+def _profile(**over: Any) -> dict[str, Any]:
+    """A profile that shares itself: `federation` plus a way in of its own."""
     base: dict[str, Any] = {
         "name": "up",
         "auth": AuthConfig(bearer_token_env="UP_TOKEN"),
@@ -54,68 +54,107 @@ def _seat(**over: Any) -> dict[str, Any]:
     return base
 
 
-# --- the shared seat and its derived ingress (validators) ---
+# --- the shared profile and its derived ingress (validators) ---
 
 
-def test_a_shared_seat_loads_and_derives_an_ingress() -> None:
-    seat = Profile(**_seat())
-    ingress = derive_ingress(seat)
+def test_a_shared_profile_loads_and_derives_an_ingress() -> None:
+    profile = Profile(**_profile())
+    ingress = derive_ingress(profile)
 
     assert ingress.name == "up-federation"
     assert ingress.role == "agent"
     assert ingress.federation_of == "up"
-    # The seat's own remote backend, plus the paging reader and nothing else.
+    # The profile's own remote backend, plus the paging reader and nothing else.
     assert ingress.backends["peer"].is_remote
     assert ingress.backends["trentina"].tools_allow == ["read_part_tool"]
 
 
-def test_the_seats_internal_surface_is_not_offered() -> None:
-    """A seat's internal backend serves the whole native surface, admin tools
-    included. The derived ingress gets a fresh one, not a filtered copy."""
-    seat = Profile(
-        **_seat(
+def test_the_internal_backend_is_constructed_under_the_derived_label() -> None:
+    """The peer reaches ONE internal backend, under the derived label, never
+    the shared profile's backend under the name the operator gave it.
+
+    Unchanged in 6.0.0, unlike the allowlist on it: there is still exactly one
+    place the derived internal surface comes from.
+    """
+    profile = Profile(
+        **_profile(
             backends={
                 "peer": Backend(url="https://real/mcp", tools_allow=["*"]),
-                "web": Backend(url="internal://web", tools_allow=["*"]),
+                "web": Backend(url="internal://web", tools_allow=["read_part_tool"]),
             }
         )
     )
-    ingress = derive_ingress(seat)
+    ingress = derive_ingress(profile)
 
     assert "web" not in ingress.backends
     assert ingress.backends["trentina"].tools_allow == ["read_part_tool"]
 
 
-def test_an_operator_seat_may_not_be_shared() -> None:
-    with pytest.raises(ValueError, match="role must be agent"):
-        Profile(**_seat(role="operator"))
+def test_an_operator_profile_may_be_shared_and_its_peer_is_an_operator() -> None:
+    """6.0.0, Scott's instruction, replacing the rule that refused this.
+
+    The rule it replaces said "a derived operator ingress would offer a peer
+    this gateway's own admin tools" -- which overstated its own code, since the
+    derivation set `role="agent"` itself. Now the role follows the profile, and
+    so does the internal surface, which is the whole point: carrying the role
+    alone would change nothing, because the admin tools are served by
+    `internal://`.
+
+    `docs/federation.md` carries what it costs. This test carries that it is
+    true.
+    """
+    shared = Profile(
+        **_profile(
+            role="operator",
+            backends={
+                "peer": Backend(url="https://real/mcp", tools_allow=["*"]),
+                "web": Backend(
+                    url="internal://web",
+                    tools_allow=["read_part_tool", "reload_profiles_tool"],
+                ),
+            },
+        )
+    )
+
+    ingress = derive_ingress(shared)
+
+    assert ingress.role == "operator"
+    assert ingress.backends["trentina"].tools_allow == [
+        "read_part_tool",
+        "reload_profiles_tool",
+    ]
 
 
-def test_a_seat_with_no_way_in_is_the_old_ingress_shape() -> None:
+def test_a_profile_with_no_way_in_is_the_old_ingress_shape() -> None:
     """The pre-5.0.0 shape loaded with no `auth`, because `peers` WAS its
     authentication. Requiring one refuses exactly that shape."""
-    with pytest.raises(ValueError, match="a shared seat needs auth or oauth"):
-        Profile(**_seat(auth=None))
+    with pytest.raises(ValueError, match="a shared profile needs auth or oauth"):
+        Profile(**_profile(auth=None))
 
 
-def test_a_seat_may_not_take_the_ingress_suffix() -> None:
+def test_a_profile_may_not_take_the_ingress_suffix() -> None:
     with pytest.raises(ValueError, match="may not end in"):
-        Profile(**_seat(name="up-federation"))
+        Profile(**_profile(name="up-federation"))
 
 
 @pytest.mark.parametrize(
     "allow",
     [
-        ["*"],  # the whole native surface, including admin tools
-        ["read_*"],  # a glob is refused as written, before it can match
         ["fetch_tool"],
-        ["cache_flush"],  # an admin tool: a denylist of egress tools would miss this
-        ["read_part_tool", "cache_flush"],
+        ["cache_flush"],
+        ["reload_profiles_tool", "tool_pins_tool"],
     ],
 )
-def test_a_derived_ingress_may_not_widen_its_internal_tools(allow: list[str]) -> None:
-    """Derivation builds these, so this guards the derivation, not the file."""
-    with pytest.raises(ValueError, match="may offer a peer only"):
+def test_a_derived_ingress_without_the_paging_reader_is_refused(allow: list[str]) -> None:
+    """What this rule still checks after 6.0.0 widened the allowlist.
+
+    `parts.py` proxies a peer's paged response through this backend part by
+    part, so an internal backend without the reader breaks paging for the peer
+    while every other tool keeps working -- the kind of failure that gets
+    diagnosed as a remote problem. Derivation builds these profiles, so this
+    guards the derivation rather than anything a person writes.
+    """
+    with pytest.raises(ValueError, match="does not offer 'read_part_tool'"):
         Profile(
             name="up-federation",
             federation_of="up",
@@ -124,10 +163,25 @@ def test_a_derived_ingress_may_not_widen_its_internal_tools(allow: list[str]) ->
         )
 
 
+@pytest.mark.parametrize("allow", [["read_part_tool"], ["read_part_tool", "cache_flush"]])
+def test_a_derived_ingress_carrying_the_reader_is_accepted(allow: list[str]) -> None:
+    """Including an admin tool beside it, and including `*`. Whether THAT is
+    right depends on the profile it was derived from, which a validator seeing
+    one profile cannot know -- `loader._check_federation_internal_surface` is
+    where that comparison happens."""
+    ingress = Profile(
+        name="up-federation",
+        federation_of="up",
+        federation=FederationConfig(peers={"breetai": FederationPeer(public_key=_PUB)}),
+        backends={"web": Backend(url="internal://web", tools_allow=allow)},
+    )
+    assert ingress.backends["web"].tools_allow == allow
+
+
 def test_a_profile_without_peers_is_unconstrained() -> None:
     # No federation block: an internal backend may serve everything, as ever.
     profile = Profile(
-        name="agent",
+        name="tenant",
         auth=AuthConfig(bearer_token_env="A"),
         backends={"web": Backend(url="internal://web", tools_allow=["*"])},
     )
@@ -180,12 +234,12 @@ def test_a_federated_call_records_its_caller(db: Any) -> None:
 
 def test_a_non_federated_call_has_a_null_caller(db: Any) -> None:
     # current_caller defaults to None; the columns stay NULL.
-    audit._audit("agent", "web", "echo", Outcome.OK, 1)
+    audit._audit("tenant", "web", "echo", Outcome.OK, 1)
     assert _caller_of(db, 1) == (None, None)
 
 
 def test_the_chain_verifies_with_and_without_a_caller(db: Any) -> None:
-    audit._audit("agent", "web", "plain", Outcome.OK, 1)  # no caller
+    audit._audit("tenant", "web", "plain", Outcome.OK, 1)  # no caller
     token = current_caller.set(("breetai", "primary"))
     try:
         audit._audit("up", "web", "echo", Outcome.OK, 1)  # federated
@@ -270,11 +324,11 @@ def _peer_ingress(pub: str) -> Profile:
     """The DERIVED ingress a peer authenticates to, as the gateway builds it.
 
     A primary's JWT is audience-pinned to the profile name it calls, which for
-    a derived ingress is `<seat>-federation` — so the audience now follows from
-    the seat rather than from a name an operator invented.
+    a derived ingress is `<profile>-federation` — so the audience now follows from
+    the profile rather than from a name an operator invented.
     """
     peers = {"breetai": FederationPeer(public_key=pub)}
-    return derive_ingress(Profile(**_seat(federation=FederationConfig(peers=peers))))
+    return derive_ingress(Profile(**_profile(federation=FederationConfig(peers=peers))))
 
 
 async def test_authorize_captures_the_federated_caller() -> None:
@@ -328,12 +382,12 @@ def test_a_trusted_response_records_its_verdict(db: Any) -> None:
 
 
 def test_a_non_federated_call_has_a_null_verdict(db: Any) -> None:
-    audit._audit("agent", "web", "echo", Outcome.OK, 1)
+    audit._audit("tenant", "web", "echo", Outcome.OK, 1)
     assert _verdict_of(db, 1) is None
 
 
 def test_the_chain_verifies_with_and_without_a_verdict(db: Any) -> None:
-    audit._audit("agent", "web", "plain", Outcome.OK, 1)
+    audit._audit("tenant", "web", "plain", Outcome.OK, 1)
     token = current_federated_verdict.set("stamp_mismatch")
     try:
         audit._audit("down", "fed", "echo", Outcome.OK, 1)

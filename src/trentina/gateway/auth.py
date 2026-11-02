@@ -157,7 +157,7 @@ async def verify_oauth(
     # Tier: the gateway's own record of which profile a flow named (proxy
     # mode, gateway/oauth_binding.py) or the per-profile audience pin
     # (delegated). One JWT audience covers every proxied profile, so without
-    # this a token issued to an agent seat verified at an operator seat that
+    # this a token issued to an agent profile verified at an operator profile that
     # allowlists the same email (#298). A verifier that cannot say is refused,
     # never assumed bound; a challenge, so the client re-authorizes for here.
     bound_profile = getattr(verifier, "bound_profile", None)

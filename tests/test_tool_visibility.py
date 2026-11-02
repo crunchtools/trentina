@@ -33,7 +33,7 @@ def _tool(name: str) -> dict[str, Any]:
     }
 
 
-def _profile(backend: Backend, name: str = "agent") -> Profile:
+def _profile(backend: Backend, name: str = "tenant") -> Profile:
     profile = Profile(name=name, auth=AuthConfig(bearer_token_env="A"), backends={"b": backend})
     profile.auth.bearer_token = SecretStr("t")
     return profile

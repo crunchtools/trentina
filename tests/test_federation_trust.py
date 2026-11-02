@@ -639,7 +639,7 @@ class TestTheEmitSideWhenThereIsNoDigest:
 
     def _signing_ingress(self) -> Profile:
         priv, _ = _keypair()
-        # A DERIVED ingress: `federation_of` names the seat it was built from,
+        # A DERIVED ingress: `federation_of` names the profile it was built from,
         # and such a profile carries no way in of its own — `peers` is its
         # authentication, and a second one would admit a caller with no peer.
         return Profile(

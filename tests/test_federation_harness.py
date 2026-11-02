@@ -59,7 +59,7 @@ async def test_a_second_pair_is_not_served_the_first_pairs_tool_list() -> None:
     Two pairs reuse the profile NAMES, and a profile aggregate is cached by
     name, so the second pair's ``tools/list`` was answered out of the first
     one's cache. That is not a visible failure — it is the same list twice, so
-    every assertion comparing a seat's offering before a change against after
+    every assertion comparing a profile's offering before a change against after
     it compared a list with itself and passed. It read as a harness that could
     only stand up one pair per process; it was a cache. ``federated_pair`` now
     resets the profile aggregates on the way in and out.

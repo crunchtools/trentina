@@ -64,7 +64,7 @@ profiles:
     backends:
       admin:
         url: internal://web
-  # The shared seat is an AGENT seat, which the loader requires: a derived
+  # The shared profile is an AGENT profile, which the loader requires: a derived
   # operator ingress would offer a peer this gateway's own admin tools. So the
   # caller and the link are two profiles, which is the shape production runs.
   josui:
@@ -84,8 +84,8 @@ profiles:
 
 
 @pytest.fixture
-def shared_seat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
-    """An operator seat that shares itself, plus one tool really held pending."""
+def shared_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
+    """An operator profile that shares itself, plus one tool really held pending."""
     monkeypatch.setenv("TEST_OPS_TOKEN", "ops-token")
     monkeypatch.setenv("TEST_JOSUI_TOKEN", "josui-token")
     monkeypatch.setenv(
@@ -117,20 +117,20 @@ def shared_seat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
 
 
 async def test_an_operator_gets_its_federation_report_without_a_thread_error(
-    shared_seat: dict,
+    shared_profile: dict,
 ) -> None:
     """The failure, as production had it: this raised ProgrammingError."""
-    with profile_context(shared_seat["ops"]):
+    with profile_context(shared_profile["ops"]):
         result = await get_trentina_stats()
 
     assert result["scope"] == "gateway"
     (shared,) = result["federation"]["shared"]
-    assert shared["seat"] == "josui"
+    assert shared["profile"] == "josui"
     assert shared["ingress"] == "josui-federation"
 
 
 async def test_the_count_is_the_one_in_the_store_not_a_stand_in(
-    shared_seat: dict,
+    shared_profile: dict,
 ) -> None:
     """A fix that returned an empty report would satisfy the test above.
 
@@ -138,20 +138,20 @@ async def test_the_count_is_the_one_in_the_store_not_a_stand_in(
     number the store actually holds — which is what makes this a test of the
     read rather than of the absence of an exception.
     """
-    with profile_context(shared_seat["ops"]):
+    with profile_context(shared_profile["ops"]):
         result = await get_trentina_stats()
 
     (shared,) = result["federation"]["shared"]
     assert shared["held_for_approval"] == 1, shared
 
 
-async def test_the_worker_left_no_reader_bound(shared_seat: dict) -> None:
+async def test_the_worker_left_no_reader_bound(shared_profile: dict) -> None:
     """``snapshot_reader`` clears ``_local.reader`` on the way out.
 
     A leaked reader would make the next write from that worker go to a
     read-only connection, and the pool reuses threads.
     """
-    with profile_context(shared_seat["ops"]):
+    with profile_context(shared_profile["ops"]):
         await get_trentina_stats()
 
     def still_bound() -> Any:

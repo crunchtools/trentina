@@ -117,13 +117,13 @@ consuming agent's trust posture, not of which provider answered.
 - **`flag` (default).** The completion streams back unchanged and is judged
   after the last frame (`source_type=llm_completion`), which records a flag but
   cannot withhold what already streamed (see `_streaming_response`): a token
-  stream carries no annotation channel, and an interactive seat keeps its
+  stream carries no annotation channel, and an interactive profile keeps its
   time-to-first-token.
 - **`block`.** The completion is buffered, judged, and **withheld** if flagged
   or not fully judged — a timeout, a scan failure, or a body over the scan cap
   all fail closed to `completion_unjudged`/`completion_oversize`. The agent gets
   the same deny marker as a request refusal, never the completion. Buffering
-  forfeits streaming, which is the trade an autonomous seat with no human
+  forfeits streaming, which is the trade an autonomous profile with no human
   waiting can make; `redact` is meaningless on a token stream and is refused.
 
 ### What This Buys You

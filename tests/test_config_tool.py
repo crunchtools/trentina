@@ -84,7 +84,7 @@ def gateway(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
     monkeypatch.setenv("QUARANTINE_DB", str(tmp_path / "state" / "trentina.db"))
     monkeypatch.setenv("OP_TOKEN", "o" * 20)
     monkeypatch.setenv("AG_TOKEN", "a" * 20)
-    # A shared seat keeps its own way in, so the federation fixtures need one.
+    # A shared profile keeps its own way in, so the federation fixtures need one.
     monkeypatch.setenv("FED_TOKEN", "f" * 20)
     # A person can approve here, so the two guarded writes stage rather than
     # being refused. Without this they are refused, which is its own test.
@@ -247,17 +247,17 @@ class TestRefusals:
         """Root over the gateway, not over who gets to be root."""
         before = gateway.read_text(encoding="utf-8")
         result = await _as_operator("set", "profiles.ag.role", "operator", await _hash())
-        # Refused by the loader's at-most-one-operator rule before the seat
+        # Refused by the loader's at-most-one-operator rule before the profile
         # check even runs; either way nothing was written.
         assert "error" in result
         assert gateway.read_text(encoding="utf-8") == before
 
-    async def test_moving_the_seat_wholesale_is_staged_not_applied(
+    async def test_moving_the_profile_wholesale_is_staged_not_applied(
         self, gateway: pathlib.Path
     ) -> None:
         """The write the loader cannot catch: one valid operator, a different
         one. Replacing the whole `profiles` mapping keeps the config legal and
-        hands root to someone else, which is what the seat check is for.
+        hands root to someone else, which is what the profile check is for.
 
         Since #637 it is not refused — it waits for a person, and the file is
         untouched until they say yes."""
@@ -271,7 +271,7 @@ class TestRefusals:
                 "role": "operator",
                 # Its `enforcement: block` is carried over deliberately. Dropping
                 # it would stand ag's perimeter down as well, and a write that
-                # moves the seat AND downgrades defense is refused for needing
+                # moves the profile AND downgrades defense is refused for needing
                 # two approvals — which would pass this test for the wrong
                 # reason. One decision per write is the rule being respected
                 # here, not one being dodged.
@@ -284,7 +284,7 @@ class TestRefusals:
         result = await _as_operator("set", "profiles", moved, await _hash())
 
         assert result["staged"] is True
-        assert result["awaiting"] == "operator seat"
+        assert result["awaiting"] == "operator profile"
         # NOTHING returned here may be enough to approve with. The first cut of
         # #637 handed back a capability URL, which an agent reads out of its own
         # tool result and an operator with code execution can POST.
@@ -297,7 +297,7 @@ class TestRefusals:
         # this caller just wrote, and no more a capability than the profile
         # name beside it. What must never appear is the resolved secret, and
         # it cannot: `auth.bearer_token` is `Field(exclude=True)`, asserted
-        # directly in test_no_secret_bearing_field_reaches_the_seat_comparison.
+        # directly in test_no_secret_bearing_field_reaches_the_profile_comparison.
         assert "bearer_token=" not in repr(result)
         # The facts a person is shown name who holds root now and who would.
         shown = " ".join(result["shown_for_approval"].values())
@@ -305,23 +305,24 @@ class TestRefusals:
         assert gateway.read_text(encoding="utf-8") == before
 
     async def test_changing_the_operators_own_auth_is_staged(self, gateway: pathlib.Path) -> None:
-        """How a caller BECOMES the operator is the seat too, not just who holds it."""
+        """How a caller BECOMES the operator is part of the role too, not just
+        which profile holds it."""
         before = gateway.read_text(encoding="utf-8")
         result = await _as_operator(
             "set", "profiles.op.auth.bearer_token_env", "AG_TOKEN", await _hash()
         )
-        assert result["awaiting"] == "operator seat"
+        assert result["awaiting"] == "operator profile"
         assert gateway.read_text(encoding="utf-8") == before
 
-    async def test_a_credential_swap_on_an_unchanged_seat_is_visible(
+    async def test_a_credential_swap_on_an_unchanged_profile_is_visible(
         self, gateway: pathlib.Path
     ) -> None:
         """Staging it is only half the job: the page has to SAY what moved.
 
-        The facts used to be the set of profile names holding the seat, before
+        The facts used to be the set of profile names holding the profile, before
         and after. A write that swaps the credential behind an unchanged name
         leaves that set identical, so the most dangerous shape of this change —
-        a different key making someone root, same seat — reached a person as
+        a different key making someone root, same profile — reached a person as
         "op, then op" and read as a no-op. Found in QE by a reviewer who was
         told to decline, saw that page, and approved.
         """
@@ -329,10 +330,10 @@ class TestRefusals:
             "set", "profiles.op.auth.bearer_token_env", "AG_TOKEN", await _hash()
         )
         facts = result["shown_for_approval"]
-        assert result["awaiting"] == "operator seat"
+        assert result["awaiting"] == "operator profile"
 
         held = [v for k, v in facts.items() if "Holds" in k or "Would hold" in k]
-        assert held == ["op", "op"], "the seat itself does not move — that is the point"
+        assert held == ["op", "op"], "the profile itself does not move — that is the point"
 
         now = facts["op.auth now"]
         after = facts["op.auth after this change"]
@@ -340,32 +341,32 @@ class TestRefusals:
         assert "OP_TOKEN" in now
         assert "AG_TOKEN" in after
 
-    async def test_a_seat_field_too_long_to_read_is_refused_not_truncated(
+    async def test_a_profile_field_too_long_to_read_is_refused_not_truncated(
         self, gateway: pathlib.Path
     ) -> None:
         """Every fragment is length-checked, but the operator writes how many
         fragments there are. Burying the one line that matters under a thousand
         that do not would get a change approved by exhausting the reader, so
         past the limit the write is refused and nothing is staged."""
-        from trentina.tools.config import _SEAT_VALUE_CHARS, _seat_facts
+        from trentina.tools.config import _PROFILE_VALUE_CHARS, _profile_facts
 
-        seat = {"op": {"auth": {"bearer_token_env": "OP_TOKEN"}}}
-        flooded = {"op": {"auth": {f"f{n}": "x" * 40 for n in range(_SEAT_VALUE_CHARS // 10)}}}
+        profile = {"op": {"auth": {"bearer_token_env": "OP_TOKEN"}}}
+        flooded = {"op": {"auth": {f"f{n}": "x" * 40 for n in range(_PROFILE_VALUE_CHARS // 10)}}}
         with pytest.raises(pending.PendingError, match="too long to show"):
-            _seat_facts(seat, flooded)
+            _profile_facts(profile, flooded)
 
     def test_a_new_operator_shows_how_it_becomes_root(self) -> None:
-        """A seat MOVE has the same blindness as a credential swap if only the
-        names are shown. "josui, then ops" says the seat moved and nothing
+        """A profile MOVE has the same blindness as a credential swap if only the
+        names are shown. "josui, then ops" says the profile moved and nothing
         about how ops authenticates — and an allowlist admitting an address
         nobody recognises is exactly what that line would hide."""
-        from trentina.tools.config import _seat_facts
+        from trentina.tools.config import _profile_facts
 
-        facts = _seat_facts(
+        facts = _profile_facts(
             {"josui": {"auth": {"bearer_token_env": "JOSUI_TOKEN"}, "oauth": None}},
             {"ops": {"auth": None, "oauth": {"allowed_emails": ["stranger@example.com"]}}},
         )
-        assert facts["Holds the operator seat now"] == "josui"
+        assert facts["Holds the operator role now"] == "josui"
         assert facts["Would hold it after this change"] == "ops"
         assert facts["ops.oauth now"] == "absent"
         assert "stranger@example.com" in facts["ops.oauth after this change"]
@@ -373,44 +374,44 @@ class TestRefusals:
         assert facts["josui.auth after this change"] == "absent"
 
     @pytest.mark.parametrize(("value", "shown"), [(True, "yes"), (False, "no")])
-    def test_a_boolean_seat_field_reads_as_a_word(self, value: bool, shown: str) -> None:
+    def test_a_boolean_profile_field_reads_as_a_word(self, value: bool, shown: str) -> None:
         """``oauth.enabled`` is a bool, and "True" on an approval page is a
         Python repr rather than an answer to the question being asked."""
         from trentina.tools.config import _shown_value
 
         assert _shown_value(value) == shown
 
-    def test_the_seat_field_limit_is_exact(self) -> None:
+    def test_the_profile_field_limit_is_exact(self) -> None:
         """Exactly at the limit is shown; one character past it is refused.
 
         A bound tested only far above itself says nothing about where it
         actually falls, and this one decides between a page a person reads and
         a write that does not happen.
         """
-        from trentina.tools.config import _SEAT_VALUE_CHARS, _seat_facts, _shown_value
+        from trentina.tools.config import _PROFILE_VALUE_CHARS, _profile_facts, _shown_value
 
         # 14 fragments of 141, joined by 13 ", " separators: 1974 + 26 = 2000.
         fits = ["x" * 141] * 14
-        assert len(_shown_value(fits)) == _SEAT_VALUE_CHARS
-        shown = _seat_facts({"op": {"matrix_networks": None}}, {"op": {"matrix_networks": fits}})
+        assert len(_shown_value(fits)) == _PROFILE_VALUE_CHARS
+        shown = _profile_facts({"op": {"matrix_networks": None}}, {"op": {"matrix_networks": fits}})
         assert shown["op.matrix_networks after this change"].startswith("xxx")
 
         over = [*fits[:-1], "x" * 142]
-        assert len(_shown_value(over)) == _SEAT_VALUE_CHARS + 1
+        assert len(_shown_value(over)) == _PROFILE_VALUE_CHARS + 1
         with pytest.raises(pending.PendingError, match="too long to show"):
-            _seat_facts({"op": {"matrix_networks": None}}, {"op": {"matrix_networks": over}})
+            _profile_facts({"op": {"matrix_networks": None}}, {"op": {"matrix_networks": over}})
 
-    def test_an_absent_seat_field_is_not_shown_as_an_unset_one(self) -> None:
+    def test_an_absent_profile_field_is_not_shown_as_an_unset_one(self) -> None:
         """``dict.get`` alone reports a missing key and a key set to ``None``
         identically, so a change between them would vanish from the page."""
-        from trentina.tools.config import _seat_facts
+        from trentina.tools.config import _profile_facts
 
-        facts = _seat_facts({"op": {}}, {"op": {"auth": None}})
+        facts = _profile_facts({"op": {}}, {"op": {"auth": None}})
         assert facts["op.auth now"] == "absent"
         assert facts["op.auth after this change"] == "not set"
 
-    def test_no_secret_bearing_field_reaches_the_seat_comparison(self) -> None:
-        """What the seat facts render is whatever ``operator_seat`` dumped, and
+    def test_no_secret_bearing_field_reaches_the_profile_comparison(self) -> None:
+        """What the profile facts render is whatever ``operator_profile`` dumped, and
         that is now shown on a web page rather than merely compared.
 
         ``auth`` and ``oauth`` each carry a resolved ``SecretStr``. Both are
@@ -661,7 +662,7 @@ class TestWithNoApprover:
         monkeypatch.delenv("TRENTINA_APPROVAL_PASSWORD_HASH", raising=False)
         pending.clear()
 
-    async def test_a_seat_change_is_refused_outright(self, gateway: pathlib.Path) -> None:
+    async def test_a_profile_change_is_refused_outright(self, gateway: pathlib.Path) -> None:
         before = gateway.read_text(encoding="utf-8")
         result = await _as_operator(
             "set", "profiles.op.auth.bearer_token_env", "AG_TOKEN", await _hash()
@@ -689,7 +690,7 @@ class TestWithNoApprover:
 
 
 class TestOneApprovalPerWrite:
-    """Gatehouse, against the constitution: a write could move the seat AND
+    """Gatehouse, against the constitution: a write could move the profile AND
     pin trust, or pin two backends, while the page showed one of them — so the
     rest would be applied unseen on the back of the one a person read."""
 
@@ -725,7 +726,7 @@ class TestOneApprovalPerWrite:
             await _hash(),
         )
         assert "more than one approval" in result["error"]
-        assert "operator seat" in result["error"]
+        assert "operator profile" in result["error"]
         assert "federation trust" in result["error"]
         assert gateway.read_text(encoding="utf-8") == before
         assert pending.outstanding() == {}
@@ -796,12 +797,12 @@ _OPERATOR = {
 
 
 def _with_peers(peers: dict[str, Any]) -> dict[str, Any]:
-    """A config whose ``fed`` SEAT is shared with ``peers``.
+    """A config whose ``fed`` PROFILE is shared with ``peers``.
 
-    ``federation`` is declared on the seat whose tools are shared, and the
-    gateway derives the ``fed-federation`` ingress from it — so the seat keeps
-    its own ``auth``, and what the peer is offered is the seat's own remote
-    backends. ``role`` is left at its default agent, which a shared seat must
+    ``federation`` is declared on the profile whose tools are shared, and the
+    gateway derives the ``fed-federation`` ingress from it — so the profile keeps
+    its own ``auth``, and what the peer is offered is the profile's own remote
+    backends. ``role`` is left at its default agent, which a shared profile must
     be.
     """
     return {
@@ -841,10 +842,10 @@ class TestAdmittingAFederationPeer:
         # The peer already admitted is not re-proposed: a page listing it would
         # ask a person to approve what they approved before.
         assert "fed.alpha" not in shown
-        assert "may authenticate to that seat's federation ingress" in shown["What this means"]
+        assert "may authenticate to that profile's federation ingress" in shown["What this means"]
         # And what the link actually hands over, not just the key fingerprints:
-        # a derived ingress spends the SEAT's grants, so admitting a peer to a
-        # seat holding one sends that peer's calls out as the account a person
+        # a derived ingress spends the PROFILE's grants, so admitting a peer to a
+        # profile holding one sends that peer's calls out as the account a person
         # authorized here. That is the consent this page takes.
         # With its DESTINATION, not its name alone: the approval is bound to
         # the facts shown, so a name list would let two candidates differing
@@ -856,8 +857,8 @@ class TestAdmittingAFederationPeer:
         self, gateway: pathlib.Path
     ) -> None:
         """The sneaky one. The peer list looks the same afterwards and a
-        different gateway holds the seat, so a rule comparing names would see
-        nothing."""
+        different gateway now answers to that name, so a rule comparing names
+        would see nothing."""
         _rewrite(gateway, _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}}))
         before = gateway.read_text(encoding="utf-8")
 
@@ -918,10 +919,12 @@ class TestAdmittingAFederationPeer:
         assert result["awaiting"] == "federation peers"
         assert gateway.read_text(encoding="utf-8") == before
 
-    async def test_sharing_a_seat_for_the_first_time_is_staged(self, gateway: pathlib.Path) -> None:
-        """A seat that was not shared at all becoming shared is the widest form
+    async def test_sharing_a_profile_for_the_first_time_is_staged(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """A profile that was not shared at all becoming shared is the widest form
         of this write, and the one Fable called the consent moment that actually
-        moves: it creates the link AND hands the peer the seat's sign-ins."""
+        moves: it creates the link AND hands the peer the profile's sign-ins."""
         unshared = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
         del unshared["profiles"]["fed"]["federation"]
         _rewrite(gateway, unshared)
@@ -938,11 +941,11 @@ class TestAdmittingAFederationPeer:
         assert result["awaiting"] == "federation peers"
         assert gateway.read_text(encoding="utf-8") == before
 
-    async def test_the_page_says_the_seats_sign_in_will_serve_the_link(
+    async def test_the_page_says_the_profiles_sign_in_will_serve_the_link(
         self, gateway: pathlib.Path
     ) -> None:
-        """A derived ingress spends the SEAT's grant, so admitting a peer to a
-        seat holding one sends that peer's calls out as the account a person
+        """A derived ingress spends the PROFILE's grant, so admitting a peer to a
+        profile holding one sends that peer's calls out as the account a person
         authorized here. A page showing only key fingerprints would take that
         consent without asking for it."""
         document = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
@@ -1007,14 +1010,14 @@ class TestAdmittingAFederationPeer:
         with pytest.raises(pending.PendingError, match="not what is staged"):
             await pending.approve(pending.Kind.FEDERATION_PEERS, as_read)
 
-    async def test_the_page_says_the_offered_set_follows_the_seat(
+    async def test_the_page_says_the_offered_set_follows_the_profile(
         self, gateway: pathlib.Path
     ) -> None:
         """Naming destinations specifically would otherwise over-promise.
 
-        The offered set is DERIVED, so a backend added to the seat later is
+        The offered set is DERIVED, so a backend added to the profile later is
         shared with this peer on the next reload. The consent taken here is to
-        the SEAT, not to the snapshot of it the page lists, and a person
+        the PROFILE, not to the snapshot of it the page lists, and a person
         deciding needs to be told which of the two they are giving.
         """
         _rewrite(gateway, _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}}))
@@ -1169,10 +1172,10 @@ class TestAdmittingAFederationPeer:
 
         assert shown["Runs as your sign-in on fed"] == "none"
 
-    async def test_a_derived_ingress_does_not_double_count_its_seats_peers(
+    async def test_a_derived_ingress_does_not_double_count_its_profiles_peers(
         self, gateway: pathlib.Path
     ) -> None:
-        """The ingress carries the seat's block verbatim, so counting both would
+        """The ingress carries the profile's block verbatim, so counting both would
         show every peer twice and make a one-peer write look like two."""
         _rewrite(gateway, _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}}))
         config = (get_active_config() or pytest.fail("gone")).config
@@ -1630,11 +1633,11 @@ class TestGrantingAWayOut:
 
         assert result["applied"] is True
 
-    async def test_the_operator_seats_own_networks_stay_with_the_seat_rule(
+    async def test_the_operator_profiles_own_networks_stay_with_the_profile_rule(
         self, gateway: pathlib.Path
     ) -> None:
         """On an operator profile the same field decides who is ROOT, so
-        `operator_seat` owns it. Counting it as an egress grant too would make
+        `operator_profile` owns it. Counting it as an egress grant too would make
         one unsplittable field need two approvals, and the write would be
         refused with no way to comply."""
         _rewrite(
@@ -1658,7 +1661,7 @@ class TestGrantingAWayOut:
         )
 
         assert result["staged"] is True
-        assert result["awaiting"] == "operator seat"
+        assert result["awaiting"] == "operator profile"
         assert gateway.read_text(encoding="utf-8") == before
 
     def test_an_upstream_cannot_carry_a_credential_to_the_page(self) -> None:
@@ -1755,3 +1758,313 @@ class TestGrantingAWayOut:
         rendered = " ".join(shown.values())
         for secret in ("sk-the-real-secret", "sk-in-the-url", "sk-in-the-query", "user:"):
             assert secret not in rendered
+
+
+class TestAPeerBecomingAnOperator:
+    """6.0.0: a derived ingress carries its source's `role` and its internal
+    allowlist, so a write that mentions no peer can hand every peer on a link
+    this gateway's own admin tools.
+
+    Scott asked for the capability and `docs/federation.md` records what it
+    costs. What this guard stops is the capability arriving as a side effect of
+    a write that reads like something else.
+    """
+
+    @staticmethod
+    def _shared_operator(tools: list[str]) -> dict[str, Any]:
+        """A config whose SHARED profile is also the operator -- the shape
+        Scott runs on lotor, and the only shape in which this guard can fire.
+
+        There is no separate `op` profile, because there cannot be: a file may
+        declare one operator, and here it is the shared one. That also makes
+        the shared profile the CALLER, since `config_tool` is operator-only.
+        """
+        return {
+            "profiles": {
+                "fed": {
+                    "role": "operator",
+                    "auth": {"bearer_token_env": "FED_TOKEN"},
+                    "defense": {"provider": "ollama"},
+                    "federation": {"peers": {"alpha": {"public_key": _ED25519_PUBLIC}}},
+                    "backends": {
+                        "memory": {"url": "https://memory.example/mcp", "tools_allow": ["*"]},
+                        "web": {"url": "internal://web", "tools_allow": tools},
+                    },
+                }
+            }
+        }
+
+    @staticmethod
+    async def _as_fed(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        caller = (get_active_config() or pytest.fail("no active config")).config.profiles["fed"]
+        with profile_context(caller):
+            return await manage_config(*args, **kwargs)
+
+    async def _fed_hash(self) -> str:
+        return str((await self._as_fed("get"))["hash"])
+
+    async def test_widening_the_internal_allowlist_is_staged_not_applied(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The write names a tools_allow, not a peer. It hands every peer on
+        fed's link `config_tool` on this gateway."""
+        _rewrite(gateway, self._shared_operator(["read_part_tool"]))
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await self._as_fed(
+            "set",
+            "profiles.fed.backends.web.tools_allow",
+            ["read_part_tool", "config_tool"],
+            await self._fed_hash(),
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "peer becomes operator"
+        assert gateway.read_text(encoding="utf-8") == before
+        # NAMED, because "2 admin tools" is not a thing anybody can consent to
+        # and `config_tool` is not `read_part_tool`.
+        assert "config_tool" in " ".join(result["shown_for_approval"].values())
+
+    async def test_the_page_states_all_three_consequences(self, gateway: pathlib.Path) -> None:
+        """A person deciding this should not have to have read the docs."""
+        _rewrite(gateway, self._shared_operator(["read_part_tool"]))
+
+        await self._as_fed(
+            "set",
+            "profiles.fed.backends.web.tools_allow",
+            ["read_part_tool", "config_tool"],
+            await self._fed_hash(),
+        )
+
+        meaning = pending.outstanding()[pending.Kind.PEER_BECOMES_OPERATOR]["What this means"]
+        assert "revoking admin means breaking the link" in meaning
+        assert "trust pin" in meaning
+        assert "transitive" in meaning
+
+    async def test_narrowing_the_allowlist_applies_at_once(self, gateway: pathlib.Path) -> None:
+        """Widening only. A gate in front of tightening teaches an operator
+        that the page is something to get past."""
+        _rewrite(gateway, self._shared_operator(["read_part_tool", "config_tool"]))
+
+        result = await self._as_fed(
+            "set",
+            "profiles.fed.backends.web.tools_allow",
+            ["read_part_tool"],
+            await self._fed_hash(),
+        )
+
+        assert result.get("staged") is not True
+        assert pending.Kind.PEER_BECOMES_OPERATOR not in pending.outstanding()
+
+    async def test_a_shared_agent_profile_stages_nothing_here(self, gateway: pathlib.Path) -> None:
+        """The default did not move: sharing an agent profile is the 5.x
+        decision and this guard has no opinion on it."""
+        document = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
+        document["profiles"]["fed"]["backends"]["web"] = {
+            "url": "internal://web",
+            "tools_allow": ["read_part_tool"],
+        }
+        _rewrite(gateway, document)
+
+        await _as_operator(
+            "set",
+            "profiles.fed.backends.web.tools_allow",
+            ["read_part_tool", "config_tool"],
+            await _hash(),
+        )
+
+        assert pending.Kind.PEER_BECOMES_OPERATOR not in pending.outstanding()
+
+    async def test_promoting_a_shared_profile_beside_another_operator_is_refused(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """Not by this guard -- by the one-operator rule, and that interaction
+        is worth recording.
+
+        It means a shared profile cannot be promoted in ONE write while another
+        profile holds the role: the candidate has two operators and does not
+        validate. Getting to Scott's shape takes two writes, and the state
+        between them (no operator at all) is legal.
+        """
+        document = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
+        _rewrite(gateway, document)
+
+        result = await _as_operator("set", "profiles.fed.role", "operator", await _hash())
+
+        assert "at most one profile may declare role: operator" in result["error"]
+        assert pending.Kind.PEER_BECOMES_OPERATOR not in pending.outstanding()
+
+    async def test_promoting_a_shared_profile_with_no_admin_tools_still_stages(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """Gatehouse found this: the role itself is the grant.
+
+        A shared operator profile with no internal backend still derives an
+        ingress carrying `role: operator`, and the role is transitive. Guarding
+        the proposal on a non-empty tool list let exactly that case through
+        unstaged -- the peer became an operator with no page shown.
+        """
+        document = self._shared_operator(["read_part_tool"])
+        del document["profiles"]["fed"]["backends"]["web"]
+        _rewrite(gateway, document)
+
+        result = await self._as_fed(
+            "set",
+            "profiles.fed.backends.web",
+            {"url": "internal://web", "tools_allow": ["read_part_tool"]},
+            await self._fed_hash(),
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "peer becomes operator"
+
+    async def test_admitting_a_peer_to_an_operator_profile_says_so(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """Also Gatehouse's. Adding a peer leaves the tool list unchanged, so
+        the operator proposal does not fire and the PEER page is the only thing
+        a person reads. It has to say the peer becomes an operator.
+
+        Stated on the peer page rather than as a second proposal, because a
+        write needing two approvals is refused rather than shown as one -- and
+        admitting a peer to an operator profile is a legitimate write.
+        """
+        _rewrite(gateway, self._shared_operator(["read_part_tool", "config_tool"]))
+
+        result = await self._as_fed(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await self._fed_hash(),
+        )
+
+        assert result["awaiting"] == "federation peers"
+        row = result["shown_for_approval"]["Does a peer administer this gateway through fed"]
+        assert row.startswith("YES")
+        assert "config_tool" in row
+        assert "breaking the link" in row
+
+    async def test_and_an_agent_profiles_peer_page_says_it_does_not(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The row is present either way. A missing row reads as "the page did
+        not mention it", which is the ambiguity this page exists to remove."""
+        _rewrite(gateway, _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}}))
+
+        result = await _as_operator(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await _hash(),
+        )
+
+        row = result["shown_for_approval"]["Does a peer administer this gateway through fed"]
+        assert row.startswith("No")
+
+    async def test_adding_federation_to_the_operator_needs_two_approvals_so_is_refused(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The other way a profile becomes shared-and-operator, and it cannot be
+        done in one write.
+
+        Gatehouse asked for a test of the `name not in was` branch in
+        `_operator_peer_proposals` -- the one for a profile NEWLY
+        shared-and-operator. Reaching it through `config_tool` turns out to be
+        impossible, and this records why rather than leaving the branch looking
+        testable:
+
+        * Promoting a different profile to operator is refused by the
+          one-operator rule, since the candidate declares two (tested above).
+        * Adding `federation` to the profile that is already the operator
+          raises BOTH the peer proposal and this one, and a write needing two
+          approvals is refused rather than shown as one -- a page can put one
+          decision in front of a person and the rest would ride along unread.
+
+        So the branch is a safety net on a path `config_tool` cannot currently
+        take, reached only by a hand edit. It is kept because the rule is
+        computed on the loaded candidate, so it stays correct if a future write
+        shape does reach it -- but nobody should read it as live.
+        """
+        document = self._shared_operator(["read_part_tool"])
+        del document["profiles"]["fed"]["federation"]
+        _rewrite(gateway, document)
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await self._as_fed(
+            "set",
+            "profiles.fed.federation",
+            {"peers": {"alpha": {"public_key": _ED25519_PUBLIC}}},
+            await self._fed_hash(),
+        )
+
+        assert "error" in result, result
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_more_admin_tools_than_a_page_can_show_is_refused_untouched(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The tools are NAMED on the page, so the list is bounded like every
+        other collapsed grant.
+
+        Truncating is the wrong alternative: the approval binds to the digest of
+        what was rendered, so a shortened list would take consent for tools the
+        person never saw. Past the limit the write is refused and the change is
+        made in the file, where a person reads a diff.
+        """
+        from trentina.tools.config import _MAX_PROPOSAL_ROWS
+
+        at_limit = [f"admin{n}_tool" for n in range(_MAX_PROPOSAL_ROWS)]
+        _rewrite(gateway, self._shared_operator(at_limit))
+
+        fits = await self._as_fed(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await self._fed_hash(),
+        )
+        assert fits["staged"] is True
+        assert (
+            "admin0_tool"
+            in fits["shown_for_approval"]["Does a peer administer this gateway through fed"]
+        )
+
+        pending.clear()
+        _rewrite(gateway, self._shared_operator([*at_limit, "one_too_many_tool"]))
+        before = gateway.read_text(encoding="utf-8")
+
+        over = await self._as_fed(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await self._fed_hash(),
+        )
+
+        assert "error" in over, over
+        assert "more than an approval page can show" in over["error"]
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_more_granted_profiles_than_a_page_can_show_is_refused(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The other bound on the same page, and the reason it is only a bound.
+
+        One write cannot promote twenty-five profiles: the grant is keyed by
+        shared profile name and only one WRITTEN profile may be the operator, so
+        a candidate that loads carries at most one. Which is why this calls
+        `_operator_peer_facts` directly and asserts only the refusal — there is
+        no at-limit side to build without a config that would not load.
+
+        It is kept rather than deleted because the rule is computed on the
+        loaded candidate: if multiple written operators are ever allowed, the
+        page must refuse to collapse them rather than grow.
+        """
+        from trentina.gateway.config_guard import ConfigWriteError
+        from trentina.tools.config import _MAX_PROPOSAL_ROWS, _operator_peer_facts
+
+        _rewrite(gateway, self._shared_operator(["read_part_tool"]))
+        after = (get_active_config() or pytest.fail("no active config")).config
+        granted = {f"shared{n}": "config_tool" for n in range(_MAX_PROPOSAL_ROWS + 1)}
+
+        with pytest.raises(ConfigWriteError) as refused:
+            _operator_peer_facts(granted, after)
+        assert "more than an approval page can show" in refused.value.payload["error"]

@@ -1,4 +1,4 @@
-# Two agents that share a backend only for reading, and one inbox seat whose
+# Two agents that share a backend only for reading, and one inbox profile whose
 # outbound tool is guarded. profile_lint reports nothing.
 profiles:
   reader-a:

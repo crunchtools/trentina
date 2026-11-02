@@ -58,6 +58,7 @@ from .reload import reload_profiles
 
 if TYPE_CHECKING:
     from ..gateway.loader import ActiveConfig, GatewayConfig
+    from ..gateway.profile import Backend
 
 logger = logging.getLogger(__name__)
 
@@ -201,20 +202,20 @@ def _fingerprint(pem: str) -> str:
     return f"sha256:{hashlib.sha256(pem.encode('utf-8')).hexdigest()[:16]}"
 
 
-#: A key absent from one side's seat, told apart from a key that is present
-#: and ``None``. ``operator_seat`` emits the same four keys for every profile
+#: A key absent from one side's profile, told apart from a key that is present
+#: and ``None``. ``operator_profile`` emits the same four keys for every profile
 #: today, so the two cannot differ — but this loop reads the union of both key
 #: sets, which is a promise that they may, and ``dict.get`` alone would show
 #: "absent" and "set to nothing" as the same unchanged field.
 _MISSING = object()
 
-#: The most one rendered seat field may run to. Every fragment inside it is
+#: The most one rendered profile field may run to. Every fragment inside it is
 #: already held to ``checked_display``'s length, but it is the operator who
 #: writes how MANY fragments there are — an OAuth allowlist is a list it
 #: controls. Burying the one line that matters under a thousand that do not is
 #: a way to get a change approved, so past this the write is refused rather
 #: than shown unreadably.
-_SEAT_VALUE_CHARS = 2000
+_PROFILE_VALUE_CHARS = 2000
 
 
 def _shown_value(value: Any) -> str:
@@ -226,7 +227,7 @@ def _shown_value(value: Any) -> str:
     dozen addresses — for being longer than one displayable string may be.
 
     Named for what it does rather than for the first page that needed it: the
-    defense table renders through it too, and `_seat_value` read as though seat
+    defense table renders through it too, and `_profile_value` read as though profile
     formatting were being applied to something else.
     """
     if value is None:
@@ -237,44 +238,44 @@ def _shown_value(value: Any) -> str:
         return ", ".join(_shown_value(item) for item in value) if value else "empty"
     if isinstance(value, dict):
         shown = [
-            f"{pending.checked_display(str(key), what='an operator seat field')}"
+            f"{pending.checked_display(str(key), what='an operator profile field')}"
             f"={_shown_value(item)}"
             for key, item in sorted(value.items())
             if item is not None
         ]
         return ", ".join(shown) if shown else "nothing set"
-    return pending.checked_display(str(value), what="an operator seat value")
+    return pending.checked_display(str(value), what="an operator profile value")
 
 
-def _seat_shown(value: Any, aspect: str) -> str:
+def _profile_shown(value: Any, aspect: str) -> str:
     """One side of a changed aspect, or a refusal if it cannot be read."""
     if value is _MISSING:
         return "absent"
     rendered = _shown_value(value)
-    if len(rendered) > _SEAT_VALUE_CHARS:
+    if len(rendered) > _PROFILE_VALUE_CHARS:
         raise pending.PendingError(
-            f"the operator seat's {aspect} is too long to show for approval; "
+            f"the operator profile's {aspect} is too long to show for approval; "
             "change it in the file, where a person can read the diff"
         )
     return rendered
 
 
-def _seat_facts(before: dict[str, Any], after: dict[str, Any]) -> dict[str, str]:
-    """What a person needs to see about a seat change.
+def _profile_facts(before: dict[str, Any], after: dict[str, Any]) -> dict[str, str]:
+    """What a person needs to see about a profile change.
 
     Who holds it is not enough, and saying only that was a real hole.
-    ``config_guard.operator_seat`` compares how a caller BECOMES the operator
+    ``config_guard.operator_profile`` compares how a caller BECOMES the operator
     as well — ``auth``, ``oauth``, and the source networks that pick the
     profile — so a write can swap the credential that makes someone root
-    while the seat's name never moves. Rendered as names alone that reaches a
+    while the profile's name never moves. Rendered as names alone that reaches a
     person as "josui, then josui": a no-op they have no reason to decline.
-    It is also the shape that matters most, because moving the seat to a new
+    It is also the shape that matters most, because moving the ROLE to a new
     profile is visible and changing the key behind an unchanged name is not.
     QE found it the hard way — told to decline, shown that page, approved.
 
     So every aspect that differs is named, with its before and its after,
-    across the UNION of both sides. A profile entering the seat needs that as
-    much as one already in it: "josui, then ops" says the seat moved and
+    across the UNION of both sides. A profile entering the role needs that as
+    much as one already in it: "josui, then ops" says the profile moved and
     nothing about how ops becomes root, and an OAuth block admitting an
     address nobody recognises is exactly the payload that line would hide.
     A side not holding the profile at all renders as ``absent``.
@@ -282,28 +283,28 @@ def _seat_facts(before: dict[str, Any], after: dict[str, Any]) -> dict[str, str]
     No credential VALUE can arrive here. The two secret-bearing fields in
     these models, ``auth.bearer_token`` and ``oauth.client_secret``, are
     declared ``Field(exclude=True)`` and so are absent from the dump
-    ``operator_seat`` compares — asserted in ``tests/test_config_tool.py``,
+    ``operator_profile`` compares — asserted in ``tests/test_config_tool.py``,
     because a new secret field without that marker would otherwise reach a
     web page.
     """
     facts = {
-        "Holds the operator seat now": pending.checked_display(
-            ", ".join(sorted(before)) or "nobody", what="the current operator seat"
+        "Holds the operator role now": pending.checked_display(
+            ", ".join(sorted(before)) or "nobody", what="the current operator profile"
         ),
         "Would hold it after this change": pending.checked_display(
-            ", ".join(sorted(after)) or "nobody", what="the proposed operator seat"
+            ", ".join(sorted(after)) or "nobody", what="the proposed operator profile"
         ),
     }
     for name in sorted(set(before) | set(after)):
-        shown = pending.checked_display(name, what="an operator seat name")
+        shown = pending.checked_display(name, what="an operator profile name")
         was, now = before.get(name, {}), after.get(name, {})
         for aspect in sorted(set(was) | set(now)):
             had, has = was.get(aspect, _MISSING), now.get(aspect, _MISSING)
             if had == has:
                 continue
-            facts[f"{shown}.{aspect} now"] = _seat_shown(had, aspect)
-            facts[f"{shown}.{aspect} after this change"] = _seat_shown(has, aspect)
-    facts["What this means"] = "Whoever holds the seat is root on this gateway."
+            facts[f"{shown}.{aspect} now"] = _profile_shown(had, aspect)
+            facts[f"{shown}.{aspect} after this change"] = _profile_shown(has, aspect)
+    facts["What this means"] = "Whoever holds the role is root on this gateway."
     return facts
 
 
@@ -370,8 +371,45 @@ def _granted_facts(rendered: dict[str, str], *, naming: str, meaning: str) -> di
     return facts
 
 
+def _operator_peer_facts(granted: dict[str, str], after: GatewayConfig) -> dict[str, str]:
+    """What a person needs to see before a peer becomes an operator here.
+
+    The tools are named rather than counted, because "7 admin tools" is not a
+    thing anybody can consent to and `config_tool` is not the same decision as
+    `quarantine_stats`. They are this gateway's own tool names, not a peer's
+    text, so they need no fingerprinting — but they go through
+    ``checked_display`` anyway, since the profile NAME beside them comes from
+    the file and the row is rendered as one.
+
+    The "What this means" row carries the three consequences
+    ``docs/federation.md`` records, because the page is where the decision is
+    actually made and a person reading it should not have to have read the docs.
+    """
+    if len(granted) > _MAX_PROPOSAL_ROWS:
+        raise _too_many("federation operator grants", len(granted))
+    facts = _granted_facts(
+        {
+            where: pending.checked_display(tools, what="an internal tool list")
+            for where, tools in granted.items()
+        },
+        naming="a shared profile name",
+        meaning=(
+            "Every peer on that profile's federation link becomes an OPERATOR of "
+            "this gateway and may call the tools listed above. Three things follow. "
+            "The peer's signing key is now its admin credential too, so revoking "
+            "admin means breaking the link. Admin responses cross on the trust pin "
+            "if the peer has one, meaning this gateway judged them and the peer "
+            "does not. And the role is transitive: a peer that shares a profile "
+            "consuming this link passes it on."
+        ),
+    )
+    for shared_name in sorted(granted):
+        facts.update(_shared_profile_facts(shared_name, after))
+    return facts
+
+
 def _peer_facts(added: dict[str, str], after: GatewayConfig) -> dict[str, str]:
-    """What a person needs to see about peers being admitted to a shared seat.
+    """What a person needs to see about peers being admitted to a shared profile.
 
     One proposal for the whole write rather than one per peer, unlike a trust
     pin: a peer list is a list an operator legitimately writes in one go, and
@@ -382,9 +420,9 @@ def _peer_facts(added: dict[str, str], after: GatewayConfig) -> dict[str, str]:
     other end can read down a phone. The whole PEM is a wall of base64 nobody
     checks by eye.
 
-    Beside the keys, what the link actually hands over: which of the seat's
-    backends cross, and which of those run on the seat's own sign-in. A derived
-    ingress spends the SEAT's OAuth grants, so admitting a peer to a seat that
+    Beside the keys, what the link actually hands over: which of the profile's
+    backends cross, and which of those run on the profile's own sign-in. A derived
+    ingress spends the PROFILE's OAuth grants, so admitting a peer to a profile that
     holds one means that peer's calls go out as the account a person authorized
     here. That is the consent this page exists to take, and a page showing only
     key fingerprints would not have asked for it.
@@ -400,20 +438,58 @@ def _peer_facts(added: dict[str, str], after: GatewayConfig) -> dict[str, str]:
         {where: _fingerprint(key) for where, key in added.items()},
         naming="a federation peer name",
         meaning=(
-            "Each key above may authenticate to that seat's federation ingress as "
-            "that peer, and reach whatever that seat's backends reach. It does NOT "
+            "Each key above may authenticate to that profile's federation ingress as "
+            "that peer, and reach whatever that profile's backends reach. It does NOT "
             "let the peer's own scan be believed in place of this gateway's - that "
             "is a separate approval."
         ),
     )
     shared = {where.partition(".")[0] for where in added}
-    for seat in sorted(shared):
-        facts.update(_shared_seat_facts(seat, after))
+    for shared_name in sorted(shared):
+        facts.update(_shared_profile_facts(shared_name, after))
     return facts
 
 
-def _shared_seat_facts(seat: str, after: GatewayConfig) -> dict[str, str]:
-    """What crosses the link for one seat: its backends, where they point, and
+def _rendered_destinations(offered: dict[str, Backend]) -> list[str]:
+    """Each offered backend as ``<name> -> <scheme>://<authority><path>``.
+
+    Named WITH its destination because an approval is bound to the facts shown
+    (``pending.digest_of``) and covers nothing absent from them: two candidates
+    differing only in where a backend points would otherwise render the same
+    string and share a digest.
+
+    Secret-bearing parts of the URL never render. Userinfo, query and fragment
+    are replaced by one fingerprint of the whole URL, which still moves when
+    they move. ``scrub`` puts an env reference back where the loader
+    substituted a held secret into the path (#268), so a person sees which
+    variable is in it and ``/admin`` still differs from ``/mcp``.
+    """
+    rendered = []
+    for name in sorted(offered):
+        url = offered[name].url
+        split = urlsplit(url)
+        host = split.hostname or "?"
+        # `hostname` strips an IPv6 literal's brackets, and `port` can be 0.
+        # Without both of these, two different destinations render the same
+        # string — and a rendering that collides is a digest that collides.
+        if ":" in host:
+            host = f"[{host}]"
+        authority = f"{host}:{split.port}" if split.port is not None else host
+        where = f"{split.scheme}://{authority}{split.path}"
+        # `urlsplit` reports a missing query or fragment as "" and missing
+        # userinfo as None, so the two halves of this cannot be tested the
+        # same way: `https://:secret@host/mcp` has `username == ""`, which is
+        # falsy, and a password that would then never be fingerprinted.
+        userinfo = split.username is not None or split.password is not None
+        if split.query or split.fragment or userinfo:
+            where = f"{where} ({redact_source(url)})"
+        shown = scrub(where)
+        rendered.append(f"{name} -> {pending.checked_display(shown, what='a backend destination')}")
+    return rendered
+
+
+def _shared_profile_facts(name: str, after: GatewayConfig) -> dict[str, str]:
+    """What crosses the link for one profile: its backends, where they point, and
     its sign-ins.
 
     Both rows are always present, "none" included. A missing row reads as "the
@@ -427,7 +503,7 @@ def _shared_seat_facts(seat: str, after: GatewayConfig) -> dict[str, str]:
     is root over its own ``url`` fields — so "share era and wiki with this
     peer" could be agreed while ``wiki`` pointed somewhere the person never
     read. It is not a privilege the peer gains (it reaches a strict subset of
-    what the seat's own agent does, and the agent could call a repointed
+    what the profile's own agent does, and the agent could call a repointed
     backend itself) but it is consent given against an incomplete description,
     which is the one thing this page exists not to do.
 
@@ -448,50 +524,58 @@ def _shared_seat_facts(seat: str, after: GatewayConfig) -> dict[str, str]:
     The person sees which variable is in the path, ``/admin`` still differs
     from ``/mcp``, and the digest still moves when the path moves.
     """
-    profile = after.profiles[seat]
+    profile = after.profiles[name]
     offered = federation_link.offerable_backends(profile)
     signed_in = sorted(name for name, backend in offered.items() if backend.auth is not None)
-    label = pending.checked_display(seat, what="a profile name")
-    destinations = []
-    for name in sorted(offered):
-        url = offered[name].url
-        split = urlsplit(url)
-        host = split.hostname or "?"
-        # `hostname` strips an IPv6 literal's brackets, and `port` can be 0.
-        # Without both of these, two different destinations render the same
-        # string — and a rendering that collides is a digest that collides.
-        if ":" in host:
-            host = f"[{host}]"
-        authority = f"{host}:{split.port}" if split.port is not None else host
-        where = f"{split.scheme}://{authority}{split.path}"
-        # `urlsplit` reports a missing query or fragment as "" and missing
-        # userinfo as None, so the two halves of this cannot be tested the
-        # same way: `https://:secret@host/mcp` has `username == ""`, which is
-        # falsy, and a password that would then never be fingerprinted.
-        userinfo = split.username is not None or split.password is not None
-        if split.query or split.fragment or userinfo:
-            where = f"{where} ({redact_source(url)})"
-        shown = scrub(where)
-        destinations.append(
-            f"{name} -> {pending.checked_display(shown, what='a backend destination')}"
-        )
+    label = pending.checked_display(name, what="a profile name")
+    destinations = _rendered_destinations(offered)
+    # Whether the peer becomes an OPERATOR here, on every page showing this
+    # profile. Admitting a peer to an already-operator profile leaves the tool
+    # list unchanged, so the operator proposal does not fire and this page is
+    # the only one a person reads. Not a second proposal: a write needing two
+    # approvals is refused, and this write is legitimate. Tool names come from
+    # the file and are checked; the sentence around them is ours.
+    admin = sorted(
+        {
+            pending.checked_display(tool, what="an internal tool name")
+            for backend in profile.backends.values()
+            if backend.is_internal
+            for tool in backend.tools_allow
+        }
+    )
+    # Bounded like every other collapsed grant on these pages. A list longer
+    # than a page can show readably is not a list anybody consents to, and the
+    # alternative -- truncating it -- would take consent for tools the person
+    # never saw, since the approval binds to the digest of what was rendered.
+    if profile.role == "operator" and len(admin) > _MAX_PROPOSAL_ROWS:
+        raise _too_many("internal tools reachable by a peer", len(admin))
+    role_row = (
+        "YES - this profile is the operator, so a peer admitted here becomes an "
+        f"OPERATOR of this gateway and may call: {', '.join(admin) or 'nothing yet'}. "
+        "Revoking admin means breaking the link, since the peer's signing key is "
+        "the same credential."
+        if profile.role == "operator"
+        else "No - this profile is an agent, so a peer reaches its backends and "
+        "none of this gateway's own tools."
+    )
     return {
         f"Tools shared from {label}": ", ".join(destinations) or "none",
+        f"Does a peer administer this gateway through {label}": role_row,
         # What the row above does NOT say on its own. The offered set is
-        # DERIVED, so it follows the seat: a backend added later is shared on
-        # the next reload, and the consent taken here was to the seat rather
+        # DERIVED, so it follows the profile: a backend added later is shared on
+        # the next reload, and the consent taken here was to the profile rather
         # than to a snapshot of it. Saying so is the honest version of a page
         # that now names destinations specifically. Staging every widening
-        # instead was the alternative and is worse — a seat gains backends
+        # instead was the alternative and is worse — a profile gains backends
         # often, and a gate in front of each one teaches a person that the page
         # is something to get past.
         f"If {label} changes later": (
             "those are its backends today. The offered set is derived from the "
-            "seat, so one added to it later is shared with this peer on the "
+            "profile, so one added to it later is shared with this peer on the "
             "next reload, without another approval"
         ),
         f"Runs as your sign-in on {label}": (
-            f"{', '.join(signed_in)} - this seat's sign-ins will serve the link, so "
+            f"{', '.join(signed_in)} - this profile's sign-ins will serve the link, so "
             "the peer's calls go out as the account authorized here"
         )
         if signed_in
@@ -594,11 +678,11 @@ _Proposal = tuple[pending.Kind, dict[str, str]]
 _DEFENSE_ASPECTS = ("modes", "enforcement", "llm_completion")
 
 
-def _seat_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Proposal]:
+def _profile_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Proposal]:
     """Who the operator is, and how a caller becomes one."""
-    was = config_guard.operator_seat(before.profiles)
-    now = config_guard.operator_seat(after.profiles)
-    return [] if was == now else [(pending.Kind.OPERATOR_SEAT, _seat_facts(was, now))]
+    was = config_guard.operator_profile(before.profiles)
+    now = config_guard.operator_profile(after.profiles)
+    return [] if was == now else [(pending.Kind.OPERATOR_PROFILE, _profile_facts(was, now))]
 
 
 def _trust_proposals(
@@ -630,6 +714,44 @@ def _peer_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Propos
         config_guard.federation_peers(after.profiles),
     )
     return [(pending.Kind.FEDERATION_PEERS, _peer_facts(admitted, after))] if admitted else []
+
+
+def _operator_peer_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Proposal]:
+    """A shared profile's peers gaining this gateway's own admin tools (6.0.0).
+
+    Three unrelated-looking writes reach it: putting ``role: operator`` on a
+    profile that carries ``federation``, adding ``federation`` to the profile
+    that is already the operator, or widening that profile's own
+    ``internal://`` allowlist. None of them mentions a peer, and all three hand
+    every peer on the link ``config_tool`` and ``reload_profiles``.
+
+    Widening only, like the rest: taking the role back off, or narrowing the
+    allowlist, applies at once. A gate in front of tightening teaches an
+    operator that the page is something to get past.
+    """
+    # Not `config_guard.widened`: it reports any CHANGED value, right for a
+    # peer's key and wrong for a tool set, where dropping one is a narrowing.
+    #
+    # Two things make a grant: a profile newly shared-and-operator, whatever
+    # its tool list holds, because the role is the grant and it is transitive;
+    # or an already-shared operator gaining a tool. The page shows the WHOLE
+    # surface either way -- an approval binds to the facts a person read, so
+    # showing two new tools out of nine would consent to the nine.
+    was = config_guard.peer_becomes_operator(before.profiles)
+    now = config_guard.peer_becomes_operator(after.profiles)
+    granted = {
+        name: ", ".join(tools) if tools else "none - the role alone, for now"
+        for name, tools in now.items()
+        if name not in was or set(tools) - set(was[name])
+    }
+    if not granted:
+        return []
+    return [
+        (
+            pending.Kind.PEER_BECOMES_OPERATOR,
+            _operator_peer_facts(granted, after),
+        )
+    ]
 
 
 def _defense_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Proposal]:
@@ -687,9 +809,10 @@ def _needs_approval(
     """
     before = active.config
     proposals = [
-        *_seat_proposals(before, after),
+        *_profile_proposals(before, after),
         *_trust_proposals(before, after, action, keys, value),
         *_peer_proposals(before, after),
+        *_operator_peer_proposals(before, after),
         *_defense_proposals(before, after),
         *_egress_proposals(before, after),
     ]
@@ -697,7 +820,7 @@ def _needs_approval(
         return None
     if len(proposals) > 1:
         # The constitution requires the approval to state WHAT IS BEING
-        # CHANGED. One write can move the seat and pin trust, or pin two
+        # CHANGED. One write can move the profile and pin trust, or pin two
         # backends at once, and a page can only put one decision in front of a
         # person — so the rest would be applied unseen on the back of the one
         # they read. Refuse and make the operator propose them one at a time;

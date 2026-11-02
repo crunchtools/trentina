@@ -8,7 +8,7 @@ login, and a name the caller does not hold is refused the same way whether
 or not it exists elsewhere.
 
 Starting a login is gated by the backend entry's ``auth.self_authorize``.
-The operator seat is not: it is the box owner's, acting on its own backends.
+The operator profile is not: it is the box owner's, acting on its own backends.
 Nothing here returns a token, a client secret or a PKCE verifier.
 """
 

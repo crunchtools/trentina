@@ -55,17 +55,17 @@ def _keypair() -> tuple[str, str]:
 
 
 def _ingress(*, private_pem: str | None) -> Profile:
-    """The ingress derived from a shared seat. With a key it signs verdicts.
+    """The ingress derived from a shared profile. With a key it signs verdicts.
 
     Built by the real derivation rather than hand-written, so these tests
-    exercise the profile a gateway actually serves: role agent, the seat's
-    remote backend offered, the seat's own internal surface replaced by the
+    exercise the profile a gateway actually serves: role agent, the profile's
+    remote backend offered, the profile's own internal surface replaced by the
     paging reader, and no second way in.
     """
     federation = FederationConfig(peers={"breetai": FederationPeer(public_key=_PEER_PUB)})
     if private_pem is not None:
         federation.secondary_key = SecretStr(private_pem)
-    seat = Profile(
+    profile = Profile(
         name="lotor",
         auth=AuthConfig(bearer_token_env="LOTOR_TOKEN"),
         federation=federation,
@@ -74,7 +74,7 @@ def _ingress(*, private_pem: str | None) -> Profile:
             "web": Backend(url="internal://web", tools_allow=["*"]),
         },
     )
-    return derive_ingress(seat)
+    return derive_ingress(profile)
 
 
 def _deliver(profile: Profile, result: dict, *, warning=None, mode=Mode.FLAG):
@@ -176,7 +176,7 @@ def _served_ingress(private_pem: str) -> Profile:
     # short_names off so `remote__echo` resolves without a name registry; a real
     # remote backend so the response is judged (an internal tool would not be).
     # `short_names` is one of the fields derivation CARRIES, so setting it on
-    # the seat is what sets it on the link.
+    # the profile is what sets it on the link.
     federation = FederationConfig(peers={"breetai": FederationPeer(public_key=_PEER_PUB)})
     federation.secondary_key = SecretStr(private_pem)
     return derive_ingress(

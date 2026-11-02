@@ -1,17 +1,17 @@
-"""A seat shares itself, over the wire, between two real gateways (#592, 5.0.0).
+"""A profile shares itself, over the wire, between two real gateways (#592, 5.0.0).
 
 `test_federation_link.py` proves the derivation as a function and
-`test_federation_grants.py` proves a link spends its seat's grant. Neither of
+`test_federation_grants.py` proves a link spends its profile's grant. Neither of
 them puts bytes on a socket, and the claim this release makes is an end-to-end
-one: write ONE `federation` block on a seat and a peer gateway serves that
-seat's tools. This is that claim over the wire — two real gateways on loopback,
+one: write ONE `federation` block on a profile and a peer gateway serves that
+profile's tools. This is that claim over the wire — two real gateways on loopback,
 a real primary JWT, a real remote MCP backend behind the secondary's perimeter,
 and a tool call that comes back with its answer.
 
-Four narrower properties follow it, each standing its own pair: that the seat's
+Four narrower properties follow it, each standing its own pair: that the profile's
 own native surface does not cross, that a consumed `federated:` backend is not
-re-exported, that several peers authenticate to one seat, and that a backend
-added to the seat reaches the peer with no second edit. Each is also covered at
+re-exported, that several peers authenticate to one profile, and that a backend
+added to the profile reaches the peer with no second edit. Each is also covered at
 the loader and model level in `test_federation_link.py`; the value of asserting
 them again here is that a derivation which is right in the registry and wrong
 on the wire is still wrong.
@@ -54,12 +54,12 @@ from trentina.gateway.profile import (
 
 pytestmark = pytest.mark.asyncio
 
-SEAT = "josui"
+PROFILE = "josui"
 PEER = "breetai"
 
 
 def wiki_tools() -> list:
-    """The seat's remote backend, named so no assertion can confuse its tools
+    """The profile's remote backend, named so no assertion can confuse its tools
     with the gateway's own internal surface."""
 
     def wiki_read(page: str) -> str:
@@ -72,7 +72,7 @@ def wiki_tools() -> list:
 def gateway_surface() -> list:
     """What `internal://` serves — the gateway's whole native surface, admin
     tools included. The derived ingress gets a FRESH internal backend allowing
-    `read_part_tool` alone rather than a filtered copy of the seat's, and these
+    `read_part_tool` alone rather than a filtered copy of the profile's, and these
     names are how the test can tell the two apart on the wire.
     """
 
@@ -92,7 +92,7 @@ def gateway_surface() -> list:
 
 
 def keypair() -> tuple[str, str]:
-    """An Ed25519 (private PEM, public PEM) pair, as a peer and a seat hold it."""
+    """An Ed25519 (private PEM, public PEM) pair, as a peer and a profile hold it."""
     private = Ed25519PrivateKey.generate()
     return (
         private.private_bytes(
@@ -107,23 +107,23 @@ def keypair() -> tuple[str, str]:
 
 
 def peer_gateway(private_pem: str, name: str = PEER):
-    """A primary that mounts the ingress DERIVED from the seat.
+    """A primary that mounts the ingress DERIVED from the profile.
 
-    The URL names `<seat>-federation` through `ingress_name`, the same function
+    The URL names `<profile>-federation` through `ingress_name`, the same function
     the loader derives with — nothing wrote that profile. The primary JWT is
     audience-pinned to that name, so getting it wrong fails to authenticate
     rather than 404ing, which is why the test asserts on the tools served and
     on a call's answer rather than on a status code.
 
     `name` is the peer's own profile name, and it is load-bearing rather than
-    cosmetic: the primary signs its JWT as the calling profile, and the seat
+    cosmetic: the primary signs its JWT as the calling profile, and the profile
     looks that name up in `federation.peers` to find the key to verify with. A
     second peer is a second name, which is what the multi-peer test turns on.
     """
 
     def build(secondary_port: int) -> Profile:
         backend = Backend(
-            url=f"http://127.0.0.1:{secondary_port}/{ingress_name(SEAT)}/mcp",
+            url=f"http://127.0.0.1:{secondary_port}/{ingress_name(PROFILE)}/mcp",
             federated=FederatedConfig(primary_key_env="PEER_KEY"),
         )
         assert backend.federated is not None
@@ -142,43 +142,43 @@ def peer_gateway(private_pem: str, name: str = PEER):
     return build
 
 
-def shared_seat(peers: dict[str, str], backends: dict[str, Backend]) -> Profile:
-    """A plain agent seat that happens to share itself.
+def shared_profile(peers: dict[str, str], backends: dict[str, Backend]) -> Profile:
+    """A plain agent profile that happens to share itself.
 
     Its own `auth`, so it is still reachable by its own agent, and one
     `federation` block. Nothing else: the ingress is derived.
     """
-    seat = Profile(
-        name=SEAT,
-        auth=AuthConfig(bearer_token_env="SEAT_TOKEN"),
+    profile = Profile(
+        name=PROFILE,
+        auth=AuthConfig(bearer_token_env="PROFILE_TOKEN"),
         federation=FederationConfig(
             peers={name: FederationPeer(public_key=pem) for name, pem in peers.items()}
         ),
         backends=backends,
     )
-    assert seat.auth is not None
-    seat.auth.bearer_token = SecretStr("seat-token-only-the-agent-holds")
-    return seat
+    assert profile.auth is not None
+    profile.auth.bearer_token = SecretStr("profile-token-only-the-agent-holds")
+    return profile
 
 
-async def test_one_block_shares_the_seat_and_the_peer_can_call_it() -> None:
-    """The whole configuration is `federation` on the seat.
+async def test_one_block_shares_the_profile_and_the_peer_can_call_it() -> None:
+    """The whole configuration is `federation` on the profile.
 
     No ingress profile, no hand-listed offered set, no second bearer, no static
     token on the wire. The peer signs a primary JWT for an audience only the
-    derivation names, is served the seat's remote backend, and calls a tool on
+    derivation names, is served the profile's remote backend, and calls a tool on
     it — so the answer came back through two perimeters.
     """
     private_pem, public_pem = keypair()
 
     async with serving_mcp_backend(wiki_tools()) as wiki_port:
-        seat = shared_seat(
+        profile = shared_profile(
             {PEER: public_pem}, {"wiki": Backend(url=f"http://127.0.0.1:{wiki_port}/mcp")}
         )
 
         async with (
             federated_pair(
-                tools=gateway_surface(), secondary=seat, primary=peer_gateway(private_pem)
+                tools=gateway_surface(), secondary=profile, primary=peer_gateway(private_pem)
             ) as fed,
             fed.primary_client() as peer,
         ):
@@ -190,7 +190,7 @@ async def test_one_block_shares_the_seat_and_the_peer_can_call_it() -> None:
     assert "wiki:Federation" in json.dumps(result), result
 
     # The ingress's internal backend is CONSTRUCTED, allowing the paging reader
-    # alone, rather than carried from the seat — so the gateway's native
+    # alone, rather than carried from the profile — so the gateway's native
     # surface reaches a peer nowhere. This is the failure only the wire shows:
     # a derived `internal://trentina` allowing `*` would hand the peer the
     # operator's own tools, and the loader would have nothing to object to,
@@ -208,9 +208,9 @@ async def test_one_block_shares_the_seat_and_the_peer_can_call_it() -> None:
 async def test_the_gateways_own_native_surface_does_not_cross() -> None:
     """The directed edge, on its own pair.
 
-    The seat's `internal://` backend is its whole native surface, admin tools
+    The profile's `internal://` backend is its whole native surface, admin tools
     included. The derived ingress gets a FRESH internal backend allowing
-    `read_part_tool` alone rather than a filtered copy of the seat's — and the
+    `read_part_tool` alone rather than a filtered copy of the profile's — and the
     paging reader is then withheld from what is SERVED (`filter._withheld`),
     because `parts.py` proxies a peer's paged response itself, in order, with
     the lead-in, stopping at a flagged part. Offering the reader to the peer as
@@ -223,12 +223,12 @@ async def test_the_gateways_own_native_surface_does_not_cross() -> None:
     """
     private_pem, public_pem = keypair()
     async with serving_mcp_backend(wiki_tools()) as wiki_port:
-        seat = shared_seat(
+        profile = shared_profile(
             {PEER: public_pem}, {"wiki": Backend(url=f"http://127.0.0.1:{wiki_port}/mcp")}
         )
         async with (
             federated_pair(
-                tools=gateway_surface(), secondary=seat, primary=peer_gateway(private_pem)
+                tools=gateway_surface(), secondary=profile, primary=peer_gateway(private_pem)
             ) as fed,
             fed.primary_client() as peer,
         ):
@@ -242,9 +242,9 @@ async def test_the_gateways_own_native_surface_does_not_cross() -> None:
 async def test_a_consumed_federated_backend_is_not_re_exported() -> None:
     """A -> B -> C is unsayable, over the wire and not merely in the registry.
 
-    One seat may both consume a peer and share itself (5.0.0 dropped the
+    One profile may both consume a peer and share itself (5.0.0 dropped the
     one-profile-one-role clause). What keeps that from chaining is structural:
-    `offerable_backends` excludes every `federated` backend, so a seat's own
+    `offerable_backends` excludes every `federated` backend, so a profile's own
     upstream link is never in the set its own peers are offered.
 
     The consumed link here points at a port nothing is listening on, and that
@@ -258,7 +258,7 @@ async def test_a_consumed_federated_backend_is_not_re_exported() -> None:
         federated=FederatedConfig(),
     )
     async with serving_mcp_backend(wiki_tools()) as wiki_port:
-        seat = shared_seat(
+        profile = shared_profile(
             {PEER: public_pem},
             {
                 "wiki": Backend(url=f"http://127.0.0.1:{wiki_port}/mcp"),
@@ -267,19 +267,19 @@ async def test_a_consumed_federated_backend_is_not_re_exported() -> None:
         )
         async with (
             federated_pair(
-                tools=gateway_surface(), secondary=seat, primary=peer_gateway(private_pem)
+                tools=gateway_surface(), secondary=profile, primary=peer_gateway(private_pem)
             ) as fed,
             fed.primary_client() as peer,
         ):
             names = {tool["name"] for tool in await peer.list_tools()}
 
-    # The seat's own remote backend crosses; the one it consumes from elsewhere
+    # The profile's own remote backend crosses; the one it consumes from elsewhere
     # does not, under any namespacing.
     assert any(name.endswith("wiki_read") for name in names), sorted(names)
     assert not any("upstream" in name or "peer" in name for name in names), sorted(names)
 
 
-async def test_two_peers_authenticate_to_one_seat() -> None:
+async def test_two_peers_authenticate_to_one_profile() -> None:
     """One `federation` block, two peers, each with its own key.
 
     The single-peer rule is gone in 5.0.0, and the thing worth asserting is that
@@ -296,11 +296,13 @@ async def test_two_peers_authenticate_to_one_seat() -> None:
     served: dict[str, set[str]] = {}
     for peer_name, peer_private in ((PEER, alpha_private), ("kagetora", beta_private)):
         async with serving_mcp_backend(wiki_tools()) as wiki_port:
-            seat = shared_seat(peers, {"wiki": Backend(url=f"http://127.0.0.1:{wiki_port}/mcp")})
+            profile = shared_profile(
+                peers, {"wiki": Backend(url=f"http://127.0.0.1:{wiki_port}/mcp")}
+            )
             async with (
                 federated_pair(
                     tools=gateway_surface(),
-                    secondary=seat,
+                    secondary=profile,
                     primary=peer_gateway(peer_private, name=peer_name),
                 ) as fed,
                 fed.primary_client() as peer,
@@ -311,16 +313,16 @@ async def test_two_peers_authenticate_to_one_seat() -> None:
         assert any(name.endswith("wiki_read") for name in names), (peer_name, sorted(names))
 
 
-async def test_a_backend_added_to_the_seat_needs_no_second_edit() -> None:
+async def test_a_backend_added_to_the_profile_needs_no_second_edit() -> None:
     """The property the whole release is for.
 
     Before 5.0.0 the offered set was hand-listed on a separate ingress profile,
-    so adding a backend to a seat and expecting a peer to see it was the most
+    so adding a backend to a profile and expecting a peer to see it was the most
     natural mistake an operator could make, and it failed silently. Now the set
     is derived, so the second edit does not exist.
 
     Asserted as before-and-after on the SAME peer: one pair with one backend,
-    one with two, and nothing between them but the seat's `backends` mapping.
+    one with two, and nothing between them but the profile's `backends` mapping.
     """
     private_pem, public_pem = keypair()
 
@@ -338,11 +340,11 @@ async def test_a_backend_added_to_the_seat_needs_no_second_edit() -> None:
             if with_ledger:
                 ledger_port = await stack.enter_async_context(serving_mcp_backend(extra_tools()))
                 backends["ledger"] = Backend(url=f"http://127.0.0.1:{ledger_port}/mcp")
-            seat = shared_seat({PEER: public_pem}, backends)
+            profile = shared_profile({PEER: public_pem}, backends)
             fed = await stack.enter_async_context(
                 federated_pair(
                     tools=gateway_surface(),
-                    secondary=seat,
+                    secondary=profile,
                     primary=peer_gateway(private_pem),
                 )
             )
@@ -356,3 +358,55 @@ async def test_a_backend_added_to_the_seat_needs_no_second_edit() -> None:
     assert any(name.endswith("ledger_read") for name in after), sorted(after)
     # And the first backend is still there: adding one is not replacing the set.
     assert any(name.endswith("wiki_read") for name in after), sorted(after)
+
+
+async def test_an_operator_profiles_peer_calls_an_admin_tool_over_the_wire() -> None:
+    """6.0.0, Scott's instruction, and the only test that proves it reaches a
+    peer rather than merely reaching the registry.
+
+    The two halves have to arrive together. Carrying `role` alone would change
+    nothing, because the admin tools are served by `internal://` and the
+    derived backend allowed one tool; carrying the surface alone would leave
+    `require_operator` refusing the call. So this asserts the end that matters:
+    the peer lists an admin tool AND gets its answer back.
+
+    Compare `test_the_gateways_own_native_surface_does_not_cross` directly
+    above, which is the same wire with an AGENT profile and shows the admin
+    tools absent. The two together are the whole of what Scott changed.
+    """
+    private_pem, public_pem = keypair()
+    async with serving_mcp_backend(wiki_tools()) as wiki_port:
+        shared = shared_profile(
+            {PEER: public_pem}, {"wiki": Backend(url=f"http://127.0.0.1:{wiki_port}/mcp")}
+        )
+        # The one difference from the agent case next door.
+        shared = shared.model_copy(
+            update={
+                "role": "operator",
+                "backends": {
+                    **shared.backends,
+                    "web": Backend(
+                        url="internal://web",
+                        tools_allow=["read_part_tool", "reload_profiles"],
+                    ),
+                },
+            }
+        )
+
+        async with (
+            federated_pair(
+                tools=gateway_surface(), secondary=shared, primary=peer_gateway(private_pem)
+            ) as fed,
+            fed.primary_client() as peer,
+        ):
+            names = {tool["name"] for tool in await peer.list_tools()}
+            served = sorted(name for name in names if name.endswith("reload_profiles"))
+            assert len(served) == 1, f"expected one reload_profiles, got {sorted(names)}"
+            result = await peer.call_tool(served[0], {})
+
+    # The answer came back, so the call was not merely offered but admitted:
+    # `require_operator` saw an operator, and the internal backend served it.
+    assert "reloaded" in json.dumps(result), result
+    # `config` is NOT on the shared profile's internal allowlist, so it does
+    # not cross. The surface follows the profile; it is not simply opened.
+    assert not any(name.endswith("config") for name in names), sorted(names)

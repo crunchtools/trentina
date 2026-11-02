@@ -10,6 +10,123 @@ under that name.
 
 ## [Unreleased]
 
+## [6.0.0] - 2026-11-02
+
+A major because of the two config rules below, not because of their size. Both
+refuse a file that loaded before, and profile naming and YAML parsing are
+outside every declared preview surface — constitution rule 1: a change reaching
+outside them is a major, and "mostly confined" is not confined. The federation
+work in this release would have been a minor on its own.
+
+### Upgrading
+
+The gateway refuses to START on items 1 and 3, so a missed one is loud rather
+than silent. `profile_lint` reports item 3 as `duplicate-key` and does not check
+item 1 at all — and a clean lint has never been a guarantee that the gateway
+will start, because the lint reads the raw YAML and never calls
+`load_profiles`. The pre-flight that is a guarantee is the real load in item 3.
+
+1. **Rename any profile named `agent` or `operator`.** Role names are reserved
+   as profile names, and so is any role added later. `role: operator` says what
+   a profile may do; a profile *called* `operator` says nothing and reads as
+   though it did, and both appear in the same sentences — "the operator
+   profile", "an operator reload", `/gateway/operator/mcp`. The rule is
+   equality, not a substring, so `operator-prime` and `agents` still load.
+2. **Anything reading `quarantine_stats` or the audit by these names needs
+   updating.** Three strings a consumer can key on have changed, and the
+   gateway does not emit the old ones: `federation.shared[].seat` is now
+   `federation.shared[].profile`; the staged approval kind `operator seat` is
+   now `operator profile`, which appears in approval requests and in
+   `gateway_calls`; and the approval page's row `Holds the operator seat now`
+   is now `Holds the operator role now`. Rows already in the audit are not
+   rewritten, so a query spanning the upgrade sees both spellings.
+3. **Remove any duplicate key from `profiles.yaml`.** A key written twice in
+   one mapping now refuses the whole file, naming each repeat and its line.
+   `yaml.safe_load` kept the LAST one and said nothing, so the block a reader
+   sees first was not the block that ran. A key arriving through a
+   `<<: *anchor` merge AND written explicitly is *not* a duplicate — that is
+   the override merge keys exist for, and it keeps working.
+
+   `python -m trentina.gateway.profile_lint <profiles.yaml>` now reports this as
+   `duplicate-key`. But the lint works on raw YAML and never calls
+   `load_profiles`, so a clean lint has never been a guarantee the gateway will
+   start. The pre-flight that is, is a real load inside the image being
+   deployed, with the unit's mounts and user:
+
+   ```
+   podman run --rm -v <config>:/config:ro --userns keep-id:uid=65532,gid=65532 \
+     --env-file <env> quay.io/crunchtools/trentina:6.0.0 \
+     python -c "from trentina.gateway.loader import load_profiles; \
+                print(len(load_profiles('/config/profiles.yaml').profiles))"
+   ```
+
+### Changed
+
+- **"Seat" is gone; everything is a "profile".** One word for one concept, at
+  Scott's instruction — the two words meant the same thing and turned up in the
+  same sentences. Three of the renames are visible rather than internal:
+
+  - `quarantine_stats`'s `federation.shared` rows name the sharing profile
+    under `profile` where they said `seat`.
+  - The approval page and the audit spell the staged kind `operator profile`
+    where they said `operator seat`.
+  - The approval page's operator row reads `Holds the operator role now`,
+    because "seat" there meant the **role** rather than a profile — one of
+    several places where a mechanical rename would have produced nonsense
+    ("moving the profile to a new profile"). Where the old word meant the role,
+    it now says role.
+
+  Released CHANGELOG sections keep the word they shipped with: they describe
+  what was released, and rewriting them would be revisionism.
+- **The operator role crosses a federation link.** A profile may now hold
+  `role: operator` and share itself, and the derived ingress carries both the
+  role and that profile's own `internal://` allowlist — so one agent
+  administering a gateway administers its peer through the link it already has.
+  Both halves are required: carrying the role alone leaves every admin tool
+  unreachable, because they are served by `internal://`.
+
+  Only for an operator profile: a shared **agent** profile's peer still gets
+  the paging reader alone, as in 5.x. And a shared operator profile must list
+  its internal tools by exact name — `*` and `read_*` are refused at load,
+  because a pattern names nothing a person can approve and covers every tool a
+  later release adds.
+
+  This gives up half of the directed edge 5.0.0 established. Three
+  consequences, none of them a bug and all of them the trade — the peer's
+  signing key is now its admin credential too, so revoking admin means
+  breaking the link; admin responses arrive on the `trust_verdict` pin if the
+  peer holds one, meaning the secondary judged this gateway's configuration and
+  the primary did not; and the role is transitive, though the offered set still
+  excludes federated backends so the tools are not. `docs/federation.md` has
+  the alternative that keeps all three (a second ordinary backend with its own
+  bearer) for anyone who wants it.
+
+  Promoting a shared profile, or widening its internal allowlist, is staged for
+  a person as `peer becomes operator`; narrowing either applies at once. The
+  promotion cannot happen in one write while another profile holds the role,
+  since the candidate would declare two operators and not validate.
+
+  Two things deliberately do not follow the role. `_check_operator` counts only
+  WRITTEN operators, because a shared operator profile and its derivation are
+  both operators and counting both refuses every such file. And `find_operator`
+  skips derivations, because the gateway's own model calls run as whatever it
+  returns, and taking the first match would let dict order choose the service
+  identity — exactly the defect #138 removed. That second one is silent: the
+  wrong identity has a provider and a key, so the calls succeed and bill to the
+  wrong place.
+- **A duplicate key in `profiles.yaml` is refused instead of silently
+  resolved.** One of mine reached production: a profile carried `defense:`
+  twice, the gateway ran the second, and the comment on the first explained a
+  block that had already lost. They happened to agree, and nothing anywhere
+  would have said so if they had not. `config_tool`'s contract is that the file
+  a person maintains and reviews in a diff is the file in force, and a
+  duplicate key broke that quietly. The scan walks the YAML node tree rather
+  than the loaded mapping, because the evidence is gone by the time there is a
+  mapping and because constructing one trips over merge keys.
+- **A profile may not be named after a role.** Reserved set read from the role
+  enum rather than a hand-kept list, so a role added later is reserved by
+  having been added.
+
 ## [5.0.1] - 2026-11-01
 
 ### Fixed

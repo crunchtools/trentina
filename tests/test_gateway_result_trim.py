@@ -37,7 +37,7 @@ DOC = {"issues": [{"key": "RT-1", "summary": "disk full"}], "total": 1}
 def _profile(*, minify: bool = False) -> Profile:
     p = Profile(
         short_names=False,  # calls below use <backend>__<tool>
-        name="agent",
+        name="tenant",
         auth=AuthConfig(bearer_token_env="TEST"),
         defense=DefenseConfig(enforcement="flag", modes=["flag"]),
         backends={"rt": Backend(url="http://rt:8000/mcp")},

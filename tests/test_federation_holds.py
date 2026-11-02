@@ -109,7 +109,7 @@ def test_only_the_exact_tool_held_reason_maps(meta: dict[str, Any] | None) -> No
 
 
 def _ingress() -> Profile:
-    # A DERIVED ingress (`federation_of` names its seat): it carries no way in
+    # A DERIVED ingress (`federation_of` names its profile): it carries no way in
     # of its own, because `peers` is its authentication and a second one would
     # admit a caller with no peer and no sub.
     return Profile(
@@ -369,14 +369,16 @@ def test_a_non_federated_backend_is_never_needs_auth_mapped() -> None:
     assert _federated_needs_auth_refusal(_primary(plain), plain, "lotor", call, stripped=0) is None
 
 
-def test_a_peer_is_offered_the_paging_reader_and_nothing_else() -> None:
-    """`internal://` serves the whole native surface, admin tools included, so
-    the allowlist is by exact name and a glob is refused as written.
+def test_a_peer_is_always_offered_the_paging_reader() -> None:
+    """What this rule checks after 6.0.0.
 
-    `backend_auth_tool` was briefly allowed here (#656), so a peer could start
-    the ingress profile's own OAuth sign-in. It is gone: a derived ingress
-    spends its SEAT's grants, so the human signs in once on the seat, through a
-    tool no peer can reach.
+    It used to be the ceiling -- `read_part_tool` and nothing else, whatever
+    the shared profile declared, which was half of the directed edge. Since
+    6.0.0 the derived internal surface follows the shared profile (Scott's
+    instruction; `federation_link.CARRIED` and `docs/federation.md`), so what
+    is left to check here is the FLOOR: `parts.py` proxies a peer's paged
+    response through this backend part by part, so an ingress without the
+    reader breaks paging for the peer while every other tool keeps working.
     """
 
     def ingress(allow: list[str]) -> Profile:
@@ -391,8 +393,12 @@ def test_a_peer_is_offered_the_paging_reader_and_nothing_else() -> None:
         )
 
     assert ingress(["read_part_tool"]).federation is not None
+    # An admin tool beside the reader is now a question for
+    # `loader._check_federation_internal_surface`, which can see the profile it
+    # was derived from; this rule cannot and no longer pretends to.
+    assert ingress(["read_part_tool", "tool_pins_tool"]).federation is not None
     for refused in (["tool_pins_tool"], ["*"], ["backend_*"], ["backend_auth_tool"]):
-        with pytest.raises(ValueError, match="may offer a peer only"):
+        with pytest.raises(ValueError, match="does not offer 'read_part_tool'"):
             ingress(refused)
 
 
@@ -408,8 +414,8 @@ def test_two_peers_on_one_link_are_fine_now() -> None:
     peer's calls used. So the model refused two peers plus that tool.
 
     Neither half is reachable now. The tool is not offerable, and the grant
-    belongs to the seat, so no peer can start or revoke one. Two peers is an
-    ordinary configuration again — which it has to be, since a seat shared with
+    belongs to the profile, so no peer can start or revoke one. Two peers is an
+    ordinary configuration again — which it has to be, since a profile shared with
     both a laptop and a phone is the thing a person actually wants.
     """
     second = (

@@ -114,8 +114,8 @@ class TestFixtures:
         ]
         assert profile_lint.check_shared_write_backends(profiles_file) == []
 
-    def test_assistants_are_exempt_and_swarm_seats_are_not(self) -> None:
-        """Interactive assistants hold broad tools on purpose; an unattended seat
+    def test_assistants_are_exempt_and_swarm_profiles_are_not(self) -> None:
+        """Interactive assistants hold broad tools on purpose; an unattended profile
         writing where they read is still the channel the check is for."""
         memory = {"url": "http://mcp-m:1/mcp", "tools_allow": ["memory_store"]}
         profiles: dict[str, Any] = {
@@ -155,17 +155,17 @@ class TestFixtures:
 
 
 class TestOAuthSubjects:
-    """#458: an OAuth seat should name the account, not just the address."""
+    """#458: an OAuth profile should name the account, not just the address."""
 
     @staticmethod
     def _file(**oauth: Any) -> dict[str, Any]:
-        return {"profiles": {"seat": {"oauth": {"enabled": True, **oauth}}}}
+        return {"profiles": {"profile": {"oauth": {"enabled": True, **oauth}}}}
 
     def test_email_only_is_a_finding(self) -> None:
         profiles_file = self._file(allowed_emails=["a@b.co"])
         (finding,) = profile_lint.check_oauth_subjects(profiles_file)
         assert finding.code == "oauth-email-only"
-        assert "'seat'" in finding.message
+        assert "'profile'" in finding.message
 
     def test_pinned_subjects_are_clean(self) -> None:
         profiles_file = self._file(allowed_emails=["a@b.co"], allowed_subjects=[1001])
@@ -173,7 +173,7 @@ class TestOAuthSubjects:
 
     def test_oauth_off_is_clean(self) -> None:
         profiles_file = {
-            "profiles": {"seat": {"oauth": {"enabled": False, "allowed_emails": ["a@b.co"]}}}
+            "profiles": {"profile": {"oauth": {"enabled": False, "allowed_emails": ["a@b.co"]}}}
         }
         assert profile_lint.check_oauth_subjects(profiles_file) == []
 
@@ -215,7 +215,7 @@ class TestEntrypoint:
 
 
 class TestSelfAuthorize:
-    """#479: an agent seat that can start its own backend logins."""
+    """#479: an agent profile that can start its own backend logins."""
 
     @staticmethod
     def _file(role: str = "agent", **extra: Any) -> dict[str, Any]:
@@ -223,26 +223,26 @@ class TestSelfAuthorize:
             "url": "https://era.example/mcp",
             "auth": {"type": "oauth", "self_authorize": True},
         }
-        return {"profiles": {"seat": {"role": role, "backends": {"era": backend}}}, **extra}
+        return {"profiles": {"profile": {"role": role, "backends": {"era": backend}}}, **extra}
 
-    def test_an_agent_seat_is_a_finding(self) -> None:
+    def test_an_agent_profile_is_a_finding(self) -> None:
         (finding,) = profile_lint.check_self_authorize(self._file())
         assert finding.code == "agent-self-authorize"
         assert "'era'" in finding.message
 
     def test_the_operator_and_assistants_are_clean(self) -> None:
         assert profile_lint.check_self_authorize(self._file("operator")) == []
-        exempt = self._file(assistants={"profiles": ["seat"], "reason": "interactive"})
+        exempt = self._file(assistants={"profiles": ["profile"], "reason": "interactive"})
         assert profile_lint.check_self_authorize(exempt) == []
 
     def test_off_is_clean(self) -> None:
         profiles_file = self._file()
-        profiles_file["profiles"]["seat"]["backends"]["era"]["auth"]["self_authorize"] = False
+        profiles_file["profiles"]["profile"]["backends"]["era"]["auth"]["self_authorize"] = False
         assert profile_lint.check_self_authorize(profiles_file) == []
 
 
 class TestFederationLinks:
-    """What a shared seat hands a peer, where it was probably not meant."""
+    """What a shared profile hands a peer, where it was probably not meant."""
 
     @staticmethod
     def _file(federation: dict[str, Any] | None = None, **backend: Any) -> dict[str, Any]:

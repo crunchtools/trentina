@@ -28,6 +28,7 @@ from .errors import ProfileConfigError
 from .federation_link import derive_all
 from .filter import filter_tools
 from .profile import (
+    FEDERATION_INTERNAL_REQUIRED,
     GIT_REMOTE_NAME_RE,
     HONEYTOKEN_MIN_CHARS,
     INGRESS_SUFFIX,
@@ -178,7 +179,7 @@ def _declared_secret_env_names(node: Any) -> set[str]:
     is referenced without being declared, so it is not collected. What is
     refused is a header naming a variable the file declares as a credential of
     its own — an operator agent writing a remote backend that points at this
-    gateway's operator endpoint with ``Bearer ${OP_TOKEN}``, which is no seat
+    gateway's operator endpoint with ``Bearer ${OP_TOKEN}``, which is no profile
     change and no ``trust_verdict``, so it applied unwatched and handed an
     outside gateway ``config_tool``. Naming the variable was enough; the agent
     never had to read its value.
@@ -391,13 +392,79 @@ def _check_renamed_federation_keys(name: str, body: dict[str, Any]) -> None:
                 )
 
 
-#: Default ports, so one secondary spelled with and without its own is one
-#: secondary rather than two.
+#: YAML's merge key (``<<: *anchor``). Repeating it is YAML's business, not a
+#: duplicated config key, so the scan below steps over it.
+_MERGE_TAG = "tag:yaml.org,2002:merge"
+
+
+def duplicate_keys(raw_text: str) -> list[tuple[str, int]]:
+    """Every key written twice in one mapping, with the line of the repeat.
+
+    ``yaml.safe_load`` keeps the LAST of a repeated key and reports nothing, so
+    by the time there is data to inspect the evidence is gone. One of mine
+    reached production: lotor's ``josui`` carried ``defense:`` twice, the
+    gateway ran the second, and the comment on the first explained a block that
+    had already lost. They happened to agree. Nothing would have said so if
+    they had not — not the loader, not ``profile_lint``, not a pre-flight.
+
+    Walks the NODE tree rather than the constructed data, for two reasons. The
+    evidence above is only in the nodes. And constructing a mapping to inspect
+    it trips over ``<<:`` merge keys, which real files use heavily: a loader
+    that resolves one raises ``could not determine a constructor for the tag
+    ':merge'`` instead of reporting the duplicate it was asked about.
+
+    Walking nodes also draws the line in the right place. A key that arrives
+    through ``<<: *anchor`` AND is written explicitly is NOT a duplicate — it
+    is the override the merge key exists for, and flagging it would make
+    anchors unusable. Only a key written twice in the same mapping is.
+
+    A syntax error returns nothing: ``safe_load`` has already reported it, with
+    a message that is careful about quoting source lines.
+
+    Args:
+        raw_text: the file's text, as read.
+
+    Returns:
+        ``(key, line)`` for each repeat, in source order.
+    """
+    try:
+        root = yaml.compose(raw_text)
+    except yaml.YAMLError:
+        return []
+
+    # Ordered by the key's byte OFFSET, not its line: the walk is depth-first
+    # over a stack, so sibling mappings come off it in reverse, and two
+    # duplicates on one line (flow style, `{a: 1, a: 2}`) share a line number
+    # and cannot be ordered by it at all.
+    found: list[tuple[int, str, int]] = []
+    # Aliases resolve to the SAME node object, so a shared anchor is reachable
+    # by several paths and a recursive one is reachable from itself. Visit each
+    # node once.
+    seen_nodes: set[int] = set()
+    stack: list[yaml.Node] = [root] if root is not None else []
+    while stack:
+        node = stack.pop()
+        if id(node) in seen_nodes:
+            continue
+        seen_nodes.add(id(node))
+        if isinstance(node, yaml.MappingNode):
+            keys: set[str] = set()
+            for key, value in node.value:
+                if isinstance(key, yaml.ScalarNode) and key.tag != _MERGE_TAG:
+                    if key.value in keys:
+                        found.append((key.start_mark.index, key.value, key.start_mark.line + 1))
+                    keys.add(key.value)
+                stack.append(value)
+        elif isinstance(node, yaml.SequenceNode):
+            stack.extend(node.value)
+    return [(key, line) for _offset, key, line in sorted(found)]
+
+
 def _refuse_derived_fields(config_path: Path, profiles_section: dict[str, Any]) -> None:
     """Refuse a file that writes a field only the loader may set.
 
-    ``federation_of`` names the seat whose OAuth grants a derived ingress
-    spends. A hand-written profile setting it would claim another seat's grants
+    ``federation_of`` names the profile whose OAuth grants a derived ingress
+    spends. A hand-written profile setting it would claim another profile's grants
     — the field is privilege, so it has to be loader-derived and never
     caller-chosen. Checked on the RAW mapping, before any profile is built,
     because ``exclude=True`` keeps it out of a dump but not out of an input.
@@ -406,27 +473,82 @@ def _refuse_derived_fields(config_path: Path, profiles_section: dict[str, Any]) 
         if isinstance(body, dict) and "federation_of" in body:
             raise ProfileConfigError(
                 f"Profile {name!r}: 'federation_of' is set by the gateway, not by "
-                f"{config_path}. It names the seat a derived federation ingress "
+                f"{config_path}. It names the profile a derived federation ingress "
                 "acts for, including whose OAuth grants it spends. Declare "
-                "`federation` on the seat instead and the ingress is derived."
+                "`federation` on the profile instead and the ingress is derived."
             )
 
 
 def _add_derived_ingresses(registry: dict[str, Profile]) -> None:
-    """Add each shared seat's derived federation ingress to ``registry``.
+    """Add each shared profile's derived federation ingress to ``registry``.
 
     A collision is refused rather than resolved: whichever way it went, an
     operator would have one profile named after another's link, and the
-    derived one carries the authority to spend that seat's grants.
+    derived one carries the authority to spend that profile's grants.
     """
     for name, ingress in derive_all(registry).items():
         if name in registry:
             raise ProfileConfigError(
-                f"Profile {name!r} collides with the ingress derived from seat "
+                f"Profile {name!r} collides with the ingress derived from profile "
                 f"{ingress.federation_of!r}. A profile name ending "
                 f"{INGRESS_SUFFIX!r} is reserved for a derived federation ingress."
             )
         registry[name] = ingress
+
+
+def _check_federation_internal_surface(registry: dict[str, Profile]) -> None:
+    """A derived ingress offers no internal tool its source does not.
+
+    The second opinion that ``profile.a_derived_ingress_is_bounded`` used to
+    give and cannot any more. Through 5.x the derivation CONSTRUCTED the
+    internal backend with the paging reader alone, so a per-profile validator
+    could hold it to a constant. Since 6.0.0 it carries the shared profile's own
+    internal allowlist, and whether that is right depends on a profile the
+    model validator cannot see.
+
+    So it is checked here, where the registry is. The cost of a derivation bug
+    is a peer holding an admin tool nobody offered it, which is worth a check
+    that does not share code with the derivation: this one restates the rule and
+    re-reads both profiles, rather than trusting ``_internal_allow``.
+
+    Restating the rule means the ROLE too, not just the source's list. Only an
+    operator profile's allowlist crosses; an agent's derivation gets
+    ``FEDERATION_INTERNAL_REQUIRED`` and nothing else, whatever its own internal
+    backend allows. Comparing an agent ingress against its source's list instead
+    would accept a widened agent ingress — and accept it silently where that
+    list is ``["*"]``, which is the common spelling.
+
+    A glob can therefore only appear on an agent source, where it is now
+    ignored rather than treated as permission. An operator profile that is
+    shared may not use one at all: ``a_shared_profile_is_shareable`` refuses it
+    while the model is built, before this runs.
+
+    Raises:
+        ProfileConfigError: an ingress offers an internal tool its source does
+            not, which can only be a bug in this package.
+    """
+    for name, ingress in registry.items():
+        source_name = ingress.federation_of
+        if source_name is None:
+            continue
+        source = registry.get(source_name)
+        if source is None:
+            continue
+        offered: set[str] = set()
+        for backend in ingress.backends.values():
+            if backend.is_internal:
+                offered.update(backend.tools_allow)
+        allowed: set[str] = set(FEDERATION_INTERNAL_REQUIRED)
+        if source.role == "operator":
+            for backend in source.backends.values():
+                if backend.is_internal:
+                    allowed.update(backend.tools_allow)
+        if extra := sorted(offered - allowed):
+            raise ProfileConfigError(
+                f"Derived ingress {name!r} offers internal tool(s) {extra} that "
+                f"profile {source_name!r} does not. This is a bug in the "
+                "derivation, not in the file."
+            )
 
 
 def _check_federation_audience(registry: dict[str, Profile]) -> None:
@@ -529,12 +651,12 @@ def _check_federation_topology(name: str, profile: Profile) -> None:
     Loop-freedom used to be the other half of this check: a profile with
     ``federation.peers`` could not also mount a ``federated`` backend, because
     one ``Profile`` serving both roles would have its single-flight aggregate
-    build wait on a peer whose build waited back. Since 5.0.0 a seat's ingress
+    build wait on a peer whose build waited back. Since 5.0.0 a profile's ingress
     is DERIVED, so those are two objects and there is no deadlock — and
     ``federation_link.offerable_backends`` excludes every ``federated`` backend,
-    so a link cannot re-export the next gateway whatever the seat mounts. A to B
+    so a link cannot re-export the next gateway whatever the profile mounts. A to B
     to C is now unsayable rather than refused, which is what
-    ``docs/federation.md`` always claimed. One seat may therefore both consume a
+    ``docs/federation.md`` always claimed. One profile may therefore both consume a
     peer's tools and share its own, which is what an operator wanted all along.
     """
     federated = {bn: b for bn, b in profile.backends.items() if b.federated is not None}
@@ -1086,7 +1208,13 @@ def _check_operator(registry: dict[str, Profile]) -> None:
     """
     from .service import judge_of
 
-    operators = sorted(name for name, p in registry.items() if p.role == "operator")
+    # WRITTEN profiles only. Since 6.0.0 a derived ingress carries its source's
+    # role, so a shared operator profile and its derivation are both operators
+    # and counting them would refuse every such file. The derivation is not a
+    # second identity; it is the same one reached by a peer.
+    operators = sorted(
+        name for name, p in registry.items() if p.role == "operator" and p.federation_of is None
+    )
     if len(operators) > 1:
         raise ProfileConfigError(
             f"at most one profile may declare role: operator, found {len(operators)}: "
@@ -1301,6 +1429,15 @@ def load_profiles(path: Path | str) -> GatewayConfig:
         # from None: a chained cause would print the snippet in a traceback.
         raise ProfileConfigError(f"Invalid YAML in {config_path}{where}: {problem}") from None
 
+    if duplicates := duplicate_keys(raw_text):
+        where = ", ".join(f"{key!r} at line {line}" for key, line in duplicates)
+        raise ProfileConfigError(
+            f"Duplicate key in {config_path}: {where}. YAML keeps the LAST of a "
+            "repeated key and discards the earlier one silently, so the block a "
+            "reader sees first is not the block that runs. Delete whichever "
+            "should not apply."
+        )
+
     if not isinstance(cfg_data, dict):
         raise ProfileConfigError(f"Profiles file {config_path} must contain a top-level mapping")
 
@@ -1329,6 +1466,7 @@ def load_profiles(path: Path | str) -> GatewayConfig:
         # refused rather than silently winning either way.
         _add_derived_ingresses(registry)
         _check_operator(registry)
+        _check_federation_internal_surface(registry)
         _check_federation_audience(registry)
         _check_judges(registry)
         _check_matrix_networks(registry)

@@ -9,7 +9,7 @@ path had no profile bound at all, so L3 fell through to the env-global key.
 Neither was a decision; both were fall-through.
 
 The rule now: centralized work runs AS the ``role: operator`` profile — its
-provider, its model, its ``llm_keys``, its bill. The operator is the seat the
+provider, its model, its ``llm_keys``, its bill. The operator is the profile the
 Operator agent holds (``docs/operator.md``), so the identity that installs and
 configures Trentina is also the one its own overhead runs under.
 
@@ -45,12 +45,23 @@ logger = logging.getLogger(__name__)
 
 
 def find_operator(profiles: Mapping[str, Profile]) -> Profile | None:
-    """The one ``role: operator`` profile in ``profiles``, or None.
+    """The one WRITTEN ``role: operator`` profile in ``profiles``, or None.
 
-    ``load_profiles`` guarantees there is at most one, so the first is the
-    only one.
+    ``load_profiles`` guarantees there is at most one written one, so the first
+    is the only one.
+
+    Derived ingresses are skipped, and that is load-bearing rather than tidy.
+    Since 6.0.0 a derived ingress carries its source's role, so a shared
+    operator profile and its derivation both match — and taking the first match
+    would let dict order decide which identity the gateway's own model calls run
+    as. That is exactly the defect #138 removed when it made the operator an
+    explicit profile instead of a search. The service identity is the profile
+    somebody wrote, never the one this code derived from it.
     """
-    return next((p for p in profiles.values() if p.role == "operator"), None)
+    return next(
+        (p for p in profiles.values() if p.role == "operator" and p.federation_of is None),
+        None,
+    )
 
 
 def service_profile() -> Profile:
@@ -59,7 +70,7 @@ def service_profile() -> Profile:
     A declared ``role: operator`` profile when the file names one; otherwise the
     environment operator (``standalone.standalone_profile``) — the whole identity
     for a standalone server, and the env-global fallback for a live gateway that
-    declares no operator. Centralized work always has a seat, so nothing is ever
+    declares no operator. Centralized work always has a profile, so nothing is ever
     bound as None and ``get_current_profile`` never has to answer "unknown" on a
     gateway's own call.
 

@@ -10,9 +10,9 @@ full local re-judge and keeps working.
 
 This answers the two questions an operator actually has:
 
-* **What am I sharing, and with whom?** Per shared seat: the derived ingress,
+* **What am I sharing, and with whom?** Per shared profile: the derived ingress,
   the peers by key fingerprint, which backends cross, which of those run on the
-  seat's own sign-in, and whether the link signs a verdict at all.
+  profile's own sign-in, and whether the link signs a verdict at all.
 * **Is the pin buying me anything?** Per federated backend: the audience it
   authenticates to, how its responses were handled over the audit window, and
   the commonest reason one was re-judged. A link whose `trusted` count is zero
@@ -50,22 +50,22 @@ def key_fingerprint(pem: str) -> str:
     return f"sha256:{hashlib.sha256(pem.encode('utf-8')).hexdigest()[:16]}"
 
 
-def _shared(seat: Profile, ingress: Profile) -> dict[str, Any]:
-    """One seat this gateway shares, and the ingress derived from it."""
-    federation = seat.federation
+def _shared(source: Profile, ingress: Profile) -> dict[str, Any]:
+    """One profile this gateway shares, and the ingress derived from it."""
+    federation = source.federation
     if federation is None:  # pragma: no cover - a derived ingress carries it
         return {}
-    offered = offerable_backends(seat)
+    offered = offerable_backends(source)
     return {
-        "seat": seat.name,
+        "profile": source.name,
         "ingress": ingress.name,
         "peers": [
             {"peer": name, "key": key_fingerprint(peer.public_key)}
             for name, peer in sorted(federation.peers.items())
         ],
         "offers": sorted(offered),
-        # Which offered backends run on the seat's sign-in. A derived ingress
-        # spends the SEAT's grant, so these are the ones where a peer's calls
+        # Which offered backends run on the profile's sign-in. A derived ingress
+        # spends the PROFILE's grant, so these are the ones where a peer's calls
         # go out as the account a person authorized here.
         "uses_sign_in": sorted(
             name for name, backend in offered.items() if backend.auth is not None
@@ -116,14 +116,14 @@ def link_report(
     Args:
         profiles: the loaded registry, by profile name, derived ingresses
             included — a link is reported by pairing each profile carrying
-            ``federation_of`` with the seat it names.
+            ``federation_of`` with the profile it names.
         verdicts: how federated responses were handled, keyed
             ``"<profile>.<backend>"`` to a count per verdict, as
             ``database.get_federated_verdict_stats`` returns it. An absent key
             means no federated call in the window, not a failure.
 
     Returns:
-        ``shared``: one entry per seat this gateway offers, with ``seat``,
+        ``shared``: one entry per profile this gateway offers, with ``profile``,
         ``ingress``, ``peers`` (name and key fingerprint), ``offers``,
         ``uses_sign_in``, ``signs_verdicts`` and ``held_for_approval``.
         ``consumed``: one entry per federated backend this gateway uses, with

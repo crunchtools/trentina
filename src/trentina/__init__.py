@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from .gateway.profile import Profile
     from .gateway.sessions import SessionRegistry
 
-__version__ = "5.0.1"
+__version__ = "6.0.0"
 
 DEFAULT_PORT = 8019
 DEFAULT_EGRESS_PORT = 8021
@@ -868,7 +868,7 @@ def _build_proxy_provider(
             "profile(s) "
             f"{', '.join(sorted(proxied))} use the built-in OAuth proxy but "
             "TRENTINA_OAUTH_GOOGLE_CLIENT_ID / _CLIENT_SECRET are not set — "
-            "refusing to start an OAuth seat with no provider"
+            "refusing to start an OAuth profile with no provider"
         )
     from fastmcp.server.auth.providers.google import GoogleProvider
 
@@ -907,7 +907,7 @@ def _build_proxy_provider(
             OAuth profile that is right. With two it is an outage: the pin goes
             to whichever profile sorts first, and the other one's every login
             fails — the 0.8.3 incident, and the reason this gateway ran one
-            OAuth seat until now.
+            OAuth profile until now.
 
             So the indicator is checked here, against every proxied profile's
             resource URL, and then cleared before delegating. Clearing is what
@@ -917,7 +917,7 @@ def _build_proxy_provider(
             Google, which implements no RFC 8707 and ignores it.
 
             The JWT audience stays the single pinned resource (proxy.py:785),
-            so the audience cannot tell two seats apart. The profile the
+            so the audience cannot tell two profiles apart. The profile the
             indicator names is bound to the flow here instead, and from there
             to the token (``gateway/oauth_binding.py``); ``verify_oauth``
             refuses a token at any other profile (#298). A flow naming no
@@ -1084,7 +1084,7 @@ def _build_proxy_provider(
     gateway_resources = frozenset(f"{base_url}/gateway/{name}/mcp" for name in proxied)
     _GatewayGoogleProvider.gateway_resources = gateway_resources
     # The audience of every issued token is `resource_url`, whichever profile
-    # asked for it, so the audience cannot tell two seats apart; the binding
+    # asked for it, so the audience cannot tell two profiles apart; the binding
     # can (gateway/oauth_binding.py, #298).
     _GatewayGoogleProvider.gateway_profiles = profile_resources(base_url, proxied)
 
@@ -1280,11 +1280,11 @@ def _wire_login_notifications(session_registry: Any) -> None:
     profile has no grant; once the human signs in, the client must hear that
     the list changed or it keeps the old one until it reconnects (#479).
 
-    And the grant belongs to the SEAT, so a sign-in there is also a sign-in for
+    And the grant belongs to the PROFILE, so a sign-in there is also a sign-in for
     every ingress derived from it (#592): those profiles were skipping the same
     backend for want of the same grant. Without this the link kept answering
     ``needs_auth`` after a successful sign-in until something flushed the
-    cache, which is the symptom seat-owned grants exist to remove.
+    cache, which is the symptom profile-owned grants exist to remove.
     """
     from .gateway.aggregate import invalidate_profile_cache
     from .gateway.backend_oauth import on_grant_stored

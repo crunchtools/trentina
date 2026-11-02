@@ -132,7 +132,7 @@ missing or bypassable.
 **Trentina.** Each profile authenticates by static bearer, Trentina's own OAuth
 authorization server with dynamic client registration, a provisioned client or
 an external issuer ([authentication](authentication.md)). An OAuth token is
-bound to the profile it was issued for, so one seat cannot present it to
+bound to the profile it was issued for, so one profile cannot present it to
 another. Unauthenticated write paths are rate limited. Backends that need
 OAuth use each profile's own grant.
 

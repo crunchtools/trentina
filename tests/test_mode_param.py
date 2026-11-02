@@ -100,7 +100,7 @@ def _profile(
 ) -> Profile:
     p = Profile(
         short_names=False,  # calls below use <backend>__<tool>
-        name="agent",
+        name="tenant",
         auth=AuthConfig(bearer_token_env="TEST"),
         defense=DefenseConfig(enforcement=enforcement, modes=modes),
         backends={"jira": Backend(url="http://jira:8000/mcp", **(backend or {}))},
@@ -270,7 +270,7 @@ class TestInstructions:
         p = _profile(["block", "flag", "redact"])
         resp = await route_jsonrpc(p, {"jsonrpc": "2.0", "id": 1, "method": "initialize"})
         text = resp["result"]["instructions"]
-        assert text.startswith("trentina gateway, profile=agent.")
+        assert text.startswith("trentina gateway, profile=tenant.")
         assert text.endswith(mode_instructions(p))
 
 
@@ -494,7 +494,7 @@ class TestInternalBackend:
 
     def _profile(self, modes: list[ModeName]) -> Profile:
         p = Profile(
-            name="webseat",
+            name="webtenant",
             short_names=False,
             declare_modes=True,
             auth=AuthConfig(bearer_token_env="TEST"),
@@ -529,7 +529,7 @@ class TestInternalBackend:
         stats = tools[f"web{NAMESPACE_SEP}quarantine_stats_tool"]["inputSchema"]
         assert MODE_PARAM not in (stats.get("properties") or {})
 
-    async def test_block_only_seat_sees_no_parameter(self) -> None:
+    async def test_block_only_profile_sees_no_parameter(self) -> None:
         with patch(f"{AGGREGATE}.scan_tool_list", new=_identity):
             resp = await self._route(
                 self._profile(["block"]), {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}

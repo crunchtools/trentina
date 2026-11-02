@@ -393,7 +393,7 @@ class TestAppliedReload:
 
 
 class TestOperatorScope:
-    """The operator seat reloads the file and is told everything that moved."""
+    """The operator profile reloads the file and is told everything that moved."""
 
     async def test_every_profile_that_moved_is_reported(self, profiles_path: Path) -> None:
         profiles_path.write_text(SWAPPED_BACKEND_YAML, encoding="utf-8")

@@ -82,7 +82,7 @@ def _profile(
 ) -> Profile:
     p = Profile(
         short_names=False,  # calls below use <backend>__<tool>
-        name="agent",
+        name="tenant",
         auth=AuthConfig(bearer_token_env="TEST"),
         defense=DefenseConfig(enforcement="flag", modes=["flag"]),
         backends={
@@ -149,7 +149,7 @@ class TestConfig:
             tools={"get_page": ToolPreProcess(processors=["petit"])},
         )
         with pytest.raises(ProfileConfigError, match="not in processors"):
-            _check_drivers("agent", p)
+            _check_drivers("tenant", p)
 
     def test_a_tool_floor_inherits_unless_it_is_set(self) -> None:
         p = _profile(

@@ -40,7 +40,7 @@ URLs) for the two gateways, and a separate SessionRegistry each.**
 
 That holds the two gateways of ONE pair apart. It does not hold two pairs
 apart, and `federated_pair` is a context manager a test may enter twice —
-which is the only way to assert that a change to a seat changes what a peer is
+which is the only way to assert that a change to a profile changes what a peer is
 served. The second pair reuses the profile NAMES, so without
 `reset_profile_tools_cache` on the way in it is answered out of the first
 pair's aggregate: `tools/list` returns the first pair's tool list, and a test
@@ -55,7 +55,7 @@ which every SSE response in the process was cut short before it was written.
 A pair in front of a REAL remote MCP backend tripped it on the third served
 app, so only the first such pair per process worked and the symptom was a
 `tools/list` that failed inside the gateway. Several pairs per test are fine
-now; `tests/test_federation_seat_link.py` stands up four.
+now; `tests/test_federation_profile_link.py` stands up four.
 """
 
 from __future__ import annotations
@@ -144,7 +144,7 @@ def secondary_profile(
 ) -> Profile:
     """The secondary: a bearer-authenticated profile serving its internal tools.
 
-    Modelled on an agent seat, which is what a federation profile is (#592):
+    Modelled on an agent profile, which is what a federation profile is (#592):
     later items narrow its ``tools_allow`` and declare its trust posture.
     """
     profile = Profile(
@@ -394,9 +394,9 @@ async def federated_pair(
     # is one backend, and reusing its list is what production does.
     reset_profile_tools_cache()
     up_profile = secondary or secondary_profile()
-    # The secondary's registry the way `load_profiles` builds it: a SEAT
+    # The secondary's registry the way `load_profiles` builds it: a PROFILE
     # carrying `federation` also serves the ingress derived from it. Passing a
-    # seat here is how a test exercises the shape production runs; passing an
+    # profile here is how a test exercises the shape production runs; passing an
     # already-derived ingress (one with `federation_of`) derives nothing.
     up_registry = {up_profile.name: up_profile}
     up_registry.update(derive_all(up_registry))

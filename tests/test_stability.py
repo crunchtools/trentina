@@ -95,7 +95,7 @@ def _config(**profiles: Profile) -> GatewayConfig:
     return GatewayConfig(profiles=dict(profiles))
 
 
-def _seat(
+def _profile(
     name: str, *, offers: bool = False, consumes: bool = False, operator: bool = False
 ) -> Profile:
     """A real `Profile`: either half of a link, neither, or both.
@@ -133,15 +133,15 @@ def _seat(
     ("config", "expected"),
     [
         (_config(), []),
-        (_config(a=_seat("a")), []),
-        (_config(a=_seat("a", offers=True)), ["federation"]),
-        (_config(a=_seat("a", consumes=True)), ["federation"]),
-        (_config(a=_seat("a"), b=_seat("b", offers=True)), ["federation"]),
+        (_config(a=_profile("a")), []),
+        (_config(a=_profile("a", offers=True)), ["federation"]),
+        (_config(a=_profile("a", consumes=True)), ["federation"]),
+        (_config(a=_profile("a"), b=_profile("b", offers=True)), ["federation"]),
         # `config_tool` is operator-only, so a file with no operator cannot
         # reach the surface at all.
-        (_config(a=_seat("a", operator=True)), ["config-api"]),
+        (_config(a=_profile("a", operator=True)), ["config-api"]),
         (
-            _config(a=_seat("a", operator=True), b=_seat("b", offers=True)),
+            _config(a=_profile("a", operator=True), b=_profile("b", offers=True)),
             ["config-api", "federation"],
         ),
     ],
@@ -151,7 +151,7 @@ def test_in_use_detects_the_surfaces_a_config_actually_uses(
     config: GatewayConfig, expected: list[str]
 ) -> None:
     """Offering a link and consuming one both count as the federation surface;
-    an operator seat is what makes `config-api` reachable."""
+    an operator profile is what makes `config-api` reachable."""
     assert in_use(config) == expected
 
 
@@ -159,11 +159,11 @@ def test_warn_names_the_surface_and_no_profile(caplog: pytest.LogCaptureFixture)
     """One WARNING per surface, naming constants only (#262).
 
     A profile name in this line would make the startup log a list of which
-    seats federate, which is a topology an agent reading the journal through
+    profiles federate, which is a topology an agent reading the journal through
     another backend's ``journal_query`` should not be handed.
     """
     with caplog.at_level("WARNING"):
-        names = warn_preview_surfaces(_config(josui=_seat("josui", offers=True)))
+        names = warn_preview_surfaces(_config(josui=_profile("josui", offers=True)))
 
     assert names == ["federation"]
     records = [r for r in caplog.records if "PREVIEW" in r.getMessage()]
@@ -177,5 +177,5 @@ def test_warn_names_the_surface_and_no_profile(caplog: pytest.LogCaptureFixture)
 
 def test_no_warning_without_the_surface(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level("WARNING"):
-        assert warn_preview_surfaces(_config(josui=_seat("josui"))) == []
+        assert warn_preview_surfaces(_config(josui=_profile("josui"))) == []
     assert not [r for r in caplog.records if "PREVIEW" in r.getMessage()]

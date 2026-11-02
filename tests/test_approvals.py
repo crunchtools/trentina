@@ -116,61 +116,61 @@ class TestStaging:
 
     def test_two_kinds_coexist(self) -> None:
         pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied([]))
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied([]))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied([]))
         assert len(pending.outstanding()) == 2
 
     def test_staging_the_same_kind_twice_replaces_the_first(self) -> None:
         first: list[str] = []
         second: list[str] = []
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(first))
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(second))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(first))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(second))
         assert len(pending.outstanding()) == 1
 
     def test_an_expired_action_is_gone(self) -> None:
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied([]))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied([]))
         assert pending.outstanding(now=time.time() + pending.TTL_SECONDS + 1) == {}
 
     def test_an_unknown_kind_name_resolves_to_nothing(self) -> None:
         assert pending.kind_named("root access please") is None
-        assert pending.kind_named("operator seat") is pending.Kind.OPERATOR_SEAT
+        assert pending.kind_named("operator profile") is pending.Kind.OPERATOR_PROFILE
 
 
 class TestApproving:
     async def test_approving_applies_the_action(self) -> None:
         record: list[str] = []
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
-        await pending.approve(pending.Kind.OPERATOR_SEAT, pending.digest_of(FACTS))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
+        await pending.approve(pending.Kind.OPERATOR_PROFILE, pending.digest_of(FACTS))
         assert record == ["applied"]
 
     async def test_approving_twice_applies_once(self) -> None:
         record: list[str] = []
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
-        await pending.approve(pending.Kind.OPERATOR_SEAT, pending.digest_of(FACTS))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
+        await pending.approve(pending.Kind.OPERATOR_PROFILE, pending.digest_of(FACTS))
         with pytest.raises(pending.PendingError):
-            await pending.approve(pending.Kind.OPERATOR_SEAT, pending.digest_of(FACTS))
+            await pending.approve(pending.Kind.OPERATOR_PROFILE, pending.digest_of(FACTS))
         assert record == ["applied"]
 
     async def test_approving_a_kind_that_is_not_staged_applies_nothing(self) -> None:
         record: list[str] = []
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
         with pytest.raises(pending.PendingError):
             await pending.approve(pending.Kind.FEDERATION_TRUST, pending.digest_of(FACTS))
         assert record == []
 
     def test_declining_applies_nothing_and_drops_it(self) -> None:
         record: list[str] = []
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
-        assert pending.decline(pending.Kind.OPERATOR_SEAT) is True
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
+        assert pending.decline(pending.Kind.OPERATOR_PROFILE) is True
         assert record == []
         assert pending.outstanding() == {}
 
     def test_declining_nothing_says_so(self) -> None:
-        assert pending.decline(pending.Kind.OPERATOR_SEAT) is False
+        assert pending.decline(pending.Kind.OPERATOR_PROFILE) is False
 
     def test_a_restart_cancels_everything(self) -> None:
         """Nothing is on disk, which is the fail-closed direction: a staged
         change that outlives the process proposing it is unwatched."""
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied([]))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied([]))
         pending.clear()
         assert pending.outstanding() == {}
 
@@ -234,12 +234,12 @@ class TestThePage:
         client = TestClient(App(routes=mcp._additional_http_routes), base_url="https://gw.example")
 
         record: list[str] = []
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
         answer = client.post(
             approval_routes.PATH,
             data={
                 "password": PASSWORD,
-                "kind": "operator seat",
+                "kind": "operator profile",
                 "decision": "approve",
                 "facts": _FACTS_DIGEST,
             },
@@ -282,7 +282,7 @@ class TestThePage:
                 approval_routes.PATH,
                 data={
                     "password": PASSWORD,
-                    "kind": "operator seat",
+                    "kind": "operator profile",
                     "decision": "approve",
                     "facts": _FACTS_DIGEST,
                 },
@@ -317,12 +317,12 @@ class TestThePage:
         """The second POST is not trusted because the first one succeeded;
         there is no session, so the password is the authority every time."""
         record: list[str] = []
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
         answer = page.post(
             approval_routes.PATH,
             data={
                 "password": "wrong",
-                "kind": "operator seat",
+                "kind": "operator profile",
                 "decision": "approve",
                 "facts": _FACTS_DIGEST,
             },
@@ -332,12 +332,12 @@ class TestThePage:
 
     def test_approving_with_the_password_applies_it(self, page: TestClient) -> None:
         record: list[str] = []
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
         answer = page.post(
             approval_routes.PATH,
             data={
                 "password": PASSWORD,
-                "kind": "operator seat",
+                "kind": "operator profile",
                 "decision": "approve",
                 "facts": _FACTS_DIGEST,
             },
@@ -347,20 +347,20 @@ class TestThePage:
 
     def test_declining_applies_nothing(self, page: TestClient) -> None:
         record: list[str] = []
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
         answer = page.post(
             approval_routes.PATH,
-            data={"password": PASSWORD, "kind": "operator seat", "decision": "decline"},
+            data={"password": PASSWORD, "kind": "operator profile", "decision": "decline"},
         )
         assert "Declined" in answer.text
         assert record == []
 
     def test_a_double_submit_applies_once(self, page: TestClient) -> None:
         record: list[str] = []
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
         form = {
             "password": PASSWORD,
-            "kind": "operator seat",
+            "kind": "operator profile",
             "decision": "approve",
             "facts": _FACTS_DIGEST,
         }
@@ -371,7 +371,7 @@ class TestThePage:
 
     def test_a_made_up_kind_approves_nothing(self, page: TestClient) -> None:
         record: list[str] = []
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied(record))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
         answer = page.post(
             approval_routes.PATH,
             data={"password": PASSWORD, "kind": "root access", "decision": "approve"},
@@ -384,12 +384,12 @@ class TestThePage:
         async def boom() -> dict[str, Any]:
             raise RuntimeError("zqx7canary")
 
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, boom)
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, boom)
         answer = page.post(
             approval_routes.PATH,
             data={
                 "password": PASSWORD,
-                "kind": "operator seat",
+                "kind": "operator profile",
                 "decision": "approve",
                 "facts": _FACTS_DIGEST,
             },
@@ -408,7 +408,7 @@ class TestThePage:
     def test_a_fact_is_escaped_on_the_way_out(self, page: TestClient) -> None:
         """checked_display is the gate, but the page escapes anyway: two
         independent reasons a value cannot become markup."""
-        pending.stage(pending.Kind.OPERATOR_SEAT, {"Label <b>": "value <b>"}, _applied([]))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, {"Label <b>": "value <b>"}, _applied([]))
         body = page.post(approval_routes.PATH, data={"password": PASSWORD}).text
         assert "value <b>" not in body
         assert "&lt;b&gt;" in body
@@ -837,7 +837,7 @@ class TestTheBodyCap:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         client = self._client(monkeypatch, "off")
-        pending.stage(pending.Kind.OPERATOR_SEAT, FACTS, _applied([]))
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied([]))
         answer = client.post(approval_routes.PATH, data={"password": PASSWORD})
         assert answer.status_code == 200
 
@@ -963,7 +963,7 @@ class TestADecisionNamesItsProposal:
 
     The agent chooses when to stage and `stage` replaces silently, so before
     this the sequence "stage K1 → person reads K1 → stage K2 → person clicks"
-    applied K2. It needs no code execution on the operator seat, only
+    applied K2. It needs no code execution on the operator profile, only
     `config_tool`, which is exactly the "can it be talked into it" threat the
     feature exists for.
     """

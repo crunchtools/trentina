@@ -852,7 +852,7 @@ async def _buffered_block_response(
 ) -> Response:
     """Block mode: buffer the completion, judge it, deliver only if clean.
 
-    The opposite tradeoff from flag. An autonomous seat has no human waiting on
+    The opposite tradeoff from flag. An autonomous profile has no human waiting on
     time-to-first-token, so it pays the buffer-scan latency to gain the power to
     WITHHOLD a flagged or not-fully-judged completion rather than only record it
     after it has streamed. The whole body is read before a byte reaches the agent;

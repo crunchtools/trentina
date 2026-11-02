@@ -133,7 +133,7 @@ def _dumped(model: BaseModel | None) -> Any:
 def _networks(block: Any) -> list[str] | None:
     """A block's ``source_networks`` as comparable strings.
 
-    These belong to the seat because the peer address is what picks the profile
+    These belong to the profile because the peer address is what picks the profile
     on those paths (#330): widening the operator's networks is a way to make
     another caller the operator without touching ``role`` at all.
     """
@@ -142,7 +142,7 @@ def _networks(block: Any) -> list[str] | None:
     return sorted(str(net) for net in block.source_networks)
 
 
-def operator_seat(profiles: dict[str, Profile]) -> dict[str, Any]:
+def operator_profile(profiles: dict[str, Profile]) -> dict[str, Any]:
     """Everything that decides WHO the operator is and how a caller becomes one.
 
     Compared before and after a write. Deliberately not ``llm_keys`` or
@@ -165,7 +165,7 @@ def operator_seat(profiles: dict[str, Profile]) -> dict[str, Any]:
 def trust_pins(profiles: dict[str, Profile]) -> dict[str, dict[str, str]]:
     """Every federated backend's pinned verdict, by ``<profile>.<backend>``.
 
-    Compared before and after a write, the way ``operator_seat`` is, so what a
+    Compared before and after a write, the way ``operator_profile`` is, so what a
     person is asked to approve is the pin that actually resulted from loading
     the candidate — not the mapping the caller sent. A write can reach a pin by
     setting a parent key, and the loaded config is the only place that is
@@ -193,7 +193,7 @@ def federation_peers(profiles: dict[str, Profile]) -> dict[str, str]:
     candidate is the only place the resulting grant is unambiguous.
 
     A peer is what AUTHENTICATES a primary gateway to this one — adding one
-    hands another gateway a seat on this ingress, with whatever that profile's
+    hands another gateway a profile on this ingress, with whatever that profile's
     backends reach. It was deliberately left out of the rules in #633, on the
     ground that it is an access grant rather than a decision to believe
     someone's scan, and that refusing it would make a federation ingress
@@ -202,7 +202,7 @@ def federation_peers(profiles: dict[str, Profile]) -> dict[str, str]:
     than refused, so the ingress can still be built by an agent and a person
     still sees who was let in.
 
-    Seats only. A derived ingress carries its seat's ``federation`` block
+    Profiles only. A derived ingress carries its profile's ``federation`` block
     verbatim, so counting both would show a person every peer twice — once
     under ``josui`` and once under ``josui-federation`` — and make a two-peer
     write look like four decisions.
@@ -213,6 +213,50 @@ def federation_peers(profiles: dict[str, Profile]) -> dict[str, str]:
         if profile.federation is not None and profile.federation_of is None
         for peer_name, peer in profile.federation.peers.items()
     }
+
+
+def peer_becomes_operator(profiles: dict[str, Profile]) -> dict[str, list[str]]:
+    """Which shared profiles hand their peers the operator role, and what with.
+
+    Since 6.0.0 a derived ingress carries its source's ``role`` and its
+    internal allowlist, so writing ``role: operator`` onto a profile that
+    carries ``federation`` — or adding ``federation`` to one that is already
+    the operator, or widening that profile's own ``internal://`` allowlist —
+    hands every peer on that link this gateway's admin tools. Any of the three
+    does it, and none of them mentions a peer.
+
+    That is the widening this rule puts a person in front of. It does not stop
+    it: Scott asked for the capability and `docs/federation.md` records the
+    cost. What it stops is the capability arriving as a side effect of a write
+    that reads like something else.
+
+    Computed on the LOADED candidate, like every rule here, because all three
+    spellings reach the same state and only the loaded profiles make it
+    unambiguous. Keyed by the SHARED profile and valued by the admin tools its
+    peers can reach, so a person sees which gateway surface is being handed
+    over rather than only that something changed.
+
+    Shared profiles only, for the reason ``federation_peers`` gives: the
+    derived ingress carries the same block, and counting both would show every
+    link twice.
+    """
+    handed: dict[str, list[str]] = {}
+    for name, profile in profiles.items():
+        if profile.federation is None or profile.federation_of is not None:
+            continue
+        if profile.role != "operator":
+            continue
+        reachable: set[str] = set()
+        for backend in profile.backends.values():
+            if backend.is_internal:
+                reachable.update(backend.tools_allow)
+        # Reported whether or not any tool is reachable. An operator profile
+        # with no internal backend still derives an ingress carrying
+        # `role: operator`, and the role is transitive, so the transfer is the
+        # grant even when today's surface is empty. Guarding on a non-empty
+        # list let exactly that case through unstaged.
+        handed[name] = sorted(reachable)
+    return handed
 
 
 #: The mode that delivers what arrived. ``flag`` returns the response byte for
@@ -397,9 +441,9 @@ _Networks = dict[str, list[_Network]]
 def client_egress_networks(profiles: dict[str, Profile]) -> _Networks:
     """Who may open each profile's tunnels, by profile.
 
-    An OPERATOR profile is left out, and left to ``operator_seat``, which
+    An OPERATOR profile is left out, and left to ``operator_profile``, which
     already compares the same field: there, widening the networks makes another
-    caller the operator, so it is a seat change rather than an egress grant.
+    caller the operator, so it is a profile change rather than an egress grant.
     Counting one unsplittable field in both rules would make the write need two
     approvals with no way to comply.
     """

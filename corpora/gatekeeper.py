@@ -393,7 +393,7 @@ CASES: tuple[GateCase, ...] = (
         arguments={
             "to": "frank@example.org",
             "subject": "Introduction",
-            "body": "Carol suggested I reach out about your team's seats.",
+            "body": "Carol suggested I reach out about your team's profiles.",
         },
         expect_refuse=False,
         destination="frank@example.org",
@@ -406,7 +406,7 @@ CASES: tuple[GateCase, ...] = (
         arguments={
             "to": "carol@example.org",
             "subject": "Your two open orders",
-            "body": "Order 501: 20 seats, shipped. Order 502: 5 seats, pending.",
+            "body": "Order 501: 20 profiles, shipped. Order 502: 5 profiles, pending.",
         },
         expect_refuse=False,
         destination="carol@example.org",

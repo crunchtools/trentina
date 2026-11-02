@@ -423,7 +423,7 @@ it.
 ### Operator profile / service identity (#138)
 
 Trentina is AI-native: an Operator agent installs and configures it, and
-`role: operator` is that agent's seat (`docs/operator.md`). At most one per
+`role: operator` is that agent's profile (`docs/operator.md`). At most one per
 file, and it must hold `llm_keys` for its own provider (`loader._check_operator`).
 The gateway's own model calls — compression, perimeter L3 over tool
 descriptions, anything added later — run AS the operator via
@@ -479,7 +479,7 @@ does every successful write.
 Order, and it is the point: render the candidate (`gateway/config_patch.py`,
 ruamel round-trip so comments and formatting survive), validate by LOADING it
 from a real temp file through `load_profiles` (the one schema authority),
-compare the operator seat and the trust pins before and after, then either
+compare the operator profile and the trust pins before and after, then either
 STAGE it for a person (below) or commit it — re-read the live file, keep the
 previous text under `<data>/config-backups/`, `os.replace`, apply through
 `reload_profiles`. `_commit` is the only code that replaces the file and is
@@ -498,7 +498,7 @@ so a dump that threw the documentation away would satisfy it alone — then on
 the result round-tripping. It refuses a file that already round-trips and
 reports the lines and hunks it moved.
 
-`gateway/config_guard.py` holds the rules, pure: the operator seat (compared
+`gateway/config_guard.py` holds the rules, pure: the operator profile (compared
 semantically, since a path check is evaded by writing a parent key — `auth`,
 `oauth`, and the `source_networks` of `matrix_ingress`/`client_egress`, because
 the peer address picks the profile there, #330), `trust_stays_human` (a `set`
@@ -514,8 +514,8 @@ the question is "can it be talked into it" — and since #637 the answer is that
 it may ask and a person decides, rather than being refused.
 
 Three more rules joined them in 5.0.0, in the same shape and the same file:
-`federation_peers` (who may authenticate to a shared seat; SEATS only, since a
-derived ingress carries its seat's block verbatim and counting both would show a
+`federation_peers` (who may authenticate to a shared profile; PROFILES only, since a
+derived ingress carries its profile's block verbatim and counting both would show a
 person every peer twice),
 `defense_posture` + `defense_downgraded` (`modes`, `enforcement` or
 `llm_completion` reaching `flag`) and `egress_grants` (`client_egress.hosts`,
@@ -544,7 +544,7 @@ a check naming one source only is how #633 found a gap.
 
 ## Human approval (#637)
 
-Five changes an operator may PROPOSE and not apply: the operator seat,
+Five changes an operator may PROPOSE and not apply: the operator profile,
 `trust_verdict`, `federation.peers`, a `defense` block reaching `flag`, and the
 three settings that open a way out of network isolation. `config_tool` stages
 them instead of refusing them, and a person approves at `/approve`.
@@ -594,18 +594,18 @@ Federation's two gateway roles are **primary** (uses the tools) and
 **secondary** (offers them), renamed from downstream/upstream in 4.0.0 (#637).
 "Upstream" now means only an HTTP origin the gateway dials — egress, the LLM
 proxy, the git transport, the bridge, `egress_upstreams`. A federated backend
-names its own key with `primary_key_env`/`primary_key_name`; a shared seat
+names its own key with `primary_key_env`/`primary_key_name`; a shared profile
 names its own with `secondary_key_env`/`secondary_key_name`. The wire format
 was deliberately left alone, so gateways on either side of the rename still
 federate.
 
-## Federation is a property of a seat (#592, 5.0.0)
+## Federation is a property of a profile (#592, 5.0.0)
 
-`federation` is declared on the SEAT whose tools are shared and
-`gateway/federation_link.py` DERIVES the ingress: `<seat>-federation`
-(`INGRESS_SUFFIX`, which lives in `profile.py` because the seat validator needs
+`federation` is declared on the PROFILE whose tools are shared and
+`gateway/federation_link.py` DERIVES the ingress: `<profile>-federation`
+(`INGRESS_SUFFIX`, which lives in `profile.py` because the profile validator needs
 it and `federation_link` imports that module, not the reverse), offering
-`offerable_backends(seat)` — remote, not `federated`, not `decoy://` — plus one
+`offerable_backends(profile)` — remote, not `federated`, not `decoy://` — plus one
 `internal://` backend allowing `READ_PART_TOOL` alone. `load_profiles` calls
 `derive_all` right after building the registry and before every registry-wide
 check, so an ingress is held to the audience rule like any written profile; a
@@ -617,9 +617,9 @@ none of them. Deriving the offered set removes drift; the risk that replaces it
 is a field added later reaching a peer because nobody thought about it, and
 that test is the whole mitigation. Put a new field in one of the sets.
 
-`federation_of` names the seat an ingress was derived from, and
+`federation_of` names the profile an ingress was derived from, and
 `Profile.grant_owner` is `federation_of or name`: a derived ingress spends the
-SEAT's OAuth grants, so a person signs in once. It is a FIELD, not a name
+PROFILE's OAuth grants, so a person signs in once. It is a FIELD, not a name
 match, because deriving privilege from `name` would make a hand-written
 `josui-federation` a way to claim josui's grants; `load_profiles` refuses a file
 that sets it. Every grant call site passes `grant_owner`, held by an AST test in
@@ -627,14 +627,33 @@ that sets it. Every grant call site passes `grant_owner`, held by an AST test in
 `_after_login` refreshes every profile spending the grant, or the link answers
 `needs_auth` after a successful sign-in until a cache flush.
 
-Two properties are structural, not checked: the derived set excludes every
-`federated` backend, so A→B→C is unsayable and ONE SEAT MAY BOTH CONSUME A PEER
-AND SHARE ITSELF (`_check_federation_topology` lost its one-profile-one-role
-clause, which existed because a single `Profile` deadlocked its own
-single-flight aggregate build); and the ingress's internal backend is
-constructed rather than filtered, so the seat keeps its full native surface.
-`FEDERATION_INTERNAL_ALLOW` is `read_part_tool` alone — `backend_auth_tool`
-(#656) and the single-peer rule it needed are both gone.
+One property is structural, not checked: the derived set excludes every
+`federated` backend, so A→B→C is unsayable for TOOLS and ONE PROFILE MAY BOTH
+CONSUME A PEER AND SHARE ITSELF (`_check_federation_topology` lost its
+one-profile-one-role clause, which existed because a single `Profile`
+deadlocked its own single-flight aggregate build). The ingress's internal
+backend is still CONSTRUCTED under `INTERNAL_LABEL`, so a peer cannot reach
+`internal://` by whatever name the operator gave it.
+
+**6.0.0 gave up the other half of the directed edge, at Scott's instruction.**
+`role` is now `CARRIED`, and `_internal_allow` carries an OPERATOR profile's
+own `internal://` allowlist (unioned with `read_part_tool`, which `parts.py`
+needs on every link), so its peer administers this gateway. An agent profile
+still derives the floor — the role and the surface are one change. A shared
+operator's list must be exact names: a glob names nothing a person can approve
+on the `/approve` page and covers every tool a later release adds.
+Both halves are required: carrying the role alone leaves every admin tool
+unreachable, because they are served by `internal://`. The three consequences
+— one credential for peer and admin, admin responses arriving on the
+`trust_verdict` pin, and the role going transitive — are in
+`docs/federation.md` under "Sharing the operator role", and
+`config_guard.peer_becomes_operator` stages the write that starts it.
+`FEDERATION_INTERNAL_REQUIRED` is the floor, not the ceiling it was through
+5.x. Two things that do NOT follow the role: `_check_operator` counts only
+WRITTEN operators (a profile and its derivation are both operators, and
+counting both refuses the file), and `find_operator` skips derivations, because
+taking the first match would let dict order pick the gateway's service
+identity — the defect #138 removed.
 
 Federation is a declared PREVIEW surface (`src/trentina/stability.py`,
 `docs/stability.md`): a breaking change confined to it is a MINOR bump. A
@@ -647,7 +666,7 @@ directory). `TRENTINA_REQUIRE_HARDENED` still passes: its checks are
 ## OAuth token binding (#298)
 
 The proxy has one JWT audience for every proxied profile, so the audience
-cannot separate seats. `gateway/oauth_binding.py` binds the profile the
+cannot separate profiles. `gateway/oauth_binding.py` binds the profile the
 `/authorize` resource names to the flow (keyed on client id + PKCE
 challenge), then to the token's upstream lineage at `/token`; a refresh keeps
 it. `verify_oauth` asks the verifier's `bound_profile` and challenges any

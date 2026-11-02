@@ -15,7 +15,7 @@ import ipaddress
 import logging
 import re
 from fnmatch import fnmatchcase
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 from urllib.parse import parse_qsl, urlparse, urlsplit
 
 from pydantic import (
@@ -95,20 +95,30 @@ HONEYTOKEN_MIN_CHARS = 16
 #: own disk, is not something to hand an agent meant to be hijacked.
 HONEYPOT_READS = frozenset({"fetch_tool", "search_tool", "content_tool"})
 
-# The only internal tools a federation ingress may offer a peer (#592, C2).
-# ``internal://<label>`` is one FastMCP server serving the whole native surface,
-# admin tools included, so this is an exact-name ALLOWLIST: a denylist would
-# offer a peer ``cache_flush`` and would federate every internal tool added
-# later. ``backend_auth_tool`` was briefly here (#656) and is not, because a
-# derived ingress spends its SEAT's grants — the human signs in once, on the
-# seat, through a tool no peer can reach.
-FEDERATION_INTERNAL_ALLOW = frozenset({"read_part_tool"})
+# What a federation ingress MUST offer a peer, and the floor for a shared
+# profile with no internal backend. A FLOOR since 6.0.0, not the ceiling it was
+# through 5.x: the derived surface follows the shared profile, so an operator's
+# peer reaches admin tools (`federation_link.CARRIED`, `docs/federation.md`).
+# The reader stays required because `parts.py` delivers a peer's paged response
+# through this backend part by part.
+FEDERATION_INTERNAL_REQUIRED = frozenset({"read_part_tool"})
 
-#: What the ingress profile derived from a seat is named: ``<seat>-federation``.
-#: It lives here rather than in ``federation_link`` because the seat validator
+#: The one member of the set above, for the messages that name it singly.
+_READ_PART = "read_part_tool"
+
+#: The only fnmatch metacharacter that can reach the rule below. `tools_allow`
+#: entries are patterns, but `Backend` already refuses every character outside
+#: alphanumerics, underscore, hyphen and `*` -- so `read_part_too?` and
+#: `[rc]onfig_tool` are refused before this, by a narrower rule with a better
+#: message. Carrying `?[]` here too would be a set that looks thought-about and
+#: is unreachable.
+_GLOB_CHARS = frozenset("*")
+
+#: What the ingress profile derived from a profile is named: ``<profile>-federation``.
+#: It lives here rather than in ``federation_link`` because the profile validator
 #: needs it and ``federation_link`` imports this module, not the reverse. The
 #: profile name IS the JWT audience, so this suffix is load-bearing on both
-#: sides: the primary's backend URL ends ``/gateway/<seat>-federation/mcp``.
+#: sides: the primary's backend URL ends ``/gateway/<profile>-federation/mcp``.
 INGRESS_SUFFIX = "-federation"
 #: Characters: the longest description and canned result a decoy tool may carry.
 DECOY_DESCRIPTION_MAX_CHARS = 1024
@@ -127,7 +137,7 @@ _REMOTE_ONLY_FIELDS = (
 
 # What a profile may reach through the gateway's own admin tools. Two values,
 # because the only distinction that matters is "my slice" versus "the whole
-# gateway" — an agent profile sees and acts on itself, the operator seat holds
+# gateway" — an agent profile sees and acts on itself, the operator profile holds
 # the box. See gateway/scope.py, which is the only place this is interpreted.
 ProfileRole = Literal["agent", "operator"]
 
@@ -1575,10 +1585,10 @@ class DefenseConfig(BaseModel):
             "the tool and request edges). flag (default): the completion "
             "streams to the agent untouched and is scanned post-hoc, the "
             "finding recorded only — a stream cannot be retracted once sent, "
-            "and an interactive seat keeps time-to-first-token. block: the "
+            "and an interactive profile keeps time-to-first-token. block: the "
             "completion is buffered, judged, and WITHHELD if flagged or not "
             "fully judged — the latency a buffer costs is one an autonomous "
-            "seat with no human waiting can pay. `redact` cannot apply to a "
+            "profile with no human waiting can pay. `redact` cannot apply to a "
             "token stream and is refused here, as for `enforcement`."
         ),
     )
@@ -2016,7 +2026,7 @@ class SemanticGuardsConfig(BaseModel):
             "Refuse these calls outright, without asking the judge, once the "
             "session has been delivered flagged or partly judged content, and "
             "for the rest of that session (#457). A call whose session the "
-            "gateway cannot identify is refused too. For unattended seats: an "
+            "gateway cannot identify is refused too. For unattended profiles: an "
             "interactive one reads flagged content routinely."
         ),
     )
@@ -2784,7 +2794,7 @@ class OAuthConfig(BaseModel):
 
     A profile always carries a static bearer (``auth``). When ``oauth.enabled``
     is set it ALSO accepts a Google-backed OAuth token whose verified email is
-    in ``allowed_emails`` — the seat for a client that cannot send a static
+    in ``allowed_emails`` — the profile for a client that cannot send a static
     ``Authorization`` header (gemini.google.com Custom Apps, which offers only
     "no auth" or OAuth). The static token keeps working for every other client.
 
@@ -2833,7 +2843,7 @@ class OAuthConfig(BaseModel):
         description=(
             "Verified Google account emails permitted through this profile. "
             "Compared case-insensitively. Empty while enabled is a hard error "
-            "— an OAuth seat open to any Google account is never intended."
+            "— an OAuth profile open to any Google account is never intended."
         ),
     )
     allowed_subjects: list[str] = Field(
@@ -3056,7 +3066,7 @@ class OAuthConfig(BaseModel):
         if self.enabled and not self.allowed_emails:
             raise ValueError(
                 "oauth.enabled is true but allowed_emails is empty — refusing "
-                "to expose an OAuth seat open to any Google account"
+                "to expose an OAuth profile open to any Google account"
             )
         return self
 
@@ -3141,7 +3151,7 @@ class Profile(BaseModel):
             "What this profile may see and act on through the gateway's own "
             "admin tools. 'agent' (the default) is self-scope: its own audit "
             "rows, its own backends, its own section of profiles.yaml. "
-            "'operator' is the seat that holds the whole gateway."
+            "'operator' is the profile that holds the whole gateway."
         ),
     )
     defense: DefenseConfig = Field(default_factory=DefenseConfig)
@@ -3243,11 +3253,11 @@ class Profile(BaseModel):
     federation: FederationConfig | None = Field(
         default=None,
         description=(
-            "Share this SEAT with a peer gateway (#592): the primary peers that "
+            "Share this PROFILE with a peer gateway (#592): the primary peers that "
             "may authenticate with a primary JWT. The gateway derives a "
-            "`<name>-federation` ingress profile offering this seat's own "
-            "non-federated remote backends, with this seat's guards and defense "
-            "posture. Write this on the seat whose tools you are sharing; there "
+            "`<name>-federation` ingress profile offering this profile's own "
+            "non-federated remote backends, with this profile's guards and defense "
+            "posture. Write this on the profile whose tools you are sharing; there "
             "is no separate ingress profile to keep in step (optional)"
         ),
     )
@@ -3255,12 +3265,12 @@ class Profile(BaseModel):
         default=None,
         exclude=True,
         description=(
-            "Set by the loader, never by the file: the seat this profile was "
+            "Set by the loader, never by the file: the profile this profile was "
             "DERIVED from (`federation_link.derive_ingress`). It is what makes "
             "the link first-class rather than a naming convention — the audit, "
             "the link report and the grant owner all read it. `load_profiles` "
             "refuses a profiles.yaml that sets it, because a hand-written "
-            "profile naming another seat here would claim that seat's OAuth "
+            "profile naming another profile here would claim that profile's OAuth "
             "grants; privilege must be loader-derived, never caller-chosen."
         ),
     )
@@ -3344,58 +3354,87 @@ class Profile(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def a_shared_seat_is_shareable(self) -> Profile:
-        """Refuse a seat that cannot be shared as written (#592).
+    def a_shared_profile_is_shareable(self) -> Profile:
+        """Refuse a profile that cannot be shared as written (#592).
 
-        ``federation`` is declared on the SEAT whose tools are being shared, and
+        ``federation`` is declared on the PROFILE whose tools are being shared, and
         ``federation_link.derive_ingress`` builds the ingress from it. So this
         rule no longer describes the ingress — derivation constructs that
-        correctly by definition — it holds the seat to being a thing that can
+        correctly by definition — it holds the profile to being a thing that can
         legibly be shared.
 
-        ``role: agent``, because a derived operator ingress would offer a peer
-        the gateway's own admin tools. The name must not already end in the
-        ingress suffix, or the derived name would collide with another link's.
+        An OPERATOR profile may be shared since 6.0.0, so there is no role rule
+        here any more. What replaces it is narrower: an operator profile's
+        ``internal://`` allowlist crosses to its peers, so it must name its
+        tools EXACTLY -- ``tools_allow`` holds fnmatch patterns, and ``*`` or
+        ``read_*`` names nothing a person can approve on the ``/approve`` page
+        while silently covering every tool a later release adds.
 
-        And a shared seat MUST carry ``auth`` or ``oauth``, which is also how the
+        The name must not already end in the ingress suffix, or the derived
+        name would collide with another link's.
+
+        And a shared profile MUST carry ``auth`` or ``oauth``, which is also how the
         pre-5.0.0 shape is refused. That shape was a standalone ingress profile
         that hand-listed its backends, and the rule it loaded under refused
         ``auth`` and ``oauth`` on it outright — ``peers`` was its authentication.
         So every such profile that loads today has neither, and requiring one
         here refuses exactly those and nothing that was ever valid. It is a real
-        rule in its own right, not only a discriminator: a seat is something an
+        rule in its own right, not only a discriminator: a profile is something an
         agent signs in to, and a profile no agent can reach has no tools of its
         own to share.
 
-        Skipped for a DERIVED ingress, which carries the seat's ``federation``
-        block and would otherwise be judged as a seat itself: its name ends in
+        Skipped for a DERIVED ingress, which carries the profile's ``federation``
+        block and would otherwise be judged as a profile itself: its name ends in
         the reserved suffix and it deliberately has no way in.
         ``a_derived_ingress_is_bounded`` is the rule that applies to those.
         """
         if self.federation is None or self.federation_of is not None:
             return self
         problems: list[str] = []
-        if self.role != "agent":
-            problems.append(
-                "role must be agent: a derived operator ingress would offer a "
-                "peer this gateway's own admin tools"
-            )
+        # A shared profile MAY be the operator since 6.0.0. The rule here used
+        # to refuse that, saying a derived operator ingress would offer a peer
+        # the gateway's own admin tools -- which overstated its own code, since
+        # `derive_ingress` set `role="agent"` itself and constructed an internal
+        # backend allowing the paging reader alone. Both of those now follow the
+        # shared profile, at Scott's instruction; `docs/federation.md` carries
+        # what it costs, and `config_guard.peer_becomes_operator` puts a person
+        # in front of the change that starts it.
         if self.name.endswith(INGRESS_SUFFIX):
             problems.append(
-                f"a seat's name may not end in {INGRESS_SUFFIX!r}, which is "
+                f"a profile's name may not end in {INGRESS_SUFFIX!r}, which is "
                 "reserved for the ingress derived from it"
             )
+        if self.role == "operator":
+            # A shared OPERATOR profile's internal allowlist crosses to its
+            # peers, and approving that grant means reading which admin tools
+            # are in it. `tools_allow` entries are fnmatch patterns, so `*` or
+            # `read_*` names nothing a person can check and silently covers
+            # every tool a later upgrade adds. Exact names only, here, so the
+            # approval page can enumerate the grant and a no-op widening (a
+            # name already matched by a pattern) cannot stage as a new one.
+            for backend_name, backend in self.backends.items():
+                if not backend.is_internal:
+                    continue
+                globbed = sorted(t for t in backend.tools_allow if _GLOB_CHARS & set(t))
+                if globbed:
+                    problems.append(
+                        f"internal backend {backend_name!r} allows {globbed} on an "
+                        "operator profile that is shared. A peer inherits this "
+                        "list, and a pattern names no tool a person can approve "
+                        "and covers every tool a later release adds. List the "
+                        "tools by exact name"
+                    )
         if self.auth is None and self.oauth is None:
             problems.append(
-                "a shared seat needs auth or oauth. Since 5.0.0 `federation` is "
-                "declared on the SEAT whose tools are shared, and the gateway "
+                "a shared profile needs auth or oauth. Since 5.0.0 `federation` is "
+                "declared on the PROFILE whose tools are shared, and the gateway "
                 "derives the `<name>-federation` ingress from it. If this was a "
                 "standalone ingress profile, move its `federation` block onto "
-                "the seat it offers and delete the profile; the primary then "
-                "points at /gateway/<seat>-federation/mcp"
+                "the profile it offers and delete the profile; the primary then "
+                "points at /gateway/<profile>-federation/mcp"
             )
         if problems:
-            raise ValueError(f"shared seat: {'; '.join(problems)}")
+            raise ValueError(f"shared profile: {'; '.join(problems)}")
         return self
 
     @model_validator(mode="after")
@@ -3408,17 +3447,25 @@ class Profile(BaseModel):
         derivation bug is a peer holding a tool nobody offered it, and that is
         worth a second opinion from a different piece of code.
 
-        The internal backend is held to ``FEDERATION_INTERNAL_ALLOW`` by exact
-        name, so a glob such as ``read_*`` or ``*`` is refused as written rather
-        than at the moment it matches the whole native surface. No remote
+        The internal backend must still carry the paging reader, because
+        ``parts.py`` delivers a peer's paged response through it part by part
+        and a link without it breaks paging while looking fine. No remote
         backend may be ``federated``: that is what keeps a link from
         re-exporting the next one, A to B to C.
+
+        What this rule used to check and no longer can: that the internal
+        backend offered ``read_part_tool`` and nothing else, and
+        that the role was ``agent``. Both followed from the derivation
+        constructing them, and since 6.0.0 both follow the shared profile
+        instead (Scott's instruction; see ``federation_link.CARRIED`` and
+        ``docs/federation.md``). A validator seeing one profile cannot tell
+        whether a widened internal surface matches the profile it came from,
+        because it cannot see that profile — so the check moved to where the
+        registry is visible: ``loader._check_federation_internal_surface``.
         """
         if self.federation_of is None:
             return self
         problems: list[str] = []
-        if self.role != "agent":
-            problems.append("role must be agent")
         for field in ("auth", "oauth"):
             if getattr(self, field) is not None:
                 problems.append(
@@ -3426,12 +3473,16 @@ class Profile(BaseModel):
                     "authenticates here, and a second way in would admit a caller "
                     "with no peer and no sub"
                 )
+        # An internal backend that EXISTS must carry the paging reader. Not
+        # "must exist": `derive_ingress` always adds one, so requiring it here
+        # would only force profiles hand-built for unrelated tests to grow a
+        # backend, and would check the derivation against itself rather than
+        # against anything a bug could get wrong.
         for name, backend in self.backends.items():
-            extra = sorted(set(backend.tools_allow) - FEDERATION_INTERNAL_ALLOW)
-            if backend.is_internal and extra:
+            if backend.is_internal and _READ_PART not in backend.tools_allow:
                 problems.append(
-                    f"internal backend {name!r} may offer a peer only "
-                    f"{sorted(FEDERATION_INTERNAL_ALLOW)}, not {extra}"
+                    f"internal backend {name!r} does not offer {_READ_PART!r}: "
+                    "paging a response to a peer needs it"
                 )
             if backend.federated is not None:
                 problems.append(
@@ -3447,21 +3498,21 @@ class Profile(BaseModel):
         """Which profile's OAuth grants this one spends (#479, #592).
 
         Itself, for every profile a person writes. For a DERIVED federation
-        ingress, the seat it was derived from — so a human signs in ONCE, on
-        the seat, and the link uses that sign-in.
+        ingress, the profile it was derived from — so a human signs in ONCE, on
+        the profile, and the link uses that sign-in.
 
         Before this, a grant belonged to ``(profile, backend)`` and a federated
-        call ran as the ingress, so a seat already signed in to a backend held
+        call ran as the ingress, so a profile already signed in to a backend held
         nothing for the link: the same person had to authorize the same account
         twice, and the second sign-in had to be driven through a tool offered
         across the link, which on a multi-peer ingress let one peer revoke
         another's grant or repoint it at its own human's account.
 
-        The peer reaches a strict subset of what the seat's own agent already
-        can — the offered set IS the seat's backends, with the seat's guards —
-        so spending the seat's grant grants no new reach; it removes a
+        The peer reaches a strict subset of what the profile's own agent already
+        can — the offered set IS the profile's backends, with the profile's guards —
+        so spending the profile's grant grants no new reach; it removes a
         ``needs_auth`` refusal. What it does widen is consent, which is why
-        adding a ``federation`` block to a seat is staged for a person.
+        adding a ``federation`` block to a profile is staged for a person.
 
         It is a FIELD rather than a name match on purpose. Deriving the owner
         from ``name`` would make a hand-written ``josui-federation`` a way to
@@ -3625,6 +3676,36 @@ class Profile(BaseModel):
             raise ValueError(f"Profile name {v!r} must match ^[a-z][a-z0-9-]*$")
         return v
 
+    @field_validator("name")
+    @classmethod
+    def name_is_not_a_role(cls, v: str) -> str:
+        """A profile may not be NAMED after a role (Scott, 2026-11-02).
+
+        ``role: operator`` says what a profile may do; a profile named
+        ``operator`` says nothing and reads as though it did. Both appear in
+        the same sentences -- "the operator profile", "an operator reload",
+        ``/gateway/operator/mcp`` -- and once one deployment has a profile with
+        that name, every such sentence is ambiguous between the role and the
+        name. Reserving the words is cheaper than disambiguating them forever.
+
+        Derived from ``get_args(ProfileRole)`` rather than a second list, so a
+        role added later is reserved by having been added. A hand-maintained
+        copy is the version that drifts, which is the same argument that put
+        ``INGRESS_SUFFIX`` in this module.
+
+        Case-insensitive even though ``PROFILE_NAME_RE`` already forbids upper
+        case: the two rules are independent, and this one should not quietly
+        stop working if that one is ever loosened.
+        """
+        if v.casefold() in {role.casefold() for role in get_args(ProfileRole)}:
+            raise ValueError(
+                f"Profile name {v!r} is a role name, which is reserved. Roles "
+                "are what a profile HOLDS (`role: " + v.casefold() + "`), so a "
+                "profile of that name makes every sentence about it ambiguous. "
+                "Name it for what it is -- its agent, its owner, or its job."
+            )
+        return v
+
     @field_validator("backends")
     @classmethod
     def backend_names_match_re(cls, v: dict[str, Backend]) -> dict[str, Backend]:
@@ -3677,13 +3758,13 @@ class Profile(BaseModel):
 
         Until 0.15.0 `auth` was required, so every profile carried a static
         bearer token and this property held by accident. That had a cost: the
-        only way to add OAuth to a seat was to ALSO give it a permanent
+        only way to add OAuth to a profile was to ALSO give it a permanent
         anonymous credential which, because the bearer is checked first,
         bypassed the OAuth entirely — the opposite of what an operator adding
         OAuth believes they are doing.
 
         So the requirement is now what it always meant: at least one way to
-        authenticate, of any kind. A bearer-only agent, an OAuth-only web seat,
+        authenticate, of any kind. A bearer-only agent, an OAuth-only web profile,
         or both together are all valid; neither is not.
         """
         if self.auth is not None:

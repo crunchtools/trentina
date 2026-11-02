@@ -224,7 +224,7 @@ class TestRefusals:
 
 
 class TestRefuseWhenFlagged:
-    """#457: an opted-in seat loses its guarded tools once its session is flagged."""
+    """#457: an opted-in profile loses its guarded tools once its session is flagged."""
 
     @pytest.mark.parametrize("session_flagged", [True, None])
     async def test_a_flagged_or_unknown_session_is_refused_unasked(
@@ -724,7 +724,7 @@ class TestSessionMarks:
         now[0] += session_marks.MARK_TTL_SECONDS + 1
         assert session_marks.was_flagged("a") is False
 
-    async def test_a_dropped_mark_refuses_an_opted_in_seat(
+    async def test_a_dropped_mark_refuses_an_opted_in_profile(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(session_marks, "MAX_MARKS", 1)
