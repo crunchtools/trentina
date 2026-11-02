@@ -178,6 +178,28 @@ def _isolated_fastmcp_home(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPat
 
 
 @pytest.fixture(autouse=True)
+def _reset_oauth_module_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Reset the OAuth modules' process-wide state around every test (#664).
+
+    ``backend_oauth._live_flows`` / ``_on_grant_stored``, the
+    ``backend_tokens._store`` singleton and ``oauth_store``'s cull task are
+    module globals that only some tests replaced, so what a test left behind
+    (a registered hook, a sweeper task holding another test's storage, a store
+    over a finished test's ``tmp_path``) reached whichever test a worker ran
+    next. That made the OAuth failures depend on scheduling order and load.
+    Cost: three attribute sets per test.
+    """
+    from trentina.gateway import backend_oauth, backend_tokens, oauth_store
+
+    monkeypatch.setattr(backend_oauth, "_live_flows", {})
+    monkeypatch.setattr(backend_oauth, "_on_grant_stored", [])
+    monkeypatch.setattr(backend_tokens, "_store", None)
+    oauth_store.reset_cull_task()
+    yield
+    oauth_store.reset_cull_task()
+
+
+@pytest.fixture(autouse=True)
 def _tools_not_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests that are not about pinning (#469) see every tool served and called.
     ``tests/test_tool_pins.py`` puts the real checks back."""
