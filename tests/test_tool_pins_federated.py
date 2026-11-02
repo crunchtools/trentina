@@ -890,7 +890,12 @@ class TestApprovingAWholeHeldSet:
         assert f"{count} of {count} held definitions" in error
         if over > 0:
             assert f"and {over} more" in error
-            assert names[-1] not in error  # beyond the cap, counted not named
+            # The named set must be the FIRST cap names and no others, or a
+            # regression that picked the wrong subset would still pass.
+            for name in names[: tool_pins.MAX_NAMED_EXCEPTIONS]:
+                assert name in error, name
+            for name in names[tool_pins.MAX_NAMED_EXCEPTIONS :]:
+                assert name not in error, name
         else:
             assert "more" not in error
             for name in names:
