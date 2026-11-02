@@ -10,6 +10,57 @@ under that name.
 
 ## [Unreleased]
 
+## [6.2.0] - 2026-11-02
+
+6.1.0 taught `tool_pins` that a tool can hold more than one definition and that
+an approval names one of them. It never told the MCP tool, so the parameter that
+names a definition could not be sent, and the gateway's own migration then held
+582 definitions that no caller could release. This finishes that feature and
+makes the set, rather than the operator's patience, the unit of decision.
+
+### Added
+
+- **`tool_pins approve_all`**: release a whole held set on one decision.
+  `list` now returns a `digest` — SHA-256 over the sorted `(tool, hash)` pairs
+  still held — and `approve_all` requires it, refusing if the live set has
+  changed since it was read. A count was the first design and is not enough: a
+  re-list swapping N definitions for N others keeps the count, where #469's
+  premise is that an approval names a *definition*.
+
+  The batch refuses unless **every** row's changed fields are a subset of
+  `description` and `inputSchema`, the two the gateway's own description
+  compressor rewrites. `annotations`, `name`, `title`, `outputSchema` and a tool
+  with no approved definition at all (`new`) each refuse the whole batch, name
+  the tool responsible, and stay one approval at a time. Nothing is approved
+  unless all of it qualifies, and a `rejected` definition is outside the digest
+  so the batch neither trips over it nor reverses it. It returns the manifest of
+  what it released and writes one `detections` row (`approved_bulk`).
+
+### Fixed
+
+- **`tool_pins` could not release a tool holding two definitions.** 6.1.0 added
+  `hash` to `manage_tool_pins`, but `tool_pins_tool` neither declared nor
+  forwarded it, so the served schema offered `action`, `backend` and `tool`
+  only. The ambiguous case answered "name one with hash" — naming a parameter no
+  MCP caller could send. On a real gateway that left 460 of 582 held definitions
+  unreleasable through the API, which is the state #633 exists to prevent. Every
+  test called `manage_tool_pins` directly, which is how it shipped.
+
+  `tests/test_server.py` now reads every registered tool's signature against the
+  implementation it forwards to and fails on a parameter that is dropped, or
+  declared and then never read. The second half is the worse bug: an argument
+  advertised, accepted and silently discarded, where an undeclared one at least
+  refuses.
+
+### Upgrading
+
+- Nothing to do. `PERIMETER_VERSION` is unchanged at `22`, so the perimeter
+  stamp does not move, cached verdicts stand, and a federated peer's
+  `trust_verdict.perimeter_stamp` pin does not need re-approving.
+- If 6.1.0's compression re-key left you holding a backend's whole tool set (see
+  6.1.0's Upgrading note 5), `tool_pins list` then `approve_all` with the digest
+  it returns is now the way through it. Read the manifest it gives back.
+
 ## [6.1.1] - 2026-11-02
 
 6.1.0 moved tool-description judging onto each profile's own key and left a set
