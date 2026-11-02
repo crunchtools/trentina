@@ -332,25 +332,22 @@ async def test_a_backend_added_to_the_seat_needs_no_second_edit() -> None:
         return [ledger_read]
 
     async def served(with_ledger: bool) -> set[str]:
-        async with serving_mcp_backend(wiki_tools()) as wiki_port:
+        async with contextlib.AsyncExitStack() as stack:
+            wiki_port = await stack.enter_async_context(serving_mcp_backend(wiki_tools()))
             backends = {"wiki": Backend(url=f"http://127.0.0.1:{wiki_port}/mcp")}
-            async with contextlib.AsyncExitStack() as stack:
-                if with_ledger:
-                    ledger_port = await stack.enter_async_context(
-                        serving_mcp_backend(extra_tools())
-                    )
-                    backends["ledger"] = Backend(url=f"http://127.0.0.1:{ledger_port}/mcp")
-                seat = shared_seat({PEER: public_pem}, backends)
-                fed = await stack.enter_async_context(
-                    federated_pair(
-                        tools=gateway_surface(),
-                        secondary=seat,
-                        primary=peer_gateway(private_pem),
-                    )
+            if with_ledger:
+                ledger_port = await stack.enter_async_context(serving_mcp_backend(extra_tools()))
+                backends["ledger"] = Backend(url=f"http://127.0.0.1:{ledger_port}/mcp")
+            seat = shared_seat({PEER: public_pem}, backends)
+            fed = await stack.enter_async_context(
+                federated_pair(
+                    tools=gateway_surface(),
+                    secondary=seat,
+                    primary=peer_gateway(private_pem),
                 )
-                peer = await stack.enter_async_context(fed.primary_client())
-                return {tool["name"] for tool in await peer.list_tools()}
-        raise AssertionError("unreachable")
+            )
+            peer = await stack.enter_async_context(fed.primary_client())
+            return {tool["name"] for tool in await peer.list_tools()}
 
     before = await served(with_ledger=False)
     after = await served(with_ledger=True)
