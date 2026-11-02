@@ -20,8 +20,11 @@ work in this release would have been a minor on its own.
 
 ### Upgrading
 
-The gateway refuses to START on either of these, so a missed one is loud rather
-than silent. Neither is caught by `profile_lint` alone for the reason in item 2.
+The gateway refuses to START on items 1 and 3, so a missed one is loud rather
+than silent. `profile_lint` reports item 3 as `duplicate-key` and does not check
+item 1 at all — and a clean lint has never been a guarantee that the gateway
+will start, because the lint reads the raw YAML and never calls
+`load_profiles`. The pre-flight that is a guarantee is the real load in item 3.
 
 1. **Rename any profile named `agent` or `operator`.** Role names are reserved
    as profile names, and so is any role added later. `role: operator` says what

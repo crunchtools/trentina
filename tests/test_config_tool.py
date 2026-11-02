@@ -1999,3 +1999,72 @@ class TestAPeerBecomingAnOperator:
 
         assert "error" in result, result
         assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_more_admin_tools_than_a_page_can_show_is_refused_untouched(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The tools are NAMED on the page, so the list is bounded like every
+        other collapsed grant.
+
+        Truncating is the wrong alternative: the approval binds to the digest of
+        what was rendered, so a shortened list would take consent for tools the
+        person never saw. Past the limit the write is refused and the change is
+        made in the file, where a person reads a diff.
+        """
+        from trentina.tools.config import _MAX_PROPOSAL_ROWS
+
+        at_limit = [f"admin{n}_tool" for n in range(_MAX_PROPOSAL_ROWS)]
+        _rewrite(gateway, self._shared_operator(at_limit))
+
+        fits = await self._as_fed(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await self._fed_hash(),
+        )
+        assert fits["staged"] is True
+        assert (
+            "admin0_tool"
+            in fits["shown_for_approval"]["Does a peer administer this gateway through fed"]
+        )
+
+        pending.clear()
+        _rewrite(gateway, self._shared_operator([*at_limit, "one_too_many_tool"]))
+        before = gateway.read_text(encoding="utf-8")
+
+        over = await self._as_fed(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await self._fed_hash(),
+        )
+
+        assert "error" in over, over
+        assert "more than an approval page can show" in over["error"]
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_more_granted_profiles_than_a_page_can_show_is_refused(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The other bound on the same page, and the reason it is only a bound.
+
+        One write cannot promote twenty-five profiles: the grant is keyed by
+        shared profile name and only one WRITTEN profile may be the operator, so
+        a candidate that loads carries at most one. Which is why this calls
+        `_operator_peer_facts` directly and asserts only the refusal — there is
+        no at-limit side to build without a config that would not load.
+
+        It is kept rather than deleted because the rule is computed on the
+        loaded candidate: if multiple written operators are ever allowed, the
+        page must refuse to collapse them rather than grow.
+        """
+        from trentina.gateway.config_guard import ConfigWriteError
+        from trentina.tools.config import _MAX_PROPOSAL_ROWS, _operator_peer_facts
+
+        _rewrite(gateway, self._shared_operator(["read_part_tool"]))
+        after = (get_active_config() or pytest.fail("no active config")).config
+        granted = {f"shared{n}": "config_tool" for n in range(_MAX_PROPOSAL_ROWS + 1)}
+
+        with pytest.raises(ConfigWriteError) as refused:
+            _operator_peer_facts(granted, after)
+        assert "more than an approval page can show" in refused.value.payload["error"]

@@ -392,8 +392,6 @@ def _check_renamed_federation_keys(name: str, body: dict[str, Any]) -> None:
                 )
 
 
-#: Default ports, so one secondary spelled with and without its own is one
-#: secondary rather than two.
 #: YAML's merge key (``<<: *anchor``). Repeating it is YAML's business, not a
 #: duplicated config key, so the scan below steps over it.
 _MERGE_TAG = "tag:yaml.org,2002:merge"
@@ -510,8 +508,20 @@ def _check_federation_internal_surface(registry: dict[str, Profile]) -> None:
 
     So it is checked here, where the registry is. The cost of a derivation bug
     is a peer holding an admin tool nobody offered it, which is worth a check
-    that does not share code with the derivation: this one re-reads both
-    profiles and compares, rather than trusting ``_internal_allow``.
+    that does not share code with the derivation: this one restates the rule and
+    re-reads both profiles, rather than trusting ``_internal_allow``.
+
+    Restating the rule means the ROLE too, not just the source's list. Only an
+    operator profile's allowlist crosses; an agent's derivation gets
+    ``FEDERATION_INTERNAL_REQUIRED`` and nothing else, whatever its own internal
+    backend allows. Comparing an agent ingress against its source's list instead
+    would accept a widened agent ingress — and accept it silently where that
+    list is ``["*"]``, which is the common spelling.
+
+    A glob can therefore only appear on an agent source, where it is now
+    ignored rather than treated as permission. An operator profile that is
+    shared may not use one at all: ``a_shared_profile_is_shareable`` refuses it
+    while the model is built, before this runs.
 
     Raises:
         ProfileConfigError: an ingress offers an internal tool its source does
@@ -529,11 +539,10 @@ def _check_federation_internal_surface(registry: dict[str, Profile]) -> None:
             if backend.is_internal:
                 offered.update(backend.tools_allow)
         allowed: set[str] = set(FEDERATION_INTERNAL_REQUIRED)
-        for backend in source.backends.values():
-            if backend.is_internal:
-                allowed.update(backend.tools_allow)
-        if "*" in allowed:
-            continue
+        if source.role == "operator":
+            for backend in source.backends.values():
+                if backend.is_internal:
+                    allowed.update(backend.tools_allow)
         if extra := sorted(offered - allowed):
             raise ProfileConfigError(
                 f"Derived ingress {name!r} offers internal tool(s) {extra} that "

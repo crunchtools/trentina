@@ -261,21 +261,40 @@ class TestTheRegistryLevelSecondOpinion:
 
         _check_federation_internal_surface(registry)
 
-    def test_a_star_on_the_source_permits_anything_on_the_ingress(self) -> None:
-        """The wildcard short-circuit, exercised rather than merely visited.
+    def test_an_agent_sources_own_allowlist_does_not_permit_anything(self) -> None:
+        """Only an OPERATOR profile's internal allowlist crosses the link.
 
-        Gatehouse caught the first version of this test: it gave the ingress
-        `read_part_tool` only, which the floor requires anyway, so the test
-        passed with or without the short-circuit and protected nothing. The
-        ingress now offers a tool the source does not list BY NAME, so removing
-        the `"*" in allowed` branch fails it.
-
-        A shared OPERATOR may not use `*` at all (the approval page could name
-        nothing), so this only arises for an agent source — whose derived
-        surface is the floor anyway. The branch is here so the check cannot
-        fail on a pattern it was never meant to expand.
+        An agent's derivation gets `FEDERATION_INTERNAL_REQUIRED` and nothing
+        else, whatever its own internal backend allows, so comparing an agent
+        ingress against its source's list would accept a widened one. The check
+        restates the role rule rather than only the list.
         """
+        registry = self._pair(
+            ["read_part_tool", "config_tool"],
+            ["read_part_tool", "config_tool"],
+            role="agent",
+        )
+
+        with pytest.raises(ProfileConfigError, match=r"offers internal tool\(s\).*config_tool"):
+            _check_federation_internal_surface(registry)
+
+    def test_a_star_on_an_agent_source_is_not_permission(self) -> None:
+        """`tools_allow: ["*"]` is the common spelling on an agent's internal
+        backend, and an earlier version of this check skipped the comparison
+        whenever it saw one — so exactly the widening worth catching was the one
+        it went quiet on. Gatehouse caught it. A shared OPERATOR cannot write a
+        glob at all (`a_shared_profile_is_shareable` refuses it while the model
+        is built), so a glob reaching here can only be an agent's, and it grants
+        nothing."""
         registry = self._pair(["*"], ["read_part_tool", "config_tool"], role="agent")
+
+        with pytest.raises(ProfileConfigError, match=r"offers internal tool\(s\).*config_tool"):
+            _check_federation_internal_surface(registry)
+
+    def test_a_star_on_an_agent_source_still_passes_a_faithful_derivation(self) -> None:
+        """The other half: the floor itself is always allowed, so a glob on the
+        source is not a false refusal either."""
+        registry = self._pair(["*"], ["read_part_tool"], role="agent")
 
         _check_federation_internal_surface(registry)
 
