@@ -46,6 +46,16 @@ served. The second pair reuses the profile NAMES, so without
 pair's aggregate: `tools/list` returns the first pair's tool list, and a test
 comparing before against after compares a list with itself. That read as a
 harness that could only stand up one pair per process. It was a cache.
+
+A SECOND thing read that way, and it was a different cache entirely — one
+boolean in `sse_starlette` (#657, fixed in 5.0.1 by
+`conftest._sse_drain_latch_is_not_held`). Every `serving()` teardown sets
+uvicorn's `should_exit`, which latched a process-global shutdown flag, after
+which every SSE response in the process was cut short before it was written.
+A pair in front of a REAL remote MCP backend tripped it on the third served
+app, so only the first such pair per process worked and the symptom was a
+`tools/list` that failed inside the gateway. Several pairs per test are fine
+now; `tests/test_federation_seat_link.py` stands up four.
 """
 
 from __future__ import annotations
@@ -376,12 +386,6 @@ async def federated_pair(
     Yields a :class:`Federation` whose ``primary_client()`` drives the
     consumer gateway.
     """
-    # Profile aggregates are keyed by profile NAME and two pairs in one test
-    # reuse the names, so the second pair would be answered out of the first
-    # one's cache. Both ends, because a pair left standing while the next one
-    # is built is the same collision from the other side. The URL-keyed backend
-    # cache is deliberately left alone: a backend at the same URL in both pairs
-    # is one backend, and reusing its list is what production does.
     # Profile aggregates are keyed by profile NAME and two pairs in one test
     # reuse the names, so the second pair would be answered out of the first
     # one's cache. Both ends, because a pair left standing while the next one

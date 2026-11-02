@@ -10,6 +10,42 @@ under that name.
 
 ## [Unreleased]
 
+## [5.0.1] - 2026-11-01
+
+### Fixed
+
+- **`quarantine_stats` failed for an operator on any gateway with a federation
+  link.** It raised `ProgrammingError`, so the tool returned nothing at all
+  rather than a report missing its federation block. `get_trentina_stats` runs
+  its SQLite aggregates in a worker thread — they cost seconds on a large audit
+  table and would stall every profile on the event loop — and 5.0.0 added a
+  read of the PERIMETER store on that path (`_federation` → `link_report` →
+  `tool_pins.pending` → `list_pending_pins`). The blocklist store has had a
+  thread-local read-only connection for this since 0.49.0 (#295); the perimeter
+  store had none, and SQLite binds a connection to the thread that opened it.
+  `perimeter_db` now has the same `opened_path`/`snapshot_reader` pair and its
+  five pure readers go through it. `check_same_thread=False` on the singleton
+  was the shorter fix and the wrong one: it shares one connection between the
+  loop's writes and a multi-second read.
+- **Only the first test per process could stand a gateway pair in front of a
+  real remote MCP backend (#657).** Filed against the in-process MCP server
+  stack; it was one global flag. `sse_starlette.sse.AppStatus.should_exit` is a
+  class attribute — one boolean per process — that every uvicorn teardown
+  latches through `_shutdown_watcher`'s signal-handler introspection, and
+  nothing clears. Once set, every SSE response in the process is ended before
+  it is written, and an MCP server answers a POST over SSE. Test-only: a
+  gateway serves one app for the life of its process, so the latch fires once,
+  at the shutdown it is for. Four federation wire tests that were written for
+  5.0.0 and withheld now ship.
+
+### Documentation
+
+- 5.0.0's upgrading item 4 (a backend header may not name an env var the file
+  also declares as a secret) now says which pre-flight catches it. It is
+  startup-fatal, and `profile_lint` reads as though it would catch it and does
+  not: it lints the raw YAML and never calls `load_profiles`. One deploy of
+  mine was rolled back on exactly this after a lint reported clean.
+
 ## [5.0.0] - 2026-11-01
 
 ### Upgrading
@@ -33,6 +69,18 @@ Breaking, so read this before deploying. The gateway refuses to START on items
    in the file names. Note that a name stays protected for the life of the
    process once any successful load has seen it declared, so retiring one takes
    a restart.
+
+   `profile_lint` does **not** catch this, and reads as though it would: it
+   lints the raw YAML mapping and never calls `load_profiles`, which is where
+   the rule lives. The pre-flight that catches it is a real load inside the
+   image you are deploying, with the unit's mounts and user:
+
+   ```
+   podman run --rm -v <config>:/config:ro --userns keep-id:uid=65532,gid=65532 \
+     --env-file <env> quay.io/crunchtools/trentina:5.0.0 \
+     python -c "from trentina.gateway.loader import load_profiles; \
+                print(len(load_profiles('/config/profiles.yaml').profiles))"
+   ```
 5. **Upgrade the secondary first, or both together.** The flagged-response
    digest fix is on the SECONDARY's emit side, so a 5.0 primary against a
    4.2.3 secondary keeps auditing `hash_mismatch` for flagged responses and

@@ -32,7 +32,9 @@ from ..gateway.service import judge_stamp, service_profile
 from ..gateway.surface import TOKEN_NOTE, surface_profiles, surface_report
 from ..logsafe import redact_source
 from ..outcomes import Outcome
+from ..perimeter_db import opened_path as perimeter_opened_path
 from ..perimeter_db import perimeter_stamp
+from ..perimeter_db import snapshot_reader as perimeter_snapshot_reader
 from ..quarantine.classifier import is_classifier_available, model_info
 
 GATEWAY_AUDIT_LOOKBACK_DAYS = 30
@@ -143,12 +145,22 @@ async def get_trentina_stats() -> dict[str, Any]:
     # Every number below is a SQLite aggregate over the audit tables, about
     # 2.7 s per million rows; on the loop that stalls every profile, and a
     # denied call is a cheap way to add rows (#295).
-    return await asyncio.to_thread(_snapshot, scope, opened_path())
+    #
+    # Both stores are opened HERE, on the loop, because opening is what creates
+    # the schema and the singleton, and both paths are read in the worker below.
+    return await asyncio.to_thread(_snapshot, scope, opened_path(), perimeter_opened_path())
 
 
-def _snapshot(scope: CallerScope, path: str) -> dict[str, Any]:
-    """The caller's view, read on this worker's own connection."""
-    with snapshot_reader(path):
+def _snapshot(scope: CallerScope, path: str, perimeter_path: str) -> dict[str, Any]:
+    """The caller's view, read on this worker's own connections.
+
+    Two readers because there are two stores and a worker may touch either: the
+    blocklist and audit tables for every caller, and the perimeter store for an
+    operator, whose ``federation`` block reaches ``tool_pins.pending``. That
+    second one was missing until 5.0.1 and took ``quarantine_stats`` down with
+    ``ProgrammingError`` on any gateway with a federation link.
+    """
+    with snapshot_reader(path), perimeter_snapshot_reader(perimeter_path):
         return _agent_stats(scope) if not scope.is_operator else _gateway_stats()
 
 

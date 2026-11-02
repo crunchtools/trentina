@@ -8,17 +8,23 @@ seat's tools. This is that claim over the wire — two real gateways on loopback
 a real primary JWT, a real remote MCP backend behind the secondary's perimeter,
 and a tool call that comes back with its answer.
 
-It is deliberately ONE test, and it is the only test in the suite that stands a
-gateway pair up in front of a real remote MCP backend. The narrower properties
-— that the seat's own native surface does not cross, that a consumed federated
-backend is not re-exported, that several peers share one seat, that a backend
-added to the seat needs no second edit — are each covered at the loader and
-model level in `test_federation_link.py`. Asserting them over the wire as well
-needs several pairs in one process, and a defect in the in-process MCP server
-stack (#657) makes a later pair's `tools/list` fail. Those tests are written
-and wait on that: a test that passes only when pytest-xdist happens to give it
-a fresh worker is worse than no test, because it reports coverage it does not
-have.
+Four narrower properties follow it, each standing its own pair: that the seat's
+own native surface does not cross, that a consumed `federated:` backend is not
+re-exported, that several peers authenticate to one seat, and that a backend
+added to the seat reaches the peer with no second edit. Each is also covered at
+the loader and model level in `test_federation_link.py`; the value of asserting
+them again here is that a derivation which is right in the registry and wrong
+on the wire is still wrong.
+
+They were written for 5.0.0 and withheld, because a second pair in one process
+could not list its tools and #657 recorded that as a defect in the in-process
+MCP server stack needing a test boundary. It was neither. It was
+`sse_starlette.sse.AppStatus.should_exit`, a process-global latch that every
+uvicorn teardown sets and nothing clears, after which an MCP server's SSE
+response is cut short before it is written — see
+`conftest._sse_drain_latch_is_not_held`. A test that passes only when xdist
+happens to give it a fresh worker is worse than no test, so these waited for
+the cause rather than shipping around it.
 
 The assertion is about what the PEER is served, which is the only view that
 matters: a derivation that is right in the registry and wrong on the wire is
@@ -27,6 +33,7 @@ still wrong.
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 import pytest
@@ -84,7 +91,22 @@ def gateway_surface() -> list:
     return [read_part_tool, config, reload_profiles]
 
 
-def peer_gateway(private_pem: str):
+def keypair() -> tuple[str, str]:
+    """An Ed25519 (private PEM, public PEM) pair, as a peer and a seat hold it."""
+    private = Ed25519PrivateKey.generate()
+    return (
+        private.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode(),
+        private.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode(),
+    )
+
+
+def peer_gateway(private_pem: str, name: str = PEER):
     """A primary that mounts the ingress DERIVED from the seat.
 
     The URL names `<seat>-federation` through `ingress_name`, the same function
@@ -92,6 +114,11 @@ def peer_gateway(private_pem: str):
     audience-pinned to that name, so getting it wrong fails to authenticate
     rather than 404ing, which is why the test asserts on the tools served and
     on a call's answer rather than on a status code.
+
+    `name` is the peer's own profile name, and it is load-bearing rather than
+    cosmetic: the primary signs its JWT as the calling profile, and the seat
+    looks that name up in `federation.peers` to find the key to verify with. A
+    second peer is a second name, which is what the multi-peer test turns on.
     """
 
     def build(secondary_port: int) -> Profile:
@@ -104,7 +131,7 @@ def peer_gateway(private_pem: str):
         # profile is built directly, so set the resolved value.
         backend.federated.primary_key = SecretStr(private_pem)
         profile = Profile(
-            name=PEER,
+            name=name,
             auth=AuthConfig(bearer_token_env="PEER_TOKEN"),
             backends={"lotor": backend},
         )
@@ -115,6 +142,25 @@ def peer_gateway(private_pem: str):
     return build
 
 
+def shared_seat(peers: dict[str, str], backends: dict[str, Backend]) -> Profile:
+    """A plain agent seat that happens to share itself.
+
+    Its own `auth`, so it is still reachable by its own agent, and one
+    `federation` block. Nothing else: the ingress is derived.
+    """
+    seat = Profile(
+        name=SEAT,
+        auth=AuthConfig(bearer_token_env="SEAT_TOKEN"),
+        federation=FederationConfig(
+            peers={name: FederationPeer(public_key=pem) for name, pem in peers.items()}
+        ),
+        backends=backends,
+    )
+    assert seat.auth is not None
+    seat.auth.bearer_token = SecretStr("seat-token-only-the-agent-holds")
+    return seat
+
+
 async def test_one_block_shares_the_seat_and_the_peer_can_call_it() -> None:
     """The whole configuration is `federation` on the seat.
 
@@ -123,29 +169,12 @@ async def test_one_block_shares_the_seat_and_the_peer_can_call_it() -> None:
     derivation names, is served the seat's remote backend, and calls a tool on
     it — so the answer came back through two perimeters.
     """
-    private = Ed25519PrivateKey.generate()
-    private_pem = private.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    ).decode()
-    public_pem = (
-        private.public_key()
-        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
-        .decode()
-    )
+    private_pem, public_pem = keypair()
 
     async with serving_mcp_backend(wiki_tools()) as wiki_port:
-        # A plain agent seat that happens to share itself: its own `auth`, so
-        # it is still reachable by its own agent, and one `federation` block.
-        seat = Profile(
-            name=SEAT,
-            auth=AuthConfig(bearer_token_env="SEAT_TOKEN"),
-            federation=FederationConfig(peers={PEER: FederationPeer(public_key=public_pem)}),
-            backends={"wiki": Backend(url=f"http://127.0.0.1:{wiki_port}/mcp")},
+        seat = shared_seat(
+            {PEER: public_pem}, {"wiki": Backend(url=f"http://127.0.0.1:{wiki_port}/mcp")}
         )
-        assert seat.auth is not None
-        seat.auth.bearer_token = SecretStr("seat-token-only-the-agent-holds")
 
         async with (
             federated_pair(
@@ -174,3 +203,156 @@ async def test_one_block_shares_the_seat_and_the_peer_can_call_it() -> None:
     # offering that reader here would be a second and unjudged way to the same
     # parts — `filter._withheld`, which no allowlist can override.
     assert not any(name.endswith("read_part") for name in names), sorted(names)
+
+
+async def test_the_gateways_own_native_surface_does_not_cross() -> None:
+    """The directed edge, on its own pair.
+
+    The seat's `internal://` backend is its whole native surface, admin tools
+    included. The derived ingress gets a FRESH internal backend allowing
+    `read_part_tool` alone rather than a filtered copy of the seat's — and the
+    paging reader is then withheld from what is SERVED (`filter._withheld`),
+    because `parts.py` proxies a peer's paged response itself, in order, with
+    the lead-in, stopping at a flagged part. Offering the reader to the peer as
+    well would be a second and unjudged way to the same parts.
+
+    This is the failure only the wire shows. A derived `internal://trentina`
+    allowing `*` would hand the peer the operator's own tools and the loader
+    would have nothing to object to, because the profile it was derived from is
+    perfectly valid.
+    """
+    private_pem, public_pem = keypair()
+    async with serving_mcp_backend(wiki_tools()) as wiki_port:
+        seat = shared_seat(
+            {PEER: public_pem}, {"wiki": Backend(url=f"http://127.0.0.1:{wiki_port}/mcp")}
+        )
+        async with (
+            federated_pair(
+                tools=gateway_surface(), secondary=seat, primary=peer_gateway(private_pem)
+            ) as fed,
+            fed.primary_client() as peer,
+        ):
+            names = {tool["name"] for tool in await peer.list_tools()}
+
+    assert any(name.endswith("wiki_read") for name in names), sorted(names)
+    for withheld in ("config", "reload_profiles", "read_part"):
+        assert not any(name.endswith(withheld) for name in names), (withheld, sorted(names))
+
+
+async def test_a_consumed_federated_backend_is_not_re_exported() -> None:
+    """A -> B -> C is unsayable, over the wire and not merely in the registry.
+
+    One seat may both consume a peer and share itself (5.0.0 dropped the
+    one-profile-one-role clause). What keeps that from chaining is structural:
+    `offerable_backends` excludes every `federated` backend, so a seat's own
+    upstream link is never in the set its own peers are offered.
+
+    The consumed link here points at a port nothing is listening on, and that
+    is the point — if the derivation offered it, the ingress would try to list
+    it and the test would see either its tools or a failure. It sees neither.
+    """
+    private_pem, public_pem = keypair()
+    unreachable = Backend(
+        url="http://127.0.0.1:1/some-other-gateway/mcp",
+        headers={"Authorization": "Bearer not-used"},
+        federated=FederatedConfig(),
+    )
+    async with serving_mcp_backend(wiki_tools()) as wiki_port:
+        seat = shared_seat(
+            {PEER: public_pem},
+            {
+                "wiki": Backend(url=f"http://127.0.0.1:{wiki_port}/mcp"),
+                "upstream-peer": unreachable,
+            },
+        )
+        async with (
+            federated_pair(
+                tools=gateway_surface(), secondary=seat, primary=peer_gateway(private_pem)
+            ) as fed,
+            fed.primary_client() as peer,
+        ):
+            names = {tool["name"] for tool in await peer.list_tools()}
+
+    # The seat's own remote backend crosses; the one it consumes from elsewhere
+    # does not, under any namespacing.
+    assert any(name.endswith("wiki_read") for name in names), sorted(names)
+    assert not any("upstream" in name or "peer" in name for name in names), sorted(names)
+
+
+async def test_two_peers_authenticate_to_one_seat() -> None:
+    """One `federation` block, two peers, each with its own key.
+
+    The single-peer rule is gone in 5.0.0, and the thing worth asserting is that
+    the SECOND peer is served by the same derived ingress rather than needing a
+    second one: both sign for the same audience and are told apart by the
+    profile name their JWT carries.
+
+    Two pairs in one test, which is what #657 made impossible.
+    """
+    alpha_private, alpha_public = keypair()
+    beta_private, beta_public = keypair()
+    peers = {PEER: alpha_public, "kagetora": beta_public}
+
+    served: dict[str, set[str]] = {}
+    for peer_name, peer_private in ((PEER, alpha_private), ("kagetora", beta_private)):
+        async with serving_mcp_backend(wiki_tools()) as wiki_port:
+            seat = shared_seat(peers, {"wiki": Backend(url=f"http://127.0.0.1:{wiki_port}/mcp")})
+            async with (
+                federated_pair(
+                    tools=gateway_surface(),
+                    secondary=seat,
+                    primary=peer_gateway(peer_private, name=peer_name),
+                ) as fed,
+                fed.primary_client() as peer,
+            ):
+                served[peer_name] = {tool["name"] for tool in await peer.list_tools()}
+
+    for peer_name, names in served.items():
+        assert any(name.endswith("wiki_read") for name in names), (peer_name, sorted(names))
+
+
+async def test_a_backend_added_to_the_seat_needs_no_second_edit() -> None:
+    """The property the whole release is for.
+
+    Before 5.0.0 the offered set was hand-listed on a separate ingress profile,
+    so adding a backend to a seat and expecting a peer to see it was the most
+    natural mistake an operator could make, and it failed silently. Now the set
+    is derived, so the second edit does not exist.
+
+    Asserted as before-and-after on the SAME peer: one pair with one backend,
+    one with two, and nothing between them but the seat's `backends` mapping.
+    """
+    private_pem, public_pem = keypair()
+
+    def extra_tools() -> list:
+        def ledger_read(entry: str) -> str:
+            """Read a ledger entry."""
+            return f"ledger:{entry}"
+
+        return [ledger_read]
+
+    async def served(with_ledger: bool) -> set[str]:
+        async with contextlib.AsyncExitStack() as stack:
+            wiki_port = await stack.enter_async_context(serving_mcp_backend(wiki_tools()))
+            backends = {"wiki": Backend(url=f"http://127.0.0.1:{wiki_port}/mcp")}
+            if with_ledger:
+                ledger_port = await stack.enter_async_context(serving_mcp_backend(extra_tools()))
+                backends["ledger"] = Backend(url=f"http://127.0.0.1:{ledger_port}/mcp")
+            seat = shared_seat({PEER: public_pem}, backends)
+            fed = await stack.enter_async_context(
+                federated_pair(
+                    tools=gateway_surface(),
+                    secondary=seat,
+                    primary=peer_gateway(private_pem),
+                )
+            )
+            peer = await stack.enter_async_context(fed.primary_client())
+            return {tool["name"] for tool in await peer.list_tools()}
+
+    before = await served(with_ledger=False)
+    after = await served(with_ledger=True)
+
+    assert not any(name.endswith("ledger_read") for name in before), sorted(before)
+    assert any(name.endswith("ledger_read") for name in after), sorted(after)
+    # And the first backend is still there: adding one is not replacing the set.
+    assert any(name.endswith("wiki_read") for name in after), sorted(after)
