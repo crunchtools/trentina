@@ -262,11 +262,20 @@ class TestTheRegistryLevelSecondOpinion:
         _check_federation_internal_surface(registry)
 
     def test_a_star_on_the_source_permits_anything_on_the_ingress(self) -> None:
-        """A shared OPERATOR may not use `*` (the approval page could name
-        nothing), so this case only arises for an agent source — whose derived
-        surface is the floor anyway. The short-circuit is here so the check
-        cannot fail on a pattern it was never meant to expand."""
-        registry = self._pair(["*"], ["read_part_tool"], role="agent")
+        """The wildcard short-circuit, exercised rather than merely visited.
+
+        Gatehouse caught the first version of this test: it gave the ingress
+        `read_part_tool` only, which the floor requires anyway, so the test
+        passed with or without the short-circuit and protected nothing. The
+        ingress now offers a tool the source does not list BY NAME, so removing
+        the `"*" in allowed` branch fails it.
+
+        A shared OPERATOR may not use `*` at all (the approval page could name
+        nothing), so this only arises for an agent source — whose derived
+        surface is the floor anyway. The branch is here so the check cannot
+        fail on a pattern it was never meant to expand.
+        """
+        registry = self._pair(["*"], ["read_part_tool", "config_tool"], role="agent")
 
         _check_federation_internal_surface(registry)
 

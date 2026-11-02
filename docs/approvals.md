@@ -1,6 +1,6 @@
 # Approvals
 
-Your agent runs this gateway. Five things it cannot do alone:
+Your agent runs this gateway. Six things it cannot do alone:
 
 - **Move the operator profile** — who is root here.
 - **Turn on federation trust** — serve another gateway's answers without
@@ -11,6 +11,9 @@ Your agent runs this gateway. Five things it cannot do alone:
   refusing them.
 - **Open a way out** — let an agent's traffic reach somewhere new on the
   internet.
+- **Let a peer administer this gateway** — widen the admin tools reachable
+  through a profile that is both shared and the operator, so the gateway on the
+  other end of that link can call them.
 
 For those it asks, and you decide in a browser. Everything else — backends,
 guards, thresholds, credentials, whole new profiles — it just does.

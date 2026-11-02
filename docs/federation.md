@@ -109,13 +109,18 @@ The alternative, which keeps all three properties, is a second ordinary
 with its own bearer token. Two doors, two credentials, two audit trails, and
 admin responses judged locally. It needs no federation feature at all.
 
-Promoting a shared profile is staged for a person (`peer becomes operator` — see
-[approvals](approvals.md)), and so is widening that profile's internal
-allowlist. Narrowing either applies at once. Note that the promotion cannot
-happen in one write while another profile holds the role: a file may declare one
-operator, so the candidate would have two and does not validate. Demote the
-current one first; a file with no operator is legal, and centralized work falls
-back to the environment default meanwhile.
+**Promoting a profile to shared-operator is a file edit, not an API write.**
+`config_tool` cannot do it, and it is worth knowing why rather than discovering
+it: while another profile holds the role, the candidate declares two operators
+and does not validate; and `config_tool` is operator-only, so demoting the
+incumbent first leaves no caller who may make the second write. Edit
+`profiles.yaml`, run the loader against it, and reload.
+
+What the `peer becomes operator` approval covers is the change the API *can*
+make: widening the internal allowlist of a profile that is already shared and
+already the operator. That is the one that arrives looking like something else
+— it names a `tools_allow`, not a peer — and it is staged for a person (see
+[approvals](approvals.md)). Narrowing it applies at once.
 
 Two things do *not* follow the role. The derivation still constructs the
 internal backend under its own label, so a peer cannot reach `internal://` by
