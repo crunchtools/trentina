@@ -75,6 +75,47 @@ def _reset_singletons() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _sse_drain_latch_is_not_held() -> None:
+    """Keep ``sse_starlette``'s shutdown latch off, for every served app (#657).
+
+    ``sse_starlette.sse.AppStatus.should_exit`` is a CLASS attribute — one
+    boolean for the whole process — and nothing ever sets it back to False.
+    ``_listen_for_exit_signal`` returns the moment it is True, which ends the
+    SSE stream a response is being written to. An MCP server answers a POST
+    over SSE, so a held latch means: transport created, "Closing SSE writer",
+    "Request stream 1 not found", and uvicorn's "ASGI callable returned
+    without completing response". The client sees ``MCPError: SSE stream ended
+    without a response`` on ``initialize``, which reads like a broken gateway
+    and is a library flag left standing.
+
+    A test harness serves uvicorn over and over in one process, and every
+    teardown sets ``server.should_exit``. ``_shutdown_watcher`` polls for that
+    through signal-handler introspection and latches ``AppStatus.should_exit``
+    — so the third served app in a process (the poll is every 0.5 s, which is
+    why it is not the second) could no longer answer a single request. That is
+    #657: it was read as a defect in the in-process MCP server stack that
+    needed a test boundary to work around, and it is neither. It is one global
+    flag, and it is why only the first gateway pair per process worked.
+
+    Disabling the automatic drain is the fix rather than clearing the flag on
+    the way out: the watcher holds a reference to the server that is shutting
+    down and would re-latch within its poll interval, so a reset races it.
+    With the drain off, only a real SIGINT/SIGTERM through
+    ``AppStatus.handle_exit`` can set it, and a test process gets neither.
+    Nothing is lost at shutdown — uvicorn sends ``http.disconnect`` and
+    ``_listen_for_disconnect`` ends the stream on that, which is the path a
+    closing client already takes.
+
+    Production is untouched: a gateway serves one app for the life of the
+    process, so the latch there fires once, at the shutdown it is meant for.
+    """
+    from sse_starlette.sse import AppStatus
+
+    AppStatus.disable_automatic_graceful_drain()
+    AppStatus.should_exit = False
+
+
+@pytest.fixture(autouse=True)
 def _isolated_perimeter_store(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Never let a test write the developer's real perimeter store.
 
