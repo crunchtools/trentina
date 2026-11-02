@@ -183,6 +183,24 @@ profiles:
 - **No self-promotion.** A tenant's reload that finds its own `role` changed
   on disk refuses and applies nothing. A promotion takes effect only through an
   operator reload or a restart.
+- **No duplicate key, anywhere in the file.** A key written twice in one
+  mapping refuses the whole file, naming each repeat and its line. YAML keeps
+  the LAST one and discards the earlier one silently, so the block a reader
+  sees first is not the block that runs — and `config_tool`'s contract is that
+  the file a person maintains and reviews in a diff is the file in force. One
+  of these reached production: a profile carried `defense:` twice, the gateway
+  ran the second, and the comment on the first explained a block that had
+  already lost.
+
+  A key that arrives through a `<<: *anchor` merge **and** is written
+  explicitly is not a duplicate — that is the override merge keys exist for,
+  and it keeps working. Only a key written twice in the same mapping counts.
+
+  `python -m trentina.gateway.profile_lint <profiles.yaml>` reports it as
+  `duplicate-key` before you deploy. Note that the lint checks posture over the
+  raw YAML and does **not** call `load_profiles`, so a clean lint is not a
+  guarantee the gateway will start; the pre-flight that is, is a real load
+  inside the image you are deploying, with the unit's mounts and user.
 
 ## Changing the operator
 

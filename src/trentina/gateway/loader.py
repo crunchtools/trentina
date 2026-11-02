@@ -393,6 +393,74 @@ def _check_renamed_federation_keys(name: str, body: dict[str, Any]) -> None:
 
 #: Default ports, so one secondary spelled with and without its own is one
 #: secondary rather than two.
+#: YAML's merge key (``<<: *anchor``). Repeating it is YAML's business, not a
+#: duplicated config key, so the scan below steps over it.
+_MERGE_TAG = "tag:yaml.org,2002:merge"
+
+
+def duplicate_keys(raw_text: str) -> list[tuple[str, int]]:
+    """Every key written twice in one mapping, with the line of the repeat.
+
+    ``yaml.safe_load`` keeps the LAST of a repeated key and reports nothing, so
+    by the time there is data to inspect the evidence is gone. One of mine
+    reached production: lotor's ``josui`` carried ``defense:`` twice, the
+    gateway ran the second, and the comment on the first explained a block that
+    had already lost. They happened to agree. Nothing would have said so if
+    they had not — not the loader, not ``profile_lint``, not a pre-flight.
+
+    Walks the NODE tree rather than the constructed data, for two reasons. The
+    evidence above is only in the nodes. And constructing a mapping to inspect
+    it trips over ``<<:`` merge keys, which real files use heavily: a loader
+    that resolves one raises ``could not determine a constructor for the tag
+    ':merge'`` instead of reporting the duplicate it was asked about.
+
+    Walking nodes also draws the line in the right place. A key that arrives
+    through ``<<: *anchor`` AND is written explicitly is NOT a duplicate — it
+    is the override the merge key exists for, and flagging it would make
+    anchors unusable. Only a key written twice in the same mapping is.
+
+    A syntax error returns nothing: ``safe_load`` has already reported it, with
+    a message that is careful about quoting source lines.
+
+    Args:
+        raw_text: the file's text, as read.
+
+    Returns:
+        ``(key, line)`` for each repeat, in source order.
+    """
+    try:
+        root = yaml.compose(raw_text)
+    except yaml.YAMLError:
+        return []
+
+    # Ordered by the key's byte OFFSET, not its line: the walk is depth-first
+    # over a stack, so sibling mappings come off it in reverse, and two
+    # duplicates on one line (flow style, `{a: 1, a: 2}`) share a line number
+    # and cannot be ordered by it at all.
+    found: list[tuple[int, str, int]] = []
+    # Aliases resolve to the SAME node object, so a shared anchor is reachable
+    # by several paths and a recursive one is reachable from itself. Visit each
+    # node once.
+    seen_nodes: set[int] = set()
+    stack: list[yaml.Node] = [root] if root is not None else []
+    while stack:
+        node = stack.pop()
+        if id(node) in seen_nodes:
+            continue
+        seen_nodes.add(id(node))
+        if isinstance(node, yaml.MappingNode):
+            keys: set[str] = set()
+            for key, value in node.value:
+                if isinstance(key, yaml.ScalarNode) and key.tag != _MERGE_TAG:
+                    if key.value in keys:
+                        found.append((key.start_mark.index, key.value, key.start_mark.line + 1))
+                    keys.add(key.value)
+                stack.append(value)
+        elif isinstance(node, yaml.SequenceNode):
+            stack.extend(node.value)
+    return [(key, line) for _offset, key, line in sorted(found)]
+
+
 def _refuse_derived_fields(config_path: Path, profiles_section: dict[str, Any]) -> None:
     """Refuse a file that writes a field only the loader may set.
 
@@ -1300,6 +1368,15 @@ def load_profiles(path: Path | str) -> GatewayConfig:
         problem = getattr(exc, "problem", None) or type(exc).__name__
         # from None: a chained cause would print the snippet in a traceback.
         raise ProfileConfigError(f"Invalid YAML in {config_path}{where}: {problem}") from None
+
+    if duplicates := duplicate_keys(raw_text):
+        where = ", ".join(f"{key!r} at line {line}" for key, line in duplicates)
+        raise ProfileConfigError(
+            f"Duplicate key in {config_path}: {where}. YAML keeps the LAST of a "
+            "repeated key and discards the earlier one silently, so the block a "
+            "reader sees first is not the block that runs. Delete whichever "
+            "should not apply."
+        )
 
     if not isinstance(cfg_data, dict):
         raise ProfileConfigError(f"Profiles file {config_path} must contain a top-level mapping")

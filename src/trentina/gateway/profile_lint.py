@@ -67,6 +67,8 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from .loader import duplicate_keys
+
 #: A leading token that makes a tool a write: create_issue, memory_store, deletePostTool.
 WRITE_VERBS = frozenset(
     {
@@ -514,11 +516,33 @@ def lint(profiles_file: dict[str, Any], *, config_source: str | None = None) -> 
 
 
 def lint_file(path: Path | str) -> list[Finding]:
-    """Lint the profiles file at ``path``. Raises OSError or yaml.YAMLError if unreadable."""
-    profiles_file = yaml.safe_load(Path(path).read_text())
+    """Lint the profiles file at ``path``. Raises OSError or yaml.YAMLError if unreadable.
+
+    Reads the text once and lints it two ways. ``lint`` works on the loaded
+    mapping, which is everything posture-shaped; the duplicate-key scan works
+    on the SOURCE, because by the time there is a mapping the repeat is gone —
+    ``safe_load`` kept the last one and said nothing.
+
+    Reported here as well as refused by ``load_profiles`` because this is the
+    command an operator reaches for first, and a lint that comes back clean on
+    a file the gateway will refuse to start on is worse than no lint. It is
+    also exactly the gap that let one of mine through: I ran this, read
+    "0 findings", and deployed a file with two ``defense:`` blocks.
+    """
+    raw_text = Path(path).read_text()
+    profiles_file = yaml.safe_load(raw_text)
     if not isinstance(profiles_file, dict):
         raise yaml.YAMLError(f"{path}: not a mapping")
-    return lint(profiles_file)
+    duplicates = [
+        Finding(
+            "duplicate-key",
+            f"key {key!r} is written twice in the same mapping, at line {line}. "
+            "YAML keeps the LAST one silently, so the block a reader sees first "
+            "is not the block that runs. The gateway refuses to load this file.",
+        )
+        for key, line in duplicate_keys(raw_text)
+    ]
+    return duplicates + lint(profiles_file)
 
 
 def main(argv: list[str] | None = None) -> int:
