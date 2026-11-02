@@ -477,6 +477,19 @@ def _shared_seat_facts(seat: str, after: GatewayConfig) -> dict[str, str]:
         )
     return {
         f"Tools shared from {label}": ", ".join(destinations) or "none",
+        # What the row above does NOT say on its own. The offered set is
+        # DERIVED, so it follows the seat: a backend added later is shared on
+        # the next reload, and the consent taken here was to the seat rather
+        # than to a snapshot of it. Saying so is the honest version of a page
+        # that now names destinations specifically. Staging every widening
+        # instead was the alternative and is worse — a seat gains backends
+        # often, and a gate in front of each one teaches a person that the page
+        # is something to get past.
+        f"If {label} changes later": (
+            "those are its backends today. The offered set is derived from the "
+            "seat, so one added to it later is shared with this peer on the "
+            "next reload, without another approval"
+        ),
         f"Runs as your sign-in on {label}": (
             f"{', '.join(signed_in)} - this seat's sign-ins will serve the link, so "
             "the peer's calls go out as the account authorized here"

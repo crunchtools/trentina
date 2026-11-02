@@ -1007,6 +1007,29 @@ class TestAdmittingAFederationPeer:
         with pytest.raises(pending.PendingError, match="not what is staged"):
             await pending.approve(pending.Kind.FEDERATION_PEERS, as_read)
 
+    async def test_the_page_says_the_offered_set_follows_the_seat(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """Naming destinations specifically would otherwise over-promise.
+
+        The offered set is DERIVED, so a backend added to the seat later is
+        shared with this peer on the next reload. The consent taken here is to
+        the SEAT, not to the snapshot of it the page lists, and a person
+        deciding needs to be told which of the two they are giving.
+        """
+        _rewrite(gateway, _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}}))
+        await _as_operator(
+            "set",
+            "profiles.fed.federation.peers.beta",
+            {"public_key": _SECOND_PUBLIC},
+            await _hash(),
+        )
+        shown = pending.outstanding()[pending.Kind.FEDERATION_PEERS]
+
+        row = shown["If fed changes later"]
+        assert "derived" in row
+        assert "without another approval" in row
+
     async def test_a_query_is_fingerprinted_rather_than_printed(
         self, gateway: pathlib.Path
     ) -> None:
