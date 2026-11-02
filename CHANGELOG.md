@@ -73,9 +73,13 @@ Breaking, so read this before deploying. The gateway refuses to START on items
 - **Stability tiers** (`src/trentina/stability.py`,
   [docs/stability.md](docs/stability.md)). A named set of features is
   *preview*: a breaking change confined to one is a minor release, so the next
-  federation change does not move the whole program's version. Federation
-  (#592) is the only declared surface. One `WARNING` per surface in use at
-  startup, and `preview_surfaces` in `quarantine_stats`' operator slice.
+  federation change does not move the whole program's version. Two surfaces are
+  declared — **federation** (#592) and **`config-api`** (#633), the latter being
+  `config_tool`'s action names, arguments and result keys and NOT the
+  `config_guard` rules deciding what a person must approve. Human approval
+  (#637) stays stable on purpose: it is the one gate an operator agent cannot
+  talk its way past. One `WARNING` per surface in use at startup, and
+  `preview_surfaces` in `quarantine_stats`' operator slice.
 - **`quarantine_stats` carries a `federation` section for an operator**: per
   shared seat, the derived ingress, peers by key fingerprint, which backends
   cross, which run on the seat's sign-in, whether the link signs verdicts, and
@@ -204,19 +208,6 @@ breaking changes outside it as well.
   of `cache_flush`, `reconnect_backend` and tool pinning ran against a gateway
   whose caches cannot cascade, which is not the gateway that ships. The reset
   now clears cached data only, and two tests hold the wiring.
-- **One missing OAuth grant took down a whole federated peer.** "Not authorized"
-  was a JSON-RPC error, so the primary lost the message and counted it against
-  the breaker, and every other tool on that peer went with it. It is now a
-  refusal for every caller; a primary maps it to `needs_auth_secondary` in its
-  own words, naming the sign-in tool as served there.
-- **An image built from a branch labelled itself with the branch name.**
-  `docker/metadata-action`'s `version` output is the ref, so every
-  `:latest` published from a main push carried
-  `org.opencontainers.image.version=main` while the Containerfile's own
-  `version` label — read from `pyproject.toml` through the `VERSION`
-  build-arg — said 4.2.3. One image, two answers, and only a tag build was
-  right. The `pkgver` step now runs before the metadata and overwrites the
-  OCI label, so the two agree on every build.
 - **A federated peer could read another peer's held response parts.** A held
   paged response was owned by the profile name alone, and a federation ingress
   is one profile for every primary that calls it; meanwhile the peer's own
@@ -251,6 +242,25 @@ breaking changes outside it as well.
   own signed stamp rather than on the pin, so a peer that drifts twice is
   reported twice.
 
+## [4.3.0] - 2026-11-01
+
+### Added
+
+- **A federated profile can sign in to the secondary's OAuth backends.** A grant
+  belongs to one profile, and a federated call runs as the ingress profile, so
+  an OAuth backend on the secondary could not be reached through the link and
+  nothing could start its sign-in. `backend_auth_tool` is now allowed on an
+  ingress when its internal backend lists it; it acts only on that profile's
+  own backends. On the primary it is served with the peer's tag, for example
+  `lotor_backend_auth`.
+
+### Fixed
+
+- **One missing OAuth grant took down a whole federated peer.** "Not authorized"
+  was a JSON-RPC error, so the primary lost the message and counted it against
+  the breaker, and every other tool on that peer went with it. It is now a
+  refusal for every caller; a primary maps it to `needs_auth_secondary` in its
+  own words, naming the sign-in tool as served there.
 - **An image built from a branch labelled itself with the branch name.**
   `docker/metadata-action`'s `version` output is the ref, so every
   `:latest` published from a main push carried
