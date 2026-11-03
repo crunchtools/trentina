@@ -10,6 +10,50 @@ under that name.
 
 ## [Unreleased]
 
+### Changed
+
+- **One image build per run, and a release that promotes rather than rebuilds.**
+  The image was built three times per pull request: `ci.yml:build-container`,
+  `security.yml:container-scan`, and `container.yml`, which built on a PR and
+  then pushed nothing. Only `Container Security Scan` was a required check, so a
+  broken production image already merged unnoticed. That job is now the one
+  build: it reads the version from `pyproject.toml`, asserts the image's
+  `version` label matches, runs every verification step `ci.yml` used to
+  (`/health` as production runs it, the native-extension imports, L2, L3, and
+  the OCR and PDF workers under `--network none --read-only`) and then scans.
+  `ci.yml:build-container` is deleted and `container.yml` no longer triggers on
+  a pull request.
+- **The build steps run only when the build's inputs change**: everything the
+  Containerfile copies plus everything the verification steps run --
+  `Containerfile`, an ignore file, `pyproject.toml`, `uv.lock`, `src/`,
+  `tests/`, `corpora/`, `benchmarks/`, `scripts/`, `.trivyignore` and the
+  workflows. `benchmarks/` is
+  in that list because the `l2-gate` stage runs `l2_obfuscation.py` and
+  `l2_benign.py` to earn the records the image ships, so a change to a gate
+  that skipped the build would be a gate nobody re-earned. A docs-only PR
+  reports success in about ten seconds. The filter
+  is step-level and fails open: a base commit it cannot resolve builds. It is
+  deliberately not a workflow `paths:` filter (a required context that never
+  reports stays pending forever) and not a job-level `if:` (a job skipped
+  because its `needs` FAILED also reports "skipped", which GitHub counts as
+  satisfying the requirement).
+- **A tag promotes the digest `main` already built and verified**, by
+  `docker buildx imagetools create`, in each registry separately since the two
+  build jobs produce two digests. It refuses unless the digest behind `:main`
+  carries this commit's `revision` label and the version the tag names, and
+  unless the commit's own checks passed -- the contexts read from the branch
+  ruleset rather than copied, and the job that built and verified the image
+  resolved through `security.yml`'s own run rather than by context name,
+  since a name is a string any workflow in the repo could post. Rebuilding at release time would
+  publish bytes nothing had verified and find a broken image at ship time.
+- **The buildx GitHub-Actions layer cache is gone.** It cost 121 s per build in
+  fixed export and import against 67 s of savings, and the `docker-container`
+  driver it requires cost the multithreaded ONNX benign-L2 gate a further 137 s
+  (219 s under buildx, 82 s under plain `docker build`).
+- The scheduled scan stops rebuilding and scans the published
+  `quay.io/crunchtools/trentina:latest`, which is what "a new CVE landed against
+  an unchanged image" actually asks.
+
 ### Fixed
 
 - `/health` no longer reads SQLite (#662). `pending_pins` comes from a cache a

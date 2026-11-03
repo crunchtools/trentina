@@ -39,23 +39,243 @@ jobs:
     with:
       python-version: "3.14"
 
+  # NAME IS LOAD-BEARING: `Container Security Scan` is a required check on the
+  # default branch (ruleset 25632585). Renaming the job strands that context at
+  # "Expected -- waiting for status" on every PR until someone edits a GitHub
+  # setting, so the job keeps a name that is now a mild misnomer: it builds and
+  # verifies as well as scans.
+  #
+  # It is the ONE image build per run (#674 follow-up). Until this, the image
+  # was built three times per pull request -- here, in `ci.yml:build-container`
+  # and in `container.yml`, which built on a PR and then pushed nothing -- and
+  # only this one gated anything, so a broken production image already merged
+  # unnoticed. The verification steps below came from `ci.yml:build-container`.
   container-scan:
     name: Container Security Scan
     runs-on: ubuntu-latest
 
     steps:
+      # fetch-depth: 0 for the surface filter below, which diffs against a base
+      # commit a shallow clone does not have.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
-      - name: Build container image
+      # Step-level, never a workflow `paths:` filter and never a `changes` job
+      # with a job-level `if:`. A required context a `paths:` filter skips stays
+      # pending forever; and a job skipped because its `needs` FAILED also
+      # reports "skipped", which GitHub counts as satisfying the requirement --
+      # a green check out of a broken filter. The job always runs and always
+      # reports; only the expensive steps are conditional. Same pattern as
+      # ci.yml's boundary-review-eval.
+      #
+      # The surface is everything the Containerfile COPYs plus everything the
+      # verification steps run. So tests/ and corpora/ are in it (those suites
+      # run INSIDE the image, so a test change changes what they execute), and
+      # so are benchmarks/ and scripts/: the `l2-gate` stage runs
+      # benchmarks/l2_obfuscation.py and benchmarks/l2_benign.py to EARN the
+      # records the image ships, and `model-builder` runs
+      # scripts/export_l2_model.py. A change to a gate that skips the build is a
+      # gate nobody re-earned. An ignore file is in the set although the repo
+      # has none today: adding one changes which files enter the build context,
+      # so a change to it changes the image. What skips is docs/, README.md,
+      # CHANGELOG.md, CONTRIBUTING.md, .claude/, examples/ and demo/.
+      - name: Does the image surface change?
+        id: surface
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
-          docker build -f Containerfile -t trentina:scan .
+          set -eu
+          surface='^(Containerfile$|\.(docker|container)ignore$|pyproject\.toml$|uv\.lock$|src/|tests/|corpora/|benchmarks/|scripts/|\.trivyignore$|\.github/workflows/)'
+          if [ "$EVENT" = "schedule" ]; then
+            # A scheduled run asks "did a new CVE land against the image we
+            # published", which needs the registry tag, not a rebuild.
+            build=false
+            image="quay.io/crunchtools/trentina:latest"
+          else
+            image="trentina:scan"
+            # FAIL OPEN. A filter that cannot work out what changed builds; one
+            # that guesses wrong must never skip.
+            if [ -z "$BASE_SHA" ] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+              build=true
+              echo "::notice::base commit unknown, building"
+            elif git diff --name-only "$BASE_SHA" HEAD | grep -qE "$surface"; then
+              build=true
+            else
+              build=false
+              echo "::notice::nothing the image is built from changed -- not building"
+            fi
+          fi
+          {
+            echo "build=$build"
+            echo "image=$image"
+            if [ "$build" = true ] || [ "$EVENT" = "schedule" ]; then
+              echo "scan=true"
+            else
+              echo "scan=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+      # The version belongs to the package, not to the ref. container.yml
+      # passes this; ci.yml's build never did, so the only image a PR ever
+      # verified was labelled 0.0.0-dev and nothing checked the label at all.
+      - name: Read package version
+        id: pkgver
+        if: steps.surface.outputs.build == 'true'
+        run: |
+          v=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+          [ -n "$v" ] || { echo "could not read version from pyproject.toml" >&2; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      # Plain `docker build`, no buildx and no `cache-from: type=gha` (#674
+      # follow-up). Measured, the cache lost on every axis: 121 s of fixed cost
+      # per build (69 s exporting, plus 52 s of docker export/import that
+      # `load: true` forces under the container driver the gha backend needs)
+      # against 67 s of savings -- and the container driver itself cost the
+      # multithreaded ONNX benign-L2 gate another 137 s (219 s under buildx,
+      # 82 s under plain docker build, same runner class, same minute).
+      #
+      # VERSION arrives through the environment, never interpolated into the
+      # script: pyproject.toml is a file a pull request may edit, so a `${{ }}`
+      # expansion inside `run:` is a command the PR author chose, with the
+      # checkout token in reach.
+      - name: Build container image
+        if: steps.surface.outputs.build == 'true'
+        env:
+          VERSION: ${{ steps.pkgver.outputs.version }}
+        run: |
+          docker build -f Containerfile \
+            --build-arg "VERSION=$VERSION" \
+            -t trentina:scan .
+
+      - name: The image states the package version
+        if: steps.surface.outputs.build == 'true'
+        env:
+          EXPECTED: ${{ steps.pkgver.outputs.version }}
+        run: |
+          label=$(docker inspect --format '{{ index .Config.Labels "version" }}' trentina:scan)
+          [ "$label" = "$EXPECTED" ] || {
+            echo "image version label is '$label', pyproject.toml says '$EXPECTED'" >&2
+            exit 1
+          }
+
+      - name: Verify container starts
+        if: steps.surface.outputs.build == 'true'
+        run: |
+          # As production runs it, then /health must answer. The default stdio
+          # transport exits on the EOF of a detached stdin, so it proves
+          # nothing. /data is a volume in production; a tmpfs stands in here.
+          mkdir -p ci-gateway
+          printf 'profiles:\n  ci:\n    auth:\n      bearer_token_env: CI_TOKEN\n    backends: {}\n' \
+            > ci-gateway/profiles.yaml
+          openssl rand -hex 16 > ci-gateway/token
+          chmod -R a+rX ci-gateway
+          docker run -d --name trentina-start -p 127.0.0.1:8019:8019 \
+            --read-only --tmpfs /tmp --tmpfs /data:mode=1777 \
+            --cap-drop=all --security-opt no-new-privileges \
+            -v "$PWD/ci-gateway:/etc/trentina:ro" \
+            -e TRENTINA_GATEWAY_ENABLED=1 -e CI_TOKEN_FILE=/etc/trentina/token \
+            trentina:scan --transport streamable-http --host 0.0.0.0 --port 8019
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8019/health; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs trentina-start 2>&1 | tail -20
+          docker rm -f trentina-start >/dev/null
+          test "$ok" -eq 1
+
+      # The real test of a native wheel in a distroless image. The runtime
+      # stage copies only site-packages plus libstdc++, so an extension
+      # needing a shared object from anywhere else fails here and nowhere
+      # else -- which is exactly how onnxruntime broke once already.
+      - name: Verify native extensions import in the distroless image
+        if: steps.surface.outputs.build == 'true'
+        run: |
+          docker run --rm --entrypoint python trentina:scan -c "
+          import onnxruntime, vodozemac
+          print('onnxruntime', onnxruntime.__version__)
+          print('vodozemac imported')
+          import cv2, PIL, pypdf, rapidocr, shapely, pyclipper
+          print('opencv', cv2.__version__, 'pillow', PIL.__version__, 'pypdf', pypdf.__version__)
+          "
+
+      - name: Build test runner image (adds shell + pytest to distroless)
+        if: steps.surface.outputs.build == 'true'
+        run: |
+          docker build -f - -t trentina:test-runner . <<'EOF'
+          FROM quay.io/hummingbird/python:3.14-builder AS test-deps
+          USER 0
+          RUN pip install --no-cache-dir --prefix=/usr pytest pytest-asyncio pytest-xdist
+
+          FROM trentina:scan
+          COPY --from=test-deps /usr/lib/python3.14/site-packages/ /usr/lib/python3.14/site-packages/
+          EOF
+
+      # Once per model the image ships (#350). TRENTINA_REQUIRE_L2_MODEL makes
+      # a model that fails to load FAIL the run: until 0.55.0 this step named
+      # a path the image never had, and every L2 test here skipped. The
+      # corpus's own L2 annotations run here too: outside the image they
+      # always skip, and one went stale under the 0.55.0 default (#353).
+      - name: Run L2 integration tests in container
+        if: steps.surface.outputs.build == 'true'
+        run: |
+          for model in prompt-injection-guard-small-ct; do
+            echo "::group::L2 integration: $model"
+            docker run --rm \
+              --entrypoint python \
+              -v ${{ github.workspace }}/tests:/tests:ro \
+              -v ${{ github.workspace }}/corpora:/corpora:ro \
+              -e GEMINI_API_KEY="test_key_for_ci" \
+              -e CLASSIFIER_MODEL="$model" \
+              -e TRENTINA_REQUIRE_L2_MODEL=1 \
+              -e CLASSIFIER_THREADS=1 \
+              trentina:test-runner \
+              -m pytest -n 4 -q -rfE /tests/test_l2_integration.py \
+                "/tests/test_adversarial_corpus.py::TestLayer2Boundary"
+            echo "::endgroup::"
+          done
+
+      # The provider is mocked (fixture responses), so no real key: gating this
+      # on a Gemini secret the repo never had meant it never ran.
+      - name: Run L3 integration tests in container
+        if: steps.surface.outputs.build == 'true'
+        run: |
+          docker run --rm \
+            --entrypoint python \
+            -v ${{ github.workspace }}/tests:/tests:ro \
+            -v ${{ github.workspace }}/corpora:/corpora:ro \
+            -e GEMINI_API_KEY="test_key_for_ci" \
+            trentina:test-runner \
+            -m pytest /tests/test_l3_integration.py -v
+
+      # The real OCR and PDF workers, as child processes of the distroless
+      # image, with no network, a read-only root and no capabilities, as
+      # production runs them (#369, #370). Outside the image these tests
+      # prove the code; only here do they prove that OpenCV, Pillow and the
+      # models load without a shell, a writable disk or a download. /tmp is
+      # for pytest's own files: the workers write nothing.
+      - name: Run the OCR and PDF workers in the container
+        if: steps.surface.outputs.build == 'true'
+        run: |
+          docker run --rm \
+            --network none --read-only --tmpfs /tmp --cap-drop=all \
+            --security-opt no-new-privileges \
+            --entrypoint python \
+            -v ${{ github.workspace }}/tests:/tests:ro \
+            -v ${{ github.workspace }}/corpora:/corpora:ro \
+            -e GEMINI_API_KEY="test_key_for_ci" \
+            trentina:test-runner \
+            -m pytest -p no:cacheprovider /tests/test_unpack_ocr.py /tests/test_unpack_pdf.py -v
 
       # Two runs: the SARIF one feeds code scanning and never fails, the table
       # one gates PRs and prints the findings, which SARIF output hides.
       - name: Run Trivy vulnerability scanner (SARIF)
+        if: steps.surface.outputs.scan == 'true'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: "trentina:scan"
+          image-ref: ${{ steps.surface.outputs.image }}
           scanners: vuln
           severity: "CRITICAL,HIGH"
           ignore-unfixed: true
@@ -67,10 +287,10 @@ jobs:
           exit-code: "0"
 
       - name: Gate on Trivy findings (PRs only)
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.surface.outputs.scan == 'true'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: "trentina:scan"
+          image-ref: ${{ steps.surface.outputs.image }}
           scanners: vuln
           severity: "CRITICAL,HIGH"
           ignore-unfixed: true
@@ -81,7 +301,7 @@ jobs:
 
       - name: Upload Trivy scan results
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        if: always() && hashFiles('trivy-results.sarif') != ''
         with:
           sarif_file: "trivy-results.sarif"
 

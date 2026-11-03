@@ -1,23 +1,24 @@
 name: Container Build & Push
 
+# The ONE build of the published image. A pull request does not build here any
+# more (#674 follow-up): `security.yml:container-scan` is the required check,
+# builds once, verifies the image as production runs it and gates on Trivy, so
+# a PR build here was a third copy that pushed nothing. A release does not build
+# either -- it promotes the digest main already built and verified, by retag.
 on:
   push:
     branches: [main]
     tags: ["v*"]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 # A new push supersedes the run it interrupts, on a PR only (#662 follow-up).
-# Without this, four pushes to one branch left four complete sets of runs
-# grinding to completion -- three image builds and a four-way test matrix each.
-#
-# Only PR runs share a group. Everything else keys on `run_id`, which is unique,
-# so no non-PR run ever contends and none can be dropped. `cancel-in-progress:
-# false` would NOT have been enough: a group holds at most one PENDING run, so a
-# third arrival cancels the second. Three quick pushes to main would have dropped
-# the middle one's publish -- a half-finished manifest and a downstream never told
-# to rebuild, which is the thing this is supposed to prevent.
+# There are no PR runs here any more, so in practice every run keys on
+# `run_id`, which is unique: no run contends and none can be dropped. The
+# expression is kept as the fleet's one spelling. `cancel-in-progress: false`
+# would NOT be enough on its own: a group holds at most one PENDING run, so a
+# third arrival cancels the second, and three quick pushes to main would drop
+# the middle one's publish -- a half-finished manifest and a downstream never
+# told to rebuild.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -29,6 +30,10 @@ env:
 jobs:
   build-and-push-quay:
     runs-on: ubuntu-latest
+    # A tag promotes; it never rebuilds. Rebuilding from the same source would
+    # produce a different digest, so the thing released would be an image
+    # nothing had verified.
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     permissions:
       contents: read
 
@@ -40,7 +45,6 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Log in to Quay.io
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           registry: quay.io
@@ -66,9 +70,6 @@ jobs:
           images: ${{ env.QUAY_IMAGE }}
           tags: |
             type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
           # Overwrites the generated OCI version label, which is the ref on a
           # branch push. The Containerfile's own `version` label already came
@@ -76,16 +77,18 @@ jobs:
           labels: |
             org.opencontainers.image.version=${{ steps.pkgver.outputs.version }}
 
+      # No `cache-from: type=gha` (#674 follow-up). Measured, the cache cost
+      # 121 s of fixed export/import per build against 67 s of savings, and the
+      # `docker-container` driver it requires cost the multithreaded ONNX
+      # benign-L2 gate another 137 s on top.
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Containerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
           build-args: |
             VERSION=${{ steps.pkgver.outputs.version }}
 
@@ -93,7 +96,6 @@ jobs:
       # limit, so a throttled account can't stop this step.
       - name: Mint CI token
         id: ci-token
-        if: github.event_name != 'pull_request'
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.CRUNCHTOOLS_CI_APP_ID || secrets.CRUNCHTOOLS_CI_APP_ID }}
@@ -102,9 +104,9 @@ jobs:
 
       # crunchtools/data-collector is built FROM this image. Tell it to
       # rebuild, as every parent image in the fleet tells its children
-      # (crunchtools/constitution, validate-cascade.py).
+      # (crunchtools/constitution, validate-cascade.py). Nothing to do on a
+      # release: `latest` moved when this commit reached main.
       - name: Trigger downstream rebuilds
-        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ steps.ci-token.outputs.token }}
         run: |
@@ -116,7 +118,6 @@ jobs:
 
       - name: Run Trivy vulnerability scanner
         continue-on-error: true
-        if: github.event_name != 'pull_request'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.QUAY_IMAGE }}:latest
@@ -127,7 +128,7 @@ jobs:
   build-and-push-ghcr:
     runs-on: ubuntu-latest
     needs: build-and-push-quay
-    if: github.event_name != 'pull_request'
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     permissions:
       contents: read
       packages: write
@@ -147,10 +148,7 @@ jobs:
           password: ${{ github.token }}
 
       # The version belongs to the package, not to the ref that triggered the
-      # build. docker/metadata-action's `version` output is the BRANCH NAME on a
-      # branch push (so main builds labelled themselves "main"); the semver only
-      # appears on tag pushes. Read pyproject.toml, which is the single source.
-      # This step runs BEFORE the metadata so its value can overwrite the label.
+      # build. See the Quay job above.
       - name: Read package version
         id: pkgver
         run: |
@@ -165,13 +163,7 @@ jobs:
           images: ${{ env.GHCR_IMAGE }}
           tags: |
             type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
-          # Overwrites the generated OCI version label, which is the ref on a
-          # branch push. The Containerfile's own `version` label already came
-          # from the build-arg below; this makes the two agree.
           labels: |
             org.opencontainers.image.version=${{ steps.pkgver.outputs.version }}
 
@@ -183,8 +175,227 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
           build-args: |
             VERSION=${{ steps.pkgver.outputs.version }}
 
+  # A release is a retag, not a build. The digest main pushed is the one the
+  # required checks passed against; building the tag again would publish bytes
+  # nothing had verified, and discover a broken image at ship time.
+  promote:
+    name: Promote the verified digest
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: read
+      checks: read
+      statuses: read
+      actions: read    # resolve security.yml's own run for this commit
+      packages: write
+
+    steps:
+      - name: Log in to Quay.io
+        uses: docker/login-action@v4
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      # Fail closed, and not as "no check reported a failure": a check still
+      # running, cancelled or never started has no failure conclusion either,
+      # and a tag pushed minutes after the merge would promote past all of them.
+      #
+      # The contexts the branch ruleset requires are READ from the ruleset: a
+      # copy here goes stale the first time a required check is added, silently
+      # and in the direction of promoting more. Each must have concluded
+      # `success` on this commit, through either API -- a check run (Actions) or
+      # a commit status (anything posting a classic context).
+      #
+      # Absence is a refusal EXCEPT for the checks in PR_ONLY, which run only on
+      # a pull request and so never attach to the squash-merge commit. That list
+      # is written out, not inferred from "nothing reported": "no run found"
+      # otherwise means both "enforced on the PR" and "never ran", which are
+      # opposite answers.
+      #
+      # The job that BUILT and verified the image is then checked separately,
+      # and by WORKFLOW FILE rather than by context name: a name is a string,
+      # and a check run carrying it could come from any workflow in the repo.
+      # `security.yml`'s own run for this commit is resolved, and the job inside
+      # it must have concluded `success`. It may not be absent at all.
+      - name: The required checks passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          RUN_ID: ${{ github.run_id }}
+          VERIFIER_WORKFLOW: security.yml
+          VERIFIER_JOB: Container Security Scan
+          PR_ONLY: |
+            Protect workflows
+            Gatehouse triage / Gatehouse triage
+        run: |
+          set -eu
+          # `rules/branches/<branch>` needs no more than the `contents: read`
+          # this job holds -- on a public repository it answers unauthenticated.
+          # It is NOT `repos/{owner}/{repo}/rulesets`, which does want
+          # Administration read, and which GITHUB_TOKEN cannot be granted.
+          required=$(gh api "repos/$REPO/rules/branches/$BRANCH" \
+            -q '.[] | select(.type == "required_status_checks")
+                  | .parameters.required_status_checks[].context' | sort -u)
+          [ -n "$required" ] || {
+            echo "cannot read the checks $BRANCH requires; nothing is promoted" >&2
+            exit 1
+          }
+          runs="$RUNNER_TEMP/outcomes.tsv"
+          # This run's own jobs are attached to the same commit and are of
+          # course not finished, so they are left out by run id.
+          gh api "repos/$REPO/commits/$SHA/check-runs" --paginate \
+            -q '.check_runs[] | select(.details_url | contains("/runs/'"$RUN_ID"'/") | not)
+                  | [.name, (.conclusion // "pending"), .started_at] | @tsv' \
+            > "$runs"
+          # A required context may be a commit status rather than a check run.
+          gh api "repos/$REPO/commits/$SHA/status" --paginate \
+            -q '.statuses[] | [.context, .state, .updated_at] | @tsv' \
+            >> "$runs"
+          outcome() {
+            # The newest report of that name, so a rerun that fixed a flake
+            # counts and the failure it replaced does not.
+            awk -F'\t' -v n="$1" '$1 == n' "$runs" \
+              | sort -t"$(printf '\t')" -k3 | tail -1 | cut -f2
+          }
+          bad=0
+          while IFS= read -r context; do
+            [ -n "$context" ] || continue
+            got=$(outcome "$context")
+            if [ "$got" = success ]; then
+              printf '  %s: success\n' "$context"
+            elif [ -z "$got" ] && printf '%s\n' "$PR_ONLY" | grep -qxF "$context"; then
+              printf '  %s: pull-request only, enforced where it ran\n' "$context"
+            else
+              printf '  %s: %s\n' "$context" "${got:-no run on this commit}" >&2
+              bad=1
+            fi
+          done <<EOF
+          $required
+          EOF
+          # Resolved through the workflow file, so the answer comes from
+          # security.yml's run and not from anything that merely posted a check
+          # with that name. The newest run for this commit, so a re-run counts.
+          verifier_run=$(gh api \
+            "repos/$REPO/actions/workflows/$VERIFIER_WORKFLOW/runs?head_sha=$SHA&per_page=100" \
+            -q '[.workflow_runs[] | select(.id != ('"$RUN_ID"'|tonumber))]
+                  | sort_by(.run_started_at) | last | .id // empty')
+          if [ -z "$verifier_run" ]; then
+            printf '%s never ran for this commit; nothing verified the image\n' \
+              "$VERIFIER_WORKFLOW" >&2
+            bad=1
+          else
+            verdict=$(gh api "repos/$REPO/actions/runs/$verifier_run/jobs" --paginate \
+              -q '.jobs[] | select(.name == env.VERIFIER_JOB) | .conclusion // "pending"' \
+              | tail -1)
+            if [ "$verdict" = success ]; then
+              printf '  %s in %s (run %s): success\n' \
+                "$VERIFIER_JOB" "$VERIFIER_WORKFLOW" "$verifier_run"
+            else
+              printf '%s in %s (run %s) is %s; nothing verified the image\n' \
+                "$VERIFIER_JOB" "$VERIFIER_WORKFLOW" "$verifier_run" "${verdict:-absent}" >&2
+              bad=1
+            fi
+          fi
+          [ "$bad" -eq 0 ] || {
+            echo "refusing to promote $SHA" >&2
+            exit 1
+          }
+
+      # The identity check, and the reason a retag is safe: the digest behind
+      # `:main` must have been built from THIS commit and must carry the version
+      # the tag names. A force-push, a reverted main or a tag on an unbuilt
+      # commit each fail here rather than publishing the wrong bytes.
+      #
+      # Each registry is resolved and checked SEPARATELY. Quay and GHCR are
+      # built by two jobs, so their digests differ: promoting Quay's digest
+      # into GHCR would name a manifest that registry has never seen.
+      #
+      # Pulled rather than read through `imagetools inspect --format`: the
+      # labels live in the image config, which the template reaches differently
+      # across buildx versions and not at all for a multi-platform index. A
+      # release can afford two pulls; publishing the wrong bytes it cannot.
+      - name: The digests main built are this commit, at this version
+        id: verified
+        env:
+          SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          version=${REF_NAME#v}
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "tag '$REF_NAME' is not vX.Y.Z" >&2; exit 1 ;;
+          esac
+          for registry in quay ghcr; do
+            case "$registry" in
+              quay) image="$QUAY_IMAGE" ;;
+              ghcr) image="$GHCR_IMAGE" ;;
+            esac
+            digest=$(docker buildx imagetools inspect "$image:main" \
+              --format '{{ .Manifest.Digest }}')
+            [ -n "$digest" ] || { echo "cannot resolve $image:main" >&2; exit 1; }
+            docker pull --quiet "$image@$digest" >/dev/null
+            revision=$(docker inspect --format \
+              '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image@$digest")
+            label=$(docker inspect --format \
+              '{{ index .Config.Labels "version" }}' "$image@$digest")
+            [ "$revision" = "$SHA" ] || {
+              echo "$image:main was built from $revision, this tag is $SHA" >&2
+              echo "main has moved or this commit never built; nothing is promoted" >&2
+              exit 1
+            }
+            [ "$label" = "$version" ] || {
+              echo "$image@$digest states version '$label', the tag says '$version'" >&2
+              exit 1
+            }
+            echo "${registry}_digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "::notice::$image@$digest verified for $version"
+          done
+          {
+            echo "version=$version"
+            echo "minor=${version%.*}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Server-side: the manifest is copied by reference, so the released tags
+      # name the SAME digest `:main` and `:latest` already name. No layer is
+      # rebuilt, re-uploaded or re-signed.
+      - name: Retag the digests in both registries
+        env:
+          QUAY_DIGEST: ${{ steps.verified.outputs.quay_digest }}
+          GHCR_DIGEST: ${{ steps.verified.outputs.ghcr_digest }}
+          VERSION: ${{ steps.verified.outputs.version }}
+          MINOR: ${{ steps.verified.outputs.minor }}
+        run: |
+          set -eu
+          docker buildx imagetools create \
+            -t "$QUAY_IMAGE:$VERSION" -t "$QUAY_IMAGE:$MINOR" "$QUAY_IMAGE@$QUAY_DIGEST"
+          docker buildx imagetools create \
+            -t "$GHCR_IMAGE:$VERSION" -t "$GHCR_IMAGE:$MINOR" "$GHCR_IMAGE@$GHCR_DIGEST"
+
+      - name: What was released
+        env:
+          VERSION: ${{ steps.verified.outputs.version }}
+          QUAY_DIGEST: ${{ steps.verified.outputs.quay_digest }}
+          GHCR_DIGEST: ${{ steps.verified.outputs.ghcr_digest }}
+        run: |
+          {
+            echo "### Promoted, not rebuilt"
+            echo
+            echo "| Tag | Digest |"
+            echo "|---|---|"
+            echo "| \`$QUAY_IMAGE:$VERSION\` | \`$QUAY_DIGEST\` |"
+            echo "| \`$GHCR_IMAGE:$VERSION\` | \`$GHCR_DIGEST\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
