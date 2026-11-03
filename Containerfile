@@ -2,9 +2,12 @@
 # Three-layer defense: deterministic checks + a local classifier (L2) + quarantined LLM
 # Built entirely on Hummingbird Python images (Red Hat hardened, minimal)
 #
-# Build: the GHA pipeline, and only the GHA pipeline.
+# Publish: the GHA pipeline, and only the GHA pipeline.
 # .github/workflows/container.yml builds and pushes quay.io/crunchtools/trentina.
-# Do NOT build this image by hand — building outside the pipeline causes drift.
+# Drift comes from PUSHING a hand-built image, not from building one. Build it
+# locally whenever you like, through `./scripts/gates.sh pr`, which runs the same
+# verification against it that CI does; security.yml already builds it with a
+# plain `docker build` for the same reason.
 #
 # No build secret is needed: the one L2 model the image ships is ungated.
 # Until 0.59.0 it also shipped Meta's gated Prompt Guard 2, which took an
