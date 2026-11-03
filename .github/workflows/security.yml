@@ -52,7 +52,27 @@ jobs:
   # unnoticed. The verification steps below came from `ci.yml:build-container`.
   container-scan:
     name: Container Security Scan
-    runs-on: ubuntu-latest
+    # Our own pull requests build on the self-hosted runner; everything else
+    # stays on GitHub's. Three properties, each deliberate:
+    #
+    # 1. A FORK pull request can never land on our hardware. This is structural,
+    #    not a setting someone can click past to see whether CI goes green --
+    #    the repo is public, so a fork PR is arbitrary code from a stranger.
+    # 2. push, schedule and workflow_dispatch stay GitHub-hosted, so every
+    #    verdict on `main` comes from a clean machine with no persistent layer
+    #    cache. The self-hosted runner can therefore make a PR pass that should
+    #    not; it can never build the image we publish.
+    # 3. The label lives in a repository VARIABLE, so no hostname is in this
+    #    repo and clearing that one variable moves every job back to
+    #    GitHub-hosted with no commit and no review. That is the kill switch
+    #    for a runner that is offline -- otherwise these jobs queue on a runner
+    #    that never answers, and a required check that never reports blocks
+    #    every PR silently.
+    runs-on: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && (vars.FAST_RUNNER_LABEL || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
 
     steps:
       # fetch-depth: 0 for the surface filter below, which diffs against a base
@@ -171,7 +191,25 @@ jobs:
             > ci-gateway/profiles.yaml
           openssl rand -hex 16 > ci-gateway/token
           chmod -R a+rX ci-gateway
-          docker run -d --name trentina-start -p 127.0.0.1:8019:8019 \
+          #
+          # NO PUBLISHED PORT, and the probe runs from a sibling container
+          # sharing this one's network namespace. Two reasons, and the second is
+          # why it is written this way rather than with a different port:
+          #
+          # - Publishing bound 8019 on the runner. On a self-hosted runner that
+          #   is a real machine, where 8019 is the production gateway's port: a
+          #   CI job would either fail to bind or, mid-restart, take the port
+          #   production was about to reclaim. A test must not be able to do
+          #   that, and picking an off port only narrows the window.
+          # - A published port is reachable by anything else listening on the
+          #   runner, so a stray listener could answer the probe and this gate
+          #   would pass without the built image ever starting. Sharing the
+          #   namespace makes it impossible to be talking to anything but the
+          #   container just built.
+          #
+          # The probe uses the image under test, so it needs no extra pull and
+          # its python is guaranteed present.
+          docker run -d --name trentina-start \
             --read-only --tmpfs /tmp --tmpfs /data:mode=1777 \
             --cap-drop=all --security-opt no-new-privileges \
             -v "$PWD/ci-gateway:/etc/trentina:ro" \
@@ -179,7 +217,11 @@ jobs:
             trentina:scan --transport streamable-http --host 0.0.0.0 --port 8019
           ok=0
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8019/health; then ok=1; break; fi
+            if docker run --rm --network container:trentina-start \
+                 --entrypoint python trentina:scan -c \
+                 'import urllib.request,sys; sys.stdout.write(urllib.request.urlopen("http://127.0.0.1:8019/health", timeout=5).read().decode())'; then
+              ok=1; break
+            fi
             sleep 2
           done
           docker logs trentina-start 2>&1 | tail -20

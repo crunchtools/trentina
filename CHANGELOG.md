@@ -12,6 +12,21 @@ under that name.
 
 ### Changed
 
+- **The container gate no longer publishes a port to check `/health`.** It
+  starts the built image with no published port and probes it from a sibling
+  container sharing its network namespace. Publishing bound 8019 on the runner,
+  which is the production gateway's port on a real machine: a CI job could fail
+  to bind or, mid-restart, take the port production was about to reclaim. It
+  also means the probe can no longer be answered by something else that happens
+  to be listening, so the gate cannot pass without the built image starting.
+- **Our own pull requests can build on a self-hosted runner.**
+  `Container Security Scan` picks its runner from
+  `vars.FAST_RUNNER_LABEL` for a pull request from this repository, and
+  GitHub-hosted for everything else. A fork's pull request therefore never
+  executes on our hardware, and `main`, releases and the scheduled scan always
+  build on a clean machine, so the published image is never built by the
+  self-hosted runner. Clearing the variable moves every job back with no commit.
+
 - **The image build stops installing PyTorch.** `model-builder` pulls torch,
   optimum, transformers and sentencepiece, and the default target used it for
   two things: a model directory that came from the digest-pinned `l2-model`
