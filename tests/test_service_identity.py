@@ -222,9 +222,7 @@ class TestMoreThanOneOperator:
     def test_two_operators_load_when_one_is_named(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        profiles = _live(
-            tmp_path, monkeypatch, _OPERATOR, _OPERATOR_TWO, service_identity="ops2"
-        )
+        profiles = _live(tmp_path, monkeypatch, _OPERATOR, _OPERATOR_TWO, service_identity="ops2")
 
         assert [p.name for p in written_operators(profiles)] == ["ops", "ops2"]
         assert service_profile().name == "ops2"
@@ -275,9 +273,7 @@ class TestMoreThanOneOperator:
         administer the gateway" is the feature, and it would be a silent loss if
         a later change keyed scope on the bound profile instead.
         """
-        profiles = _live(
-            tmp_path, monkeypatch, _OPERATOR, _OPERATOR_TWO, service_identity="ops"
-        )
+        profiles = _live(tmp_path, monkeypatch, _OPERATOR, _OPERATOR_TWO, service_identity="ops")
 
         with profile_context(profiles[caller]):
             assert current_scope().is_operator is True
@@ -354,9 +350,7 @@ class TestMoreThanOneOperator:
     ) -> None:
         """With two operators, the line saying which one is bound reads as
         though it were the only one unless the others are in the same record."""
-        profiles = _live(
-            tmp_path, monkeypatch, _OPERATOR, _OPERATOR_TWO, service_identity="ops"
-        )
+        profiles = _live(tmp_path, monkeypatch, _OPERATOR, _OPERATOR_TWO, service_identity="ops")
 
         with caplog.at_level(logging.WARNING, logger="trentina.gateway.service"):
             log_service_identity(profiles, "ops")

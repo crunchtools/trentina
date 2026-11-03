@@ -1318,8 +1318,7 @@ def _gateway_service_identity(gateway: dict[str, Any]) -> str | None:
         return None
     if not isinstance(raw, str) or not raw.strip():
         raise ProfileConfigError(
-            "gateway.service_identity must be the name of one profile that declares "
-            "role: operator"
+            "gateway.service_identity must be the name of one profile that declares role: operator"
         )
     return raw.strip()
 

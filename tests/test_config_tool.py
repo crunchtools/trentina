@@ -864,7 +864,7 @@ class TestTheServiceIdentity:
         assert gateway.read_text(encoding="utf-8") == before
 
     async def test_the_page_names_both_sides_of_the_move(self, gateway: pathlib.Path) -> None:
-        """"op, then op2". Who HOLDS the role has not moved, so without this row
+        """ "op, then op2". Who HOLDS the role has not moved, so without this row
         the page reads as a change with nothing changed on it -- a no-op a person
         has no reason to decline."""
         _rewrite(gateway, _two_operators("op"))
@@ -883,9 +883,7 @@ class TestTheServiceIdentity:
         await _as_operator("set", "gateway.service_identity", "op2", await _hash())
         shown = pending.outstanding()[pending.Kind.OPERATOR_PROFILE]
 
-        applied = await pending.approve(
-            pending.Kind.OPERATOR_PROFILE, pending.digest_of(shown)
-        )
+        applied = await pending.approve(pending.Kind.OPERATOR_PROFILE, pending.digest_of(shown))
 
         assert applied["applied"] is True
         assert "service_identity: op2" in gateway.read_text(encoding="utf-8")
