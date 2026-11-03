@@ -34,6 +34,26 @@ _root=$(git rev-parse --show-toplevel 2>/dev/null) \
 cd "$_root" \
   || { printf 'GATE CANNOT RUN: cannot enter the repository root\n' >&2; exit 2; }
 
+# Leave the machine usable. Unbounded, these gates took a 14-core laptop to a
+# load average of 116 and made a video call unusable -- and a gate that does
+# that is a gate people turn off, which costs more than it saves. Half the
+# cores by default, a memory cap so nothing swaps the desktop out, and a low
+# CPU weight so the desktop wins the contention that is left.
+#
+# TRENTINA_GATES_CPUS and TRENTINA_GATES_MEMORY override. On a machine doing
+# nothing else, TRENTINA_GATES_CPUS set to the core count is the fast setting.
+_cores=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 4)
+case "$_cores" in '' | *[!0-9]*) _cores=4 ;; esac
+_half=$(( _cores / 2 ))
+[ "$_half" -ge 2 ] || _half=2
+GATE_CPUS=${TRENTINA_GATES_CPUS:-$_half}
+GATE_MEMORY=${TRENTINA_GATES_MEMORY:-8g}
+# cgroup v2 reads this as a weight against a 1024 default: the desktop is not
+# in a gate's cgroup, so under contention the scheduler prefers it.
+GATE_WEIGHT=256
+# A build takes the same budget, expressed the way buildah accepts it.
+BUILD_LIMITS=(--cpu-period 100000 --cpu-quota "$(( GATE_CPUS * 100000 ))" --memory "$GATE_MEMORY")
+
 CACHE_VOLUME=crunchtools-hook-cache        # shared with the mypy hook
 SCRATCH_VOLUME=crunchtools-gates-scratch   # fixtures; never the worktree
 UV_IMAGE=ghcr.io/astral-sh/uv:python3.12-bookworm-slim
@@ -49,7 +69,8 @@ RUNNER=localhost/trentina:gates-runner
 SERVER=trentina-gates-server
 GATEHOUSE_ENV="$HOME/.config/mcp-env/gatehouse.env"
 
-PODMAN=(podman --events-backend=none run --rm --log-driver=none)
+PODMAN=(podman --events-backend=none run --rm --log-driver=none
+  --cpus "$GATE_CPUS" --memory "$GATE_MEMORY" --cpu-shares "$GATE_WEIGHT")
 # `z`, not `Z`: several of these containers mount the same tree at the same time,
 # and `Z` relabels it exclusively -- which takes it out from under whichever
 # started first. CI mounts bare because the runners have no SELinux, so the steps
@@ -107,7 +128,7 @@ gate_pytest() {
     -e GEMINI_API_KEY=test_key_for_ci \
     "$UV_IMAGE" \
     uv run --locked --all-extras --python 3.14 \
-      pytest -q -rfE -p no:cacheprovider \
+      pytest -q -rfE -p no:cacheprovider -n "$GATE_CPUS" \
     || fail "pytest"
 }
 
@@ -164,7 +185,8 @@ gate_container_build() {
   step "build $IMAGE (VERSION=$version)"
   # Plain build, no buildx: the container driver the gha cache needs costs more
   # than the cache saves, and locally there is no gha cache at all.
-  podman build -f Containerfile --build-arg "VERSION=$version" -t "$IMAGE" . \
+  podman build "${BUILD_LIMITS[@]}" \
+    -f Containerfile --build-arg "VERSION=$version" -t "$IMAGE" . \
     || fail "container build"
   local label
   label=$(podman image inspect "$IMAGE" --format '{{ index .Config.Labels "version" }}') \
@@ -175,6 +197,8 @@ gate_container_build() {
 
 gate_container_verify() {
   need_podman; need_volume "$SCRATCH_VOLUME"
+  # Never more L2 workers than the budget: each one runs its own ONNX session.
+  local L2_WORKERS=$(( GATE_CPUS < 4 ? GATE_CPUS : 4 ))
   podman image exists "$IMAGE" || die "$IMAGE is not built; run: ./scripts/gates.sh container-build"
 
   step "the gateway answers /health as production runs it"
@@ -195,6 +219,7 @@ seed = pathlib.Path("/seed")
   # No published port: 8019 is very likely a Trentina you are already running,
   # and probing that would pass while this image was broken.
   podman run -d --name "$SERVER" \
+    --cpus "$GATE_CPUS" --memory "$GATE_MEMORY" --cpu-shares "$GATE_WEIGHT" \
     --read-only --tmpfs /tmp --tmpfs /data:mode=1777 \
     --cap-drop=all --security-opt no-new-privileges \
     -v "$SCRATCH_VOLUME":/etc/trentina:ro \
@@ -224,7 +249,7 @@ print("opencv", cv2.__version__, "pillow", PIL.__version__, "pypdf", pypdf.__ver
 ' || fail "a native extension does not import in the distroless image"
 
   step "build the test runner (adds a shell and pytest to distroless)"
-  podman build -f - -t "$RUNNER" . <<RUNNERFILE || fail "test runner build"
+  podman build "${BUILD_LIMITS[@]}" -f - -t "$RUNNER" . <<RUNNERFILE || fail "test runner build"
 FROM $BUILDER_IMAGE AS test-deps
 USER 0
 RUN pip install --no-cache-dir --prefix=/usr pytest pytest-asyncio pytest-xdist
@@ -241,7 +266,7 @@ RUNNERFILE
   "${in_image[@]}" \
     -e CLASSIFIER_MODEL=prompt-injection-guard-small-ct \
     -e TRENTINA_REQUIRE_L2_MODEL=1 -e CLASSIFIER_THREADS=1 \
-    "$RUNNER" -m pytest -n 4 -q -rfE -p no:cacheprovider \
+    "$RUNNER" -m pytest -n "$L2_WORKERS" -q -rfE -p no:cacheprovider \
       /tests/test_l2_integration.py \
       "/tests/test_adversarial_corpus.py::TestLayer2Boundary" \
     || fail "L2 integration in the image"

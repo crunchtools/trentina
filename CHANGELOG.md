@@ -28,6 +28,11 @@ under that name.
   `Hash mismatch` exactly as pip refuses. (Corrupting ONE hash proves nothing
   about either: a requirements file lists a hash per artifact and both accept a
   download matching any of them.)
+- **The local gates run capped**: half the cores, an 8 GB ceiling and a low CPU
+  weight, overridable with `TRENTINA_GATES_CPUS` and `TRENTINA_GATES_MEMORY`.
+  Unbounded they took a 14-core laptop to a load average of 116 and made a
+  video call unusable. `pytest` now follows that budget instead of `-n auto`,
+  and the mypy commit hook is capped the same way.
 
 ## [6.3.0] - 2026-11-03
 
