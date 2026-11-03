@@ -34,6 +34,10 @@ _root=$(git rev-parse --show-toplevel 2>/dev/null) \
 cd "$_root" \
   || { printf 'GATE CANNOT RUN: cannot enter the repository root\n' >&2; exit 2; }
 
+die()  { printf 'GATE CANNOT RUN: %s\n' "$*" >&2; exit 2; }
+fail() { printf 'GATE FAILED: %s\n'     "$*" >&2; exit 1; }
+step() { printf '\n== %s\n' "$*"; }
+
 # Leave the machine usable. Unbounded, these gates took a 14-core laptop to a
 # load average of 116 and made a video call unusable -- and a gate that does
 # that is a gate people turn off, which costs more than it saves. Half the
@@ -52,7 +56,12 @@ _cpus_in_list() {               # "0-3,7,10-11" -> 7
   local part lo hi total=0 IFS=,
   for part in $1; do
     case "$part" in
-      *-*) lo=${part%%-*}; hi=${part##*-}; total=$(( total + hi - lo + 1 )) ;;
+      *-*)
+        lo=${part%%-*}; hi=${part##*-}
+        case "$lo$hi" in '' | *[!0-9]*) return 1 ;; esac
+        total=$(( total + hi - lo + 1 ))
+        ;;
+      *[!0-9]* | '') return 1 ;;
       *) total=$(( total + 1 )) ;;
     esac
   done
@@ -109,6 +118,20 @@ _half=$(( _cores / 2 ))
 [ "$_half" -ge 1 ] || _half=1
 GATE_CPUS=${TRENTINA_GATES_CPUS:-$_half}
 GATE_MEMORY=${TRENTINA_GATES_MEMORY:-8g}
+
+# Both are validated BEFORE they reach arithmetic or a podman argument, because
+# bash evaluates the CONTENTS of a variable inside $(( )) and an array subscript
+# there is a command-substitution vector: GATE_CPUS='x[$(...)]' would run it.
+# Nobody sets these hostilely today -- the point is that the gates are about to
+# run in CI, where the environment is not the developer's own.
+case "$GATE_CPUS" in
+  '' | *[!0-9]*) die "TRENTINA_GATES_CPUS must be a whole number of CPUs" ;;
+esac
+{ [ "$GATE_CPUS" -ge 1 ] && [ "$GATE_CPUS" -le 1024 ]; } \
+  || die "TRENTINA_GATES_CPUS must be between 1 and 1024"
+case "$GATE_MEMORY" in
+  '' | *[!0-9kKmMgG]* | [!0-9]*) die "TRENTINA_GATES_MEMORY must be a size like 8g or 4096m" ;;
+esac
 # cgroup v2 reads this as a weight against a 1024 default: the desktop is not
 # in a gate's cgroup, so under contention the scheduler prefers it.
 GATE_WEIGHT=256
@@ -138,9 +161,6 @@ PODMAN=(podman --events-backend=none run --rm --log-driver=none
 # ported from it denied every read here until this was added.
 RO_REPO=(-v "$PWD":/src:ro,z -w /src)
 
-die()  { printf 'GATE CANNOT RUN: %s\n' "$*" >&2; exit 2; }
-fail() { printf 'GATE FAILED: %s\n'     "$*" >&2; exit 1; }
-step() { printf '\n== %s\n' "$*"; }
 
 need_podman() { command -v podman >/dev/null 2>&1 || die "podman is not on PATH"; }
 need_file()   { [ -f "$1" ] || die "$1 is missing"; }

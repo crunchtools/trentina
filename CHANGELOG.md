@@ -38,7 +38,9 @@ under that name.
   than to the host, with a floor of one CPU (pytest then runs in-process rather
   than starting two xdist workers on one core). The mypy commit hook calls
   `./scripts/gates.sh mypy` instead of spelling out its own podman line, so
-  there is one budget and one override.
+  there is one budget and one override. Both knobs are validated before they
+  reach bash arithmetic, which evaluates a variable's contents and would run a
+  command substitution hidden in an array subscript.
 
 ## [6.3.0] - 2026-11-03
 
