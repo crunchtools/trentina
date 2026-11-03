@@ -45,7 +45,10 @@ dependency install and saves about thirty seconds of it.
 ## They do not take the whole machine
 
 Every gate runs capped: half the cores, an 8 GB memory ceiling, and a low CPU
-weight so your desktop wins any contention. Unbounded, the `pr` tier took a
+weight so your desktop wins any contention. "Half the cores" means half of what
+the gate may actually use -- a CPU affinity mask and a cgroup quota each count,
+so a run inside a container or a systemd slice asks for what it was given
+rather than what the host owns. Unbounded, the `pr` tier took a
 14-core laptop to a load average of 116 and made a video call unusable, which
 is how you end up with a gate nobody runs.
 

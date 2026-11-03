@@ -42,8 +42,66 @@ cd "$_root" \
 #
 # TRENTINA_GATES_CPUS and TRENTINA_GATES_MEMORY override. On a machine doing
 # nothing else, TRENTINA_GATES_CPUS set to the core count is the fast setting.
+#
+# How many CPUs the machine HAS is the wrong question: a cpuset, a CPU quota or
+# a systemd slice narrows what this process may use, and /proc/cpuinfo reports
+# none of them. Taking the smallest of the three ceilings means a gate run
+# under a quota -- a CI runner in its own slice, a gate inside a container --
+# asks for what it was given instead of what the host owns.
+_cpus_in_list() {               # "0-3,7,10-11" -> 7
+  local part lo hi total=0 IFS=,
+  for part in $1; do
+    case "$part" in
+      *-*) lo=${part%%-*}; hi=${part##*-}; total=$(( total + hi - lo + 1 )) ;;
+      *) total=$(( total + 1 )) ;;
+    esac
+  done
+  printf '%s' "$total"
+}
+
+_cgroup_cpu_ceiling() {         # cpu.max, leaf to root, smallest quota wins
+  local rel= dir quota period want best=
+  # One read, not a loop: read clears its variables when it hits EOF, so
+  # reading to the end of the file leaves them empty. cgroup v2 writes a
+  # single "0::<path>" line, and cpu.max is a v2 file, so anything else here
+  # has no quota to find.
+  read -r rel < /proc/self/cgroup 2>/dev/null || :
+  case "${rel:-}" in 0::/*) dir="/sys/fs/cgroup${rel#0::}" ;; *) return 0 ;; esac
+  while [ -n "$dir" ]; do
+    if [ -r "$dir/cpu.max" ] && read -r quota period < "$dir/cpu.max"; then
+      case "$quota$period" in
+        *[!0-9]* | '') ;;       # "max", or something unparseable: no ceiling here
+        *)
+          want=$(( (quota + period - 1) / period ))
+          [ "$want" -ge 1 ] || want=1
+          if [ -z "$best" ] || [ "$want" -lt "$best" ]; then best=$want; fi
+          ;;
+      esac
+    fi
+    [ "$dir" != /sys/fs/cgroup ] || break
+    dir=${dir%/*}
+  done
+  printf '%s' "$best"
+}
+
 _cores=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 4)
 case "$_cores" in '' | *[!0-9]*) _cores=4 ;; esac
+while IFS= read -r _line; do
+  case "$_line" in
+    Cpus_allowed_list:*)
+      _allowed=$(_cpus_in_list "${_line#Cpus_allowed_list:$'\t'}")
+      case "$_allowed" in
+        '' | *[!0-9]* | 0) ;;
+        *) [ "$_allowed" -lt "$_cores" ] && _cores=$_allowed ;;
+      esac
+      ;;
+  esac
+done < /proc/self/status 2>/dev/null || :
+_quota=$(_cgroup_cpu_ceiling)
+case "$_quota" in
+  '' | *[!0-9]* | 0) ;;
+  *) [ "$_quota" -lt "$_cores" ] && _cores=$_quota ;;
+esac
 _half=$(( _cores / 2 ))
 [ "$_half" -ge 2 ] || _half=2
 GATE_CPUS=${TRENTINA_GATES_CPUS:-$_half}
@@ -198,7 +256,7 @@ gate_container_build() {
 gate_container_verify() {
   need_podman; need_volume "$SCRATCH_VOLUME"
   # Never more L2 workers than the budget: each one runs its own ONNX session.
-  local L2_WORKERS=$(( GATE_CPUS < 4 ? GATE_CPUS : 4 ))
+  local l2_workers=$(( GATE_CPUS < 4 ? GATE_CPUS : 4 ))
   podman image exists "$IMAGE" || die "$IMAGE is not built; run: ./scripts/gates.sh container-build"
 
   step "the gateway answers /health as production runs it"
@@ -266,7 +324,7 @@ RUNNERFILE
   "${in_image[@]}" \
     -e CLASSIFIER_MODEL=prompt-injection-guard-small-ct \
     -e TRENTINA_REQUIRE_L2_MODEL=1 -e CLASSIFIER_THREADS=1 \
-    "$RUNNER" -m pytest -n "$L2_WORKERS" -q -rfE -p no:cacheprovider \
+    "$RUNNER" -m pytest -n "$l2_workers" -q -rfE -p no:cacheprovider \
       /tests/test_l2_integration.py \
       "/tests/test_adversarial_corpus.py::TestLayer2Boundary" \
     || fail "L2 integration in the image"

@@ -32,7 +32,10 @@ under that name.
   weight, overridable with `TRENTINA_GATES_CPUS` and `TRENTINA_GATES_MEMORY`.
   Unbounded they took a 14-core laptop to a load average of 116 and made a
   video call unusable. `pytest` now follows that budget instead of `-n auto`,
-  and the mypy commit hook is capped the same way.
+  and the mypy commit hook is capped the same way. The budget is the smallest of
+  the core count, the CPU affinity mask and the cgroup CPU quota, so a gate run
+  inside a container or a systemd slice sizes itself to its allocation rather
+  than to the host.
 
 ## [6.3.0] - 2026-11-03
 
