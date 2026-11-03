@@ -34,6 +34,110 @@ _root=$(git rev-parse --show-toplevel 2>/dev/null) \
 cd "$_root" \
   || { printf 'GATE CANNOT RUN: cannot enter the repository root\n' >&2; exit 2; }
 
+die()  { printf 'GATE CANNOT RUN: %s\n' "$*" >&2; exit 2; }
+fail() { printf 'GATE FAILED: %s\n'     "$*" >&2; exit 1; }
+step() { printf '\n== %s\n' "$*"; }
+
+# Leave the machine usable. Unbounded, these gates took a 14-core laptop to a
+# load average of 116 and made a video call unusable -- and a gate that does
+# that is a gate people turn off, which costs more than it saves. Half the
+# cores by default, a memory cap so nothing swaps the desktop out, and a low
+# CPU weight so the desktop wins the contention that is left.
+#
+# TRENTINA_GATES_CPUS and TRENTINA_GATES_MEMORY override. On a machine doing
+# nothing else, TRENTINA_GATES_CPUS set to the core count is the fast setting.
+#
+# How many CPUs the machine HAS is the wrong question: a cpuset, a CPU quota or
+# a systemd slice narrows what this process may use, and /proc/cpuinfo reports
+# none of them. Taking the smallest of the three ceilings means a gate run
+# under a quota -- a CI runner in its own slice, a gate inside a container --
+# asks for what it was given instead of what the host owns.
+_cpus_in_list() {               # "0-3,7,10-11" -> 7
+  local part lo hi total=0 IFS=,
+  for part in $1; do
+    case "$part" in
+      *-*)
+        lo=${part%%-*}; hi=${part##*-}
+        case "$lo$hi" in '' | *[!0-9]*) return 1 ;; esac
+        total=$(( total + hi - lo + 1 ))
+        ;;
+      *[!0-9]* | '') return 1 ;;
+      *) total=$(( total + 1 )) ;;
+    esac
+  done
+  printf '%s' "$total"
+}
+
+_cgroup_cpu_ceiling() {         # cpu.max, leaf to root, smallest quota wins
+  local rel= dir quota period want best=
+  # One read, not a loop: read clears its variables when it hits EOF, so
+  # reading to the end of the file leaves them empty. cgroup v2 writes a
+  # single "0::<path>" line, and cpu.max is a v2 file, so anything else here
+  # has no quota to find.
+  read -r rel < /proc/self/cgroup 2>/dev/null || :
+  case "${rel:-}" in 0::/*) dir="/sys/fs/cgroup${rel#0::}" ;; *) return 0 ;; esac
+  while [ -n "$dir" ]; do
+    if [ -r "$dir/cpu.max" ] && read -r quota period < "$dir/cpu.max"; then
+      case "$quota$period" in
+        *[!0-9]* | '') ;;       # "max", or something unparseable: no ceiling here
+        *)
+          want=$(( (quota + period - 1) / period ))
+          [ "$want" -ge 1 ] || want=1
+          if [ -z "$best" ] || [ "$want" -lt "$best" ]; then best=$want; fi
+          ;;
+      esac
+    fi
+    [ "$dir" != /sys/fs/cgroup ] || break
+    dir=${dir%/*}
+  done
+  printf '%s' "$best"
+}
+
+_cores=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 4)
+case "$_cores" in '' | *[!0-9]*) _cores=4 ;; esac
+while IFS= read -r _line; do
+  case "$_line" in
+    Cpus_allowed_list:*)
+      _allowed=$(_cpus_in_list "${_line#Cpus_allowed_list:$'\t'}")
+      case "$_allowed" in
+        '' | *[!0-9]* | 0) ;;
+        *) [ "$_allowed" -lt "$_cores" ] && _cores=$_allowed ;;
+      esac
+      ;;
+  esac
+done < /proc/self/status 2>/dev/null || :
+_quota=$(_cgroup_cpu_ceiling)
+case "$_quota" in
+  '' | *[!0-9]* | 0) ;;
+  *) [ "$_quota" -lt "$_cores" ] && _cores=$_quota ;;
+esac
+_half=$(( _cores / 2 ))
+# Floor at one, not two: on a two-CPU allocation a floor of two would take the
+# whole of it, which is the thing this is here to stop. One means pytest runs
+# in-process (-n 0), which beats two xdist workers on one CPU.
+[ "$_half" -ge 1 ] || _half=1
+GATE_CPUS=${TRENTINA_GATES_CPUS:-$_half}
+GATE_MEMORY=${TRENTINA_GATES_MEMORY:-8g}
+
+# Both are validated BEFORE they reach arithmetic or a podman argument, because
+# bash evaluates the CONTENTS of a variable inside $(( )) and an array subscript
+# there is a command-substitution vector: GATE_CPUS='x[$(...)]' would run it.
+# Nobody sets these hostilely today -- the point is that the gates are about to
+# run in CI, where the environment is not the developer's own.
+case "$GATE_CPUS" in
+  '' | *[!0-9]*) die "TRENTINA_GATES_CPUS must be a whole number of CPUs" ;;
+esac
+{ [ "$GATE_CPUS" -ge 1 ] && [ "$GATE_CPUS" -le 1024 ]; } \
+  || die "TRENTINA_GATES_CPUS must be between 1 and 1024"
+case "$GATE_MEMORY" in
+  '' | *[!0-9kKmMgG]* | [!0-9]*) die "TRENTINA_GATES_MEMORY must be a size like 8g or 4096m" ;;
+esac
+# cgroup v2 reads this as a weight against a 1024 default: the desktop is not
+# in a gate's cgroup, so under contention the scheduler prefers it.
+GATE_WEIGHT=256
+# A build takes the same budget, expressed the way buildah accepts it.
+BUILD_LIMITS=(--cpu-period 100000 --cpu-quota "$(( GATE_CPUS * 100000 ))" --memory "$GATE_MEMORY")
+
 CACHE_VOLUME=crunchtools-hook-cache        # shared with the mypy hook
 SCRATCH_VOLUME=crunchtools-gates-scratch   # fixtures; never the worktree
 UV_IMAGE=ghcr.io/astral-sh/uv:python3.12-bookworm-slim
@@ -49,16 +153,14 @@ RUNNER=localhost/trentina:gates-runner
 SERVER=trentina-gates-server
 GATEHOUSE_ENV="$HOME/.config/mcp-env/gatehouse.env"
 
-PODMAN=(podman --events-backend=none run --rm --log-driver=none)
+PODMAN=(podman --events-backend=none run --rm --log-driver=none
+  --cpus "$GATE_CPUS" --memory "$GATE_MEMORY" --cpu-shares "$GATE_WEIGHT")
 # `z`, not `Z`: several of these containers mount the same tree at the same time,
 # and `Z` relabels it exclusively -- which takes it out from under whichever
 # started first. CI mounts bare because the runners have no SELinux, so the steps
 # ported from it denied every read here until this was added.
 RO_REPO=(-v "$PWD":/src:ro,z -w /src)
 
-die()  { printf 'GATE CANNOT RUN: %s\n' "$*" >&2; exit 2; }
-fail() { printf 'GATE FAILED: %s\n'     "$*" >&2; exit 1; }
-step() { printf '\n== %s\n' "$*"; }
 
 need_podman() { command -v podman >/dev/null 2>&1 || die "podman is not on PATH"; }
 need_file()   { [ -f "$1" ] || die "$1 is missing"; }
@@ -107,8 +209,23 @@ gate_pytest() {
     -e GEMINI_API_KEY=test_key_for_ci \
     "$UV_IMAGE" \
     uv run --locked --all-extras --python 3.14 \
-      pytest -q -rfE -p no:cacheprovider \
+      pytest -q -rfE -p no:cacheprovider -n "$(( GATE_CPUS > 1 ? GATE_CPUS : 0 ))" \
     || fail "pytest"
+}
+
+# mypy's pre-commit entry calls this rather than spelling out its own podman
+# line: a hook entry is a static string and cannot read the budget, so the two
+# drifted apart the moment the budget became dynamic. 3.12 and its own
+# UV_PROJECT_ENVIRONMENT, for the reason gate_pytest gives.
+gate_mypy() {
+  need_podman; need_volume "$CACHE_VOLUME"
+  "${PODMAN[@]}" "${RO_REPO[@]}" \
+    -v "$CACHE_VOLUME":/cache \
+    -e UV_CACHE_DIR=/cache/uv \
+    -e UV_PROJECT_ENVIRONMENT=/cache/venv/trentina \
+    "$UV_IMAGE" \
+    uv run --locked --all-extras mypy --cache-dir /cache/mypy/trentina src \
+    || fail "mypy"
 }
 
 gate_semgrep() {
@@ -164,7 +281,8 @@ gate_container_build() {
   step "build $IMAGE (VERSION=$version)"
   # Plain build, no buildx: the container driver the gha cache needs costs more
   # than the cache saves, and locally there is no gha cache at all.
-  podman build -f Containerfile --build-arg "VERSION=$version" -t "$IMAGE" . \
+  podman build "${BUILD_LIMITS[@]}" \
+    -f Containerfile --build-arg "VERSION=$version" -t "$IMAGE" . \
     || fail "container build"
   local label
   label=$(podman image inspect "$IMAGE" --format '{{ index .Config.Labels "version" }}') \
@@ -175,6 +293,8 @@ gate_container_build() {
 
 gate_container_verify() {
   need_podman; need_volume "$SCRATCH_VOLUME"
+  # Never more L2 workers than the budget: each one runs its own ONNX session.
+  local l2_workers=$(( GATE_CPUS < 4 ? GATE_CPUS : 4 ))
   podman image exists "$IMAGE" || die "$IMAGE is not built; run: ./scripts/gates.sh container-build"
 
   step "the gateway answers /health as production runs it"
@@ -195,6 +315,7 @@ seed = pathlib.Path("/seed")
   # No published port: 8019 is very likely a Trentina you are already running,
   # and probing that would pass while this image was broken.
   podman run -d --name "$SERVER" \
+    --cpus "$GATE_CPUS" --memory "$GATE_MEMORY" --cpu-shares "$GATE_WEIGHT" \
     --read-only --tmpfs /tmp --tmpfs /data:mode=1777 \
     --cap-drop=all --security-opt no-new-privileges \
     -v "$SCRATCH_VOLUME":/etc/trentina:ro \
@@ -224,7 +345,7 @@ print("opencv", cv2.__version__, "pillow", PIL.__version__, "pypdf", pypdf.__ver
 ' || fail "a native extension does not import in the distroless image"
 
   step "build the test runner (adds a shell and pytest to distroless)"
-  podman build -f - -t "$RUNNER" . <<RUNNERFILE || fail "test runner build"
+  podman build "${BUILD_LIMITS[@]}" -f - -t "$RUNNER" . <<RUNNERFILE || fail "test runner build"
 FROM $BUILDER_IMAGE AS test-deps
 USER 0
 RUN pip install --no-cache-dir --prefix=/usr pytest pytest-asyncio pytest-xdist
@@ -241,7 +362,7 @@ RUNNERFILE
   "${in_image[@]}" \
     -e CLASSIFIER_MODEL=prompt-injection-guard-small-ct \
     -e TRENTINA_REQUIRE_L2_MODEL=1 -e CLASSIFIER_THREADS=1 \
-    "$RUNNER" -m pytest -n 4 -q -rfE -p no:cacheprovider \
+    "$RUNNER" -m pytest -n "$l2_workers" -q -rfE -p no:cacheprovider \
       /tests/test_l2_integration.py \
       "/tests/test_adversarial_corpus.py::TestLayer2Boundary" \
     || fail "L2 integration in the image"
@@ -345,6 +466,7 @@ case "${1:-}" in
 
   hooks-installed)  gate_hooks_installed ;;
   pytest)           gate_pytest ;;
+  mypy)             gate_mypy ;;
   semgrep)          gate_semgrep ;;
   gatehouse-range)  gate_gatehouse_range ;;
   container-build)  gate_container_build ;;

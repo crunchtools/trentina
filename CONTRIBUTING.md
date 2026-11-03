@@ -42,6 +42,26 @@ the `crunchtools-hook-cache` volume and podman's image store. The image build
 alone is about four minutes; a rebuild that touched only `src/` skips the
 dependency install and saves about thirty seconds of it.
 
+## They do not take the whole machine
+
+Every gate runs capped: half the cores, an 8 GB memory ceiling, and a low CPU
+weight so your desktop wins any contention. "Half the cores" means half of what
+the gate may actually use -- a CPU affinity mask and a cgroup quota each count,
+so a run inside a container or a systemd slice asks for what it was given
+rather than what the host owns. Unbounded, the `pr` tier took a
+14-core laptop to a load average of 116 and made a video call unusable, which
+is how you end up with a gate nobody runs.
+
+```bash
+TRENTINA_GATES_CPUS=2 ./scripts/gates.sh push     # on a call
+TRENTINA_GATES_CPUS=14 ./scripts/gates.sh pr      # machine doing nothing else
+TRENTINA_GATES_MEMORY=4g ./scripts/gates.sh push  # the memory ceiling too
+```
+
+The cap applies to the container builds, the test runs (`pytest -n` follows the
+budget rather than `-n auto`), the image under verification, trivy, the RPM
+build, and the mypy commit hook.
+
 Two Gatehouse reviews is deliberate. The commit hook reads one staged diff, so
 nothing looked at the branch as a whole until the push tier added
 `origin/main...HEAD` — which is how findings used to arrive from CI after the
