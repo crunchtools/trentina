@@ -27,13 +27,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Every connection sets `PRAGMA busy_timeout=250` (SQLite's default is 0, #662):
-# the wait happens inside SQLite so the loop never sleeps.
+# Every connection sets `PRAGMA busy_timeout=250` (SQLite's default is 0, #662),
+# so contention waits inside SQLite instead of raising at once. That wait is on
+# the caller's thread, which is the event loop.
 
-#: Attempts at one audit write. Immediate, no sleep: the caller is on the loop.
-#: A retry that cannot sleep is weak (SQLITE_PROTOCOL is a WAL-shm race that
-#: often clears at once); the loss record, not the retry, is what makes a failure safe.
+#: Attempts at one audit write, and the wall clock they share. Both bound it:
+#: a fast failure (SQLITE_PROTOCOL) gets every attempt, while one that spent a
+#: busy timeout gets however many fit the budget. Without the budget three
+#: attempts could hold the loop for 750 ms. There is no sleep of our own —
+#: `asyncio.sleep` is not reachable from a synchronous caller.
 AUDIT_ATTEMPTS = 3
+AUDIT_RETRY_BUDGET = 0.3
 
 # Rows given up on since the last successful write, written to `audit_losses`
 # by the next one. Held here because at failure time the store is unwritable.
@@ -837,17 +841,17 @@ def record_gateway_call(
         "caller_sub": caller_sub,
         "federated_verdict": federated_verdict,
     }
+    deadline = time.monotonic() + AUDIT_RETRY_BUDGET
     for attempt in range(AUDIT_ATTEMPTS):
         try:
             row = _write_call(db, fields)
             break
         except sqlite3.OperationalError as exc:
-            # SQLITE_BUSY from BEGIN IMMEDIATE already waited out busy_timeout
-            # inside SQLite; retrying would block the loop another 250 ms each
-            # time. SQLITE_LOCKED never invokes the busy handler, and a fast
-            # failure (SQLITE_PROTOCOL) did not wait either: both are retried.
-            waited = getattr(exc, "sqlite_errorname", "") == "SQLITE_BUSY"
-            if attempt + 1 < AUDIT_ATTEMPTS and not waited:
+            # Retried whatever it says. Telling apart the errors SQLite already
+            # waited on cannot be done from the error name: the busy handler is
+            # never invoked for SQLITE_LOCKED, and SQLITE_BUSY comes back at
+            # once when a deferred transaction cannot be upgraded.
+            if attempt + 1 < AUDIT_ATTEMPTS and time.monotonic() < deadline:
                 continue
             # Given up on. The chain stays continuous without this row, so
             # `verify` would call the record sound; the count goes to

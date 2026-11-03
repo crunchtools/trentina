@@ -196,6 +196,18 @@ def test_calls_without_a_call_ref_carry_no_digest(db: Any) -> None:
     assert _verify(db)["ok"] is True
 
 
+class _Named(sqlite3.OperationalError):
+    """An OperationalError carrying the ``sqlite_errorname`` a real one would.
+
+    Subclassed rather than set on an instance: the real attribute comes from
+    the C module, so assigning to it needs a type suppression.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__("database is locked")
+        self.sqlite_errorname = name
+
+
 class TestLostRows:
     """A failed audit write leaves no break; the loss record is the only signal (#662)."""
 
@@ -226,26 +238,31 @@ class TestLostRows:
         assert db.get_db().execute("SELECT COUNT(*) FROM gateway_calls").fetchone()[0] == 1
         assert _verify(db)["ok"] is True
 
-    @pytest.mark.parametrize(
-        ("errorname", "attempts"),
-        [("SQLITE_BUSY", 1), ("SQLITE_LOCKED", 3), ("SQLITE_PROTOCOL", 3)],
-    )
-    def test_retry_depends_on_whether_sqlite_waited(
-        self, db: Any, monkeypatch: pytest.MonkeyPatch, errorname: str, attempts: int
+    def test_a_busy_or_locked_failure_is_retried_like_any_other(
+        self, db: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        calls: list[int] = []
+        """SQLite's busy handler never runs for SQLITE_LOCKED, and SQLITE_BUSY comes
+        back at once when a deferred transaction cannot be upgraded. Neither has
+        "already waited", so neither may cost the row its remaining attempts."""
+        for name in ("SQLITE_BUSY", "SQLITE_LOCKED"):
+            monkeypatch.setattr(db, "_lost_pending", 0)
+            real = db._write_call
+            calls: list[int] = []
 
-        def write(conn: Any, fields: Any) -> Any:
-            calls.append(1)
-            err = sqlite3.OperationalError("x")
-            err.sqlite_errorname = errorname  # type: ignore[attr-defined]
-            raise err
+            def write(
+                conn: Any, fields: Any, _real: Any = real, _calls: Any = calls, _name: str = name
+            ) -> Any:
+                _calls.append(1)
+                if len(_calls) <= 2:
+                    raise _Named(_name)
+                return _real(conn, fields)
 
-        monkeypatch.setattr(db, "_write_call", write)
-        with pytest.raises(sqlite3.OperationalError):
+            monkeypatch.setattr(db, "_write_call", write)
             db.record_gateway_call("p", "web", "t", Outcome.OK.value, 1)
-        assert len(calls) == attempts
-        assert db._lost_pending == 1
+            assert len(calls) == 3, name
+            monkeypatch.setattr(db, "_write_call", real)
+
+        assert _verify(db)["lost_rows"] == 0
 
     def test_a_row_never_written_reports_incomplete_not_broken(
         self, db: Any, monkeypatch: pytest.MonkeyPatch
