@@ -43,7 +43,6 @@ GATEHOUSE_IMAGE=quay.io/crunchtools/gatehouse:latest
 # Keep aligned with whatever aquasecurity/trivy-action@v0.36.0 installs. Pinned
 # rather than :latest so a local finding and a CI finding are the same finding.
 TRIVY_IMAGE=docker.io/aquasec/trivy:0.58.1
-CONSTITUTION_TAG=v1.28.0                   # with constitution.yml and `Inherits:`
 
 IMAGE=localhost/trentina:gates
 RUNNER=localhost/trentina:gates-runner
@@ -287,9 +286,24 @@ gate_trivy() {
 # pyproject.toml, src/*/__init__.py, server.json and the Containerfile label to
 # the newest CHANGELOG heading, and a local copy of that rule would pass while
 # one of the others was stale.
+# The tag is READ from the manifest, not pinned a second time here. A copy in
+# this file is a copy fleet-bump.py does not know about, so it would be moved by
+# hand after each constitution release, or more likely not -- and the gate would
+# then judge the repo by rules it no longer inherits.
+constitution_tag() {
+  local tag
+  tag=$(grep -m1 '^> \*\*Inherits:\*\*' .specify/memory/constitution.md \
+    | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+') \
+    || die "cannot read the inherited constitution version from .specify/memory/constitution.md"
+  [ -n "$tag" ] || die ".specify/memory/constitution.md names no inherited version"
+  printf '%s' "$tag"
+}
+
 gate_constitution() {
   need_podman; need_volume "$CACHE_VOLUME"
   local checkout=.gates/constitution
+  local CONSTITUTION_TAG
+  CONSTITUTION_TAG=$(constitution_tag)
   if [ -d "$checkout/.git" ]; then
     git -C "$checkout" fetch --quiet --depth 1 origin "$CONSTITUTION_TAG" \
       && git -C "$checkout" checkout --quiet FETCH_HEAD \
