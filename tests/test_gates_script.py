@@ -192,3 +192,33 @@ def test_a_memory_ceiling_that_is_not_a_size_cannot_run(gates: Harness, value: s
 def test_a_memory_ceiling_that_is_a_size_is_accepted(gates: Harness, value: str) -> None:
     result = gates.run("hooks-installed", TRENTINA_GATES_MEMORY=value)
     assert "TRENTINA_GATES_MEMORY" not in gates.said(result)
+
+
+def test_a_hostile_memory_ceiling_cannot_run_and_executes_nothing(
+    gates: Harness, tmp_path: Path
+) -> None:
+    """The memory knob gets the same sentinel as the CPU one.
+
+    It does not reach arithmetic today -- it is only ever a quoted podman
+    argument -- so this guards the change that makes it one, or that expands it
+    unquoted. Without a sentinel the rejection cases above pass even if a
+    regression evaluates the value first and rejects it afterwards.
+    """
+    sentinel = tmp_path / "pwned-by-memory"
+    result = gates.run("hooks-installed", TRENTINA_GATES_MEMORY=f"$(touch {sentinel})g")
+    assert result.returncode == CANNOT_RUN
+    assert "TRENTINA_GATES_MEMORY" in gates.said(result)
+    assert not sentinel.exists()
+
+
+@pytest.mark.parametrize("knob", ["TRENTINA_GATES_CPUS", "TRENTINA_GATES_MEMORY"])
+def test_an_explicitly_empty_knob_takes_the_default(gates: Harness, knob: str) -> None:
+    """``${VAR:-default}`` treats empty as unset, and that is the behaviour wanted.
+
+    Asserted rather than left as a comment: a validation change could start
+    refusing an empty value while every acceptance and rejection case above
+    still passed, and ``TRENTINA_GATES_CPUS= ./scripts/gates.sh push`` would
+    then fail for no reason a reader could see.
+    """
+    result = gates.run("hooks-installed", **{knob: ""})
+    assert knob not in gates.said(result)
