@@ -51,7 +51,11 @@ SERVER=trentina-gates-server
 GATEHOUSE_ENV="$HOME/.config/mcp-env/gatehouse.env"
 
 PODMAN=(podman --events-backend=none run --rm --log-driver=none)
-RO_REPO=(-v "$PWD":/src:ro,Z -w /src)
+# `z`, not `Z`: several of these containers mount the same tree at the same time,
+# and `Z` relabels it exclusively -- which takes it out from under whichever
+# started first. CI mounts bare because the runners have no SELinux, so the steps
+# ported from it denied every read here until this was added.
+RO_REPO=(-v "$PWD":/src:ro,z -w /src)
 
 die()  { printf 'GATE CANNOT RUN: %s\n' "$*" >&2; exit 2; }
 fail() { printf 'GATE FAILED: %s\n'     "$*" >&2; exit 1; }
@@ -231,7 +235,7 @@ COPY --from=test-deps /usr/lib/python3.14/site-packages/ /usr/lib/python3.14/sit
 RUNNERFILE
 
   local in_image=("${PODMAN[@]}" --entrypoint python
-    -v "$PWD/tests":/tests:ro -v "$PWD/corpora":/corpora:ro
+    -v "$PWD/tests":/tests:ro,z -v "$PWD/corpora":/corpora:ro,z
     -e GEMINI_API_KEY=test_key_for_ci)
 
   step "L2 integration, against the model the image ships"
@@ -251,9 +255,10 @@ RUNNERFILE
   step "the OCR and PDF workers, as production runs them"
   "${PODMAN[@]}" --network none --read-only --tmpfs /tmp --cap-drop=all \
     --security-opt no-new-privileges --entrypoint python \
-    -v "$PWD/tests":/tests:ro -v "$PWD/corpora":/corpora:ro \
+    -v "$PWD/tests":/tests:ro,z -v "$PWD/corpora":/corpora:ro,z \
     -e GEMINI_API_KEY=test_key_for_ci \
-    "$RUNNER" -m pytest -q -rfE -p no:cacheprovider -m ocr /tests \
+    "$RUNNER" -m pytest -q -rfE -p no:cacheprovider \
+      /tests/test_unpack_ocr.py /tests/test_unpack_pdf.py \
     || fail "the OCR or PDF worker does not run in the image"
 }
 
@@ -263,8 +268,12 @@ gate_trivy() {
   step "trivy"
   # Trivy cannot read podman's image store, so the image is streamed into the
   # scratch volume as an archive.
+  # The archive lands in the scratch VOLUME, not the worktree and not /tmp. The
+  # builder image is named explicitly because podman reads the first non-flag
+  # argument as the image: a bare `sh` there is an image called "sh".
   podman save --format docker-archive "$IMAGE" \
-    | "${PODMAN[@]}" -i -v "$SCRATCH_VOLUME":/scratch sh -c 'cat > /scratch/image.tar' \
+    | "${PODMAN[@]}" -i -v "$SCRATCH_VOLUME":/scratch "$BUILDER_IMAGE" \
+        sh -c 'cat > /scratch/image.tar' \
     || die "cannot stage the image for trivy"
   "${PODMAN[@]}" -v "$SCRATCH_VOLUME":/scratch:ro "${RO_REPO[@]}" \
     -v "$CACHE_VOLUME":/cache -e TRIVY_CACHE_DIR=/cache/trivy \
@@ -305,7 +314,7 @@ gate_constitution() {
 gate_rpm() {
   need_podman; need_volume "$CACHE_VOLUME"
   step "cockpit RPM"
-  "${PODMAN[@]}" -v "$PWD":/src:Z -w /src \
+  "${PODMAN[@]}" -v "$PWD":/src:z -w /src \
     -v "$CACHE_VOLUME":/var/cache/libdnf5 \
     registry.fedoraproject.org/fedora:43 \
     sh -c 'dnf -y --setopt=keepcache=1 install rpm-build make tar >/dev/null && make rpm' \
