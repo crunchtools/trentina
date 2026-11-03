@@ -128,13 +128,14 @@ gate_gatehouse_range() {
     1) ;;
     *) die "git could not compute origin/main...HEAD" ;;
   esac
-  # The diff is written out first, so a failure to PRODUCE it is told apart from
-  # a reviewer that read it and objected. Piping straight in reported the former
-  # as the latter.
-  local diff=/tmp/trentina-gates-range.diff
-  git diff origin/main...HEAD > "$diff" || die "git could not write the cumulative diff"
-  "${PODMAN[@]}" -i --env-file "$GATEHOUSE_ENV" "${RO_REPO[@]}" "$GATEHOUSE_IMAGE" --stdin \
-    < "$diff" \
+  # Captured into a variable, not a file: the diff is produced BEFORE the
+  # reviewer starts, so a failure to produce it is told apart from a reviewer
+  # that read it and objected (piping straight in reported the former as the
+  # latter), and there is no path in /tmp for anyone to pre-create as a symlink.
+  local diff
+  diff=$(git diff origin/main...HEAD) || die "git could not produce the cumulative diff"
+  printf '%s\n' "$diff" \
+    | "${PODMAN[@]}" -i --env-file "$GATEHOUSE_ENV" "${RO_REPO[@]}" "$GATEHOUSE_IMAGE" --stdin \
     || fail "Gatehouse found blocking findings in the cumulative diff"
 }
 
