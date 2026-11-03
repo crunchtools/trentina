@@ -106,4 +106,14 @@ def test_a_gate_run_outside_a_checkout_cannot_run(gates: Harness) -> None:
     gates.stub("git", "exit 128")
     result = gates.run("semgrep")
     assert result.returncode == CANNOT_RUN
-    assert "git checkout" in result.stderr
+    assert "not a git checkout" in result.stderr
+
+
+def test_a_git_that_names_no_root_cannot_run(gates: Harness) -> None:
+    """git succeeding with empty output must not leave the gate in the caller's
+    directory. `cd ""` fails on some shells and is a no-op on others -- the
+    runner's bash accepted it and ran the gate from wherever it happened to be."""
+    gates.stub("git", 'echo ""')
+    result = gates.run("semgrep")
+    assert result.returncode == CANNOT_RUN
+    assert "named no repository root" in result.stderr

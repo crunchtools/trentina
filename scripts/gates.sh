@@ -21,7 +21,18 @@ set -euo pipefail
 
 # Every path below is repo-relative (.semgrep/, .specify/, .gates/) and every
 # mount is $PWD, so the gates must run from the root wherever they are invoked.
-cd "$(git rev-parse --show-toplevel)" || { printf 'GATE CANNOT RUN: not a git checkout\n' >&2; exit 2; }
+#
+# Checked in three steps rather than `cd "$(git ...)"`: the exit status of that
+# is cd's, not git's, and whether `cd ""` then fails is not portable -- bash on
+# Fedora refuses a null directory while the runner's accepted it and carried on
+# from wherever it already was. Spotted by CI, which is the only machine that
+# disagreed.
+_root=$(git rev-parse --show-toplevel 2>/dev/null) \
+  || { printf 'GATE CANNOT RUN: not a git checkout\n' >&2; exit 2; }
+[ -n "$_root" ] \
+  || { printf 'GATE CANNOT RUN: git named no repository root\n' >&2; exit 2; }
+cd "$_root" \
+  || { printf 'GATE CANNOT RUN: cannot enter the repository root\n' >&2; exit 2; }
 
 CACHE_VOLUME=crunchtools-hook-cache        # shared with the mypy hook
 SCRATCH_VOLUME=crunchtools-gates-scratch   # fixtures; never the worktree
