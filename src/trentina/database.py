@@ -210,7 +210,7 @@ def get_db(db_path: str | None = None) -> sqlite3.Connection:
         _db_path = path
         _db.row_factory = sqlite3.Row
         _db.execute("PRAGMA journal_mode=WAL")
-        _db.execute("PRAGMA busy_timeout=250")
+        _db.execute("PRAGMA busy_timeout=250")  # BUSY_TIMEOUT_MS; PRAGMA takes no parameter
         _db.execute("PRAGMA foreign_keys=ON")
         _db.executescript(SCHEMA)
         _migrate(_db)
@@ -243,7 +243,7 @@ def snapshot_reader(path: str) -> Iterator[None]:
     """
     conn = sqlite3.connect(f"file:{quote(path)}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=250")
+    conn.execute("PRAGMA busy_timeout=250")  # BUSY_TIMEOUT_MS; PRAGMA takes no parameter
     _local.reader = conn
     try:
         yield

@@ -268,22 +268,31 @@ class TestLostRows:
         self, db: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The budget is checked between attempts, so a retry's own busy wait is
-        cut to the remainder; otherwise it could run a whole busy timeout past it."""
+        cut to the remainder; otherwise it could run a whole busy timeout past it.
+
+        The clock is driven by the first attempt rather than slept through: the
+        remainder is asserted exactly, and an upper bound measured off a real
+        sleep fails on a machine that overshoots it.
+        """
         real = db._write_call
+        now = 0.0
+        monkeypatch.setattr(db.time, "monotonic", lambda: now)
+        spent = 0.2  # what the first attempt spends waiting
         timeouts: list[int] = []
 
-        def write(conn: Any, fields: Any) -> Any:
+        def write(conn: Any, _fields: Any) -> Any:
+            nonlocal now
             timeouts.append(conn.execute("PRAGMA busy_timeout").fetchone()[0])
             if len(timeouts) == 1:
-                time.sleep(0.2)  # the first attempt spends most of the budget waiting
+                now += spent
                 raise sqlite3.OperationalError("database is locked")
-            return real(conn, fields)
+            return real(conn, _fields)
 
         monkeypatch.setattr(db, "_write_call", write)
         db.record_gateway_call("p", "web", "t", Outcome.OK.value, 1)
         assert timeouts[0] == db.BUSY_TIMEOUT_MS
         assert len(timeouts) == 2
-        assert 0 < timeouts[1] <= int(db.AUDIT_RETRY_BUDGET * 1000) - 200
+        assert timeouts[1] == int((db.AUDIT_RETRY_BUDGET - spent) * 1000)
         conn = db.get_db()
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == db.BUSY_TIMEOUT_MS
 
