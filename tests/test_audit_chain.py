@@ -264,6 +264,29 @@ class TestLostRows:
 
         assert _verify(db)["lost_rows"] == 0
 
+    def test_a_retry_waits_only_what_is_left_of_the_budget(
+        self, db: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The budget is checked between attempts, so a retry's own busy wait is
+        cut to the remainder; otherwise it could run a whole busy timeout past it."""
+        real = db._write_call
+        timeouts: list[int] = []
+
+        def write(conn: Any, fields: Any) -> Any:
+            timeouts.append(conn.execute("PRAGMA busy_timeout").fetchone()[0])
+            if len(timeouts) == 1:
+                time.sleep(0.2)  # the first attempt spends most of the budget waiting
+                raise sqlite3.OperationalError("database is locked")
+            return real(conn, fields)
+
+        monkeypatch.setattr(db, "_write_call", write)
+        db.record_gateway_call("p", "web", "t", Outcome.OK.value, 1)
+        assert timeouts[0] == db.BUSY_TIMEOUT_MS
+        assert len(timeouts) == 2
+        assert 0 < timeouts[1] <= int(db.AUDIT_RETRY_BUDGET * 1000) - 200
+        conn = db.get_db()
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == db.BUSY_TIMEOUT_MS
+
     def test_a_row_never_written_reports_incomplete_not_broken(
         self, db: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:

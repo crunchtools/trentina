@@ -31,10 +31,13 @@ logger = logging.getLogger(__name__)
 # so contention waits inside SQLite instead of raising at once. That wait is on
 # the caller's thread, which is the event loop.
 
+BUSY_TIMEOUT_MS = 250
+
 #: Attempts at one audit write, and the wall clock they share. Both bound it:
 #: a fast failure (SQLITE_PROTOCOL) gets every attempt, while one that spent a
-#: busy timeout gets however many fit the budget. Without the budget three
-#: attempts could hold the loop for 750 ms. There is no sleep of our own —
+#: busy timeout gets however many fit the budget, and a retry's busy timeout is
+#: cut to what is left of it. Without the budget three attempts could hold the
+#: loop for 750 ms. There is no sleep of our own —
 #: `asyncio.sleep` is not reachable from a synchronous caller.
 AUDIT_ATTEMPTS = 3
 AUDIT_RETRY_BUDGET = 0.3
@@ -844,6 +847,11 @@ def record_gateway_call(
     deadline = time.monotonic() + AUDIT_RETRY_BUDGET
     for attempt in range(AUDIT_ATTEMPTS):
         try:
+            # A retry may wait only what is left of the budget: the check
+            # below runs between attempts, so an attempt's own busy wait is
+            # what would otherwise carry the total past it.
+            if attempt:
+                _set_busy_timeout(db, _remaining_ms(deadline))
             row = _write_call(db, fields)
             break
         except sqlite3.OperationalError as exc:
@@ -851,7 +859,7 @@ def record_gateway_call(
             # waited on cannot be done from the error name: the busy handler is
             # never invoked for SQLITE_LOCKED, and SQLITE_BUSY comes back at
             # once when a deferred transaction cannot be upgraded.
-            if attempt + 1 < AUDIT_ATTEMPTS and time.monotonic() < deadline:
+            if attempt + 1 < AUDIT_ATTEMPTS and _remaining_ms(deadline) > 0:
                 continue
             # Given up on. The chain stays continuous without this row, so
             # `verify` would call the record sound; the count goes to
@@ -859,9 +867,22 @@ def record_gateway_call(
             _lost_pending += 1
             _lost_reason = exc_kind(exc)
             raise
+        finally:
+            if attempt:
+                _set_busy_timeout(db, BUSY_TIMEOUT_MS)
     # The row is committed; emit its safe metadata to any telemetry sink. emit
     # swallows a sink's failure, so this never fails the call (#556).
     telemetry.emit(telemetry.from_row(row))
+
+
+def _remaining_ms(deadline: float) -> int:
+    """Whole milliseconds left before ``deadline``, never negative."""
+    return max(0, int((deadline - time.monotonic()) * 1000))
+
+
+def _set_busy_timeout(db: sqlite3.Connection, ms: int) -> None:
+    """How long SQLite may wait on a lock before this connection's next statement fails."""
+    db.execute(f"PRAGMA busy_timeout={min(int(ms), BUSY_TIMEOUT_MS)}")
 
 
 def _write_call(db: sqlite3.Connection, fields: dict[str, Any]) -> dict[str, Any]:
