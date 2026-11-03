@@ -923,21 +923,48 @@ class TestTheServiceIdentity:
         # The gateway still reports itself as `op`, so the row stays off.
         assert "The gateway reports itself as" not in shown
 
-    async def test_demoting_the_bound_operator_is_staged_and_names_the_new_one(
+    async def test_demoting_the_other_operator_stages_without_the_identity_row(
         self, gateway: pathlib.Path
     ) -> None:
-        """Taking the role off the bound profile moves the identity by
-        implication, which is exactly the write a resolved comparison catches
-        and a raw-setting one would not: `gateway.service_identity` is not in
-        this write at all.
-        """
-        _rewrite(gateway, _two_operators("op2"))
+        """Who holds the role moved; which one the gateway IS did not.
 
-        result = await _as_operator("set", "profiles.op.role", "agent", await _hash())
+        So the page shows the role change and no identity row -- the row is
+        rendered only when the bound identity moves, because on a page whose
+        value is that every line is worth reading, a line saying the same name
+        twice teaches a reader to skim.
+        """
+        _rewrite(gateway, _two_operators("op"))
+
+        result = await _as_operator("set", "profiles.op2.role", "agent", await _hash())
 
         assert result["staged"] is True
         shown = pending.outstanding()[pending.Kind.OPERATOR_PROFILE]
-        assert shown["Would hold it after this change"] == "op2"
+        assert shown["Holds the operator role now"] == "op, op2"
+        assert shown["Would hold it after this change"] == "op"
+        assert "The gateway reports itself as" not in shown
+
+    async def test_demoting_the_named_operator_is_refused_by_the_loader(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The identity cannot move by implication, which is why no approval
+        path has to handle it.
+
+        Taking the role off the profile `gateway.service_identity` names leaves
+        the setting pointing at a profile that is not an operator, and the
+        loader refuses that candidate -- so the write is refused with the
+        remaining operators named, rather than staged and silently resolved to
+        whoever is left. Getting there takes two writes, in the same order as
+        getting to two operators in the first place.
+        """
+        _rewrite(gateway, _two_operators("op"))
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator("set", "profiles.op.role", "agent", await _hash())
+
+        assert "gateway.service_identity names 'op'" in result["error"]
+        assert "op2" in result["error"]
+        assert gateway.read_text(encoding="utf-8") == before
+        assert not pending.outstanding()
 
     async def test_an_agent_cannot_write_it(self, gateway: pathlib.Path) -> None:
         """`config_tool` is operator-only, so this is the existing rule rather

@@ -150,6 +150,37 @@ class TestTheFileStillLoads:
         written = [p for p in profiles.values() if p.role == "operator" and not p.federation_of]
         assert [p.name for p in written] == ["josui"]
 
+    def test_the_derivation_cannot_be_named_as_the_service_identity(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`gateway.service_identity` must name a WRITTEN operator (#661).
+
+        The derivation carries the role since 6.0.0, so it passes a role test
+        and would otherwise be nameable — and it is not a profile anybody wrote,
+        so nobody chose it. Asserted through `load_profiles` rather than through
+        `find_operator`: the loader is where the name is checked, and
+        `find_operator` deliberately falls back rather than raising.
+        """
+        monkeypatch.setenv("TEST_JOSUI_TOKEN", "a-token")
+        monkeypatch.setenv(
+            "TEST_SIGNING_KEY",
+            Ed25519PrivateKey.generate()
+            .private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+            .decode(),
+        )
+        path = tmp_path / "profiles.yaml"
+        path.write_text(
+            f"gateway:\n  service_identity: {ingress_name('josui')}\n" + SHARED_OPERATOR_YAML,
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ProfileConfigError, match=r"gateway\.service_identity names"):
+            load_profiles(path)
+
 
 class TestTheServiceIdentityIsTheWrittenProfile:
     """The silent one. `service_profile` runs the gateway's own model calls as

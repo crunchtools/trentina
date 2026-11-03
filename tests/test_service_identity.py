@@ -327,15 +327,25 @@ class TestMoreThanOneOperator:
         with pytest.raises(ProfileConfigError, match="role: operator"):
             load_profiles(path)
 
-    def test_a_non_string_setting_is_fatal_rather_than_ignored(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        "written",
+        [
+            pytest.param("\n    - ops\n    - ops2", id="a-list"),
+            pytest.param(' ""', id="empty"),
+            pytest.param(' "   "', id="whitespace"),
+            pytest.param(" 7", id="a-number"),
+        ],
+    )
+    def test_a_setting_that_is_not_one_name_is_fatal_rather_than_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written: str
     ) -> None:
-        """A list here is somebody naming two identities. Falling back to the
-        one-operator default would bind a profile they did not choose."""
+        """A list here is somebody naming two identities; an empty string is a
+        half-finished write. Falling back to the one-operator default would bind
+        a profile nobody chose, and say nothing about it."""
         monkeypatch.setenv("TEST_OPS_TOKEN", "o")
         path = tmp_path / "profiles.yaml"
         path.write_text(
-            "gateway:\n  service_identity:\n    - ops\n    - ops2\nprofiles:\n" + _OPERATOR,
+            f"gateway:\n  service_identity:{written}\nprofiles:\n" + _OPERATOR,
             encoding="utf-8",
         )
 

@@ -215,6 +215,12 @@ Doing them the other way round is refused: the candidate would have two
 operators and no name. That is deliberate — the choice is made before the
 ambiguity exists, rather than after.
 
+Going back the other way is the same two writes reversed, for the same reason:
+taking the role off the profile the setting names leaves it pointing at a
+profile that is not an operator, and the loader refuses that rather than
+resolving it to whoever is left. Point the setting at the operator you are
+keeping, then demote the other one.
+
 Any operator may propose either write, including one that is not the named
 identity. There is no privilege tier among operators: an operator is root here,
 and one that can rewrite another's `auth` block could become it anyway, so a
