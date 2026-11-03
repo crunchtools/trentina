@@ -10,7 +10,41 @@ under that name.
 
 ## [Unreleased]
 
+## [6.3.0] - 2026-11-03
+
+### Added
+
+- **`./scripts/gates.sh commit|push|pr|release`**, one script holding the local
+  gates, tiered, with `commit` and `push` wired as pre-commit hooks (#674,
+  #675). `push` runs the full pytest suite, semgrep and a Gatehouse review of
+  `origin/main...HEAD` -- the pre-commit hook sees one staged diff, so nothing
+  reviewed the branch as a whole and CI kept finding things after the local
+  hook went green. `pr` builds, verifies and scans the image; `release` runs the
+  constitution validator and `make rpm`. Every gate runs from a container image,
+  so the host needs only git, podman, pre-commit and gh. Exit 2 means the gate
+  COULD NOT run and is never 0 and never a warning.
+- **`CONTRIBUTING.md`**: the four tiers, what each costs, what an exit code
+  means, and that `SKIP=<hook>` obliges you to answer the same finding on the
+  pull request.
+
 ### Changed
+
+- **A local image build is a gate; publishing is still CI's alone.** Inherits
+  constitution v1.29.0 (Security Gateway profile 1.1.0), where "nothing is built
+  or pushed from a workstation" becomes "nothing is published from one". The old
+  rule was written when the build needed a gated Hugging Face credential, which
+  went at 0.59.0 with Prompt Guard 2 (#362).
+- A new push to a pull request supersedes the run it interrupts (#673). A main
+  push keys on `run_id` instead: a concurrency group holds at most one PENDING
+  run, so three quick pushes to main would have dropped the middle one's
+  publish.
+- The `pip-builder` stage installs the locked dependency set before `src/` is
+  copied in (#676), so a source-only rebuild skips it. Measured at 33 s of the
+  image build, and the dependency install stops happening on a local rebuild.
+- The local constitution gate reads the inherited tag out of the manifest
+  rather than pinning it a second time (#678): `fleet-bump.py` moves `Inherits`,
+  the workflow pins and the pre-commit hook rev, and knows nothing about a
+  repo-local script.
 
 - **One image build per run, and a release that promotes rather than rebuilds.**
   The image was built three times per pull request: `ci.yml:build-container`,
@@ -27,12 +61,12 @@ under that name.
   Containerfile copies plus everything the verification steps run --
   `Containerfile`, an ignore file, `pyproject.toml`, `uv.lock`, `src/`,
   `tests/`, `corpora/`, `benchmarks/`, `scripts/`, `.trivyignore` and the
-  workflows. `benchmarks/` is
-  in that list because the `l2-gate` stage runs `l2_obfuscation.py` and
-  `l2_benign.py` to earn the records the image ships, so a change to a gate
-  that skipped the build would be a gate nobody re-earned. A docs-only PR
-  reports success in about ten seconds. The filter
-  is step-level and fails open: a base commit it cannot resolve builds. It is
+  workflows. `benchmarks/` is in that list because the `l2-gate` stage runs
+  `l2_obfuscation.py` and `l2_benign.py` to earn the records the image ships,
+  so a change to a gate that skipped the build would be a gate nobody
+  re-earned. A docs-only PR reports success in about ten seconds (measured: 9).
+  The filter is step-level and fails open: a base commit it cannot resolve
+  builds. It is
   deliberately not a workflow `paths:` filter (a required context that never
   reports stays pending forever) and not a job-level `if:` (a job skipped
   because its `needs` FAILED also reports "skipped", which GitHub counts as
@@ -44,8 +78,11 @@ under that name.
   unless the commit's own checks passed -- the contexts read from the branch
   ruleset rather than copied, and the job that built and verified the image
   resolved through `security.yml`'s own run rather than by context name,
-  since a name is a string any workflow in the repo could post. Rebuilding at release time would
-  publish bytes nothing had verified and find a broken image at ship time.
+  since a name is a string any workflow in the repo could post. A tag must be
+  `vX.Y.Z` with exactly three numbers, since `v1.2.3.4` would otherwise derive
+  the alias `1.2.3` and move that release's tag. Rebuilding at release time
+  would publish bytes nothing had verified and find a broken image at ship
+  time.
 - **The buildx GitHub-Actions layer cache is gone.** It cost 121 s per build in
   fixed export and import against 67 s of savings, and the `docker-container`
   driver it requires cost the multithreaded ONNX benign-L2 gate a further 137 s

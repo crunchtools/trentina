@@ -284,6 +284,18 @@ class TestBinary:
         assert key.unread == ()
 
 
+# Only for a case whose 40k measurement is near the timer's resolution, where a
+# ratio means nothing. It is deliberately far BELOW the real costs (6-20 ms at
+# 40k): a floor above them stops the ratio being the test at all. See
+# TestShape.test_linear.
+NOISE_FLOOR = 0.005
+
+# Thread CPU time is one-sided -- contention only ever makes a measurement
+# slower -- so the minimum of several is the estimator, and more samples move
+# it towards the true cost. Three was not enough under a full pytest -n auto.
+SAMPLES = 7
+
+
 class TestShape:
     def test_nothing_to_unpack_returns_the_same_object(self) -> None:
         text = "plain words and a sha " + _GIT_SHA
@@ -323,17 +335,32 @@ class TestShape:
         on wall clock the 80k case landed at 0.0514 s against a 0.05 s floor
         on a saturated CI runner — a failure that said nothing about the
         regex it guards.
+
+        Raising the floor was the wrong answer to a flake and is not what
+        happened here. On 2026-11-03 the 80k ``uu-bait`` case measured
+        0.0513 s of thread time against 0.0125 s at 40k, a 4.1x ratio that
+        failed — while the same case measures 20.1 ms at 80k and 41.5 ms at
+        160k on an idle machine, 2.0x per doubling, which is the linearity
+        this asserts. Thread CPU time is not immune to contention: fourteen
+        workers competing for memory bandwidth slow a thread's own cycles.
+
+        So the fix is the estimator, not the allowance. A floor of 0.05 s was
+        already above every real 40k cost here (6-20 ms), which meant the
+        floor and not the ratio decided the test, and 20 ms to 100 ms would
+        have passed. ``SAMPLES`` minima make the measurement good enough that
+        the ratio decides, and ``NOISE_FLOOR`` drops to 0.005 s, where it
+        covers only a case too fast to time.
         """
         timings = []
         for n in (40_000, 80_000):
             text = make(n)
             best = float("inf")
-            for _ in range(3):
+            for _ in range(SAMPLES):
                 start = time.thread_time()
                 unpack(text)
                 best = min(best, time.thread_time() - start)
             timings.append(best)
-        assert timings[1] < max(timings[0] * 4, 0.05)
+        assert timings[1] < max(timings[0] * 4, NOISE_FLOOR)
 
 
 _D = "trentina.defense"
