@@ -1,14 +1,15 @@
 # trentina Constitution
 
-> **Version:** 2.13.0
+> **Version:** 2.14.0
 > **Ratified:** 2026-09-22
-> **Amended:** 2026-11-01
+> **Amended:** 2026-11-03
 > **Status:** Active
 > **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.29.0
 > **Profile:** Security Gateway
 
 This file holds what is specific to Trentina. The fleet rules and the
-Security Gateway profile (image-only distribution, a judging path that fails
+Security Gateway profile (image-only distribution published by CI alone, a
+local build as a gate, a judging path that fails
 closed, delivery of exactly what was judged, a versioned perimeter, declared
 coverage, measured detector changes, hostile parsers in child processes)
 apply at the inherited version and are checked against this repo's files by
@@ -448,3 +449,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.11.0 | 2026-10-31 | Human Approval (#637): the Trust Allowlist clause is about the allowlist, and had been read as governing every trust decision in the product. Federation's scan-once trust is a different mechanism and does decide whether a layer runs, so what governs it is stated rather than inferred. Two decisions — who holds the operator profile, and turning on a trust that stops a layer running — may be PROPOSED by an operator agent and applied only on a person's approval. Three requirements: the approval capability is something the agent cannot read, the approval states what is being changed in values a person can check, and no approver configured means both decisions stay refused. High-volume approvals (tool pins) deliberately stay out. `PERIMETER_VERSION` does not move: no verdict changes |
 | 2.12.0 | 2026-11-01 | Human Approval extended by the federation security hardening pass: three more decisions an operator agent may propose and not apply — who may authenticate to a federation ingress (`federation.peers`), standing a profile's perimeter down to detect-only (`defense.modes`, `enforcement`, `llm_completion` reaching `flag`), and opening a way out of network isolation (`client_egress.hosts`, `egress_upstreams`, `llm_providers`). The last is the widest of the five: a trusted peer has run three layers over its response, while nothing reads a CONNECT tunnel's bytes (known gap 26). Two rules stated rather than left to each rule's author: only WIDENING needs a person, since narrowing only makes the gateway stricter and a gate in front of tightening teaches an operator to click through; and each approval is ONE decision, a write needing two being refused rather than shown as one. `PERIMETER_VERSION` does not move: no verdict changes |
 | 2.13.0 | 2026-11-01 | Stability Tiers: one program with one version meant a break anywhere forced a major bump for everything, so a version number could not say whether the break landed in the defense pipeline or in a feature the operator does not use. Most of the gateway is stable; a named set of surfaces is preview (`src/trentina/stability.py`, `docs/stability.md`), and a break CONFINED to one is a minor. Three rules: a change reaching outside every declared surface is still a major, since "mostly confined" is not confined; a declaration may never soften how THAT release announces its own break, so the test is the version the release would have carried without it and a declaration that lowers it is too late; and a preview surface carries the full test, lint, review and documentation bar, since the tier promises blast radius and not permission to churn. Two surfaces: federation (#592) and `config-api` (#633), the latter being `config_tool`'s action names, arguments and result keys and NOT the `config_guard` rules deciding what a person must approve. Human approval (#637) stays stable on purpose — it is the one gate an operator agent cannot talk its way past, and "we may change how a person authorises a trust pin, in a minor" is the wrong promise to make about it; adding a staged `Kind` or a guard rule needs no surface anyway, being a tightening rather than a break. `PERIMETER_VERSION` does not move: no verdict changes |
+| 2.14.0 | 2026-11-03 | Under constitution v1.29.0 (Security Gateway profile 1.1.0): what the profile forbids is PUBLISHING an image from a workstation, not building one. A local build is a gate the host should run, and `./scripts/gates.sh pr` builds, verifies and scans before the push. The old wording was written when the build needed a gated Hugging Face credential, which went with Prompt Guard 2 (#362); what it left standing was CI building the same image three times per pull request while the inner loop could not build it once. Nothing about what reaches a registry changes: GitHub Actions publishes, and a hand-built image is never pushed, deployed or tagged |

@@ -146,15 +146,16 @@ Then point Claude Code at it:
 ## Development
 
 ```bash
-uv sync --all-extras
-uv run ruff check src tests
-uv run mypy src
-uv run pytest -v
+pre-commit install          # wires the commit, merge and push gates
+./scripts/gates.sh pr       # the container build, verification and scans
 ```
 
-The container image is built by CI, never locally; see `CLAUDE.md`. The demo
-is recorded by [`demo.yml`](.github/workflows/demo.yml); its fixtures are in
-[`docs/demo/`](docs/demo/).
+[CONTRIBUTING.md](CONTRIBUTING.md) is the page for a person: the four tiers,
+what each costs, and what an exit code means. The host needs only `git`,
+`podman`, `pre-commit` and `gh` — every gate runs from a container image. CI
+publishes the image; building one locally is supported and needs no
+credential. The demo is recorded by [`demo.yml`](.github/workflows/demo.yml);
+its fixtures are in [`docs/demo/`](docs/demo/).
 
 ## License
 
