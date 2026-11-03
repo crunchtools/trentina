@@ -48,6 +48,14 @@ _db_path: str = ""
 
 _local = threading.local()
 
+# Every connection sets `PRAGMA busy_timeout=250`: SQLite's default is 0, so any
+# contention raised ``database is locked`` at once (#662).
+
+pending_pins_cached: int | None = None
+"""The pending-pin count ``/health`` reports (#662). Written by the refresher
+``warmup.trentina_lifespan`` owns, read by the probe, which never waits on
+SQLite. None until a refresh succeeds, and again whenever the last one failed."""
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS verdict_cache (
     cache_key TEXT PRIMARY KEY,
@@ -160,6 +168,7 @@ def get_perimeter_db(db_path: str | None = None) -> sqlite3.Connection:
         _db_path = path
         _db.row_factory = sqlite3.Row
         _db.execute("PRAGMA journal_mode=WAL")
+        _db.execute("PRAGMA busy_timeout=250")
         # An existing store from before pins is an upgrade: its tools were
         # already being served, so the first pass pins them as approved. A
         # missing store is not, and holds everything.
@@ -288,6 +297,7 @@ def snapshot_reader(path: str) -> Iterator[None]:
     """
     conn = sqlite3.connect(f"file:{quote(path)}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=250")
     _local.reader = conn
     try:
         yield

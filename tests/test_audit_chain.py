@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from typing import Any
 
@@ -193,3 +194,49 @@ def test_calls_without_a_call_ref_carry_no_digest(db: Any) -> None:
     db.record_gateway_call("p", "web", "t", Outcome.OK.value, 1)
     assert db.get_db().execute("SELECT detections_digest FROM gateway_calls").fetchone()[0] is None
     assert _verify(db)["ok"] is True
+
+
+class TestLostRows:
+    """A failed audit write leaves no break; the loss record is the only signal (#662)."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self, db: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(db, "_lost_pending", 0)
+        monkeypatch.setattr(db, "_lost_reason", "")
+
+    def _flaky(self, db: Any, monkeypatch: pytest.MonkeyPatch, failures: int) -> list[int]:
+        real = db._write_call
+        calls: list[int] = []
+
+        def write(conn: Any, fields: Any) -> Any:
+            calls.append(1)
+            if len(calls) <= failures:
+                raise sqlite3.OperationalError("locking protocol")
+            return real(conn, fields)
+
+        monkeypatch.setattr(db, "_write_call", write)
+        return calls
+
+    def test_two_failures_then_success_writes_one_row(
+        self, db: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._flaky(db, monkeypatch, 2)
+        db.record_gateway_call("p", "web", "t", Outcome.OK.value, 1)
+        assert len(calls) == 3
+        assert db.get_db().execute("SELECT COUNT(*) FROM gateway_calls").fetchone()[0] == 1
+        assert _verify(db)["ok"] is True
+
+    def test_a_row_never_written_reports_incomplete_not_broken(
+        self, db: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db.record_gateway_call("p", "web", "first", Outcome.OK.value, 1)
+        calls = self._flaky(db, monkeypatch, 3)
+        with pytest.raises(sqlite3.OperationalError):
+            db.record_gateway_call("p", "web", "lost", Outcome.OK.value, 1)
+        assert len(calls) == 3
+        db.record_gateway_call("p", "web", "after", Outcome.OK.value, 1)
+
+        report = _verify(db)
+        assert report["first_break"] is None  # the chain is continuous
+        assert report["lost_rows"] == 1
+        assert report["ok"] is False

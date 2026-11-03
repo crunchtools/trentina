@@ -10,6 +10,19 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+
+- `/health` no longer reads SQLite (#662). `pending_pins` comes from a cache a
+  single-flight task refreshes on its own thread, and is `null` until the first
+  refresh succeeds or whenever the last one failed; the probe answers 200 while
+  the loop is alive.
+- Both stores set `PRAGMA busy_timeout=250` on every connection (SQLite's
+  default is 0).
+- An audit write is attempted three times. One that still fails is counted and
+  recorded in the new `audit_losses` table by the next successful write;
+  `audit_verify` reports `lost_rows` and `ok: false` over an intact chain,
+  since a lost row leaves no break.
+
 ## [6.2.0] - 2026-11-02
 
 6.1.0 taught `tool_pins` that a tool can hold more than one definition and that

@@ -200,6 +200,16 @@ def tail_hash(db: sqlite3.Connection) -> str:
     return str(checkpoint[3]) if checkpoint is not None else GENESIS
 
 
+def _lost_rows(db: sqlite3.Connection) -> int:
+    """Audit rows known to have been lost to failed writes (``audit_losses``, #662)."""
+    try:
+        return int(db.execute("SELECT COALESCE(SUM(rows_lost), 0) FROM audit_losses").fetchone()[0])
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):  # a database from before the table
+            return 0
+        raise
+
+
 def verify(
     db: sqlite3.Connection, *, ttl_seconds: float, now: float | None = None
 ) -> dict[str, Any]:
@@ -213,7 +223,9 @@ def verify(
 
     Returns:
         ``ok``, ``checked`` (rows walked), ``first_break`` (None, or the row
-        ``id`` and a closed ``reason``), ``detections_expired`` (calls whose
+        ``id`` and a closed ``reason``), ``lost_rows`` (rows known lost to
+        failed writes; non-zero makes ``ok`` false with the chain intact),
+        ``detections_expired`` (calls whose
         detection rows are gone past the TTL: noted, not a break) and the
         ``checkpoint`` the walk started from.
     """
@@ -227,7 +239,12 @@ def verify(
         "first_break": None,
         "detections_expired": 0,
         "checkpoint": {"kind": kind, "last_id": last_id},
+        "lost_rows": _lost_rows(db),
     }
+    if report["lost_rows"]:
+        # The chain can hold and the record still be short: a lost row leaves
+        # no break, so this is the only signal (#662).
+        report["ok"] = False
     # Rows at or below the genesis checkpoint predate the chain and carry no hash.
     rows = db.execute(_ROWS_SQL, (max(last_id, genesis_last),))
     names = [column[0] for column in rows.description]
