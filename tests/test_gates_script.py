@@ -178,6 +178,7 @@ def test_a_cpu_budget_that_is_not_a_sane_count_cannot_run(gates: Harness, value:
 @pytest.mark.parametrize("value", ["1", "2", "1024"])
 def test_a_cpu_budget_at_the_boundaries_is_accepted(gates: Harness, value: str) -> None:
     result = gates.run("hooks-installed", TRENTINA_GATES_CPUS=value)
+    assert result.returncode != CANNOT_RUN, gates.said(result)
     assert "TRENTINA_GATES_CPUS" not in gates.said(result)
 
 
@@ -191,6 +192,7 @@ def test_a_memory_ceiling_that_is_not_a_size_cannot_run(gates: Harness, value: s
 @pytest.mark.parametrize("value", ["8g", "4096m", "512k", "16G"])
 def test_a_memory_ceiling_that_is_a_size_is_accepted(gates: Harness, value: str) -> None:
     result = gates.run("hooks-installed", TRENTINA_GATES_MEMORY=value)
+    assert result.returncode != CANNOT_RUN, gates.said(result)
     assert "TRENTINA_GATES_MEMORY" not in gates.said(result)
 
 
@@ -221,4 +223,9 @@ def test_an_explicitly_empty_knob_takes_the_default(gates: Harness, knob: str) -
     then fail for no reason a reader could see.
     """
     result = gates.run("hooks-installed", **{knob: ""})
+    # Exit 2 is this script's "could not run", which is what validation
+    # raises. Asserting it is NOT 2 says exactly "validation did not refuse
+    # this" -- where the absence of the knob's name alone is also satisfied by
+    # any other way of failing.
+    assert result.returncode != CANNOT_RUN, gates.said(result)
     assert knob not in gates.said(result)
