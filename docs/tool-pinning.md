@@ -108,7 +108,7 @@ because forty-nine of them arrived together.
 `inputSchema` is in that set because the compressor rewrites the descriptions
 **inside** a schema as well as the tool's own
 (`compress._compressed_properties`) — which is why a re-compression reports
-`description,inputSchema` on hundreds of tools at once, 278 of breetai's 582.
+`description,inputSchema` on hundreds of tools at once, 278 of one gateway's 582.
 What keeps that honest is the third gate: **a schema may differ from the
 approved one only in its descriptions.** Both are compared with every
 `description` annotation taken out, and anything else that moved refuses the

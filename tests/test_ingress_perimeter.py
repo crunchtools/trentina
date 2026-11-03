@@ -1076,7 +1076,7 @@ class TestPerCallMode:
 
 
 class TestToolDescriptionBriefing:
-    """Descriptions describe invoking tools; L3 is told so (lotor, 0.32.0)."""
+    """Descriptions describe invoking tools; L3 is told so (peergw, 0.32.0)."""
 
     async def test_l3_is_briefed_that_this_is_a_tool_definition(self) -> None:
         from trentina.gateway.tool_list_edge import TOOL_BRIEFING

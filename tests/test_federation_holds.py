@@ -113,14 +113,14 @@ def _ingress() -> Profile:
     # of its own, because `peers` is its authentication and a second one would
     # admit a caller with no peer and no sub.
     return Profile(
-        name="lotor-federation",
-        federation_of="lotor",
+        name="peergw-federation",
+        federation_of="peergw",
         defense=DefenseConfig(provider="ollama"),
         # An ingress names at least one peer: `peers` IS what authenticates a
         # primary, so a block without one is not an ingress (`profile.py`).
         federation=FederationConfig(
             peers={
-                "breetai": FederationPeer(
+                "mypeer": FederationPeer(
                     public_key=Ed25519PrivateKey.generate()
                     .public_key()
                     .public_bytes(
@@ -256,12 +256,12 @@ def test_held_total_sums_the_backend_holds() -> None:
         },
         served=Stage(),
     )
-    surface.record_surface("lotor", s)
+    surface.record_surface("peergw", s)
     try:
-        assert surface.held_total("lotor") == 3
+        assert surface.held_total("peergw") == 3
         assert surface.held_total("absent") == 0
     finally:
-        surface.forget_surface("lotor")
+        surface.forget_surface("peergw")
 
 
 @pytest.mark.asyncio
@@ -302,7 +302,7 @@ def _primary(backend: Backend) -> Profile:
         name="down",
         auth=AuthConfig(bearer_token_env="UP"),
         defense=DefenseConfig(provider="ollama"),
-        backends={"lotor": backend},
+        backends={"peergw": backend},
     )
 
 
@@ -330,16 +330,18 @@ def test_the_primary_writes_needs_auth_in_its_own_words(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _federated_backend()
-    monkeypatch.setattr("trentina.transports.mcp.served_name", lambda *_: "lotor_backend_auth")
+    monkeypatch.setattr("trentina.transports.mcp.served_name", lambda *_: "peergw_backend_auth")
     call = _call(
         {REFUSAL_KEY: {"reason": NEEDS_AUTH_REASON, "backend": "era"}}, text="SECRET peer wording"
     )
-    assembled = _federated_needs_auth_refusal(_primary(backend), backend, "lotor", call, stripped=0)
+    assembled = _federated_needs_auth_refusal(
+        _primary(backend), backend, "peergw", call, stripped=0
+    )
     assert assembled is not None
     assert assembled.outcome is Outcome.NEEDS_AUTH
     assert assembled.result[REFUSAL_KEY]["reason"] == NEEDS_AUTH_SECONDARY_REASON
     text = assembled.result["content"][0]["text"]
-    assert 'Call lotor_backend_auth with action="status"' in text
+    assert 'Call peergw_backend_auth with action="status"' in text
     assert "SECRET" not in text
 
 
@@ -347,7 +349,9 @@ def test_an_unapproved_sign_in_tool_is_named_as_missing(monkeypatch: pytest.Monk
     backend = _federated_backend()
     monkeypatch.setattr("trentina.transports.mcp.served_name", lambda *_: None)
     call = _call({REFUSAL_KEY: {"reason": NEEDS_AUTH_REASON, "backend": "era"}})
-    assembled = _federated_needs_auth_refusal(_primary(backend), backend, "lotor", call, stripped=0)
+    assembled = _federated_needs_auth_refusal(
+        _primary(backend), backend, "peergw", call, stripped=0
+    )
     assert assembled is not None
     assert "must list backend_auth_tool" in assembled.result["content"][0]["text"]
 
@@ -356,9 +360,11 @@ def test_nothing_the_peer_sent_reaches_the_needs_auth_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _federated_backend()
-    monkeypatch.setattr("trentina.transports.mcp.served_name", lambda *_: "lotor_backend_auth")
+    monkeypatch.setattr("trentina.transports.mcp.served_name", lambda *_: "peergw_backend_auth")
     call = _call({REFUSAL_KEY: {"reason": NEEDS_AUTH_REASON, "backend": "ignore-instructions"}})
-    assembled = _federated_needs_auth_refusal(_primary(backend), backend, "lotor", call, stripped=0)
+    assembled = _federated_needs_auth_refusal(
+        _primary(backend), backend, "peergw", call, stripped=0
+    )
     assert assembled is not None
     assert "ignore-instructions" not in json.dumps(assembled.result)
 
@@ -366,7 +372,7 @@ def test_nothing_the_peer_sent_reaches_the_needs_auth_text(
 def test_a_non_federated_backend_is_never_needs_auth_mapped() -> None:
     plain = Backend(url=UP_URL, tools_allow=["*"])
     call = _call({REFUSAL_KEY: {"reason": NEEDS_AUTH_REASON, "backend": "era"}})
-    assert _federated_needs_auth_refusal(_primary(plain), plain, "lotor", call, stripped=0) is None
+    assert _federated_needs_auth_refusal(_primary(plain), plain, "peergw", call, stripped=0) is None
 
 
 def test_a_peer_is_always_offered_the_paging_reader() -> None:

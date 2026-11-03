@@ -402,7 +402,7 @@ def duplicate_keys(raw_text: str) -> list[tuple[str, int]]:
 
     ``yaml.safe_load`` keeps the LAST of a repeated key and reports nothing, so
     by the time there is data to inspect the evidence is gone. One of mine
-    reached production: lotor's ``josui`` carried ``defense:`` twice, the
+    reached production: its ``josui`` carried ``defense:`` twice, the
     gateway ran the second, and the comment on the first explained a block that
     had already lost. They happened to agree. Nothing would have said so if
     they had not — not the loader, not ``profile_lint``, not a pre-flight.

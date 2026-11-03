@@ -154,7 +154,7 @@ agent reads was already judged, so the verdict cache is untouched and enabling
 it re-judges nothing. It is on by default; `compact_schemas: false` on a
 backend turns it off.
 
-Measured on the lotor tool cache (800 tools, 26 backends): 519k → 461k schema
+Measured on the production tool cache (800 tools, 26 backends): 519k → 461k schema
 characters, 11%, about 15k tokens.
 
 Since 0.38.0 the same step drops three fields no agent reads: `outputSchema`

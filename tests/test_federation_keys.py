@@ -24,7 +24,7 @@ from trentina.gateway.federation_keys import (
     verify_primary_jwt,
 )
 
-AUD = "lotor-fed"
+AUD = "peergw-fed"
 
 
 def _keypair() -> tuple[Ed25519PrivateKey, object]:
@@ -49,8 +49,8 @@ def _craft(priv: Ed25519PrivateKey, header: dict[str, object], claims: dict[str,
 def test_round_trip() -> None:
     priv, pub = _keypair()
     token = sign_primary_jwt(priv, sub="josui", aud=AUD, now=1000)
-    actor, sub = verify_primary_jwt(token, {"breetai": pub}, aud=AUD, now=1005)
-    assert actor == "breetai"
+    actor, sub = verify_primary_jwt(token, {"mypeer": pub}, aud=AUD, now=1005)
+    assert actor == "mypeer"
     assert sub == "josui"
 
 
@@ -58,8 +58,8 @@ def test_the_right_peer_is_named_among_several() -> None:
     a_priv, a_pub = _keypair()
     _, b_pub = _keypair()
     token = sign_primary_jwt(a_priv, sub="josui", aud=AUD, now=1000)
-    actor, _ = verify_primary_jwt(token, {"other": b_pub, "breetai": a_pub}, aud=AUD, now=1000)
-    assert actor == "breetai"
+    actor, _ = verify_primary_jwt(token, {"other": b_pub, "mypeer": a_pub}, aud=AUD, now=1000)
+    assert actor == "mypeer"
 
 
 def test_pem_round_trip() -> None:

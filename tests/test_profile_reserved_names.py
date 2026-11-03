@@ -2,9 +2,9 @@
 
 `role: operator` says what a profile may do. A profile *named* `operator` says
 nothing and reads as though it did — and both turn up in the same sentences:
-"the operator profile", "an operator reload", `/gateway/operator/mcp`. lotor had
+"the operator profile", "an operator reload", `/gateway/operator/mcp`. peergw had
 exactly that profile, and the ambiguity was not theoretical: it took a side-by-
-side comparison to establish that lotor's `josui` is an agent and the operator
+side comparison to establish that peergw's `josui` is an agent and the operator
 is a different profile entirely, because every sentence about it could be read
 either way.
 

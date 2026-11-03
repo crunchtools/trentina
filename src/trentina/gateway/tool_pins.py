@@ -159,7 +159,7 @@ def _schema_shape_changed(old: dict[str, Any] | None, new: dict[str, Any]) -> bo
     compressor rewrites the DESCRIPTIONS inside a schema as well as the tool's
     own (``compress._compressed_properties``), which is why a re-compression
     reports ``description,inputSchema`` on hundreds of tools at once — 278 of
-    breetai's 582. Those strings are the ONLY thing it touches, so the test is
+    one gateway's 582. Those strings are the ONLY thing it touches, so the test is
     equality once they are taken out: anything else that moved is the backend's
     doing and goes in front of a person.
 

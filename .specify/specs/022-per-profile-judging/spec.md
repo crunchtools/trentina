@@ -62,7 +62,7 @@ right; the reasoning behind it was sloppy. Taking the candidates apart:
 - **Cache invalidation is not a break.** `PERIMETER_VERSION` has been bumped
   twenty times and `tool_list_edge.py` treats the cold start as a routine
   documented cost. The first boot re-judges and re-compresses each profile's
-  descriptions — on lotor, 1,456 across 9 profiles, with 10 extra list fetches
+  descriptions — in production, 1,456 across 9 profiles, with 10 extra list fetches
   (26 distinct URLs becoming 36 partitions). Measured, not estimated.
 - **The keyless-profile LOAD ERROR is gone.** It was this draft's main reason
   for a major and it was never part of what Scott asked for. Such a profile is
@@ -151,7 +151,7 @@ is more correct and is asserted in a test rather than left as a side effect.
       `config_tool`'s `no_llm_key`, and ollama stays exempt.
 - [ ] The `tool_compressions` migration: an old-schema database opens, and the
       pre-migration rows are not served to any profile.
-- [ ] A cold-start cost measurement on a lotor-shaped config (9 profiles, 1,456
+- [ ] A cold-start cost measurement on a production-shaped config (9 profiles, 1,456
       descriptions, several shared backends), recorded in the PR so the
       regression is known rather than discovered in production.
 

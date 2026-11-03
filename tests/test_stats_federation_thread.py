@@ -73,7 +73,7 @@ profiles:
     federation:
       secondary_key_env: TEST_SIGNING_KEY
       peers:
-        breetai:
+        mypeer:
           public_key: |
 {_PEM_BLOCK}
     backends:

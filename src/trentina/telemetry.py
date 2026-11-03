@@ -118,7 +118,7 @@ class JsonLineWriter:
     backpressured stderr can never stall a gateway call; a full queue drops the
     record and counts it on ``dropped``. A daemon thread drains the queue to the
     stream, one JSON line per record, for a structured-log collector (journald
-    -> the lotor syslog collector) to pick up.
+    -> a syslog collector) to pick up.
     """
 
     def __init__(self, stream: TextIO | None = None, maxsize: int = TELEMETRY_QUEUE_MAX) -> None:

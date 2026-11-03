@@ -352,7 +352,7 @@ one does; the rest name the benchmark that measured them.
    and without L1's counts, L3's verdicts differed on 13 of 241 payloads in
    both directions, inside its own run-to-run noise.
 9. **L2 flags SSH `authorized_keys` lines** whatever their key: `ssh-rsa
-   ops@lotor` alone scores 0.97 with the default model, and the same line
+   ops@example` alone scores 0.97 with the default model, and the same line
    with its key labelled scores 0.92 (2026-10-04). Horizon reads the shape as
    key planting. Block mode refuses a response that is little else; in a
    longer document the line is diluted (two such lines scored 0.62).

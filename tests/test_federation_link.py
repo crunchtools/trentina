@@ -57,7 +57,7 @@ def _profile(**over: Any) -> Profile:
     base: dict[str, Any] = {
         "name": "josui",
         "auth": AuthConfig(bearer_token_env="JOSUI_TOKEN"),
-        "federation": FederationConfig(peers={"breetai": FederationPeer(public_key=_public_pem())}),
+        "federation": FederationConfig(peers={"mypeer": FederationPeer(public_key=_public_pem())}),
         "backends": {"wiki": Backend(url="https://wiki.example/mcp", tools_allow=["*"])},
     }
     base.update(over)
@@ -351,7 +351,7 @@ def test_the_loader_serves_an_ingress_nobody_wrote(tmp_path: pathlib.Path) -> No
         {
             "josui": {
                 **_BASE_PROFILE,
-                "federation": {"peers": {"breetai": {"public_key": _public_pem()}}},
+                "federation": {"peers": {"mypeer": {"public_key": _public_pem()}}},
             }
         },
     )
@@ -403,11 +403,11 @@ def test_a_profile_may_share_itself_and_consume_a_peer(tmp_path: pathlib.Path) -
         {
             "josui": {
                 **_BASE_PROFILE,
-                "federation": {"peers": {"breetai": {"public_key": _public_pem()}}},
+                "federation": {"peers": {"mypeer": {"public_key": _public_pem()}}},
                 "backends": {
                     "wiki": {"url": "https://wiki.example/mcp", "tools_allow": ["*"]},
-                    "lotor": {
-                        "url": "https://lotor.example/gateway/x-federation/mcp",
+                    "peergw": {
+                        "url": "https://peergw.example/gateway/x-federation/mcp",
                         "tools_allow": ["*"],
                         "federated": {"primary_key_env": "PRIMARY_KEY"},
                     },
@@ -418,5 +418,5 @@ def test_a_profile_may_share_itself_and_consume_a_peer(tmp_path: pathlib.Path) -
 
     profiles = load_profiles(path).profiles
 
-    assert "lotor" in profiles["josui"].backends
+    assert "peergw" in profiles["josui"].backends
     assert set(profiles["josui-federation"].backends) == {"wiki", "trentina"}

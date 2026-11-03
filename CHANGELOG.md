@@ -96,7 +96,7 @@ something from the operator's judge.
   model changed.** `reload_profiles` decided staleness from whether the
   operator's judge had moved and then invalidated every profile's aggregate,
   which was right while the operator judged for everyone and became
-  over-invalidation in 6.1.0 — on a lotor-shaped config, 1,456 descriptions
+  over-invalidation in 6.1.0 — on a production-shaped config, 1,456 descriptions
   re-judged on nine profiles' own keys because one unrelated profile changed
   model. It also pushed `notifications/tools/list_changed` to every session.
   A profile's judge can only move by a change to its own `defense`, which a
@@ -148,7 +148,7 @@ stops loading. Two operational notes:
    description, once per profile.** The verdict and compression keys now carry
    the owner, and `PERIMETER_VERSION` moves to `22`, so the stored rows sweep
    on startup. The warm-up paces this and the gateway serves throughout, but it
-   costs real model calls once — on lotor, 1,456 descriptions across 9
+   costs real model calls once — in production, 1,456 descriptions across 9
    profiles. The cached tool lists are rebuilt too, which costs one extra fetch
    per profile sharing a backend and no model calls.
 2. **A federated peer must re-pin.** `PERIMETER_VERSION` is part of
@@ -711,7 +711,7 @@ breaking changes outside it as well.
   nothing could start its sign-in. `backend_auth_tool` is now allowed on an
   ingress when its internal backend lists it; it acts only on that profile's
   own backends. On the primary it is served with the peer's tag, for example
-  `lotor_backend_auth`.
+  `peergw_backend_auth`.
 
 ### Fixed
 
@@ -1133,7 +1133,7 @@ so the two gateways can be migrated one at a time instead of together. A
 
 - **The default L2 model is now `prompt-injection-guard-small-ct`, Horizon's `prompt-injection-guard-small` fine-tuned on benign tool replies (#17).** Horizon refused about 150 ordinary tool replies a day (feed entries, Metsuke sweep pages, Nagios rollups, issue lists), L3 agreeing with 6 in a week, and it halted the weekend report. The fine-tune is trained by `l2-train` on a RunPod RTX 4090 (`scripts/runpod_train.py`; GHA run 40311268794) from pinned public sets (#17 lab log in `docs/benchmark.md`), gated there and in the image build, and pulled by digest from `ghcr.io/crunchtools/trentina-l2-model`; NOTICE and `training.json` ship beside it. At its threshold of 0.5, against Horizon at 0.7, on production replies screened locally: sweep pages 0 of 8 flagged (2), sweep records 3 of 276 (16), Miniflux entries 1 of 65 (3); internal attacks caught 43 of 44 (41), hijacking attacks 103 of 128 (80). Known gaps 19 (logs) and 28 (meeting notes with bare links) close and their shapes are gated; gap 31 narrows. **Gap 21 inverts:** attacks in base32, Ascii85, base85, UU, Braille or Morse, which the unpack stage does not decode, now reach L3 alone (1 to 21 of 44 caught by L2, against 37 to 44 when Horizon flagged anything encoded); shipped with the gap open by decision, decoders to follow. Horizon leaves the image, so rolling back is the previous image digest, not `CLASSIFIER_MODEL`. The model change sweeps cached verdicts, as any model change does.
 
-- **BREAKING (major): the three terminating proxy routes are renamed to the `/proxy/*` family (#511).** `/egress/{upstream}/{path}` → `/proxy/http/{upstream}/{path}`, `/git/{remote}/…` → `/proxy/git/{remote}/…`, `/llm/{provider}/…` → `/proxy/llm/{provider}/…`. The old paths now 404. The `/egress` route's audit `backend` prefix is aligned to the family: `egress:<name>` → `http:<name>` (`git:`/`llm:` unchanged); `DestinationKind.EGRESS` is unchanged. The CONNECT tunnel keeps its own `--egress-port` listener and name (it is a forward proxy with no request path). Cutover is lockstep with the deploy: `profiles.yaml` on lotor, any agent base URL, and the constitution instance table must point at `/proxy/*` before the new image serves, or those clients 404. This is also the culmination of the #511 convergence — all five agent-originated outbound paths now share `gateway/upstream.py` (the operator-origin network leg, pinned+pooled) and `gateway/relay.Operation` (the one call lifecycle and audit row).
+- **BREAKING (major): the three terminating proxy routes are renamed to the `/proxy/*` family (#511).** `/egress/{upstream}/{path}` → `/proxy/http/{upstream}/{path}`, `/git/{remote}/…` → `/proxy/git/{remote}/…`, `/llm/{provider}/…` → `/proxy/llm/{provider}/…`. The old paths now 404. The `/egress` route's audit `backend` prefix is aligned to the family: `egress:<name>` → `http:<name>` (`git:`/`llm:` unchanged); `DestinationKind.EGRESS` is unchanged. The CONNECT tunnel keeps its own `--egress-port` listener and name (it is a forward proxy with no request path). Cutover is lockstep with the deploy: the production `profiles.yaml`, any agent base URL, and the constitution instance table must point at `/proxy/*` before the new image serves, or those clients 404. This is also the culmination of the #511 convergence — all five agent-originated outbound paths now share `gateway/upstream.py` (the operator-origin network leg, pinned+pooled) and `gateway/relay.Operation` (the one call lifecycle and audit row).
 
 ### Added
 
@@ -3708,7 +3708,7 @@ The modes take OpenRouter's names: Flag, Redact, Block (#200).
 
 ### Fixed
 - **The mode instructions read as three modes, not four.** warn's text
-  carried its own semicolon, the separator between modes, so on lotor it
+  carried its own semicolon, the separator between modes, so in production it
   split into two clauses and clean's "instead" attached to warn.
 
 ## [0.34.0] - 2026-09-24
@@ -3732,14 +3732,14 @@ The modes take OpenRouter's names: Flag, Redact, Block (#200).
 - **Served inputSchemas are compacted, tighten-only** (#199): the pydantic
   null branch, stray null defaults and `$schema` are dropped after the
   perimeter scan, so no verdict changes. About 15k tokens across 800 tools on
-  lotor. `compact_schemas: false` opts a backend out.
+  one production gateway. `compact_schemas: false` opts a backend out.
 
 ## [0.32.1] - 2026-09-24
 
 ### Fixed
 - **L3 is briefed that a tool definition describes invoking a tool.** With
   0.32.0 moving four profiles to a `block` default, L3's `tool_invocation`
-  false positives on descriptions (15 on lotor, L2 ≤ 0.004, L1 clean) became
+  false positives on descriptions (15 in production, L2 ≤ 0.004, L1 clean) became
   withheld tools: `jira_create_issue`, GitHub `list_issues_tool`, and our own
   `fetch_tool` among them. Only cached verdicts L3 flagged before the
   briefing are judged again; clean verdicts stand, so there is no cold-start
@@ -4011,7 +4011,7 @@ this is that release.
   accepted-and-ignored since 0.12.0 and is now rejected by `extra="forbid"`.
 
   A profile still carrying any of these now FAILS TO LOAD, which is loud and
-  recoverable — the alternative was migrating it forever. lotor's
+  recoverable — the alternative was migrating it forever. Production's
   `/etc/trentina/profiles.yaml` was migrated off all of them on 2026-09-23.
 
 ## [0.28.0] - 2026-09-23
@@ -4100,7 +4100,7 @@ this is that release.
   `TRENTINA_LOG_LEVEL=WARNING`, then logged the sweeper's start at INFO — so
   the one line answering "is anything actually removing these records?" was
   discarded on the only box where the question gets asked. Found while
-  verifying the 0.27.2 deploy on lotor, where there was no other way to tell.
+  verifying the 0.27.2 deploy in production, where there was no other way to tell.
 
 ## [0.27.2] - 2026-09-23
 

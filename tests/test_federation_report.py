@@ -41,7 +41,7 @@ PEER_PEM = (
 
 
 def _profile(*, signs: bool = True, with_oauth_backend: bool = True) -> Profile:
-    federation = FederationConfig(peers={"breetai": FederationPeer(public_key=PEER_PEM)})
+    federation = FederationConfig(peers={"mypeer": FederationPeer(public_key=PEER_PEM)})
     if signs:
         federation.secondary_key = SecretStr(
             Ed25519PrivateKey.generate()
@@ -73,8 +73,8 @@ def _consumer(*, pinned: bool) -> Profile:
         name="down",
         auth=AuthConfig(bearer_token_env="DOWN_TOKEN"),
         backends={
-            "lotor": Backend(
-                url="https://lotor.example/gateway/josui-federation/mcp",
+            "peergw": Backend(
+                url="https://peergw.example/gateway/josui-federation/mcp",
                 tools_allow=["*"],
                 federated=federated,
             )
@@ -91,7 +91,7 @@ class TestWhatAmISharing:
 
         assert shared["profile"] == "josui"
         assert shared["ingress"] == "josui-federation"
-        assert shared["peers"] == [{"peer": "breetai", "key": key_fingerprint(PEER_PEM)}]
+        assert shared["peers"] == [{"peer": "mypeer", "key": key_fingerprint(PEER_PEM)}]
 
     def test_it_says_which_backends_cross_and_which_use_the_sign_in(self) -> None:
         """A derived ingress spends the PROFILE's grant, so `uses_sign_in` is where
@@ -135,13 +135,13 @@ class TestIsThePinBuyingAnything:
 
         assert consumed["audience"] == "josui-federation"
         assert consumed["trust_pinned"] is True
-        assert "lotor.example" not in repr(report)
+        assert "peergw.example" not in repr(report)
 
     def test_a_pin_that_has_stopped_matching_is_visible(self) -> None:
         """The number an operator cannot otherwise read. A pin that matches
         nothing keeps working and keeps costing a full local re-judge, and the
         only trace is the reason in these rows."""
-        verdicts = {"down.lotor": {"hash_mismatch": 41, "stale": 1}}
+        verdicts = {"down.peergw": {"hash_mismatch": 41, "stale": 1}}
 
         (consumed,) = link_report({"down": _consumer(pinned=True)}, verdicts)["consumed"]
 
@@ -151,7 +151,7 @@ class TestIsThePinBuyingAnything:
     def test_a_working_pin_has_no_rejudged_reason(self) -> None:
         """`incomplete` is not a failure: the assertion was fine, the secondary
         just could not fully read the content, so it is not reported as one."""
-        verdicts = {"down.lotor": {"trusted": 900, "incomplete": 3}}
+        verdicts = {"down.peergw": {"trusted": 900, "incomplete": 3}}
 
         (consumed,) = link_report({"down": _consumer(pinned=True)}, verdicts)["consumed"]
 
@@ -180,7 +180,7 @@ def test_both_directions_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
     report = link_report(profiles, {})
 
     assert [s["profile"] for s in report["shared"]] == ["josui"]
-    assert [c["backend"] for c in report["consumed"]] == ["lotor"]
+    assert [c["backend"] for c in report["consumed"]] == ["peergw"]
 
 
 class TestSharedJudge:
@@ -225,7 +225,7 @@ class TestHeldForApproval:
     def test_the_consumed_count_is_its_own_backends(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "trentina.gateway.tool_pins.pending",
-            lambda url: [{"tool": "a"}, {"tool": "b"}] if "lotor.example" in url else [],
+            lambda url: [{"tool": "a"}, {"tool": "b"}] if "peergw.example" in url else [],
         )
 
         (consumed,) = link_report({"down": _consumer(pinned=True)}, {})["consumed"]

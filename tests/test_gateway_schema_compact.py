@@ -17,7 +17,7 @@ from trentina.gateway.profile import AuthConfig, Backend, Profile
 from trentina.gateway.schema_compact import MAX_DEPTH, compact_tool
 from trentina.transports.mcp import route_jsonrpc
 
-# Shapes taken from the lotor tool_list_cache: FastMCP (gw), jira, memory.
+# Shapes taken from the peergw tool_list_cache: FastMCP (gw), jira, memory.
 GW_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "properties": {

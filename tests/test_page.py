@@ -30,7 +30,7 @@ class TestTheHostIsReadBack:
     @pytest.mark.parametrize(
         ("sent", "shown"),
         [
-            ("trentina-breetai.crunchtools.com", "trentina-breetai.crunchtools.com"),
+            ("trentina-mypeer.crunchtools.com", "trentina-mypeer.crunchtools.com"),
             ("gw.example:8019", "gw.example"),
             ("GW.Example", "gw.example"),
             ("localhost", "localhost"),

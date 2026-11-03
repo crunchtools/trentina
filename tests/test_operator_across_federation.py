@@ -64,7 +64,7 @@ profiles:
     federation:
       secondary_key_env: TEST_SIGNING_KEY
       peers:
-        breetai:
+        mypeer:
           public_key: |
 {_PEM_BLOCK}
     backends:
@@ -83,7 +83,7 @@ def _shared_operator() -> Profile:
         role="operator",
         auth=AuthConfig(bearer_token_env="TOK"),
         defense=DefenseConfig(provider="ollama"),
-        federation=FederationConfig(peers={"breetai": FederationPeer(public_key=PEER_PEM)}),
+        federation=FederationConfig(peers={"mypeer": FederationPeer(public_key=PEER_PEM)}),
         backends={
             "wiki": Backend(url="https://wiki.example/mcp", tools_allow=["*"]),
             "web": Backend(
@@ -215,7 +215,7 @@ class TestTheRegistryLevelSecondOpinion:
             role=role,
             auth=AuthConfig(bearer_token_env="TOK"),
             defense=DefenseConfig(provider="ollama"),
-            federation=FederationConfig(peers={"breetai": FederationPeer(public_key=PEER_PEM)}),
+            federation=FederationConfig(peers={"mypeer": FederationPeer(public_key=PEER_PEM)}),
             backends={
                 "wiki": Backend(url="https://wiki.example/mcp", tools_allow=["*"]),
                 "web": Backend(url="internal://web", tools_allow=source_tools),

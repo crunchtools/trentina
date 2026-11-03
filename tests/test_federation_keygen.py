@@ -37,7 +37,7 @@ pytestmark = pytest.mark.anyio
 
 PRIVATE_MARKER = "-----BEGIN PRIVATE KEY-----"
 
-SECONDARY = "https://lotor.example/gateway/fed-breetai/mcp"
+SECONDARY = "https://peergw.example/gateway/fed-mypeer/mcp"
 
 #: A peer's public half, which the model validates as a real Ed25519 PEM.
 PEER_PUBLIC_KEY = (
@@ -59,7 +59,7 @@ profiles:
     auth:
       bearer_token_env: EDGE_TOKEN
     backends:
-      lotor:
+      peergw:
         url: "{url}"
         tools_allow: ["*"]
         federated:
@@ -80,26 +80,26 @@ class TestMinting:
     """No ActiveConfig is registered, so the caller is the standalone operator."""
 
     async def test_it_returns_a_loadable_public_key(self, data_dir: pathlib.Path) -> None:
-        result = await federation_keygen("primary-to-lotor")
-        assert result["key"] == "primary-to-lotor"
+        result = await federation_keygen("primary-to-peergw")
+        assert result["key"] == "primary-to-peergw"
         load_public_key(result["public_key"])  # raises FederationKeyError if it is not one
 
     async def test_the_public_key_belongs_to_the_private_key(self, data_dir: pathlib.Path) -> None:
         """The returned half must actually verify what the stored half signs —
         otherwise the peer pins a key that can never authenticate this link."""
-        result = await federation_keygen("primary-to-lotor")
-        private = load_private_key(key_path("primary-to-lotor").read_text(encoding="utf-8"))
+        result = await federation_keygen("primary-to-peergw")
+        private = load_private_key(key_path("primary-to-peergw").read_text(encoding="utf-8"))
         payload = b"a federated request"
         assert verify(load_public_key(result["public_key"]), sign(private, payload), payload)
 
     async def test_the_private_half_never_comes_back(self, data_dir: pathlib.Path) -> None:
-        result = await federation_keygen("primary-to-lotor")
+        result = await federation_keygen("primary-to-peergw")
         assert PRIVATE_MARKER not in str(result)
         assert set(result) == {"key", "public_key"}
 
     async def test_the_key_and_its_directory_are_private(self, data_dir: pathlib.Path) -> None:
-        await federation_keygen("primary-to-lotor")
-        path = key_path("primary-to-lotor")
+        await federation_keygen("primary-to-peergw")
+        path = key_path("primary-to-peergw")
         assert path.read_text(encoding="utf-8").startswith(PRIVATE_MARKER)
         assert os.stat(path).st_mode & 0o777 == KEY_FILE_MODE
         assert os.stat(path.parent).st_mode & 0o777 == KEY_DIR_MODE
@@ -114,29 +114,29 @@ class TestMinting:
         finally:
             os.umask(previous)
 
-        await federation_keygen("primary-to-lotor")
+        await federation_keygen("primary-to-peergw")
 
         assert os.stat(loose).st_mode & 0o777 == KEY_DIR_MODE
 
     async def test_no_file_tool_can_read_the_key(self, data_dir: pathlib.Path) -> None:
         """The keys sit under the gateway's own data directory, which
         ``confine`` refuses to read_tool and dir_tool alike."""
-        await federation_keygen("primary-to-lotor")
+        await federation_keygen("primary-to-peergw")
         with pytest.raises(FileReadError):
-            confine(str(key_path("primary-to-lotor")))
+            confine(str(key_path("primary-to-peergw")))
 
 
 class TestWrittenOnce:
     async def test_a_second_mint_of_one_name_is_refused(self, data_dir: pathlib.Path) -> None:
-        first = await federation_keygen("primary-to-lotor")
-        stored = key_path("primary-to-lotor").read_text(encoding="utf-8")
+        first = await federation_keygen("primary-to-peergw")
+        stored = key_path("primary-to-peergw").read_text(encoding="utf-8")
 
-        second = await federation_keygen("primary-to-lotor")
+        second = await federation_keygen("primary-to-peergw")
 
         assert "already exists" in second["error"]
         assert "public_key" not in second
         # The live key is untouched: rotating under a running link would break it.
-        assert key_path("primary-to-lotor").read_text(encoding="utf-8") == stored
+        assert key_path("primary-to-peergw").read_text(encoding="utf-8") == stored
         assert load_public_key(first["public_key"])
 
 
@@ -146,7 +146,7 @@ class TestNames:
         [
             "Edge",  # uppercase
             "9edge",  # leading digit
-            "edge_to_lotor",  # underscore: a backend name has none either
+            "edge_to_peergw",  # underscore: a backend name has none either
             "edge/../escape",  # traversal
             "edge.pem",  # a dot would make the suffix ambiguous
             "",
@@ -176,7 +176,7 @@ class TestScope:
             {"name": "ag", "auth": {"bearer_token_env": "A"}, "backends": {}}
         )
         with profile_context(agent):
-            result = await federation_keygen("primary-to-lotor")
+            result = await federation_keygen("primary-to-peergw")
         assert "operator" in result["error"].lower()
         assert not (data_dir / "keys").exists()
 
@@ -192,18 +192,18 @@ class TestKeyByName:
         path = tmp_path / "profiles.yaml"
         path.write_text(
             FED_YAML.format(
-                url=SECONDARY, key_field="primary_key_name", key_value="primary-to-lotor"
+                url=SECONDARY, key_field="primary_key_name", key_value="primary-to-peergw"
             ),
             encoding="utf-8",
         )
         return path
 
     def test_a_named_key_resolves_to_its_pem(self, fed_config: pathlib.Path) -> None:
-        key_store.mint("primary-to-lotor")
+        key_store.mint("primary-to-peergw")
 
         config = load_profiles(fed_config)
 
-        fed = config.profiles["primary"].backends["lotor"].federated
+        fed = config.profiles["primary"].backends["peergw"].federated
         assert fed is not None and fed.primary_key is not None
         load_private_key(fed.primary_key.get_secret_value())
 
@@ -215,16 +215,16 @@ class TestKeyByName:
         with pytest.raises(ProfileConfigError, match="has not minted"):
             load_profiles(fed_config)
 
-        key_store.mint("primary-to-lotor")
+        key_store.mint("primary-to-peergw")
 
-        fed = load_profiles(fed_config).profiles["primary"].backends["lotor"].federated
+        fed = load_profiles(fed_config).profiles["primary"].backends["peergw"].federated
         assert fed is not None and fed.primary_key is not None
 
     async def test_reload_profiles_picks_up_a_newly_minted_key(
         self, fed_config: pathlib.Path
     ) -> None:
         """End to end through the operator tool an agent would actually call."""
-        key_store.mint("primary-to-lotor")
+        key_store.mint("primary-to-peergw")
         config = load_profiles(fed_config)
         register_active_config(fed_config, config, {})
         set_profiles(config.profiles)
@@ -241,7 +241,7 @@ class TestKeyByName:
             result = await reload_profiles()
 
         assert result["reloaded"] is True
-        rotated = config.profiles["primary"].backends["lotor"].federated
+        rotated = config.profiles["primary"].backends["peergw"].federated
         assert rotated is not None and rotated.primary_key_name == "primary-rotated"
         load_private_key(rotated.primary_key.get_secret_value())
 
@@ -252,8 +252,8 @@ class TestKeyByName:
     def test_an_empty_key_file_fails_closed(self, fed_config: pathlib.Path) -> None:
         """A truncated key would otherwise load as a profile that cannot sign,
         and fail at the first federated call instead of at load."""
-        key_store.mint("primary-to-lotor")
-        key_path("primary-to-lotor").write_text("", encoding="utf-8")
+        key_store.mint("primary-to-peergw")
+        key_path("primary-to-peergw").write_text("", encoding="utf-8")
         with pytest.raises(ProfileConfigError, match="empty"):
             load_profiles(fed_config)
 
@@ -264,13 +264,13 @@ class TestKeyByName:
         source the key came from — a check naming only `primary_key_env` is the gap
         this item closed."""
         monkeypatch.setenv("EDGE_TOKEN", "t" * 20)
-        key_store.mint("primary-to-lotor")
+        key_store.mint("primary-to-peergw")
         path = tmp_path / "profiles.yaml"
         path.write_text(
             FED_YAML.format(
-                url="https://lotor.example/mcp",
+                url="https://peergw.example/mcp",
                 key_field="primary_key_name",
-                key_value="primary-to-lotor",
+                key_value="primary-to-peergw",
             ),
             encoding="utf-8",
         )
@@ -286,11 +286,11 @@ class TestOneKeySource:
                     "name": "primary",
                     "auth": {"bearer_token_env": "A"},
                     "backends": {
-                        "lotor": {
+                        "peergw": {
                             "url": SECONDARY,
                             "federated": {
                                 "primary_key_env": "EDGE_KEY",
-                                "primary_key_name": "primary-to-lotor",
+                                "primary_key_name": "primary-to-peergw",
                             },
                         }
                     },
@@ -305,14 +305,14 @@ class TestOneKeySource:
                     "auth": {"bearer_token_env": "A"},
                     "backends": {},
                     "federation": {
-                        "peers": {"breetai": {"public_key": PEER_PUBLIC_KEY}},
+                        "peers": {"mypeer": {"public_key": PEER_PUBLIC_KEY}},
                         "secondary_key_env": "SIGN",
                         "secondary_key_name": "ingress-signing",
                     },
                 }
             )
 
-    @pytest.mark.parametrize("name", ["Edge", "9edge", "edge_to_lotor", "../escape", "edge.pem"])
+    @pytest.mark.parametrize("name", ["Edge", "9edge", "edge_to_peergw", "../escape", "edge.pem"])
     def test_a_name_that_is_not_a_key_name_is_refused(self, name: str) -> None:
         with pytest.raises(ValidationError, match="primary_key_name"):
             Profile.model_validate(
@@ -320,7 +320,7 @@ class TestOneKeySource:
                     "name": "primary",
                     "auth": {"bearer_token_env": "A"},
                     "backends": {
-                        "lotor": {"url": SECONDARY, "federated": {"primary_key_name": name}}
+                        "peergw": {"url": SECONDARY, "federated": {"primary_key_name": name}}
                     },
                 }
             )

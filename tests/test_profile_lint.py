@@ -253,7 +253,7 @@ class TestFederationLinks:
                     "federation": federation
                     if federation is not None
                     else {
-                        "peers": {"breetai": {"public_key": "x"}},
+                        "peers": {"mypeer": {"public_key": "x"}},
                         "secondary_key_name": "josui-secondary",
                     },
                     "backends": {"wiki": wiki},
@@ -265,7 +265,7 @@ class TestFederationLinks:
         """It works and costs double: the primary re-judges what this gateway
         already judged. Invisible unless someone says so."""
         (finding,) = profile_lint.check_federation_links(
-            self._file({"peers": {"breetai": {"public_key": "x"}}})
+            self._file({"peers": {"mypeer": {"public_key": "x"}}})
         )
         assert finding.code == "federation-no-secondary-key"
         assert "'josui'" in finding.message

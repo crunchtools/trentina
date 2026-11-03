@@ -47,7 +47,7 @@ def _profile(**over: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "name": "up",
         "auth": AuthConfig(bearer_token_env="UP_TOKEN"),
-        "federation": FederationConfig(peers={"breetai": FederationPeer(public_key=_PUB)}),
+        "federation": FederationConfig(peers={"mypeer": FederationPeer(public_key=_PUB)}),
         "backends": {"peer": Backend(url="https://real/mcp", tools_allow=["*"])},
     }
     base.update(over)
@@ -158,7 +158,7 @@ def test_a_derived_ingress_without_the_paging_reader_is_refused(allow: list[str]
         Profile(
             name="up-federation",
             federation_of="up",
-            federation=FederationConfig(peers={"breetai": FederationPeer(public_key=_PUB)}),
+            federation=FederationConfig(peers={"mypeer": FederationPeer(public_key=_PUB)}),
             backends={"web": Backend(url="internal://web", tools_allow=allow)},
         )
 
@@ -172,7 +172,7 @@ def test_a_derived_ingress_carrying_the_reader_is_accepted(allow: list[str]) -> 
     ingress = Profile(
         name="up-federation",
         federation_of="up",
-        federation=FederationConfig(peers={"breetai": FederationPeer(public_key=_PUB)}),
+        federation=FederationConfig(peers={"mypeer": FederationPeer(public_key=_PUB)}),
         backends={"web": Backend(url="internal://web", tools_allow=allow)},
     )
     assert ingress.backends["web"].tools_allow == allow
@@ -224,12 +224,12 @@ def _caller_of(db: Any, call_id: int) -> tuple[Any, Any]:
 
 
 def test_a_federated_call_records_its_caller(db: Any) -> None:
-    token = current_caller.set(("breetai", "primary"))
+    token = current_caller.set(("mypeer", "primary"))
     try:
         audit._audit("up", "web", "echo", Outcome.OK, 1)
     finally:
         current_caller.reset(token)
-    assert _caller_of(db, 1) == ("breetai", "primary")
+    assert _caller_of(db, 1) == ("mypeer", "primary")
 
 
 def test_a_non_federated_call_has_a_null_caller(db: Any) -> None:
@@ -240,7 +240,7 @@ def test_a_non_federated_call_has_a_null_caller(db: Any) -> None:
 
 def test_the_chain_verifies_with_and_without_a_caller(db: Any) -> None:
     audit._audit("tenant", "web", "plain", Outcome.OK, 1)  # no caller
-    token = current_caller.set(("breetai", "primary"))
+    token = current_caller.set(("mypeer", "primary"))
     try:
         audit._audit("up", "web", "echo", Outcome.OK, 1)  # federated
     finally:
@@ -260,11 +260,11 @@ def test_a_null_caller_hashes_as_a_pre_c2_row_did() -> None:
 
 def test_a_caller_commits_in_the_hash() -> None:
     base = dict.fromkeys(audit_chain.CHAIN_FIELDS, "x")
-    with_caller = audit_chain.row_hash({**base, "caller_peer": "breetai", "caller_sub": "down"})
+    with_caller = audit_chain.row_hash({**base, "caller_peer": "mypeer", "caller_sub": "down"})
     assert with_caller != audit_chain.row_hash(base)
     # Editing the caller breaks the commitment — the point of folding it in.
     assert with_caller != audit_chain.row_hash(
-        {**base, "caller_peer": "breetai", "caller_sub": "someone-else"}
+        {**base, "caller_peer": "mypeer", "caller_sub": "someone-else"}
     )
 
 
@@ -327,7 +327,7 @@ def _peer_ingress(pub: str) -> Profile:
     a derived ingress is `<profile>-federation` — so the audience now follows from
     the profile rather than from a name an operator invented.
     """
-    peers = {"breetai": FederationPeer(public_key=pub)}
+    peers = {"mypeer": FederationPeer(public_key=pub)}
     return derive_ingress(Profile(**_profile(federation=FederationConfig(peers=peers))))
 
 
@@ -337,7 +337,7 @@ async def test_authorize_captures_the_federated_caller() -> None:
     jwt = sign_primary_jwt(priv, sub="primary", aud=profile.name)
     request = _request(f"Bearer {jwt}")
     assert await _authorize(request, profile, None) is None
-    assert request.state.federation_caller == ("breetai", "primary")
+    assert request.state.federation_caller == ("mypeer", "primary")
 
 
 async def test_authorize_leaves_no_caller_without_an_edge_jwt() -> None:
@@ -352,7 +352,7 @@ async def test_authorize_leaves_no_caller_without_an_edge_jwt() -> None:
 def test_the_caller_sub_is_never_logged(caplog: pytest.LogCaptureFixture) -> None:
     # caller_sub is peer-chosen: an audit fact, never a log line (#262).
     with caplog.at_level(logging.DEBUG, logger="trentina"):
-        token = current_caller.set(("breetai", "secret-sub-canary"))
+        token = current_caller.set(("mypeer", "secret-sub-canary"))
         try:
             audit._audit("up", "web", "echo", Outcome.OK, 1)
         finally:

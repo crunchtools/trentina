@@ -42,7 +42,7 @@ whether a trust pin is earning anything:
 -- Of this link's calls, how many were served on the secondary's verdict?
 SELECT federated_verdict, COUNT(*)
 FROM gateway_calls
-WHERE profile = 'myagent' AND backend = 'lotor' AND federated_verdict IS NOT NULL
+WHERE profile = 'myagent' AND backend = 'peergw' AND federated_verdict IS NOT NULL
 GROUP BY federated_verdict;
 ```
 

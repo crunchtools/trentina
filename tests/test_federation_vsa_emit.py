@@ -62,12 +62,12 @@ def _ingress(*, private_pem: str | None) -> Profile:
     remote backend offered, the profile's own internal surface replaced by the
     paging reader, and no second way in.
     """
-    federation = FederationConfig(peers={"breetai": FederationPeer(public_key=_PEER_PUB)})
+    federation = FederationConfig(peers={"mypeer": FederationPeer(public_key=_PEER_PUB)})
     if private_pem is not None:
         federation.secondary_key = SecretStr(private_pem)
     profile = Profile(
-        name="lotor",
-        auth=AuthConfig(bearer_token_env="LOTOR_TOKEN"),
+        name="peergw",
+        auth=AuthConfig(bearer_token_env="PEERGW_TOKEN"),
         federation=federation,
         backends={
             "demo": Backend(url="https://peer.invalid/mcp"),
@@ -95,7 +95,7 @@ def test_a_signing_ingress_attaches_a_verifiable_assertion() -> None:
     out = _deliver(_ingress(private_pem=private_pem), result)
     assertion = verify_assertion(out["_meta"][VSA_KEY], public_pem)
     assert assertion is not None
-    assert assertion["verifier"] == ingress_name("lotor")
+    assert assertion["verifier"] == ingress_name("peergw")
     assert assertion["content_sha256"] == content_digest(result["content"], None, False)
     assert assertion["verdict"] == {
         "flagged_by": None,
@@ -177,12 +177,12 @@ def _served_ingress(private_pem: str) -> Profile:
     # remote backend so the response is judged (an internal tool would not be).
     # `short_names` is one of the fields derivation CARRIES, so setting it on
     # the profile is what sets it on the link.
-    federation = FederationConfig(peers={"breetai": FederationPeer(public_key=_PEER_PUB)})
+    federation = FederationConfig(peers={"mypeer": FederationPeer(public_key=_PEER_PUB)})
     federation.secondary_key = SecretStr(private_pem)
     return derive_ingress(
         Profile(
-            name="lotor",
-            auth=AuthConfig(bearer_token_env="LOTOR_TOKEN"),
+            name="peergw",
+            auth=AuthConfig(bearer_token_env="PEERGW_TOKEN"),
             short_names=False,
             federation=federation,
             backends={"remote": Backend(url="http://peer:8000/mcp", tools_allow=["*"])},
@@ -219,5 +219,5 @@ async def test_the_transport_delivers_the_assertion_on_a_real_call() -> None:
     result = resp["result"]
     assertion = verify_assertion(result["_meta"][VSA_KEY], public_pem)
     assert assertion is not None  # the transport called the hook and delivered the VSA
-    assert assertion["verifier"] == ingress_name("lotor")
+    assert assertion["verifier"] == ingress_name("peergw")
     assert assertion["content_sha256"] == content_digest(result["content"], None, False)

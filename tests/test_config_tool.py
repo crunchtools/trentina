@@ -166,7 +166,7 @@ class TestWriting:
     ) -> None:
         result = await _as_operator(
             "set",
-            "profiles.ag.backends.lotor",
+            "profiles.ag.backends.peergw",
             # An ordinary MCP server: the test is about a write reaching the
             # running profile. A gateway federation endpoint without a
             # `federated:` block is the interim path, refused since 5.0.0.
@@ -176,7 +176,7 @@ class TestWriting:
 
         assert result["applied"] is True
         running = (get_active_config() or pytest.fail("gone")).config.profiles["ag"]
-        assert "lotor" in running.backends
+        assert "peergw" in running.backends
 
     async def test_a_write_returns_the_next_hash(self, gateway: pathlib.Path) -> None:
         """So a run of changes needs one read at the start, not one per write."""
@@ -445,9 +445,9 @@ class TestRefusals:
         before = gateway.read_text(encoding="utf-8")
         result = await _as_operator(
             "set",
-            "profiles.ag.backends.lotor",
+            "profiles.ag.backends.peergw",
             {
-                "url": "https://lotor.example/gateway/fed/mcp",
+                "url": "https://peergw.example/gateway/fed/mcp",
                 "federated": {
                     "trust_verdict": {
                         "public_key": _ED25519_PUBLIC,
@@ -461,7 +461,7 @@ class TestRefusals:
         assert result["staged"] is True
         assert result["awaiting"] == "federation trust"
         shown = result["shown_for_approval"]
-        assert shown["Backend to trust"] == "ag.lotor"
+        assert shown["Backend to trust"] == "ag.peergw"
         # A fingerprint, not the PEM: a wall of base64 is not reviewed by eye.
         assert shown["Its key"].startswith("sha256:")
         assert "WITHOUT this gateway running" in shown["What this means"]
@@ -709,8 +709,8 @@ class TestOneApprovalPerWrite:
                 "ag": {
                     "auth": {"bearer_token_env": "AG_TOKEN"},
                     "backends": {
-                        "lotor": {
-                            "url": "https://lotor.example/gateway/fed/mcp",
+                        "peergw": {
+                            "url": "https://peergw.example/gateway/fed/mcp",
                             "federated": {
                                 "trust_verdict": {
                                     "public_key": _ED25519_PUBLIC,
@@ -1773,7 +1773,7 @@ class TestAPeerBecomingAnOperator:
     @staticmethod
     def _shared_operator(tools: list[str]) -> dict[str, Any]:
         """A config whose SHARED profile is also the operator -- the shape
-        Scott runs on lotor, and the only shape in which this guard can fire.
+        Scott runs on peergw, and the only shape in which this guard can fire.
 
         There is no separate `op` profile, because there cannot be: a file may
         declare one operator, and here it is the shared one. That also makes

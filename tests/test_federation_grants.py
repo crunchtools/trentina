@@ -70,7 +70,7 @@ def _profile(name: str = "josui") -> Profile:
     return Profile(
         name=name,
         auth=AuthConfig(bearer_token_env="JOSUI_TOKEN"),
-        federation=FederationConfig(peers={"breetai": FederationPeer(public_key=public_pem)}),
+        federation=FederationConfig(peers={"mypeer": FederationPeer(public_key=public_pem)}),
         backends={"era": ERA},
     )
 
@@ -262,7 +262,7 @@ async def test_a_grant_spending_call_records_which_peer_spent_it(
     monkeypatch.setattr(db_mod, "get_config", lambda: cfg)
 
     ingress = derive_ingress(_profile())
-    token = current_caller.set(("breetai", "primary-sub"))
+    token = current_caller.set(("mypeer", "primary-sub"))
     try:
         audit._audit(ingress.name, "era", "search", Outcome.OK, 1)
     finally:
@@ -274,4 +274,4 @@ async def test_a_grant_spending_call_records_which_peer_spent_it(
         )
         db_mod._db = None
 
-    assert tuple(row) == ("josui-federation", "breetai", "primary-sub")
+    assert tuple(row) == ("josui-federation", "mypeer", "primary-sub")

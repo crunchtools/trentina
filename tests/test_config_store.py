@@ -105,7 +105,7 @@ class TestBackups:
     def test_they_do_not_land_beside_the_live_file(
         self, data_dir: pathlib.Path, live: pathlib.Path
     ) -> None:
-        """On lotor the config directory is a git repo with a drift check on it,
+        """On peergw the config directory is a git repo with a drift check on it,
         so a backup written there would trip the check on every write."""
         kept = config_store.back_up(ORIGINAL, after_hash="a" * 64, now=1_000_000)
         assert live.parent not in kept.parents

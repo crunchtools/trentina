@@ -29,8 +29,8 @@ from trentina.gateway.profile import (
     Profile,
 )
 
-HTTPS = "https://lotor.example/gateway/josui/mcp"
-HTTP = "http://lotor.example/gateway/josui/mcp"
+HTTPS = "https://peergw.example/gateway/josui/mcp"
+HTTP = "http://peergw.example/gateway/josui/mcp"
 
 
 def _peers() -> dict[str, FederationPeer]:
@@ -42,7 +42,7 @@ def _peers() -> dict[str, FederationPeer]:
         .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
         .decode()
     )
-    return {"breetai": FederationPeer(public_key=pem)}
+    return {"mypeer": FederationPeer(public_key=pem)}
 
 
 def _profile(*, ingress: bool, federated_url: str | None) -> Profile:
@@ -52,7 +52,7 @@ def _profile(*, ingress: bool, federated_url: str | None) -> Profile:
     # A PROFILE is shared now, and a profile has a way in of its own: `federation` on
     # it is what the gateway derives the ingress from.
     return Profile(
-        name="breetai",
+        name="mypeer",
         auth=AuthConfig(bearer_token_env="B"),
         federation=FederationConfig(peers=_peers()) if ingress else None,
         backends={**backends, "web": Backend(url="https://wiki/mcp", tools_allow=["*"])},
@@ -69,7 +69,7 @@ def test_a_profile_may_both_consume_and_share() -> None:
     whatever this profile mounts. A to B to C is unsayable, not refused.
     """
     profile = _profile(ingress=True, federated_url=HTTPS)
-    _check_federation_topology("breetai", profile)
+    _check_federation_topology("mypeer", profile)
 
     offered = derive_ingress(profile).backends
     assert "up" not in offered  # the federated backend is NOT re-exported
@@ -77,24 +77,24 @@ def test_a_profile_may_both_consume_and_share() -> None:
 
 
 def test_an_ingress_alone_is_fine() -> None:
-    _check_federation_topology("breetai", _profile(ingress=True, federated_url=None))
+    _check_federation_topology("mypeer", _profile(ingress=True, federated_url=None))
 
 
 def test_a_consumer_alone_over_https_is_fine() -> None:
-    _check_federation_topology("breetai", _profile(ingress=False, federated_url=HTTPS))
+    _check_federation_topology("mypeer", _profile(ingress=False, federated_url=HTTPS))
 
 
 def test_a_federated_backend_over_http_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TRENTINA_FEDERATION_ALLOW_INSECURE", raising=False)
     profile = _profile(ingress=False, federated_url=HTTP)
     with pytest.raises(ProfileConfigError, match="https"):
-        _check_federation_topology("breetai", profile)
+        _check_federation_topology("mypeer", profile)
 
 
 def test_http_is_allowed_with_the_insecure_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRENTINA_FEDERATION_ALLOW_INSECURE", "1")
     # Must not raise; the loader warns instead.
-    _check_federation_topology("breetai", _profile(ingress=False, federated_url=HTTP))
+    _check_federation_topology("mypeer", _profile(ingress=False, federated_url=HTTP))
 
 
 # --- The 4.0.0 rename (#637): the old field names are refused by name ---
@@ -116,10 +116,10 @@ def test_a_pre_4_0_0_backend_key_name_is_refused_with_its_replacement(old: str, 
     """
     body = {
         "auth": {"bearer_token_env": "T"},
-        "backends": {"lotor": {"url": HTTPS, "federated": {old: "A_KEY"}}},
+        "backends": {"peergw": {"url": HTTPS, "federated": {old: "A_KEY"}}},
     }
     with pytest.raises(ProfileConfigError, match=f"{old!r} was renamed to {new!r}"):
-        _check_renamed_federation_keys("breetai", body)
+        _check_renamed_federation_keys("mypeer", body)
 
 
 @pytest.mark.parametrize(
@@ -132,14 +132,14 @@ def test_a_pre_4_0_0_backend_key_name_is_refused_with_its_replacement(old: str, 
 def test_a_pre_4_0_0_ingress_key_name_is_refused_with_its_replacement(old: str, new: str) -> None:
     body = {"auth": {"bearer_token_env": "T"}, "federation": {old: "A_KEY"}}
     with pytest.raises(ProfileConfigError, match=f"{old!r} was renamed to {new!r}"):
-        _check_renamed_federation_keys("breetai", body)
+        _check_renamed_federation_keys("mypeer", body)
 
 
 def test_the_new_names_pass_the_rename_check() -> None:
     _check_renamed_federation_keys(
-        "breetai",
+        "mypeer",
         {
-            "backends": {"lotor": {"url": HTTPS, "federated": {"primary_key_env": "A"}}},
+            "backends": {"peergw": {"url": HTTPS, "federated": {"primary_key_env": "A"}}},
             "federation": {"secondary_key_env": "B"},
         },
     )
@@ -149,7 +149,7 @@ def test_the_check_does_not_fire_on_an_unrelated_block() -> None:
     """Only the two places the schema ever took these keys are read, so a
     same-named key somewhere else is not a false positive."""
     _check_renamed_federation_keys(
-        "breetai", {"backends": {"plain": {"url": HTTPS, "headers": {"edge_key_env": "x"}}}}
+        "mypeer", {"backends": {"plain": {"url": HTTPS, "headers": {"edge_key_env": "x"}}}}
     )
 
 
@@ -231,7 +231,7 @@ class TestOnePrimaryKeyPerSecondary:
 
     def _profile(self, urls: dict[str, str], *, keys: dict[str, str]) -> Profile:
         profile = Profile(
-            name="breetai",
+            name="mypeer",
             auth=AuthConfig(bearer_token_env="B"),
             backends={
                 name: Backend(url=url, tools_allow=["*"], federated=FederatedConfig())
@@ -263,7 +263,7 @@ class TestOnePrimaryKeyPerSecondary:
         assert federated is not None
         federated.primary_key = SecretStr("K")
         with pytest.raises(ProfileConfigError, match="could replay the other's token"):
-            _check_federation_audience({"breetai": prod, "other": staging})
+            _check_federation_audience({"mypeer": prod, "other": staging})
 
     def test_one_host_with_two_path_prefixes_is_refused(self) -> None:
         """Comparing origins would read two independent gateways behind one
@@ -276,7 +276,7 @@ class TestOnePrimaryKeyPerSecondary:
             keys={"a": "K", "b": "K"},
         )
         with pytest.raises(ProfileConfigError, match="could replay the other's token"):
-            _check_federation_audience({"breetai": profile})
+            _check_federation_audience({"mypeer": profile})
 
     def test_the_same_key_to_two_gateways_with_one_audience_is_refused(self) -> None:
         profile = self._profile(
@@ -287,7 +287,7 @@ class TestOnePrimaryKeyPerSecondary:
             keys={"prod": "K", "staging": "K"},
         )
         with pytest.raises(ProfileConfigError, match="could replay the other's token"):
-            _check_federation_audience({"breetai": profile})
+            _check_federation_audience({"mypeer": profile})
 
     def test_a_key_each_is_fine(self) -> None:
         """Different keys already fail at the secondary: A holds only its own
@@ -299,7 +299,7 @@ class TestOnePrimaryKeyPerSecondary:
             },
             keys={"prod": "K1", "staging": "K2"},
         )
-        _check_federation_audience({"breetai": profile})
+        _check_federation_audience({"mypeer": profile})
 
     def test_different_ingress_names_are_fine(self) -> None:
         """A distinct audience is the other way out: the token names the
@@ -311,7 +311,7 @@ class TestOnePrimaryKeyPerSecondary:
             },
             keys={"prod": "K", "staging": "K"},
         )
-        _check_federation_audience({"breetai": profile})
+        _check_federation_audience({"mypeer": profile})
 
     def test_two_backends_at_one_gateway_are_fine(self) -> None:
         """The same gateway twice is not a replay: it is the audience it is."""
@@ -322,7 +322,7 @@ class TestOnePrimaryKeyPerSecondary:
             },
             keys={"a": "K", "b": "K"},
         )
-        _check_federation_audience({"breetai": profile})
+        _check_federation_audience({"mypeer": profile})
 
 
 class TestOneSecondarySpelledTwoWays:
@@ -335,7 +335,7 @@ class TestOneSecondarySpelledTwoWays:
 
     def _profile(self, urls: dict[str, str]) -> Profile:
         profile = Profile(
-            name="breetai",
+            name="mypeer",
             auth=AuthConfig(bearer_token_env="B"),
             backends={
                 name: Backend(url=url, tools_allow=["*"], federated=FederatedConfig())
@@ -356,7 +356,7 @@ class TestOneSecondarySpelledTwoWays:
     )
     def test_the_same_gateway_spelled_differently_is_fine(self, other: str) -> None:
         profile = self._profile({"a": "https://prod.example/gateway/fed/mcp", "b": other})
-        _check_federation_audience({"breetai": profile})
+        _check_federation_audience({"mypeer": profile})
 
     def test_two_prefixes_on_one_host_are_still_two_gateways(self) -> None:
         """The path is kept: reading those as one endpoint is the mistake in
@@ -368,7 +368,7 @@ class TestOneSecondarySpelledTwoWays:
             }
         )
         with pytest.raises(ProfileConfigError, match="could replay the other's token"):
-            _check_federation_audience({"breetai": profile})
+            _check_federation_audience({"mypeer": profile})
 
 
 @pytest.mark.parametrize(
@@ -395,8 +395,8 @@ def test_a_derived_ingress_may_not_take_a_second_way_in(way_in: dict[str, object
     """
     with pytest.raises(ValidationError, match="does not apply"):
         Profile(
-            name="breetai-federation",
-            federation_of="breetai",
+            name="mypeer-federation",
+            federation_of="mypeer",
             federation=FederationConfig(peers=_peers()),
             backends={},
             **way_in,
@@ -406,7 +406,7 @@ def test_a_derived_ingress_may_not_take_a_second_way_in(way_in: dict[str, object
 def test_derivation_drops_the_profiles_ways_in() -> None:
     """The profile has both; the ingress derived from it has neither."""
     profile = Profile(
-        name="breetai",
+        name="mypeer",
         auth=AuthConfig(bearer_token_env="B"),
         oauth=OAuthConfig(enabled=True, allowed_emails=["alice@example.com"]),
         federation=FederationConfig(peers=_peers()),

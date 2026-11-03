@@ -24,42 +24,42 @@ from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.loader import _check_interim_federation
 from trentina.gateway.profile import AuthConfig, Backend, FederatedConfig, Profile
 
-GATEWAY_URL = "https://lotor.example/gateway/josui/mcp"
+GATEWAY_URL = "https://peergw.example/gateway/josui/mcp"
 
 
 def _profile(backend: Backend) -> Profile:
     return Profile(
-        name="breetai",
+        name="mypeer",
         auth=AuthConfig(bearer_token_env="B"),
-        backends={"lotor": backend},
+        backends={"peergw": backend},
     )
 
 
 def test_a_static_bearer_gateway_backend_is_refused() -> None:
     profile = _profile(Backend(url=GATEWAY_URL, tools_allow=["*"]))
     with pytest.raises(ProfileConfigError, match="without a 'federated:' block") as caught:
-        _check_interim_federation("breetai", profile)
+        _check_interim_federation("mypeer", profile)
     # The profile and backend are config and loggable; the URL is not (#262).
-    assert "lotor.example" not in str(caught.value)
-    assert "breetai" in str(caught.value) and "lotor" in str(caught.value)
+    assert "peergw.example" not in str(caught.value)
+    assert "mypeer" in str(caught.value) and "peergw" in str(caught.value)
 
 
 def test_a_federated_block_is_fine() -> None:
     profile = _profile(Backend(url=GATEWAY_URL, tools_allow=["*"], federated=FederatedConfig()))
-    _check_interim_federation("breetai", profile)
+    _check_interim_federation("mypeer", profile)
 
 
 def test_a_plain_mcp_backend_is_fine() -> None:
     # No "gateway" segment: an ordinary MCP server, not a Trentina federation
     # endpoint, must not be mistaken for the interim path.
-    _check_interim_federation("breetai", _profile(Backend(url="https://api.example/foo/mcp")))
+    _check_interim_federation("mypeer", _profile(Backend(url="https://api.example/foo/mcp")))
 
 
 def test_gateway_elsewhere_in_the_path_is_fine() -> None:
     # "gateway" present but NOT the antepenultimate segment: not the
     # .../gateway/<profile>/mcp shape, so not the interim path (detection is exact).
     _check_interim_federation(
-        "breetai", _profile(Backend(url="https://api.example/gateway/a/b/mcp"))
+        "mypeer", _profile(Backend(url="https://api.example/gateway/a/b/mcp"))
     )
 
 
