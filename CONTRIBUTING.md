@@ -77,8 +77,16 @@ reach for `SKIP` because a gate is slow.
 
 Local builds are supported and need no credential. What causes drift is
 *pushing* a hand-built image, which only `.github/workflows/container.yml`
-does. `main` builds, verifies and publishes; a release retags the digest `main`
-already verified rather than building again.
+does.
+
+The published pipeline builds the image exactly once per run. A pull request
+builds it in `Container Security Scan`, which also verifies it as production
+runs it and gates on Trivy, and skips the build entirely when nothing the image
+is built from changed. A merge to `main` builds and publishes. A release builds
+nothing at all: it retags the digest `main` already verified, refusing unless
+that digest carries the release commit's `revision` label, the version the tag
+names, and a green `security.yml` run for that commit. So a red `main` is fixed
+forward or reverted — it is never released around.
 
 ## Before you open a pull request
 
