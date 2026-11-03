@@ -35,7 +35,10 @@ under that name.
   and the mypy commit hook is capped the same way. The budget is the smallest of
   the core count, the CPU affinity mask and the cgroup CPU quota, so a gate run
   inside a container or a systemd slice sizes itself to its allocation rather
-  than to the host.
+  than to the host, with a floor of one CPU (pytest then runs in-process rather
+  than starting two xdist workers on one core). The mypy commit hook calls
+  `./scripts/gates.sh mypy` instead of spelling out its own podman line, so
+  there is one budget and one override.
 
 ## [6.3.0] - 2026-11-03
 

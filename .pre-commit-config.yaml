@@ -28,17 +28,16 @@ repos:
         always_run: true
         stages: [pre-commit, pre-merge-commit]
   # mypy needs the project's locked dependencies, so it runs `uv` from the uv
-  # image instead of a host install. The named volume keeps the environment and
-  # the mypy cache between runs; the repo is mounted read-only.
-  #
-  # Capped like every gate in scripts/gates.sh: a commit hook that takes the
-  # whole machine is one people stop running. See that script for the load
-  # average this is about.
+  # image instead of a host install -- and through gates.sh, so the resource
+  # budget and the TRENTINA_GATES_CPUS override are defined once. A hook entry
+  # is a static string and cannot read a budget, which is how this hook's
+  # hand-written caps drifted from the script's the moment they stopped being
+  # constants.
   - repo: local
     hooks:
       - id: mypy
         name: mypy
-        entry: podman --events-backend=none run --rm --log-driver=none --cpus 4 --memory 6g --cpu-shares 256 -v .:/src:ro,Z -w /src -v crunchtools-hook-cache:/cache -e UV_CACHE_DIR=/cache/uv -e UV_PROJECT_ENVIRONMENT=/cache/venv/trentina ghcr.io/astral-sh/uv:python3.12-bookworm-slim uv run --locked --all-extras mypy --cache-dir /cache/mypy/trentina src
+        entry: ./scripts/gates.sh mypy
         language: system
         pass_filenames: false
         stages: [pre-commit, pre-merge-commit]

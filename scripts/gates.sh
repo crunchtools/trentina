@@ -103,7 +103,10 @@ case "$_quota" in
   *) [ "$_quota" -lt "$_cores" ] && _cores=$_quota ;;
 esac
 _half=$(( _cores / 2 ))
-[ "$_half" -ge 2 ] || _half=2
+# Floor at one, not two: on a two-CPU allocation a floor of two would take the
+# whole of it, which is the thing this is here to stop. One means pytest runs
+# in-process (-n 0), which beats two xdist workers on one CPU.
+[ "$_half" -ge 1 ] || _half=1
 GATE_CPUS=${TRENTINA_GATES_CPUS:-$_half}
 GATE_MEMORY=${TRENTINA_GATES_MEMORY:-8g}
 # cgroup v2 reads this as a weight against a 1024 default: the desktop is not
@@ -186,8 +189,23 @@ gate_pytest() {
     -e GEMINI_API_KEY=test_key_for_ci \
     "$UV_IMAGE" \
     uv run --locked --all-extras --python 3.14 \
-      pytest -q -rfE -p no:cacheprovider -n "$GATE_CPUS" \
+      pytest -q -rfE -p no:cacheprovider -n "$(( GATE_CPUS > 1 ? GATE_CPUS : 0 ))" \
     || fail "pytest"
+}
+
+# mypy's pre-commit entry calls this rather than spelling out its own podman
+# line: a hook entry is a static string and cannot read the budget, so the two
+# drifted apart the moment the budget became dynamic. 3.12 and its own
+# UV_PROJECT_ENVIRONMENT, for the reason gate_pytest gives.
+gate_mypy() {
+  need_podman; need_volume "$CACHE_VOLUME"
+  "${PODMAN[@]}" "${RO_REPO[@]}" \
+    -v "$CACHE_VOLUME":/cache \
+    -e UV_CACHE_DIR=/cache/uv \
+    -e UV_PROJECT_ENVIRONMENT=/cache/venv/trentina \
+    "$UV_IMAGE" \
+    uv run --locked --all-extras mypy --cache-dir /cache/mypy/trentina src \
+    || fail "mypy"
 }
 
 gate_semgrep() {
@@ -428,6 +446,7 @@ case "${1:-}" in
 
   hooks-installed)  gate_hooks_installed ;;
   pytest)           gate_pytest ;;
+  mypy)             gate_mypy ;;
   semgrep)          gate_semgrep ;;
   gatehouse-range)  gate_gatehouse_range ;;
   container-build)  gate_container_build ;;
