@@ -138,3 +138,53 @@ def test_a_git_that_names_no_root_cannot_run(gates: Harness) -> None:
     result = gates.run("semgrep")
     assert result.returncode == CANNOT_RUN
     assert "named no repository root" in result.stderr
+
+
+# The resource knobs are a security control, not a convenience: bash evaluates
+# the CONTENTS of a variable inside $(( )), so an array subscript in one is a
+# command-substitution vector and `BUILD_LIMITS` computes exactly such an
+# expression. These assert the refusal happens BEFORE any arithmetic.
+HOSTILE_CPUS = "x[$(touch {sentinel})]"
+
+
+def test_a_hostile_cpu_budget_cannot_run_and_executes_nothing(
+    gates: Harness, tmp_path: Path
+) -> None:
+    sentinel = tmp_path / "pwned"
+    result = gates.run(
+        "hooks-installed", TRENTINA_GATES_CPUS=HOSTILE_CPUS.format(sentinel=sentinel)
+    )
+    assert result.returncode == CANNOT_RUN
+    assert "TRENTINA_GATES_CPUS" in gates.said(result)
+    # The real assertion: the payload never reached arithmetic.
+    assert not sentinel.exists()
+
+
+# An EMPTY value is not in these lists on purpose: `${VAR:-default}` treats
+# empty as unset, so clearing the knob asks for the default rather than for
+# nonsense, and refusing it would make `TRENTINA_GATES_CPUS= ./gates.sh push`
+# fail for no reason.
+@pytest.mark.parametrize("value", ["abc", "-4", "0", "1025", "4.5", "4 5", "0x10"])
+def test_a_cpu_budget_that_is_not_a_sane_count_cannot_run(gates: Harness, value: str) -> None:
+    result = gates.run("hooks-installed", TRENTINA_GATES_CPUS=value)
+    assert result.returncode == CANNOT_RUN
+    assert "TRENTINA_GATES_CPUS" in gates.said(result)
+
+
+@pytest.mark.parametrize("value", ["1", "2", "1024"])
+def test_a_cpu_budget_at_the_boundaries_is_accepted(gates: Harness, value: str) -> None:
+    result = gates.run("hooks-installed", TRENTINA_GATES_CPUS=value)
+    assert result.returncode == 0, gates.said(result)
+
+
+@pytest.mark.parametrize("value", ["g8", "8g;id", "8gb", "eight", "$(id)", "-8g"])
+def test_a_memory_ceiling_that_is_not_a_size_cannot_run(gates: Harness, value: str) -> None:
+    result = gates.run("hooks-installed", TRENTINA_GATES_MEMORY=value)
+    assert result.returncode == CANNOT_RUN
+    assert "TRENTINA_GATES_MEMORY" in gates.said(result)
+
+
+@pytest.mark.parametrize("value", ["8g", "4096m", "512k", "16G"])
+def test_a_memory_ceiling_that_is_a_size_is_accepted(gates: Harness, value: str) -> None:
+    result = gates.run("hooks-installed", TRENTINA_GATES_MEMORY=value)
+    assert result.returncode == 0, gates.said(result)
