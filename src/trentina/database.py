@@ -842,7 +842,11 @@ def record_gateway_call(
             row = _write_call(db, fields)
             break
         except sqlite3.OperationalError as exc:
-            if attempt + 1 < AUDIT_ATTEMPTS:
+            # A busy/locked failure already waited out busy_timeout inside
+            # SQLite; retrying would block the loop another 250 ms each time.
+            # Only a fast failure (SQLITE_PROTOCOL) is worth an immediate retry.
+            waited = getattr(exc, "sqlite_errorname", "") in ("SQLITE_BUSY", "SQLITE_LOCKED")
+            if attempt + 1 < AUDIT_ATTEMPTS and not waited:
                 continue
             # Given up on. The chain stays continuous without this row, so
             # `verify` would call the record sound; the count goes to

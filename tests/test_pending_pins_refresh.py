@@ -22,7 +22,7 @@ def _reset() -> Any:
 async def test_success_fills_the_cache_through_the_snapshot_reader() -> None:
     seen: list[str] = []
 
-    def count(path: str, ids: set[str]) -> int:
+    def count(path: str, _ids: set[str]) -> int:
         seen.append(path)
         return 4
 
@@ -39,7 +39,7 @@ async def test_success_fills_the_cache_through_the_snapshot_reader() -> None:
 async def test_failure_clears_the_cache() -> None:
     perimeter_db.pending_pins_cached = 2
 
-    def boom(path: str, ids: set[str]) -> int:
+    def boom(_path: str, _ids: set[str]) -> int:
         raise RuntimeError("locking protocol")
 
     with (
