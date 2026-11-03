@@ -55,9 +55,27 @@ class Harness:
 
 @pytest.fixture
 def gates(tmp_path: Path) -> Harness:
+    """A harness whose `git` is a stub from the start.
+
+    Every test controls its own environment rather than inheriting one. The
+    gates themselves run inside a container with no git at all, so a test
+    leaning on the real one passes on a laptop and fails in the gate -- which
+    is how the push tier caught these two. A test that wants git to misbehave
+    re-stubs it; `stub` overwrites.
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    return Harness(bin=bin_dir)
+    harness = Harness(bin=bin_dir)
+    harness.stub(
+        "git",
+        'case "$*" in\n'
+        '  "config --get core.hooksPath") exit 1 ;;\n'
+        f"  *--show-toplevel*) echo {REPO} ;;\n"
+        f"  *hooks/pre-push*) echo {REPO}/.git/hooks/pre-push ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac",
+    )
+    return harness
 
 
 def test_no_argument_is_a_gate_that_cannot_run(gates: Harness) -> None:
@@ -79,6 +97,9 @@ def test_a_missing_podman_cannot_run_rather_than_passing(gates: Harness) -> None
 
 
 def test_a_missing_gatehouse_key_cannot_run_and_names_no_install(gates: Harness) -> None:
+    # podman is checked before the key, and the gate container has none, so the
+    # stub is what lets this test reach the thing it is about.
+    gates.stub("podman", "exit 0")
     result = gates.run("gatehouse-range", HOME="/nonexistent")
     assert result.returncode == CANNOT_RUN
     assert "gatehouse.env" in result.stderr

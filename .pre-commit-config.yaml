@@ -1,3 +1,7 @@
+# `pre-commit install` wires all three stages. Without this it wires only
+# pre-commit, so the push tier would never run and nobody would notice.
+default_install_hook_types: [pre-commit, pre-merge-commit, pre-push]
+
 repos:
   # ruff runs from its own pre-commit environment, not a host install
   # (constitution XII, host contract). Keep rev at the ruff version in uv.lock.
@@ -11,6 +15,17 @@ repos:
       - id: ruff-format
         args: [--check]
         files: \.py$
+        stages: [pre-commit, pre-merge-commit]
+      # CI lints `src tests corpora` whole; the hook above lints only what you
+      # staged, so an error in a file you did not touch still reaches CI. No
+      # --fix here on purpose: a whole-tree fix rewrites files outside the
+      # commit and fights pre-commit's stash of your unstaged work.
+      - id: ruff-check
+        alias: ruff-check-all
+        name: ruff check (src tests corpora, as CI runs it)
+        args: [src, tests, corpora]
+        pass_filenames: false
+        always_run: true
         stages: [pre-commit, pre-merge-commit]
   # mypy needs the project's locked dependencies, so it runs `uv` from the uv
   # image instead of a host install. The named volume keeps the environment and
@@ -46,3 +61,42 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-commit, pre-merge-commit]
+
+  # XII host contract: a repo script, so no gate assumes uv, pytest or semgrep
+  # on the host. Every one of them runs from a container image.
+  - repo: local
+    hooks:
+      - id: gates-hooks-installed
+        name: pre-push gates are installed
+        entry: ./scripts/gates.sh hooks-installed
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-merge-commit]
+
+      - id: pytest-container
+        name: pytest (full suite, containerised)
+        entry: ./scripts/gates.sh pytest
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      - id: semgrep
+        name: Semgrep (rule tests + scan src)
+        entry: ./scripts/gates.sh semgrep
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      # Closes the gap that let CI findings arrive after the local hook went
+      # green: the pre-commit Gatehouse sees ONE staged diff, so nothing
+      # reviewed the branch as a whole. This reviews origin/main...HEAD.
+      - id: gatehouse-range
+        name: Gatehouse (AI review, cumulative branch diff)
+        entry: ./scripts/gates.sh gatehouse-range
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
