@@ -82,8 +82,14 @@ FROM quay.io/hummingbird/python:3.14-builder AS pip-builder
 USER 0
 
 WORKDIR /app
+# The lock and the manifest only. `src/` arrives AFTER the third-party install
+# below, because that install does not depend on it: `uv export
+# --no-emit-project` deliberately leaves the project out of requirements.txt.
+# With `COPY src/` above the install, every source edit invalidated the whole
+# locked set and reinstalled 148 packages to pick up a changed comment. Measured
+# at 32.6 s of the 37.9 s that RUN took; locally it is the difference between a
+# rebuild that re-installs everything and one that re-installs the project.
 COPY pyproject.toml README.md uv.lock ./
-COPY src/ ./src/
 
 # Dependencies come from uv.lock, not from a fresh resolve (issue #79). Every
 # dependency in pyproject.toml is floor-pinned with no upper bound, so a plain
@@ -115,8 +121,13 @@ COPY src/ ./src/
 RUN pip install --no-cache-dir uv \
  && uv export --frozen --no-dev --extra matrix --extra bridge --no-emit-project \
       --format requirements-txt -o /tmp/requirements.txt \
- && pip install --no-cache-dir --prefix=/usr --no-deps -r /tmp/requirements.txt \
- && pip install --no-cache-dir --prefix=/usr --no-deps '.[matrix,bridge]'
+ && pip install --no-cache-dir --prefix=/usr --no-deps -r /tmp/requirements.txt
+
+# The project itself, in its own layer so a source change costs only this one.
+# --no-deps again: the locked set is already installed above, and letting pip
+# resolve here is what the comment above is about.
+COPY src/ ./src/
+RUN pip install --no-cache-dir --prefix=/usr --no-deps '.[matrix,bridge]'
 
 # onnxruntime >= 1.29 reads /etc/machine-id during module init. When that file
 # is absent it falls back to popen("blkid")/popen("hostname"), and popen returns
