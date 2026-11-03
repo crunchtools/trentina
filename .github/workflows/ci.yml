@@ -6,6 +6,17 @@ on:
   pull_request:
     branches: [main]
 
+# A new push supersedes the run it interrupts, on a PR only (#662 follow-up).
+# Without this, four pushes to one branch left four complete sets of runs
+# grinding to completion -- three image builds and a four-way test matrix each.
+#
+# Main and tag pushes get `false`, so they QUEUE instead of cancelling. A
+# cancelled publish can leave a half-pushed manifest and a downstream that was
+# never told to rebuild; waiting is cheaper than reconciling that.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
