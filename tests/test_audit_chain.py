@@ -226,6 +226,27 @@ class TestLostRows:
         assert db.get_db().execute("SELECT COUNT(*) FROM gateway_calls").fetchone()[0] == 1
         assert _verify(db)["ok"] is True
 
+    @pytest.mark.parametrize(
+        ("errorname", "attempts"),
+        [("SQLITE_BUSY", 1), ("SQLITE_LOCKED", 3), ("SQLITE_PROTOCOL", 3)],
+    )
+    def test_retry_depends_on_whether_sqlite_waited(
+        self, db: Any, monkeypatch: pytest.MonkeyPatch, errorname: str, attempts: int
+    ) -> None:
+        calls: list[int] = []
+
+        def write(conn: Any, fields: Any) -> Any:
+            calls.append(1)
+            err = sqlite3.OperationalError("x")
+            err.sqlite_errorname = errorname  # type: ignore[attr-defined]
+            raise err
+
+        monkeypatch.setattr(db, "_write_call", write)
+        with pytest.raises(sqlite3.OperationalError):
+            db.record_gateway_call("p", "web", "t", Outcome.OK.value, 1)
+        assert len(calls) == attempts
+        assert db._lost_pending == 1
+
     def test_a_row_never_written_reports_incomplete_not_broken(
         self, db: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
