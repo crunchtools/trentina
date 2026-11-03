@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.4.0] - 2026-11-03
+
 ### Added
 
 - **More than one profile may be the operator, so two agents can administer one
