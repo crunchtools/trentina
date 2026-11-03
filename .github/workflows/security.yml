@@ -215,11 +215,13 @@ jobs:
             -v "$PWD/ci-gateway:/etc/trentina:ro" \
             -e TRENTINA_GATEWAY_ENABLED=1 -e CI_TOKEN_FILE=/etc/trentina/token \
             trentina:scan --transport streamable-http --host 0.0.0.0 --port 8019
+          # `exec` into the container under test rather than starting a
+          # sibling per attempt: no container or interpreter startup cost on
+          # any of the thirty tries, and still no way to be talking to
+          # anything but the image just built.
           ok=0
           for _ in $(seq 1 30); do
-            if docker run --rm --network container:trentina-start \
-                 --entrypoint python trentina:scan -c \
-                 'import urllib.request,sys; sys.stdout.write(urllib.request.urlopen("http://127.0.0.1:8019/health", timeout=5).read().decode())'; then
+            if docker exec trentina-start python -c 'import urllib.request,sys; sys.stdout.write(urllib.request.urlopen("http://127.0.0.1:8019/health", timeout=5).read().decode())'; then
               ok=1; break
             fi
             sleep 2
