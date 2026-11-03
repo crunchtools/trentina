@@ -284,6 +284,11 @@ class TestBinary:
         assert key.unread == ()
 
 
+# Below this, the two sizes are both too small to tell linear from anything
+# else on a loaded machine. See TestShape.test_linear for the measurements.
+NOISE_FLOOR = 0.15
+
+
 class TestShape:
     def test_nothing_to_unpack_returns_the_same_object(self) -> None:
         text = "plain words and a sha " + _GIT_SHA
@@ -323,6 +328,17 @@ class TestShape:
         on wall clock the 80k case landed at 0.0514 s against a 0.05 s floor
         on a saturated CI runner — a failure that said nothing about the
         regex it guards.
+
+        ``NOISE_FLOOR`` is 0.15 s and not 0.05 s because thread CPU time is
+        not immune to the same contention: on 2026-11-03 the 80k ``uu-bait``
+        case measured 0.0513 s of thread time against 0.0125 s at 40k, a 4.1x
+        ratio that failed the check — while the same case measured 20.1 ms at
+        80k and 41.5 ms at 160k on an idle machine, 2.0x per doubling, which
+        is the linearity this asserts. Fourteen workers competing for memory
+        bandwidth slow a thread's own cycles. The floor stays decisive
+        anyway: a regex gone quadratic over 80k characters costs seconds, one
+        to two orders of magnitude above it, so nothing this guards against
+        hides under it.
         """
         timings = []
         for n in (40_000, 80_000):
@@ -333,7 +349,7 @@ class TestShape:
                 unpack(text)
                 best = min(best, time.thread_time() - start)
             timings.append(best)
-        assert timings[1] < max(timings[0] * 4, 0.05)
+        assert timings[1] < max(timings[0] * 4, NOISE_FLOOR)
 
 
 _D = "trentina.defense"
