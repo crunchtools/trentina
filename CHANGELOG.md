@@ -10,6 +10,25 @@ under that name.
 
 ## [Unreleased]
 
+### Changed
+
+- **The image build stops installing PyTorch.** `model-builder` pulls torch,
+  optimum, transformers and sentencepiece, and the default target used it for
+  two things: a model directory that came from the digest-pinned `l2-model`
+  stage anyway, and `libstdc++.so.6`, which ships in the builder base rather
+  than arriving with a pip install. Both are taken from where they come from,
+  so nothing in the default target depends on `model-builder` and the builder
+  skips the stage: 59 s measured cold, of a four-minute build. The stage stays
+  for `l2-train.yml --target model-builder`, which exports what it trains and
+  does need them.
+- **The locked set is installed by `uv pip install`, not `pip`** -- the stage
+  already installs uv to run `uv export`. Same 263 entries, in 18.9 s against
+  42.5 s, measured cold on the same requirements file. The verified install is
+  unchanged: with every hash in the exported file replaced, uv refuses with
+  `Hash mismatch` exactly as pip refuses. (Corrupting ONE hash proves nothing
+  about either: a requirements file lists a hash per artifact and both accept a
+  download matching any of them.)
+
 ## [6.3.0] - 2026-11-03
 
 ### Added

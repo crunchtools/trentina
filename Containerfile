@@ -104,14 +104,25 @@ COPY pyproject.toml README.md uv.lock ./
 # it against the project. Exporting without installing gives you a verified
 # wheel nobody imports; installing without exporting gives you an unpinned one.
 #
-# `uv export` emits hashes, so this is also a verified install. The project
-# itself goes in second with --no-deps so pip cannot re-resolve around the lock.
+# `uv export` emits hashes, so this is also a verified install, and `uv pip
+# install` enforces them: with every hash in the exported file replaced by a
+# wrong one it refuses with `Hash mismatch`, exactly as pip refuses with
+# `THESE PACKAGES DO NOT MATCH THE HASHES`. It installs the same 263 entries
+# pip did, and does it in 18.9 s against pip's 42.5 s (measured cold, same
+# requirements file) -- which is why the installer here is uv and not the pip
+# that is also present. Note that corrupting ONE hash of a package proves
+# nothing either way: a requirements file lists a hash per artifact and both
+# installers accept a download matching any of them.
+#
+# The project itself goes in second with --no-deps so nothing can re-resolve
+# around the lock.
 #
 # The requirements go in with --no-deps too (#370). The export is the whole
-# locked set, so pip has nothing to resolve, and letting it try is what broke
-# the build: rapidocr asks for `opencv-python`, the lock replaces that with
-# `opencv-python-headless` (pyproject.toml, [tool.uv]), and pip, reading
-# rapidocr's own metadata, went looking for the one the lock had removed.
+# locked set, so there is nothing to resolve, and letting an installer try is
+# what broke the build: rapidocr asks for `opencv-python`, the lock replaces
+# that with `opencv-python-headless` (pyproject.toml, [tool.uv]), and pip,
+# reading rapidocr's own metadata, went looking for the one the lock had
+# removed.
 #
 # petit-log-crunchtools used to be held out of this export and installed from
 # a hashed source archive, because it resolved from a git tag and pip refuses
@@ -121,13 +132,13 @@ COPY pyproject.toml README.md uv.lock ./
 RUN pip install --no-cache-dir uv \
  && uv export --frozen --no-dev --extra matrix --extra bridge --no-emit-project \
       --format requirements-txt -o /tmp/requirements.txt \
- && pip install --no-cache-dir --prefix=/usr --no-deps -r /tmp/requirements.txt
+ && uv pip install --no-cache --prefix=/usr --no-deps -r /tmp/requirements.txt
 
 # The project itself, in its own layer so a source change costs only this one.
-# --no-deps again: the locked set is already installed above, and letting pip
-# resolve here is what the comment above is about.
+# --no-deps again: the locked set is already installed above, and letting the
+# installer resolve here is what the comment above is about.
 COPY src/ ./src/
-RUN pip install --no-cache-dir --prefix=/usr --no-deps '.[matrix,bridge]'
+RUN uv pip install --no-cache --prefix=/usr --no-deps '.[matrix,bridge]'
 
 # onnxruntime >= 1.29 reads /etc/machine-id during module init. When that file
 # is absent it falls back to popen("blkid")/popen("hostname"), and popen returns
@@ -146,7 +157,14 @@ RUN tr -d - < /proc/sys/kernel/random/uuid > /etc/machine-id.seed
 # and refuses to start on one under TRENTINA_REQUIRE_HARDENED.
 # ============================================================
 FROM pip-builder AS l2-gate
-COPY --from=model-builder /models/ /models/
+# Straight from the digest-pinned stage, NOT through model-builder, which held
+# the same bytes and nothing else this stage uses. Routed that way, nothing in
+# the default target depends on model-builder, so the builder skips it and its
+# torch + optimum + transformers + sentencepiece install (59 s measured cold,
+# of a four-minute build) stops happening on every build. The stage stays in
+# this file for `l2-train.yml --target model-builder`, which exports what it
+# trains and does need them.
+COPY --from=l2-model /model/ /models/prompt-injection-guard-small-ct/
 COPY benchmarks/l2_obfuscation.py benchmarks/l2_benign.py /gate/benchmarks/
 COPY corpora/internal.py corpora/benign_ops.py /gate/corpora/
 RUN cd /gate \
@@ -187,8 +205,11 @@ LABEL name="trentina" \
 
 WORKDIR /app
 
-# Copy libstdc++ from model-builder — required by onnxruntime/numpy C extensions
-COPY --from=model-builder /usr/lib64/libstdc++.so.6* /usr/lib64/
+# libstdc++, required by the onnxruntime and numpy C extensions. From
+# pip-builder, which has it: it ships in quay.io/hummingbird/python's own
+# builder variant (libstdc++.so.6 -> libstdc++.so.6.0.36) rather than arriving
+# with a pip install, so taking it from here depends on no extra stage.
+COPY --from=pip-builder /usr/lib64/libstdc++.so.6* /usr/lib64/
 
 # The ONNX model, from the gate stage: its manifest carries the gate record.
 # No PyTorch in the final image.
