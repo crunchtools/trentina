@@ -717,15 +717,32 @@ change to the test.
 
 ## Development
 
+The gates run themselves: `./scripts/gates.sh commit|push|pr|release`, every one
+from a container image (constitution XII's host contract assumes only git,
+podman, pre-commit and gh). `commit` and `push` are wired as pre-commit hooks;
+`pr` and `release` have no git hook and are run by hand. Exit 2 means a gate
+COULD NOT run and is never to be worked around.
+
+| Tier | What it runs |
+|---|---|
+| commit | ruff (staged, and the whole tree as CI lints it), mypy, Gourmand, Gatehouse over the staged diff |
+| push | the full suite, semgrep, Gatehouse over `origin/main...HEAD` |
+| pr | the container build, the verification CI runs in the image, trivy, the constitution validator |
+| release | the constitution validator and `make rpm` |
+
+The image is buildable locally and `./scripts/gates.sh pr` is how. It needs no
+build secret: the HF_TOKEN that once gated it went at 0.59.0 with Prompt Guard 2
+(#362). What causes drift is PUSHING a hand-built image, which only
+`container.yml` does.
+
+Underneath, if you want one tool by hand:
+
 ```bash
 uv run ruff check src tests corpora    # Lint
 uv run mypy src                # Type check
 uv run pytest -v               # Test
 TRENTINA_REQUIRE_L2_MODEL=1 CLASSIFIER_MODEL_PATH=<export> uv run pytest tests/test_l2_integration.py  # L2 against a real model; fails, not skips, if it does not load
-podman run --rm -v .:/repo:Z quay.io/crunchtools/gourmand:latest check /repo  # Slop detection
-# Container image: built by GHA (.github/workflows/container.yml), never locally —
-# the model-export stage needs a gated HF credential held only in CI. Push and let
-# the pipeline build it.
+podman run --rm -v .:/src:Z -w /src quay.io/crunchtools/gourmand:latest check --full  # Slop detection, as the hook runs it
 uv run python benchmarks/provider_benchmark.py  # L3 detection benchmark across providers — see docs/benchmark.md
 CLASSIFIER_MODEL_PATH=<export> uv run python benchmarks/l2_lone_flag.py --packs <pack.json> --judged <detonation.json> --corpora <benchmark.json>  # what L2 flags of a judge's stored misses; calls no judge (#404)
 podman run --rm -v .:/src:Z docker.io/semgrep/semgrep semgrep --config /src/.semgrep --error /src/src  # in-repo rules

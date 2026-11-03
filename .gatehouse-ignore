@@ -12,3 +12,6 @@ demo/attack-sim/payload/
 docs/demo/site/
 # Captured third-party tool list: data, not code under review
 docs/demo/fixtures/
+
+# The constitution checkout gates.sh clones: not our code to review.
+.gates/
