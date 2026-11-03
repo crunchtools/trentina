@@ -801,10 +801,11 @@ async def reload_profiles() -> dict[str, Any]:
     session_registry.session_ttl = new_config.session_ttl_seconds
     session_registry.max_sessions_per_profile = new_config.max_sessions_per_profile
     replace_active_config(replace(new_config, profiles=registry))
-    # A reload can promote, demote or re-key the operator. Say who holds the
+    # A reload can promote, demote or re-key an operator, add a second one, or
+    # move `gateway.service_identity` between them (#661). Say who holds the
     # service identity now — it binds the approved-config apply, and since
     # 6.1.0 that is the whole of it.
-    log_service_identity(registry)
+    log_service_identity(registry, new_config.service_identity)
 
     # A profile's descriptions are judged by ITS OWN judge (6.1.0), so a judge
     # that moved makes exactly one profile's aggregate stale, and `changed`

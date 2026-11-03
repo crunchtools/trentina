@@ -11,8 +11,8 @@ rules are not a privilege boundary against a hostile operator — there is no
 such boundary, by design. They exist because the operator is an LLM, so the
 question is not "may it?" but "can it be talked into it?", and two writes have
 consequences out of all proportion to how easily they would slip into a
-plausible-looking request: minting a second operator, and accepting another
-gateway's security verdict.
+plausible-looking request: moving who administers the gateway, and accepting
+another gateway's security verdict.
 """
 
 from __future__ import annotations
@@ -25,10 +25,12 @@ import yaml
 
 from . import config_patch
 from .profile import DefenseConfig
+from .service import find_operator
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
+    from .loader import GatewayConfig
     from .profile import Profile
 
 WRITE_ACTIONS = ("set", "unset", "normalize")
@@ -161,6 +163,27 @@ def operator_profile(profiles: dict[str, Profile]) -> dict[str, Any]:
         for name, profile in profiles.items()
         if profile.role == "operator"
     }
+
+
+def service_identity(config: GatewayConfig) -> str | None:
+    """Which operator this gateway binds and reports as ITSELF (#661).
+
+    Compared before and after a write, beside ``operator_profile``, because
+    since 6.4.0 more than one profile may hold the role and the one the gateway
+    claims to be is a separate choice from who holds it. It reaches two places a
+    reader believes: the profile named in an approved config write's audit row,
+    and ``quarantine_stats``' ``perimeter.judge``.
+
+    The RESOLVED name, through ``find_operator``, not the raw setting. Two
+    different writes move it — naming a different profile, and promoting or
+    demoting an operator while the setting is absent — and only the resolved
+    answer makes them one comparison. Computed on the LOADED candidate like
+    every rule here, for the usual reason: a write reaches the setting by
+    writing the ``gateway`` key, and the loaded config is the only place the
+    result is unambiguous.
+    """
+    operator = find_operator(config.profiles, config.service_identity)
+    return operator.name if operator is not None else None
 
 
 def trust_pins(profiles: dict[str, Profile]) -> dict[str, dict[str, str]]:

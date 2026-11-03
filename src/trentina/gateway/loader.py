@@ -62,6 +62,12 @@ class GatewayConfig:
     session_ttl_seconds: float = 300.0
     max_sessions_per_profile: int = 10
     approval_enrol_window_seconds: float = DEFAULT_ENROL_WINDOW_SECONDS
+    #: ``gateway.service_identity``: which operator the gateway binds and
+    #: reports as ITSELF (#661). None when the file names none, which is legal
+    #: only while there is at most one written operator to bind — see
+    #: ``_check_operator``. Read through ``service.find_operator`` rather than
+    #: directly, so "who is the service identity" has one answer.
+    service_identity: str | None = None
 
 
 logger = logging.getLogger(__name__)
@@ -1218,12 +1224,29 @@ def _check_judges(registry: dict[str, Profile]) -> None:
         )
 
 
-def _check_operator(registry: dict[str, Profile]) -> None:
-    """At most one operator, and it must hold a key for its own judge.
+def _check_operator(registry: dict[str, Profile], service_identity: str | None) -> None:
+    """More than one operator is allowed; which one the gateway IS is not guessed.
 
-    The operator is the gateway's service identity (``service.py``, #138), and
-    two of them would make "whose identity" a matter of file order again, which
-    is the thing #138 removed — so it is a load error, not a tiebreak.
+    Through 6.3.0 a second written operator was a load error, because the
+    operator was also whose key the gateway's own model calls ran on and a
+    second one would have made that a matter of file order — the defect #138
+    removed. 6.1.0 moved every such call onto the listing profile's own key, so
+    nothing bills the operator any more and two agents administering one gateway
+    costs nothing (#661).
+
+    What two operators would still leave to dict order is which one the gateway
+    binds and reports as ITSELF: the profile in an approved config write's audit
+    row, and ``quarantine_stats``' ``perimeter.judge``. So the rule inverts
+    rather than disappearing — more than one operator is fine, and more than one
+    with no ``gateway.service_identity`` naming one of them is refused. Both
+    names are in the message, because the fix is to choose between them and a
+    refusal that named neither would not say what to choose from. Defaulting to
+    the first instead would be #138 again under a new spelling.
+
+    The setting must name a profile that is here, holds the role, and was
+    WRITTEN: a derived federation ingress carries its source's role since 6.0.0
+    but is not a profile anybody chose, so it can never be the identity this
+    gateway claims.
 
     The key requirement outlives the reason it was written for. Since 6.1.0 the
     operator pays for nobody else's judging, so a missing key costs only its own
@@ -1237,34 +1260,68 @@ def _check_operator(registry: dict[str, Profile]) -> None:
     it stays a refusal, which on a reload keeps the running config
     (``reload_profiles``) and puts the reason in the one message a person
     running the container is sure to read.
+
+    That reason is per-PROFILE, not per-gateway: each operator reaches the admin
+    tools on its own credential and judges its own descriptions on its own key.
+    So every written operator is held to it, not only the one the setting names
+    — a keyless second operator is an admin seat that cannot administer.
     """
-    from .service import judge_of
+    from .service import judge_of, written_operators
 
     # WRITTEN profiles only. Since 6.0.0 a derived ingress carries its source's
     # role, so a shared operator profile and its derivation are both operators
     # and counting them would refuse every such file. The derivation is not a
     # second identity; it is the same one reached by a peer.
-    operators = sorted(
-        name for name, p in registry.items() if p.role == "operator" and p.federation_of is None
-    )
-    if len(operators) > 1:
+    operators = sorted(written_operators(registry), key=lambda p: p.name)
+    names = [p.name for p in operators]
+    if service_identity is not None and service_identity not in names:
         raise ProfileConfigError(
-            f"at most one profile may declare role: operator, found {len(operators)}: "
-            f"{', '.join(operators)}"
+            f"gateway.service_identity names {service_identity!r}, which is not a profile "
+            f"in this file with role: operator. It must name one of: "
+            f"{', '.join(names) or 'none — no profile declares role: operator'}. A derived "
+            f"federation ingress carries its source's role but is not a profile anybody "
+            f"wrote, so it can never be the identity this gateway reports as its own"
         )
-    if not operators:
-        return
-    operator = registry[operators[0]]
-    provider, _model = judge_of(operator)
-    if provider != "ollama" and provider not in operator.llm_keys:
+    if len(operators) > 1 and service_identity is None:
         raise ProfileConfigError(
-            f"operator profile {operator.name!r} judges with provider {provider!r} but has "
-            f"no llm_keys.{provider}; its own admin tools are internal:// and are judged "
-            f"like any other description, so under block it would be served no "
-            f"quarantine_stats, config_tool or reload_profiles and the gateway could not "
-            f"be administered through the API. Add the key, or set defense.provider to one "
-            f"it holds"
+            f"{len(operators)} profiles declare role: operator ({', '.join(names)}), so "
+            f"set gateway.service_identity to whichever one the gateway should bind and "
+            f"report as itself — it names the profile in an approved config write's audit "
+            f"row and in quarantine_stats' perimeter.judge. More than one operator is "
+            f"allowed; picking one of them by file order is not"
         )
+    for operator in operators:
+        provider, _model = judge_of(operator)
+        if provider != "ollama" and provider not in operator.llm_keys:
+            raise ProfileConfigError(
+                f"operator profile {operator.name!r} judges with provider {provider!r} but "
+                f"has no llm_keys.{provider}; its own admin tools are internal:// and are "
+                f"judged like any other description, so under block it would be served no "
+                f"quarantine_stats, config_tool or reload_profiles and the gateway could "
+                f"not be administered through the API. Add the key, or set defense.provider "
+                f"to one it holds"
+            )
+
+
+def _gateway_service_identity(gateway: dict[str, Any]) -> str | None:
+    """``gateway.service_identity``: a profile name, or None (#661).
+
+    Shape only. Whether the name resolves to a written operator is
+    ``_check_operator``'s question, and it cannot be asked here: the profiles do
+    not exist yet. A non-string is fatal rather than ignored — a list or a
+    mapping here is somebody's idea of naming two identities, and silently
+    falling back to the one-operator default would bind a profile they did not
+    choose.
+    """
+    raw = gateway.get("service_identity")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise ProfileConfigError(
+            "gateway.service_identity must be the name of one profile that declares "
+            "role: operator"
+        )
+    return raw.strip()
 
 
 def matrix_other_agents(matrix: dict[str, Any]) -> frozenset[str]:
@@ -1491,6 +1548,16 @@ def load_profiles(path: Path | str) -> GatewayConfig:
     declared = _declared_secret_env_names(cfg_data)
     _refuse_derived_fields(config_path, profiles_section)
 
+    # Read BEFORE the profiles are built, because `_check_operator` needs
+    # `service_identity` and it is a registry-wide check. The rest of this
+    # section is read again below, where the GatewayConfig is assembled;
+    # pulling one value forward is cheaper than moving every setting's
+    # defaulting up here, away from the constructor that documents it.
+    gateway_section = cfg_data.get("gateway", {})
+    if not isinstance(gateway_section, dict):
+        gateway_section = {}
+    service_identity = _gateway_service_identity(gateway_section)
+
     with _protecting(declared, config_path):
         registry: dict[str, Profile] = {
             name: _build_profile(name, body) for name, body in profiles_section.items()
@@ -1500,7 +1567,7 @@ def load_profiles(path: Path | str) -> GatewayConfig:
         # profile is. A derived name that collides with a written one is
         # refused rather than silently winning either way.
         _add_derived_ingresses(registry)
-        _check_operator(registry)
+        _check_operator(registry, service_identity)
         _check_federation_internal_surface(registry)
         _check_federation_audience(registry)
         _check_judges(registry)
@@ -1521,16 +1588,13 @@ def load_profiles(path: Path | str) -> GatewayConfig:
     matrix_section = cfg_data.get("matrix", {})
     if isinstance(matrix_section, dict):
         matrix_other_agents(matrix_section)  # validated here, bound at startup
-    gateway_section = cfg_data.get("gateway", {})
-    if not isinstance(gateway_section, dict):
-        gateway_section = {}
-
     return GatewayConfig(
         profiles=registry,
         llm_providers=llm_section if isinstance(llm_section, dict) else {},
         matrix=matrix_section if isinstance(matrix_section, dict) else {},
         git_remotes=git_remotes,
         egress_upstreams=egress_upstreams,
+        service_identity=service_identity,
         session_ttl_seconds=float(gateway_section.get("session_ttl_seconds", 300.0)),
         max_sessions_per_profile=int(gateway_section.get("max_sessions_per_profile", 10)),
         # Clamped at load rather than at use, so what the file says and what

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -33,10 +34,14 @@ from trentina.gateway.profile import (
     DefenseConfig,
     Profile,
 )
+from trentina.gateway.scope import current_scope
 from trentina.gateway.service import (
+    find_operator,
     judge_of,
+    log_service_identity,
     service_context,
     service_profile,
+    written_operators,
 )
 from trentina.gateway.sessions import SessionRegistry
 from trentina.quarantine.providers.base import ProviderResult
@@ -70,30 +75,72 @@ _OPERATOR = """\
 """
 
 
-def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *sections: str) -> Path:
+#: A second operator, written so it differs from `_OPERATOR` only in its name
+#: and token. Both hold a key for their own judge, which the load rule requires
+#: of EVERY operator since 6.4.0 and not only the bound one.
+_OPERATOR_TWO = """\
+  ops2:
+    role: operator
+    auth:
+      bearer_token_env: TEST_OPS2_TOKEN
+    llm_keys:
+      gemini:
+        api_key: ops2-key
+    defense:
+      model: ops2-model
+"""
+
+
+def _load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *sections: str,
+    service_identity: str | None = None,
+) -> Path:
     monkeypatch.setenv("TEST_TENANT_TOKEN", "t")
     monkeypatch.setenv("TEST_OPS_TOKEN", "o")
+    monkeypatch.setenv("TEST_OPS2_TOKEN", "o2")
     path = tmp_path / "profiles.yaml"
-    path.write_text("profiles:\n" + "".join(sections), encoding="utf-8")
+    gateway = (
+        f"gateway:\n  service_identity: {service_identity}\n"
+        if service_identity is not None
+        else ""
+    )
+    path.write_text(gateway + "profiles:\n" + "".join(sections), encoding="utf-8")
     return path
 
 
-def _live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *sections: str) -> dict[str, Profile]:
-    path = _load(tmp_path, monkeypatch, *sections)
+def _live(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *sections: str,
+    service_identity: str | None = None,
+) -> dict[str, Profile]:
+    path = _load(tmp_path, monkeypatch, *sections, service_identity=service_identity)
     config = load_profiles(path)
     register_active_config(path, config, {})
     return config.profiles
 
 
 class TestLoadRules:
-    def test_two_operators_refuse_the_file(
+    def test_two_operators_with_no_service_identity_refuse_the_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        second = _OPERATOR.replace("  ops:", "  ops2:")
-        path = _load(tmp_path, monkeypatch, _OPERATOR, second)
+        """6.4.0 inverted this rule rather than deleting it (#661).
 
-        with pytest.raises(ProfileConfigError, match="at most one profile"):
+        Two operators are allowed; two operators and no name for the one the
+        gateway reports as ITSELF is not, because the alternative is taking the
+        first in dict order — the defect #138 removed, under a new spelling.
+        Both names are asserted: the fix is to choose between them, and a
+        refusal naming neither does not say what there is to choose from.
+        """
+        path = _load(tmp_path, monkeypatch, _OPERATOR, _OPERATOR_TWO)
+
+        with pytest.raises(ProfileConfigError, match=r"set gateway\.service_identity") as caught:
             load_profiles(path)
+
+        message = str(caught.value)
+        assert "ops," in message and "ops2" in message
 
     def test_an_operator_without_a_key_for_its_provider_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -159,6 +206,179 @@ class TestLoadRules:
         path = _load(tmp_path, monkeypatch, _TENANT)
 
         assert "tenant" in load_profiles(path).profiles
+
+
+class TestMoreThanOneOperator:
+    """#661: two agents administer one gateway, and the gateway says which it is.
+
+    The one-operator rule existed because the operator was also whose key the
+    gateway's own model calls ran on, so a second one would have let dict order
+    decide whose key paid (#138). 6.1.0 moved every such call onto the listing
+    profile's own key. What is left to decide is which operator the gateway
+    binds and REPORTS as itself: the profile in an approved config write's audit
+    row, and `quarantine_stats`' `perimeter.judge`.
+    """
+
+    def test_two_operators_load_when_one_is_named(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        profiles = _live(
+            tmp_path, monkeypatch, _OPERATOR, _OPERATOR_TWO, service_identity="ops2"
+        )
+
+        assert [p.name for p in written_operators(profiles)] == ["ops", "ops2"]
+        assert service_profile().name == "ops2"
+
+    @pytest.mark.parametrize("named", ["ops", "ops2"])
+    def test_either_one_can_be_the_named_identity(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, named: str
+    ) -> None:
+        _live(tmp_path, monkeypatch, _OPERATOR, _OPERATOR_TWO, service_identity=named)
+
+        assert service_profile().name == named
+
+    @pytest.mark.parametrize("order", [(_OPERATOR, _OPERATOR_TWO), (_OPERATOR_TWO, _OPERATOR)])
+    def test_file_order_does_not_move_the_bound_identity(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, order: tuple[str, str]
+    ) -> None:
+        """The regression the whole setting exists to prevent.
+
+        Mutation check: make `find_operator` ignore `service_identity` and the
+        second parametrisation returns `ops2`. Both orders are run because dict
+        order here IS file order — `load_profiles` builds the registry by
+        iterating the `profiles` mapping — so one order alone would pass with
+        the setting doing nothing.
+        """
+        _live(tmp_path, monkeypatch, *order, service_identity="ops")
+
+        assert service_profile().name == "ops"
+
+    @pytest.mark.parametrize("order", [(_OPERATOR, _OPERATOR_TWO), (_OPERATOR_TWO, _OPERATOR)])
+    def test_the_judge_reported_to_an_operator_is_the_named_ones(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, order: tuple[str, str]
+    ) -> None:
+        """`quarantine_stats`' `perimeter.judge`, which is `judge_stamp(service_profile())`.
+
+        The two operators differ in `defense.model`, so a judge resolved from
+        the wrong one is visible in the value rather than only in the name.
+        """
+        _live(tmp_path, monkeypatch, *order, service_identity="ops")
+
+        assert judge_of(service_profile()) == (get_config().provider, "ops-model")
+
+    @pytest.mark.parametrize("caller", ["ops", "ops2"])
+    def test_both_operators_hold_the_gateway_scope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caller: str
+    ) -> None:
+        """Admin scope never read the service identity — it reads `role` — and
+        that is what makes this issue cheap. Asserted anyway: "either agent can
+        administer the gateway" is the feature, and it would be a silent loss if
+        a later change keyed scope on the bound profile instead.
+        """
+        profiles = _live(
+            tmp_path, monkeypatch, _OPERATOR, _OPERATOR_TWO, service_identity="ops"
+        )
+
+        with profile_context(profiles[caller]):
+            assert current_scope().is_operator is True
+
+    def test_a_keyless_second_operator_is_refused_by_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The keyless rule is per-PROFILE, so it applies to every operator.
+
+        6.1.1's reasoning: the admin tools are `internal://` and are judged, so
+        under `block` a keyless operator is served none of them. Each operator
+        reaches those tools on its own credential and judges them on its own
+        key, so a keyless second operator is an admin seat that cannot
+        administer. Mutation check: check only the named identity and this
+        loads.
+        """
+        keyless = _OPERATOR_TWO.replace(
+            "    llm_keys:\n      gemini:\n        api_key: ops2-key\n", ""
+        )
+        path = _load(tmp_path, monkeypatch, _OPERATOR, keyless, service_identity="ops")
+
+        with pytest.raises(ProfileConfigError, match="no llm_keys") as caught:
+            load_profiles(path)
+
+        assert "'ops2'" in str(caught.value)
+
+    def test_one_operator_needs_no_setting(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No file written before 6.4.0 changes meaning."""
+        _live(tmp_path, monkeypatch, _TENANT, _OPERATOR)
+
+        assert service_profile().name == "ops"
+
+    def test_naming_a_profile_that_is_not_here_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = _load(tmp_path, monkeypatch, _OPERATOR, service_identity="nobody")
+
+        with pytest.raises(ProfileConfigError, match=r"gateway\.service_identity names"):
+            load_profiles(path)
+
+    def test_naming_a_tenant_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A profile that does not hold the role cannot be the identity: the
+        gateway's own work applies a whole config file, which `reload_profiles`
+        does only for an operator."""
+        path = _load(tmp_path, monkeypatch, _TENANT, _OPERATOR, service_identity="tenant")
+
+        with pytest.raises(ProfileConfigError, match="role: operator"):
+            load_profiles(path)
+
+    def test_a_non_string_setting_is_fatal_rather_than_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A list here is somebody naming two identities. Falling back to the
+        one-operator default would bind a profile they did not choose."""
+        monkeypatch.setenv("TEST_OPS_TOKEN", "o")
+        path = tmp_path / "profiles.yaml"
+        path.write_text(
+            "gateway:\n  service_identity:\n    - ops\n    - ops2\nprofiles:\n" + _OPERATOR,
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ProfileConfigError, match="must be the name of one profile"):
+            load_profiles(path)
+
+    def test_the_startup_line_names_the_bound_one_and_counts_the_rest(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """With two operators, the line saying which one is bound reads as
+        though it were the only one unless the others are in the same record."""
+        profiles = _live(
+            tmp_path, monkeypatch, _OPERATOR, _OPERATOR_TWO, service_identity="ops"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="trentina.gateway.service"):
+            log_service_identity(profiles, "ops")
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("operator profile=ops," in text for text in messages)
+        assert any("also hold role: operator (ops2)" in text for text in messages)
+
+    def test_a_derived_ingress_is_not_counted_and_cannot_be_named(self) -> None:
+        """A shared operator and its derivation are ONE operator, and the
+        derivation is never the identity even when named: it is not a profile
+        anybody wrote, so nobody chose it."""
+        from tests.test_operator_across_federation import _shared_operator
+        from trentina.gateway.federation_link import derive_ingress, ingress_name
+
+        shared = _shared_operator()
+        ingress = derive_ingress(shared)
+        registry = {ingress.name: ingress, shared.name: shared}
+
+        assert [p.name for p in written_operators(registry)] == ["josui"]
+        found = find_operator(registry, ingress_name("josui"))
+        assert found is not None and found.name == "josui"
 
 
 class TestServiceContext:

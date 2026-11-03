@@ -10,6 +10,41 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- **More than one profile may be the operator, so two agents can administer one
+  gateway** without sharing a login (#661). The one-operator rule existed
+  because `role: operator` was also whose key the gateway's own model calls ran
+  on, and a second one would have let file order decide whose key paid — the
+  defect #138 removed. 6.1.0 moved every such call onto the listing profile's
+  own key, so nothing bills the operator and the rule was protecting two
+  *reported* values: the profile in an approved config write's audit row, and
+  `quarantine_stats`' `perimeter.judge`.
+- **`gateway.service_identity` names the operator the gateway binds and reports
+  as itself.** With one operator it is unnecessary and may be left out, so no
+  existing file changes meaning. With two or more and no setting, the file is
+  **refused** rather than resolved by whichever came first, and the refusal
+  names both: file order deciding an identity is what #138 removed. The setting
+  must name a profile that is present, holds the role, and was written — a
+  derived federation ingress carries its source's role but is not a profile
+  anybody chose.
+- Every operator is equal: each administers the whole gateway on its own
+  credential, and the **keyless-operator refusal now applies to every written
+  operator** rather than only the named one. The reason is per-profile — the
+  admin tools are `internal://` and are judged, so under `block` a keyless
+  operator is served none of them and the gateway cannot be repaired through
+  the API.
+- Moving the role, the credential behind it, or the named identity are three
+  spellings of one decision and all **stage for a person** at `/approve`. The
+  rule compares the *resolved* identity, so demoting the named operator stages
+  too, although `gateway.service_identity` is not in that write. Any operator
+  may propose it, including one that is not the named identity: an operator is
+  root here, and one that can rewrite another's `auth` block could become it
+  anyway, so a restriction naming only the service identity would defend
+  nothing. Adding a second operator takes two writes — name the identity, then
+  grant the role — because the candidate must validate at every step, which
+  puts the choice before the ambiguity.
+
 ### Changed
 
 - **The container gate no longer publishes a port to check `/health`.** It

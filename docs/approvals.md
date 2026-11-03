@@ -2,7 +2,8 @@
 
 Your agent runs this gateway. Six things it cannot do alone:
 
-- **Move the operator profile** — who is root here.
+- **Move the operator profile** — who is root here, and which of them this
+  gateway reports as itself.
 - **Turn on federation trust** — serve another gateway's answers without
   scanning them.
 - **Let another gateway in** — add a peer that may authenticate to a profile you
@@ -55,6 +56,8 @@ After that, just say what you want:
 > Trust the peer gateway's verdicts for this backend.
 
 > Move the operator profile to <profile>.
+
+> Make <profile> an operator too.
 
 > Let a peer federate into the shared ingress.
 

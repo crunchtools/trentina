@@ -21,6 +21,7 @@ from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
 from trentina.gateway.loader import get_active_config, load_profiles, register_active_config
 from trentina.gateway.profile import Profile
+from trentina.gateway.service import service_profile
 from trentina.tools.config import manage_config
 
 pytestmark = pytest.mark.anyio
@@ -815,6 +816,143 @@ def _with_peers(peers: dict[str, Any]) -> dict[str, Any]:
             },
         }
     }
+
+
+#: Two operators and a name for the one the gateway reports as itself. The
+#: second is `ollama` like the first, so neither is refused by the
+#: keyless-operator rule before the staging rules are reached.
+def _two_operators(service_identity: str | None = "op") -> dict[str, Any]:
+    document: dict[str, Any] = {
+        "profiles": {
+            "op": _OPERATOR,
+            "op2": {
+                "role": "operator",
+                "defense": {"provider": "ollama"},
+                "auth": {"bearer_token_env": "FED_TOKEN"},
+                "backends": {"web": {"url": "internal://web", "tools_allow": ["fetch_tool"]}},
+            },
+        }
+    }
+    if service_identity is not None:
+        document["gateway"] = {"service_identity": service_identity}
+    return document
+
+
+class TestTheServiceIdentity:
+    """`gateway.service_identity`: which operator the gateway reports as ITSELF
+    (#661).
+
+    More than one profile may hold the role since 6.4.0, so "who administers
+    this gateway" and "which one of them the gateway binds as its own identity"
+    became two answers. The second reaches two places a reader believes — the
+    profile named in an approved write's audit row, and `quarantine_stats`'
+    `perimeter.judge` — so moving it is the same decision as moving the role,
+    and goes to the same page. Scott's call: any operator may propose it, and a
+    person agrees. There is no privilege tier among operators.
+    """
+
+    async def test_moving_it_between_two_operators_is_staged_not_applied(
+        self, gateway: pathlib.Path
+    ) -> None:
+        _rewrite(gateway, _two_operators("op"))
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator("set", "gateway.service_identity", "op2", await _hash())
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "operator profile"
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_the_page_names_both_sides_of_the_move(self, gateway: pathlib.Path) -> None:
+        """"op, then op2". Who HOLDS the role has not moved, so without this row
+        the page reads as a change with nothing changed on it -- a no-op a person
+        has no reason to decline."""
+        _rewrite(gateway, _two_operators("op"))
+
+        await _as_operator("set", "gateway.service_identity", "op2", await _hash())
+
+        shown = pending.outstanding()[pending.Kind.OPERATOR_PROFILE]
+        assert shown["The gateway reports itself as"] == "op, then op2"
+        # Unchanged, and still shown: the two rows a person reads first are who
+        # holds the role, and it is the same two profiles on both sides.
+        assert shown["Holds the operator role now"] == "op, op2"
+        assert shown["Would hold it after this change"] == "op, op2"
+
+    async def test_approving_it_moves_the_bound_identity(self, gateway: pathlib.Path) -> None:
+        _rewrite(gateway, _two_operators("op"))
+        await _as_operator("set", "gateway.service_identity", "op2", await _hash())
+        shown = pending.outstanding()[pending.Kind.OPERATOR_PROFILE]
+
+        applied = await pending.approve(
+            pending.Kind.OPERATOR_PROFILE, pending.digest_of(shown)
+        )
+
+        assert applied["applied"] is True
+        assert "service_identity: op2" in gateway.read_text(encoding="utf-8")
+        assert service_profile().name == "op2"
+
+    async def test_naming_the_identity_it_already_resolves_to_applies_at_once(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The rule is on the RESOLVED identity, not on the raw setting.
+
+        Writing the setting on a file with one operator spells out what was
+        already true, which is what an operator does on the way to adding a
+        second one. Staging it would put a person in front of a change that
+        changes nothing and teach them the page is a formality.
+        """
+        result = await _as_operator("set", "gateway.service_identity", "op", await _hash())
+
+        assert result.get("staged") is not True
+        assert result["applied"] is True
+        assert not pending.outstanding()
+
+    async def test_promoting_a_second_operator_is_staged(self, gateway: pathlib.Path) -> None:
+        """The other half of Scott's shape: with the identity already named, a
+        second profile can be given the role in one write, and a person sees it.
+        """
+        document = _two_operators("op")
+        document["profiles"]["op2"].pop("role")
+        _rewrite(gateway, document)
+
+        result = await _as_operator("set", "profiles.op2.role", "operator", await _hash())
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "operator profile"
+        shown = pending.outstanding()[pending.Kind.OPERATOR_PROFILE]
+        assert shown["Holds the operator role now"] == "op"
+        assert shown["Would hold it after this change"] == "op, op2"
+        # The gateway still reports itself as `op`, so the row stays off.
+        assert "The gateway reports itself as" not in shown
+
+    async def test_demoting_the_bound_operator_is_staged_and_names_the_new_one(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """Taking the role off the bound profile moves the identity by
+        implication, which is exactly the write a resolved comparison catches
+        and a raw-setting one would not: `gateway.service_identity` is not in
+        this write at all.
+        """
+        _rewrite(gateway, _two_operators("op2"))
+
+        result = await _as_operator("set", "profiles.op.role", "agent", await _hash())
+
+        assert result["staged"] is True
+        shown = pending.outstanding()[pending.Kind.OPERATOR_PROFILE]
+        assert shown["Would hold it after this change"] == "op2"
+
+    async def test_an_agent_cannot_write_it(self, gateway: pathlib.Path) -> None:
+        """`config_tool` is operator-only, so this is the existing rule rather
+        than a new one. Asserted because the setting decides what the gateway
+        says it is, and a tenant reaching it would be worse than a tenant
+        reaching its own section."""
+        agent = (get_active_config() or pytest.fail("no active config")).config.profiles["ag"]
+
+        with profile_context(agent):
+            result = await manage_config("set", "gateway.service_identity", "ag", None)
+
+        assert "error" in result
+        assert not pending.outstanding()
 
 
 class TestAdmittingAFederationPeer:
@@ -1775,9 +1913,11 @@ class TestAPeerBecomingAnOperator:
         """A config whose SHARED profile is also the operator -- the shape
         Scott runs on peergw, and the only shape in which this guard can fire.
 
-        There is no separate `op` profile, because there cannot be: a file may
-        declare one operator, and here it is the shared one. That also makes
-        the shared profile the CALLER, since `config_tool` is operator-only.
+        There is no separate `op` profile, because this fixture does not need
+        one: a second operator is legal since 6.4.0 but would only add a
+        `gateway.service_identity` to write and another name on every approval
+        page. With one profile, the shared profile is also the CALLER, which it
+        has to be somehow -- `config_tool` is operator-only.
         """
         return {
             "profiles": {
@@ -1878,21 +2018,69 @@ class TestAPeerBecomingAnOperator:
     async def test_promoting_a_shared_profile_beside_another_operator_is_refused(
         self, gateway: pathlib.Path
     ) -> None:
-        """Not by this guard -- by the one-operator rule, and that interaction
-        is worth recording.
+        """Not by this guard -- by the ambiguity rule, and that interaction is
+        worth recording.
 
-        It means a shared profile cannot be promoted in ONE write while another
-        profile holds the role: the candidate has two operators and does not
-        validate. Getting to Scott's shape takes two writes, and the state
-        between them (no operator at all) is legal.
+        More than one operator is allowed since 6.4.0 (#661), but a file with
+        two and no `gateway.service_identity` naming one of them does not
+        validate. So promoting a shared profile beside an existing operator in
+        ONE write is still refused, for a new reason, and the refusal says what
+        the next write is.
         """
         document = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
         _rewrite(gateway, document)
 
         result = await _as_operator("set", "profiles.fed.role", "operator", await _hash())
 
-        assert "at most one profile may declare role: operator" in result["error"]
+        assert "set gateway.service_identity" in result["error"]
         assert pending.Kind.PEER_BECOMES_OPERATOR not in pending.outstanding()
+
+    async def test_promoting_it_once_the_identity_is_named_needs_two_approvals(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The write that gets past the ambiguity rule hits the one-decision rule.
+
+        With `gateway.service_identity` already set, promoting the shared
+        profile is a legal candidate -- and it is two unrelated decisions in one
+        write: a second profile gains the role here, and every peer on fed's
+        link gains this gateway's admin tools. A person can be shown one at a
+        time, so it is refused rather than collapsed, and the two kinds are
+        named so the operator knows which writes to make.
+        """
+        document = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
+        # ollama, so the promoted profile is not refused by the keyless-operator
+        # rule before it reaches this one.
+        document["profiles"]["fed"]["defense"] = {"provider": "ollama"}
+        document["gateway"] = {"service_identity": "op"}
+        _rewrite(gateway, document)
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator("set", "profiles.fed.role", "operator", await _hash())
+
+        assert "needs more than one approval" in result["error"]
+        assert "operator profile" in result["error"]
+        assert "peer becomes operator" in result["error"]
+        assert gateway.read_text(encoding="utf-8") == before
+        assert not pending.outstanding()
+
+    async def test_a_keyless_profile_cannot_be_promoted_even_once_named(
+        self, gateway: pathlib.Path
+    ) -> None:
+        """The keyless-operator rule is per-profile since 6.4.0.
+
+        `fed` judges with gemini and holds no key for it, so promoting it makes
+        an admin seat that is served none of the admin tools under `block`. Every
+        written operator is held to that, not only the one the setting names.
+        """
+        document = _with_peers({"alpha": {"public_key": _ED25519_PUBLIC}})
+        document["gateway"] = {"service_identity": "op"}
+        _rewrite(gateway, document)
+
+        result = await _as_operator("set", "profiles.fed.role", "operator", await _hash())
+
+        assert "no llm_keys.gemini" in result["error"]
+        assert "'fed'" in result["error"]
+        assert not pending.outstanding()
 
     async def test_promoting_a_shared_profile_with_no_admin_tools_still_stages(
         self, gateway: pathlib.Path
@@ -2048,15 +2236,16 @@ class TestAPeerBecomingAnOperator:
     ) -> None:
         """The other bound on the same page, and the reason it is only a bound.
 
-        One write cannot promote twenty-five profiles: the grant is keyed by
-        shared profile name and only one WRITTEN profile may be the operator, so
-        a candidate that loads carries at most one. Which is why this calls
-        `_operator_peer_facts` directly and asserts only the refusal — there is
-        no at-limit side to build without a config that would not load.
+        One write still cannot promote twenty-five SHARED profiles, although
+        6.4.0 allows more than one written operator (#661): the write would
+        move the operator profile and hand peers the admin tools, which is two
+        decisions, so `TestOneApprovalPerWrite`'s rule refuses it first. Which
+        is why this calls `_operator_peer_facts` directly and asserts only the
+        refusal — there is no at-limit side to build through the tool.
 
-        It is kept rather than deleted because the rule is computed on the
-        loaded candidate: if multiple written operators are ever allowed, the
-        page must refuse to collapse them rather than grow.
+        It is kept rather than deleted because the bound is what the page falls
+        back on: the rule is computed on the loaded candidate, and the page must
+        refuse to collapse a list it cannot show rather than grow one.
         """
         from trentina.gateway.config_guard import ConfigWriteError
         from trentina.tools.config import _MAX_PROPOSAL_ROWS, _operator_peer_facts
