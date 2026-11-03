@@ -200,7 +200,24 @@ class TestHealthEndpoint:
         assert body["status"] == "ok"
         assert body["profiles"] == 1
         assert body["classifier"] in {"loaded", "not-loaded", "failed"}
-        assert body["pending_pins"] == 0  # a Nagios-pollable count (#592, E1c)
+        # Read from the refresher's cache, never from SQLite (#662): None until
+        # warm-up has produced a value, and no lifespan runs here.
+        assert body["pending_pins"] is None
+
+    def test_health_reports_the_cached_pin_count(self, client: TestClient) -> None:
+        from trentina import perimeter_db
+
+        perimeter_db.pending_pins_cached = 3
+        try:
+            assert client.get("/health").json()["pending_pins"] == 3
+        finally:
+            perimeter_db.pending_pins_cached = None
+
+    def test_health_makes_no_database_call(self, client: TestClient) -> None:
+        with patch(
+            "trentina.perimeter_db.count_pending_pins", side_effect=AssertionError("db read")
+        ):
+            assert client.get("/health").status_code == 200
 
     def test_health_needs_no_auth(self, client: TestClient) -> None:
         """A probe that requires a per-profile token is useless to a monitor."""

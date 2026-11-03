@@ -23,8 +23,10 @@ import asyncio
 import contextlib
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
+from .. import perimeter_db
 from ..logsafe import exc_kind, exc_where
 from ..quarantine.limiter import Priority, all_limiters, l3_priority, l3_throttle_budget
 from .aggregate import (
@@ -34,6 +36,7 @@ from .aggregate import (
 )
 from .backend import revalidate_backend_tools
 from .loader import get_active_config
+from .tool_pins import backend_id
 from .verdict_cache import perimeter_counts
 
 if TYPE_CHECKING:
@@ -56,6 +59,60 @@ _task: asyncio.Task[None] | None = None
 IDLE_TICK = 60.0
 _poll_task: asyncio.Task[None] | None = None
 _next_due: dict[str, float] = {}
+
+
+# The pending-pin count `/health` reports (#662). The probe reads
+# `perimeter_db.pending_pins_cached` and never waits; this task keeps it. Its
+# own one-thread pool, not the default executor, which L1 and the tokenizer use:
+# a wedged store would otherwise park one default-pool thread per refresh.
+PINS_REFRESH_SECONDS = 15.0
+PINS_TIMEOUT_SECONDS = 5.0
+_pins_task: asyncio.Task[None] | None = None
+_pins_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="trentina-pins")
+
+
+def _count_pins(path: str, backend_ids: set[str]) -> int:
+    with perimeter_db.snapshot_reader(path):
+        return perimeter_db.count_pending_pins(backend_ids)
+
+
+async def refresh_pending_pins(
+    inflight: asyncio.Future[int] | None = None,
+) -> asyncio.Future[int] | None:
+    """One refresh of ``perimeter_db.pending_pins_cached``; returns the call in flight.
+
+    Single-flight: while the previous call has not returned (a wedged store) no
+    second one is submitted, and the cache reads None. Never raises.
+    """
+    active = get_active_config()
+    if inflight is None or inflight.done():
+        ids = {
+            backend_id(b.url)
+            for p in (active.config.profiles.values() if active else ())
+            for b in p.backends.values()
+        }
+        try:
+            path = perimeter_db.opened_path()
+        except Exception as exc:
+            perimeter_db.pending_pins_cached = None
+            logger.warning("pending pins: refresh failed: %s", exc_kind(exc))
+            return None
+        inflight = asyncio.get_running_loop().run_in_executor(_pins_pool, _count_pins, path, ids)
+    try:
+        perimeter_db.pending_pins_cached = await asyncio.wait_for(
+            asyncio.shield(inflight), PINS_TIMEOUT_SECONDS
+        )
+    except Exception as exc:
+        perimeter_db.pending_pins_cached = None
+        logger.warning("pending pins: refresh failed: %s", exc_kind(exc))
+    return inflight
+
+
+async def _refresh_pins_forever() -> None:
+    inflight: asyncio.Future[int] | None = None
+    while True:
+        inflight = await refresh_pending_pins(inflight)
+        await asyncio.sleep(PINS_REFRESH_SECONDS)
 
 
 async def warm_all() -> None:
@@ -228,9 +285,10 @@ async def trentina_lifespan() -> AsyncIterator[dict[str, Any]]:
     FastMCP ref-counts its lifespan, but the module-level task still guards
     against a second warm-up if it is ever entered twice.
     """
-    global _task, _poll_task
+    global _task, _poll_task, _pins_task
     started_here = False
     if get_active_config() is not None and _task is None:
+        _pins_task = asyncio.create_task(_refresh_pins_forever(), name="trentina-pins")
         _task = asyncio.create_task(warm_all(), name="trentina-warmup")
         _poll_task = asyncio.create_task(_poll_tool_lists(), name="trentina-fed-poll")
         started_here = True
@@ -259,6 +317,11 @@ async def trentina_lifespan() -> AsyncIterator[dict[str, Any]]:
             with contextlib.suppress(asyncio.CancelledError):
                 await _task
             _task = None
+        if started_here and _pins_task is not None:
+            _pins_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await _pins_task
+            _pins_task = None
         if started_here and _poll_task is not None:
             _poll_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from typing import Any
 
@@ -193,3 +194,119 @@ def test_calls_without_a_call_ref_carry_no_digest(db: Any) -> None:
     db.record_gateway_call("p", "web", "t", Outcome.OK.value, 1)
     assert db.get_db().execute("SELECT detections_digest FROM gateway_calls").fetchone()[0] is None
     assert _verify(db)["ok"] is True
+
+
+class _Named(sqlite3.OperationalError):
+    """An OperationalError carrying the ``sqlite_errorname`` a real one would.
+
+    Subclassed rather than set on an instance: the real attribute comes from
+    the C module, so assigning to it needs a type suppression.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__("database is locked")
+        self.sqlite_errorname = name
+
+
+class TestLostRows:
+    """A failed audit write leaves no break; the loss record is the only signal (#662)."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self, db: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(db, "_lost_pending", 0)
+        monkeypatch.setattr(db, "_lost_reason", "")
+
+    def _flaky(self, db: Any, monkeypatch: pytest.MonkeyPatch, failures: int) -> list[int]:
+        real = db._write_call
+        calls: list[int] = []
+
+        def write(conn: Any, fields: Any) -> Any:
+            calls.append(1)
+            if len(calls) <= failures:
+                raise sqlite3.OperationalError("locking protocol")
+            return real(conn, fields)
+
+        monkeypatch.setattr(db, "_write_call", write)
+        return calls
+
+    def test_two_failures_then_success_writes_one_row(
+        self, db: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._flaky(db, monkeypatch, 2)
+        db.record_gateway_call("p", "web", "t", Outcome.OK.value, 1)
+        assert len(calls) == 3
+        assert db.get_db().execute("SELECT COUNT(*) FROM gateway_calls").fetchone()[0] == 1
+        assert _verify(db)["ok"] is True
+
+    def test_a_busy_or_locked_failure_is_retried_like_any_other(
+        self, db: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """SQLite's busy handler never runs for SQLITE_LOCKED, and SQLITE_BUSY comes
+        back at once when a deferred transaction cannot be upgraded. Neither has
+        "already waited", so neither may cost the row its remaining attempts."""
+        for name in ("SQLITE_BUSY", "SQLITE_LOCKED"):
+            monkeypatch.setattr(db, "_lost_pending", 0)
+            real = db._write_call
+            calls: list[int] = []
+
+            def write(
+                conn: Any, fields: Any, _real: Any = real, _calls: Any = calls, _name: str = name
+            ) -> Any:
+                _calls.append(1)
+                if len(_calls) <= 2:
+                    raise _Named(_name)
+                return _real(conn, fields)
+
+            monkeypatch.setattr(db, "_write_call", write)
+            db.record_gateway_call("p", "web", "t", Outcome.OK.value, 1)
+            assert len(calls) == 3, name
+            monkeypatch.setattr(db, "_write_call", real)
+
+        assert _verify(db)["lost_rows"] == 0
+
+    def test_a_retry_waits_only_what_is_left_of_the_budget(
+        self, db: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The budget is checked between attempts, so a retry's own busy wait is
+        cut to the remainder; otherwise it could run a whole busy timeout past it.
+
+        The clock is driven by the first attempt rather than slept through: the
+        remainder is asserted exactly, and an upper bound measured off a real
+        sleep fails on a machine that overshoots it.
+        """
+        real = db._write_call
+        now = 0.0
+        monkeypatch.setattr(db.time, "monotonic", lambda: now)
+        spent = 0.2  # what the first attempt spends waiting
+        timeouts: list[int] = []
+
+        def write(conn: Any, _fields: Any) -> Any:
+            nonlocal now
+            timeouts.append(conn.execute("PRAGMA busy_timeout").fetchone()[0])
+            if len(timeouts) == 1:
+                now += spent
+                raise sqlite3.OperationalError("database is locked")
+            return real(conn, _fields)
+
+        monkeypatch.setattr(db, "_write_call", write)
+        db.record_gateway_call("p", "web", "t", Outcome.OK.value, 1)
+        assert timeouts[0] == db.BUSY_TIMEOUT_MS
+        assert len(timeouts) == 2
+        assert timeouts[1] == int((db.AUDIT_RETRY_BUDGET - spent) * 1000)
+        conn = db.get_db()
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == db.BUSY_TIMEOUT_MS
+
+    def test_a_row_never_written_reports_incomplete_not_broken(
+        self, db: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db.record_gateway_call("p", "web", "first", Outcome.OK.value, 1)
+        calls = self._flaky(db, monkeypatch, 3)
+        with pytest.raises(sqlite3.OperationalError):
+            db.record_gateway_call("p", "web", "lost", Outcome.OK.value, 1)
+        assert len(calls) == 3
+        db.record_gateway_call("p", "web", "after", Outcome.OK.value, 1)
+
+        report = _verify(db)
+        assert report["first_break"] is None  # the chain is continuous
+        assert report["lost_rows"] == 1
+        assert report["ok"] is False

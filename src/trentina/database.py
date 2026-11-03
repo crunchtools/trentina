@@ -27,6 +27,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Every connection sets `PRAGMA busy_timeout=250` (SQLite's default is 0, #662),
+# so contention waits inside SQLite instead of raising at once. That wait is on
+# the caller's thread, which is the event loop.
+
+BUSY_TIMEOUT_MS = 250
+
+#: Attempts at one audit write, and the wall clock they share. Both bound it:
+#: a fast failure (SQLITE_PROTOCOL) gets every attempt, while one that spent a
+#: busy timeout gets however many fit the budget, and a retry's busy timeout is
+#: cut to what is left of it. Without the budget three attempts could hold the
+#: loop for 750 ms. There is no sleep of our own —
+#: `asyncio.sleep` is not reachable from a synchronous caller.
+AUDIT_ATTEMPTS = 3
+AUDIT_RETRY_BUDGET = 0.3
+
+# Rows given up on since the last successful write, written to `audit_losses`
+# by the next one. Held here because at failure time the store is unwritable.
+_lost_pending = 0
+_lost_reason = ""
+_last_written_id = 0
+
 _db: sqlite3.Connection | None = None
 _db_path = ""  # set by get_db on every open
 _local = threading.local()
@@ -46,9 +67,22 @@ CREATE TABLE IF NOT EXISTS audit_checkpoints (
     rows_pruned INTEGER NOT NULL
 )"""
 
+# Audit rows that could not be written (#662). Not a checkpoint: those anchor
+# where `verify` starts walking, and a lost row anchors nothing. A lost row
+# leaves the chain continuous (the next row chains to the last one WRITTEN), so
+# this table is the only trace; `verify` sums it and reports the record
+# incomplete.
 SCHEMA = (
     _CHECKPOINTS_TABLE
     + """;
+
+CREATE TABLE IF NOT EXISTS audit_losses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at REAL NOT NULL,
+    rows_lost INTEGER NOT NULL,
+    last_id INTEGER NOT NULL,
+    reason_kind TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS detections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,6 +210,7 @@ def get_db(db_path: str | None = None) -> sqlite3.Connection:
         _db_path = path
         _db.row_factory = sqlite3.Row
         _db.execute("PRAGMA journal_mode=WAL")
+        _db.execute("PRAGMA busy_timeout=250")  # BUSY_TIMEOUT_MS; PRAGMA takes no parameter
         _db.execute("PRAGMA foreign_keys=ON")
         _db.executescript(SCHEMA)
         _migrate(_db)
@@ -208,6 +243,7 @@ def snapshot_reader(path: str) -> Iterator[None]:
     """
     conn = sqlite3.connect(f"file:{quote(path)}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=250")  # BUSY_TIMEOUT_MS; PRAGMA takes no parameter
     _local.reader = conn
     try:
         yield
@@ -785,9 +821,73 @@ def record_gateway_call(
     meaning — the call returned usable content — which means a fail-closed
     defense block still reads as ``success = 0``, exactly as it did before.
     """
+    global _lost_pending, _lost_reason
     db = get_db()
     _maybe_sweep(db)
-    success = int(outcome == Outcome.OK.value)
+    fields: dict[str, Any] = {
+        "profile": profile,
+        "backend": backend,
+        "tool": tool,
+        "success": int(outcome == Outcome.OK.value),
+        "duration_ms": duration_ms,
+        "error_message": error_message,
+        "outcome": outcome,
+        "bytes_arrived": bytes_arrived,
+        "bytes_delivered": bytes_delivered,
+        "normalized": json.dumps(normalized) if normalized else None,
+        "destination": destination,
+        "destination_kind": destination_kind,
+        "session": session,
+        "call_ref": call_ref,
+        "content_digest": content_digest,
+        "caller_peer": caller_peer,
+        "caller_sub": caller_sub,
+        "federated_verdict": federated_verdict,
+    }
+    deadline = time.monotonic() + AUDIT_RETRY_BUDGET
+    for attempt in range(AUDIT_ATTEMPTS):
+        try:
+            # A retry may wait only what is left of the budget: the check
+            # below runs between attempts, so an attempt's own busy wait is
+            # what would otherwise carry the total past it.
+            if attempt:
+                _set_busy_timeout(db, _remaining_ms(deadline))
+            row = _write_call(db, fields)
+            break
+        except sqlite3.OperationalError as exc:
+            # Retried whatever it says. Telling apart the errors SQLite already
+            # waited on cannot be done from the error name: the busy handler is
+            # never invoked for SQLITE_LOCKED, and SQLITE_BUSY comes back at
+            # once when a deferred transaction cannot be upgraded.
+            if attempt + 1 < AUDIT_ATTEMPTS and _remaining_ms(deadline) > 0:
+                continue
+            # Given up on. The chain stays continuous without this row, so
+            # `verify` would call the record sound; the count goes to
+            # `audit_losses` with the next write that succeeds.
+            _lost_pending += 1
+            _lost_reason = exc_kind(exc)
+            raise
+        finally:
+            if attempt:
+                _set_busy_timeout(db, BUSY_TIMEOUT_MS)
+    # The row is committed; emit its safe metadata to any telemetry sink. emit
+    # swallows a sink's failure, so this never fails the call (#556).
+    telemetry.emit(telemetry.from_row(row))
+
+
+def _remaining_ms(deadline: float) -> int:
+    """Whole milliseconds left before ``deadline``, never negative."""
+    return max(0, int((deadline - time.monotonic()) * 1000))
+
+
+def _set_busy_timeout(db: sqlite3.Connection, ms: int) -> None:
+    """How long SQLite may wait on a lock before this connection's next statement fails."""
+    db.execute(f"PRAGMA busy_timeout={min(int(ms), BUSY_TIMEOUT_MS)}")
+
+
+def _write_call(db: sqlite3.Connection, fields: dict[str, Any]) -> dict[str, Any]:
+    """One attempt at writing an audit row (and any pending loss record) in one transaction."""
+    global _lost_pending, _last_written_id
     # The tail read and the insert share one write lock (#472): the singleton
     # cannot fork the chain inside this process, but the CLI or a second
     # process could. The id is chosen here, not by AUTOINCREMENT, because
@@ -799,36 +899,26 @@ def record_gateway_call(
         row: dict[str, Any] = {
             "id": max(int(seq[0]) if seq else 0, int(top)) + 1,
             "timestamp": time.time(),
-            "profile": profile,
-            "backend": backend,
-            "tool": tool,
-            "success": success,
-            "duration_ms": duration_ms,
-            "error_message": error_message,
-            "outcome": outcome,
-            "bytes_arrived": bytes_arrived,
-            "bytes_delivered": bytes_delivered,
-            "normalized": json.dumps(normalized) if normalized else None,
-            "destination": destination,
-            "destination_kind": destination_kind,
-            "session": session,
-            "call_ref": call_ref,
-            "content_digest": content_digest,
-            "caller_peer": caller_peer,
-            "caller_sub": caller_sub,
-            "federated_verdict": federated_verdict,
-            "detections_digest": audit_chain.detections_digest(db, call_ref),
+            **fields,
+            "detections_digest": audit_chain.detections_digest(db, fields["call_ref"]),
             "prev_hash": audit_chain.tail_hash(db),
         }
         row["row_hash"] = audit_chain.row_hash(row)
+        lost = _lost_pending
+        if lost:
+            db.execute(
+                "INSERT INTO audit_losses (at, rows_lost, last_id, reason_kind) "
+                "VALUES (?, ?, ?, ?)",
+                (time.time(), lost, _last_written_id, _lost_reason or "unknown"),
+            )
         db.execute(_INSERT_CALL, row)
         db.commit()
     except BaseException:
         db.rollback()
         raise
-    # The row is committed; emit its safe metadata to any telemetry sink. emit
-    # swallows a sink's failure, so this never fails the call (#556).
-    telemetry.emit(telemetry.from_row(row))
+    _lost_pending -= lost
+    _last_written_id = int(row["id"])
+    return row
 
 
 def reset_gateway_calls() -> int:

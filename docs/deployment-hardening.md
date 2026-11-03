@@ -110,6 +110,15 @@ on any deployment that serves agents you do not fully trust, which means a
 coding agent or a swarm. stdio skips the check: a desktop client's child
 process is not a deployment.
 
+## Do not open the live databases from another process
+
+Do not open `trentina.db` or `perimeter.db` from another process while the
+gateway runs, read-only or otherwise. On a read-only mount SQLite cannot write
+the `-shm` file, falls back to `readonly_shm`, and that can make the gateway's
+own connections fail with `SQLITE_PROTOCOL` (#662). Copy the file first, or go
+through `quarantine_stats`. Audit writes that fail are retried, then counted in
+`audit_losses`; `audit_verify` reports them as `lost_rows` with `ok: false`.
+
 ## Secrets
 
 Use the `_FILE` form for every secret: `TRENTINA_OAUTH_JWT_SIGNING_KEY_FILE`,
