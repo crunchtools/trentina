@@ -171,10 +171,14 @@ def test_a_cpu_budget_that_is_not_a_sane_count_cannot_run(gates: Harness, value:
     assert "TRENTINA_GATES_CPUS" in gates.said(result)
 
 
+# The accepted cases assert that VALIDATION did not refuse the value, not that
+# the gate passed: `hooks-installed` legitimately fails on a checkout without
+# pre-commit hooks, which is every CI runner, and asserting exit 0 made these
+# pass on a laptop and fail in CI.
 @pytest.mark.parametrize("value", ["1", "2", "1024"])
 def test_a_cpu_budget_at_the_boundaries_is_accepted(gates: Harness, value: str) -> None:
     result = gates.run("hooks-installed", TRENTINA_GATES_CPUS=value)
-    assert result.returncode == 0, gates.said(result)
+    assert "TRENTINA_GATES_CPUS" not in gates.said(result)
 
 
 @pytest.mark.parametrize("value", ["g8", "8g;id", "8gb", "eight", "$(id)", "-8g"])
@@ -187,4 +191,4 @@ def test_a_memory_ceiling_that_is_not_a_size_cannot_run(gates: Harness, value: s
 @pytest.mark.parametrize("value", ["8g", "4096m", "512k", "16G"])
 def test_a_memory_ceiling_that_is_a_size_is_accepted(gates: Harness, value: str) -> None:
     result = gates.run("hooks-installed", TRENTINA_GATES_MEMORY=value)
-    assert result.returncode == 0, gates.said(result)
+    assert "TRENTINA_GATES_MEMORY" not in gates.said(result)
