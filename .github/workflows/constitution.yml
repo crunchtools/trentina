@@ -12,6 +12,20 @@ on:
   push:
     branches: [main, master]
 
+# A new push supersedes the run it interrupts, on a PR only (#662 follow-up).
+# Without this, four pushes to one branch left four complete sets of runs
+# grinding to completion -- three image builds and a four-way test matrix each.
+#
+# Only PR runs share a group. Everything else keys on `run_id`, which is unique,
+# so no non-PR run ever contends and none can be dropped. `cancel-in-progress:
+# false` would NOT have been enough: a group holds at most one PENDING run, so a
+# third arrival cancels the second. Three quick pushes to main would have dropped
+# the middle one's publish -- a half-finished manifest and a downstream never told
+# to rebuild, which is the thing this is supposed to prevent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
