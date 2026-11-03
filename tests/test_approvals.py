@@ -58,7 +58,7 @@ def _applied(record: list[str]) -> Any:
     return apply
 
 
-FACTS = {"Backend to trust": "ag.lotor", "What this means": "Responses are not scanned here."}
+FACTS = {"Backend to trust": "ag.peergw", "What this means": "Responses are not scanned here."}
 #: What the review page puts in its hidden ``facts`` field for ``FACTS``.
 _FACTS_DIGEST = pending.digest_of(FACTS)
 
@@ -192,7 +192,7 @@ class TestWhatMayBeShown:
         [
             "v7:prompt-injection-guard-small@abc123:0.7:gate-ok",
             "openrouter/google/gemini-3.5-flash-lite/pack-1",
-            "ag.lotor",
+            "ag.peergw",
             "sha256:0123456789abcdef",
             "op, ag",
         ],
@@ -253,14 +253,14 @@ class TestThePage:
         pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied([]))
         body = page.get(approval_routes.PATH).text
         assert 'type="password"' in body
-        assert "ag.lotor" not in body
+        assert "ag.peergw" not in body
         assert "federation trust" not in body
 
     def test_the_wrong_password_shows_nothing_about_what_is_staged(self, page: TestClient) -> None:
         pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied([]))
         answer = page.post(approval_routes.PATH, data={"password": "wrong"})
         assert answer.status_code == 404
-        assert "ag.lotor" not in answer.text
+        assert "ag.peergw" not in answer.text
 
     def test_a_wrong_password_and_nothing_staged_are_indistinguishable(
         self, page: TestClient
@@ -309,7 +309,7 @@ class TestThePage:
     def test_the_right_password_shows_what_is_about_to_change(self, page: TestClient) -> None:
         pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied([]))
         body = page.post(approval_routes.PATH, data={"password": PASSWORD}).text
-        assert "ag.lotor" in body
+        assert "ag.peergw" in body
         assert "not scanned here" in body
         assert "Nothing has changed yet" in body
 

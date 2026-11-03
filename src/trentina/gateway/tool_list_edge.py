@@ -73,7 +73,7 @@ TOOL_BRIEFING = (
 """L3's briefing for a tool definition.
 
 Without it L3 read every description as content that tells an agent to call
-a tool — which is what a description IS — and flagged fifteen on lotor as
+a tool — which is what a description IS — and flagged fifteen in production as
 `tool_invocation` with L2 under 0.005 and L1 clean. Under a block default a
 flagged description is withheld, so those false positives removed
 `jira_create_issue` and our own `fetch_tool` from the agents that most

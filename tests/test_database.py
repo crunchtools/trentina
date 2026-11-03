@@ -386,11 +386,11 @@ class TestFederatedVerdictStats:
             patch.object(database, "_read_db", return_value=conn),
         ):
             for profile, backend, verdict in (
-                ("down", "lotor", "trusted"),
-                ("down", "lotor", "trusted"),
-                ("down", "lotor", "hash_mismatch"),
+                ("down", "peergw", "trusted"),
+                ("down", "peergw", "trusted"),
+                ("down", "peergw", "hash_mismatch"),
                 ("down", "other", "stale"),
-                ("up", "lotor", "trusted"),
+                ("up", "peergw", "trusted"),
                 ("down", "plain", None),  # a non-federated call
             ):
                 database.record_gateway_call(
@@ -401,10 +401,10 @@ class TestFederatedVerdictStats:
     def test_counts_are_grouped_by_profile_backend_and_verdict(self) -> None:
         stats = self._rows(_fresh_db())
 
-        assert stats["down.lotor"] == {"trusted": 2, "hash_mismatch": 1}
+        assert stats["down.peergw"] == {"trusted": 2, "hash_mismatch": 1}
         assert stats["down.other"] == {"stale": 1}
         # Same backend name, different profile: its own key, not merged.
-        assert stats["up.lotor"] == {"trusted": 1}
+        assert stats["up.peergw"] == {"trusted": 1}
 
     def test_a_non_federated_call_is_not_a_verdict_of_its_own(self) -> None:
         """`federated_verdict` is NULL on every ordinary call, and counting

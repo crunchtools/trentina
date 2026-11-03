@@ -1067,7 +1067,7 @@ async def manage_config(
     Args:
         action: ``get``, ``set``, ``unset`` or ``normalize``.
         path: A dotted path of config keys, e.g.
-            ``profiles.myagent.backends.lotor.federated.primary_key_name``. For
+            ``profiles.myagent.backends.peergw.federated.primary_key_name``. For
             ``get`` it may be omitted, which returns the whole file;
             ``normalize`` takes none.
         value: What to set, for ``set``. A scalar, a list or a mapping.

@@ -55,7 +55,7 @@ from trentina.gateway.profile import (
 pytestmark = pytest.mark.asyncio
 
 PROFILE = "josui"
-PEER = "breetai"
+PEER = "mypeer"
 
 
 def wiki_tools() -> list:
@@ -133,7 +133,7 @@ def peer_gateway(private_pem: str, name: str = PEER):
         profile = Profile(
             name=name,
             auth=AuthConfig(bearer_token_env="PEER_TOKEN"),
-            backends={"lotor": backend},
+            backends={"peergw": backend},
         )
         assert profile.auth is not None
         profile.auth.bearer_token = SecretStr("peer-token")

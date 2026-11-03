@@ -495,7 +495,7 @@ def test_exc_kind_leaves_a_plain_exception_unchanged() -> None:
 class TestFederatedErrorKindIsLegible:
     """F1: a failed federated probe names the real leaf, not 'ExceptionGroup'.
 
-    Picking up a redeployed federated tool on breetai failed with an opaque
+    Picking up a redeployed federated tool on mypeer failed with an opaque
     ``list_tools failed: ExceptionGroup`` because the reporter read
     ``type(exc).__name__`` on the SDK's task-group wrapper. The operator-visible
     error and the log line must both name the leaf an operator can act on.

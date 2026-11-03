@@ -15,7 +15,7 @@ from pydantic import SecretStr, ValidationError
 from trentina.gateway.profile import AuthConfig, Backend, FederatedConfig, Profile
 from trentina.tools.reload import _hold_perimeter_fields
 
-UP = "https://lotor.example/gateway/x/mcp"
+UP = "https://peergw.example/gateway/x/mcp"
 
 
 class TestSchema:

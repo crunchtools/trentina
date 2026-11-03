@@ -5,7 +5,7 @@ backed up, version controlled". This module is the backed-up part, and the
 mechanics of replacing the file without ever leaving it half-written.
 
 Backups live under the gateway's own data directory, NOT beside the live file.
-On lotor the config directory is a git repository with a Nagios drift check on
+In our production deployment the config directory is a git repository with a Nagios drift check on
 it, so a backup written next to ``profiles.yaml`` would trip that check on
 every write. Version control is the operator agent's job on the host, where it
 has git; the gateway's job is to make sure the previous bytes still exist.

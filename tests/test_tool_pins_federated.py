@@ -1,6 +1,6 @@
 """E1a: a held federated tool shows up in `tool_pins list` (#592).
 
-Field note from running federation: on breetai, `tool_pins list backend=lotor`
+Field note from running federation: on mypeer, `tool_pins list backend=peergw`
 returned `held: []` while the raw `tool_pins` table held several pending — the
 operator could not see, by name, what the federated secondary was holding.
 """
@@ -25,7 +25,7 @@ from trentina.tools.pins import manage_tool_pins
 
 pytestmark = pytest.mark.asyncio
 
-LOTOR_URL = "https://lotor:8019/gateway/josui/mcp"
+PEERGW_URL = "https://peergw:8019/gateway/josui/mcp"
 
 YAML = f"""\
 profiles:
@@ -36,8 +36,8 @@ profiles:
     auth:
       bearer_token_env: OP_TOKEN
     backends:
-      lotor:
-        url: {LOTOR_URL}
+      peergw:
+        url: {PEERGW_URL}
         federated: {{}}
 """
 
@@ -63,21 +63,25 @@ def _drop_profiles() -> object:
 
 
 async def test_a_held_federated_tool_is_listed(gateway: dict[str, Profile]) -> None:
-    # lotor's tool is held primary under backend_id(the federated backend url).
-    perimeter_db.put_pin(backend_id(LOTOR_URL), "send_message", "h", perimeter_db.PIN_PENDING, "{}")
+    # peergw's tool is held primary under backend_id(the federated backend url).
+    perimeter_db.put_pin(
+        backend_id(PEERGW_URL), "send_message", "h", perimeter_db.PIN_PENDING, "{}"
+    )
     with profile_context(gateway["op"]):
-        result = await manage_tool_pins("list", "lotor")
+        result = await manage_tool_pins("list", "peergw")
     assert "error" not in result, result
     assert any(h["tool"] == "send_message" for h in result["held"]), result
 
 
 async def test_approve_by_name_releases_a_federated_hold(gateway: dict[str, Profile]) -> None:
-    perimeter_db.put_pin(backend_id(LOTOR_URL), "send_message", "h", perimeter_db.PIN_PENDING, "{}")
+    perimeter_db.put_pin(
+        backend_id(PEERGW_URL), "send_message", "h", perimeter_db.PIN_PENDING, "{}"
+    )
     with profile_context(gateway["op"]):
-        approved = await manage_tool_pins("approve", "lotor", "send_message")
-        after = await manage_tool_pins("list", "lotor")
+        approved = await manage_tool_pins("approve", "peergw", "send_message")
+        after = await manage_tool_pins("list", "peergw")
     assert approved == {
-        "backend": "lotor",
+        "backend": "peergw",
         "tool": "send_message",
         "action": "approve",
         # One held definition, so the hash is implied and the operator
@@ -101,11 +105,11 @@ async def test_an_agent_cannot_manage_pins() -> None:
         {
             "name": "ag",
             "auth": {"bearer_token_env": "A"},
-            "backends": {"lotor": {"url": LOTOR_URL, "federated": {}}},
+            "backends": {"peergw": {"url": PEERGW_URL, "federated": {}}},
         }
     )
     with profile_context(agent):
-        result = await manage_tool_pins("list", "lotor")
+        result = await manage_tool_pins("list", "peergw")
     assert "error" in result
     assert "operator" in result["error"].lower()
 
@@ -140,7 +144,7 @@ class TestAFirstConnectIsReported:
 
     def test_a_first_connect_warns_with_the_count(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING):
-            served = check_tools(LOTOR_URL, "lotor", self._offered(3), federated=True)
+            served = check_tools(PEERGW_URL, "peergw", self._offered(3), federated=True)
         assert len(served) == 3  # approved as a unit, as the design says
         line = next(m for m in self._pin_lines(caplog) if "first connect" in m)
         assert "of 3 tool(s)" in line
@@ -150,7 +154,7 @@ class TestAFirstConnectIsReported:
         """#262: the backend name is config, the peer's tool names are not."""
         offered = [{"name": "secret_peer_tool", "description": "d"}]
         with caplog.at_level(logging.WARNING):
-            check_tools(LOTOR_URL, "lotor", offered, federated=True)
+            check_tools(PEERGW_URL, "peergw", offered, federated=True)
         assert all("secret_peer_tool" not in r.getMessage() for r in caplog.records)
 
     def test_a_first_connect_leaves_a_detections_row(self) -> None:
@@ -158,7 +162,7 @@ class TestAFirstConnectIsReported:
         the point. An operator reviewing what this gateway trusted has a row
         to find."""
         with patch.object(tool_pins, "record_detection") as recorded:
-            check_tools(LOTOR_URL, "lotor", self._offered(2), federated=True)
+            check_tools(PEERGW_URL, "peergw", self._offered(2), federated=True)
         kwargs = recorded.call_args.kwargs
         assert kwargs["source_type"] == "tool_pin"
         assert kwargs["blocked"] is False
@@ -167,12 +171,12 @@ class TestAFirstConnectIsReported:
     def test_the_second_list_is_not_a_first_connect(self, caplog: pytest.LogCaptureFixture) -> None:
         """The sentinel is what stops a later-added tool reading as another
         first connect."""
-        check_tools(LOTOR_URL, "lotor", self._offered(1), federated=True)
+        check_tools(PEERGW_URL, "peergw", self._offered(1), federated=True)
         # `at_level` changes the level, it does not scope capture: the first
         # call's own first-connect line is still in `records` without this.
         caplog.clear()
         with caplog.at_level(logging.WARNING):
-            served = check_tools(LOTOR_URL, "lotor", self._offered(2), federated=True)
+            served = check_tools(PEERGW_URL, "peergw", self._offered(2), federated=True)
         assert all("first connect" not in m for m in self._pin_lines(caplog))
         assert len(served) == 1  # the new tool is HELD, not auto-approved
 
@@ -180,7 +184,7 @@ class TestAFirstConnectIsReported:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         with caplog.at_level(logging.WARNING):
-            served = check_tools(LOTOR_URL, "plain", self._offered(2))
+            served = check_tools(PEERGW_URL, "plain", self._offered(2))
         assert all("first connect" not in m for m in self._pin_lines(caplog))
         assert served == []  # held for approval, one at a time
 
@@ -214,30 +218,30 @@ class TestAUrlEditIsNotAFirstConnect:
         profile = Profile(
             name="josui",
             auth=AuthConfig(bearer_token_env="T"),
-            backends={"lotor": Backend(url=url, federated=FederatedConfig(), tools_allow=["*"])},
+            backends={"peergw": Backend(url=url, federated=FederatedConfig(), tools_allow=["*"])},
         )
         assert profile.auth is not None
         profile.auth.bearer_token = SecretStr("t")
         return profile
 
     def test_the_pins_move_with_the_url(self, caplog: pytest.LogCaptureFixture) -> None:
-        moved_to = LOTOR_URL + "/"
-        check_tools(LOTOR_URL, "lotor", self._offered(2), federated=True)
-        assert perimeter_db.has_pins(backend_id(LOTOR_URL))
+        moved_to = PEERGW_URL + "/"
+        check_tools(PEERGW_URL, "peergw", self._offered(2), federated=True)
+        assert perimeter_db.has_pins(backend_id(PEERGW_URL))
 
         migrated = tool_pins.migrate_federated_pins(
-            {"josui": self._profile(LOTOR_URL)}, {"josui": self._profile(moved_to)}
+            {"josui": self._profile(PEERGW_URL)}, {"josui": self._profile(moved_to)}
         )
 
-        assert migrated == ["josui.lotor"]
+        assert migrated == ["josui.peergw"]
         assert perimeter_db.has_pins(backend_id(moved_to))
-        assert not perimeter_db.has_pins(backend_id(LOTOR_URL))
+        assert not perimeter_db.has_pins(backend_id(PEERGW_URL))
 
         # And the point of all of it: the next list at the new URL is not a
         # first connect, so a newly offered tool is HELD rather than trusted.
         caplog.clear()
         with caplog.at_level(logging.WARNING):
-            served = check_tools(moved_to, "lotor", self._offered(3), federated=True)
+            served = check_tools(moved_to, "peergw", self._offered(3), federated=True)
         assert all("first connect" not in r.getMessage() for r in caplog.records)
         assert len(served) == 2
 
@@ -246,15 +250,15 @@ class TestAUrlEditIsNotAFirstConnect:
         is the primary key: the pins already there are not this edit's to
         replace, and an UPDATE would collide on every shared tool."""
         other = "https://other:8019/gateway/josui/mcp"
-        check_tools(LOTOR_URL, "lotor", self._offered(2), federated=True)
+        check_tools(PEERGW_URL, "peergw", self._offered(2), federated=True)
         check_tools(other, "other", self._offered(1), federated=True)
 
         migrated = tool_pins.migrate_federated_pins(
-            {"josui": self._profile(LOTOR_URL)}, {"josui": self._profile(other)}
+            {"josui": self._profile(PEERGW_URL)}, {"josui": self._profile(other)}
         )
 
         assert migrated == []
-        assert perimeter_db.has_pins(backend_id(LOTOR_URL))
+        assert perimeter_db.has_pins(backend_id(PEERGW_URL))
 
     def test_a_different_host_is_not_a_moved_url(self) -> None:
         """The hole in the first cut of this, which Gatehouse caught: migrating
@@ -263,33 +267,33 @@ class TestAUrlEditIsNotAFirstConnect:
         connect and no review. Only the SAME endpoint spelled differently
         moves; a new host gets the first connect it should."""
         elsewhere = "https://attacker.example/gateway/josui/mcp"
-        check_tools(LOTOR_URL, "lotor", self._offered(2), federated=True)
+        check_tools(PEERGW_URL, "peergw", self._offered(2), federated=True)
 
         migrated = tool_pins.migrate_federated_pins(
-            {"josui": self._profile(LOTOR_URL)}, {"josui": self._profile(elsewhere)}
+            {"josui": self._profile(PEERGW_URL)}, {"josui": self._profile(elsewhere)}
         )
 
         assert migrated == []
         assert not perimeter_db.has_pins(backend_id(elsewhere))
-        assert perimeter_db.has_pins(backend_id(LOTOR_URL))
+        assert perimeter_db.has_pins(backend_id(PEERGW_URL))
 
     def test_a_port_written_out_is_the_same_endpoint(self) -> None:
         """`same_gateway_endpoint` keeps the path and the query and forgives the
         spelling: a default port written explicitly is one gateway, not two."""
-        https = "https://lotor.example/gateway/josui/mcp"
-        with_port = "https://Lotor.example:443/gateway/josui/mcp/"
-        check_tools(https, "lotor", self._offered(2), federated=True)
+        https = "https://peergw.example/gateway/josui/mcp"
+        with_port = "https://Peergw.example:443/gateway/josui/mcp/"
+        check_tools(https, "peergw", self._offered(2), federated=True)
 
         assert tool_pins.migrate_federated_pins(
             {"josui": self._profile(https)}, {"josui": self._profile(with_port)}
-        ) == ["josui.lotor"]
+        ) == ["josui.peergw"]
 
     def test_a_different_query_is_not_the_same_endpoint(self) -> None:
         """A token-in-URL backend carries its credential in the query, so two
         URLs differing only there can be two endpoints."""
-        one = "https://lotor.example/gateway/josui/mcp?t=aaa"
-        two = "https://lotor.example/gateway/josui/mcp?t=bbb"
-        check_tools(one, "lotor", self._offered(2), federated=True)
+        one = "https://peergw.example/gateway/josui/mcp?t=aaa"
+        two = "https://peergw.example/gateway/josui/mcp?t=bbb"
+        check_tools(one, "peergw", self._offered(2), federated=True)
 
         assert (
             tool_pins.migrate_federated_pins(
@@ -303,15 +307,15 @@ class TestAUrlEditIsNotAFirstConnect:
         it lives, so its pins are not carried to a new URL by this rule."""
         from trentina.gateway.profile import AuthConfig, Backend
 
-        check_tools(LOTOR_URL, "lotor", self._offered(2), federated=True)
+        check_tools(PEERGW_URL, "peergw", self._offered(2), federated=True)
         plain = Profile(
             name="josui",
             auth=AuthConfig(bearer_token_env="T"),
-            backends={"lotor": Backend(url=LOTOR_URL + "/", tools_allow=["*"])},
+            backends={"peergw": Backend(url=PEERGW_URL + "/", tools_allow=["*"])},
         )
 
         assert (
-            tool_pins.migrate_federated_pins({"josui": self._profile(LOTOR_URL)}, {"josui": plain})
+            tool_pins.migrate_federated_pins({"josui": self._profile(PEERGW_URL)}, {"josui": plain})
             == []
         )
 
@@ -325,7 +329,7 @@ class TestTheHashAtTheToolBoundary:
 
     @staticmethod
     def _hold_two() -> list[str]:
-        bid = backend_id(LOTOR_URL)
+        bid = backend_id(PEERGW_URL)
         for body in ('{"name": "send_message", "v": 1}', '{"name": "send_message", "v": 2}'):
             perimeter_db.put_pin(
                 bid, "send_message", tool_pins.digest(body), perimeter_db.PIN_PENDING, body
@@ -338,12 +342,12 @@ class TestTheHashAtTheToolBoundary:
         held = self._hold_two()
 
         with profile_context(gateway["op"]):
-            result = await manage_tool_pins("approve", "lotor", "send_message")
+            result = await manage_tool_pins("approve", "peergw", "send_message")
 
         assert "more than one held definition" in result["error"]
         assert sorted(result["held"]) == sorted(held)
         # And nothing was decided by accident.
-        assert len(perimeter_db.pending_hashes(backend_id(LOTOR_URL), "send_message")) == 2
+        assert len(perimeter_db.pending_hashes(backend_id(PEERGW_URL), "send_message")) == 2
 
     async def test_approving_by_hash_takes_only_that_definition(
         self, gateway: dict[str, Profile]
@@ -352,12 +356,12 @@ class TestTheHashAtTheToolBoundary:
         chosen = held[0]
 
         with profile_context(gateway["op"]):
-            result = await manage_tool_pins("approve", "lotor", "send_message", chosen)
+            result = await manage_tool_pins("approve", "peergw", "send_message", chosen)
 
         assert result["hash"] == chosen
         assert result["action"] == "approve"
         # The other one is still held, which is the whole point of the hash.
-        assert perimeter_db.pending_hashes(backend_id(LOTOR_URL), "send_message") == [held[1]]
+        assert perimeter_db.pending_hashes(backend_id(PEERGW_URL), "send_message") == [held[1]]
 
     async def test_rejecting_by_hash_takes_only_that_definition(
         self, gateway: dict[str, Profile]
@@ -365,8 +369,8 @@ class TestTheHashAtTheToolBoundary:
         held = self._hold_two()
 
         with profile_context(gateway["op"]):
-            await manage_tool_pins("reject", "lotor", "send_message", held[1])
-            listed = await manage_tool_pins("list", "lotor")
+            await manage_tool_pins("reject", "peergw", "send_message", held[1])
+            listed = await manage_tool_pins("list", "peergw")
 
         states = {row["hash"]: row["rejected"] for row in listed["held"]}
         assert states[held[1]] is True
@@ -376,7 +380,7 @@ class TestTheHashAtTheToolBoundary:
         self._hold_two()
 
         with profile_context(gateway["op"]):
-            result = await manage_tool_pins("approve", "lotor", "send_message", "not-a-held-hash")
+            result = await manage_tool_pins("approve", "peergw", "send_message", "not-a-held-hash")
 
         assert result["error"] == "no such held tool"
 
@@ -393,7 +397,7 @@ class TestApprovingAWholeHeldSet:
     6.1.0's `tool_compressions` `owner` column dropped pre-migration rows, and a
     pin is keyed by the definition AS SERVED — which under
     `preprocess_tool_descriptions` is the compressor's output. Re-compressing is
-    a fresh model call, so it is not byte-identical, and breetai held 582
+    a fresh model call, so it is not byte-identical, and mypeer held 582
     definitions across 352 tools on one federated backend. Releasing those one
     at a time is not a control; it is how an operator learns to stop reading.
 
@@ -405,13 +409,13 @@ class TestApprovingAWholeHeldSet:
     @staticmethod
     def _approved(tool: str, body: str) -> None:
         perimeter_db.put_pin(
-            backend_id(LOTOR_URL), tool, tool_pins.digest(body), perimeter_db.PIN_APPROVED, body
+            backend_id(PEERGW_URL), tool, tool_pins.digest(body), perimeter_db.PIN_APPROVED, body
         )
 
     @staticmethod
     def _held(tool: str, body: str, state: str = perimeter_db.PIN_PENDING) -> str:
         h = tool_pins.digest(body)
-        perimeter_db.put_pin(backend_id(LOTOR_URL), tool, h, state, body)
+        perimeter_db.put_pin(backend_id(PEERGW_URL), tool, h, state, body)
         return h
 
     def _recompressed(self) -> None:
@@ -437,8 +441,8 @@ class TestApprovingAWholeHeldSet:
     async def test_the_whole_set_goes_on_one_decision(self, gateway: dict[str, Profile]) -> None:
         self._recompressed()
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
-            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+            listed = await manage_tool_pins("list", "peergw")
+            result = await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         assert result["approved"] == 3, result
         assert {row["tool"] for row in result["tools"]} == {
@@ -452,14 +456,14 @@ class TestApprovingAWholeHeldSet:
         assert changed["list_feeds"] == ["description", "inputSchema"]
         assert changed["send_message"] == ["description"]
         with profile_context(gateway["op"]):
-            assert (await manage_tool_pins("list", "lotor"))["held"] == []
+            assert (await manage_tool_pins("list", "peergw"))["held"] == []
 
     async def test_a_stale_digest_refuses_and_changes_nothing(
         self, gateway: dict[str, Profile]
     ) -> None:
         self._recompressed()
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
+            listed = await manage_tool_pins("list", "peergw")
             # Another profile lists for the first time and a fourth tool is held.
             self._approved(
                 "alert_history", tool_pins.canonical({"name": "alert_history", "description": "a"})
@@ -467,11 +471,11 @@ class TestApprovingAWholeHeldSet:
             self._held(
                 "alert_history", tool_pins.canonical({"name": "alert_history", "description": "b"})
             )
-            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+            result = await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         assert "changed since it was listed" in result["error"]
         with profile_context(gateway["op"]):
-            assert len((await manage_tool_pins("list", "lotor"))["held"]) == 4
+            assert len((await manage_tool_pins("list", "peergw"))["held"]) == 4
 
     async def test_the_digest_moves_when_a_swap_keeps_the_count(
         self, gateway: dict[str, Profile]
@@ -484,16 +488,16 @@ class TestApprovingAWholeHeldSet:
         agent) rejected the count on this ground; the test is here so the
         reasoning cannot be lost to a later simplification.
         """
-        bid = backend_id(LOTOR_URL)
+        bid = backend_id(PEERGW_URL)
         self._approved("send_message", tool_pins.canonical({"name": "send_message", "d": 0}))
         first = self._held("send_message", tool_pins.canonical({"name": "send_message", "d": 1}))
         with profile_context(gateway["op"]):
-            before = (await manage_tool_pins("list", "lotor"))["digest"]
+            before = (await manage_tool_pins("list", "peergw"))["digest"]
 
         perimeter_db.set_pin_state(bid, "send_message", first, perimeter_db.PIN_APPROVED)
         self._held("send_message", tool_pins.canonical({"name": "send_message", "d": 2}))
         with profile_context(gateway["op"]):
-            after = await manage_tool_pins("list", "lotor")
+            after = await manage_tool_pins("list", "peergw")
 
         assert len(after["held"]) == 1  # the count is identical
         assert after["digest"] != before  # the digest is not
@@ -507,15 +511,15 @@ class TestApprovingAWholeHeldSet:
         self._recompressed()
         self._held("brand_new_tool", tool_pins.canonical({"name": "brand_new_tool", "d": 1}))
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
-            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+            listed = await manage_tool_pins("list", "peergw")
+            result = await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         assert "1 of 4 held definitions will not go in a batch" in result["error"]
         assert "brand_new_tool (changed in new)" in result["error"]
         # Nothing was released: a batch that took most of itself and reported
         # the rest would be read as a success.
         with profile_context(gateway["op"]):
-            assert len((await manage_tool_pins("list", "lotor"))["held"]) == 4
+            assert len((await manage_tool_pins("list", "peergw"))["held"]) == 4
 
     async def test_an_annotation_change_refuses_the_batch(
         self, gateway: dict[str, Profile]
@@ -525,8 +529,8 @@ class TestApprovingAWholeHeldSet:
         self._approved("send_message", tool_pins.canonical(old))
         self._held("send_message", tool_pins.canonical(new))
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
-            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+            listed = await manage_tool_pins("list", "peergw")
+            result = await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         assert "send_message (changed in annotations)" in result["error"]
 
@@ -548,8 +552,8 @@ class TestApprovingAWholeHeldSet:
         self._approved("send_message", tool_pins.canonical(old))
         self._held("send_message", tool_pins.canonical(new))
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
-            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+            listed = await manage_tool_pins("list", "peergw")
+            result = await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         assert "send_message (loosened a safety hint)" in result["error"]
 
@@ -560,12 +564,12 @@ class TestApprovingAWholeHeldSet:
         kept = self._held("send_message", _defn("recompressed"))
         refused = self._held("send_message", _defn("rejected once"), perimeter_db.PIN_REJECTED)
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
-            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+            listed = await manage_tool_pins("list", "peergw")
+            result = await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         assert [row["hash"] for row in result["tools"]] == [kept]
         with profile_context(gateway["op"]):
-            still = (await manage_tool_pins("list", "lotor"))["held"]
+            still = (await manage_tool_pins("list", "peergw"))["held"]
         assert [(row["hash"], row["rejected"]) for row in still] == [(refused, True)]
 
     async def test_both_definitions_of_one_tool_are_released(
@@ -573,25 +577,25 @@ class TestApprovingAWholeHeldSet:
     ) -> None:
         """Two profiles served different bytes by one backend: both answers are
         real (`docs/tool-pinning.md`), and both are the compressor's own output.
-        230 of breetai's 352 held tools were this shape."""
+        230 of mypeer's 352 held tools were this shape."""
         self._approved("send_message", _defn("as approved"))
         one = self._held("send_message", _defn("as one profile reads it"))
         two = self._held("send_message", _defn("as the other reads it"))
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
-            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+            listed = await manage_tool_pins("list", "peergw")
+            result = await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         assert sorted(row["hash"] for row in result["tools"]) == sorted([one, two])
-        assert perimeter_db.pending_hashes(backend_id(LOTOR_URL), "send_message") == []
+        assert perimeter_db.pending_hashes(backend_id(PEERGW_URL), "send_message") == []
 
     async def test_it_leaves_one_detections_row_for_the_batch(
         self, gateway: dict[str, Profile]
     ) -> None:
         self._recompressed()
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
+            listed = await manage_tool_pins("list", "peergw")
             with patch.object(tool_pins, "record_detection") as recorded:
-                await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+                await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         assert recorded.call_count == 1
         kwargs = recorded.call_args.kwargs
@@ -606,9 +610,9 @@ class TestApprovingAWholeHeldSet:
         count stands for them, and the manifest carries the rest."""
         self._recompressed()
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
+            listed = await manage_tool_pins("list", "peergw")
             with caplog.at_level(logging.WARNING):
-                await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+                await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         messages = [r.getMessage() for r in caplog.records]
         assert any("released 3 held tool definition(s)" in m for m in messages)
@@ -617,11 +621,11 @@ class TestApprovingAWholeHeldSet:
     async def test_it_refuses_without_a_digest(self, gateway: dict[str, Profile]) -> None:
         self._recompressed()
         with profile_context(gateway["op"]):
-            result = await manage_tool_pins("approve_all", "lotor")
+            result = await manage_tool_pins("approve_all", "peergw")
 
         assert "needs the set_digest" in result["error"]
         with profile_context(gateway["op"]):
-            assert len((await manage_tool_pins("list", "lotor"))["held"]) == 3
+            assert len((await manage_tool_pins("list", "peergw"))["held"]) == 3
 
     async def test_a_schema_that_gained_an_input_refuses_the_batch(
         self, gateway: dict[str, Profile]
@@ -630,7 +634,7 @@ class TestApprovingAWholeHeldSet:
 
         The compressor rewrites the descriptions INSIDE a schema as well as the
         tool's own (`compress._compressed_properties`), which is why 278 of
-        breetai's 582 rows reported `description,inputSchema`. It never adds a
+        mypeer's 582 rows reported `description,inputSchema`. It never adds a
         property — so a schema that grew is the backend's doing, and "a schema
         that grows a `recipient` or `url` parameter" is the rug pull this module
         exists to catch.
@@ -651,13 +655,13 @@ class TestApprovingAWholeHeldSet:
         self._approved("send_message", tool_pins.canonical(old))
         self._held("send_message", tool_pins.canonical(new))
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
-            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+            listed = await manage_tool_pins("list", "peergw")
+            result = await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         assert listed["held"][0]["changed"] == ["inputSchema"]
         assert listed["held"][0]["schema_shape_changed"] is True
         assert "beyond its descriptions" in result["error"]
-        assert perimeter_db.pending_hashes(backend_id(LOTOR_URL), "send_message")
+        assert perimeter_db.pending_hashes(backend_id(PEERGW_URL), "send_message")
 
     async def test_a_rewritten_property_description_still_batches(
         self, gateway: dict[str, Profile]
@@ -674,8 +678,8 @@ class TestApprovingAWholeHeldSet:
         self._approved("send_message", tool_pins.canonical(old))
         self._held("send_message", tool_pins.canonical(new))
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
-            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+            listed = await manage_tool_pins("list", "peergw")
+            result = await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         assert listed["held"][0]["schema_shape_changed"] is False
         assert result["approved"] == 1
@@ -697,8 +701,8 @@ class TestApprovingAWholeHeldSet:
             ),
         )
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
-            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+            listed = await manage_tool_pins("list", "peergw")
+            result = await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         assert "beyond its descriptions" in result["error"]
 
@@ -712,12 +716,14 @@ class TestApprovingAWholeHeldSet:
         the ones nothing has reviewed.
         """
         self._recompressed()
-        bid = backend_id(LOTOR_URL)
+        bid = backend_id(PEERGW_URL)
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
+            listed = await manage_tool_pins("list", "peergw")
             # One row vanishes between the digest check and the write.
             with patch.object(perimeter_db, "set_pin_states", side_effect=lambda *a, **k: None):
-                result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+                result = await manage_tool_pins(
+                    "approve_all", "peergw", set_digest=listed["digest"]
+                )
 
         assert "moved while it was being approved" in result["error"]
         assert len(perimeter_db.list_pending_pins(bid)) == 3  # nothing released
@@ -778,8 +784,8 @@ class TestApprovingAWholeHeldSet:
             "send_message", tool_pins.canonical({"name": "send_message", "inputSchema": new_schema})
         )
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
-            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+            listed = await manage_tool_pins("list", "peergw")
+            result = await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         assert listed["held"][0]["schema_shape_changed"] is True, what
         assert "beyond its descriptions" in result["error"], what
@@ -798,7 +804,7 @@ class TestApprovingAWholeHeldSet:
             "send_message", tool_pins.canonical({"name": "send_message", "inputSchema": new})
         )
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
+            listed = await manage_tool_pins("list", "peergw")
 
         assert listed["held"][0]["schema_shape_changed"] is True
 
@@ -816,8 +822,8 @@ class TestApprovingAWholeHeldSet:
             "send_message", tool_pins.canonical({"name": "send_message", "inputSchema": new})
         )
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
-            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+            listed = await manage_tool_pins("list", "peergw")
+            result = await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         assert "beyond its descriptions" in result["error"]
 
@@ -847,8 +853,8 @@ class TestApprovingAWholeHeldSet:
             "send_message", tool_pins.canonical({"name": "send_message", "inputSchema": new})
         )
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
-            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+            listed = await manage_tool_pins("list", "peergw")
+            result = await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         assert listed["held"][0]["schema_shape_changed"] is True, keyword
         assert "beyond its descriptions" in result["error"], keyword
@@ -864,8 +870,8 @@ class TestApprovingAWholeHeldSet:
         for name in ("brand_new_a", "brand_new_b", "brand_new_c"):
             self._held(name, tool_pins.canonical({"name": name, "description": "d"}))
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
-            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+            listed = await manage_tool_pins("list", "peergw")
+            result = await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         assert "3 of 6 held definitions will not go in a batch" in result["error"]
         for name in ("brand_new_a", "brand_new_b", "brand_new_c"):
@@ -883,8 +889,8 @@ class TestApprovingAWholeHeldSet:
         for name in names:
             self._held(name, tool_pins.canonical({"name": name, "description": "d"}))
         with profile_context(gateway["op"]):
-            listed = await manage_tool_pins("list", "lotor")
-            result = await manage_tool_pins("approve_all", "lotor", set_digest=listed["digest"])
+            listed = await manage_tool_pins("list", "peergw")
+            result = await manage_tool_pins("approve_all", "peergw", set_digest=listed["digest"])
 
         error = result["error"]
         assert f"{count} of {count} held definitions" in error

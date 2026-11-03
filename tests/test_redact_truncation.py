@@ -32,7 +32,7 @@ from trentina.quarantine.providers.gemini import GeminiProvider
 from trentina.quarantine.providers.ollama import OllamaProvider
 from trentina.quarantine.providers.openai import OpenAIProvider
 
-# Captured on lotor 2026-10-05, google/gemini-2.5-flash-lite through
+# Captured on peergw 2026-10-05, google/gemini-2.5-flash-lite through
 # OpenRouter: finish_reason "length", native MAX_TOKENS, 4096 completion
 # tokens, 15,468 characters. The head is kept; the middle is elided.
 _CAPTURED_HEAD = (

@@ -1589,7 +1589,7 @@ wordings, against 1 to 3 for the plain text around them).
 The 1 benign and 42 attacks match what L2 flags on the same texts with no
 encoding at all, so the unpacked text reads like plain text to L2.
 
-**The whole pipeline**, rerun with `benchmarks/l1_briefing.py` on lotor
+**The whole pipeline**, rerun with `benchmarks/l1_briefing.py` in production
 (L3 `gemini-2.5-flash-lite`, three calls a payload, majority vote). Each
 cell counts payloads refused by L1, L2 or L3:
 
@@ -2113,7 +2113,7 @@ Images are read by RapidOCR 3.9 (PP-OCRv6 small detection and recognition
 models, 31 MB, shipped inside its wheel) in a child process,
 `unpack/ocr_worker.py`, started once per payload for all of its images.
 The plan called for measuring size and latency before shipping; these are
-the numbers (lotor, 2026-10-05).
+the numbers (production, 2026-10-05).
 
 **Size.** The image grows by about 235 MB on 1.1 GB: OpenCV 153 MB, the
 RapidOCR wheel with its models 33 MB, Pillow 22 MB, Shapely 13 MB and

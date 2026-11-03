@@ -52,11 +52,11 @@ operator profile's backends are Trentina's own tools; see below.
 
 After that, just say what you want:
 
-> Trust lotor's verdicts for this backend.
+> Trust the peer gateway's verdicts for this backend.
 
 > Move the operator profile to <profile>.
 
-> Let breetai federate into the shared ingress.
+> Let a peer federate into the shared ingress.
 
 > This agent's client needs to reach api.example.com.
 

@@ -19,7 +19,7 @@ from trentina.gateway.profile import AuthConfig, Backend, FederatedConfig, Profi
 if TYPE_CHECKING:
     import pytest
 
-URL = "https://lotor.example/gateway/x/mcp"
+URL = "https://peergw.example/gateway/x/mcp"
 
 
 def _tool(name: str) -> dict[str, Any]:

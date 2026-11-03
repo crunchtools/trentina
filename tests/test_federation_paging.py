@@ -47,7 +47,7 @@ def _profile() -> Profile:
     profile = Profile(
         name="primary",
         auth=AuthConfig(bearer_token_env="D"),
-        backends={"fed": Backend(url="https://lotor/gateway/up/mcp", federated=FederatedConfig())},
+        backends={"fed": Backend(url="https://peergw/gateway/up/mcp", federated=FederatedConfig())},
     )
     profile.auth.bearer_token = SecretStr("t")
     return profile
@@ -261,7 +261,7 @@ def _served_profile() -> Profile:
         auth=AuthConfig(bearer_token_env="D"),
         backends={
             "web": Backend(url="internal://web", tools_allow=["*"]),
-            "fed": Backend(url="https://lotor/gateway/up/mcp", federated=FederatedConfig()),
+            "fed": Backend(url="https://peergw/gateway/up/mcp", federated=FederatedConfig()),
         },
     )
     profile.auth.bearer_token = SecretStr("t")
@@ -343,7 +343,7 @@ class TestThePeersReaderIsNotOffered:
 
     def _backend(self, *, federated: bool) -> Backend:
         return Backend(
-            url="https://lotor/gateway/up/mcp",
+            url="https://peergw/gateway/up/mcp",
             federated=FederatedConfig() if federated else None,
             tools_allow=["*"],
         )
@@ -468,7 +468,7 @@ class TestAPeersPartIsNeverReCut:
             r.getMessage() for r in caplog.records if "federated part exceeds" in r.getMessage()
         )
         assert "TRENTINA_PART_TOKENS" in line
-        assert "lotor" not in line  # the peer's URL is never logged (#262)
+        assert "peergw" not in line  # the peer's URL is never logged (#262)
         assert "align the two gateways' part budgets" in out.result["content"][0]["text"]
 
     async def test_an_unmarked_response_still_pages_normally(self) -> None:

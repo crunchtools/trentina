@@ -139,10 +139,12 @@ class TestTrustStaysHuman:
         assert trust_stays_human(
             "set",
             ("profiles", "up", "federation"),
-            {"peers": {"breetai": {"public_key": "..."}}, "secondary_key_name": "sign"},
+            {"peers": {"mypeer": {"public_key": "..."}}, "secondary_key_name": "sign"},
         )
         assert trust_stays_human(
-            "set", ("profiles", "down", "backends", "lotor", "federated"), {"primary_key_name": "k"}
+            "set",
+            ("profiles", "down", "backends", "peergw", "federated"),
+            {"primary_key_name": "k"},
         )
 
     def test_an_ordinary_write_is_untouched(self) -> None:

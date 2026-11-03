@@ -426,7 +426,7 @@ async def config_tool(
         action: `get` reads, `set` writes a value, `unset` removes a key,
             `normalize` rewrites the whole file so later writes apply cleanly.
         path: Dotted config keys, e.g.
-            "profiles.myagent.backends.lotor.federated.primary_key_name". Omit on
+            "profiles.myagent.backends.peergw.federated.primary_key_name". Omit on
             `get` for the whole file, and on `normalize` entirely.
         value: What to set. A scalar, a list or a mapping. It REPLACES whatever
             is at that path: setting a mapping removes any keys already there
@@ -465,7 +465,7 @@ async def federation_keygen_tool(name: str) -> dict[str, Any]:
 
     Args:
         name: What to call the key: lowercase letters, digits and hyphens
-            (e.g. "primary-to-lotor", "ingress-signing").
+            (e.g. "primary-to-peergw", "ingress-signing").
     """
     return await federation_keygen(name)
 

@@ -79,7 +79,7 @@ def _primary(public_pem: str, *, stamp: str = STAMP, enforcement: str = "flag") 
         ),
     )
     profile = Profile(
-        name="breetai",
+        name="mypeer",
         short_names=False,
         auth=AuthConfig(bearer_token_env="D"),
         defense=DefenseConfig(enforcement=enforcement),
@@ -100,7 +100,7 @@ def _envelope(
     mode: str = "flag",
 ) -> dict[str, Any]:
     assertion = vsa.build_assertion(
-        verifier="lotor",
+        verifier="peergw",
         content_sha256=digest if digest is not None else vsa.content_digest(CONTENT, None, False),
         verdict=verdict if verdict is not None else vsa.verdict_summary(None, mode),
         perimeter_stamp=stamp,
@@ -643,10 +643,10 @@ class TestTheEmitSideWhenThereIsNoDigest:
         # and such a profile carries no way in of its own — `peers` is its
         # authentication, and a second one would admit a caller with no peer.
         return Profile(
-            name="lotor-federation",
-            federation_of="lotor",
+            name="peergw-federation",
+            federation_of="peergw",
             federation=FederationConfig(
-                peers={"breetai": FederationPeer(public_key=_keypair()[1])},
+                peers={"mypeer": FederationPeer(public_key=_keypair()[1])},
                 secondary_key=SecretStr(priv),
             ),
             backends={"web": Backend(url="internal://web", tools_allow=["read_part_tool"])},

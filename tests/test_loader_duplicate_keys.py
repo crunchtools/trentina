@@ -1,7 +1,7 @@
 """A key written twice in `profiles.yaml` is refused, not silently resolved.
 
 `yaml.safe_load` keeps the LAST of a repeated key and says nothing. One of mine
-reached production: lotor's `josui` carried `defense:` twice, the gateway ran
+reached production: peergw's `josui` carried `defense:` twice, the gateway ran
 the second, and the comment on the first explained a block that had already
 lost. The two happened to agree, so nothing was misconfigured — and nothing
 would have said so if they had not. Not the loader, not `profile_lint`, not a
@@ -153,7 +153,7 @@ class TestAnchorsAndMergeKeysStillWork:
     ) -> None:
         """`<<: *anchor` plus an explicit override is the point of anchors.
 
-        lotor's file does this throughout. An earlier version of the scan
+        peergw's file does this throughout. An earlier version of the scan
         constructed the mapping to inspect it and raised `could not determine a
         constructor for the tag ':merge'` on a real file, reporting a YAML
         error where it had been asked about a duplicate.
@@ -217,7 +217,7 @@ class TestProfileLintReportsItToo:
 
     A lint that comes back clean on a file the gateway will refuse to start on
     is worse than no lint, and that is not hypothetical: I ran `profile_lint`
-    on lotor's config, read "0 findings", and deployed a file with two
+    on peergw's config, read "0 findings", and deployed a file with two
     `defense:` blocks.
     """
 

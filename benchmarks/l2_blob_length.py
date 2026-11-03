@@ -81,7 +81,7 @@ def _real_world(rng: random.Random) -> dict[str, str]:
         "SRI integrity hash (64)": (
             f'<script src="https://cdn.example/app.js" integrity="sha384-{b64(48)}"></script>'
         ),
-        "SSH public key (~380)": f"{ssh} ops@lotor",
+        "SSH public key (~380)": f"{ssh} ops@peergw",
         "k8s Secret with a TLS key": f"kind: Secret\ndata:\n  tls.key: {b64(1200)}\n",
     }
 

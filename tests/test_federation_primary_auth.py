@@ -70,7 +70,7 @@ def _primary_factory(private_pem: str):
     def down(up_port: int) -> Profile:
         backend = Backend(
             url=f"http://127.0.0.1:{up_port}/{SECONDARY_PROFILE}/mcp",
-            federated=FederatedConfig(primary_key_env="BREETAI_EDGE_KEY"),
+            federated=FederatedConfig(primary_key_env="MYPEER_EDGE_KEY"),
         )
         # The loader would resolve primary_key_env -> primary_key; set it directly here.
         assert backend.federated is not None
@@ -104,7 +104,7 @@ async def test_a_wrong_primary_key_is_refused() -> None:
     secondary = Profile(
         name=SECONDARY_PROFILE,
         federation_of=SECONDARY_PROFILE,
-        federation=FederationConfig(peers={"breetai": FederationPeer(public_key=trusted_pub)}),
+        federation=FederationConfig(peers={"mypeer": FederationPeer(public_key=trusted_pub)}),
         backends={
             "demo": Backend(url=f"http://127.0.0.1:{_DEAD_PORT}/mcp"),
             INTERNAL_KEY: Backend(url="internal://web", tools_allow=["read_part_tool"]),
@@ -142,11 +142,11 @@ def _down(url: str) -> Profile:
 class TestReloadHolds:
     def test_a_federated_backends_url_is_held(self) -> None:
         # Repointing a federated backend would send the primary key to a new host.
-        before = _down("https://lotor.example/gateway/fed/mcp")
+        before = _down("https://peergw.example/gateway/fed/mcp")
         after = _down("https://evil.example/gateway/fed/mcp")
         held = _hold_perimeter_fields(before, after)
         assert "backends.fed.url" in held
-        assert after.backends["fed"].url == "https://lotor.example/gateway/fed/mcp"
+        assert after.backends["fed"].url == "https://peergw.example/gateway/fed/mcp"
 
     def test_the_federation_block_is_held(self) -> None:
         _, pub = _keypair()
@@ -163,7 +163,7 @@ class TestReloadHolds:
         after = Profile(
             name="up",
             auth=AuthConfig(bearer_token_env="A"),
-            federation=FederationConfig(peers={"breetai": FederationPeer(public_key=pub)}),
+            federation=FederationConfig(peers={"mypeer": FederationPeer(public_key=pub)}),
             backends={"x": Backend(url="internal://web", tools_allow=["read_part_tool"])},
         )
         held = _hold_perimeter_fields(before, after)

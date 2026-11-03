@@ -395,7 +395,7 @@ class TestCallerIsolation:
     handles, and a handle was enough to read their parts."""
 
     INGRESS = "fed-ingress"
-    ALICE = ("breetai", "josui")
+    ALICE = ("mypeer", "josui")
     BOB = ("other-primary", "kagetora")
 
     def _hold(

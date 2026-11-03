@@ -27,7 +27,7 @@ uv run trentina
   `llm_keys`). Since 3.0.0 it no longer enables search: the Gemini grounding
   standalone-only fallback was dropped (#579), so web search is OpenRouter's
   `web` plugin on every path and a standalone server needs `OPENROUTER_API_KEY`
-  for `search`. The lotor gateway holds no Gemini key, so it never calls
+  for `search`. Our production gateway holds no Gemini key, so it never calls
   Google directly.
 - `OPENROUTER_API_KEY` — standalone key for `TRENTINA_MODEL_PROVIDER=openrouter`;
   a gateway profile uses `llm_keys.openrouter`. Model ids are OpenRouter's
@@ -524,7 +524,7 @@ lies to the next reader. One `asyncio.Lock`: two writes validating against the
 same text would both satisfy their own `expect_hash`.
 
 A write that does not round-trip is refused rather than reformatted (3.3.1,
-after one of mine reindented hundreds of sequences on lotor and lost a
+after one of mine reindented hundreds of sequences in production and lost a
 setting). `action="normalize"` is the way through: the one write whose bytes are
 MEANT to change, gated on `config_guard.equivalent` — `safe_load` deep equality
 AND every comment still present, because safe_load discards comments entirely

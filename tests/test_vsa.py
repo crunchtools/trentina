@@ -36,7 +36,7 @@ def _keypair() -> tuple[str, str]:
 
 def _assertion(digest: str = "abc") -> dict[str, Any]:
     return vsa.build_assertion(
-        verifier="lotor",
+        verifier="peergw",
         content_sha256=digest,
         verdict={"clean": True, "mode": "flag"},
         perimeter_stamp="v1:model@rev:0.7",
@@ -160,18 +160,18 @@ def test_verdict_summary_carries_the_closed_warning_facts() -> None:
 
 
 def _peers() -> dict[str, FederationPeer]:
-    return {"breetai": FederationPeer(public_key=_keypair()[1])}
+    return {"mypeer": FederationPeer(public_key=_keypair()[1])}
 
 
 def test_secondary_key_env_accepts_an_env_name() -> None:
-    cfg = FederationConfig(peers=_peers(), secondary_key_env="LOTOR_SIGNING_KEY")
-    assert cfg.secondary_key_env == "LOTOR_SIGNING_KEY"
+    cfg = FederationConfig(peers=_peers(), secondary_key_env="PEERGW_SIGNING_KEY")
+    assert cfg.secondary_key_env == "PEERGW_SIGNING_KEY"
     assert cfg.secondary_key is None  # resolved at load, not here
 
 
 def test_secondary_key_env_rejects_a_non_env_name() -> None:
     with pytest.raises(ValueError, match="UPPERCASE env-var identifier"):
-        FederationConfig(peers=_peers(), secondary_key_env="lotor-key")
+        FederationConfig(peers=_peers(), secondary_key_env="peergw-key")
 
 
 # --- check_trust: the primary's decision to trust (D2a) ---
@@ -181,7 +181,7 @@ def _signed(
     priv: str, *, digest: str = "d", stamp: str = "v1", mode: str = "flag", ts: int = 1_000_000
 ) -> dict[str, Any]:
     assertion = vsa.build_assertion(
-        verifier="lotor",
+        verifier="peergw",
         content_sha256=digest,
         verdict={"flagged_by": None, "mode": mode},
         perimeter_stamp=stamp,
