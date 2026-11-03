@@ -272,7 +272,7 @@ def _run_with_gateway(mcp_server: FastMCP, *, host: str, port: int, log_level: s
         else " (COLD: the first tools/list will judge every tool description and may take minutes)",
     )
     set_profiles(gateway_config.profiles)
-    log_service_identity(gateway_config.profiles)
+    log_service_identity(gateway_config.profiles, gateway_config.service_identity)
     # Last, and after every route is wired: this records both the config and
     # the facts about what got wired that a later reload has to respect. See
     # tools/reload.py — without it, an edit to profiles.yaml costs a restart,

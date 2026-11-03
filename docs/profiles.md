@@ -22,7 +22,7 @@ llm_providers:              # every name under llm_keys must be one of these
 
 profiles:
   agent2:
-    role: operator          # default: agent (see Roles and operator.md)
+    role: operator          # default: agent; more than one is allowed (see Roles)
     auth:
       bearer_token_env: TRENTINA_PROFILE_AGENT2_TOKEN
     llm_keys:               # every profile judges on its own key, operator included
@@ -215,13 +215,17 @@ through the gateway's own admin tools — `cache_flush`, `reconnect_backend`,
 | `reload_profiles` | validates the whole file, applies its own section | applies the whole file and the gateway-wide settings |
 | `backend_auth` | its own OAuth backends; `start` and `revoke` need `auth.self_authorize` | its own OAuth backends, `self_authorize` or not |
 
-Omit `role` and the profile is an agent. There is at most one operator, and it
-belongs to the **Operator agent**: the agent that installs, configures and runs
-Trentina. Every other agent, supervised or not, is a tenant and stays
-`role: agent`. The operator is also the gateway's service identity, which since
-6.1.0 binds an approved config write and nothing else — no model call runs on
-its key for anyone but itself. [operator.md](operator.md) covers the whole
-profile.
+Omit `role` and the profile is an agent. The operator role belongs to the
+**Operator agent**: the agent that installs, configures and runs Trentina.
+Every other agent, supervised or not, is a tenant and stays `role: agent`.
+
+More than one profile may hold the role since 6.4.0, so two agents administer
+one gateway without sharing a login. Each is equal, and
+`gateway.service_identity` names the one the gateway binds and reports as
+*itself* — which since 6.1.0 binds an approved config write and nothing else;
+no model call runs on its key for anyone but itself. With two operators and no
+such name the file is refused. [operator.md](operator.md) covers the whole
+profile and both writes.
 
 An agent profile is not told what it cannot act on. Another profile's backend
 names, allowlist deltas, guarded parameter names, call volumes and blocked URLs

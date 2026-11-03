@@ -1,9 +1,10 @@
 """config_guard (#633): the two writes that are not the operator's to make freely.
 
 The operator is root on the gateway and these are not a privilege boundary —
-there is none, by design. They exist because the operator is an LLM: minting a
-second operator, and accepting another gateway's security verdict, are both
-easy to slip into a plausible-looking request and expensive to discover later.
+there is none, by design. They exist because the operator is an LLM: moving who
+administers the gateway, and accepting another gateway's security verdict, are
+both easy to slip into a plausible-looking request and expensive to discover
+later.
 """
 
 from __future__ import annotations
@@ -19,8 +20,10 @@ from trentina.gateway.config_guard import (
     equivalent,
     mask_inline_secrets,
     operator_profile,
+    service_identity,
     trust_stays_human,
 )
+from trentina.gateway.loader import GatewayConfig
 from trentina.gateway.profile import Profile
 
 
@@ -33,6 +36,42 @@ def _profile(**overrides: object) -> Profile:
     }
     body.update(overrides)
     return Profile.model_validate(body)
+
+
+class TestServiceIdentity:
+    """Which operator the gateway binds and reports as ITSELF (#661).
+
+    The RESOLVED name, not the raw setting, because two different writes move
+    it: naming a different profile, and promoting or demoting an operator while
+    the setting is absent.
+    """
+
+    @staticmethod
+    def _config(profiles: dict[str, Profile], named: str | None = None) -> GatewayConfig:
+        return GatewayConfig(profiles=profiles, service_identity=named)
+
+    def test_one_operator_needs_no_setting(self) -> None:
+        assert service_identity(self._config({"op": _profile()})) == "op"
+
+    def test_the_setting_decides_between_two(self) -> None:
+        two = {"op": _profile(), "op2": _profile(name="op2")}
+        assert service_identity(self._config(two, "op2")) == "op2"
+        assert service_identity(self._config(two, "op")) == "op"
+
+    def test_no_operator_at_all_resolves_to_nothing(self) -> None:
+        agent = Profile.model_validate(
+            {"name": "ag", "auth": {"bearer_token_env": "A"}, "backends": {}}
+        )
+        assert service_identity(self._config({"ag": agent})) is None
+
+    def test_demoting_the_named_one_moves_it_without_the_setting_in_the_write(self) -> None:
+        """The reason this compares the resolved name. `op` is named and loses
+        the role; nothing wrote `service_identity`, and the identity moved."""
+        before = {"op": _profile(), "op2": _profile(name="op2")}
+        after = {"op": _profile(role="agent"), "op2": _profile(name="op2")}
+
+        assert service_identity(self._config(before, "op")) == "op"
+        assert service_identity(self._config(after, "op")) == "op2"
 
 
 class TestOperatorProfile:

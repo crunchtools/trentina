@@ -5,7 +5,9 @@
 Trentina is meant to be run by an agent. It gets installed, configured, tuned
 and kept healthy by an **Operator agent**, and humans set policy rather than
 editing YAML. The operator profile (`role: operator`) is that agent's profile.
-It is the one identity that owns the gateway.
+It owns the gateway. More than one profile may hold it — see
+[More than one operator](#more-than-one-operator) — and one of them is named as
+the identity the gateway reports as *itself*.
 
 Every other agent is a **tenant** (`role: agent`, the default). A tenant sees
 its own tools, its own audit rows and its own section of the config, and
@@ -56,9 +58,11 @@ authority — the operator *is* root on this gateway. They exist because the
 operator is a model, so what matters is not whether it may but whether it can
 be talked into it.
 
-The first is the operator profile: who holds `role: operator`, and how a caller
-becomes one. Minting a second root is the one change whose blast radius is
-unbounded and permanent.
+The first is the operator profile: who holds `role: operator`, how a caller
+becomes one, and which of them the gateway reports as itself
+(`gateway.service_identity`). All three go to the same page, because they are
+three spellings of one decision — who runs this gateway — and the blast radius
+of getting it wrong is unbounded and permanent.
 
 The second is `trust_verdict`, which makes this gateway serve another gateway's
 response *without* running its own three layers over it. The project
@@ -101,8 +105,9 @@ without a restart. A writable config directory is what `config_tool` needs from
 the deployment; see [Deployment Hardening](deployment-hardening.md#a-writable-config-directory).
 
 **Service identity.** A few model calls belong to no tenant, and those run
-**as the operator**, on the operator's `defense.provider`, `defense.model` and
-`llm_keys`.
+**as the operator** — the one `gateway.service_identity` names when more than
+one profile holds the role — on that profile's `defense.provider`,
+`defense.model` and `llm_keys`.
 
 Since 6.1.0 that is a short list, and judging and compressing tool
 descriptions are not on it. A tenant's tool list is a tenant's own: it is
@@ -156,7 +161,71 @@ service identity: operator profile=ops, its own judge provider=gemini model=... 
 
 The judge in that line is the operator's **own** — what judges the operator's
 own tool descriptions. It says nothing about any other profile's, and nothing
-about who pays for them.
+about who pays for them. With more than one operator, a line before it counts
+the rest.
+
+## More than one operator
+
+Two agents can administer one gateway without sharing a login. Give each its
+own profile with `role: operator`, and name the one the gateway binds and
+reports as *itself*:
+
+```yaml
+gateway:
+  service_identity: ops       # one of the operator profiles below
+profiles:
+  ops:
+    role: operator
+    auth:
+      bearer_token_env: TRENTINA_PROFILE_OPS_TOKEN
+    llm_keys:
+      gemini:
+        api_key_env: GEMINI_API_KEY
+  ops-breetai:                # a second agent, its own login, its own key
+    role: operator
+    auth:
+      bearer_token_env: TRENTINA_PROFILE_OPS_BREETAI_TOKEN
+    llm_keys:
+      gemini:
+        api_key_env: GEMINI_API_KEY
+```
+
+With one operator the setting is unnecessary and may be left out, so no file
+written before 6.4.0 changes meaning. With two or more and no setting, the file
+is **refused** rather than resolved by whichever came first: file order
+deciding an identity is the defect #138 removed.
+
+Every operator is equal. Each administers the whole gateway on its own
+credential, each judges its own tool descriptions on its own key, and each is
+held to the keyless-operator rule below — a second operator with no key for its
+provider is an admin seat that is served none of the admin tools under `block`.
+What the named one gets is not authority but *attribution*: it is the profile in
+an approved config write's audit row, and the `perimeter.judge` an operator's
+`quarantine_stats` reports.
+
+Because the file must validate at every step, adding the second operator takes
+two writes, in this order:
+
+```
+config_tool set gateway.service_identity ops      # applies at once: nothing moved
+config_tool set profiles.ops-breetai.role operator # stages for a person
+```
+
+Doing them the other way round is refused: the candidate would have two
+operators and no name. That is deliberate — the choice is made before the
+ambiguity exists, rather than after.
+
+Going back the other way is the same two writes reversed, for the same reason:
+taking the role off the profile the setting names leaves it pointing at a
+profile that is not an operator, and the loader refuses that rather than
+resolving it to whoever is left. Point the setting at the operator you are
+keeping, then demote the other one.
+
+Any operator may propose either write, including one that is not the named
+identity. There is no privilege tier among operators: an operator is root here,
+and one that can rewrite another's `auth` block could become it anyway, so a
+restriction naming only the service identity would defend nothing while implying
+a boundary the design does not have. A person decides instead.
 
 ## Declaring one
 

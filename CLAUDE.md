@@ -424,11 +424,20 @@ it.
 ### Operator profile / service identity (#138)
 
 Trentina is AI-native: an Operator agent installs and configures it, and
-`role: operator` is that agent's profile (`docs/operator.md`). At most one per
-file, and it must hold `llm_keys` for its own provider (`loader._check_operator`).
-`service_context()` (`gateway/service.py`) binds it, and the Q-Agent resolves
-key and model from the bound profile. No operator: env-global, logged at
-startup.
+`role: operator` is that agent's profile (`docs/operator.md`). MORE THAN ONE IS
+ALLOWED since 6.4.0 (#661), and each must hold `llm_keys` for its own provider
+— that rule is per-profile, since the admin tools are `internal://` and judged.
+`gateway.service_identity` names the one the gateway binds and REPORTS as
+itself (the approved-apply audit row, `quarantine_stats`' `perimeter.judge`);
+two operators and no name refuses the file rather than taking the first in dict
+order, which is #138 again. `loader._check_operator` holds both; the one
+predicate is `service.written_operators`. `service_context()`
+(`gateway/service.py`) binds it, and the Q-Agent resolves key and model from
+the bound profile. No operator: env-global, logged at startup. Moving the role,
+the credential behind it, or the named identity are three spellings of one
+decision and all stage for a person (`config_guard.service_identity` compares
+the RESOLVED name, since demoting the named one moves it without the setting
+being in the write).
 
 **6.1.0 took the tool-description work off it.** Judging a description at the
 perimeter and compressing one run as the LISTING profile, on that profile's own

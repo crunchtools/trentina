@@ -260,7 +260,12 @@ def _profile_shown(value: Any, aspect: str) -> str:
     return rendered
 
 
-def _profile_facts(before: dict[str, Any], after: dict[str, Any]) -> dict[str, str]:
+def _profile_facts(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    bound_before: str | None = None,
+    bound_after: str | None = None,
+) -> dict[str, str]:
     """What a person needs to see about a profile change.
 
     Who holds it is not enough, and saying only that was a real hole.
@@ -272,6 +277,12 @@ def _profile_facts(before: dict[str, Any], after: dict[str, Any]) -> dict[str, s
     It is also the shape that matters most, because moving the ROLE to a new
     profile is visible and changing the key behind an unchanged name is not.
     QE found it the hard way — told to decline, shown that page, approved.
+
+    Since 6.4.0 more than one profile may hold the role, so there is one more
+    thing to see: which of them the gateway binds and reports as itself. That
+    row is rendered only when it MOVES — on a gateway with one operator it
+    would otherwise say the same name twice, on a page whose whole value is
+    that every line on it is worth reading.
 
     So every aspect that differs is named, with its before and its after,
     across the UNION of both sides. A profile entering the role needs that as
@@ -295,6 +306,16 @@ def _profile_facts(before: dict[str, Any], after: dict[str, Any]) -> dict[str, s
             ", ".join(sorted(after)) or "nobody", what="the proposed operator profile"
         ),
     }
+    # Only when it moves. More than one profile may hold the role since 6.4.0,
+    # so "who holds it" and "which one the gateway reports as itself" are two
+    # answers — but on the common change, where there is one operator and it is
+    # both, a second row saying the same name twice is noise on a page whose
+    # whole job is that every line on it is worth reading.
+    if bound_before != bound_after:
+        facts["The gateway reports itself as"] = (
+            f"{pending.checked_display(bound_before or 'nobody', what='the bound operator')}, "
+            f"then {pending.checked_display(bound_after or 'nobody', what='the bound operator')}"
+        )
     for name in sorted(set(before) | set(after)):
         shown = pending.checked_display(name, what="an operator profile name")
         was, now = before.get(name, {}), after.get(name, {})
@@ -679,10 +700,26 @@ _DEFENSE_ASPECTS = ("modes", "enforcement", "llm_completion")
 
 
 def _profile_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Proposal]:
-    """Who the operator is, and how a caller becomes one."""
+    """Who the operator is, how a caller becomes one, and which one the gateway IS.
+
+    Three ways to the same page, deliberately, because since 6.4.0 they are
+    three spellings of one decision: promote a profile into the role, change the
+    credential behind a name already in it, or point
+    ``gateway.service_identity`` at a different one of them (#661). Scott's
+    call: any operator may propose any of them, and a person agrees to it. There
+    is no privilege tier among operators — an operator is root here, and one
+    that may rewrite another's ``auth`` block could become it anyway, so a
+    restriction naming only the service identity would defend nothing while
+    implying a boundary the design does not have.
+    """
     was = config_guard.operator_profile(before.profiles)
     now = config_guard.operator_profile(after.profiles)
-    return [] if was == now else [(pending.Kind.OPERATOR_PROFILE, _profile_facts(was, now))]
+    bound_was = config_guard.service_identity(before)
+    bound_now = config_guard.service_identity(after)
+    if was == now and bound_was == bound_now:
+        return []
+    facts = _profile_facts(was, now, bound_was, bound_now)
+    return [(pending.Kind.OPERATOR_PROFILE, facts)]
 
 
 def _trust_proposals(
