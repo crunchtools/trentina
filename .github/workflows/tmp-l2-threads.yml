@@ -16,6 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
       - run: uv sync --frozen --no-dev --extra matrix --extra bridge
       - name: Fetch the pinned model
         run: |
