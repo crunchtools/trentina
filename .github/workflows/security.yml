@@ -59,15 +59,31 @@ jobs:
   # changing both.
   sdlc:
     name: sdlc ci
-    # Our own pull requests build on the self-hosted runner; everything else
-    # stays on GitHub's. A FORK pull request can never land on our hardware;
-    # every verdict on `main` comes from a clean GitHub-hosted machine; and
-    # clearing the FAST_RUNNER_LABEL variable moves every job back with no
-    # commit -- the kill switch for a runner that is offline.
+    # Two runners on gloval, named for their storage (crunchtools/gha-runner):
+    #
+    #   crunchtools-cached    our own pull requests. Its layer cache persists,
+    #                         which is what makes it fast, and every job it runs
+    #                         can write to that cache -- so nothing it builds is
+    #                         ever published.
+    #   crunchtools-uncached  pushes to main and scheduled runs: the build
+    #                         `publish` pushes. Its container storage is a tmpfs,
+    #                         empty at the start of every job, so the published
+    #                         bytes come from storage nothing else has written to.
+    #
+    # Everything else stays on GitHub's machines: a FORK pull request never
+    # lands on our hardware, and neither does a Dependabot one, whose job runs
+    # the new release of a third-party package. The author is checked rather
+    # than the actor, because a person re-running Dependabot's job becomes the
+    # actor. Clearing CACHED_RUNNER_LABEL or UNCACHED_RUNNER_LABEL moves that
+    # runner's jobs back to GitHub-hosted with no commit -- the kill switch for a
+    # runner that is offline.
     runs-on: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.head.repo.full_name == github.repository
-          && (vars.FAST_RUNNER_LABEL || 'ubuntu-latest')
+          && github.event.pull_request.user.login != 'dependabot[bot]'
+          && (vars.CACHED_RUNNER_LABEL || 'ubuntu-latest')
+          || github.event_name != 'pull_request'
+          && (vars.UNCACHED_RUNNER_LABEL || 'ubuntu-latest')
           || 'ubuntu-latest' }}
     permissions:
       contents: read
