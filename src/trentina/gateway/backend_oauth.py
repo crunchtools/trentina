@@ -41,7 +41,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import timedelta
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
@@ -193,10 +193,7 @@ async def _request(
     return _Reply(status=status, headers=reply_headers, body=bytes(received))
 
 
-_M = TypeVar("_M", bound=BaseModel)
-
-
-def _parse(model: type[_M], reply: _Reply) -> _M | None:
+def _parse[M: BaseModel](model: type[M], reply: _Reply) -> M | None:
     # TRUST: metadata, registration and token replies from a backend's authorization server
     #   untrusted: the whole body; the server is a third party the backend named
     #   judged-by: a pydantic model (unknown fields ignored, types enforced), then the

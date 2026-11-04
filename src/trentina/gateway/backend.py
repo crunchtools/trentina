@@ -20,7 +20,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 import httpx2
 from mcp import ClientSession
@@ -51,7 +51,6 @@ if TYPE_CHECKING:
     from .backend_tokens import BackendGrant
     from .profile import Backend, Profile
 
-_T = TypeVar("_T")
 #: The POSTs whose 401 means "ran nothing, authorize and try again".
 _AUTH_METHODS = frozenset({"initialize", "tools/list", "tools/call"})
 
@@ -778,15 +777,15 @@ def _with_bearer(backend: Backend, grant: BackendGrant) -> dict[str, str]:
     }
 
 
-async def _with_reauth(
+async def _with_reauth[T](
     backend_name: str,
     backend: Backend,
     profile: Profile | None,
     grant: BackendGrant | None,
     headers: dict[str, str] | None,
     cap: ResponseCap,
-    run: Callable[[dict[str, str] | None], Awaitable[_T]],
-) -> _T:
+    run: Callable[[dict[str, str] | None], Awaitable[T]],
+) -> T:
     """``run(headers)``; on a 401 that ran nothing, refresh the grant and run it once more.
 
     Only a 401 to the session's ``initialize``, ``tools/list`` or a

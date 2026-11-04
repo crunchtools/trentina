@@ -128,16 +128,20 @@ packages = ["src/trentina"]
 
 [tool.ruff]
 line-length = 100
-# NOT py314, and the reason is our own tooling rather than the runtime.
-# At py314 ruff requires PEP 695 type parameters (UP047) and its formatter
-# rewrites every multi-exception handler into PEP 758's unparenthesized
-# `except A, B:`. Gourmand's parser understands neither: with both applied it
-# stopped analysing 39 files and reported DestinationKind.TUNNEL, GIT, MODEL
-# and OAUTH as dead members, all four of which production constructs. A
-# formatting change that silently switches a quality gate off across a third
-# of the package is a worse trade than one pin that disagrees with the others.
-# Raise this to py314 when Gourmand parses 3.12+ syntax (crunchtools/gourmand).
-target-version = "py311"
+# py313, not py314, and the gap is one minor version with one reason: at py314
+# ruff's FORMATTER rewrites every multi-exception handler into PEP 758's
+# unparenthesized `except A, B:`, and Gourmand cannot parse it. Measured on a
+# two-file fixture: with that syntax present Gourmand reports an enum member as
+# dead while the same file still uses it -- no parse error, just lost usages. On
+# this tree it silently stopped seeing 39 files and called
+# DestinationKind.TUNNEL, GIT, MODEL and OAUTH dead, all four of which
+# production constructs. A formatter setting that switches a quality gate off
+# across a third of the package is the wrong trade.
+#
+# py313 still gets everything else 3.12+ -- PEP 695 type parameters (UP047,
+# UP049) included, which Gourmand parses correctly. Raise to py314 when it
+# handles PEP 758 (crunchtools/gourmand).
+target-version = "py313"
 # Known-bad code on purpose: the boundary-review eval (#90) grades a reviewer
 # on catching exactly what lint would flag, and semgrep's --test fixtures
 # carry a rule's true and false positives.
