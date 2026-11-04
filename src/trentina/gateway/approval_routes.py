@@ -621,6 +621,14 @@ async def _enrol_password(request: Request, form: Any) -> Response:
             await asyncio.to_thread(approver.set_password, new)
         except ValueError as exc:
             return _page(request, "Not set", f"<p>{html.escape(str(exc))}</p>", 400)
+        except OSError as exc:
+            logger.warning("approval: the password could not be stored err=%s", exc_kind(exc))
+            return _page(
+                request,
+                "Not set",
+                "<p>It could not be stored. Nothing changed.</p>",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
         approver.close_enrolment()
     _audit_change("approval password enrolled")
     return _signed_in(request, "password", f"{SETUP_PATH}?done=password_set", as_json=False)
