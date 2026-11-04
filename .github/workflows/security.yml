@@ -81,8 +81,17 @@ jobs:
           && (vars.FAST_RUNNER_LABEL || 'ubuntu-latest')
           || 'ubuntu-latest' }}
 
-    # The digest this job published, for mirror-ghcr to copy. Empty on anything
-    # but a push, where the publish step does not run.
+    # Narrower than the workflow-level set, which this replaces: checkout,
+    # the SARIF upload, and the GHCR push are all of it. `issues` and
+    # `pull-requests` are for other jobs in this file and this one never
+    # needed them.
+    permissions:
+      contents: read
+      security-events: write
+      packages: write
+
+    # The digest both registries hold for this commit. Empty on anything but a
+    # push, where the publish step does not run.
     outputs:
       digest: ${{ steps.publish.outputs.digest }}
 
@@ -406,11 +415,21 @@ jobs:
           sarif_file: "trivy-results.sarif"
 
       # The image this job built, started, tested and scanned is now the image
-      # we publish. Until this change container.yml rebuilt it twice, once per
-      # registry, so the bytes the gate above passed were thrown away and the
-      # bytes on the registry had been scanned by nothing. `promote` already
+      # we publish, to BOTH registries, from the one local build. Until this
+      # change container.yml rebuilt it twice, once per registry, so the bytes
+      # the gate above passed were thrown away and the bytes on the registries
+      # had been scanned by nothing -- and, being separate builds, the two
+      # registries held different digests for one version. `promote` already
       # asserts that THIS job succeeded on the tagged commit, by workflow file;
       # that assertion is now about the bytes it promotes.
+      #
+      # Pushed from here rather than copied by a later job. Gatehouse rejected
+      # the copy, and was right: `skopeo copy` meant mounting the Docker auth
+      # config -- credentials for both registries -- into a third-party image on
+      # a floating tag. Pushing the same local image twice needs no extra tool
+      # and no credential leaves this job. The manifest does not name its
+      # repository, so the same bytes yield the same digest in both registries;
+      # that is asserted below rather than assumed.
       #
       # `push` only, so a pull request never holds a registry credential, and
       # `runs-on` above already pins push to ubuntu-latest, so the self-hosted
@@ -423,91 +442,72 @@ jobs:
           username: ${{ secrets.QUAY_USERNAME }}
           password: ${{ secrets.QUAY_PASSWORD }}
 
-      - name: Publish the scanned image
-        id: publish
-        if: github.event_name == 'push'
-        env:
-          IMAGE: ${{ env.QUAY_IMAGE }}
-        run: |
-          set -eu
-          docker tag trentina:scan "$IMAGE:main"
-          docker tag trentina:scan "$IMAGE:latest"
-          docker push "$IMAGE:main"
-          docker push "$IMAGE:latest"
-          # Read back the digest the registry assigned, filtered to this
-          # repository: one local image can carry a RepoDigest for several.
-          digest=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
-            "$IMAGE:main" | grep "^$IMAGE@" | head -1 | cut -d@ -f2)
-          [ -n "$digest" ] || {
-            echo "pushed, but could not resolve the digest; not mirroring" >&2
-            exit 1
-          }
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "::notice::published $IMAGE@$digest"
-
-  # A COPY of what container-scan published, never a second build. container.yml
-  # rebuilt the image for GHCR, so the two registries shipped DIFFERENT bytes
-  # for the same version and neither set was the set that had been scanned.
-  mirror-ghcr:
-    name: Mirror the published digest to GHCR
-    runs-on: ubuntu-latest
-    needs: container-scan
-    if: github.event_name == 'push'
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Log in to Quay.io
-        uses: docker/login-action@v4
-        with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_USERNAME }}
-          password: ${{ secrets.QUAY_PASSWORD }}
-
       - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ github.token }}
 
-      # skopeo from its own pinned image rather than an apt install, and the
-      # credentials arrive as the authfile the two logins above wrote -- never
-      # as --src-creds/--dest-creds, which would put both secrets in the argv
-      # of a process on the runner.
-      - name: Copy the digest to GHCR
+      - name: Publish the scanned image
+        id: publish
+        if: github.event_name == 'push'
         env:
-          SRC: ${{ env.QUAY_IMAGE }}
-          DST: ${{ env.GHCR_IMAGE }}
-          DIGEST: ${{ needs.container-scan.outputs.digest }}
+          QUAY: ${{ env.QUAY_IMAGE }}
+          GHCR: ${{ env.GHCR_IMAGE }}
         run: |
           set -eu
-          [ -n "$DIGEST" ] || { echo "container-scan published no digest" >&2; exit 1; }
-          for tag in main latest; do
-            docker run --rm \
-              -v "$HOME/.docker/config.json:/auth.json:ro" \
-              quay.io/skopeo/stable:v1.16.1 \
-              copy --all --authfile /auth.json \
-              "docker://$SRC@$DIGEST" "docker://$DST:$tag"
+          # Read the digest back from the local image's RepoDigests, filtered to
+          # the repository asked for: one local image carries a RepoDigest per
+          # repository it has been pushed to, and after the second push both are
+          # present.
+          pushed() {
+            docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+              "$1:main" | grep "^$1@" | head -1 | cut -d@ -f2
+          }
+          for image in "$QUAY" "$GHCR"; do
+            docker tag trentina:scan "$image:main"
+            docker tag trentina:scan "$image:latest"
+            docker push "$image:main"
+            docker push "$image:latest"
           done
-          echo "::notice::mirrored $SRC@$DIGEST to $DST"
+          quay_digest=$(pushed "$QUAY")
+          ghcr_digest=$(pushed "$GHCR")
+          [ -n "$quay_digest" ] && [ -n "$ghcr_digest" ] || {
+            echo "pushed, but a digest could not be resolved" >&2
+            exit 1
+          }
+          # The point of the whole change, enforced rather than trusted. If one
+          # registry ever assigns a different digest to these bytes, `promote`
+          # would resolve two different images for one release and this is where
+          # that has to stop.
+          [ "$quay_digest" = "$ghcr_digest" ] || {
+            echo "the registries disagree on the digest for these bytes:" >&2
+            echo "  $QUAY@$quay_digest" >&2
+            echo "  $GHCR@$ghcr_digest" >&2
+            exit 1
+          }
+          echo "digest=$quay_digest" >> "$GITHUB_OUTPUT"
+          echo "::notice::published $quay_digest to both registries"
 
       # The crunchtools-ci App's token, not a personal one: it has its own rate
       # limit, so a throttled account can't stop this step.
       - name: Mint CI token
         id: ci-token
+        if: github.event_name == 'push'
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.CRUNCHTOOLS_CI_APP_ID || secrets.CRUNCHTOOLS_CI_APP_ID }}
           private-key: ${{ secrets.CRUNCHTOOLS_CI_APP_KEY }}
           owner: crunchtools
 
-      # crunchtools/data-collector is built FROM this image. Tell it to
-      # rebuild, as every parent image in the fleet tells its children
+      # crunchtools/data-collector is built FROM this image. Tell it to rebuild,
+      # as every parent image in the fleet tells its children
       # (crunchtools/constitution, validate-cascade.py). Moved here from
       # container.yml with the publish it belongs to.
       - name: Trigger downstream rebuilds
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ steps.ci-token.outputs.token }}
         run: |

@@ -19,8 +19,10 @@ under that name.
   jobs, sequentially. The verified build was discarded and the two published
   builds were scanned by nothing, so the two registries shipped *different
   bytes* for the same version. `container-scan` now publishes the image it
-  verified and a second job mirrors that digest to GHCR with `skopeo copy`, so
-  one build reaches both registries under one digest. The constitution's claim
+  verified to both registries from that one local build, and fails if they
+  disagree on its digest — a manifest does not name its repository, so the same
+  bytes are the same digest, and the invariant is asserted rather than trusted.
+  The constitution's claim
   that a tag "promotes the digest main already built and verified" held only by
   sequencing; `promote` is unchanged, and the job it asserts ran is now the job
   that pushed the bytes it promotes.
