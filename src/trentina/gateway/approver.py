@@ -353,10 +353,16 @@ def _read_store() -> list[dict[str, Any]]:
         logger.warning("approval: the passkey store could not be read: %s", exc_kind(exc))
         return []
     try:
-        entries = json.loads(raw).get("passkeys", [])
-    except (ValueError, AttributeError) as exc:
-        # Fail closed: an unreadable store is no passkeys, never any passkey.
-        logger.warning("approval: the passkey store is malformed: %s", exc_kind(exc))
+        stored = json.loads(raw)
+    except (ValueError, RecursionError) as exc:
+        stored, problem = None, exc_kind(exc)
+    else:
+        problem = "shape"
+    entries = stored.get("passkeys") if isinstance(stored, dict) else None
+    if not isinstance(entries, list):
+        # Fail closed: an unreadable or misshapen store is no passkeys, never
+        # any passkey, and never an exception on the approval routes.
+        logger.warning("approval: the passkey store is malformed: %s", problem)
         return []
     return [entry for entry in entries if isinstance(entry, dict)][:MAX_PASSKEYS]
 

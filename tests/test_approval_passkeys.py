@@ -409,10 +409,14 @@ class TestManaging:
                 "k",
             )
 
-    def test_a_malformed_store_is_no_passkeys(self) -> None:
+    @pytest.mark.parametrize(
+        "content",
+        ["{not json", '{"passkeys": null}', '{"passkeys": 5}', "[]", "null", "[" * 3000],
+    )
+    def test_a_malformed_store_is_no_passkeys(self, content: str) -> None:
         path = approver._passkeys_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{not json")
+        path.write_text(content)
         assert approver.passkeys() == []
         assert approver.configured() is False
 

@@ -833,7 +833,9 @@ async def _finish_register(request: Request, body: dict[str, Any]) -> Response:
     except OSError as exc:
         logger.warning("approval: a passkey could not be stored err=%s", exc_kind(exc))
         return JSONResponse(
-            {"ok": False, "message": "It could not be stored."}, 500, headers=_HEADERS
+            {"ok": False, "message": "It could not be stored."},
+            HTTPStatus.INTERNAL_SERVER_ERROR,
+            headers=_HEADERS,
         )
     _audit_change(f"passkey enrolled {approver.credential_digest(cred_id)} alg={credential.alg}")
     target = f"{SETUP_PATH}?done=passkey_added"
