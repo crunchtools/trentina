@@ -17,4 +17,5 @@ NATIVE = ["onnxruntime", "vodozemac", "cv2", "PIL", "pypdf", "rapidocr", "shapel
 
 @pytest.mark.parametrize("module", NATIVE)
 def test_native_extension_loads(module: str) -> None:
-    importlib.import_module(module)
+    loaded = importlib.import_module(module)
+    assert loaded.__spec__ is not None and loaded.__spec__.origin, f"{module} has no origin"

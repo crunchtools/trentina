@@ -345,11 +345,9 @@ petit-plus = { path = "tests/fixtures/plugins/petit_plus" }
 #   sdlc ci       CI: push's checks except the two reviewers, plus the image
 
 # The integration suites read a key at call time; every provider call in them
-# is mocked. Unit tests drop it (conftest.py), so this reaches only those. The
-# tree is mounted read-only for the suite, so the downloaded-corpora cache goes
-# to /tmp rather than corpora/data/.
+# is mocked. Unit tests drop it (conftest.py), so this reaches only those.
 [tool.sdlc.push.pytest]
-env = { GEMINI_API_KEY = "test_key_for_ci", TRENTINA_CORPORA_CACHE = "/tmp/trentina-corpora" }
+env = { GEMINI_API_KEY = "test_key_for_ci" }
 
 # The in-repo rules scan the package, as CI always has.
 [tool.sdlc.push.semgrep]
