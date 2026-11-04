@@ -12,6 +12,14 @@ under that name.
 
 ### Changed
 
+- **The Containerfile's layers are ordered by how often their input changes.**
+  The dependency install is keyed on the exported, hash-pinned requirements
+  rather than on `pyproject.toml` and `README.md`, so a release bump or a README
+  edit no longer reinstalls ~263 packages. Trentina installs in a stage of its
+  own and is copied into the image as one small layer; the L2 gates test those
+  same bytes. The version label is the last layer, and the machine-id seed no
+  longer changes with every source edit. A new `.containerignore` keeps `.venv`
+  and `.git` out of the build context. The image's contents are unchanged.
 - **Every check runs from python-sdlc, and `scripts/gates.sh` is gone.** One
   pin in `.pre-commit-config.yaml` fixes the image and every tool in it for the
   laptop and for CI, which reads the same line. Three commands, configured by

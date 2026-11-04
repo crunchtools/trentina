@@ -1,0 +1,36 @@
+# TEMPORARY -- removed before merge. Times the benign L2 gate on a
+# GitHub-hosted runner at 1, 2 and 4 ONNX threads (it took 7m07s there in the
+# image build and 69s on gloval).
+name: TMP L2 gate threads
+
+on:
+  pull_request:
+    paths: [.github/workflows/tmp-l2-threads.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  threads:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --frozen --no-dev --extra matrix --extra bridge
+      - name: Fetch the pinned model
+        run: |
+          ref=$(awk '/^FROM ghcr.io\/crunchtools\/trentina-l2-model@/ {print $2; exit}' Containerfile)
+          id=$(docker create "$ref" /none)
+          docker cp "$id:/model" "$RUNNER_TEMP/model"
+          nproc
+      - name: Time the benign gate
+        env:
+          ORT_DISABLE_TELEMETRY: "1"
+        run: |
+          for t in 4 2 1; do
+            cp -r "$RUNNER_TEMP/model" "$RUNNER_TEMP/m$t"
+            s=$(date +%s)
+            CLASSIFIER_THREADS=$t CLASSIFIER_MODEL_PATH="$RUNNER_TEMP/m$t" \
+              uv run --no-sync python benchmarks/l2_benign.py --record > "$RUNNER_TEMP/out$t" 2>&1 || true
+            echo "threads=$t seconds=$(( $(date +%s) - s )) $(tail -1 "$RUNNER_TEMP/out$t")"
+          done
