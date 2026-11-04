@@ -25,12 +25,15 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Every version `requires-python` admits, INCLUDING the one the
-        # container runs. CI previously tested 3.11 and 3.12 -- neither of
-        # which is production (the Containerfile is on 3.14), while the
-        # advertised 3.10 floor could not be installed at all. An untested
-        # floor and an untested production version are how issue #100 happened.
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        # ONE version: the one the image runs. Trentina ships as a container
+        # image and nothing else (no PyPI since 0.54.1), so a support matrix was
+        # describing installs nobody performs while costing four suites per PR
+        # and a `fail-fast` rule to stop one version's flake cancelling the rest.
+        #
+        # Still a matrix, with one entry, on purpose: it is what names the check
+        # `test (3.14)`, which the branch ruleset requires and `promote` reads.
+        # Removing it would rename the check to `test` and block every merge.
+        python-version: ["3.14"]
 
     steps:
       - uses: actions/checkout@v7

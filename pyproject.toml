@@ -2,7 +2,7 @@
 name = "trentina"
 version = "6.4.0"
 description = "MCP gateway for AI agents — prompt-injection defense, token savings, deterministic policy, OAuth, per-agent profiles"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = "AGPL-3.0-or-later"
 authors = [
     { name = "crunchtools.com" }
@@ -14,9 +14,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
@@ -131,7 +128,24 @@ packages = ["src/trentina"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+# py313, not py314, and the gap is one minor version with one reason: at py314
+# ruff's FORMATTER rewrites every multi-exception handler into PEP 758's
+# unparenthesized `except A, B:`, and Gourmand cannot parse it. Measured on a
+# two-file fixture: with that syntax present Gourmand reports an enum member as
+# dead while the same file still uses it -- no parse error, just lost usages. On
+# this tree it silently stopped seeing 39 files and called
+# DestinationKind.TUNNEL, GIT, MODEL and OAUTH dead, all four of which
+# production constructs. A formatter setting that switches a quality gate off
+# across a third of the package is the wrong trade.
+#
+# py313 still gets everything else 3.12+ -- PEP 695 type parameters (UP047,
+# UP049) included, which Gourmand parses correctly. The constitution's Python
+# Version Coverage section carries the exemption this sits under: target-version
+# governs the syntax the FORMATTER emits, so it is the one name on that list
+# that can write code another gate has to read. Raise it to py314 when Gourmand
+# either parses PEP 758 or fails loudly on what it cannot read:
+# https://github.com/crunchtools/gourmand/issues/29
+target-version = "py313"
 # Known-bad code on purpose: the boundary-review eval (#90) grades a reviewer
 # on catching exactly what lint would flag, and semgrep's --test fixtures
 # carry a rule's true and false positives.
@@ -255,15 +269,12 @@ max-complexity = 10
 "benchmarks/l2_blob_length.py" = ["E402", "S311"]
 
 [tool.mypy]
-# NOT the 3.11 floor, deliberately. numpy's bundled stubs use PEP 695 `type X =`
-# syntax, which mypy refuses to parse under python_version = "3.11":
-#   numpy/__init__.pyi: error: Type statement is only supported in Python 3.12
-#   and greater  [syntax]
-# That is a blocking error, so type checking stops entirely. 3.11 compatibility
-# is instead enforced where it actually bites -- ruff's target-version = py311,
-# and the CI matrix running the full suite on 3.11, which would fail at import
-# on any 3.12-only syntax.
-python_version = "3.12"
+# The version the image runs, and the only one there is. This used to say 3.12
+# while ruff said py311 and the suite ran on four versions -- three settings
+# that had to be reasoned about together, because numpy's stubs would not parse
+# under the 3.11 floor we advertised. Supporting one version deletes the
+# problem rather than managing it.
+python_version = "3.14"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

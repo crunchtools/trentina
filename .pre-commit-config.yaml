@@ -6,7 +6,7 @@ repos:
   # ruff runs from its own pre-commit environment, not a host install
   # (constitution XII, host contract). Keep rev at the ruff version in uv.lock.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.9
+    rev: v0.17.1
     hooks:
       - id: ruff-check
         args: [--fix]
