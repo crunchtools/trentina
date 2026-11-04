@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.4.2] - 2026-11-04
+
 ### Fixed
 
 - **A release tag names the digest main published, again.** The retag used
