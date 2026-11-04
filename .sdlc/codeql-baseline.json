@@ -1,0 +1,97 @@
+[
+  {
+    "rule": "py/clear-text-logging-sensitive-data",
+    "path": "src/trentina/__init__.py",
+    "fingerprint": "3a252dc55121b06c:1"
+  },
+  {
+    "rule": "py/clear-text-logging-sensitive-data",
+    "path": "src/trentina/__init__.py",
+    "fingerprint": "5917653a74267c10:1"
+  },
+  {
+    "rule": "py/clear-text-logging-sensitive-data",
+    "path": "src/trentina/__init__.py",
+    "fingerprint": "fb3f0e8708e5bdbf:1"
+  },
+  {
+    "rule": "py/clear-text-logging-sensitive-data",
+    "path": "src/trentina/gateway/loader.py",
+    "fingerprint": "367ec2c05673d18e:1"
+  },
+  {
+    "rule": "py/clear-text-logging-sensitive-data",
+    "path": "src/trentina/gateway/loader.py",
+    "fingerprint": "72dbed5259c70fa:1"
+  },
+  {
+    "rule": "py/clear-text-logging-sensitive-data",
+    "path": "src/trentina/posture.py",
+    "fingerprint": "20c346a6d729e203:1"
+  },
+  {
+    "rule": "py/clear-text-logging-sensitive-data",
+    "path": "tests/test_log_scrub.py",
+    "fingerprint": "fa7eb54864e889a1:1"
+  },
+  {
+    "rule": "py/clear-text-logging-sensitive-data",
+    "path": "tests/test_oauth_context.py",
+    "fingerprint": "f4615e2dda3fca2f:1"
+  },
+  {
+    "rule": "py/overly-large-range",
+    "path": "src/trentina/l1/unicode.py",
+    "fingerprint": "1157a2b98237d656:1"
+  },
+  {
+    "rule": "py/overly-large-range",
+    "path": "src/trentina/l1/unicode.py",
+    "fingerprint": "6957ddb1439646c7:1"
+  },
+  {
+    "rule": "trentina/tool-arg-to-log",
+    "path": "src/trentina/gateway/backend.py",
+    "fingerprint": "2f381cf8ec57bfc6:1"
+  },
+  {
+    "rule": "trentina/tool-arg-to-log",
+    "path": "src/trentina/gateway/backend.py",
+    "fingerprint": "3fb467c37a813b1:1"
+  },
+  {
+    "rule": "trentina/tool-arg-to-log",
+    "path": "src/trentina/gateway/backend.py",
+    "fingerprint": "878a183be8f007:1"
+  },
+  {
+    "rule": "trentina/tool-arg-to-log",
+    "path": "src/trentina/gateway/backend_tokens.py",
+    "fingerprint": "1922bd38f7bb6f68:1"
+  },
+  {
+    "rule": "trentina/tool-arg-to-log",
+    "path": "src/trentina/gateway/backend_tokens.py",
+    "fingerprint": "764bbe49faf5152c:1"
+  },
+  {
+    "rule": "trentina/tool-arg-to-log",
+    "path": "src/trentina/gateway/backend_tokens.py",
+    "fingerprint": "8a3c78191346ab44:1"
+  },
+  {
+    "rule": "trentina/tool-arg-to-log",
+    "path": "src/trentina/gateway/backend_tokens.py",
+    "fingerprint": "8e84bd2e723d083b:1"
+  },
+  {
+    "rule": "trentina/tool-arg-to-log",
+    "path": "src/trentina/gateway/backend_tokens.py",
+    "fingerprint": "d633ea3e8a920f39:1"
+  },
+  {
+    "rule": "trentina/tool-arg-to-log",
+    "path": "src/trentina/gateway/tool_pins.py",
+    "fingerprint": "969a1e00313f000:1"
+  }
+]

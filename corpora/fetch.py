@@ -19,7 +19,13 @@ import httpx
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-CACHE_DIR = Path(__file__).resolve().parent / "data"
+# Where downloaded corpora are cached: corpora/data/ (gitignored) by default.
+# TRENTINA_CORPORA_CACHE moves it, for a run whose checkout is read-only --
+# python-sdlc mounts the tree read-only for the suite, and a test that writes
+# into the source tree fails there rather than leaving files behind.
+CACHE_DIR = Path(
+    os.environ.get("TRENTINA_CORPORA_CACHE") or Path(__file__).resolve().parent / "data"
+)
 
 MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
 """The constitution's cap on a fetched response. The largest file is 1.3 MB."""

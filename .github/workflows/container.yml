@@ -1,9 +1,9 @@
 name: Container Promote
 
-# This file no longer builds anything (#689). `security.yml:container-scan`
-# builds the image ONCE per push to main, verifies it as production runs it,
-# gates on Trivy, and publishes exactly those bytes; a second job there mirrors
-# that digest to GHCR. Before, this workflow rebuilt the image twice on every
+# This file no longer builds anything (#689). `security.yml`'s `sdlc ci` job
+# builds the image ONCE per push to main through python-sdlc, tests it from
+# inside as production runs it, and `publish` pushes exactly those bytes to both
+# registries. Before, this workflow rebuilt the image twice on every
 # merge -- once per registry -- so main built three copies, the verified one was
 # discarded and the two published ones had been scanned by nothing.
 #
@@ -89,7 +89,7 @@ jobs:
           BRANCH: ${{ github.event.repository.default_branch || 'main' }}
           RUN_ID: ${{ github.run_id }}
           VERIFIER_WORKFLOW: security.yml
-          VERIFIER_JOB: Container Security Scan
+          VERIFIER_JOB: sdlc ci
           PR_ONLY: |
             Protect workflows
             Gatehouse triage / Gatehouse triage

@@ -726,23 +726,22 @@ change to the test.
 
 ## Development
 
-The gates run themselves: `./scripts/gates.sh commit|push|pr|release`, every one
-from a container image (constitution XII's host contract assumes only git,
-podman, pre-commit and gh). `commit` and `push` are wired as pre-commit hooks;
-`pr` and `release` have no git hook and are run by hand. Exit 2 means a gate
-COULD NOT run and is never to be worked around.
+Every check runs from python-sdlc (constitution XII v1.30.0), pinned once in
+`.pre-commit-config.yaml`, configured in `pyproject.toml` under
+`[tool.sdlc.commit]`, `[tool.sdlc.push]` and `[tool.sdlc.ci]`. CI runs the same
+image at the same release. Exit 2 means a check COULD NOT run and is never to be
+worked around. `scripts/gates.sh` is gone.
 
-| Tier | What it runs |
+| Command | What it runs |
 |---|---|
-| commit | ruff (staged, and the whole tree as CI lints it), mypy, Gourmand, Gatehouse over the staged diff |
-| push | the full suite, semgrep, Gatehouse over `origin/main...HEAD` |
-| pr | the container build, the verification CI runs in the image, trivy, the constitution validator |
-| release | the constitution validator and `make rpm` |
+| `sdlc commit` (pre-commit hook) | ruff fixes, and that the push hook is installed |
+| `sdlc push` (pre-push hook) | mypy, the suite, Gourmand, Gatehouse over `origin/main...HEAD`, semgrep, pip-audit, the constitution validator, CodeQL against `.sdlc/codeql-baseline.json`. Never builds the image |
+| `sdlc ci` (the `sdlc ci` job in `security.yml`) | push's checks except Gourmand and Gatehouse, plus `image` (the build CI publishes) and `image-tests` (`tests/image/` and the L2, L3, OCR and PDF suites, run inside the image with no network) |
 
-The image is buildable locally and `./scripts/gates.sh pr` is how. It needs no
-build secret: the HF_TOKEN that once gated it went at 0.59.0 with Prompt Guard 2
-(#362). What causes drift is PUSHING a hand-built image, which only
-`container.yml` does.
+`sdlc <check>` runs one: `sdlc image`, `sdlc image-tests`, `sdlc mypy`.
+`SDLC_SKIP=<check>` skips one for a false positive, which must then be answered
+on the PR. `tests/image/` is ignored by the suite outside the image. What causes
+drift is PUSHING a hand-built image, which only CI does.
 
 Underneath, if you want one tool by hand:
 

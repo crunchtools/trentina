@@ -12,6 +12,25 @@ under that name.
 
 ### Changed
 
+- **Every check runs from python-sdlc, and `scripts/gates.sh` is gone.** One
+  pin in `.pre-commit-config.yaml` fixes the image and every tool in it for the
+  laptop and for CI, which reads the same line. Three commands, configured by
+  the `pyproject.toml` block of the same name: `sdlc commit` runs the ruff
+  fixes in seconds and offline; `sdlc push` renders every verdict and never
+  builds the image; `sdlc ci` -- the `sdlc ci` job in `security.yml`, which
+  replaces `test (3.14)` and `Container Security Scan` as required checks --
+  runs the same image as the laptop and adds the image build and the tests
+  that only mean something inside it. The `/health` startup check and the
+  native-library check became pytest files in `tests/image/` instead of YAML.
+  `publish` now loads and pushes with podman, so the ID it checks is the ID the
+  build produced. Constitution v1.30.0.
+- **Trivy is removed.** All 45 alerts it raised on this repo were Python
+  packages: 38 our own dependencies, which pip-audit catches from `uv.lock`
+  before the push, and 7 pip copies vendored inside the base image, which
+  nothing here can fix and which only ever went into `.trivyignore`. Fleet
+  image scanning moves to a scheduled job (RT #1551).
+- **CodeQL gates the push** on any finding outside `.sdlc/codeql-baseline.json`,
+  the 19 already-triaged findings on `main`. It used to report and pass.
 - **The image is built once per merge, and the bytes we publish are the bytes we
   scanned** (#689). Every push to main built the production image **three
   times**: `security.yml:container-scan` (which starts it as production does,
