@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.4.1] - 2026-11-04
+
 ### Changed
 
 - **A release promotes the digests main's publish recorded, not whatever
