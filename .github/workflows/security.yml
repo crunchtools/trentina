@@ -458,13 +458,17 @@ jobs:
           GHCR: ${{ env.GHCR_IMAGE }}
         run: |
           set -eu
-          # Read the digest back from the local image's RepoDigests, filtered to
-          # the repository asked for: one local image carries a RepoDigest per
-          # repository it has been pushed to, and after the second push both are
-          # present.
+          # Ask the REGISTRY what the tag resolves to, not the local image's
+          # RepoDigests. Gatehouse was right that reading them back after a push
+          # is not something to rely on -- they are populated most dependably by
+          # a pull, and the behaviour differs between the classic and containerd
+          # image stores, so a green push could yield an empty digest and fail
+          # the job after publishing. `imagetools inspect` asks the registry,
+          # which is the actual question, and it is the same call `promote` makes
+          # in container.yml on the same runner class: one mechanism on both
+          # sides of a release rather than two that can disagree.
           pushed() {
-            docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
-              "$1:main" | grep "^$1@" | head -1 | cut -d@ -f2
+            docker buildx imagetools inspect "$1:main" --format '{{ .Manifest.Digest }}'
           }
           for image in "$QUAY" "$GHCR"; do
             docker tag trentina:scan "$image:main"
