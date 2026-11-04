@@ -128,17 +128,20 @@ def remaining(session: Session, *, now: float | None = None) -> int:
 
 
 def fresh(session: Session, *, now: float | None = None) -> bool:
+    """Whether the person signed in recently enough to change how approval works."""
     moment = time.monotonic() if now is None else now
     return moment - session.authenticated <= FRESH_SECONDS
 
 
 def csrf_ok(session: Session, presented: object) -> bool:
+    """Whether ``presented`` is this session's CSRF token, compared in constant time."""
     return isinstance(presented, str) and hmac.compare_digest(
         presented.encode("utf-8"), session.csrf.encode("utf-8")
     )
 
 
 def end(token: str | None) -> None:
+    """Sign out the session ``token`` names, if it is live."""
     if token:
         _sessions.pop(_digest(token), None)
 
@@ -162,18 +165,23 @@ def _secure(request: Request) -> bool:
 
 
 def cookie_name(request: Request) -> str:
+    """``__Host-`` prefixed on https; a plain name on http, which is only localhost."""
     return SECURE_COOKIE if _secure(request) else PLAIN_COOKIE
 
 
 def token_of(request: Request) -> str | None:
+    """The session token this request's cookie carries, if any."""
     return request.cookies.get(cookie_name(request))
 
 
 def current(request: Request, *, touch: bool = True) -> Session | None:
+    """The live session behind this request's cookie, its idle clock restarted."""
     return find(token_of(request), touch=touch)
 
 
 def set_cookie(response: Response, request: Request, token: str) -> None:
+    """Hand the browser ``token``: HttpOnly, SameSite=Strict, Secure and Path=/ on
+    https, Path=/approve on localhost http, lasting no longer than a session can."""
     secure = _secure(request)
     response.set_cookie(
         cookie_name(request),
@@ -187,6 +195,7 @@ def set_cookie(response: Response, request: Request, token: str) -> None:
 
 
 def clear_cookie(response: Response, request: Request) -> None:
+    """Tell the browser to drop the cookie, with the attributes it was set with."""
     secure = _secure(request)
     response.delete_cookie(
         cookie_name(request),

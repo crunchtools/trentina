@@ -46,7 +46,7 @@ import secrets
 import time
 from http import HTTPStatus
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlsplit
 
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -198,7 +198,11 @@ def _same_origin(request: Request, *, required: bool) -> bool:
     origin = request.headers.get("origin")
     if origin is None:
         return not required
-    parts = urlsplit(origin)
+    try:
+        parts = urlsplit(origin)
+    except ValueError:
+        # e.g. "https://[": malformed, so not ours.
+        return False
     host = (request.headers.get("host") or "").lower()
     return bool(host) and parts.scheme in ("http", "https") and parts.netloc.lower() == host
 
@@ -703,13 +707,22 @@ async def _setup_post(request: Request) -> Response:
 async def _body(request: Request) -> dict[str, Any] | None:
     try:
         parsed = json.loads(await request.body())
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        # RecursionError: a body of nested brackets inside the size cap.
         return None
     return parsed if isinstance(parsed, dict) else None
 
 
-def _registration_binding(request: Request, body: dict[str, Any]) -> str | None:
-    """Who is allowed to register a passkey right now, as a challenge binding.
+class _Registrant(NamedTuple):
+    """Who may register a passkey: the challenge binding, and whether it came
+    from the enrolment window (the first approver) rather than a session."""
+
+    binding: str
+    enrolling: bool
+
+
+def _registration_binding(request: Request, body: dict[str, Any]) -> _Registrant | None:
+    """Who is allowed to register a passkey right now.
 
     A fresh session with its CSRF token, or the enrolment window's code. Asked
     at BEGIN too, so nobody unauthorised can even spend a challenge.
@@ -722,10 +735,10 @@ def _registration_binding(request: Request, body: dict[str, Any]) -> str | None:
         and approval_session.fresh(session)
         and approval_session.csrf_ok(session, body.get("csrf"))
     ):
-        return approval_session.binding_for_session(token)
+        return _Registrant(approval_session.binding_for_session(token), enrolling=False)
     code = body.get("code")
     if isinstance(code, str) and code and approver.enrolling(code):
-        return approval_session.binding_for_code(code)
+        return _Registrant(approval_session.binding_for_code(code), enrolling=True)
     return None
 
 
@@ -743,10 +756,10 @@ async def _begin(request: Request) -> Response:
         # full one look the same from here.
         challenge = approval_session.issue_challenge(webauthn.SIGN_IN)
     elif ceremony == webauthn.REGISTER:
-        binding = _registration_binding(request, body)
-        if binding is None:
+        registrant = _registration_binding(request, body)
+        if registrant is None:
             return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
-        challenge = approval_session.issue_challenge(webauthn.REGISTER, binding)
+        challenge = approval_session.issue_challenge(webauthn.REGISTER, registrant.binding)
         options["userId"] = webauthn.b64url(secrets.token_bytes(16))
         options["userName"] = f"Trentina approver ({served})"
     else:
@@ -789,12 +802,11 @@ def _registration_challenge(body: dict[str, Any], binding: str) -> bytes:
 
 
 async def _finish_register(request: Request, body: dict[str, Any]) -> Response:
-    binding = _registration_binding(request, body)
-    if binding is None:
+    registrant = _registration_binding(request, body)
+    if registrant is None:
         return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
-    enrolling = binding.startswith("code:")
     try:
-        challenge = _registration_challenge(body, binding)
+        challenge = _registration_challenge(body, registrant.binding)
         alg = body.get("publicKeyAlgorithm")
         credential = webauthn.verify_registration(
             raw_id=_field(body, "id", webauthn.MAX_CREDENTIAL_ID),
@@ -825,7 +837,7 @@ async def _finish_register(request: Request, body: dict[str, Any]) -> Response:
         )
     _audit_change(f"passkey enrolled {approver.credential_digest(cred_id)} alg={credential.alg}")
     target = f"{SETUP_PATH}?done=passkey_added"
-    if enrolling:
+    if registrant.enrolling:
         # The first approver: shut the window and sign them straight in.
         approver.close_enrolment()
         return _signed_in(request, "passkey", target, as_json=True)

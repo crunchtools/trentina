@@ -132,6 +132,7 @@ def configured() -> bool:
 
 
 def has_password() -> bool:
+    """Whether a password approves here: pinned by the deployment or stored."""
     return _verifier() is not None
 
 

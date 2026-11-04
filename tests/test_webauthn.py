@@ -259,3 +259,12 @@ class TestBase64Fields:
     def test_round_trip(self) -> None:
         raw = os.urandom(33)
         assert webauthn.from_b64url(webauthn.b64url(raw), limit=64) == raw
+
+
+class TestHostileClientData:
+    def test_nested_client_data_is_refused_not_raised(self) -> None:
+        nested = b"[" * 2000 + b"]" * 2000
+        assert _reason(lambda: _register(Authenticator(), client_data=nested)) == "client_data"
+
+    def test_an_origin_that_cannot_be_parsed_is_refused_not_raised(self) -> None:
+        assert _reason(lambda: _register(Authenticator(origin="https://["))) == "origin"

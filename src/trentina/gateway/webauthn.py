@@ -107,6 +107,7 @@ class Credential:
 
 
 def b64url(raw: bytes) -> str:
+    """``raw`` as unpadded URL-safe base64, WebAuthn's encoding for bytes."""
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
@@ -181,7 +182,7 @@ def _client_origin(raw: bytes, *, ceremony: str, challenge: bytes) -> str:
         raise WebAuthnError("client_data_size")
     try:
         signed = json.loads(raw)
-    except (ValueError, UnicodeDecodeError) as exc:
+    except (ValueError, UnicodeDecodeError, RecursionError) as exc:
         raise WebAuthnError("client_data") from exc
     if not isinstance(signed, dict):
         raise WebAuthnError("client_data")
@@ -210,8 +211,8 @@ def pin_origin(origin: str, served_as: str | None) -> tuple[str, str]:
     """
     if served_as is None:
         raise WebAuthnError("no_host")
-    parts = urlsplit(origin)
     try:
+        parts = urlsplit(origin)
         host = (parts.hostname or "").lower()
         _ = parts.port  # raises on a malformed port
     except ValueError as exc:

@@ -142,6 +142,10 @@ def served_as(request: Request) -> str | None:
     return host.lower() if _HOSTNAME.match(host) else None
 
 
+#: The highest TCP port; a Host header naming a larger one is not an address.
+_MAX_PORT = 65535
+
+
 def served_origin(request: Request) -> str | None:
     """``scheme://host[:port]`` this request reached us on, when the host is a
     hostname, else None (#639).
@@ -153,6 +157,11 @@ def served_origin(request: Request) -> str | None:
     if host is None:
         return None
     _, colon, port = (request.headers.get("host") or "").partition(":")
+    # served_as already refused a non-decimal port; held here again because
+    # this value becomes a link, and `gw.example:443@evil.example` must never
+    # reach one.
+    if colon and not (port.isascii() and port.isdigit() and 0 < int(port) <= _MAX_PORT):
+        return None
     if host == "127.0.0.1":
         host = "localhost"
     return f"{request.url.scheme}://{host}{':' + port if colon else ''}"

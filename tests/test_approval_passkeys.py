@@ -494,3 +494,55 @@ class TestTheLimits:
             for _ in range(approval_routes.PAGE_LIMIT[0] + 1)
         ]
         assert codes[-1] == 429
+
+
+class TestHostileInput:
+    """Found by Gatehouse on the second push: each of these raised instead of
+    refusing."""
+
+    def test_a_deeply_nested_body_is_refused_not_raised(self, client: TestClient) -> None:
+        nested = b"[" * 5000 + b"]" * 5000
+        for path in (BEGIN, FINISH):
+            answer = client.post(
+                path, content=nested, headers={"Content-Type": "application/json", **ORIGIN}
+            )
+            assert answer.status_code == 400
+
+    @pytest.mark.parametrize("origin", ["https://[", "http://[::1", "https://a:b:c"])
+    def test_a_malformed_origin_is_refused_not_raised(
+        self, client: TestClient, origin: str
+    ) -> None:
+        assert _post(client, BEGIN, {"ceremony": "signin"}, Origin=origin).status_code == 400
+        form = client.post(PATH, data={"password": "x"}, headers={"Origin": origin})
+        assert form.status_code == 404
+
+    @pytest.mark.parametrize(
+        "host",
+        ["gw.example:443@evil.example", "gw.example:99999", "gw.example:0", "gw.example:+1"],
+    )
+    def test_a_crafted_host_never_becomes_a_link(self, host: str) -> None:
+        from starlette.requests import Request
+
+        from trentina.gateway.page import served_origin
+
+        request = Request(
+            {"type": "http", "scheme": "https", "path": "/", "headers": [(b"host", host.encode())]}
+        )
+        assert served_origin(request) is None
+
+    def test_a_plain_host_and_port_become_a_link(self) -> None:
+        from starlette.requests import Request
+
+        from trentina.gateway.page import served_origin
+
+        def origin(host: str, scheme: str = "https") -> str | None:
+            scope = {
+                "type": "http",
+                "scheme": scheme,
+                "path": "/",
+                "headers": [(b"host", host.encode())],
+            }
+            return served_origin(Request(scope))
+
+        assert origin("gw.example:8443") == "https://gw.example:8443"
+        assert origin("127.0.0.1:8020", "http") == "http://localhost:8020"
