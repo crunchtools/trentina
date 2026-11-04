@@ -1078,3 +1078,10 @@ path = "src/trentina/gateway/tool_pins.py"
 pattern = "decide_all"
 justification = "Structural match on the (value, reason) guard-clause idiom with matrix_bridge/core.py _sent_attachment; no shared logic, and extracting it would couple unrelated subsystems"
 classification = "by_design"
+
+[[exceptions]]
+check = "linter_configuration"
+path = ".pre-commit-config.yaml"
+pattern = "ruff-check"
+justification = "ruff runs inside the sdlc-commit hook from python-sdlc (constitution XII v1.30.0), configured by [tool.ruff] in pyproject.toml; Gourmand looks for a literal ruff hook id"
+classification = "by_design"

@@ -42,398 +42,67 @@ jobs:
     permissions:
       contents: read
       issues: write
-    uses: crunchtools/constitution/.github/workflows/dependency-audit.yml@v1.29.0
+    uses: crunchtools/constitution/.github/workflows/dependency-audit.yml@v1.30.0
     with:
       python-version: "3.14"
 
-  # NAME IS LOAD-BEARING: `Container Security Scan` is a required check on the
-  # default branch (ruleset 25632585). Renaming the job strands that context at
-  # "Expected -- waiting for status" on every PR until someone edits a GitHub
-  # setting, so the job keeps a name that is now a mild misnomer: it builds and
-  # verifies as well as scans.
+  # Every check this repo runs, from python-sdlc at the release
+  # .pre-commit-config.yaml pins -- the same image and the same commands the
+  # laptop runs, so a green push predicts a green CI. `sdlc ci` is push's checks
+  # except Gourmand and Gatehouse (their own workflows run those) plus this
+  # repo's own: build the image and test it from inside (pyproject.toml,
+  # [tool.sdlc.ci]).
   #
-  # It is the ONE image build per run (#674 follow-up). Until this, the image
-  # was built three times per pull request -- here, in `ci.yml:build-container`
-  # and in `container.yml`, which built on a PR and then pushed nothing -- and
-  # only this one gated anything, so a broken production image already merged
-  # unnoticed. The verification steps below came from `ci.yml:build-container`.
-  container-scan:
-    name: Container Security Scan
+  # It is also the ONE image build per run (#674, #689), and the image it builds
+  # is the one `publish` pushes. The job name is a required check and is what
+  # container.yml's `promote` looks up (VERIFIER_JOB), so renaming it means
+  # changing both.
+  sdlc:
+    name: sdlc ci
     # Our own pull requests build on the self-hosted runner; everything else
-    # stays on GitHub's. Three properties, each deliberate:
-    #
-    # 1. A FORK pull request can never land on our hardware. This is structural,
-    #    not a setting someone can click past to see whether CI goes green --
-    #    the repo is public, so a fork PR is arbitrary code from a stranger.
-    # 2. push, schedule and workflow_dispatch stay GitHub-hosted, so every
-    #    verdict on `main` comes from a clean machine with no persistent layer
-    #    cache. The self-hosted runner can therefore make a PR pass that should
-    #    not; it can never build the image we publish.
-    # 3. The label lives in a repository VARIABLE, so no hostname is in this
-    #    repo and clearing that one variable moves every job back to
-    #    GitHub-hosted with no commit and no review. That is the kill switch
-    #    for a runner that is offline -- otherwise these jobs queue on a runner
-    #    that never answers, and a required check that never reports blocks
-    #    every PR silently.
+    # stays on GitHub's. A FORK pull request can never land on our hardware;
+    # every verdict on `main` comes from a clean GitHub-hosted machine; and
+    # clearing the FAST_RUNNER_LABEL variable moves every job back with no
+    # commit -- the kill switch for a runner that is offline.
     runs-on: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.head.repo.full_name == github.repository
           && (vars.FAST_RUNNER_LABEL || 'ubuntu-latest')
           || 'ubuntu-latest' }}
-
-    # Narrower than the workflow-level set, which this replaces: checkout,
-    # the SARIF upload, and the GHCR push are all of it. `issues` and
-    # `pull-requests` are for other jobs in this file and this one never
-    # needed them.
     permissions:
       contents: read
-      security-events: write
-
-    # The image ID -- the config digest, which pins every layer's diff ID -- of
-    # the build the `publish` job must load. Empty on anything but a push.
+    # The image ID -- the config digest, which pins every layer -- of the build
+    # `publish` must load. Empty on anything but a push.
     outputs:
       image_id: ${{ steps.handoff.outputs.image_id }}
 
     steps:
-      # fetch-depth: 0 for the surface filter below, which diffs against a base
-      # commit a shallow clone does not have.
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          persist-credentials: false
 
-      # Step-level, never a workflow `paths:` filter and never a `changes` job
-      # with a job-level `if:`. A required context a `paths:` filter skips stays
-      # pending forever; and a job skipped because its `needs` FAILED also
-      # reports "skipped", which GitHub counts as satisfying the requirement --
-      # a green check out of a broken filter. The job always runs and always
-      # reports; only the expensive steps are conditional. Same pattern as
-      # ci.yml's boundary-review-eval.
-      #
-      # The surface is everything the Containerfile COPYs plus everything the
-      # verification steps run. So tests/ and corpora/ are in it (those suites
-      # run INSIDE the image, so a test change changes what they execute), and
-      # so are benchmarks/ and scripts/: the `l2-gate` stage runs
-      # benchmarks/l2_obfuscation.py and benchmarks/l2_benign.py to EARN the
-      # records the image ships, and `model-builder` runs
-      # scripts/export_l2_model.py. A change to a gate that skips the build is a
-      # gate nobody re-earned. An ignore file is in the set although the repo
-      # has none today: adding one changes which files enter the build context,
-      # so a change to it changes the image. What skips is docs/, README.md,
-      # CHANGELOG.md, CONTRIBUTING.md, .claude/, examples/ and demo/.
-      - name: Does the image surface change?
-        id: surface
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+      # The release is read from .pre-commit-config.yaml, so it is pinned in
+      # one place for the laptop and CI both.
+      - name: sdlc ci
         run: |
           set -eu
-          surface='^(Containerfile$|\.(docker|container)ignore$|pyproject\.toml$|uv\.lock$|src/|tests/|corpora/|benchmarks/|scripts/|\.trivyignore$|\.github/workflows/)'
-          if [ "$EVENT" = "schedule" ]; then
-            # A scheduled run asks "did a new CVE land against the image we
-            # published", which needs the registry tag, not a rebuild.
-            build=false
-            image="quay.io/crunchtools/trentina:latest"
-          elif [ "$EVENT" = "push" ]; then
-            # ALWAYS build on a push to main, surface filter or not, because
-            # this job now PUBLISHES `:main` and `promote` refuses a tag whose
-            # `:main` carries a different revision. A docs-only merge that
-            # skipped the build would leave `:main` on the previous commit and
-            # make the next release unreleasable for a reason nothing explains
-            # until the tag is pushed. The filter stays for pull requests,
-            # where skipping costs nothing. One build per docs-only merge is
-            # the price, against three per merge before this change.
-            build=true
-            image="trentina:scan"
-          else
-            image="trentina:scan"
-            # FAIL OPEN. A filter that cannot work out what changed builds; one
-            # that guesses wrong must never skip.
-            if [ -z "$BASE_SHA" ] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
-              build=true
-              echo "::notice::base commit unknown, building"
-            elif git diff --name-only "$BASE_SHA" HEAD | grep -qE "$surface"; then
-              build=true
-            else
-              build=false
-              echo "::notice::nothing the image is built from changed -- not building"
-            fi
-          fi
-          {
-            echo "build=$build"
-            echo "image=$image"
-            if [ "$build" = true ] || [ "$EVENT" = "schedule" ]; then
-              echo "scan=true"
-            else
-              echo "scan=false"
-            fi
-          } >> "$GITHUB_OUTPUT"
+          rev=$(awk '/repo: https:\/\/github.com\/crunchtools\/python-sdlc/ {f=1; next}
+                     f && /rev:/ {print $2; exit}' .pre-commit-config.yaml)
+          [ -n "$rev" ] || { echo "no python-sdlc rev in .pre-commit-config.yaml" >&2; exit 2; }
+          git clone -q --depth 1 --branch "$rev" https://github.com/crunchtools/python-sdlc "$RUNNER_TEMP/sdlc"
+          $RUNNER_TEMP/sdlc/bin/sdlc ci
 
-      # The version belongs to the package, not to the ref. container.yml
-      # passes this; ci.yml's build never did, so the only image a PR ever
-      # verified was labelled 0.0.0-dev and nothing checked the label at all.
-      - name: Read package version
-        id: pkgver
-        if: steps.surface.outputs.build == 'true'
-        run: |
-          v=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
-          [ -n "$v" ] || { echo "could not read version from pyproject.toml" >&2; exit 1; }
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-
-      # Plain `docker build`, no buildx and no `cache-from: type=gha` (#674
-      # follow-up). Measured, the cache lost on every axis: 121 s of fixed cost
-      # per build (69 s exporting, plus 52 s of docker export/import that
-      # `load: true` forces under the container driver the gha backend needs)
-      # against 67 s of savings -- and the container driver itself cost the
-      # multithreaded ONNX benign-L2 gate another 137 s (219 s under buildx,
-      # 82 s under plain docker build, same runner class, same minute).
-      #
-      # VERSION arrives through the environment, never interpolated into the
-      # script: pyproject.toml is a file a pull request may edit, so a `${{ }}`
-      # expansion inside `run:` is a command the PR author chose, with the
-      # checkout token in reach.
-      # The OCI labels the Containerfile does NOT set. It carries
-      # `version="${VERSION}"` and the static labels; `revision`, the OCI
-      # `version` and `created` were generated by docker/metadata-action in
-      # container.yml, which no longer builds. `promote` reads
-      # `org.opencontainers.image.revision` off `:main` in BOTH registries and
-      # refuses a tag unless it equals that commit, so without these three a
-      # release refuses -- the one failure this move could have introduced and
-      # the hardest to find, since nothing before the tag reads them.
-      #
-      # Values arrive through the environment and are referenced as "$VAR",
-      # never interpolated with ${{ }} inside `run:`, for the reason stated
-      # above the version read: pyproject.toml is a file a pull request may
-      # edit, so an expansion inside the script is a command the PR author
-      # chose, with the checkout token in reach. `github.sha` is not
-      # PR-editable, but one rule for every value is the rule that holds.
-      - name: Build container image
-        if: steps.surface.outputs.build == 'true'
-        env:
-          VERSION: ${{ steps.pkgver.outputs.version }}
-          REVISION: ${{ github.sha }}
-        run: |
-          docker build -f Containerfile \
-            --build-arg "VERSION=$VERSION" \
-            --label "org.opencontainers.image.revision=$REVISION" \
-            --label "org.opencontainers.image.version=$VERSION" \
-            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -t trentina:scan .
-
-      - name: The image states the package version
-        if: steps.surface.outputs.build == 'true'
-        env:
-          EXPECTED: ${{ steps.pkgver.outputs.version }}
-        run: |
-          label=$(docker inspect --format '{{ index .Config.Labels "version" }}' trentina:scan)
-          [ "$label" = "$EXPECTED" ] || {
-            echo "image version label is '$label', pyproject.toml says '$EXPECTED'" >&2
-            exit 1
-          }
-
-      - name: Verify container starts
-        if: steps.surface.outputs.build == 'true'
-        run: |
-          # As production runs it, then /health must answer. The default stdio
-          # transport exits on the EOF of a detached stdin, so it proves
-          # nothing. /data is a volume in production; a tmpfs stands in here.
-          mkdir -p ci-gateway
-          printf 'profiles:\n  ci:\n    auth:\n      bearer_token_env: CI_TOKEN\n    backends: {}\n' \
-            > ci-gateway/profiles.yaml
-          openssl rand -hex 16 > ci-gateway/token
-          chmod -R a+rX ci-gateway
-          #
-          # NO PUBLISHED PORT, and the probe runs from a sibling container
-          # sharing this one's network namespace. Two reasons, and the second is
-          # why it is written this way rather than with a different port:
-          #
-          # - Publishing bound 8019 on the runner. On a self-hosted runner that
-          #   is a real machine, where 8019 is the production gateway's port: a
-          #   CI job would either fail to bind or, mid-restart, take the port
-          #   production was about to reclaim. A test must not be able to do
-          #   that, and picking an off port only narrows the window.
-          # - A published port is reachable by anything else listening on the
-          #   runner, so a stray listener could answer the probe and this gate
-          #   would pass without the built image ever starting. Sharing the
-          #   namespace makes it impossible to be talking to anything but the
-          #   container just built.
-          #
-          # The probe uses the image under test, so it needs no extra pull and
-          # its python is guaranteed present.
-          docker run -d --name trentina-start \
-            --read-only --tmpfs /tmp --tmpfs /data:mode=1777 \
-            --cap-drop=all --security-opt no-new-privileges \
-            -v "$PWD/ci-gateway:/etc/trentina:ro" \
-            -e TRENTINA_GATEWAY_ENABLED=1 -e CI_TOKEN_FILE=/etc/trentina/token \
-            trentina:scan --transport streamable-http --host 0.0.0.0 --port 8019
-          # `exec` into the container under test rather than starting a
-          # sibling per attempt: no container or interpreter startup cost on
-          # any of the thirty tries, and still no way to be talking to
-          # anything but the image just built.
-          ok=0
-          for _ in $(seq 1 30); do
-            if docker exec trentina-start python -c 'import urllib.request,sys; sys.stdout.write(urllib.request.urlopen("http://127.0.0.1:8019/health", timeout=5).read().decode())'; then
-              ok=1; break
-            fi
-            sleep 2
-          done
-          docker logs trentina-start 2>&1 | tail -20
-          docker rm -f trentina-start >/dev/null
-          test "$ok" -eq 1
-
-      # The real test of a native wheel in a distroless image. The runtime
-      # stage copies only site-packages plus libstdc++, so an extension
-      # needing a shared object from anywhere else fails here and nowhere
-      # else -- which is exactly how onnxruntime broke once already.
-      - name: Verify native extensions import in the distroless image
-        if: steps.surface.outputs.build == 'true'
-        run: |
-          docker run --rm --entrypoint python trentina:scan -c "
-          import onnxruntime, vodozemac
-          print('onnxruntime', onnxruntime.__version__)
-          print('vodozemac imported')
-          import cv2, PIL, pypdf, rapidocr, shapely, pyclipper
-          print('opencv', cv2.__version__, 'pillow', PIL.__version__, 'pypdf', pypdf.__version__)
-          "
-
-      - name: Build test runner image (adds shell + pytest to distroless)
-        if: steps.surface.outputs.build == 'true'
-        run: |
-          docker build -f - -t trentina:test-runner . <<'EOF'
-          FROM quay.io/hummingbird/python:3.14-builder AS test-deps
-          USER 0
-          RUN pip install --no-cache-dir --prefix=/usr pytest pytest-asyncio pytest-xdist
-
-          FROM trentina:scan
-          COPY --from=test-deps /usr/lib/python3.14/site-packages/ /usr/lib/python3.14/site-packages/
-          EOF
-
-      # Once per model the image ships (#350). TRENTINA_REQUIRE_L2_MODEL makes
-      # a model that fails to load FAIL the run: until 0.55.0 this step named
-      # a path the image never had, and every L2 test here skipped. The
-      # corpus's own L2 annotations run here too: outside the image they
-      # always skip, and one went stale under the 0.55.0 default (#353).
-      - name: Run L2 integration tests in container
-        if: steps.surface.outputs.build == 'true'
-        run: |
-          for model in prompt-injection-guard-small-ct; do
-            echo "::group::L2 integration: $model"
-            docker run --rm \
-              --entrypoint python \
-              -v ${{ github.workspace }}/tests:/tests:ro \
-              -v ${{ github.workspace }}/corpora:/corpora:ro \
-              -e GEMINI_API_KEY="test_key_for_ci" \
-              -e CLASSIFIER_MODEL="$model" \
-              -e TRENTINA_REQUIRE_L2_MODEL=1 \
-              -e CLASSIFIER_THREADS=1 \
-              trentina:test-runner \
-              -m pytest -n 4 -q -rfE /tests/test_l2_integration.py \
-                "/tests/test_adversarial_corpus.py::TestLayer2Boundary"
-            echo "::endgroup::"
-          done
-
-      # The provider is mocked (fixture responses), so no real key: gating this
-      # on a Gemini secret the repo never had meant it never ran.
-      - name: Run L3 integration tests in container
-        if: steps.surface.outputs.build == 'true'
-        run: |
-          docker run --rm \
-            --entrypoint python \
-            -v ${{ github.workspace }}/tests:/tests:ro \
-            -v ${{ github.workspace }}/corpora:/corpora:ro \
-            -e GEMINI_API_KEY="test_key_for_ci" \
-            trentina:test-runner \
-            -m pytest /tests/test_l3_integration.py -v
-
-      # The real OCR and PDF workers, as child processes of the distroless
-      # image, with no network, a read-only root and no capabilities, as
-      # production runs them (#369, #370). Outside the image these tests
-      # prove the code; only here do they prove that OpenCV, Pillow and the
-      # models load without a shell, a writable disk or a download. /tmp is
-      # for pytest's own files: the workers write nothing.
-      - name: Run the OCR and PDF workers in the container
-        if: steps.surface.outputs.build == 'true'
-        run: |
-          docker run --rm \
-            --network none --read-only --tmpfs /tmp --cap-drop=all \
-            --security-opt no-new-privileges \
-            --entrypoint python \
-            -v ${{ github.workspace }}/tests:/tests:ro \
-            -v ${{ github.workspace }}/corpora:/corpora:ro \
-            -e GEMINI_API_KEY="test_key_for_ci" \
-            trentina:test-runner \
-            -m pytest -p no:cacheprovider /tests/test_unpack_ocr.py /tests/test_unpack_pdf.py -v
-
-      # Two runs: the SARIF one feeds code scanning and never fails, the table
-      # one gates PRs and prints the findings, which SARIF output hides.
-      - name: Run Trivy vulnerability scanner (SARIF)
-        if: steps.surface.outputs.scan == 'true'
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ${{ steps.surface.outputs.image }}
-          scanners: vuln
-          severity: "CRITICAL,HIGH"
-          ignore-unfixed: true
-          trivyignores: .trivyignore
-          format: "sarif"
-          output: "trivy-results.sarif"
-          # Without this, trivy-action drops the severity filter for SARIF
-          limit-severities-for-sarif: true
-          exit-code: "0"
-
-      # EVERY event that scans, not just a pull request. This job publishes the
-      # image it scans, so a gate that only ran on pull requests would let a
-      # fixable CRITICAL reach the registry on a merge, and let a new advisory
-      # against the PUBLISHED image pass the Monday run with nothing but a SARIF
-      # row. `ignore-unfixed: true` means only actionable findings stop it, and
-      # the answer to a red main with no code change is `.trivyignore`: one CVE
-      # per line with the reason, who accepted it and a review date.
-      #
-      # It was scoped to pull requests in b4222d2c, whose subject was printing
-      # findings as a table rather than SARIF -- where the gate happened to be
-      # added, not a decision to leave main alerting.
-      #
-      # Before the push steps below, deliberately: the image must not reach a
-      # registry that this has not passed.
-      - name: Gate on Trivy findings
-        if: steps.surface.outputs.scan == 'true'
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ${{ steps.surface.outputs.image }}
-          scanners: vuln
-          severity: "CRITICAL,HIGH"
-          ignore-unfixed: true
-          trivyignores: .trivyignore
-          format: "table"
-          exit-code: "1"
-          skip-setup-trivy: true
-
-      - name: Upload Trivy scan results
-        uses: github/codeql-action/upload-sarif@v4
-        if: always() && hashFiles('trivy-results.sarif') != ''
-        with:
-          sarif_file: "trivy-results.sarif"
-
-      # Hand the verified image to `publish`, which is the only job that holds
-      # a credential. This job HOLDS NOTHING THAT CAN PUBLISH, and that is the
-      # whole point: `permissions` and `secrets` are job-level while an `if:` is
-      # step-level, so gating the publish steps did not stop a same-repository
-      # pull request reaching the ambient token, the registry secrets or the
-      # crunchtools-ci App key -- on gloval, our own hardware, since that is
-      # where `runs-on` sends a same-repo PR. Gatehouse found the token half;
-      # Fable found the App key, which is worse.
-      #
-      # An artifact rather than a registry hand-off, deliberately, and it is the
-      # more expensive choice: about a minute each way. The verifier must not be
-      # able to publish, and pushing to a registry so a later job can pull is
-      # exactly the credential this job must not have. Paid on the main-push
-      # path only, never on a pull request.
+      # Hand the verified image to `publish`, the only job that holds a
+      # credential. This job HOLDS NOTHING THAT CAN PUBLISH: it runs pull-request
+      # code on our own runner, and `permissions` and `secrets` are job-level
+      # while an `if:` is only step-level.
       - name: Save the verified image for the publish job
         id: handoff
         if: github.event_name == 'push'
         run: |
           set -eu
-          docker save trentina:scan -o image.tar
-          id=$(docker inspect --format '{{ .Id }}' trentina:scan)
+          podman save --format docker-archive localhost/trentina:sdlc -o image.tar
+          id=$(podman image inspect --format '{{.Id}}' localhost/trentina:sdlc)
           [ -n "$id" ] || { echo "could not read the built image id" >&2; exit 1; }
           echo "image_id=$id" >> "$GITHUB_OUTPUT"
           echo "::notice::handing off $id"
@@ -445,8 +114,7 @@ jobs:
           name: verified-image
           path: image.tar
           retention-days: 1
-          # The layers inside are already compressed; level 6 on a multi-gigabyte
-          # tar costs more than it saves.
+          # The layers inside are already compressed.
           compression-level: 1
 
   # The ONLY job that can publish. Separate from the verifier so that the
@@ -455,7 +123,7 @@ jobs:
   publish:
     name: Publish the verified image
     runs-on: ubuntu-latest
-    needs: container-scan
+    needs: sdlc
     if: github.event_name == 'push'
     permissions:
       contents: read
@@ -468,7 +136,7 @@ jobs:
           name: verified-image
 
       # The invariant that matters: the bytes this job publishes are the bytes
-      # container-scan verified. The image ID is the config digest, which pins
+      # the sdlc job verified. The image ID is the config digest, which pins
       # every layer's diff ID, so an equal ID across the hand-off means equal
       # content. `promote` separately proves "this commit, this version" from
       # the labels on each registry.
@@ -479,12 +147,12 @@ jobs:
       # reported below and never gates.
       - name: Load it, and prove it is what was verified
         env:
-          EXPECTED: ${{ needs.container-scan.outputs.image_id }}
+          EXPECTED: ${{ needs.sdlc.outputs.image_id }}
         run: |
           set -eu
-          [ -n "$EXPECTED" ] || { echo "container-scan handed over no image id" >&2; exit 1; }
-          docker load -i image.tar
-          got=$(docker inspect --format '{{ .Id }}' trentina:scan)
+          [ -n "$EXPECTED" ] || { echo "sdlc ci handed over no image id" >&2; exit 1; }
+          podman load -i image.tar
+          got=$(podman image inspect --format '{{ .Id }}' localhost/trentina:sdlc)
           [ "$got" = "$EXPECTED" ] || {
             echo "the image that arrived is not the image that was verified:" >&2
             echo "  verified: $EXPECTED" >&2
@@ -493,19 +161,19 @@ jobs:
           }
           echo "::notice::loaded the verified image $got"
 
-      - name: Log in to Quay.io
-        uses: docker/login-action@v4
-        with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_USERNAME }}
-          password: ${{ secrets.QUAY_PASSWORD }}
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ github.token }}
+      # podman, not docker, end to end: `sdlc ci` built the image with podman,
+      # and the identity check above compares podman's ID for it. Passwords go
+      # in on stdin so they never reach a process list.
+      - name: Log in to both registries
+        env:
+          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
+          GHCR_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -eu
+          printf '%s' "$QUAY_PASSWORD" | podman login -u "$QUAY_USERNAME" --password-stdin quay.io
+          printf '%s' "$GHCR_TOKEN" | podman login -u "$OWNER" --password-stdin ghcr.io
 
       - name: Publish to both registries
         env:
@@ -514,23 +182,22 @@ jobs:
         run: |
           set -eu
           for image in "$QUAY" "$GHCR"; do
-            docker tag trentina:scan "$image:main"
-            docker tag trentina:scan "$image:latest"
-            docker push "$image:main"
-            docker push "$image:latest"
+            for tag in main latest; do
+              podman tag localhost/trentina:sdlc "$image:$tag"
+              podman push --format v2s2 "$image:$tag"
+            done
           done
-          # Reported, not gated -- see the note above. Asking the registry is
-          # the same call `promote` makes, so a difference here is worth seeing
-          # in the log before a release has to resolve it.
+          # Reported, not gated. Asking the registry is the same call `promote`
+          # makes, so a difference here is worth seeing before a release has to
+          # resolve it.
           for image in "$QUAY" "$GHCR"; do
-            d=$(docker buildx imagetools inspect "$image:main" \
-              --format '{{ .Manifest.Digest }}' || true)
+            d=$(skopeo inspect --format '{{.Digest}}' "docker://$image:main" || true)
             echo "::notice::$image:main is ${d:-unresolved}"
           done
 
       # The crunchtools-ci App's token, not a personal one: it has its own rate
       # limit, so a throttled account can't stop this step. Minted HERE rather
-      # than in container-scan, so its key is never present in a job that runs
+      # than in the sdlc job, so its key is never present in a job that runs
       # pull-request code.
       - name: Mint CI token
         id: ci-token

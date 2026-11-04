@@ -19,7 +19,16 @@ import httpx
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-CACHE_DIR = Path(__file__).resolve().parent / "data"
+# Where downloaded corpora are cached: corpora/data/ (gitignored) in a writable
+# checkout, the temp directory in a read-only one. python-sdlc runs the suite
+# over a read-only mount, so that a check can never change the tree about to be
+# pushed; there, the cache cannot live in the tree.
+_IN_TREE = Path(__file__).resolve().parent / "data"
+CACHE_DIR = (
+    _IN_TREE
+    if os.access(_IN_TREE.parent, os.W_OK)
+    else Path(tempfile.gettempdir()) / "trentina-corpora"
+)
 
 MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
 """The constitution's cap on a fetched response. The largest file is 1.3 MB."""
