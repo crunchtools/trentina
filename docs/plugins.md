@@ -146,11 +146,11 @@ never loaded from a path or URL at run time:
 ```dockerfile
 FROM quay.io/crunchtools/trentina:2.1.0 AS base
 
-FROM python:3.13 AS build
+FROM python:3.14 AS build
 RUN pip install --target=/plugins "acme-shout==1.2.3" --require-hashes -r hashes.txt
 
 FROM base
-COPY --from=build /plugins /usr/lib/python3.13/site-packages/
+COPY --from=build /plugins /usr/lib/python3.14/site-packages/
 ```
 
 ## Using it (profile)

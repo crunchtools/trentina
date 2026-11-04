@@ -2,7 +2,7 @@
 name = "trentina"
 version = "6.4.0"
 description = "MCP gateway for AI agents — prompt-injection defense, token savings, deterministic policy, OAuth, per-agent profiles"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = "AGPL-3.0-or-later"
 authors = [
     { name = "crunchtools.com" }
@@ -14,9 +14,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
@@ -131,6 +128,15 @@ packages = ["src/trentina"]
 
 [tool.ruff]
 line-length = 100
+# NOT py314, and the reason is our own tooling rather than the runtime.
+# At py314 ruff requires PEP 695 type parameters (UP047) and its formatter
+# rewrites every multi-exception handler into PEP 758's unparenthesized
+# `except A, B:`. Gourmand's parser understands neither: with both applied it
+# stopped analysing 39 files and reported DestinationKind.TUNNEL, GIT, MODEL
+# and OAUTH as dead members, all four of which production constructs. A
+# formatting change that silently switches a quality gate off across a third
+# of the package is a worse trade than one pin that disagrees with the others.
+# Raise this to py314 when Gourmand parses 3.12+ syntax (crunchtools/gourmand).
 target-version = "py311"
 # Known-bad code on purpose: the boundary-review eval (#90) grades a reviewer
 # on catching exactly what lint would flag, and semgrep's --test fixtures
@@ -255,15 +261,12 @@ max-complexity = 10
 "benchmarks/l2_blob_length.py" = ["E402", "S311"]
 
 [tool.mypy]
-# NOT the 3.11 floor, deliberately. numpy's bundled stubs use PEP 695 `type X =`
-# syntax, which mypy refuses to parse under python_version = "3.11":
-#   numpy/__init__.pyi: error: Type statement is only supported in Python 3.12
-#   and greater  [syntax]
-# That is a blocking error, so type checking stops entirely. 3.11 compatibility
-# is instead enforced where it actually bites -- ruff's target-version = py311,
-# and the CI matrix running the full suite on 3.11, which would fail at import
-# on any 3.12-only syntax.
-python_version = "3.12"
+# The version the image runs, and the only one there is. This used to say 3.12
+# while ruff said py311 and the suite ran on four versions -- three settings
+# that had to be reasoned about together, because numpy's stubs would not parse
+# under the 3.11 floor we advertised. Supporting one version deletes the
+# problem rather than managing it.
+python_version = "3.14"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

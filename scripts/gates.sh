@@ -140,7 +140,7 @@ BUILD_LIMITS=(--cpu-period 100000 --cpu-quota "$(( GATE_CPUS * 100000 ))" --memo
 
 CACHE_VOLUME=crunchtools-hook-cache        # shared with the mypy hook
 SCRATCH_VOLUME=crunchtools-gates-scratch   # fixtures; never the worktree
-UV_IMAGE=ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+UV_IMAGE=ghcr.io/astral-sh/uv:python3.14-bookworm-slim
 SEMGREP_IMAGE=docker.io/semgrep/semgrep:1.177.0
 BUILDER_IMAGE=quay.io/hummingbird/python:3.14-builder
 GATEHOUSE_IMAGE=quay.io/crunchtools/gatehouse:latest

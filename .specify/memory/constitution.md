@@ -1,8 +1,8 @@
 # trentina Constitution
 
-> **Version:** 2.14.0
+> **Version:** 2.15.0
 > **Ratified:** 2026-09-22
-> **Amended:** 2026-11-03
+> **Amended:** 2026-11-04
 > **Status:** Active
 > **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.29.0
 > **Profile:** Security Gateway
@@ -354,25 +354,31 @@ un-promised, only broken in a major release.
 
 ## Python Version Coverage
 
-Two rules, not negotiable independently; the second only works because the
-first bounds it.
+ONE supported version: the one the container ships. `requires-python`, the CI
+matrix, `mypy`'s `python_version`, ruff's `target-version` and the image the
+local test gate runs in all name it, and they move together or not at all.
 
-1. Everything that can run on the whole matrix MUST run on the whole
-   matrix: every Python version from the `requires-python` floor to the
-   newest supported release, inclusive, no gaps. A version admitted by
-   `requires-python` but absent from the CI matrix is an untested claim,
-   which is how a floor of 3.10 survived while being uninstallable
-   (issue #100).
-2. Anything that can only run on one version MUST run on the newest
-   supported version, the one the container ships. Work that needs a
-   credential only one job holds, costs live API quota, or runs inside the
-   built image runs where production runs.
+Trentina is distributed as a container image and nothing else (I; nothing on
+PyPI since 0.54.1), so a support matrix described installs nobody performs.
+What it cost was four suites per pull request, a `fail-fast` rule to stop one
+version's flake cancelling the others, and three settings that could only be
+reasoned about together: mypy pinned BELOW the advertised floor because a
+dependency's stubs would not parse under it, and ruff pinned AT the floor to
+enforce what mypy therefore could not. Supporting one version deletes that
+problem rather than managing it.
 
-When a new Python release is adopted, the matrix ceiling and the
-single-version jobs move together. Type checking is exempt from rule 2:
-mypy's `python_version` selects the language semantics checked against and
-should track the floor; where a dependency's stubs make that impossible the
-config MUST record the specific blocker.
+The rule this replaces required every version from the `requires-python` floor
+to the newest, with no gaps, because a version admitted and untested is a false
+claim — which is how a floor of 3.10 survived while being uninstallable
+(issue #100). That hazard does not come back: with one supported version there
+is nothing claimed that is not tested, and the local gate now runs the same
+version as production rather than one nothing ships.
+
+Adopting a new Python release is a single change that moves every name above at
+once, and it is gated on the dependency floor rather than on the release date.
+As of 2026-11-04 the image cannot move to 3.15 — which is released, and which
+`quay.io/hummingbird/python` already publishes — because `onnxruntime` ships no
+cp315 wheel, and Layer 2 has no runtime without it.
 
 ## Test Coverage Specifics
 
@@ -450,3 +456,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.12.0 | 2026-11-01 | Human Approval extended by the federation security hardening pass: three more decisions an operator agent may propose and not apply — who may authenticate to a federation ingress (`federation.peers`), standing a profile's perimeter down to detect-only (`defense.modes`, `enforcement`, `llm_completion` reaching `flag`), and opening a way out of network isolation (`client_egress.hosts`, `egress_upstreams`, `llm_providers`). The last is the widest of the five: a trusted peer has run three layers over its response, while nothing reads a CONNECT tunnel's bytes (known gap 26). Two rules stated rather than left to each rule's author: only WIDENING needs a person, since narrowing only makes the gateway stricter and a gate in front of tightening teaches an operator to click through; and each approval is ONE decision, a write needing two being refused rather than shown as one. `PERIMETER_VERSION` does not move: no verdict changes |
 | 2.13.0 | 2026-11-01 | Stability Tiers: one program with one version meant a break anywhere forced a major bump for everything, so a version number could not say whether the break landed in the defense pipeline or in a feature the operator does not use. Most of the gateway is stable; a named set of surfaces is preview (`src/trentina/stability.py`, `docs/stability.md`), and a break CONFINED to one is a minor. Three rules: a change reaching outside every declared surface is still a major, since "mostly confined" is not confined; a declaration may never soften how THAT release announces its own break, so the test is the version the release would have carried without it and a declaration that lowers it is too late; and a preview surface carries the full test, lint, review and documentation bar, since the tier promises blast radius and not permission to churn. Two surfaces: federation (#592) and `config-api` (#633), the latter being `config_tool`'s action names, arguments and result keys and NOT the `config_guard` rules deciding what a person must approve. Human approval (#637) stays stable on purpose — it is the one gate an operator agent cannot talk its way past, and "we may change how a person authorises a trust pin, in a minor" is the wrong promise to make about it; adding a staged `Kind` or a guard rule needs no surface anyway, being a tightening rather than a break. `PERIMETER_VERSION` does not move: no verdict changes |
 | 2.14.0 | 2026-11-03 | Under constitution v1.29.0 (Security Gateway profile 1.1.0): what the profile forbids is PUBLISHING an image from a workstation, not building one. A local build is a gate the host should run, and `./scripts/gates.sh pr` builds, verifies and scans before the push. The old wording was written when the build needed a gated Hugging Face credential, which went with Prompt Guard 2 (#362); what it left standing was CI building the same image three times per pull request while the inner loop could not build it once. Nothing about what reaches a registry changes: GitHub Actions publishes, and a hand-built image is never pushed, deployed or tagged |
+| 2.15.0 | 2026-11-04 | Python Version Coverage: ONE supported version, the one the image ships, named identically by `requires-python`, the CI matrix, mypy, ruff and the local test image. The matrix existed to keep a promise an image-only product does not make — nothing has been on PyPI since 0.54.1 — and it was not free: four suites per pull request, a `fail-fast` rule so one version's flake did not cancel the rest, and three version settings that could only be reasoned about together, with mypy pinned below the advertised floor because numpy's stubs would not parse under it and ruff pinned at the floor to enforce what mypy then could not. The retired rule's hazard does not return: a version admitted and untested (issue #100's uninstallable 3.10 floor) is impossible when one version is admitted and tested, and the local gate now runs production's version instead of one nothing ships. Adoption of a new release is gated on the dependency floor, not the release date: 3.15 is out and Hummingbird publishes it, but `onnxruntime` has no cp315 wheel and Layer 2 has no runtime without one. `PERIMETER_VERSION` does not move: no verdict changes |

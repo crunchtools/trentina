@@ -24,21 +24,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
-      # One version's failure must not cancel the others. On run 41738222976 --
-      # the main merge of #687 -- `test (3.13)` failed on the `test_unpack.py`
-      # timing flake (#689) and the default `fail-fast: true` CANCELLED 3.11 and
-      # 3.12, so a single flake cost the signal from two more versions and
-      # nothing said so. The four jobs already run in parallel on free minutes,
-      # so a universal failure costs wall time we do not pay for. PR
-      # supersession is `cancel-in-progress`, not this.
-      fail-fast: false
       matrix:
-        # Every version `requires-python` admits, INCLUDING the one the
-        # container runs. CI previously tested 3.11 and 3.12 -- neither of
-        # which is production (the Containerfile is on 3.14), while the
-        # advertised 3.10 floor could not be installed at all. An untested
-        # floor and an untested production version are how issue #100 happened.
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        # ONE version: the one the image runs. Trentina ships as a container
+        # image and nothing else (no PyPI since 0.54.1), so a support matrix was
+        # describing installs nobody performs while costing four suites per PR
+        # and a `fail-fast` rule to stop one version's flake cancelling the rest.
+        #
+        # Still a matrix, with one entry, on purpose: it is what names the check
+        # `test (3.14)`, which the branch ruleset requires and `promote` reads.
+        # Removing it would rename the check to `test` and block every merge.
+        python-version: ["3.14"]
 
     steps:
       - uses: actions/checkout@v7
