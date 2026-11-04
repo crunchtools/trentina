@@ -88,12 +88,11 @@ jobs:
     permissions:
       contents: read
       security-events: write
-      packages: write
 
-    # The digest both registries hold for this commit. Empty on anything but a
-    # push, where the publish step does not run.
+    # The image ID -- the config digest, which pins every layer's diff ID -- of
+    # the build the `publish` job must load. Empty on anything but a push.
     outputs:
-      digest: ${{ steps.publish.outputs.digest }}
+      image_id: ${{ steps.handoff.outputs.image_id }}
 
     steps:
       # fetch-depth: 0 for the surface filter below, which diffs against a base
@@ -414,28 +413,87 @@ jobs:
         with:
           sarif_file: "trivy-results.sarif"
 
-      # The image this job built, started, tested and scanned is now the image
-      # we publish, to BOTH registries, from the one local build. Until this
-      # change container.yml rebuilt it twice, once per registry, so the bytes
-      # the gate above passed were thrown away and the bytes on the registries
-      # had been scanned by nothing -- and, being separate builds, the two
-      # registries held different digests for one version. `promote` already
-      # asserts that THIS job succeeded on the tagged commit, by workflow file;
-      # that assertion is now about the bytes it promotes.
+      # Hand the verified image to `publish`, which is the only job that holds
+      # a credential. This job HOLDS NOTHING THAT CAN PUBLISH, and that is the
+      # whole point: `permissions` and `secrets` are job-level while an `if:` is
+      # step-level, so gating the publish steps did not stop a same-repository
+      # pull request reaching the ambient token, the registry secrets or the
+      # crunchtools-ci App key -- on gloval, our own hardware, since that is
+      # where `runs-on` sends a same-repo PR. Gatehouse found the token half;
+      # Fable found the App key, which is worse.
       #
-      # Pushed from here rather than copied by a later job. Gatehouse rejected
-      # the copy, and was right: `skopeo copy` meant mounting the Docker auth
-      # config -- credentials for both registries -- into a third-party image on
-      # a floating tag. Pushing the same local image twice needs no extra tool
-      # and no credential leaves this job. The manifest does not name its
-      # repository, so the same bytes yield the same digest in both registries;
-      # that is asserted below rather than assumed.
-      #
-      # `push` only, so a pull request never holds a registry credential, and
-      # `runs-on` above already pins push to ubuntu-latest, so the self-hosted
-      # runner can never publish.
-      - name: Log in to Quay.io
+      # An artifact rather than a registry hand-off, deliberately, and it is the
+      # more expensive choice: about a minute each way. The verifier must not be
+      # able to publish, and pushing to a registry so a later job can pull is
+      # exactly the credential this job must not have. Paid on the main-push
+      # path only, never on a pull request.
+      - name: Save the verified image for the publish job
+        id: handoff
         if: github.event_name == 'push'
+        run: |
+          set -eu
+          docker save trentina:scan -o image.tar
+          id=$(docker inspect --format '{{ .Id }}' trentina:scan)
+          [ -n "$id" ] || { echo "could not read the built image id" >&2; exit 1; }
+          echo "image_id=$id" >> "$GITHUB_OUTPUT"
+          echo "::notice::handing off $id"
+
+      - name: Upload the verified image
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v7
+        with:
+          name: verified-image
+          path: image.tar
+          retention-days: 1
+          # The layers inside are already compressed; level 6 on a multi-gigabyte
+          # tar costs more than it saves.
+          compression-level: 1
+
+  # The ONLY job that can publish. Separate from the verifier so that the
+  # verifier -- which runs PR-authored code, on our own runner -- holds no
+  # registry secret, no App key and no `packages: write`.
+  publish:
+    name: Publish the verified image
+    runs-on: ubuntu-latest
+    needs: container-scan
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download the verified image
+        uses: actions/download-artifact@v7
+        with:
+          name: verified-image
+
+      # The invariant that matters: the bytes this job publishes are the bytes
+      # container-scan verified. The image ID is the config digest, which pins
+      # every layer's diff ID, so an equal ID across the hand-off means equal
+      # content. `promote` separately proves "this commit, this version" from
+      # the labels on each registry.
+      #
+      # NOT a cross-registry digest comparison. A registry digest is over the
+      # manifest, which is strictly stronger than content equality and can
+      # differ for encoding reasons that say nothing about the image -- so it is
+      # reported below and never gates.
+      - name: Load it, and prove it is what was verified
+        env:
+          EXPECTED: ${{ needs.container-scan.outputs.image_id }}
+        run: |
+          set -eu
+          [ -n "$EXPECTED" ] || { echo "container-scan handed over no image id" >&2; exit 1; }
+          docker load -i image.tar
+          got=$(docker inspect --format '{{ .Id }}' trentina:scan)
+          [ "$got" = "$EXPECTED" ] || {
+            echo "the image that arrived is not the image that was verified:" >&2
+            echo "  verified: $EXPECTED" >&2
+            echo "  arrived:  $got" >&2
+            exit 1
+          }
+          echo "::notice::loaded the verified image $got"
+
+      - name: Log in to Quay.io
         uses: docker/login-action@v4
         with:
           registry: quay.io
@@ -443,67 +501,39 @@ jobs:
           password: ${{ secrets.QUAY_PASSWORD }}
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name == 'push'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ github.token }}
 
-      - name: Publish the scanned image
-        id: publish
-        if: github.event_name == 'push'
+      - name: Publish to both registries
         env:
           QUAY: ${{ env.QUAY_IMAGE }}
           GHCR: ${{ env.GHCR_IMAGE }}
         run: |
           set -eu
-          # Ask the REGISTRY what the tag resolves to, not the local image's
-          # RepoDigests. Gatehouse was right that reading them back after a push
-          # is not something to rely on -- they are populated most dependably by
-          # a pull, and the behaviour differs between the classic and containerd
-          # image stores, so a green push could yield an empty digest and fail
-          # the job after publishing. `imagetools inspect` asks the registry,
-          # which is the actual question, and it is the same call `promote` makes
-          # in container.yml on the same runner class: one mechanism on both
-          # sides of a release rather than two that can disagree.
-          pushed() {
-            docker buildx imagetools inspect "$1:main" --format '{{ .Manifest.Digest }}'
-          }
           for image in "$QUAY" "$GHCR"; do
             docker tag trentina:scan "$image:main"
             docker tag trentina:scan "$image:latest"
             docker push "$image:main"
             docker push "$image:latest"
           done
-          quay_digest=$(pushed "$QUAY")
-          ghcr_digest=$(pushed "$GHCR")
-          # Named one at a time: two registries are resolved here, and "a digest
-          # could not be resolved" does not say which push to go and look at.
-          for pair in "$QUAY=$quay_digest" "$GHCR=$ghcr_digest"; do
-            [ -n "${pair#*=}" ] || {
-              echo "pushed ${pair%%=*}, but its digest could not be resolved" >&2
-              exit 1
-            }
+          # Reported, not gated -- see the note above. Asking the registry is
+          # the same call `promote` makes, so a difference here is worth seeing
+          # in the log before a release has to resolve it.
+          for image in "$QUAY" "$GHCR"; do
+            d=$(docker buildx imagetools inspect "$image:main" \
+              --format '{{ .Manifest.Digest }}' || true)
+            echo "::notice::$image:main is ${d:-unresolved}"
           done
-          # The point of the whole change, enforced rather than trusted. If one
-          # registry ever assigns a different digest to these bytes, `promote`
-          # would resolve two different images for one release and this is where
-          # that has to stop.
-          [ "$quay_digest" = "$ghcr_digest" ] || {
-            echo "the registries disagree on the digest for these bytes:" >&2
-            echo "  $QUAY@$quay_digest" >&2
-            echo "  $GHCR@$ghcr_digest" >&2
-            exit 1
-          }
-          echo "digest=$quay_digest" >> "$GITHUB_OUTPUT"
-          echo "::notice::published $quay_digest to both registries"
 
       # The crunchtools-ci App's token, not a personal one: it has its own rate
-      # limit, so a throttled account can't stop this step.
+      # limit, so a throttled account can't stop this step. Minted HERE rather
+      # than in container-scan, so its key is never present in a job that runs
+      # pull-request code.
       - name: Mint CI token
         id: ci-token
-        if: github.event_name == 'push'
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.CRUNCHTOOLS_CI_APP_ID || secrets.CRUNCHTOOLS_CI_APP_ID }}
@@ -512,10 +542,8 @@ jobs:
 
       # crunchtools/data-collector is built FROM this image. Tell it to rebuild,
       # as every parent image in the fleet tells its children
-      # (crunchtools/constitution, validate-cascade.py). Moved here from
-      # container.yml with the publish it belongs to.
+      # (crunchtools/constitution, validate-cascade.py).
       - name: Trigger downstream rebuilds
-        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ steps.ci-token.outputs.token }}
         run: |

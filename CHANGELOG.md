@@ -18,11 +18,13 @@ under that name.
   runs the suite inside it and scans it), then `container.yml`'s Quay and GHCR
   jobs, sequentially. The verified build was discarded and the two published
   builds were scanned by nothing, so the two registries shipped *different
-  bytes* for the same version. `container-scan` now publishes the image it
-  verified to both registries from that one local build, and fails if they
-  disagree on its digest — a manifest does not name its repository, so the same
-  bytes are the same digest, and the invariant is asserted rather than trusted.
-  The constitution's claim
+  bytes* for the same version. `container-scan` now hands the image it verified
+  to a separate `publish` job, which proves the image ID it loaded is the one
+  that was verified — the config digest, which pins every layer — and pushes
+  that to both registries. `publish` is the only job holding a registry
+  credential, the App key or `packages: write`, and it runs on `push` only:
+  `permissions` and `secrets` are job-level, so gating the steps of a job that
+  also runs pull-request code gates nothing. The constitution's claim
   that a tag "promotes the digest main already built and verified" held only by
   sequencing; `promote` is unchanged, and the job it asserts ran is now the job
   that pushed the bytes it promotes.
