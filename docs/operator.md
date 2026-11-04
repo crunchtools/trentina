@@ -75,9 +75,9 @@ believe someone else's scan.
 Both are written the way any other change is written. The gateway stages them
 instead of applying them, tells you what a person will be shown, and waits. A
 person approves at `/approve`; nothing moves until they do, and on a gateway
-with no approval password set nothing can approve, so both stay refused. See
-[Approvals](approvals.md) — including `approval_enrol`, which is how you ask a
-person to set that password without anyone touching a shell.
+with no passkey or password set nothing can approve, so both stay refused. See
+[Approvals](approvals.md) — including `approval_enrol`, which is how you bring
+up the page where a person sets one, without anyone touching a shell.
 
 Adding a profile no longer needs a restart. Its bearer token used to have to be
 an environment variable, which the container carries, which made a brand-new

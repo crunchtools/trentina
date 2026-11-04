@@ -118,11 +118,18 @@ class BackendAuthError(Exception):
         self.code = code
 
 
+def configured_base_url() -> str | None:
+    """``TRENTINA_OAUTH_BASE_URL`` as the deployment set it, or None when unset.
+
+    For a link that must not fall back to another deployment's address: the
+    approval setup page (#639) uses the origin a call arrived on instead.
+    """
+    return os.environ.get("TRENTINA_OAUTH_BASE_URL", "").strip().rstrip("/") or None
+
+
 def public_base_url() -> str:
     """Where the gateway is reached from outside: the root of every link it hands out."""
-    return (
-        os.environ.get("TRENTINA_OAUTH_BASE_URL", "https://mcp.crunchtools.com").strip().rstrip("/")
-    )
+    return configured_base_url() or "https://mcp.crunchtools.com"
 
 
 def callback_url() -> str:

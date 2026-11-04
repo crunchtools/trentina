@@ -10,6 +10,40 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- **Approve with a passkey (#639).** A person can now sign in to `/approve`
+  with a passkey: the gateway keeps only a public key, the browser binds every
+  signature to this gateway's origin, and there is nothing to brute-force. The
+  check needs no new dependency and no CBOR parser — the browser hands over the
+  key as SubjectPublicKeyInfo, the authenticator data is read by fixed offset,
+  and `cryptography` verifies (`gateway/webauthn.py`). The origin is pinned when
+  the passkey is made and compared exactly afterwards. Once a passkey is
+  enrolled the password can be removed entirely.
+- **`approval_enrol` brings the page up on request.** "Let me set my passkey in
+  Trentina" or "let me change my password in Trentina": it returns an absolute
+  `open_url` (the deployment's public address, or the one the call arrived on)
+  for the agent to open in the person's browser. With nothing set, the link
+  carries the one-time code in its fragment, which never reaches the server;
+  with something set, the person signs in and manages passkeys and the password
+  at `/approve/setup`. `action="close"` shuts an open window early.
+
+### Changed
+
+- **Signing in to the approval page starts a session; the password is no longer
+  written back into the page.** It was carried forward in a hidden field to the
+  decision POST — in the DOM, form history and any shared screen. A session is
+  in memory only, holds no token in the clear, lasts five minutes idle and
+  fifteen at most, is SameSite=Strict with a CSRF token on every form, and is
+  counted down on the page with a Sign out. Changing how approval works needs a
+  sign-in from the last five minutes, and removing a credential signs out every
+  other session.
+- **The approval routes have two rate limits.** Requests that test something (a
+  password, a passkey, an enrolment code) keep the strict 10-burst bucket; page
+  loads, challenges and sign-out get a looser one, so an ordinary visit no
+  longer spends the guesses.
+- `/approve/password` moved to `/approve/setup`; the old path redirects.
+
 ## [6.4.2] - 2026-11-04
 
 ### Fixed

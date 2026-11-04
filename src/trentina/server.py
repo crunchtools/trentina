@@ -408,7 +408,7 @@ async def config_tool(
     write carrying either is STAGED rather than applied. Nothing changes, the
     result says what a person will be shown, and it takes effect only when one
     opens `/approve` on this gateway and agrees; `approval_enrol` is how you ask
-    for the password that lets them. With no approval password set there is no
+    for the passkey or password that lets them. With no approver set there is no
     way to agree, so both stay refused. Removing trust (`unset`) applies at
     once, since it only causes more scanning. Everything else about federation
     is yours, including `federation.peers`.
@@ -557,28 +557,35 @@ async def backend_auth_tool(
 
 
 @mcp.tool()
-async def approval_enrol_tool() -> dict[str, Any]:
-    """Ask a person to set this gateway's approval password. Operator only.
+async def approval_enrol_tool(action: str = "open") -> dict[str, Any]:
+    """Bring up the page where a person sets how they approve. Operator only.
 
-    Two changes on this gateway need a person to agree: who holds the operator
-    profile, and turning on federation trust, which makes this gateway serve
-    another gateway's response without running its own layers over it. Both are
-    staged rather than refused, and a person approves them with a password.
+    Use this when the person says "let me set my passkey in Trentina", "let me
+    change my password in Trentina", "add a passkey", or asks why nothing can
+    be approved. Some changes on this gateway need a person to agree — the
+    operator profile, federation trust and peers, a perimeter going
+    detect-only, a new way out of the network — and a person agrees by signing
+    in with a passkey or the approval password.
 
-    If no password is set yet, those two changes cannot be approved at all, so
-    they stay refused. Call this and give the URL it returns to a person: they
-    choose the password in a browser, and nothing else is needed. The window is
-    short and closes as soon as the password is set.
+    `open` (the default) returns `open_url`: open it in the person's browser,
+    or give it to them. If nothing is set yet, it starts a short window and the
+    link carries a one-time code; the person creates a passkey there. If
+    something is set already, the person signs in and manages passkeys and the
+    password there. `close` shuts an open window early.
 
-    You can ask for this; you cannot answer it. Setting the password is a form
-    submission, which none of your tools makes — that asymmetry is why asking
-    is yours to do.
+    You can ask for this; you cannot answer it. A passkey needs the person's
+    device and a password is a form submission none of your tools makes — that
+    asymmetry is why asking is yours to do.
+
+    Args:
+        action: "open" or "close".
 
     Returns:
-        `url` and `open_for_seconds`, or `already_set`, or `error` when the
-        password is pinned by the deployment instead.
+        `open_url` (absolute, when the gateway knows its address) and `url`,
+        with `opened`, `code` and `open_for_seconds` for a new window, or
+        `already_set`; `closed` for close; `error` otherwise.
     """
-    return await approval_enrol()
+    return await approval_enrol(action)
 
 
 @mcp.tool()

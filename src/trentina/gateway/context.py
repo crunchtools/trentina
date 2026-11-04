@@ -60,6 +60,11 @@ current_call: ContextVar[str] = ContextVar("current_call", default="")
 # ``caller_sub`` is peer-chosen and is an audit fact only, never an input to
 # scope, role, policy or a guard (cto ruling, #592 C2).
 current_caller: ContextVar[tuple[str, str] | None] = ContextVar("current_caller", default=None)
+# The origin this request reached the gateway on, as ``page.served_origin``
+# checked it, or None. Read by ``approval_enrol`` (#639) so the link it hands a
+# person is one their browser can open, on the address they already use. Set
+# beside ``current_caller`` for the same reason: from this request alone.
+current_origin: ContextVar[str | None] = ContextVar("current_origin", default=None)
 # Whether a federated response was served on the secondary's verdict or
 # re-judged here, and if re-judged, why (``vsa.AUDITED_VERDICTS``). Decided deep
 # in the response path rather than at the edge, so it is set there and read by

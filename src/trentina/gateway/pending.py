@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 #: the route module so the tools that STAGE an action can name the page without
 #: depending on the HTTP layer (review on #637).
 PAGE_PATH = "/approve"
-ENROL_PATH = "/approve/password"
+ENROL_PATH = "/approve/setup"
 
 #: How long a staged action stands. Long enough for a person to be fetched,
 #: short enough that an abandoned proposal is gone before anyone forgets it was
