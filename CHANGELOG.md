@@ -12,6 +12,14 @@ under that name.
 
 ### Changed
 
+- **Main builds on gloval, on a runner that starts empty.** `sdlc ci` on a push
+  to main ran on a GitHub-hosted machine (16-19 min) so that the published image
+  never came from the self-hosted runner's shared layer cache. It now runs on
+  `crunchtools-uncached`, whose container storage is a tmpfs emptied every job,
+  which keeps that property at gloval's speed. Our pull requests run on
+  `crunchtools-cached`; Dependabot's move to GitHub-hosted, so a third-party
+  package's new release never runs in the cached store. `FAST_RUNNER_LABEL` is
+  replaced by `CACHED_RUNNER_LABEL` and `UNCACHED_RUNNER_LABEL`.
 - **The Containerfile's layers are ordered by how often their input changes.**
   The dependency install is keyed on the exported, hash-pinned requirements
   rather than on `pyproject.toml` and `README.md`, so a release bump or a README
