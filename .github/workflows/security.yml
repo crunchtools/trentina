@@ -195,21 +195,34 @@ jobs:
         env:
           QUAY: ${{ env.QUAY_IMAGE }}
           GHCR: ${{ env.GHCR_IMAGE }}
+          SHA: ${{ github.sha }}
         run: |
           set -eu
           for image in "$QUAY" "$GHCR"; do
             for tag in main latest; do
               podman tag localhost/trentina:sdlc "$image:$tag"
-              podman push --format v2s2 "$image:$tag"
+              podman push --format v2s2 --digestfile "$RUNNER_TEMP/digest" "$image:$tag"
             done
+            # The digest the registry stored for what THIS job pushed, recorded
+            # below for `promote`. Read from the push itself, not from asking the
+            # registry what :main is, which any later push can change.
+            case "$image" in "$QUAY") quay=$(cat "$RUNNER_TEMP/digest") ;; *) ghcr=$(cat "$RUNNER_TEMP/digest") ;; esac
           done
-          # Reported, not gated. Asking the registry is the same call `promote`
-          # makes, so a difference here is worth seeing before a release has to
-          # resolve it.
-          for image in "$QUAY" "$GHCR"; do
-            d=$(skopeo inspect --format '{{.Digest}}' "docker://$image:main" || true)
-            echo "::notice::$image:main is ${d:-unresolved}"
-          done
+          printf '{"sha":"%s","quay":"%s","ghcr":"%s"}\n' "$SHA" "$quay" "$ghcr" > published.json
+          cat published.json
+          echo "::notice::published $quay (quay) and $ghcr (ghcr) for $SHA"
+
+      # `promote` releases exactly these digests. It used to resolve `:main` and
+      # trust the labels on whatever it found -- labels the writer chooses, on a
+      # tag that a pull request's GITHUB_TOKEN with packages:write can also push.
+      # This artifact comes from the push-to-main run of security.yml, which runs
+      # main's own workflow file, and from this job alone.
+      - name: Record the published digests for promote
+        uses: actions/upload-artifact@v7
+        with:
+          name: published-digests
+          path: published.json
+          retention-days: 90
 
       # The crunchtools-ci App's token, not a personal one: it has its own rate
       # limit, so a throttled account can't stop this step. Minted HERE rather
