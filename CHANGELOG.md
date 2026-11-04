@@ -10,6 +10,39 @@ under that name.
 
 ## [Unreleased]
 
+### Changed
+
+- **The image is built once per merge, and the bytes we publish are the bytes we
+  scanned** (#689). Every push to main built the production image **three
+  times**: `security.yml:container-scan` (which starts it as production does,
+  runs the suite inside it and scans it), then `container.yml`'s Quay and GHCR
+  jobs, sequentially. The verified build was discarded and the two published
+  builds were scanned by nothing, so the two registries shipped *different
+  bytes* for the same version. `container-scan` now publishes the image it
+  verified and a second job mirrors that digest to GHCR with `skopeo copy`, so
+  one build reaches both registries under one digest. The constitution's claim
+  that a tag "promotes the digest main already built and verified" held only by
+  sequencing; `promote` is unchanged, and the job it asserts ran is now the job
+  that pushed the bytes it promotes.
+- **`container.yml` builds nothing**; it is the release retag and nothing else,
+  and no longer offers `workflow_dispatch`. A hand-started publish is not a
+  property worth keeping for an image-only security product.
+- **Trivy gates every event that scans, not only pull requests.** The gate was
+  scoped to `pull_request` in b4222d2c, a commit about printing findings as a
+  table rather than SARIF — so main and the weekly scheduled scan had no
+  vulnerability gate at all, only a SARIF row. Leaving that while
+  `container-scan` began publishing would have put a fixable CRITICAL on the
+  registry. `ignore-unfixed: true` still means only actionable findings stop a
+  build, and `.trivyignore` is the documented way to accept one.
+- **`container-scan` always builds on a push to main.** Its surface filter was
+  safe while `container.yml` built every merge; now that `:main` comes from this
+  job, a docs-only merge that skipped the build would leave `:main` on the
+  previous commit and `promote` would refuse the next tag. The filter still
+  applies to pull requests.
+- **One test version's failure no longer cancels the others.** `ci.yml`'s matrix
+  sets `fail-fast: false`. On run 41738222976 a timing flake in `test (3.13)`
+  cancelled 3.11 and 3.12, and nothing said so.
+
 ## [6.4.0] - 2026-11-03
 
 ### Added

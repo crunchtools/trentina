@@ -1,24 +1,27 @@
-name: Container Build & Push
+name: Container Promote
 
-# The ONE build of the published image. A pull request does not build here any
-# more (#674 follow-up): `security.yml:container-scan` is the required check,
-# builds once, verifies the image as production runs it and gates on Trivy, so
-# a PR build here was a third copy that pushed nothing. A release does not build
-# either -- it promotes the digest main already built and verified, by retag.
+# This file no longer builds anything (#689). `security.yml:container-scan`
+# builds the image ONCE per push to main, verifies it as production runs it,
+# gates on Trivy, and publishes exactly those bytes; a second job there mirrors
+# that digest to GHCR. Before, this workflow rebuilt the image twice on every
+# merge -- once per registry -- so main built three copies, the verified one was
+# discarded and the two published ones had been scanned by nothing.
+#
+# What is left here is the release: a tag promotes the digest main already built
+# and verified, by retag. That sentence used to be true only by sequencing. It
+# is now true by construction, because the job `promote` asserts ran is the job
+# that pushed the bytes it promotes.
+#
+# No `workflow_dispatch`: a hand-started publish is not a property worth having
+# for an image-only security product, and nothing here builds for it to start.
 on:
   push:
-    branches: [main]
     tags: ["v*"]
-  workflow_dispatch:
 
-# A new push supersedes the run it interrupts, on a PR only (#662 follow-up).
-# There are no PR runs here any more, so in practice every run keys on
-# `run_id`, which is unique: no run contends and none can be dropped. The
-# expression is kept as the fleet's one spelling. `cancel-in-progress: false`
-# would NOT be enough on its own: a group holds at most one PENDING run, so a
-# third arrival cancels the second, and three quick pushes to main would drop
-# the middle one's publish -- a half-finished manifest and a downstream never
-# told to rebuild.
+# Every run here is a tag, so every run keys on `run_id`, which is unique: no
+# run contends and none can be dropped. The expression is kept as the fleet's
+# one spelling rather than simplified, so this file reads the same as the
+# others.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -28,156 +31,6 @@ env:
   GHCR_IMAGE: ghcr.io/crunchtools/trentina
 
 jobs:
-  build-and-push-quay:
-    runs-on: ubuntu-latest
-    # A tag promotes; it never rebuilds. Rebuilding from the same source would
-    # produce a different digest, so the thing released would be an image
-    # nothing had verified.
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to Quay.io
-        uses: docker/login-action@v4
-        with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_USERNAME }}
-          password: ${{ secrets.QUAY_PASSWORD }}
-
-      # The version belongs to the package, not to the ref that triggered the
-      # build. docker/metadata-action's `version` output is the BRANCH NAME on a
-      # branch push (so main builds labelled themselves "main"); the semver only
-      # appears on tag pushes. Read pyproject.toml, which is the single source.
-      # This step runs BEFORE the metadata so its value can overwrite the label.
-      - name: Read package version
-        id: pkgver
-        run: |
-          v=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
-          [ -n "$v" ] || { echo "could not read version from pyproject.toml" >&2; exit 1; }
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.QUAY_IMAGE }}
-          tags: |
-            type=ref,event=branch
-            type=raw,value=latest,enable={{is_default_branch}}
-          # Overwrites the generated OCI version label, which is the ref on a
-          # branch push. The Containerfile's own `version` label already came
-          # from the build-arg below; this makes the two agree.
-          labels: |
-            org.opencontainers.image.version=${{ steps.pkgver.outputs.version }}
-
-      # No `cache-from: type=gha` (#674 follow-up). Measured, the cache cost
-      # 121 s of fixed export/import per build against 67 s of savings, and the
-      # `docker-container` driver it requires cost the multithreaded ONNX
-      # benign-L2 gate another 137 s on top.
-      - name: Build and push
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./Containerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ steps.pkgver.outputs.version }}
-
-      # The crunchtools-ci App's token, not a personal one: it has its own rate
-      # limit, so a throttled account can't stop this step.
-      - name: Mint CI token
-        id: ci-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ vars.CRUNCHTOOLS_CI_APP_ID || secrets.CRUNCHTOOLS_CI_APP_ID }}
-          private-key: ${{ secrets.CRUNCHTOOLS_CI_APP_KEY }}
-          owner: crunchtools
-
-      # crunchtools/data-collector is built FROM this image. Tell it to
-      # rebuild, as every parent image in the fleet tells its children
-      # (crunchtools/constitution, validate-cascade.py). Nothing to do on a
-      # release: `latest` moved when this commit reached main.
-      - name: Trigger downstream rebuilds
-        env:
-          GH_TOKEN: ${{ steps.ci-token.outputs.token }}
-        run: |
-          for repo in data-collector; do
-            gh api repos/crunchtools/$repo/dispatches \
-              -f event_type=parent-image-updated \
-              || echo "::warning::$repo was not told to rebuild; start its build by hand"
-          done
-
-      - name: Run Trivy vulnerability scanner
-        continue-on-error: true
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ${{ env.QUAY_IMAGE }}:latest
-          format: "table"
-          exit-code: "0"
-          severity: "CRITICAL,HIGH"
-
-  build-and-push-ghcr:
-    runs-on: ubuntu-latest
-    needs: build-and-push-quay
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ github.token }}
-
-      # The version belongs to the package, not to the ref that triggered the
-      # build. See the Quay job above.
-      - name: Read package version
-        id: pkgver
-        run: |
-          v=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
-          [ -n "$v" ] || { echo "could not read version from pyproject.toml" >&2; exit 1; }
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.GHCR_IMAGE }}
-          tags: |
-            type=ref,event=branch
-            type=raw,value=latest,enable={{is_default_branch}}
-          labels: |
-            org.opencontainers.image.version=${{ steps.pkgver.outputs.version }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./Containerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ steps.pkgver.outputs.version }}
-
   # A release is a retag, not a build. The digest main pushed is the one the
   # required checks passed against; building the tag again would publish bytes
   # nothing had verified, and discover a broken image at ship time.

@@ -24,6 +24,14 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # One version's failure must not cancel the others. On run 41738222976 --
+      # the main merge of #687 -- `test (3.13)` failed on the `test_unpack.py`
+      # timing flake (#689) and the default `fail-fast: true` CANCELLED 3.11 and
+      # 3.12, so a single flake cost the signal from two more versions and
+      # nothing said so. The four jobs already run in parallel on free minutes,
+      # so a universal failure costs wall time we do not pay for. PR
+      # supersession is `cancel-in-progress`, not this.
+      fail-fast: false
       matrix:
         # Every version `requires-python` admits, INCLUDING the one the
         # container runs. CI previously tested 3.11 and 3.12 -- neither of
