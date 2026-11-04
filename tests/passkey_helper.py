@@ -20,6 +20,8 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 from trentina.gateway import webauthn
 
 UP_UV = webauthn.FLAG_UP | webauthn.FLAG_UV
+RSA_PUBLIC_EXPONENT = 65537
+DEFAULT_RSA_BITS = webauthn.RSA_MIN_BITS
 
 
 def b64url(raw: bytes) -> str:
@@ -30,27 +32,26 @@ def unb64url(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def _private(alg: int, rsa_bits: int) -> Any:
-    if alg == webauthn.ES256:
-        return ec.generate_private_key(ec.SECP256R1())
-    if alg == webauthn.EDDSA:
-        return ed25519.Ed25519PrivateKey.generate()
-    return rsa.generate_private_key(public_exponent=65537, key_size=rsa_bits)
-
-
 @dataclass
 class Authenticator:
     rp_id: str = "gw.example"
     origin: str = "https://gw.example"
     alg: int = webauthn.ES256
-    rsa_bits: int = 2048
+    rsa_bits: int = DEFAULT_RSA_BITS
     counter: int = 0
     credential_id: bytes = field(default_factory=lambda: os.urandom(16))
     key: Any = None
 
     def __post_init__(self) -> None:
+        makers = {
+            webauthn.ES256: lambda: ec.generate_private_key(ec.SECP256R1()),
+            webauthn.EDDSA: ed25519.Ed25519PrivateKey.generate,
+            webauthn.RS256: lambda: rsa.generate_private_key(
+                public_exponent=RSA_PUBLIC_EXPONENT, key_size=self.rsa_bits
+            ),
+        }
         if self.key is None:
-            self.key = _private(self.alg, self.rsa_bits)
+            self.key = makers[self.alg]()
 
     @property
     def spki(self) -> bytes:
@@ -83,11 +84,13 @@ class Authenticator:
         return body
 
     def sign(self, signed: bytes) -> bytes:
-        if self.alg == webauthn.ES256:
-            return self.key.sign(signed, ec.ECDSA(hashes.SHA256()))
-        if self.alg == webauthn.EDDSA:
-            return self.key.sign(signed)
-        return self.key.sign(signed, padding.PKCS1v15(), hashes.SHA256())
+        """Sign as the key's own algorithm does: ECDSA, Ed25519 or PKCS#1 v1.5."""
+        signers = {
+            webauthn.ES256: lambda: self.key.sign(signed, ec.ECDSA(hashes.SHA256())),
+            webauthn.EDDSA: lambda: self.key.sign(signed),
+            webauthn.RS256: lambda: self.key.sign(signed, padding.PKCS1v15(), hashes.SHA256()),
+        }
+        return signers[self.alg]()
 
     def registration(
         self, challenge: bytes, *, flags: int | None = None, **client: Any

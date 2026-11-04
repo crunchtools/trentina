@@ -141,7 +141,8 @@ window is also the one moment this gateway's approver could be claimed by
 whoever holds the code.
 
 **Keep code execution off the operator profile.** An agent with a backend that can
-run code or fetch arbitrary URLs can submit the form itself — and can rewrite
+run code or fetch arbitrary URLs can submit the form itself — or, while the
+enrolment window is open, register a software passkey of its own — and can rewrite
 the configuration directly anyway, so no setting inside the gateway binds it.
 If you want the guarantee unconditionally, pin the password in the gateway's
 own configuration, where the gateway cannot set it at all —

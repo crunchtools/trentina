@@ -15,6 +15,8 @@ may be enough to approve with.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import os
 import pathlib
 import re
@@ -444,9 +446,6 @@ class TestThePage:
         assert "connect-src 'self'" in policy
 
     def test_the_script_on_the_page_is_the_one_the_policy_allows(self, page: TestClient) -> None:
-        import base64
-        import hashlib
-
         body = page.get(PATH).text
         script = body.split("<script>")[1].split("</script>")[0]
         digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
@@ -672,7 +671,7 @@ class TestEnrolment:
         assert approver.verify(PASSWORD) is True
 
     def test_the_old_password_page_lands_on_the_new_one(self, pages: TestClient) -> None:
-        answer = pages.get(approval_routes.LEGACY_PASSWORD_PATH, follow_redirects=False)
+        answer = pages.get(approval_routes.OLD_ENROL_PATH, follow_redirects=False)
         assert answer.status_code == 303
         assert answer.headers["location"] == SETUP
 

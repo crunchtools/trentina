@@ -19,6 +19,7 @@ import ast
 import asyncio
 import contextlib
 import functools
+import json
 import logging
 import pathlib
 from collections.abc import Iterator
@@ -247,8 +248,6 @@ class TestInternalTools:
         """The sign-in and passkey routes are unauthenticated and public
         (#639): every field, header and failure reason reaching a record is a
         string a stranger chose, so none of them may."""
-        import json as json_mod
-
         from fastmcp import FastMCP
         from starlette.applications import Starlette
         from starlette.testclient import TestClient
@@ -269,7 +268,7 @@ class TestInternalTools:
         json_headers = {"Content-Type": "application/json", "Origin": "https://gw.example"}
 
         def post(path: str, body: dict[str, Any], **headers: str) -> None:
-            client.post(path, content=json_mod.dumps(body), headers={**json_headers, **headers})
+            client.post(path, content=json.dumps(body), headers={**json_headers, **headers})
 
         for ceremony in ("signin", "register", CANARY):
             post(approval_routes.BEGIN_PATH, {"ceremony": ceremony, "code": CANARY, "csrf": CANARY})
@@ -295,13 +294,15 @@ class TestInternalTools:
         csrf = page.split('name="csrf" value="')[1].split('"')[0]
         begun = client.post(
             approval_routes.BEGIN_PATH,
-            content=json_mod.dumps({"ceremony": "register", "csrf": csrf}),
+            content=json.dumps({"ceremony": "register", "csrf": csrf}),
             headers=json_headers,
         ).json()
         post(
             approval_routes.FINISH_PATH,
             auth.register_json(begun["challenge"], csrf=csrf, name=CANARY),
         )
+        # Every one of those was refused: nothing a stranger sent was kept.
+        assert approver.passkeys() == []
         approval_session.clear()
         config_mod._config = None
 

@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 PATH = pending.PAGE_PATH
 SETUP_PATH = pending.ENROL_PATH
 #: Where the password page lived through 6.4; a bookmark to it still lands.
-LEGACY_PASSWORD_PATH = "/approve/password"  # noqa: S105 - a path, not a secret
+OLD_ENROL_PATH = "/approve/password"
 SIGN_OUT_PATH = "/approve/signout"
 BEGIN_PATH = "/approve/webauthn/begin"
 FINISH_PATH = "/approve/webauthn/finish"
@@ -183,22 +183,6 @@ def _page(
     return HTMLResponse(document, status_code=status, headers=_HEADERS)
 
 
-def _nothing(request: Request) -> Response:
-    return _page(request, *_NOTHING_PAGE)
-
-
-def _json(payload: dict[str, Any], status: int = 200) -> Response:
-    return JSONResponse(payload, status_code=status, headers=_HEADERS)
-
-
-def _nothing_json() -> Response:
-    return _json(_NOTHING_JSON, HTTPStatus.BAD_REQUEST)
-
-
-def _redirect(target: str) -> Response:
-    return RedirectResponse(target, status_code=HTTPStatus.SEE_OTHER, headers=_HEADERS)
-
-
 def _next(value: object, default: str = PATH) -> str:
     return value if isinstance(value, str) and value in _NEXT else default
 
@@ -229,10 +213,7 @@ def _audit_change(what: str) -> None:
     from .audit import _audit
     from .service import service_profile
 
-    try:
-        _audit(service_profile().name, "internal://approval", "approver", Outcome.OK, 0, what)
-    except Exception as exc:
-        logger.warning("approval: the audit row was not written: %s", exc_kind(exc))
+    _audit(service_profile().name, "internal://approval", "approver", Outcome.OK, 0, what)
 
 
 def _signin_body(next_path: str, *, confirm: bool) -> str:
@@ -313,14 +294,14 @@ def _review(
     )
 
 
-def _idle(request: Request, session: approval_session.Session) -> Response:
-    return _page(
-        request,
-        "Nothing waiting",
+#: What a signed-in person sees when no agent is asking for anything.
+_IDLE_PAGE = (
+    "Nothing waiting",
+    (
         "<h1>Nothing is waiting</h1><p>No agent on this gateway is asking for anything "
-        "right now. When one does, it will give you this link again.</p>",
-        session=session,
-    )
+        "right now. When one does, it will give you this link again.</p>"
+    ),
+)
 
 
 async def _show(request: Request) -> Response:
@@ -333,14 +314,22 @@ async def _show(request: Request) -> Response:
             "<h1>Approve a change</h1>" + _signin_body(PATH, confirm=False),
         )
     staged = pending.outstanding()
-    return _review(request, session, staged) if staged else _idle(request, session)
+    return (
+        _review(request, session, staged)
+        if staged
+        else _page(request, *_IDLE_PAGE, session=session)
+    )
 
 
 def _signed_in(request: Request, method: str, target: str, *, as_json: bool) -> Response:
     """Start a session, ending whatever this browser held before."""
     approval_session.end(approval_session.token_of(request))
     token = approval_session.start(method)
-    response = _json({"ok": True, "next": target}) if as_json else _redirect(target)
+    response = (
+        JSONResponse({"ok": True, "next": target}, headers=_HEADERS)
+        if as_json
+        else RedirectResponse(target, HTTPStatus.SEE_OTHER, headers=_HEADERS)
+    )
     approval_session.set_cookie(response, request, token)
     return response
 
@@ -355,7 +344,7 @@ async def _password_sign_in(request: Request, form: Any) -> Response:
         verified = await asyncio.to_thread(approver.verify, str(form.get("password") or ""))
     if not verified:
         logger.info("approval: a visitor did not present a valid approval password")
-        return _nothing(request)
+        return _page(request, *_NOTHING_PAGE)
     return _signed_in(request, "password", _next(form.get("next")), as_json=False)
 
 
@@ -377,7 +366,7 @@ async def _act(
             return _page(
                 request, "Declined", "<p>Declined. Nothing was changed.</p>", session=session
             )
-        return _idle(request, session)
+        return _page(request, *_IDLE_PAGE, session=session)
     try:
         await pending.approve(kind, facts_digest)
     except pending.PendingError:
@@ -386,7 +375,9 @@ async def _act(
         # agreed to is not what is staged. Re-render, and let them decide again.
         staged = pending.outstanding()
         return (
-            _review(request, session, staged, swapped=True) if staged else _idle(request, session)
+            _review(request, session, staged, swapped=True)
+            if staged
+            else _page(request, *_IDLE_PAGE, session=session)
         )
     except Exception as exc:
         # The action's own failure. It reports the detail to the agent that
@@ -411,31 +402,35 @@ async def _act(
 
 async def _decide(request: Request) -> Response:
     if not _same_origin(request, required=False):
-        return _nothing(request)
+        return _page(request, *_NOTHING_PAGE)
     form = await request.form()
     if "password" in form:
         return await _password_sign_in(request, form)
     session = approval_session.current(request)
     if session is None or not approval_session.csrf_ok(session, form.get("csrf")):
-        return _nothing(request)
+        return _page(request, *_NOTHING_PAGE)
     staged = pending.outstanding()
     kind = pending.kind_named(str(form.get("kind") or ""))
     decision = str(form.get("decision") or "")
     if kind is None or decision not in ("approve", "decline"):
-        return _review(request, session, staged) if staged else _idle(request, session)
+        return (
+            _review(request, session, staged)
+            if staged
+            else _page(request, *_IDLE_PAGE, session=session)
+        )
     return await _act(request, session, kind, decision, str(form.get("facts") or ""))
 
 
 async def _sign_out(request: Request) -> Response:
     """Sign out. Needs no token: ending a session is never what an attacker wants."""
     approval_session.end(approval_session.token_of(request))
-    response = _redirect(PATH)
+    response = RedirectResponse(PATH, HTTPStatus.SEE_OTHER, headers=_HEADERS)
     approval_session.clear_cookie(response, request)
     return response
 
 
 async def _legacy(_request: Request) -> Response:
-    return _redirect(SETUP_PATH)
+    return RedirectResponse(SETUP_PATH, HTTPStatus.SEE_OTHER, headers=_HEADERS)
 
 
 # --- /approve/setup ---------------------------------------------------------
@@ -507,8 +502,6 @@ def _when(stamp: object) -> str:
 
 
 def _passkey_list(keys: list[dict[str, Any]], csrf: str) -> str:
-    if not keys:
-        return "<p class='note'>None yet.</p>"
     items = []
     for key in keys:
         used = _when(key["last_used"])
@@ -527,12 +520,13 @@ def _passkey_list(keys: list[dict[str, Any]], csrf: str) -> str:
     return f'<ul class="keys">{"".join(items)}</ul>'
 
 
+_PINNED_NOTE = (
+    "<p class='note'>The password is pinned by this gateway's deployment, so it "
+    "is changed where the configuration is kept, not here.</p>"
+)
+
+
 def _password_section(csrf: str, *, has_keys: bool) -> str:
-    if approver.pinned_by_deployment():
-        return (
-            "<p class='note'>The password is pinned by this gateway's deployment, so it "
-            "is changed where the configuration is kept, not here.</p>"
-        )
     has = approver.has_password()
     lead = (
         "<p class='note'>A fallback for a browser that cannot use your passkey.</p>"
@@ -563,12 +557,18 @@ def _manage_body(session: approval_session.Session, done: str | None) -> str:
     csrf = html.escape(session.csrf)
     keys = approver.passkeys()
     notice = f"<p class='done' role='status'>{html.escape(_DONE[done])}</p>" if done else ""
+    listing = _passkey_list(keys, csrf) if keys else "<p class='note'>None yet.</p>"
+    password_part = (
+        _PINNED_NOTE
+        if approver.pinned_by_deployment()
+        else _password_section(csrf, has_keys=bool(keys))
+    )
     return (
         f"<h1>Sign-in for approvals</h1>{notice}"
         "<p class='note'>How you prove it is you when an agent asks for a change.</p>"
-        f"<section><h2>Passkeys</h2>{_passkey_list(keys, csrf)}"
+        f"<section><h2>Passkeys</h2>{listing}"
         f"{_register_box(csrf=session.csrf, label='Add passkey')}</section>"
-        f"<section><h2>Password</h2>{_password_section(csrf, has_keys=bool(keys))}</section>"
+        f"<section><h2>Password</h2>{password_part}</section>"
     )
 
 
@@ -612,7 +612,7 @@ async def _enrol_password(request: Request, form: Any) -> Response:
     async with _PASSWORD_WORK:
         if not approver.enrolling(str(form.get("code") or "")):
             logger.info("approval: an enrolment was not authorised")
-            return _nothing(request)
+            return _page(request, *_NOTHING_PAGE)
         try:
             await asyncio.to_thread(approver.set_password, new)
         except ValueError as exc:
@@ -660,11 +660,11 @@ async def _change(request: Request, form: Any, action: str) -> Response:
         or not approval_session.fresh(session)
         or not approval_session.csrf_ok(session, form.get("csrf"))
     ):
-        return _nothing(request)
+        return _page(request, *_NOTHING_PAGE)
     try:
         what, done = await _apply_change(form, action)
     except LookupError:
-        return _nothing(request)
+        return _page(request, *_NOTHING_PAGE)
     except _BusyError:
         return _page(request, *_BUSY_PAGE)
     except (approver.ApproverError, ValueError) as exc:
@@ -684,12 +684,12 @@ async def _change(request: Request, form: Any, action: str) -> Response:
     # Whoever signed in with what just changed must not still be in.
     approval_session.end_others(token)
     _audit_change(what)
-    return _redirect(f"{SETUP_PATH}?done={done}")
+    return RedirectResponse(f"{SETUP_PATH}?done={done}", HTTPStatus.SEE_OTHER, headers=_HEADERS)
 
 
 async def _setup_post(request: Request) -> Response:
     if not _same_origin(request, required=False):
-        return _nothing(request)
+        return _page(request, *_NOTHING_PAGE)
     form = await request.form()
     action = str(form.get("action") or "")
     if action == "enrol_password":
@@ -702,10 +702,10 @@ async def _setup_post(request: Request) -> Response:
 
 async def _body(request: Request) -> dict[str, Any] | None:
     try:
-        data = json.loads(await request.body())
+        parsed = json.loads(await request.body())
     except (ValueError, UnicodeDecodeError):
         return None
-    return data if isinstance(data, dict) else None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _registration_binding(request: Request, body: dict[str, Any]) -> str | None:
@@ -731,11 +731,11 @@ def _registration_binding(request: Request, body: dict[str, Any]) -> str | None:
 
 async def _begin(request: Request) -> Response:
     if not _same_origin(request, required=True):
-        return _nothing_json()
+        return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
     body = await _body(request)
     served = page.served_as(request)
     if body is None or served is None:
-        return _nothing_json()
+        return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
     ceremony = body.get("ceremony")
     options: dict[str, Any] = {"rpId": served, "algorithms": list(webauthn.ALGORITHMS)}
     if ceremony == webauthn.SIGN_IN:
@@ -745,14 +745,14 @@ async def _begin(request: Request) -> Response:
     elif ceremony == webauthn.REGISTER:
         binding = _registration_binding(request, body)
         if binding is None:
-            return _nothing_json()
+            return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
         challenge = approval_session.issue_challenge(webauthn.REGISTER, binding)
         options["userId"] = webauthn.b64url(secrets.token_bytes(16))
         options["userName"] = f"Trentina approver ({served})"
     else:
-        return _nothing_json()
+        return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
     options["challenge"] = webauthn.b64url(challenge)
-    return _json(options)
+    return JSONResponse(options, headers=_HEADERS)
 
 
 def _field(body: dict[str, Any], name: str, limit: int) -> bytes:
@@ -763,7 +763,7 @@ async def _finish_sign_in(request: Request, body: dict[str, Any]) -> Response:
     try:
         challenge = _field(body, "challenge", 64)
         if not approval_session.take_challenge(challenge, webauthn.SIGN_IN):
-            return _nothing_json()
+            return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
         _field(body, "id", webauthn.MAX_CREDENTIAL_ID)
         verified = await asyncio.to_thread(
             approver.verify_passkey,
@@ -774,9 +774,9 @@ async def _finish_sign_in(request: Request, body: dict[str, Any]) -> Response:
             challenge=challenge,
         )
     except webauthn.WebAuthnError:
-        return _nothing_json()
+        return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
     if not verified:
-        return _nothing_json()
+        return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
     return _signed_in(request, "passkey", _next(body.get("next")), as_json=True)
 
 
@@ -791,7 +791,7 @@ def _registration_challenge(body: dict[str, Any], binding: str) -> bytes:
 async def _finish_register(request: Request, body: dict[str, Any]) -> Response:
     binding = _registration_binding(request, body)
     if binding is None:
-        return _nothing_json()
+        return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
     enrolling = binding.startswith("code:")
     try:
         challenge = _registration_challenge(body, binding)
@@ -806,39 +806,44 @@ async def _finish_register(request: Request, body: dict[str, Any]) -> Response:
             served_as=page.served_as(request),
         )
     except webauthn.WebAuthnError as exc:
-        logger.info("approval: a passkey registration did not verify: %s", exc)  # logsafe: ours
-        return _json(
+        logger.info("approval: a passkey registration did not verify: %s", exc.reason)
+        return JSONResponse(
             {"ok": False, "message": "That passkey could not be verified. Try again."},
             HTTPStatus.BAD_REQUEST,
+            headers=_HEADERS,
         )
     try:
         cred_id = await asyncio.to_thread(approver.add_passkey, credential, body.get("name"))
     except approver.ApproverError as exc:
-        return _json({"ok": False, "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+        return JSONResponse(
+            {"ok": False, "message": str(exc)}, HTTPStatus.BAD_REQUEST, headers=_HEADERS
+        )
     except OSError as exc:
         logger.warning("approval: a passkey could not be stored err=%s", exc_kind(exc))
-        return _json({"ok": False, "message": "It could not be stored."}, 500)
+        return JSONResponse(
+            {"ok": False, "message": "It could not be stored."}, 500, headers=_HEADERS
+        )
     _audit_change(f"passkey enrolled {approver.credential_digest(cred_id)} alg={credential.alg}")
     target = f"{SETUP_PATH}?done=passkey_added"
     if enrolling:
         # The first approver: shut the window and sign them straight in.
         approver.close_enrolment()
         return _signed_in(request, "passkey", target, as_json=True)
-    return _json({"ok": True, "next": target})
+    return JSONResponse({"ok": True, "next": target}, headers=_HEADERS)
 
 
 async def _finish(request: Request) -> Response:
     if not _same_origin(request, required=True):
-        return _nothing_json()
+        return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
     body = await _body(request)
     if body is None:
-        return _nothing_json()
+        return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
     ceremony = body.get("ceremony")
     if ceremony == webauthn.SIGN_IN:
         return await _finish_sign_in(request, body)
     if ceremony == webauthn.REGISTER:
         return await _finish_register(request, body)
-    return _nothing_json()
+    return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
 
 
 def register_approval_routes(mcp_server: Any) -> None:
@@ -873,7 +878,7 @@ def register_approval_routes(mcp_server: Any) -> None:
         (SIGN_OUT_PATH, ["POST"], _sign_out, MAX_BODY_BYTES, browsing),
         (SETUP_PATH, ["GET"], _setup, MAX_BODY_BYTES, browsing),
         (SETUP_PATH, ["POST"], _setup_post, MAX_BODY_BYTES, attempts),
-        (LEGACY_PASSWORD_PATH, ["GET", "POST"], _legacy, MAX_BODY_BYTES, browsing),
+        (OLD_ENROL_PATH, ["GET", "POST"], _legacy, MAX_BODY_BYTES, browsing),
         (BEGIN_PATH, ["POST"], _begin, MAX_CEREMONY_BYTES, browsing),
         (FINISH_PATH, ["POST"], _finish, MAX_CEREMONY_BYTES, attempts),
     )

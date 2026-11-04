@@ -1085,3 +1085,9 @@ path = ".pre-commit-config.yaml"
 pattern = "ruff-check"
 justification = "ruff runs inside the sdlc-commit hook from python-sdlc (constitution XII v1.30.0), configured by [tool.ruff] in pyproject.toml; Gourmand looks for a literal ruff hook id"
 classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/webauthn.py"
+justification = "_auth_data reads WebAuthn authenticator data by fixed offset and _public_key holds an SPKI to a COSE algorithm; the matches (_parse_openrouter_search, json_object) are unrelated parsers that share only the bounds-check-then-raise guard shape. Sharing a helper across the passkey check and the L3 provider code would couple the root-gating route to the judge's parsing."
+classification = "by_design"

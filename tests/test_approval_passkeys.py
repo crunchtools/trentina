@@ -73,12 +73,6 @@ def _post(client: TestClient, path: str, body: dict[str, Any], **headers: str) -
     )
 
 
-def _csrf(client: TestClient, path: str = SETUP) -> str:
-    found = re.search(r'name="csrf" value="([^"]+)"', client.get(path).text)
-    assert found
-    return found.group(1)
-
-
 def _enrol_passkey(client: TestClient, auth: Authenticator, name: str = "Laptop") -> Any:
     _, code = approver.open_enrolment()
     begun = _post(client, BEGIN, {"ceremony": "register", "code": code})
@@ -329,7 +323,9 @@ class TestEveryFailureIsOneAnswer:
 class TestManaging:
     def _signed_in(self, client: TestClient, auth: Authenticator) -> str:
         assert _sign_in(client, auth).status_code == 200
-        return _csrf(client)
+        found = re.search(r'name="csrf" value="([^"]+)"', client.get(SETUP).text)
+        assert found
+        return found.group(1)
 
     def test_a_second_passkey_needs_a_fresh_session(
         self, client: TestClient, enrolled: Authenticator, monkeypatch: pytest.MonkeyPatch
@@ -461,6 +457,18 @@ class TestOnLocalhost:
         assert "path=/approve" in cookie
         assert "secure" not in cookie
         assert "Sign-in for approvals" in client.get(SETUP).text
+
+
+class TestTheBodyCap:
+    @pytest.mark.parametrize("path", [BEGIN, FINISH])
+    def test_an_oversized_ceremony_body_is_refused_unread(
+        self, client: TestClient, path: str
+    ) -> None:
+        approver.open_enrolment()
+        huge = {"ceremony": "signin", "pad": "x" * (approval_routes.MAX_CEREMONY_BYTES * 2)}
+        assert _post(client, path, huge).status_code == 413
+        assert approval_session._challenges == {}
+        assert approver.passkeys() == []
 
 
 class TestTheLimits:

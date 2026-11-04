@@ -61,6 +61,7 @@ MAX_SPKI = 1024
 MAX_CLIENT_DATA = 4096
 MAX_CREDENTIAL_ID = 1023
 MAX_SIGNATURE = 1024
+MAX_ORIGIN_CHARS = 300
 RSA_MIN_BITS = 2048
 RSA_MAX_BITS = 4096
 
@@ -84,8 +85,12 @@ _CLIENT_TYPE = {REGISTER: "webauthn.create", SIGN_IN: "webauthn.get"}
 
 
 class WebAuthnError(Exception):
-    """A ceremony that did not verify. The message is a closed reason code,
-    never anything the caller sent, so it is safe to log (#262)."""
+    """A ceremony that did not verify. ``reason`` is a closed code, never
+    anything the caller sent, so it is what a log line names (#262)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -137,13 +142,11 @@ class _AuthData:
     credential_id: bytes | None
 
 
-# TRUST: authenticator data, bytes a browser (or anyone posting to the route) chose
+# TRUST: authenticator data, bytes anyone posting to the route chose
 #   untrusted: every byte of `raw`
-#   judged-by: length cap first, then fixed offsets only; the credential id's
-#     length is bounded and checked against what remains; nothing past it (the
-#     COSE key, extensions) is read at all
-#   on-failure: fail-closed; WebAuthnError, which the route answers like any
-#     other failed sign-in
+#   judged-by: length cap, then fixed offsets only; the credential id's length
+#     is bounded against what remains; the COSE key past it is never read
+#   on-failure: fail-closed; WebAuthnError, answered like any failed sign-in
 #   owner: webauthn._auth_data, the only reader of the layout
 #   evidence: T1 tests/test_webauthn.py truncation and length cases
 def _auth_data(raw: bytes, *, attested: bool) -> _AuthData:
@@ -177,22 +180,22 @@ def _client_origin(raw: bytes, *, ceremony: str, challenge: bytes) -> str:
     if len(raw) > MAX_CLIENT_DATA:
         raise WebAuthnError("client_data_size")
     try:
-        data = json.loads(raw)
+        signed = json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
         raise WebAuthnError("client_data") from exc
-    if not isinstance(data, dict):
+    if not isinstance(signed, dict):
         raise WebAuthnError("client_data")
-    if data.get("type") != _CLIENT_TYPE[ceremony]:
+    if signed.get("type") != _CLIENT_TYPE[ceremony]:
         raise WebAuthnError("ceremony")
-    presented = data.get("challenge")
+    presented = signed.get("challenge")
     if not isinstance(presented, str) or not hmac.compare_digest(
         presented.encode("ascii", "replace"), b64url(challenge).encode("ascii")
     ):
         raise WebAuthnError("challenge")
-    if data.get("crossOrigin") is True:
+    if signed.get("crossOrigin") is True:
         raise WebAuthnError("cross_origin")
-    origin = data.get("origin")
-    if not isinstance(origin, str) or len(origin) > 300:
+    origin = signed.get("origin")
+    if not isinstance(origin, str) or len(origin) > MAX_ORIGIN_CHARS:
         raise WebAuthnError("origin")
     return origin
 
@@ -275,14 +278,11 @@ def _rp_hash(rp_id: str) -> bytes:
     return hashlib.sha256(rp_id.encode("ascii")).digest()
 
 
-# TRUST: a registration: credential id, client data, authenticator data and
-#   SubjectPublicKeyInfo, all posted by the browser
+# TRUST: a registration's id, client data, authenticator data and SPKI
 #   untrusted: every argument but `challenge` and `served_as`
-#   judged-by: the caller has ALREADY authorised the registrant (enrolment code
-#     or a fresh approval session) before this runs; then each field is bounded,
-#     the origin pinned to the served host, the rpId hash matched, UP+UV+AT
-#     required, the credential id matched to the authenticator's, and the key
-#     held to an offered algorithm before `cryptography` loads it
+#   judged-by: registrant already authorised (code or fresh session); fields
+#     bounded, origin pinned, rpId hash, UP+UV+AT, id matched, key held to
+#     an offered algorithm before `cryptography` loads it
 #   on-failure: fail-closed; WebAuthnError, nothing stored
 #   owner: webauthn.verify_registration
 #   evidence: T1 tests/test_webauthn.py TestRegistration

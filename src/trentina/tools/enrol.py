@@ -23,11 +23,10 @@ or "let me change my password in Trentina":
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 from urllib.parse import urlsplit
 
-from ..gateway import approver, pending
+from ..gateway import approver, backend_oauth, pending
 from ..gateway.context import current_origin
 from ..gateway.errors import ScopeError
 from ..gateway.scope import require_caller, require_operator
@@ -38,24 +37,21 @@ logger = logging.getLogger(__name__)
 ACTIONS = ("open", "close")
 
 
-def _base() -> str | None:
-    """The origin a person's browser reaches this gateway on.
-
-    ``TRENTINA_OAUTH_BASE_URL`` when the deployment set it, since that is the
-    public address it already hands out; otherwise the origin this very call
-    arrived on. Never ``backend_oauth.public_base_url()``'s default, which is
-    one particular deployment's address and would send a person elsewhere.
-    """
-    configured = os.environ.get("TRENTINA_OAUTH_BASE_URL", "").strip().rstrip("/")
-    if configured:
-        parts = urlsplit(configured)
-        if parts.scheme in ("http", "https") and parts.hostname:
-            return f"{parts.scheme}://{parts.netloc}"
-    return current_origin.get()
-
-
 def _link(code: str | None = None) -> dict[str, str]:
-    base = _base()
+    """The setup page's path, and its absolute address when one is known.
+
+    The deployment's ``TRENTINA_OAUTH_BASE_URL`` when it set one, since that is
+    the public address it already hands out; otherwise the origin this very
+    call arrived on. Never ``public_base_url()``'s fallback, which is one
+    particular deployment's address and would send a person elsewhere.
+    """
+    configured = backend_oauth.configured_base_url()
+    parts = urlsplit(configured or "")
+    base = (
+        f"{parts.scheme}://{parts.netloc}"
+        if parts.scheme in ("http", "https") and parts.hostname
+        else current_origin.get()
+    )
     path = pending.ENROL_PATH + (f"#code={code}" if code else "")
     answer = {"url": path}
     if base:

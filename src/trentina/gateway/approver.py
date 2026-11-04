@@ -330,7 +330,7 @@ _PASSKEYS = "passkeys.json"
 _NAME_CHARS = 40
 
 #: Every read-modify-write of the passkey store, so a sign-in's counter update
-#: and a removal cannot interleave and resurrect what was removed.
+#: and a removal cannot interleave and bring a deleted passkey back.
 _STORE_LOCK = threading.Lock()
 
 
@@ -458,7 +458,7 @@ def remove_password() -> None:
                 "The password is the only way to approve on this gateway. Add a passkey first."
             )
         _store_path().unlink(missing_ok=True)
-    logger.info("approval: the approval password was removed")
+    logger.info("approval: the stored approval password was deleted")
 
 
 def verify_passkey(
@@ -468,7 +468,8 @@ def verify_passkey(
 
     Fail-closed on every path: an unknown credential, a malformed stored
     entry, and every ceremony failure are all simply not an approver. The
-    counter and last-used time are written back only on success.
+    counter and last-used time are written back only on success, and an
+    ``OSError`` writing them propagates.
     """
     with _STORE_LOCK:
         entries = _read_store()
@@ -485,15 +486,12 @@ def verify_passkey(
                 challenge=challenge,
             )
         except webauthn.WebAuthnError as exc:
-            logger.info("approval: a passkey did not verify: %s", exc)  # logsafe: ours
+            logger.info("approval: a passkey did not verify: %s", exc.reason)
             return False
+        # Written before answering yes: a counter that could not be recorded
+        # would let the same assertion count twice, so a store that cannot be
+        # written fails the sign-in.
         entry["sign_count"] = count
         entry["last_used"] = int(time.time())
-        try:
-            _write_store(entries)
-        except OSError as exc:
-            # The signature verified; failing to record when is not a reason
-            # to turn a person away. The counter check stays as strict as the
-            # stored value was.
-            logger.warning("approval: the passkey store could not be updated: %s", exc_kind(exc))
+        _write_store(entries)
     return True

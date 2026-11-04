@@ -71,6 +71,9 @@ class Session:
     method: str
     csrf: str = field(default_factory=lambda: secrets.token_urlsafe(_TOKEN_BYTES))
 
+    def live(self, now: float) -> bool:
+        return now - self.last_seen <= IDLE_SECONDS and now - self.created <= ABSOLUTE_SECONDS
+
 
 _sessions: OrderedDict[str, Session] = OrderedDict()
 
@@ -93,12 +96,8 @@ def start(method: str, *, now: float | None = None) -> str:
     return token
 
 
-def _live(session: Session, now: float) -> bool:
-    return now - session.last_seen <= IDLE_SECONDS and now - session.created <= ABSOLUTE_SECONDS
-
-
 def _sweep(now: float) -> None:
-    for key in [key for key, session in _sessions.items() if not _live(session, now)]:
+    for key in [key for key, session in _sessions.items() if not session.live(now)]:
         del _sessions[key]
 
 
@@ -110,7 +109,7 @@ def find(token: str | None, *, now: float | None = None, touch: bool = True) -> 
     session = _sessions.get(_digest(token))
     if session is None:
         return None
-    if not _live(session, moment):
+    if not session.live(moment):
         del _sessions[_digest(token)]
         return None
     if touch:
