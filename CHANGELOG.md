@@ -12,6 +12,14 @@ under that name.
 
 ### Changed
 
+- **A release promotes the digests main's publish recorded, not whatever
+  `:main` names.** `publish` writes the two digests it pushed (from
+  `podman push --digestfile`) to a `published-digests` artifact, kept 90 days;
+  `promote` reads it from the push-to-main run of `security.yml` for the tag's
+  commit and retags exactly those. It used to resolve `:main` and trust the
+  labels on what it found, and a pull request's token with `packages: write`
+  could push `:main` with any labels it liked. The verifier lookup now also
+  takes only a push to the default branch, never a pull request's run.
 - **Main builds on gloval, on a runner that starts empty.** `sdlc ci` on a push
   to main ran on a GitHub-hosted machine (16-19 min) so that the published image
   never came from the self-hosted runner's shared layer cache. It now runs on
