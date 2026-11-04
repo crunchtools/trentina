@@ -474,10 +474,14 @@ jobs:
           done
           quay_digest=$(pushed "$QUAY")
           ghcr_digest=$(pushed "$GHCR")
-          [ -n "$quay_digest" ] && [ -n "$ghcr_digest" ] || {
-            echo "pushed, but a digest could not be resolved" >&2
-            exit 1
-          }
+          # Named one at a time: two registries are resolved here, and "a digest
+          # could not be resolved" does not say which push to go and look at.
+          for pair in "$QUAY=$quay_digest" "$GHCR=$ghcr_digest"; do
+            [ -n "${pair#*=}" ] || {
+              echo "pushed ${pair%%=*}, but its digest could not be resolved" >&2
+              exit 1
+            }
+          done
           # The point of the whole change, enforced rather than trusted. If one
           # registry ever assigns a different digest to these bytes, `promote`
           # would resolve two different images for one release and this is where
