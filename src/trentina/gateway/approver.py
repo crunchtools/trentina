@@ -18,13 +18,13 @@ hand it to exactly the caller this is defending against. A scrypt verifier
 yields nothing that can be POSTed. ``hashlib.scrypt`` is stdlib, so this costs
 no dependency.
 
-**Passkeys.** A WebAuthn credential would be stronger still — the gateway
-would hold only a public key, so reading its config would yield nothing at
-all, and origin binding would stop a replay. It needs script on the page and
-an assertion parser, which is new untrusted-bytes surface and in practice a
-dependency, so it is a follow-up rather than the first cut. ``verify`` is the
-seam it joins: a second method answers the same question, and either being
-satisfied is enough.
+**Passkeys (#639).** The second method, and the stronger one: the gateway
+holds only a public key, so reading its data directory yields nothing at all,
+and the browser's origin binding stops a phished or replayed approval.
+``webauthn`` checks the ceremony; this module keeps the credentials, under
+``/data`` beside the password, at most ``MAX_PASSKEYS``. Either method is
+enough, and ``configured`` means any method — so a gateway can drop its
+password once a passkey is enrolled, which is where #639 wanted to end up.
 
 With no approver configured there is no way to approve, so nothing may be
 staged: ``config_tool`` refuses the two writes exactly as it did before #637.
@@ -37,14 +37,17 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import logging
 import secrets
+import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from ..config import get_config
 from ..logsafe import exc_kind, hold
-from . import secret_file
+from . import secret_file, webauthn
 
 logger = logging.getLogger(__name__)
 
@@ -118,13 +121,17 @@ def _matches(password: str, verifier: str) -> bool:
 
 
 def configured() -> bool:
-    """Whether an approver is configured at all.
+    """Whether an approver is configured at all: a password or a passkey.
 
     Read on every call rather than cached, so a password set through the
     enrolment page, or a verifier added by a deploy, takes effect at once — and
     so removing one takes effect just as fast, which is the direction that
     matters.
     """
+    return has_password() or bool(passkeys())
+
+
+def has_password() -> bool:
     return _verifier() is not None
 
 
@@ -183,6 +190,8 @@ def set_password(password: str) -> None:
     open enrolment window with nothing configured yet, or a correct current
     password — and this does not second-guess it.
     """
+    if pinned_by_deployment():
+        raise ApproverError("The password is pinned by this gateway's deployment.")
     verifier = make_verifier(password)
     secret_file.private_dir(_STORE_DIR)
     secret_file.replace_atomically(_store_path(), verifier.encode("utf-8"))
@@ -282,7 +291,7 @@ def enrolling(code: str | None = None) -> bool:
     Called with no code to ask whether the window itself is open, which is what
     the page needs to decide what to render.
     """
-    if _verifier() is not None or _window_opened is None or _window_code is None:
+    if configured() or _window_opened is None or _window_code is None:
         return False
     if time.monotonic() - _window_opened > _window_seconds:
         return False
@@ -292,7 +301,8 @@ def enrolling(code: str | None = None) -> bool:
 
 
 def close_enrolment() -> None:
-    """Shut the window. Called once a password is set, and by tests."""
+    """Shut the window: once an approver is set, on the operator's ``close``,
+    and by tests."""
     global _window_opened, _window_code, _window_seconds
     _window_opened = None
     _window_code = None
@@ -310,3 +320,180 @@ def verify(password: str | None) -> bool:
     if verifier is None or not password:
         return False
     return _matches(password, verifier)
+
+
+#: How many passkeys one gateway keeps. A person has a phone, a laptop and a
+#: hardware key or two; more than this is a store somebody is filling.
+MAX_PASSKEYS = 8
+
+_PASSKEYS = "passkeys.json"
+_NAME_CHARS = 40
+
+#: Every read-modify-write of the passkey store, so a sign-in's counter update
+#: and a removal cannot interleave and resurrect what was removed.
+_STORE_LOCK = threading.Lock()
+
+
+class ApproverError(Exception):
+    """A credential change refused for a reason a person can act on. The
+    message is fixed text, never anything the caller sent."""
+
+
+def _passkeys_path() -> Path:
+    return _store_path().parent / _PASSKEYS
+
+
+def _read_store() -> list[dict[str, Any]]:
+    try:
+        raw = _passkeys_path().read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        logger.warning("approval: the passkey store could not be read: %s", exc_kind(exc))
+        return []
+    try:
+        entries = json.loads(raw).get("passkeys", [])
+    except (ValueError, AttributeError) as exc:
+        # Fail closed: an unreadable store is no passkeys, never any passkey.
+        logger.warning("approval: the passkey store is malformed: %s", exc_kind(exc))
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)][:MAX_PASSKEYS]
+
+
+def _write_store(entries: list[dict[str, Any]]) -> None:
+    secret_file.private_dir(_STORE_DIR)
+    payload = json.dumps({"version": 1, "passkeys": entries}, indent=1, sort_keys=True)
+    secret_file.replace_atomically(_passkeys_path(), payload.encode("utf-8"))
+
+
+def passkeys() -> list[dict[str, Any]]:
+    """What a person may see of each enrolled passkey: never the key itself."""
+    return [
+        {
+            "id": entry.get("id", ""),
+            "name": entry.get("name", "Passkey"),
+            "created": entry.get("created", 0),
+            "last_used": entry.get("last_used"),
+        }
+        for entry in _read_store()
+    ]
+
+
+def _credential(entry: dict[str, Any]) -> webauthn.Credential | None:
+    try:
+        return webauthn.Credential(
+            credential_id=webauthn.from_b64url(entry["id"], limit=webauthn.MAX_CREDENTIAL_ID),
+            spki=base64.b64decode(entry["spki"]),
+            alg=int(entry["alg"]),
+            rp_id=str(entry["rp_id"]),
+            origin=str(entry["origin"]),
+            sign_count=int(entry.get("sign_count", 0)),
+        )
+    except (KeyError, ValueError, TypeError, webauthn.WebAuthnError):
+        return None
+
+
+def credential_digest(credential_id: str) -> str:
+    """What an audit row or a log line may say about a credential."""
+    return "sha256:" + hashlib.sha256(credential_id.encode("ascii", "replace")).hexdigest()[:12]
+
+
+def clean_name(name: object) -> str:
+    """A label a person typed for a passkey, cut to something a page shows."""
+    text = " ".join(str(name or "").split())[:_NAME_CHARS]
+    return "".join(ch for ch in text if ch.isprintable()) or "Passkey"
+
+
+def add_passkey(credential: webauthn.Credential, name: object) -> str:
+    """Keep ``credential``; returns its id. The caller has authorised this."""
+    cred_id = webauthn.b64url(credential.credential_id)
+    with _STORE_LOCK:
+        entries = _read_store()
+        if any(entry.get("id") == cred_id for entry in entries):
+            raise ApproverError("That passkey is already enrolled here.")
+        if len(entries) >= MAX_PASSKEYS:
+            raise ApproverError(
+                f"This gateway already keeps {MAX_PASSKEYS} passkeys. Remove one first."
+            )
+        entries.append(
+            {
+                "id": cred_id,
+                "spki": base64.b64encode(credential.spki).decode("ascii"),
+                "alg": credential.alg,
+                "rp_id": credential.rp_id,
+                "origin": credential.origin,
+                "name": clean_name(name),
+                "created": int(time.time()),
+                "last_used": None,
+                "sign_count": credential.sign_count,
+            }
+        )
+        _write_store(entries)
+    logger.info("approval: a passkey was enrolled %s", credential_digest(cred_id))
+    return cred_id
+
+
+def remove_passkey(cred_id: str) -> None:
+    """Forget one passkey. The last way to approve is never removed here."""
+    with _STORE_LOCK:
+        entries = _read_store()
+        kept = [entry for entry in entries if entry.get("id") != cred_id]
+        if len(kept) == len(entries):
+            raise ApproverError("That passkey is not enrolled here.")
+        if not kept and not has_password():
+            raise ApproverError(
+                "That is the only way left to approve on this gateway. Add another first."
+            )
+        _write_store(kept)
+    logger.info("approval: a passkey was removed %s", credential_digest(cred_id))
+
+
+def remove_password() -> None:
+    """Drop the stored password, once a passkey can take its place."""
+    if pinned_by_deployment():
+        raise ApproverError("The password is pinned by this gateway's deployment.")
+    with _STORE_LOCK:
+        if not _read_store():
+            raise ApproverError(
+                "The password is the only way to approve on this gateway. Add a passkey first."
+            )
+        _store_path().unlink(missing_ok=True)
+    logger.info("approval: the approval password was removed")
+
+
+def verify_passkey(
+    cred_id: str, *, client_data: bytes, auth_data: bytes, signature: bytes, challenge: bytes
+) -> bool:
+    """Whether the passkey ``cred_id`` signed ``challenge``. Never raises.
+
+    Fail-closed on every path: an unknown credential, a malformed stored
+    entry, and every ceremony failure are all simply not an approver. The
+    counter and last-used time are written back only on success.
+    """
+    with _STORE_LOCK:
+        entries = _read_store()
+        entry = next((item for item in entries if item.get("id") == cred_id), None)
+        credential = _credential(entry) if entry is not None else None
+        if entry is None or credential is None:
+            return False
+        try:
+            count = webauthn.verify_assertion(
+                credential,
+                client_data=client_data,
+                auth_data=auth_data,
+                signature=signature,
+                challenge=challenge,
+            )
+        except webauthn.WebAuthnError as exc:
+            logger.info("approval: a passkey did not verify: %s", exc)  # logsafe: ours
+            return False
+        entry["sign_count"] = count
+        entry["last_used"] = int(time.time())
+        try:
+            _write_store(entries)
+        except OSError as exc:
+            # The signature verified; failing to record when is not a reason
+            # to turn a person away. The counter check stays as strict as the
+            # stored value was.
+            logger.warning("approval: the passkey store could not be updated: %s", exc_kind(exc))
+    return True

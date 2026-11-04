@@ -43,13 +43,32 @@ because it is someone else's TLS.
 
 Once per gateway, before anything else:
 
-> Ask me to set the approval password.
+> Let me set my passkey in Trentina.
 
-You get a URL and a one-time code. Open it, paste the code, choose a password.
-Your agent cannot do this part — setting a password is a form submission, and
-none of Trentina's own tools makes one. That asymmetry is the whole mechanism,
-and it is why asking is safe to hand to an agent. It holds as long as the
-operator profile's backends are Trentina's own tools; see below.
+Your agent opens a page in your browser with a one-time code already filled in.
+Choose **Create a passkey**, unlock it with your fingerprint, face or PIN, and
+you are done: the gateway keeps only a public key, so there is no secret on it
+to steal. A password is there too, under "Set a password instead", for a
+browser that cannot make a passkey.
+
+Your agent cannot do this part. A passkey needs your device, and a password is
+a form submission none of Trentina's own tools makes. That asymmetry is the
+whole mechanism, and it is why asking is safe to hand to an agent. It holds as
+long as the operator profile's backends are Trentina's own tools; see below.
+
+Later, the same request gets you the same page, and you sign in first:
+
+> Let me change my password in Trentina.
+
+> Add a passkey for my phone.
+
+There you add or remove passkeys, change the password, or drop it entirely once
+a passkey is enrolled. The last way to approve can never be removed. Removing a
+passkey or changing the password signs out everyone else.
+
+The enrolment window is short (five minutes by default), closes as soon as
+something is set, and your agent can close it early. Passkeys need https, or a
+gateway reached as `localhost`.
 
 After that, just say what you want:
 
@@ -73,8 +92,8 @@ decision in front of you, and the other would have ridden along unread.
 
 ## Deciding
 
-Open the URL, enter the password, read what it shows — only things you can
-actually check:
+Open the URL, sign in with your passkey (or the password), and read what it
+shows — only things you can actually check:
 
 - **Operator role** — which profile holds it now, which would hold it after.
 - **Federation trust** — which backend, the peer's key as a short fingerprint,
@@ -106,15 +125,20 @@ actually check:
 Approve or decline. Declining changes nothing, and so does ignoring it: a
 proposal expires on its own and a restart cancels it.
 
+Signing in lasts five minutes idle and fifteen at most, the page counts it
+down, and **Sign out** ends it at once. Your password is never written back into
+the page.
+
 **If you do not recognise the fingerprint or the peer, decline.** That is the
 one check only you can make. Your agent believed whatever the other end told
 it; you are the part that does not have to.
 
 ## Two things worth knowing
 
-**Set the password promptly on a new gateway.** Until it is set nothing can be
-approved, so all five stay blocked — but the enrolment window is also the
-one moment this gateway's approver could be claimed by whoever holds the code.
+**Set it up promptly on a new gateway.** Until a passkey or password is set
+nothing can be approved, so all of these stay blocked — but the enrolment
+window is also the one moment this gateway's approver could be claimed by
+whoever holds the code.
 
 **Keep code execution off the operator profile.** An agent with a backend that can
 run code or fetch arbitrary URLs can submit the form itself — and can rewrite
@@ -127,15 +151,20 @@ one.
 
 ## If the page seems unhelpful
 
-It answers identically whether the password was wrong, nothing is staged, or
-this gateway has no password at all. That is deliberate — a stranger who finds
-the page learns nothing from it, including whether anything is pending right
-now. If you are sure the password is right and still see nothing, ask your
-agent whether anything is actually staged; it may have expired.
+Before you sign in, every failure looks the same: a wrong password, a passkey
+this gateway does not know, an expired attempt. That is deliberate — a stranger
+who finds the page learns nothing from it, including whether anything is
+pending. Once you are signed in it tells you plainly, including "Nothing is
+waiting"; if you expected something, ask your agent, since a proposal expires.
+
+If the passkey button is greyed out, the browser has no passkeys here: use
+https, or reach a local gateway as `localhost` rather than `127.0.0.1`.
 
 ---
 
 For maintainers: the mechanism is `gateway/pending.py` (what is staged),
-`gateway/approver.py` (who may approve), `gateway/approval_routes.py` (the
-pages) and `gateway/config_guard.py` (which writes need one). The rule they
+`gateway/approver.py` (who may approve), `gateway/webauthn.py` (the passkey
+check, no CBOR), `gateway/approval_session.py` (sign-in sessions and
+challenges), `gateway/approval_routes.py` (the pages) and
+`gateway/config_guard.py` (which writes need one). The rule they
 follow is in the project constitution, under Human Approval.

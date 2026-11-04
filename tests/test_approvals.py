@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import pathlib
+import re
 import time
 from typing import Any, ClassVar
 
@@ -25,7 +26,7 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
-from trentina.gateway import approval_routes, approver, pending
+from trentina.gateway import approval_routes, approval_session, approver, pending
 from trentina.gateway.context import profile_context
 
 pytestmark = pytest.mark.anyio
@@ -40,8 +41,10 @@ BARE_REQUEST = Request({"type": "http", "method": "POST", "path": "/", "headers"
 @pytest.fixture(autouse=True)
 def _empty() -> Any:
     pending.clear()
+    approval_session.clear()
     yield
     pending.clear()
+    approval_session.clear()
 
 
 @pytest.fixture
@@ -61,6 +64,43 @@ def _applied(record: list[str]) -> Any:
 FACTS = {"Backend to trust": "ag.peergw", "What this means": "Responses are not scanned here."}
 #: What the review page puts in its hidden ``facts`` field for ``FACTS``.
 _FACTS_DIGEST = pending.digest_of(FACTS)
+
+PATH = approval_routes.PATH
+SETUP = approval_routes.SETUP_PATH
+
+
+def _csrf_from(body: str) -> str:
+    found = re.search(r'name="csrf" value="([^"]+)"', body)
+    assert found, "no CSRF token on the page"
+    return found.group(1)
+
+
+def _sign_in(client: TestClient, password: str = PASSWORD, next_path: str = PATH) -> Any:
+    """Sign in with the password, as the form under "Use the password instead"."""
+    return client.post(PATH, data={"password": password, "next": next_path})
+
+
+def _decide(
+    client: TestClient,
+    *,
+    kind: str = "operator profile",
+    decision: str = "approve",
+    facts: str = _FACTS_DIGEST,
+    csrf: str | None = None,
+) -> Any:
+    token = csrf if csrf is not None else _csrf_from(client.get(PATH).text)
+    return client.post(
+        PATH, data={"csrf": token, "kind": kind, "decision": decision, "facts": facts}
+    )
+
+
+def _enrol(
+    client: TestClient, code: str | None, new: str = PASSWORD, again: str | None = None
+) -> Any:
+    data = {"action": "enrol_password", "new": new, "again": new if again is None else again}
+    if code is not None:
+        data["code"] = code
+    return client.post(SETUP, data=data)
 
 
 class TestTheVerifier:
@@ -218,12 +258,11 @@ def page(approval: str) -> TestClient:
 
 
 class TestThePage:
-    def test_nothing_can_be_approved_without_a_password(
+    def test_nothing_can_be_approved_without_an_approver(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """No password, no approvals. The pages still mount — that is where a
-        password gets set in the first place — but none of them approves
-        anything."""
+        """No approver, no approvals. The pages still mount — that is where the
+        first one gets set — but none of them approves anything."""
         from fastmcp import FastMCP
         from starlette.applications import Starlette as App
 
@@ -235,147 +274,148 @@ class TestThePage:
 
         record: list[str] = []
         pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
-        answer = client.post(
-            approval_routes.PATH,
-            data={
-                "password": PASSWORD,
-                "kind": "operator profile",
-                "decision": "approve",
-                "facts": _FACTS_DIGEST,
-            },
-        )
-        assert answer.status_code == 404
+        assert _sign_in(client).status_code == 404
+        assert _decide(client, csrf="anything").status_code == 404
         assert record == []
 
-    def test_the_first_page_asks_only_for_the_password(self, page: TestClient) -> None:
+    def test_the_first_page_asks_only_to_sign_in(self, page: TestClient) -> None:
         """It does not say whether anything is pending: an unauthenticated
         visitor learns nothing about this gateway."""
         pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied([]))
-        body = page.get(approval_routes.PATH).text
+        body = page.get(PATH).text
+        assert "Sign in with a passkey" in body
         assert 'type="password"' in body
         assert "ag.peergw" not in body
         assert "federation trust" not in body
 
     def test_the_wrong_password_shows_nothing_about_what_is_staged(self, page: TestClient) -> None:
         pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied([]))
-        answer = page.post(approval_routes.PATH, data={"password": "wrong"})
+        answer = _sign_in(page, "wrong")
         assert answer.status_code == 404
         assert "ag.peergw" not in answer.text
 
-    def test_a_wrong_password_and_nothing_staged_are_indistinguishable(
-        self, page: TestClient
-    ) -> None:
-        """No oracle: a guesser cannot tell a bad password from an idle gateway.
+    def test_every_unauthenticated_failure_is_one_answer(self, page: TestClient) -> None:
+        """No oracle: a stranger cannot tell one refusal from another.
 
-        Every refusal this route can reach has to be one answer, down to the
-        headers — a `Content-Length` that differs by a byte, or a header one
-        branch sets and another does not, is the same oracle as different
-        words. The four below are the states a stranger can put the page in
-        without the password: a wrong one, an empty field, a right one with
-        nothing staged, and a right one naming a kind that is not there.
+        Down to the headers — a `Content-Length` that differs by a byte, or a
+        header one branch sets and another does not, is the same oracle as
+        different words — and none of them hands out a cookie.
         """
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied([]))
         answers = [
-            page.post(approval_routes.PATH, data={"password": "wrong"}),
-            page.post(approval_routes.PATH, data={"password": ""}),
-            page.post(approval_routes.PATH, data={"password": PASSWORD}),
-            page.post(
-                approval_routes.PATH,
-                data={
-                    "password": PASSWORD,
-                    "kind": "operator profile",
-                    "decision": "approve",
-                    "facts": _FACTS_DIGEST,
-                },
-            ),
+            _sign_in(page, "wrong"),
+            _sign_in(page, ""),
+            _decide(page, csrf="guessed"),
+            _decide(page, csrf=""),
+            page.post(PATH, data={"kind": "operator profile", "decision": "approve"}),
+            page.post(PATH, data={"csrf": "x"}, cookies={approval_session.SECURE_COOKIE: "forged"}),
         ]
         first, *rest = answers
         assert first.status_code == 404
+        for other in answers:
+            assert "set-cookie" not in other.headers
         for other in rest:
             assert (other.status_code, other.text) == (first.status_code, first.text)
             assert dict(other.headers) == dict(first.headers)
 
     def test_a_guess_learns_nothing_from_the_wording_either(self, page: TestClient) -> None:
-        """What the refusal says is as load-bearing as that they match.
-
-        It must not name the gateway's state in either direction — no "wrong
-        password", which confirms the password was read and judged, and no
-        "nothing is pending", which answers the question an unauthenticated
-        visitor came to ask.
-        """
-        body = page.post(approval_routes.PATH, data={"password": "wrong"}).text.lower()
+        """It must not name the gateway's state in either direction — no "wrong
+        password", which confirms the password was judged, and no "pending",
+        which answers the question an unauthenticated visitor came to ask."""
+        body = _sign_in(page, "wrong").text.lower()
         for leak in ("wrong", "incorrect", "invalid", "denied", "not authorised", "pending"):
             assert leak not in body
 
-    def test_the_right_password_shows_what_is_about_to_change(self, page: TestClient) -> None:
+    def test_signing_in_shows_what_is_about_to_change(self, page: TestClient) -> None:
         pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied([]))
-        body = page.post(approval_routes.PATH, data={"password": PASSWORD}).text
+        answer = _sign_in(page)
+        assert answer.status_code == 303
+        assert answer.headers["location"] == PATH
+        body = page.get(PATH).text
         assert "ag.peergw" in body
         assert "not scanned here" in body
         assert "Nothing has changed yet" in body
 
-    def test_approving_needs_the_password_too(self, page: TestClient) -> None:
-        """The second POST is not trusted because the first one succeeded;
-        there is no session, so the password is the authority every time."""
+    def test_the_password_is_never_written_back_into_a_page(self, page: TestClient) -> None:
+        """The reason for sessions (#639): the review page used to carry the
+        password forward in a hidden field — the DOM, form history, a shared
+        screen."""
+        pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied([]))
+        signed_in = _sign_in(page)
+        assert PASSWORD not in signed_in.text
+        assert PASSWORD not in page.get(PATH).text
+        assert 'name="password"' not in page.get(PATH).text
+
+    def test_once_signed_in_an_idle_gateway_says_so(self, page: TestClient) -> None:
+        """The no-oracle rule is for strangers; a signed-in person is who the
+        page is for."""
+        _sign_in(page)
+        answer = page.get(PATH)
+        assert answer.status_code == 200
+        assert "Nothing is waiting" in answer.text
+
+    def test_approving_needs_a_session(self, page: TestClient) -> None:
         record: list[str] = []
         pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
+        assert _decide(page, csrf="no-session").status_code == 404
+        assert record == []
+
+    def test_approving_needs_the_sessions_own_csrf_token(self, page: TestClient) -> None:
+        record: list[str] = []
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
+        _sign_in(page)
+        assert _decide(page, csrf="not-this-sessions").status_code == 404
+        assert record == []
+
+    def test_approving_while_signed_in_applies_it(self, page: TestClient) -> None:
+        record: list[str] = []
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
+        _sign_in(page)
+        answer = _decide(page)
+        assert answer.status_code == 200
+        assert record == ["applied"]
+
+    def test_a_post_from_another_origin_is_refused(self, page: TestClient) -> None:
+        record: list[str] = []
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
+        _sign_in(page)
+        csrf = _csrf_from(page.get(PATH).text)
         answer = page.post(
-            approval_routes.PATH,
+            PATH,
             data={
-                "password": "wrong",
+                "csrf": csrf,
                 "kind": "operator profile",
                 "decision": "approve",
                 "facts": _FACTS_DIGEST,
             },
+            headers={"Origin": "https://evil.example"},
         )
         assert answer.status_code == 404
         assert record == []
 
-    def test_approving_with_the_password_applies_it(self, page: TestClient) -> None:
-        record: list[str] = []
-        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
-        answer = page.post(
-            approval_routes.PATH,
-            data={
-                "password": PASSWORD,
-                "kind": "operator profile",
-                "decision": "approve",
-                "facts": _FACTS_DIGEST,
-            },
-        )
-        assert answer.status_code == 200
-        assert record == ["applied"]
-
     def test_declining_applies_nothing(self, page: TestClient) -> None:
         record: list[str] = []
         pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
-        answer = page.post(
-            approval_routes.PATH,
-            data={"password": PASSWORD, "kind": "operator profile", "decision": "decline"},
-        )
+        _sign_in(page)
+        answer = _decide(page, decision="decline")
         assert "Declined" in answer.text
         assert record == []
 
     def test_a_double_submit_applies_once(self, page: TestClient) -> None:
         record: list[str] = []
         pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
-        form = {
-            "password": PASSWORD,
-            "kind": "operator profile",
-            "decision": "approve",
-            "facts": _FACTS_DIGEST,
-        }
-        page.post(approval_routes.PATH, data=form)
-        second = page.post(approval_routes.PATH, data=form)
+        _sign_in(page)
+        csrf = _csrf_from(page.get(PATH).text)
+        _decide(page, csrf=csrf)
+        second = _decide(page, csrf=csrf)
         assert record == ["applied"]
-        assert second.status_code == 404
+        assert "Nothing is waiting" in second.text
 
     def test_a_made_up_kind_approves_nothing(self, page: TestClient) -> None:
         record: list[str] = []
         pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied(record))
-        answer = page.post(
-            approval_routes.PATH,
-            data={"password": PASSWORD, "kind": "root access", "decision": "approve"},
-        )
+        _sign_in(page)
+        answer = _decide(page, kind="root access")
         # Falls back to the review page rather than applying anything.
         assert record == []
         assert "Nothing has changed yet" in answer.text
@@ -385,33 +425,82 @@ class TestThePage:
             raise RuntimeError("zqx7canary")
 
         pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, boom)
-        answer = page.post(
-            approval_routes.PATH,
-            data={
-                "password": PASSWORD,
-                "kind": "operator profile",
-                "decision": "approve",
-                "facts": _FACTS_DIGEST,
-            },
-        )
+        _sign_in(page)
+        answer = _decide(page)
         assert answer.status_code == 500
         assert "nothing was changed" in answer.text
         # The exception's own text is never shown to a person (#262).
         assert "zqx7canary" not in answer.text
 
     def test_the_page_carries_the_headers_that_keep_it_boring(self, page: TestClient) -> None:
-        headers = page.get(approval_routes.PATH).headers
+        headers = page.get(PATH).headers
+        policy = headers["content-security-policy"]
         assert headers["cache-control"] == "no-store"
         assert headers["x-frame-options"] == "DENY"
-        assert "default-src 'none'" in headers["content-security-policy"]
+        assert "default-src 'none'" in policy
+        # One script, by hash; nothing inline by permission, nothing fetched.
+        assert f"script-src 'sha256-{approval_routes._SCRIPT_HASH}'" in policy
+        assert "unsafe-inline' ; " not in policy and "script-src 'unsafe" not in policy
+        assert "connect-src 'self'" in policy
+
+    def test_the_script_on_the_page_is_the_one_the_policy_allows(self, page: TestClient) -> None:
+        import base64
+        import hashlib
+
+        body = page.get(PATH).text
+        script = body.split("<script>")[1].split("</script>")[0]
+        digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+        assert digest == approval_routes._SCRIPT_HASH
 
     def test_a_fact_is_escaped_on_the_way_out(self, page: TestClient) -> None:
         """checked_display is the gate, but the page escapes anyway: two
         independent reasons a value cannot become markup."""
         pending.stage(pending.Kind.OPERATOR_PROFILE, {"Label <b>": "value <b>"}, _applied([]))
-        body = page.post(approval_routes.PATH, data={"password": PASSWORD}).text
+        _sign_in(page)
+        body = page.get(PATH).text
         assert "value <b>" not in body
         assert "&lt;b&gt;" in body
+
+
+class TestTheSession:
+    """What replaced the reflected password: short, in memory, and strict."""
+
+    def test_the_cookie_is_host_bound_secure_httponly_and_strict(self, page: TestClient) -> None:
+        cookie = _sign_in(page).headers["set-cookie"].lower()
+        assert cookie.startswith(approval_session.SECURE_COOKIE.lower() + "=")
+        for attribute in ("httponly", "secure", "samesite=strict", "path=/"):
+            assert attribute in cookie
+        assert "domain=" not in cookie
+
+    def test_signing_out_ends_it(self, page: TestClient) -> None:
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied([]))
+        _sign_in(page)
+        csrf = _csrf_from(page.get(PATH).text)
+        out = page.post(approval_routes.SIGN_OUT_PATH, data={"csrf": csrf})
+        assert out.status_code == 303
+        assert _decide(page, csrf=csrf).status_code == 404
+        assert "Sign in with a passkey" in page.get(PATH).text
+
+    def test_it_ends_when_idle(self, page: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied([]))
+        _sign_in(page)
+        csrf = _csrf_from(page.get(PATH).text)
+        later = time.monotonic() + approval_session.IDLE_SECONDS + 1
+        monkeypatch.setattr(approval_session.time, "monotonic", lambda: later)
+        assert _decide(page, csrf=csrf).status_code == 404
+
+    def test_a_restart_signs_everyone_out(self, page: TestClient) -> None:
+        pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied([]))
+        _sign_in(page)
+        csrf = _csrf_from(page.get(PATH).text)
+        approval_session.clear()
+        assert _decide(page, csrf=csrf).status_code == 404
+
+    def test_the_page_shows_how_long_is_left(self, page: TestClient) -> None:
+        _sign_in(page)
+        body = page.get(PATH).text
+        assert 'id="ttl"' in body
+        assert "Sign out" in body
 
 
 @pytest.fixture
@@ -435,59 +524,64 @@ def pages(unset: Any) -> TestClient:
     del unset
     mcp = FastMCP("t")
     approval_routes.register_approval_routes(mcp)
-    return TestClient(Starlette(routes=mcp._additional_http_routes), base_url="https://gw.example")
+    return TestClient(
+        Starlette(routes=mcp._additional_http_routes),
+        base_url="https://gw.example",
+        follow_redirects=False,
+    )
 
 
 class TestEnrolment:
     """Scott's ruling: the operator asks, Trentina prompts a person, and the
-    person chooses. The operator can ask and cannot answer — setting the
-    password is a form submission, which none of its tools makes."""
+    person chooses. The operator can ask and cannot answer — a passkey needs the
+    person's device and a password is a form submission none of its tools makes."""
 
     def test_a_gateway_starts_with_no_approver(self, unset: Any) -> None:
         assert approver.configured() is False
         assert approver.enrolling() is False
 
     def test_the_window_has_to_be_opened(self, pages: TestClient) -> None:
-        """A gateway sitting with no password is not a standing offer to
+        """A gateway sitting with no approver is not a standing offer to
         whoever reaches the page first."""
-        answer = pages.post(approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD})
-        assert answer.status_code == 404
+        assert _enrol(pages, None).status_code == 404
         assert approver.configured() is False
 
-    def test_an_opened_window_lets_a_person_set_it(self, pages: TestClient) -> None:
+    def test_with_no_window_the_page_says_what_to_ask_for(self, pages: TestClient) -> None:
+        body = pages.get(SETUP).text
+        assert "Let me set my passkey in Trentina" in body
+
+    def test_an_opened_window_offers_a_passkey_first(self, pages: TestClient) -> None:
+        approver.open_enrolment()
+        body = pages.get(SETUP).text
+        assert "Create passkey" in body
+        assert "Set a password instead" in body
+
+    def test_an_opened_window_lets_a_person_set_a_password(self, pages: TestClient) -> None:
         _, code = approver.open_enrolment()
-        assert "Set the approval password" in pages.get(approval_routes.ENROL_PATH).text
-        answer = pages.post(
-            approval_routes.ENROL_PATH,
-            data={"code": code, "new": PASSWORD, "again": PASSWORD},
-        )
-        assert answer.status_code == 200
+        answer = _enrol(pages, code)
+        assert answer.status_code == 303
         assert approver.configured() is True
         assert approver.verify(PASSWORD) is True
 
+    def test_enrolling_signs_the_person_straight_in(self, pages: TestClient) -> None:
+        _, code = approver.open_enrolment()
+        answer = _enrol(pages, code)
+        assert "set-cookie" in answer.headers
+        assert "Password set." in pages.get(answer.headers["location"]).text
+
     def test_setting_it_closes_the_window(self, pages: TestClient) -> None:
         _, code = approver.open_enrolment()
-        pages.post(
-            approval_routes.ENROL_PATH,
-            data={"code": code, "new": PASSWORD, "again": PASSWORD},
-        )
+        _enrol(pages, code)
         assert approver.enrolling() is False
 
     def test_a_window_cannot_replace_a_working_password(self, pages: TestClient) -> None:
-        """Once one is set, changing it takes the current one — a window is
-        only ever for the first."""
+        """Once one is set, changing it takes a fresh sign-in — a window is only
+        ever for the first."""
         _, code = approver.open_enrolment()
-        pages.post(
-            approval_routes.ENROL_PATH,
-            data={"code": code, "new": PASSWORD, "again": PASSWORD},
-        )
+        _enrol(pages, code)
         approver.open_enrolment()
         assert approver.enrolling() is False
-        answer = pages.post(
-            approval_routes.ENROL_PATH,
-            data={"new": "something-else-entirely", "again": "something-else-entirely"},
-        )
-        assert answer.status_code == 404
+        assert _enrol(pages, code, "something-else-entirely").status_code == 404
         assert approver.verify(PASSWORD) is True
 
     def test_the_window_expires(self, pages: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -498,43 +592,53 @@ class TestEnrolment:
 
     def test_mismatched_entries_change_nothing(self, pages: TestClient) -> None:
         _, code = approver.open_enrolment()
-        answer = pages.post(
-            approval_routes.ENROL_PATH,
-            data={"code": code, "new": PASSWORD, "again": PASSWORD + "x"},
-        )
-        assert answer.status_code == 400
+        assert _enrol(pages, code, PASSWORD, PASSWORD + "x").status_code == 400
         assert approver.configured() is False
 
     def test_a_short_password_is_refused_with_the_rule(self, pages: TestClient) -> None:
         _, code = approver.open_enrolment()
-        answer = pages.post(
-            approval_routes.ENROL_PATH, data={"code": code, "new": "short", "again": "short"}
-        )
+        answer = _enrol(pages, code, "short")
         assert answer.status_code == 400
         assert "at least" in answer.text
         assert approver.configured() is False
 
-    def test_changing_it_needs_the_current_one(self, pages: TestClient) -> None:
-        _, code = approver.open_enrolment()
-        pages.post(
-            approval_routes.ENROL_PATH,
-            data={"code": code, "new": PASSWORD, "again": PASSWORD},
-        )
+    def test_changing_it_needs_a_fresh_sign_in(
+        self, pages: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        approver.set_password(PASSWORD)
         changed = "a-brand-new-password"
-        refused = pages.post(
-            approval_routes.ENROL_PATH,
-            data={"password": "wrong", "new": changed, "again": changed},
+        unsigned = pages.post(
+            SETUP, data={"action": "set_password", "csrf": "x", "new": changed, "again": changed}
         )
-        assert refused.status_code == 404
+        assert unsigned.status_code == 404
+
+        _sign_in(pages, next_path=SETUP)
+        csrf = _csrf_from(pages.get(SETUP).text)
+        later = time.monotonic() + approval_session.FRESH_SECONDS + 1
+        monkeypatch.setattr(approval_session.time, "monotonic", lambda: later)
+        assert "Confirm it is you" in pages.get(SETUP).text
+        stale = pages.post(
+            SETUP, data={"action": "set_password", "csrf": csrf, "new": changed, "again": changed}
+        )
+        assert stale.status_code == 404
         assert approver.verify(PASSWORD) is True
 
+    def test_a_fresh_sign_in_changes_it_and_signs_others_out(self, pages: TestClient) -> None:
+        approver.set_password(PASSWORD)
+        other = TestClient(pages.app, base_url="https://gw.example")
+        _sign_in(other)
+        _sign_in(pages, next_path=SETUP)
+        csrf = _csrf_from(pages.get(SETUP).text)
+        changed = "a-brand-new-password"
         ok = pages.post(
-            approval_routes.ENROL_PATH,
-            data={"password": PASSWORD, "new": changed, "again": changed},
+            SETUP, data={"action": "set_password", "csrf": csrf, "new": changed, "again": changed}
         )
-        assert ok.status_code == 200
+        assert ok.status_code == 303
         assert approver.verify(changed) is True
         assert approver.verify(PASSWORD) is False
+        # Whoever signed in with the old one is out; this person is not.
+        assert "Sign in with a passkey" in other.get(PATH).text
+        assert "Sign-in for approvals" in pages.get(SETUP).text
 
     def test_a_deployment_pinned_password_cannot_be_changed_from_here(
         self, pages: TestClient, monkeypatch: pytest.MonkeyPatch
@@ -542,24 +646,39 @@ class TestEnrolment:
         """A deployment that pinned one is saying it is not the gateway's to
         change, so the page says so instead of offering to."""
         monkeypatch.setenv("TRENTINA_APPROVAL_PASSWORD_HASH", approver.make_verifier(PASSWORD))
-        assert "pinned by its deployment" in pages.get(approval_routes.ENROL_PATH).text
+        _sign_in(pages, next_path=SETUP)
+        body = pages.get(SETUP).text
+        assert "pinned by this gateway's deployment" in body
+        changed = "another-long-password"
         answer = pages.post(
-            approval_routes.ENROL_PATH,
+            SETUP,
             data={
-                "password": PASSWORD,
-                "new": "another-long-password",
-                "again": "another-long-password",
+                "action": "set_password",
+                "csrf": _csrf_from(body),
+                "new": changed,
+                "again": changed,
             },
         )
-        assert answer.status_code == 404
+        assert answer.status_code == 400
         assert approver.verify(PASSWORD) is True
+
+    def test_the_last_way_to_approve_cannot_be_removed(self, pages: TestClient) -> None:
+        approver.set_password(PASSWORD)
+        _sign_in(pages, next_path=SETUP)
+        body = pages.get(SETUP).text
+        assert "Remove the password" not in body
+        answer = pages.post(SETUP, data={"action": "remove_password", "csrf": _csrf_from(body)})
+        assert answer.status_code == 400
+        assert approver.verify(PASSWORD) is True
+
+    def test_the_old_password_page_lands_on_the_new_one(self, pages: TestClient) -> None:
+        answer = pages.get(approval_routes.LEGACY_PASSWORD_PATH, follow_redirects=False)
+        assert answer.status_code == 303
+        assert answer.headers["location"] == SETUP
 
     def test_the_stored_verifier_is_private(self, pages: TestClient) -> None:
         _, code = approver.open_enrolment()
-        pages.post(
-            approval_routes.ENROL_PATH,
-            data={"code": code, "new": PASSWORD, "again": PASSWORD},
-        )
+        _enrol(pages, code)
         path = approver._store_path()
         assert os.stat(path).st_mode & 0o777 == 0o600
         assert os.stat(path.parent).st_mode & 0o777 == 0o700
@@ -651,52 +770,33 @@ class TestHowLongTheWindowStands:
 
 
 class TestAClosedWindow:
-    """The failure this is here for happened to Scott on a real gateway. An
-    agent opened a window and told him about it in a chat he read on a phone;
-    by the time he opened the page the window had closed, the form had
-    silently become one asking for a current password that did not exist, and
-    the refusal is identical to every other refusal by design. He retyped it
-    three times. A page that cannot succeed and will not say so is a trap, so
-    the code field is on it whether or not a window is open right now."""
+    """The failure this is here for happened to Scott on a real gateway: by the
+    time he opened the page the window had closed, and the page silently became
+    one he could not complete. A page that cannot succeed must say so, and a
+    window opened while he sits there must still work."""
 
-    def test_the_page_takes_a_code_with_no_window_open(self, pages: TestClient) -> None:
-        body = pages.get(approval_routes.ENROL_PATH).text
-        assert 'name="code"' in body
-        assert 'name="password"' in body
+    def test_a_closed_window_says_what_to_ask_for(self, pages: TestClient) -> None:
+        _, code = approver.open_enrolment()
+        approver.close_enrolment()
+        assert "Let me set my passkey in Trentina" in pages.get(SETUP).text
+        assert _enrol(pages, code).status_code == 404
 
     def test_a_window_opened_while_a_person_reads_the_page_works(self, pages: TestClient) -> None:
-        """What the trap cost: the agent can open a fresh window while the
-        person sits on the page, and they just type the new code."""
-        assert 'name="code"' in pages.get(approval_routes.ENROL_PATH).text
+        pages.get(SETUP)
         _, code = approver.open_enrolment()
-
-        answer = pages.post(
-            approval_routes.ENROL_PATH,
-            data={"code": code, "password": "", "new": PASSWORD, "again": PASSWORD},
-        )
-
-        assert answer.status_code == 200
+        assert _enrol(pages, code).status_code == 303
         assert approver.verify(PASSWORD) is True
 
-    def test_an_expired_code_is_refused_exactly_like_a_wrong_password(
+    def test_an_expired_code_is_refused_exactly_like_a_wrong_one(
         self, pages: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Both fields on one form must not become an oracle: which one was
-        offered, and which was wrong, answer the same."""
         _, code = approver.open_enrolment()
         monkeypatch.setattr(time, "monotonic", lambda: time.perf_counter() + 1e6)
-
-        expired = pages.post(
-            approval_routes.ENROL_PATH,
-            data={"code": code, "new": PASSWORD, "again": PASSWORD},
-        )
-        guessed = pages.post(
-            approval_routes.ENROL_PATH,
-            data={"password": "not-the-password", "new": PASSWORD, "again": PASSWORD},
-        )
-
+        expired = _enrol(pages, code)
+        guessed = _enrol(pages, "not-the-code")
         assert expired.status_code == guessed.status_code == 404
         assert expired.text == guessed.text
+        assert dict(expired.headers) == dict(guessed.headers)
         assert approver.configured() is False
 
 
@@ -708,17 +808,12 @@ class TestTheEnrolmentCode:
 
     def test_the_window_alone_is_not_enough(self, pages: TestClient) -> None:
         approver.open_enrolment()
-        answer = pages.post(approval_routes.ENROL_PATH, data={"new": PASSWORD, "again": PASSWORD})
-        assert answer.status_code == 404
+        assert _enrol(pages, None).status_code == 404
         assert approver.configured() is False
 
     def test_a_wrong_code_is_not_enough(self, pages: TestClient) -> None:
         approver.open_enrolment()
-        answer = pages.post(
-            approval_routes.ENROL_PATH,
-            data={"code": "not-the-code", "new": PASSWORD, "again": PASSWORD},
-        )
-        assert answer.status_code == 404
+        assert _enrol(pages, "not-the-code").status_code == 404
         assert approver.configured() is False
 
     def test_the_code_changes_every_time_the_window_opens(self, unset: Any) -> None:
@@ -746,15 +841,43 @@ class TestTheEnrolTool:
     has to be the one the page accepts, or the flow is unusable while every
     unit test still passes."""
 
-    async def test_it_returns_a_url_a_duration_and_a_code(self, unset: Any) -> None:
+    async def test_it_returns_a_link_a_duration_and_a_code(self, unset: Any) -> None:
         del unset
         from trentina.tools.enrol import approval_enrol
 
         result = await approval_enrol()
         assert result["opened"] is True
-        assert result["url"] == approval_routes.ENROL_PATH
+        assert result["url"] == f"{approval_routes.SETUP_PATH}#code={result['code']}"
         assert result["open_for_seconds"] == approver.DEFAULT_ENROL_WINDOW_SECONDS
-        assert result["code"]
+        # No address known, so no absolute link: never a guessed one.
+        assert "open_url" not in result
+
+    async def test_the_link_is_on_the_address_the_call_arrived_on(self, unset: Any) -> None:
+        del unset
+        from trentina.gateway.context import current_origin
+        from trentina.tools.enrol import approval_enrol
+
+        reset = current_origin.set("https://gw.example")
+        try:
+            result = await approval_enrol()
+        finally:
+            current_origin.reset(reset)
+        assert result["open_url"] == f"https://gw.example{SETUP}#code={result['code']}"
+
+    async def test_a_configured_public_address_wins(
+        self, unset: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        del unset
+        from trentina.gateway.context import current_origin
+        from trentina.tools.enrol import approval_enrol
+
+        monkeypatch.setenv("TRENTINA_OAUTH_BASE_URL", "https://public.example/")
+        reset = current_origin.set("http://localhost:8020")
+        try:
+            result = await approval_enrol()
+        finally:
+            current_origin.reset(reset)
+        assert result["open_url"].startswith("https://public.example/approve/setup#code=")
 
     async def test_its_code_is_the_one_the_page_accepts(self, pages: TestClient) -> None:
         """End to end, the way Scott's acceptance test runs it: the operator
@@ -762,34 +885,48 @@ class TestTheEnrolTool:
         from trentina.tools.enrol import approval_enrol
 
         code = (await approval_enrol())["code"]
-        answer = pages.post(
-            approval_routes.ENROL_PATH,
-            data={"code": code, "new": PASSWORD, "again": PASSWORD},
-        )
-        assert answer.status_code == 200
+        assert _enrol(pages, code).status_code == 303
         assert approver.verify(PASSWORD) is True
 
-    async def test_it_says_so_when_one_is_already_set(self, unset: Any) -> None:
-        """Set through the store, which is what enrolment does — not pinned by
-        the environment, which is the other branch."""
+    async def test_with_an_approver_set_it_links_to_manage_it(self, unset: Any) -> None:
+        """ "Let me change my password" — no code, no window, just the page."""
         del unset
         from trentina.tools.enrol import approval_enrol
 
         approver.set_password(PASSWORD)
         result = await approval_enrol()
         assert result["already_set"] is True
+        assert result["url"] == SETUP
         assert "code" not in result
-        # It did not open a window, so nothing can be set without the current one.
         assert approver.enrolling() is False
 
-    async def test_it_refuses_when_the_deployment_pinned_one(
-        self, monkeypatch: pytest.MonkeyPatch
+    async def test_a_deployment_pinned_password_still_links_to_manage(
+        self, unset: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """A pinned password cannot be changed here, but a passkey can be
+        added beside it, so the page is still where to go."""
+        del unset
         from trentina.tools.enrol import approval_enrol
 
         monkeypatch.setenv("TRENTINA_APPROVAL_PASSWORD_HASH", approver.make_verifier(PASSWORD))
         result = await approval_enrol()
-        assert "pinned by its deployment" in result["error"]
+        assert result["already_set"] is True
+
+    async def test_close_shuts_an_open_window(self, unset: Any) -> None:
+        del unset
+        from trentina.tools.enrol import approval_enrol
+
+        code = (await approval_enrol())["code"]
+        closed = await approval_enrol("close")
+        assert closed == {"closed": True, "was_open": True}
+        assert approver.enrolling(code) is False
+
+    async def test_an_unknown_action_is_refused(self, unset: Any) -> None:
+        del unset
+        from trentina.tools.enrol import approval_enrol
+
+        assert "error" in await approval_enrol("reset")
+        assert approver.enrolling() is False
 
     async def test_an_agent_caller_is_refused(self, unset: Any) -> None:
         del unset
@@ -838,8 +975,10 @@ class TestTheBodyCap:
     ) -> None:
         client = self._client(monkeypatch, "off")
         pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied([]))
-        answer = client.post(approval_routes.PATH, data={"password": PASSWORD})
-        assert answer.status_code == 200
+        answer = client.post(
+            approval_routes.PATH, data={"password": PASSWORD}, follow_redirects=False
+        )
+        assert answer.status_code == 303
 
 
 class _AlwaysBusy:
@@ -881,11 +1020,7 @@ class TestPasswordWorkIsBounded:
     ) -> None:
         _, code = approver.open_enrolment()
         monkeypatch.setattr(approval_routes, "_PASSWORD_WORK", _AlwaysBusy())
-        answer = pages.post(
-            approval_routes.ENROL_PATH,
-            data={"code": code, "new": PASSWORD, "again": PASSWORD},
-        )
-        assert answer.status_code == 503
+        assert _enrol(pages, code).status_code == 503
         assert approver.configured() is False
 
 
@@ -903,20 +1038,26 @@ class TestCompetingPasswordChanges:
         """Bound to this test's own running loop, not a previous one's."""
         approval_routes._PASSWORD_WORK = asyncio.Semaphore(1)
 
+    @staticmethod
+    def _form(code: str, new: str) -> dict[str, str]:
+        return {"code": code, "new": new, "again": new}
+
     async def test_two_enrolments_from_one_window_leave_one_password(self, unset: Any) -> None:
         del unset
         _, code = approver.open_enrolment()
         first, second = "password-one-here", "password-two-here"
 
         results = await asyncio.gather(
-            approval_routes._authorised_set(BARE_REQUEST, code, "", first),
-            approval_routes._authorised_set(BARE_REQUEST, code, "", second),
+            approval_routes._enrol_password(BARE_REQUEST, self._form(code, first)),
+            approval_routes._enrol_password(BARE_REQUEST, self._form(code, second)),
         )
 
-        # Exactly one set a password; the other was refused.
-        assert sorted(r is None for r in results) == [False, True]
-        refused = next(r for r in results if r is not None)
-        assert refused.status_code == 404
+        # Exactly one set a password. The loser is refused: busy if it arrived
+        # while the winner held the lock, or "nothing" once the window had
+        # closed. Never queued.
+        winner, loser = sorted(r.status_code for r in results)
+        assert winner == 303
+        assert loser in (404, 503)
 
         # And the winner's password is the one that stands — not silently
         # replaced by whichever finished second.
@@ -932,28 +1073,30 @@ class TestCompetingPasswordChanges:
         _, code = approver.open_enrolment()
 
         await asyncio.gather(
-            approval_routes._authorised_set(BARE_REQUEST, code, "", "password-one-here"),
-            approval_routes._authorised_set(BARE_REQUEST, code, "", "password-two-here"),
+            approval_routes._enrol_password(BARE_REQUEST, self._form(code, "password-one-here")),
+            approval_routes._enrol_password(BARE_REQUEST, self._form(code, "password-two-here")),
         )
 
         assert approver.enrolling(code) is False
         assert approver.configured() is True
 
-    async def test_a_change_cannot_be_overtaken_by_an_unauthorised_one(self, unset: Any) -> None:
-        """One caller knows the current password and one does not. The one that
-        does not must lose regardless of ordering."""
+    async def test_an_enrolment_cannot_be_overtaken_by_an_unauthorised_one(
+        self, unset: Any
+    ) -> None:
         del unset
-        approver.set_password(PASSWORD)
-        wanted = "the-authorised-change"
+        _, code = approver.open_enrolment()
+        wanted = "the-authorised-one"
 
         results = await asyncio.gather(
-            approval_routes._authorised_set(BARE_REQUEST, "", PASSWORD, wanted),
-            approval_routes._authorised_set(
-                BARE_REQUEST, "", "wrong-current-password", "the-other-one"
-            ),
+            approval_routes._enrol_password(BARE_REQUEST, self._form(code, wanted)),
+            approval_routes._enrol_password(BARE_REQUEST, self._form("wrong", "the-other-one")),
         )
 
-        assert sorted(r is None for r in results) == [False, True]
+        # The loser is refused: busy if it arrived while the winner held the
+        # lock, or "nothing" once the window had closed. Never queued.
+        winner, loser = sorted(r.status_code for r in results)
+        assert winner == 303
+        assert loser in (404, 503)
         assert approver.verify(wanted) is True
         assert approver.verify("the-other-one") is False
 
@@ -1020,14 +1163,15 @@ class TestADecisionNamesItsProposal:
         self, page: TestClient
     ) -> None:
         pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied([]))
-        body = page.post(approval_routes.PATH, data={"password": PASSWORD}).text
+        _sign_in(page)
+        body = page.get(PATH).text
         assert f'name="facts" value="{pending.digest_of(FACTS)}"' in body
 
     def test_a_swap_through_the_page_applies_nothing_and_says_so(self, page: TestClient) -> None:
         """End to end: the hidden field the page gave is replayed after the
         agent re-staged.
 
-        This person has already proved they hold the password, so the
+        This person has already signed in, so the
         "an unauthenticated visitor learns nothing" rule has done its job and
         the useful answer is the truth. Answering with the generic
         "nothing to approve" hid the one thing they most need to know — that
@@ -1035,19 +1179,12 @@ class TestADecisionNamesItsProposal:
         """
         record: list[str] = []
         pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied(record))
-        body = page.post(approval_routes.PATH, data={"password": PASSWORD}).text
+        _sign_in(page)
+        body = page.get(PATH).text
         shown = body.split('name="facts" value="')[1].split('"')[0]
         pending.stage(pending.Kind.FEDERATION_TRUST, self.OTHER, _applied(record))
 
-        answer = page.post(
-            approval_routes.PATH,
-            data={
-                "password": PASSWORD,
-                "kind": "federation trust",
-                "decision": "approve",
-                "facts": shown,
-            },
-        )
+        answer = _decide(page, kind="federation trust", facts=shown, csrf=_csrf_from(body))
         assert answer.status_code == 200
         assert record == []  # nothing applied, which is the point
         assert "Nothing was applied" in answer.text
@@ -1056,18 +1193,10 @@ class TestADecisionNamesItsProposal:
         assert pending.outstanding() == {pending.Kind.FEDERATION_TRUST: self.OTHER}
 
     def test_an_unauthenticated_visitor_still_learns_nothing(self, page: TestClient) -> None:
-        """The rule the above does not weaken: without the password, a guessed
+        """The rule the above does not weaken: without a session, a guessed
         kind and an idle gateway answer identically."""
         pending.stage(pending.Kind.FEDERATION_TRUST, self.OTHER, _applied([]))
-        answer = page.post(
-            approval_routes.PATH,
-            data={
-                "password": "wrong",
-                "kind": "federation trust",
-                "decision": "approve",
-                "facts": "0" * 64,
-            },
-        )
+        answer = _decide(page, kind="federation trust", facts="0" * 64, csrf="guessed")
         assert answer.status_code == 404
         assert "evil.example" not in answer.text
 
@@ -1075,9 +1204,7 @@ class TestADecisionNamesItsProposal:
         """A person who did not expect this wants whatever is staged gone,
         whichever proposal is sitting there now."""
         pending.stage(pending.Kind.FEDERATION_TRUST, FACTS, _applied([]))
-        answer = page.post(
-            approval_routes.PATH,
-            data={"password": PASSWORD, "kind": "federation trust", "decision": "decline"},
-        )
+        _sign_in(page)
+        answer = _decide(page, kind="federation trust", decision="decline", facts="")
         assert answer.status_code == 200
         assert pending.outstanding() == {}

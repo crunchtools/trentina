@@ -241,6 +241,70 @@ class TestInternalTools:
         monkeypatch.setenv("TRENTINA_APPROVAL_PASSWORD_HASH", f"scrypt$bad${CANARY}")
         assert approver.verify(CANARY) is False
 
+    def test_the_passkey_pages_never_log_what_a_browser_sent(
+        self, captured: _Capture, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """The sign-in and passkey routes are unauthenticated and public
+        (#639): every field, header and failure reason reaching a record is a
+        string a stranger chose, so none of them may."""
+        import json as json_mod
+
+        from fastmcp import FastMCP
+        from starlette.applications import Starlette
+        from starlette.testclient import TestClient
+
+        from tests.passkey_helper import Authenticator
+        from trentina import config as config_mod
+        from trentina.gateway import approval_routes, approval_session, approver
+
+        monkeypatch.setenv("QUARANTINE_DB", str(tmp_path / "trentina.db"))
+        monkeypatch.setenv("TRENTINA_RATE_LIMIT", "off")
+        config_mod._config = None
+        approver.set_password("a-real-password-here")
+        mcp = FastMCP("t")
+        approval_routes.register_approval_routes(mcp)
+        client = TestClient(
+            Starlette(routes=mcp._additional_http_routes), base_url="https://gw.example"
+        )
+        json_headers = {"Content-Type": "application/json", "Origin": "https://gw.example"}
+
+        def post(path: str, body: dict[str, Any], **headers: str) -> None:
+            client.post(path, content=json_mod.dumps(body), headers={**json_headers, **headers})
+
+        for ceremony in ("signin", "register", CANARY):
+            post(approval_routes.BEGIN_PATH, {"ceremony": ceremony, "code": CANARY, "csrf": CANARY})
+        post(approval_routes.BEGIN_PATH, {"ceremony": "signin"}, Origin=f"https://{CANARY}.example")
+        challenge = client.post(
+            approval_routes.BEGIN_PATH, content='{"ceremony": "signin"}', headers=json_headers
+        ).json()["challenge"]
+        auth = Authenticator(origin=f"https://{CANARY}.example")
+        post(approval_routes.FINISH_PATH, auth.sign_in_json(challenge, next=CANARY, name=CANARY))
+        post(approval_routes.FINISH_PATH, {"ceremony": "signin", "challenge": CANARY, "id": CANARY})
+        post(approval_routes.FINISH_PATH, {"ceremony": "register", "code": CANARY, "name": CANARY})
+        client.post(approval_routes.PATH, data={"password": CANARY, "next": CANARY})
+        client.post(
+            approval_routes.SETUP_PATH, data={"action": CANARY, "csrf": CANARY, "id": CANARY}
+        )
+        client.post(
+            approval_routes.SETUP_PATH,
+            data={"action": "enrol_password", "code": CANARY, "new": CANARY, "again": CANARY},
+        )
+        # A registration that fails inside the ceremony, with a session behind it.
+        client.post(approval_routes.PATH, data={"password": "a-real-password-here"})
+        page = client.get(approval_routes.SETUP_PATH).text
+        csrf = page.split('name="csrf" value="')[1].split('"')[0]
+        begun = client.post(
+            approval_routes.BEGIN_PATH,
+            content=json_mod.dumps({"ceremony": "register", "csrf": csrf}),
+            headers=json_headers,
+        ).json()
+        post(
+            approval_routes.FINISH_PATH,
+            auth.register_json(begun["challenge"], csrf=csrf, name=CANARY),
+        )
+        approval_session.clear()
+        config_mod._config = None
+
 
 # ------------------------------------------------------------ proxied tools
 
