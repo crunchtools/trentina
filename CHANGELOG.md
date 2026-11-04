@@ -10,6 +10,15 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A release tag names the digest main published, again.** The retag used
+  `docker buildx imagetools create`, which wraps a single image manifest in a
+  new one-entry manifest list. Publish has pushed a single manifest since #692,
+  so 6.4.1's tags got a digest `:main` never had (the image inside is the
+  same). The retag is now `skopeo copy --preserve-digests`, and the job fails
+  if a released tag resolves to anything but the recorded digest.
+
 ## [6.4.1] - 2026-11-04
 
 ### Changed

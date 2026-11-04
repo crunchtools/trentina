@@ -261,9 +261,13 @@ jobs:
             echo "minor=${version%.*}"
           } >> "$GITHUB_OUTPUT"
 
-      # Server-side: the manifest is copied by reference, so the released tags
-      # name the SAME digest `:main` and `:latest` already name. No layer is
-      # rebuilt, re-uploaded or re-signed.
+      # The released tags name the SAME digest publish recorded. Copied within
+      # one repository, so every blob is already there and nothing is
+      # re-uploaded. Not `imagetools create`: given a single image manifest
+      # (what podman pushes since #692) it writes a new one-entry manifest
+      # list, so 6.4.1 got a digest main never had. `--preserve-digests`
+      # refuses any copy that would change the manifest, and the check after
+      # it fails the release if a tag still resolves to anything else.
       - name: Retag the digests in both registries
         env:
           QUAY_DIGEST: ${{ steps.verified.outputs.quay_digest }}
@@ -272,10 +276,19 @@ jobs:
           MINOR: ${{ steps.verified.outputs.minor }}
         run: |
           set -eu
-          docker buildx imagetools create \
-            -t "$QUAY_IMAGE:$VERSION" -t "$QUAY_IMAGE:$MINOR" "$QUAY_IMAGE@$QUAY_DIGEST"
-          docker buildx imagetools create \
-            -t "$GHCR_IMAGE:$VERSION" -t "$GHCR_IMAGE:$MINOR" "$GHCR_IMAGE@$GHCR_DIGEST"
+          auth="$HOME/.docker/config.json"
+          for pair in "$QUAY_IMAGE=$QUAY_DIGEST" "$GHCR_IMAGE=$GHCR_DIGEST"; do
+            image=${pair%%=*} digest=${pair#*=}
+            for tag in "$VERSION" "$MINOR"; do
+              skopeo copy --all --preserve-digests --authfile "$auth" \
+                "docker://$image@$digest" "docker://$image:$tag"
+              got=$(skopeo inspect --raw --authfile "$auth" "docker://$image:$tag" | sha256sum | cut -d' ' -f1)
+              [ "sha256:$got" = "$digest" ] || {
+                echo "$image:$tag resolves to sha256:$got, not the recorded $digest" >&2
+                exit 1
+              }
+            done
+          done
 
       - name: What was released
         env:
