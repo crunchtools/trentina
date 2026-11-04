@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.5.0] - 2026-11-04
+
 ### Added
 
 - **Approve with a passkey (#639).** A person can now sign in to `/approve`
