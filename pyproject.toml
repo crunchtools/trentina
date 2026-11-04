@@ -139,8 +139,12 @@ line-length = 100
 # across a third of the package is the wrong trade.
 #
 # py313 still gets everything else 3.12+ -- PEP 695 type parameters (UP047,
-# UP049) included, which Gourmand parses correctly. Raise to py314 when it
-# handles PEP 758 (crunchtools/gourmand).
+# UP049) included, which Gourmand parses correctly. The constitution's Python
+# Version Coverage section carries the exemption this sits under: target-version
+# governs the syntax the FORMATTER emits, so it is the one name on that list
+# that can write code another gate has to read. Raise it to py314 when Gourmand
+# either parses PEP 758 or fails loudly on what it cannot read:
+# https://github.com/crunchtools/gourmand/issues/29
 target-version = "py313"
 # Known-bad code on purpose: the boundary-review eval (#90) grades a reviewer
 # on catching exactly what lint would flag, and semgrep's --test fixtures
