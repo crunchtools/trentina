@@ -1,7 +1,8 @@
 name: L2 - fine-tune
 
 # Fine-tune the shipped L2 model (Horizon) on benign and attack text in real
-# tool-reply envelopes, then hold the result to every L2 gate (#17, gaps 24,
+# tool-reply envelopes and in letter ciphers (#720, gap 22), then hold the
+# result to every L2 gate (#17, gaps 24,
 # 28, 31). The shipped model refuses benign tool replies because it never saw
 # one: scripts/l2_train_data.py builds the missing half from pinned public
 # sets, wrapping attacks in the same envelopes so the label follows the text.
@@ -29,6 +30,10 @@ on:
         description: "Plain benign rows, and plain attack rows"
         type: number
         default: 1000
+      per_cipher:
+        description: "Benign rows per letter cipher, ROT13, Atbash, leetspeak (each with an attack twin)"
+        type: number
+        default: 120
       epochs:
         description: "Training epochs"
         type: string
@@ -49,6 +54,7 @@ jobs:
     env:
       PER_ENVELOPE: ${{ inputs.per_envelope || 120 }}
       REPLAY: ${{ inputs.replay || 1000 }}
+      PER_CIPHER: ${{ inputs.per_cipher || 120 }}
       EPOCHS: ${{ inputs.epochs || '2' }}
     steps:
       - uses: actions/checkout@v7
@@ -67,11 +73,12 @@ jobs:
 
       - name: Build the training set
         run: |
-          for size in "$PER_ENVELOPE" "$REPLAY"; do
+          for size in "$PER_ENVELOPE" "$REPLAY" "$PER_CIPHER"; do
             # Ten and up: one row in ten of each is validation.
             [[ "$size" =~ ^[1-9][0-9]+$ ]] || { echo "sizes must be whole numbers from 10" >&2; exit 1; }
           done
-          uv run --no-sync python scripts/l2_train_data.py --out build/l2-train --per-envelope "$PER_ENVELOPE" --replay "$REPLAY"
+          uv run --no-sync python scripts/l2_train_data.py --out build/l2-train --per-envelope "$PER_ENVELOPE" --replay "$REPLAY" \
+            --per-cipher "$PER_CIPHER"
 
       - name: Build the model-builder stage
         run: docker build --target model-builder -t l2-builder -f Containerfile .
@@ -132,6 +139,18 @@ jobs:
             [[ $status == 0 ]] && passed=1 && touch "$model.passed"
           done
           [[ $passed == 1 ]]
+
+      # Measured, never gated (#423, #720): the letter ciphers of known gap 22
+      # beside plain, attacks and benign text alike, for every blend.
+      - name: Letter ciphers
+        if: always()
+        run: |
+          shopt -s nullglob  # nothing exported, nothing to measure
+          for model in build/l2-export/blend-*/; do
+            echo "# $(basename "$model") letter ciphers" >> "$GITHUB_STEP_SUMMARY"
+            CLASSIFIER_MODEL_PATH="$model" uv run --no-sync python benchmarks/l2_encodings.py \
+              --transforms plain,ROT13,Atbash,leetspeak | tee -a "$GITHUB_STEP_SUMMARY"
+          done
 
       # For screening on production shapes, which never leave the host they
       # came from, before a Containerfile change pins a model. A derivative of
