@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.5.2] - 2026-11-05
+
 ### Fixed
 
 - **Upper-case hex (garak's base16) decodes whole (#546).** The base32 token
