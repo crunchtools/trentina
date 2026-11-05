@@ -355,10 +355,6 @@ paths = ["src"]
 
 [tool.sdlc.ci]
 checks = ["image", "image-tests"]
-# The CodeQL Action job uploads to the Security tab and annotates new alerts on
-# the pull request, so CI does not run the analysis a second time here. The
-# push tier still gates on the committed baseline.
-skip = ["codeql"]
 
 # The image CI publishes. Labels carry what `promote` reads off it.
 [tool.sdlc.ci.image]
