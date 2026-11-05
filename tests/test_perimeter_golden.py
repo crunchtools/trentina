@@ -40,6 +40,11 @@ CASES: dict[str, Case] = {}
 #:     wrote ``-`` before it had parsed the service.
 #:   * what ``admit`` established is on the row before the slot, so a busy
 #:     refusal records the destination it refused; http set it after the slot.
+#:   * the slot comes before any body byte (cto, #535): llm read and admitted the
+#:     body before its slot, so its busy row named an endpoint and model it now
+#:     never reads — the price of not buffering 32 MiB per refused request.
+#:   * llm's unknown provider is refused after authentication like any unknown
+#:     instance, so it now has a row; its no-key refusal names its reason.
 DELTAS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {}
 
 
@@ -67,6 +72,52 @@ DELTAS["git-bad-endpoint"] = _first_row(tool="GET")
 DELTAS["git-bad-service"] = _first_row(tool="GET")
 DELTAS["git-unknown-remote"] = _first_row(backend="git:-", tool="GET")
 DELTAS["git-not-granted-profile"] = _first_row(backend="git:-", tool="GET")
+for _case in (
+    "llm-traversal",
+    "llm-endpoint-not-allowed",
+    "llm-provider-tool-refused",
+    "llm-mcp-servers-refused",
+    "llm-not-json",
+    "llm-client-gone-during-body",
+):
+    DELTAS[_case] = _first_row(tool="POST")
+DELTAS["llm-no-key"] = _first_row(tool="POST", error_message="no_key")
+
+
+def _busy_reads_no_body(record: dict[str, Any]) -> dict[str, Any]:
+    for row in record["gateway_calls"]:
+        if row["error_message"] == "busy":
+            row.update(tool="POST", destination=None, destination_kind=None)
+    return record
+
+
+#: Every column a recorded row carries, for a row 6.7.0 never wrote.
+_COLUMNS = (
+    "backend", "bytes_arrived", "bytes_delivered", "call_ref", "caller_peer", "caller_sub",
+    "content_digest", "destination", "destination_kind", "detections_digest", "error_message",
+    "federated_verdict", "normalized", "outcome", "profile", "session", "success", "tool",
+)  # fmt: skip
+
+
+def _gains_row(**fields: Any) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    def apply(record: dict[str, Any]) -> dict[str, Any]:
+        row = dict.fromkeys(_COLUMNS)
+        row.update(bytes_arrived=0, bytes_delivered=0, **fields)
+        record["gateway_calls"].append(row)
+        return record
+
+    return apply
+
+
+DELTAS["llm-busy"] = _busy_reads_no_body
+DELTAS["llm-unknown-provider"] = _gains_row(
+    backend="llm:-",
+    tool="POST",
+    profile="agent1",
+    outcome="denied_allowlist",
+    error_message="unknown_upstream",
+    success=0,
+)
 
 
 def case(name: str) -> Callable[[Case], Case]:

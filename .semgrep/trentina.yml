@@ -143,6 +143,7 @@ rules:
         # The built-in routes on the spine; each port adds its module.
         - "**/trentina/gateway/egress_http.py"
         - "**/trentina/gateway/git_transport.py"
+        - "**/trentina/gateway/llm_proxy.py"
         - "**/.semgrep/tests/**"
       exclude:
         - "**/trentina/transports/perimeter.py"

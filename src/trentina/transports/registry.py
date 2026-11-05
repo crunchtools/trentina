@@ -179,11 +179,13 @@ def _seed() -> Mapping[str, tuple[Route[Any, Any], DestinationKind]]:
     from ..gateway.destination import DestinationKind
     from ..gateway.egress_http import HttpRoute
     from ..gateway.git_transport import GitRoute
+    from ..gateway.llm_proxy import LlmRoute
 
     return MappingProxyType(
         {
             "http": (HttpRoute(), DestinationKind.EGRESS),
             "git": (GitRoute(), DestinationKind.GIT),
+            "llm": (LlmRoute(), DestinationKind.MODEL),
         }
     )
 
@@ -230,21 +232,31 @@ def register_route(name: str, route: Route[Any, Any]) -> None:
     _insert(ROUTES, "route", name, route)
 
 
-def configured(name: str, config: GatewayConfig) -> bool:
+def configured(name: str, config: GatewayConfig, providers: Mapping[str, Any]) -> bool:
     """Whether the file configures any instance of the built-in route ``name``.
     A route with nothing to reach is not mounted, as before #535."""
-    return bool({"http": config.egress_upstreams, "git": config.git_remotes}.get(name))
+    instances = {"http": config.egress_upstreams, "git": config.git_remotes, "llm": providers}
+    return bool(instances.get(name))
 
 
 #: The routes this gateway serves, by name, as mounted at startup.
 MOUNTED: dict[str, Mount] = {}
 
 
-def mount_routes(server: Any, config: GatewayConfig, profiles: dict[str, Profile]) -> None:
-    """Mount every built-in route the configuration uses on ``server``."""
+def mount_routes(
+    server: Any,
+    config: GatewayConfig,
+    profiles: dict[str, Profile],
+    providers: Mapping[str, Any] | None = None,
+) -> None:
+    """Mount every built-in route the configuration uses on ``server``.
+
+    ``providers`` are the LLM providers loaded at startup, keys resolved.
+    """
     from .perimeter import Mount, mount
 
+    loaded = providers or {}
     for name, (route, kind) in _seed().items():
-        if configured(name, config):
-            MOUNTED[name] = Mount(route, kind, config, in_tree=True)
+        if configured(name, config, loaded):
+            MOUNTED[name] = Mount(route, kind, config, in_tree=True, providers=loaded)
             mount(server, MOUNTED[name], profiles)

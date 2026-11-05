@@ -27,9 +27,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from dataclasses import InitVar, dataclass
+from dataclasses import InitVar, dataclass, field
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 import httpx
 from starlette.datastructures import Headers
@@ -51,7 +52,7 @@ from ..gateway.outbound import (
     judge_input,
 )
 from ..gateway.relay import NO_OPERATION, Operation, Relayed, Slots, upstream_outcome
-from ..gateway.upstream import RESOLVER_BUSY, pinned_send
+from ..gateway.upstream import MAX_POOL_CONNECTIONS, RESOLVER_BUSY, pinned_send
 from ..modes import Mode
 from ..orchestrator import judge_egress_response, judge_outbound
 from ..outcomes import Outcome
@@ -130,59 +131,114 @@ class Bound:
     secret_label: str
 
 
-def bind(config: GatewayConfig, profile: Profile, route: str, name: str) -> Bound | None:
-    """The instance ``name`` of ``route`` and ``profile``'s grant on it, or None.
+@dataclass(frozen=True)
+class Configured:
+    """What the gateway loaded: the file, and the LLM providers with their
+    keys resolved (which bind at startup, as before #535)."""
 
-    Read from the configuration blocks each route had before ``proxies:``;
-    #535 R12 replaces this body with the one lookup.
-    """
-    if route == "http":
-        upstream = config.egress_upstreams.get(name)
-        grant = profile.egress_http.get(name)
-        if upstream is None or grant is None:
-            return None
-        credential = upstream.credential
-        return Bound(
-            instance=Instance(
-                name=name,
-                type=route,
-                origins={"origin": Origin(upstream.host)},
-                options={"body": upstream.body, "headers_allow": tuple(upstream.headers_allow)},
-            ),
-            grant=Grant(
-                origins=frozenset({"origin"}),
-                methods=frozenset(m.upper() for m in grant.methods),
-                enforcement=Mode(grant.enforcement),
-                options={"paths": tuple(grant.paths)},
-            ),
-            secret=grant.token if credential is not None else None,
-            injection=HeaderToken(credential.header, credential.prefix) if credential else None,
-            secret_label=grant.token_env or name,
-        )
-    if route == "git":
-        remote = config.git_remotes.get(name)
-        lists = profile.git.get(name)
-        if remote is None or lists is None or lists.token is None:
-            return None
-        return Bound(
-            instance=Instance(
-                name=name,
-                type=route,
-                origins={"origin": Origin(remote.host)},
-                options={"hidden_refs": tuple(remote.hidden_refs)},
-            ),
-            grant=Grant(
-                origins=frozenset({"origin"}),
-                methods=frozenset({"GET", "POST"}),
-                enforcement=Mode.BLOCK,
-                # The repository and ref lists, without the token they carry.
-                options={"git": lists.model_copy(update={"token": None})},
-            ),
-            secret=lists.token,
-            injection=BasicAuth(remote.username),
-            secret_label=lists.token_env,
-        )
-    return None
+    config: GatewayConfig
+    providers: Mapping[str, Any]
+
+
+def _bind_http(loaded: Configured, profile: Profile, name: str) -> Bound | None:
+    """An ``egress_upstreams`` entry and the profile's ``egress_http`` grant."""
+    upstream = loaded.config.egress_upstreams.get(name)
+    grant = profile.egress_http.get(name)
+    if upstream is None or grant is None:
+        return None
+    credential = upstream.credential
+    return Bound(
+        instance=Instance(
+            name=name,
+            type="http",
+            origins={"origin": Origin(upstream.host)},
+            options={"body": upstream.body, "headers_allow": tuple(upstream.headers_allow)},
+        ),
+        grant=Grant(
+            origins=frozenset({"origin"}),
+            methods=frozenset(m.upper() for m in grant.methods),
+            enforcement=Mode(grant.enforcement),
+            options={"paths": tuple(grant.paths)},
+        ),
+        secret=grant.token if credential is not None else None,
+        injection=HeaderToken(credential.header, credential.prefix) if credential else None,
+        secret_label=grant.token_env or name,
+    )
+
+
+def _bind_llm(loaded: Configured, profile: Profile, name: str) -> Bound | None:
+    """A loaded provider and the profile's key for it; a profile without one
+    is bound, so its route can say so rather than say the provider is unknown."""
+    provider = loaded.providers.get(name)
+    if provider is None:
+        return None
+    key = profile.llm_keys.get(name)
+    parts = urlsplit(provider.upstream)
+    return Bound(
+        instance=Instance(
+            name=name,
+            type="llm",
+            origins={
+                "origin": Origin(
+                    parts.hostname or "", parts.port or HTTPS_PORT, parts.path.rstrip("/")
+                )
+            },
+            options={"api": provider.api, "allowed_models": tuple(provider.allowed_models)},
+        ),
+        grant=Grant(
+            origins=frozenset({"origin"}),
+            methods=frozenset(),
+            enforcement=Mode(key.enforcement) if key is not None else Mode.BLOCK,
+            options={"has_key": key is not None},
+        ),
+        secret=key.api_key if key is not None else None,
+        injection=HeaderToken(provider.auth_header, provider.auth_prefix),
+        secret_label=(key.api_key_env if key is not None else None) or name,
+    )
+
+
+def _bind_git(loaded: Configured, profile: Profile, name: str) -> Bound | None:
+    """A ``git_remotes`` entry and the profile's ``git`` lists, with a token."""
+    remote = loaded.config.git_remotes.get(name)
+    lists = profile.git.get(name)
+    if remote is None or lists is None or lists.token is None:
+        return None
+    return Bound(
+        instance=Instance(
+            name=name,
+            type="git",
+            origins={"origin": Origin(remote.host)},
+            options={"hidden_refs": tuple(remote.hidden_refs)},
+        ),
+        grant=Grant(
+            origins=frozenset({"origin"}),
+            methods=frozenset({"GET", "POST"}),
+            enforcement=Mode.BLOCK,
+            # The repository and ref lists, without the token they carry.
+            options={"git": lists.model_copy(update={"token": None})},
+        ),
+        secret=lists.token,
+        injection=BasicAuth(remote.username),
+        secret_label=lists.token_env,
+    )
+
+
+#: How each built-in route type finds an instance and a profile's grant on it,
+#: in the configuration blocks it had before ``proxies:``. #535 R12 replaces
+#: this table with the one lookup.
+_BINDERS = {"http": _bind_http, "llm": _bind_llm, "git": _bind_git}
+
+
+def bind(
+    config: GatewayConfig,
+    providers: Mapping[str, Any],
+    profile: Profile,
+    route: str,
+    name: str,
+) -> Bound | None:
+    """The instance ``name`` of ``route`` and ``profile``'s grant on it, or None."""
+    binder = _BINDERS.get(route)
+    return binder(Configured(config, providers), profile, name) if binder is not None else None
 
 
 def _credential(bound: Bound) -> tuple[str, str, str] | None:
@@ -519,6 +575,9 @@ class InTree(Context):
     bound: Bound
     origin: Origin
     idle: float
+    #: The pool's connections to the origin: at least the route's slots, so a
+    #: fan-out the slot cap admits is not starved on the pool.
+    max_connections: int
 
     def stream(self) -> AsyncIterator[bytes]:
         """The request body as it arrives, unread by the spine."""
@@ -556,11 +615,18 @@ class InTree(Context):
         if (credential := _credential(self.bound)) is not None:
             sent[credential[0]] = credential[1]
         port = "" if self.origin.port == HTTPS_PORT else f":{self.origin.port}"
-        url = f"https://{self.origin.host}{port}/{path}" + (f"?{query}" if query else "")
+        url = f"https://{self.origin.host}{port}{self.origin.base}/{path}"
+        url += f"?{query}" if query else ""
         try:
             return await self.op.upstream.enter_async_context(
                 pinned_send(
-                    self.profile, method, url, idle=self.idle, headers=sent, content=content
+                    self.profile,
+                    method,
+                    url,
+                    idle=self.idle,
+                    headers=sent,
+                    content=content,
+                    max_connections=self.max_connections,
                 )
             )
         except GuardRefusedError as exc:
@@ -569,6 +635,8 @@ class InTree(Context):
             raise RefusedError("denied_guard", detail=exc.reason) from None
         except httpx.TimeoutException:
             raise RefusedError("upstream_idle", executed=True) from None
+        except httpx.ConnectError:
+            raise RefusedError("upstream_unreachable") from None
         except httpx.HTTPError as exc:
             logger.warning("perimeter: upstream failed err=%s", logsafe.exc_kind(exc))
             raise RefusedError("upstream_failed") from None
@@ -582,6 +650,9 @@ class Mount:
     destination_kind: DestinationKind
     config: GatewayConfig
     in_tree: bool = False
+    #: The LLM providers loaded at startup, keys resolved; they bind then, as
+    #: before #535, and a reload reports a change to them rather than apply it.
+    providers: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.slots = Slots(self.route.slots or 0)
@@ -593,14 +664,16 @@ class Mount:
 
         active = get_active_config()
         config = active.config if active is not None else self.config
-        return bind(config, profile, self.route.name, name)
+        return bind(config, self.providers, profile, self.route.name, name)
 
 
 def _spell(mount: Mount, refused: RefusedError) -> RefusedError:
     """``refused`` in this route's own words: its spelling, status and outcome.
 
-    A reason the route did not declare is a fault in the route, answered as a
-    gateway error rather than trusted to mean anything.
+    The raised refusal itself is filled in, so whatever a route's own subclass
+    carries for its ``render`` stays with it. A reason the route did not
+    declare is a fault in the route, answered as a gateway error rather than
+    trusted to mean anything.
     """
     entry = mount.route.refusals.get(refused.reason)
     if entry is None:
@@ -610,15 +683,12 @@ def _spell(mount: Mount, refused: RefusedError) -> RefusedError:
             status=HTTPStatus.INTERNAL_SERVER_ERROR,
             outcome=Outcome.GATEWAY_ERROR,
         )
-    return RefusedError(
-        entry.wire or refused.reason,
-        status=refused.status or entry.status,
-        outcome=refused.outcome or entry.outcome,
-        executed=refused.executed,
-        detail=refused.detail if mount.in_tree else None,
-        tool=refused.tool,
-        destination=refused.destination,
-    )
+    refused.reason = entry.wire or refused.reason
+    refused.status = refused.status or entry.status
+    refused.outcome = refused.outcome or entry.outcome
+    if not mount.in_tree:
+        refused.detail = None
+    return refused
 
 
 async def serve(mount: Mount, request: Request, profiles: dict[str, Profile]) -> Any:
@@ -722,6 +792,7 @@ async def _carry(mount: Mount, request: Request, op: Operation) -> Any:
             bound=bound,
             origin=upstream.origin,
             idle=route.idle,
+            max_connections=max(MAX_POOL_CONNECTIONS, route.slots or 0),
         )
     else:
         ctx = Context(

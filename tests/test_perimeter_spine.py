@@ -125,7 +125,9 @@ async def _run(
     )
     toy = ("toy", "acme")
     monkeypatch.setattr(
-        perimeter, "bind", lambda _c, _p, route, name: bound if (route, name) == toy else None
+        perimeter,
+        "bind",
+        lambda _c, _providers, _p, route, name: bound if (route, name) == toy else None,
     )
     entry = perimeter.Mount(Toy(), DestinationKind.EGRESS, config)
 

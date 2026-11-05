@@ -155,12 +155,16 @@ def _service(wire: Wire, endpoint: str) -> str:
 #: git's refusals: the spine's, each reason git_wire may raise (each raise
 #: carries its own status and outcome), and git's own spelling of three of the
 #: spine's: an unknown or ungranted remote is ``remote``, and a redirect and a
-#: guard refusal keep git's outcome.
+#: guard refusal keep git's outcome, and a forge that cannot be reached is
+#: ``upstream_failed`` as any other failure is.
 REFUSALS: Mapping[str, Refusal] = {
     **{reason: Refusal(HTTPStatus.BAD_REQUEST, Outcome.DENIED_GUARD) for reason in REASONS},
     **SPINE_REFUSALS,
     "unknown_upstream": Refusal(HTTPStatus.FORBIDDEN, Outcome.DENIED_ALLOWLIST, wire="remote"),
     "redirect": Refusal(HTTPStatus.BAD_GATEWAY, Outcome.DENIED_GUARD),
+    "upstream_unreachable": Refusal(
+        HTTPStatus.BAD_GATEWAY, Outcome.BACKEND_ERROR, wire="upstream_failed"
+    ),
 }
 
 

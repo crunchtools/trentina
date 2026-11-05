@@ -169,10 +169,12 @@ HTTPS_PORT = 443
 
 @dataclass(frozen=True)
 class Origin:
-    """An https origin the operator configured: a DNS name and a port."""
+    """An https origin the operator configured: a DNS name, a port, and the
+    path every request to it starts with (a provider's ``/api/v1``), if any."""
 
     host: str
     port: int = HTTPS_PORT
+    base: str = ""
 
 
 @dataclass(frozen=True)
@@ -235,6 +237,7 @@ SPINE_REFUSALS: Mapping[str, Refusal] = {
     "denied_guard": Refusal(HTTPStatus.FORBIDDEN, Outcome.BLOCKED_DEFENSE),
     "redirect": Refusal(HTTPStatus.BAD_GATEWAY, Outcome.BACKEND_ERROR),
     "upstream_failed": Refusal(HTTPStatus.BAD_GATEWAY, Outcome.BACKEND_ERROR),
+    "upstream_unreachable": Refusal(HTTPStatus.BAD_GATEWAY, Outcome.BACKEND_ERROR),
     "upstream_idle": Refusal(HTTPStatus.GATEWAY_TIMEOUT, Outcome.BACKEND_ERROR),
     "binary_body": Refusal(HTTPStatus.FORBIDDEN, Outcome.BLOCKED_DEFENSE),
     "credential_in_request": Refusal(HTTPStatus.FORBIDDEN, Outcome.BLOCKED_DEFENSE),
@@ -279,6 +282,8 @@ class RefusedError(Exception):
         self.detail = detail
         self.tool = tool
         self.destination = destination
+        #: The spine's name for the reason, kept when a route's table re-spells it.
+        self.canonical = reason
 
 
 @dataclass(frozen=True)
