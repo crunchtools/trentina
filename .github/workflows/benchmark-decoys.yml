@@ -598,7 +598,8 @@ jobs:
           git init -q bench && cd bench
           git fetch -q --depth 1 https://github.com/luckyPipewrench/agent-egress-bench "$BENCH_REF"
           git checkout -q FETCH_HEAD
-          docker run --rm -v "$PWD:/src" -w /src/runner -e CGO_ENABLED=0 \
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/src" -w /src/runner \
+            -e HOME=/tmp -e GOCACHE=/tmp/go-cache -e GOPATH=/tmp/go -e CGO_ENABLED=0 \
             -e GOFLAGS=-buildvcs=false docker.io/library/golang:1.26 go build -o /src/aeb-runner .
 
       # The gateway runs as production runs it, from this image, judging on the
@@ -642,7 +643,7 @@ jobs:
         run: |
           set -eu
           docker run --rm --network host --read-only --tmpfs /tmp --cap-drop=all \
-            --security-opt no-new-privileges \
+            --security-opt no-new-privileges --user "$(id -u):$(id -g)" -e HOME=/tmp \
             -v "$GITHUB_WORKSPACE/bench:/bench:ro" \
             -v "$GITHUB_WORKSPACE/benchmarks/agent_egress:/kit:ro" \
             -v "$GITHUB_WORKSPACE/kit-run:/kit-run:ro" \
@@ -666,8 +667,7 @@ jobs:
         if: always()
         run: docker rm -f aeb-gateway aeb-shim >/dev/null 2>&1 || true
 
-      # Not hashFiles(): it walks the whole workspace, and the bench checkout
-      # holds files the Go build container wrote as root.
+      # Not hashFiles(): an outcome-only condition keeps a missing summary loud.
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7
