@@ -797,7 +797,11 @@ replaced.
   `(image/png, 1.1 KB, not read)`; and leaves identifiers, short binary and
   anything non-canonical as it arrived. Binary an agent's tools could open
   (image, PDF, archive) is `Unpacked.unread`, which becomes the
-  `binary_unread` gap: block and redact refuse it, flag warns. Kind names
+  `binary_unread` gap: block and redact refuse it, flag warns. Last,
+  `letters.py` reads back Caesar shifts, Atbash and leetspeak (#720) when the
+  reading is English, judged by `common_words.txt` in one lookup per word
+  (`_READINGS`, not 26 passes); a plain common word in ciphertext stays as
+  it arrived. Kind names
   are a closed set: a data URI's declared type is mapped, never echoed.
   `UnpackStats` rides in L1's `PipelineStats` as `unpacked` and is
   informational, not suspicious. Binary an agent cannot open is labelled

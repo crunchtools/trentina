@@ -19,14 +19,6 @@ reads well there (run 40202667628: 4 to 41 of 221 benign_ops cases flagged).
 Each row is rendered the way the gateway renders a tool reply
 (``corpora.gateway_read.as_read``).
 
-Letter ciphers (ROT13, Atbash, leetspeak; known gap 22, #720) are a model
-weakness no decoder can fix, since every text is also valid ciphertext. The
-same sources go in ciphered, benign and attack alike with counterfactual
-twins, so the label follows what the text says and never its being ciphered.
-Only these sources are ciphered: the benign_ops anchor stays plain, so the
-forum replies ``benchmarks/l2_encodings.py`` scores under each cipher are
-still held out.
-
     uv run python scripts/l2_train_data.py --out build/l2-train
 
 Writes ``train.jsonl`` and ``val.jsonl`` (``{"text", "label", "shape", "distill"}``,
@@ -54,7 +46,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 from corpora.benign_ops import BENIGN, in_tuning
 from corpora.envelopes import MAKERS
-from corpora.garak_encodings import ENCODINGS
 from corpora.gateway_read import as_read
 
 SEED = 20261025
@@ -72,11 +63,6 @@ PER_ENVELOPE = 120
 """Benign rows per envelope; each has an attack twin, and half as many attacks
 arrive alone, so an envelope holds 300 rows as it did before the twins."""
 REPLAY = 1000
-PER_CIPHER = 120
-"""Benign rows per letter cipher, each with an attack twin, plus half as many
-attacks alone: 300 rows a cipher, as an envelope holds."""
-CIPHERS = ("ROT13", "Atbash", "leetspeak")
-"""garak's letter ciphers (``corpora/garak_encodings.py``), known gap 22."""
 ANCHOR_REPEATS = 8
 """Times each ``benign_ops`` tuning case appears in training: about 85 cases,
 so the anchor weighs about as much as one envelope's benign rows times five."""
@@ -293,11 +279,7 @@ async def _enveloped(
 
 
 async def build(
-    benign: list[str],
-    attack: list[str],
-    per_envelope: int,
-    replay: int,
-    per_cipher: int = PER_CIPHER,
+    benign: list[str], attack: list[str], per_envelope: int, replay: int
 ) -> list[dict[str, Any]]:
     """Rows: every envelope around benign text and its attack twin, attacks
     alone, and plain replay.
@@ -329,44 +311,7 @@ async def build(
         {"text": t, "label": 1, "shape": "plain", "at": 0, "distill": True}
         for t in rng.sample(attack, min(replay, len(attack)))
     ]
-    rows += ciphered(rng, benign, attack, per_cipher)
     rng.shuffle(rows)
-    return rows
-
-
-def ciphered(
-    rng: random.Random, benign: list[str], attack: list[str], per_cipher: int
-) -> list[dict[str, Any]]:
-    """Rows: each cipher over benign text and its attack twin, and attacks alone.
-
-    The twin plants the ciphered attack in the same ciphered text, so the pair
-    differs only in what is said. Text and attack are ciphered apart, which
-    for ROT13 and Atbash is the same as ciphering the whole, and for
-    leetspeak (a coin toss seeded by the string) keeps the attack findable.
-    No row is ``distill``: the base model's score on ciphertext is the error
-    being trained away.
-    """
-    security = [t for t in benign if SECURITY_WORDS.search(t)]
-    rows: list[dict[str, Any]] = []
-    for name in CIPHERS:
-        encode, shape = ENCODINGS[name], f"cipher:{name}"
-        for i in range(per_cipher):
-            pool = security if security and i % 2 == 0 else benign
-            text, planted = encode(rng.choice(pool)), encode(rng.choice(attack))
-            twin = plant(rng, text, planted)
-            rows.append({"text": text, "label": 0, "shape": shape, "distill": False})
-            rows.append(
-                {
-                    "text": twin,
-                    "label": 1,
-                    "shape": shape,
-                    "at": attack_at(planted, twin),
-                    "distill": False,
-                }
-            )
-        for _ in range(per_cipher // 2):
-            text = encode(rng.choice(attack))
-            rows.append({"text": text, "label": 1, "shape": shape, "at": 0, "distill": False})
     return rows
 
 
@@ -402,12 +347,6 @@ def main() -> int:
     p.add_argument(
         "--replay", type=int, default=REPLAY, help="Plain benign rows, and plain attack rows."
     )
-    p.add_argument(
-        "--per-cipher",
-        type=int,
-        default=PER_CIPHER,
-        help="Benign rows, and attack twins, per letter cipher.",
-    )
     args = p.parse_args()
     benign, attack, provenance = load_sources(args.cache)
     split = {
@@ -417,16 +356,11 @@ def main() -> int:
         )
         for name, held in (("train", False), ("val", True))
     }
-    train = asyncio.run(build(*split["train"], args.per_envelope, args.replay, args.per_cipher))
+    train = asyncio.run(build(*split["train"], args.per_envelope, args.replay))
     train += asyncio.run(anchors())
     random.Random(SEED).shuffle(train)
     val = asyncio.run(
-        build(
-            *split["val"],
-            args.per_envelope // VAL_ONE_IN,
-            args.replay // VAL_ONE_IN,
-            args.per_cipher // VAL_ONE_IN,
-        )
+        build(*split["val"], args.per_envelope // VAL_ONE_IN, args.replay // VAL_ONE_IN)
     )
     rows = train + val
     args.out.mkdir(parents=True, exist_ok=True)

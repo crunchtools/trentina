@@ -141,7 +141,7 @@ A prompt-injection classifier running on ONNX Runtime (CPU, no GPU required), sl
 
 The image ships that one model. Horizon, the base, shipped until 2.0.0: it refused about 150 ordinary tool replies a day (feeds, monitoring pages, issue lists) that its training had never shown it, and the fine-tune was fixed at model selection ([benchmark](benchmark.md#envelopes-not-prose-17)). Meta's `prompt-guard-2-86m` shipped beside it from 0.55.0 to 0.58.0 and was dropped (#362): it fails five of the six transforms of the obfuscation gate, so one zero-width character blinded it. `CLASSIFIER_MODEL_PATH` still reaches an export of it, or of any model, for research.
 
-**The obfuscation gate is enforced.** The image build classifies every corpus attack plain and under six transforms with the shipped model and writes the result into its `trentina-model.json` (`benchmarks/l2_obfuscation.py --record`); a model that fails stops the build. At startup the gateway reads the record: a model with a failing record, or none, is logged as `l2_obfuscation_gate_failed` or `l2_obfuscation_gate_unrecorded`, and under `TRENTINA_REQUIRE_HARDENED` the gateway refuses to start. The gate's state is part of the verdict stamp. garak's nineteen further encodings are measured against the model and gate nothing (`benchmarks/l2_encodings.py`, #423): the model reads quoted-printable and MIME, which barely change the text, and none of the others; base16, hex, base32, Ascii85, base85, UU, Braille, Morse, the NATO alphabet, sneaky bits, Base2048, Ecoji and Zalgo are decoded before it is asked (base16/hex, the six of #546 and the five of 6.6.0), and the letter ciphers are known gap 22. To run your own model, export it and record the gate against it before you point `CLASSIFIER_MODEL_PATH` at it.
+**The obfuscation gate is enforced.** The image build classifies every corpus attack plain and under six transforms with the shipped model and writes the result into its `trentina-model.json` (`benchmarks/l2_obfuscation.py --record`); a model that fails stops the build. At startup the gateway reads the record: a model with a failing record, or none, is logged as `l2_obfuscation_gate_failed` or `l2_obfuscation_gate_unrecorded`, and under `TRENTINA_REQUIRE_HARDENED` the gateway refuses to start. The gate's state is part of the verdict stamp. garak's nineteen further encodings are measured against the model and gate nothing (`benchmarks/l2_encodings.py`, #423): the model reads quoted-printable and MIME, which barely change the text, and none of the others; base16, hex, base32, Ascii85, base85, UU, Braille, Morse, the NATO alphabet, sneaky bits, Base2048, Ecoji and Zalgo are decoded before it is asked (base16/hex, the six of #546 and the five of 6.6.0), and ROT13, Atbash and leetspeak are read back when the reading is English (6.7.0, #720; what is not read back is gap 22). To run your own model, export it and record the gate against it before you point `CLASSIFIER_MODEL_PATH` at it.
 
 **So is the benign gate (#411).** The same build then runs the model, at the threshold it ships with, over 296 invented benign cases of the shapes production refused (unit properties, journals, disk-usage and container listings, metrics rows, replies that carry an identifier, agent-forum replies, machine-written meeting notes, writing about attacks), 207 of them gated, each read as the gateway reads a tool response: through the default transforms, the text block and then every string of the structured content, unpacked. A model that flags more than 2% of the held-out cases stops the build (`benchmarks/l2_benign.py --record`). The record carries the threshold it was taken at, so a gateway started with another `CLASSIFIER_THRESHOLD` reports `l2_benign_gate_unrecorded` until the gate is run at that one. Numbers, and the shapes the shipped model still flags (known gap 31), are in [benchmark.md](benchmark.md#l2-benign-gate-411-404).
 
@@ -252,7 +252,7 @@ gaps below.
 | URL-safe, unpadded or otherwise non-canonical base64 | as it arrived | the raw blob | judged, but L2 may react to the blob |
 | Text in base32, Ascii85, base85, UU (uuencode), Braille or Morse | as it arrived | the decoded text, in place (#546); base32, UU, Braille and Morse at any length, Ascii85 and base85 between 16 and 20000 characters | judged; the attack inside is read like the plain text ([benchmark](benchmark.md#garaks-encodings-423)) |
 | Text in the NATO alphabet, sneaky bits, Base2048, Ecoji or Zalgo | as it arrived | the decoded text, in place (6.6.0); NATO from eight code words, sneaky bits from twelve bits, Base2048 from twelve characters, Ecoji from eight emoji, Zalgo from two characters under three or more marks each | judged; NATO reads as one unbroken lower-case run (garak drops the spaces), and sneaky bits' cheapest reading recovers Latin text but can misread long code points (CJK) ([benchmark](benchmark.md#garaks-encodings-423)) |
-| Text in ROT13, Atbash or leetspeak | as it arrived | as it arrived; L1 matches its directive patterns through ROT13 | judged, with L2 detections lost and benign text flagged (gap 22) |
+| Text in ROT13 or any Caesar shift, Atbash, or leetspeak | as it arrived | read back in place when the reading is English (6.7.0, #720): a segment (a line, cut again at double quotes) whose words are under 30% common English and whose reading under one cipher is at least 30% and 20 points more, with five common words; inside it a common word whose reading is not one stays as it arrived. Leetspeak a token at a time, in a segment where five tokens read as common words. L1 also matches its directive patterns through ROT13 | judged; ROT13 and Atbash attacks are caught 41 of 44 and flag 1 of 86 benign texts, leetspeak 42 of 44 and 6 of 86 ([benchmark](benchmark.md#garaks-encodings-423)); text in another language under a cipher, and a cipher wrapped four words a line, are not read back (gap 22) |
 | Writing about attacks: security documentation, a detector's source, a security gateway's issue list or issue reply | as it arrived | as it arrived | judged, but L2 may flag it whatever it says (gap 31) |
 | Text in quoted-printable or MIME encoding | as it arrived | as it arrived, soft line breaks included | judged; L2 reads through it (42 of 44 attacks against 41 plain, 6 of 86 benign texts flagged) |
 | Text hidden in Unicode variant selectors | as it arrived | as it arrived; L1 counts the run | judged; L1's count alone refuses it, whatever it says |
@@ -339,10 +339,10 @@ one does; the rest name the benchmark that measured them.
    percent, backslash and character-reference escapes are decoded and
    read for instruction words. The unpack stage ahead of L1 decodes base32,
    Ascii85, base85, UU, Braille and Morse (#546) and the NATO alphabet,
-   sneaky bits, Base2048, Ecoji and Zalgo (6.6.0), so L1 reads their plain
-   text; a Caesar shift other than 13 and the letter ciphers still reach L2
-   and L3 as they arrived. The lookalike counter knows Cyrillic and Greek
-   only. What L2 makes of what still reaches it encoded is gap 22.
+   sneaky bits, Base2048, Ecoji and Zalgo (6.6.0), and reads back every
+   Caesar shift, Atbash and leetspeak when the reading is English (6.7.0),
+   so L1 reads their plain text. The lookalike counter knows Cyrillic and
+   Greek only. What is not read back is gap 22.
    Tested.
 7. **L1's own refusal is coarse on invisible characters.** Four of them
    already rate high risk. In the L1 briefing ablation
@@ -456,13 +456,19 @@ one does; the rest name the benchmark that measured them.
     lowercases and collapses colliding cells) can still read differently to the
     model within the gate's one-detection tolerance; that is model sensitivity
     (#17), not a decoder fault.
-22. **A letter cipher costs L2 detections and adds false positives**
-    (#423). Under ROT13 and Atbash the shipped model flags 26 and 17 of 44
-    attacks against 43 plain, and 24 and 12 of 86 benign texts against
-    none. Under leetspeak it now loses only one (42 of 44), but still
-    flags 20 of the 86 benign texts. L1
-    matches its directive patterns through ROT13 only, and those attacks
-    carry none: it counted 1 of 44. Tested, L2 in the image.
+22. **A letter cipher wrapped short, or in another language, is not read
+    back** (#423, narrowed in 6.7.0 by #720). Every text is valid
+    ciphertext, so unpack reads a segment back only when one cipher turns it
+    English, judged on its own words with five common ones at the least. An
+    attack in Atbash or a Caesar shift wrapped four words a line, or with a
+    double quote between every few words, is read by no layer as plain text;
+    nor is an attack in another language, whose reading is not English
+    either (the 2 of 44 the pipeline still loses). Inside a segment read
+    back, a rare word whose reading is not a common word is read back
+    anyway, and a leet token whose reading is not one stays as it arrived:
+    leetspeak still flags 6 of 86 benign texts. Retraining L2 on ciphered
+    text was tried twice and taught it nothing ([benchmark](benchmark.md#garaks-encodings-423)).
+    Tested, L2 in the image.
 23. **Closed (6.6.0).** An attack spelled in the NATO alphabet, or written
     in sneaky bits, used to pass L1 and L2 at 0 of 44: the code words are
     ordinary words and L2's tokenizer drops the invisible characters. The

@@ -328,6 +328,9 @@ class TestShape:
             lambda n: "\u2064" * n,  # sneaky bits: one word of n bits
             lambda n: "Ø" * n,  # a wall of Base2048
             lambda n: "🀄" * n,  # a wall of Ecoji
+            lambda n: "Vtaber nyy " * (n // 11),  # one ROT13 segment, read back whole
+            lambda n: "xq " * (n // 3),  # one segment of words no reading makes English
+            lambda n: "a4" * (n // 2) + "2",  # one leet-shaped run a non-leet digit ends
         ],
         ids=[
             "long-run",
@@ -343,6 +346,9 @@ class TestShape:
             "sneaky-word",
             "base2048-wall",
             "ecoji-wall",
+            "rot13-segment",
+            "letter-noise",
+            "leet-run",
         ],
     )
     def test_linear(self, make: Callable[[int], str]) -> None:

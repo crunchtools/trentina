@@ -524,9 +524,9 @@ the 6.6.0 decoders, with `--transforms`, the same day.
 | Unicode variant selectors | 28 | 44 | 9 | 14 | 52 | 72 |
 | quoted-printable | 41 | 41 | 0 | 0 | 1 | 1 |
 | MIME | 41 | 41 | 0 | 0 | 1 | 1 |
-| ROT13 | 26 | 26 | 4 | 4 | 20 | 20 |
-| Atbash | 17 | 17 | 5 | 5 | 7 | 7 |
-| leetspeak | 42 | 42 | 7 | 7 | 13 | 13 |
+| ROT13 (6.7.0) | 26 | 41 | 4 | 1 | 20 | 0 |
+| Atbash (6.7.0) | 17 | 41 | 5 | 1 | 7 | 0 |
+| leetspeak (6.7.0) | 42 | 42 | 7 | 4 | 13 | 2 |
 | NATO alphabet | 0 of 42 | 37 of 42 | 0 of 12 | 8 of 12 | 0 | 19 |
 | sneaky bits | 0 | 43 | 0 | 1 | 0 | 1 |
 | Base2048 | 0 | 43 | 0 | 0 | 0 | 0 |
@@ -570,10 +570,27 @@ What the rows say, in the order of the table:
 - **Quoted-printable and MIME are read.** They are one routine and one
   row. ASCII passes through them unchanged except for a soft line break
   every 76 characters, which is why garak ships both probes switched off.
-- **ROT13 and Atbash are read badly; leetspeak is read.** Detection falls to
-  26 and 17 of 44 and benign flags rise to 24 and 12 of 86. Leetspeak keeps
-  42 of 44 at 20 of 86 benign. L1's ROT13 stage reads directive patterns,
-  and the corpus is written to carry none. Known gap 22.
+- **ROT13, Atbash and leetspeak are read back (6.7.0, #720).** Alone, the
+  model catches 26 and 17 of 44 under ROT13 and Atbash and flags 24 and 12
+  of 86 benign texts; leetspeak it reads (42) but flags 20 of 86. No
+  decoder can tell ciphertext from text, so unpack reads a segment back
+  when one cipher turns it English (every Caesar shift and Atbash, and
+  leetspeak a token at a time). Read back, the pipeline catches 41, 41 and
+  42 and flags 1, 1 and 6 benign texts. The two attacks lost are written in
+  German and Spanish, whose reading is not English either. Over the docs,
+  source, tests and corpora (425,581 segments) nothing plain is read back;
+  the only segments that are are leetspeak attacks the corpora hold. The
+  model is the shipped one, measured 2026-11-05.
+
+  Retraining the model to read ciphers was tried first and failed. Two
+  RunPod rounds added ROT13, Atbash and leetspeak renderings of the
+  training sources, benign rows with counterfactual attack twins, 990 and
+  then 4,950 rows (GHA runs 42030658927 and 42039709770). The first left
+  ROT13 at 26 of 44, raised ciphered benign flags (forum replies 20 to 29),
+  lost leetspeak (42 to 37) and plain (43 to 42), and failed the benign
+  gate on meeting notes (4 of 185, 3 allowed); the second failed the gates
+  as well. A 2,000-word list does in microseconds what a small classifier
+  could not learn from a few thousand rows.
 - **The NATO alphabet, sneaky bits, Base2048, Ecoji and Zalgo are decoded
   (6.6.0).** Alone, the model reads none of the first four (0 attacks) and
   flags Zalgo by its marks, benign text too (40 of 72 forum replies).
@@ -601,9 +618,10 @@ What the rows say, in the order of the table:
   encoded text, the pressure the
   [benign gate](#l2-benign-gate-411-404) was added to oppose.
 - base16, hex, the six of #546 and the five of 6.6.0 are rows of the
-  [coverage table](defense-pipeline.md#coverage). The letter ciphers are
-  [known gap](defense-pipeline.md#known-gaps) 22, held open by a test and
-  left to the model (#720). The half that needs the
+  [coverage table](defense-pipeline.md#coverage), and so, since 6.7.0, are
+  the letter ciphers; what they still miss is
+  [known gap](defense-pipeline.md#known-gaps) 22, held open by a test. The
+  half that needs the
   model runs in the image (`tests/test_l2_integration.py`).
 - The benchmark is not part of the image build. It classifies about 3,400
   texts twice, many of them long once encoded, and took 9 minutes 20
