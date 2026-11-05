@@ -1091,3 +1091,9 @@ check = "copy_paste_detection"
 path = "src/trentina/gateway/webauthn.py"
 justification = "_auth_data reads WebAuthn authenticator data by fixed offset and _public_key holds an SPKI to a COSE algorithm; the matches (_parse_openrouter_search, json_object) are unrelated parsers that share only the bounds-check-then-raise guard shape. Sharing a helper across the passkey check and the L3 provider code would couple the root-gating route to the judge's parsing."
 classification = "by_design"
+
+[[exceptions]]
+check = "hyperbolic_language"
+path = "src/trentina/unpack/common_words.txt"
+justification = "A word list, not prose: the 2,000 commonest words of the L2 training sources' benign text, which the letter-cipher reader (#720) scores readings against. One of them is on the hype list; removing it would change which segments are read back."
+classification = "by_design"

@@ -82,6 +82,7 @@ from .alphabets import (
     decode_zalgo,
 )
 from .archive import OPENABLE, ZIP, Budget, Entry, open_archive
+from .letters import read_through
 from .ocr import MAX_IMAGE_BYTES, MAX_IMAGES, ImageText, read_images
 from .pdf import SECTIONS, PdfReading, read_pdf
 from .signatures import OPAQUE, Kind, from_media_type, identify
@@ -315,11 +316,14 @@ def unpack(text: str) -> Unpacked:
     #   on-failure: fail-closed (binary no layer reads is the binary_unread gap); a
     #     token that does not decode strictly is read as it arrived
     #   owner: unpack.scan.unpack
-    #   evidence: T1 strict decode + re-encode equality (b64/b32/a85/b85/uu),
-    #     Braille/Morse by alphabet; T4 test_unpack.py linearity; T3 layer contract
+    #   evidence: T1 strict decode + re-encode (b64/b32/a85/b85/uu), Braille/Morse
+    #     by alphabet, letter ciphers when the reading is English; T4 linearity
     state = _Pass()
-    unpacked = _unpack(text, 0, state)
-    return state.result(_ascii85_pass(unpacked, state))
+    unpacked = _ascii85_pass(_unpack(text, 0, state), state)
+    # Last, so a cipher inside base64 is read through too (#720, gap 22).
+    read, ciphered = read_through(unpacked)
+    state.stats.text_decoded += ciphered
+    return state.result(read)
 
 
 def _ascii85_pass(text: str, state: _Pass, depth: int = 0) -> str:
