@@ -441,13 +441,13 @@ def test_a_binary_egress_response_is_read_by_no_layer() -> None:
     so a body a layer cannot positively read is the ``binary_unread`` gap
     (withheld under ``block``, delivered with a warning under ``flag``). A route
     that began reading binary bodies would change this."""
-    from trentina.gateway import egress_http
+    from trentina.transports import perimeter
 
-    assert egress_http._is_text("text/html; charset=utf-8") is True
-    assert egress_http._is_text("application/json") is True
-    assert egress_http._is_text("application/octet-stream") is False
-    assert egress_http._is_text("image/png") is False
-    assert egress_http._is_text("") is False  # fail closed: unknown is not text
+    assert perimeter._is_text("text/html; charset=utf-8") is True
+    assert perimeter._is_text("application/json") is True
+    assert perimeter._is_text("application/octet-stream") is False
+    assert perimeter._is_text("image/png") is False
+    assert perimeter._is_text("") is False  # fail closed: unknown is not text
 
     page = Path(__file__).parents[1].joinpath("docs/defense-pipeline.md").read_text()
     assert "32. **A binary egress response is not read**" in page

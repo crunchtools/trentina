@@ -119,11 +119,45 @@ rules:
       exclude:
         - "**/trentina/reach/egress.py"
         - "**/trentina/gateway/client_egress.py"
+        - "**/trentina/transports/perimeter.py"
     pattern-either:
       - pattern: asyncio.open_connection(...)
       - pattern: socket.create_connection(...)
       - pattern: socket.socket(...)
       - pattern: $LOOP.create_connection(...)
+
+  - id: trentina-network-reach-in-transports
+    message: >-
+      A transport module reaching the network itself. A Route or Listener
+      never holds a socket, a pooled client or the egress guard: the spine
+      (transports/perimeter.py) dials the checked origin and hands the route a
+      sealed Upstream (#535). Import the contract from transports.base, and
+      send through the Upstream you were handed.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      obligation: O6 EGRESS
+    paths:
+      include:
+        - "**/trentina/transports/**"
+        # The built-in routes on the spine; each port adds its module.
+        - "**/trentina/gateway/egress_http.py"
+        - "**/.semgrep/tests/**"
+      exclude:
+        - "**/trentina/transports/perimeter.py"
+    pattern-either:
+      - pattern: import httpx
+      - pattern: import httpcore
+      - pattern: from httpx import $X
+      - pattern: from httpcore import $X
+      - pattern: from trentina.gateway.upstream import $X
+      - pattern: from trentina.gateway import upstream
+      - pattern: from trentina.reach.egress import $X
+      - pattern: from trentina.reach import egress
+      - pattern: from ..gateway.upstream import $X
+      - pattern: from ..gateway import upstream
+      - pattern: from ..reach.egress import $X
+      - pattern: from ..reach import egress
 
   - id: trentina-log-exception-text
     message: >-

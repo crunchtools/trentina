@@ -21,14 +21,22 @@ dispatchable (``mcp``), not what is registered.
 
 from __future__ import annotations
 
+import importlib
+import re
 import threading
-from typing import TYPE_CHECKING
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
 
-from .base import Carrier, Face
-from .mcp import mcp_transport
+from .base import Audit, Carrier, Face, Route
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from ..gateway.destination import DestinationKind
+    from ..gateway.loader import GatewayConfig
+    from ..gateway.profile import Profile
     from .base import Transport
+    from .perimeter import Mount
 
 #: Guards the duplicate-name check and the insertion in ``register_transport`` as
 #: one critical section, so "a name is never reassigned" holds even if two
@@ -48,12 +56,33 @@ SUPPORTED_TRANSPORT_API: frozenset[int] = frozenset({1})
 #: to ``TRANSPORTS`` (below), never to this set.
 BUILTIN_TRANSPORTS: frozenset[str] = frozenset({"mcp"})
 
-#: Name → transport. Seeded with the built-ins; ``register_transport`` adds to
-#: it. One role, one table; kept apart from the transform table on purpose.
-TRANSPORTS: dict[str, Transport] = {"mcp": mcp_transport}
+#: Name → transport. Seeded with the built-ins on first use; ``register_transport``
+#: adds to it. One role, one table; kept apart from the transform table on purpose.
+#: Seeded lazily because the ``mcp`` transport imports the gateway, which imports
+#: it back: importing this module must not start that chain.
+_TRANSPORTS: dict[str, Transport] = {}
 
 
-def _supported_api(half: Face | Carrier) -> bool:
+def _table() -> dict[str, Transport]:
+    """The transport table, with the built-ins in it."""
+    if "mcp" not in _TRANSPORTS:
+        # The mcp transport and the gateway package import each other; the
+        # gateway must finish loading first, as it does on every serving path.
+        importlib.import_module("trentina.gateway")
+        from .mcp import mcp_transport
+
+        _TRANSPORTS.setdefault("mcp", mcp_transport)
+    return _TRANSPORTS
+
+
+def __getattr__(name: str) -> Any:
+    """``TRANSPORTS`` is the seeded table, read on first use (PEP 562)."""
+    if name == "TRANSPORTS":
+        return _table()
+    raise AttributeError(name)
+
+
+def _supported_api(half: Face | Carrier | Route[Any, Any]) -> bool:
     """Whether ``half`` declares an ``api_version`` this build runs.
 
     ``type(version) is int`` rather than ``isinstance``: ``bool`` is an ``int``
@@ -63,6 +92,18 @@ def _supported_api(half: Face | Carrier) -> bool:
     """
     version = getattr(half, "api_version", None)
     return type(version) is int and version in SUPPORTED_TRANSPORT_API
+
+
+def _insert(table: dict[str, Any], kind: str, name: str, value: Any) -> None:
+    """Add ``value`` to ``table`` under a name nobody holds, or refuse.
+
+    The duplicate check and the insertion are one critical section: two callers
+    must not both pass the check and then overwrite each other.
+    """
+    with _REGISTER_LOCK:
+        if name in table:
+            raise ValueError(f"{kind} {name!r} is already registered; names are never reassigned")
+        table[name] = value
 
 
 def register_transport(name: str, transport: Transport) -> None:
@@ -98,14 +139,7 @@ def register_transport(name: str, transport: Transport) -> None:
             f"transport {name!r}: declares an api_version this build does not run; "
             f"supported: {sorted(SUPPORTED_TRANSPORT_API)}"
         )
-    # The duplicate check and the insertion are one critical section: two
-    # callers must not both pass the check and then overwrite each other.
-    with _REGISTER_LOCK:
-        if name in TRANSPORTS:
-            raise ValueError(
-                f"transport {name!r} is already registered; names are never reassigned"
-            )
-        TRANSPORTS[name] = transport
+    _insert(_table(), "transport", name, transport)
 
 
 def build_transport(name: str) -> Transport:
@@ -120,14 +154,91 @@ def build_transport(name: str) -> Transport:
     """
     from ..gateway.errors import ProfileConfigError
 
-    if name in TRANSPORTS:
-        return TRANSPORTS[name]
+    table = _table()
+    if name in table:
+        return table[name]
     if ":" in name:
         raise ProfileConfigError(
             f"transport {name!r}: external transport plugins have no entry-point group "
             f"yet — the Face/Carrier contract is untyped until #535; registered transports: "
-            f"{sorted(TRANSPORTS)}"
+            f"{sorted(table)}"
         )
-    raise ProfileConfigError(
-        f"unknown transport {name!r}; registered transports: {sorted(TRANSPORTS)}"
-    )
+    raise ProfileConfigError(f"unknown transport {name!r}; registered transports: {sorted(table)}")
+
+
+# ---- The perimeter routes (#535). ----------------------------------------------
+#
+# The gateway's own routes, seeded here and nowhere else. Being in this table is
+# what makes a route in-tree: the spine hands it ``InTree`` (the profile and the
+# operation) because it judges its own protocol. ``register_route`` and the
+# ``dist:`` loader add entries that are NOT seeded and get a plain ``Context``;
+# nothing exported adds to this table, so the privilege cannot be claimed.
+
+
+def _seed() -> Mapping[str, tuple[Route[Any, Any], DestinationKind]]:
+    from ..gateway.destination import DestinationKind
+    from ..gateway.egress_http import HttpRoute
+
+    return MappingProxyType({"http": (HttpRoute(), DestinationKind.EGRESS)})
+
+
+#: The built-in route names: what the seed holds, and no plugin may take.
+BUILTIN_ROUTES: frozenset[str] = frozenset({"http", "git", "llm", "matrix", "forward", "egress"})
+
+#: A route name: lower-case, a letter first, at most 32 characters. It is a URL
+#: segment and an audit column, so nothing else is admitted.
+_ROUTE_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+
+#: Routes registered in-process or loaded from a ``dist:`` plugin: never seeded,
+#: so never in-tree. One role, one table, beside ``TRANSPORTS``.
+ROUTES: dict[str, Route[Any, Any]] = {}
+
+
+def register_route(name: str, route: Route[Any, Any]) -> None:
+    """Add a route that is not the gateway's own, or fail closed.
+
+    Refuses, by name: anything that is not a ``Route`` (a ``Listener`` is built
+    in only: a new port is a larger surface than a path); an ``api_version`` this
+    build does not run; a name that is not a route name or is a built-in's; a
+    path outside ``/proxy/<name>/``; and
+    ``Audit.ON_FINDING``, since a route that is not ours does not get to leave
+    its clean calls unrecorded. The table is unchanged on every refusal.
+
+    Raises:
+        TypeError: ``route`` is not a ``Route``.
+        ValueError: any other refusal above.
+    """
+    if not isinstance(route, Route):
+        raise TypeError(f"route {name!r}: not a Route (a Listener is built in only)")
+    if not _supported_api(route):
+        raise ValueError(
+            f"route {name!r}: declares an api_version this build does not run; "
+            f"supported: {sorted(SUPPORTED_TRANSPORT_API)}"
+        )
+    if not _ROUTE_NAME.fullmatch(name) or name in BUILTIN_ROUTES or route.name != name:
+        raise ValueError(f"route {name!r}: not a free route name matching the route's own")
+    if not route.path.startswith(f"/proxy/{name}/"):
+        raise ValueError(f"route {name!r}: is served under /proxy/{name}/ and nowhere else")
+    if route.audit is not Audit.ALWAYS:
+        raise ValueError(f"route {name!r}: records every call; ON_FINDING is built in only")
+    _insert(ROUTES, "route", name, route)
+
+
+def configured(name: str, config: GatewayConfig) -> bool:
+    """Whether the file configures any instance of the built-in route ``name``.
+    A route with nothing to reach is not mounted, as before #535."""
+    return name == "http" and bool(config.egress_upstreams)
+
+
+#: The routes this gateway serves, by name, as mounted at startup.
+MOUNTED: dict[str, Mount] = {}
+
+
+def mount_routes(server: Any, config: GatewayConfig, profiles: dict[str, Profile]) -> None:
+    """Mount every built-in route the configuration uses on ``server``."""
+    from .perimeter import Mount, mount
+
+    for name, (route, kind) in _seed().items():
+        if configured(name, config):
+            MOUNTED[name] = Mount(route, kind, config, in_tree=True)
+            mount(server, MOUNTED[name], profiles)

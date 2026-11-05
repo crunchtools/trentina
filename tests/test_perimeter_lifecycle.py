@@ -65,3 +65,65 @@ def test_a_gateway_calls_row_is_written_only_by_the_known_lifecycles() -> None:
         f"gone: {sorted(_ALLOWED - callers)}. A perimeter reverse proxy must write "
         "its row through relay.Operation, not record_gateway_call directly."
     )
+
+
+# --- The spine is the only way onto the perimeter (#535 R5) ----------------------
+
+#: Modules that mount a route that is NOT a perimeter path: content pushed in,
+#: the approval page, OAuth callbacks, the gateway's own MCP surface.
+_NOT_PERIMETER = {
+    "__init__.py",
+    "gateway/alert_ingress.py",
+    "gateway/approval_routes.py",
+    "gateway/backend_oauth.py",
+    "gateway/app.py",
+}
+
+#: Perimeter paths not yet moved onto the spine. Each port removes its module;
+#: #535 R11 leaves this empty, and then a perimeter path has one way in.
+_NOT_YET_ON_THE_SPINE = {
+    "gateway/git_transport.py",
+    "gateway/llm_proxy.py",
+    "gateway/matrix_proxy.py",
+    "gateway/client_egress.py",
+}
+
+_SPINE = "transports/perimeter.py"
+
+
+def test_only_the_spine_mounts_a_perimeter_path() -> None:
+    """A route served by hand skips the spine: its caller, its slot, its dial,
+    its judging and its row. ``custom_route`` and ``start_server`` are the two
+    ways to serve something; outside the spine only non-perimeter modules (and,
+    until #535 R11, the routes still being ported) may call them."""
+    allowed = _NOT_PERIMETER | _NOT_YET_ON_THE_SPINE | {_SPINE}
+    callers = _modules_calling("custom_route") | _modules_calling("start_server")
+    assert callers <= allowed, (
+        f"serves a route outside the spine: {sorted(callers - allowed)}. A perimeter "
+        "route is a transports.base.Route mounted by transports.registry."
+    )
+
+
+def _route_classes() -> set[str]:
+    """Every class in ``src`` that subclasses ``Route`` or ``Listener``, by name."""
+    found: set[str] = set()
+    for path in _SRC.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            for base in node.bases:
+                target = base.value if isinstance(base, ast.Subscript) else base
+                name = target.id if isinstance(target, ast.Name) else getattr(target, "attr", "")
+                if name in {"Route", "Listener"}:
+                    found.add(node.name)
+    return found
+
+
+def test_every_route_in_the_source_is_seeded() -> None:
+    """A Route class the registry does not seed is never mounted, so it is
+    either dead or about to be served some other way."""
+    from trentina.transports import registry
+
+    seeded = {type(route).__name__ for route, _kind in registry._seed().values()}
+    assert _route_classes() == seeded

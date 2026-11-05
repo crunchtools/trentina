@@ -128,6 +128,9 @@ class Operation:
     #: recorded and not only shown to the agent.
     flag_reason: str | None = None
     holds_slot: bool = False
+    #: The route's audit policy (``Audit.ON_FINDING``): a row only for a
+    #: refusal, a failure or a finding, never for clean traffic.
+    only_on_finding: bool = False
     finished: bool = False
     upstream: AsyncExitStack = field(default_factory=AsyncExitStack)
     _slots: Slots | None = field(default=None, init=False, repr=False)
@@ -148,9 +151,11 @@ class Operation:
     async def finish(self) -> None:
         """Close upstream, give the slot back and write the audit row. Once.
 
-        The destination and tool are the caller's text, stored there and nowhere
-        else (#266). Like ``router._audit``, a lost row never fails what it
-        records.
+        With ``only_on_finding`` the row is written only when a reason was
+        settled; what the operation held is closed either way, because the
+        close and the row are two obligations, not one (#535). The destination
+        and tool are the caller's text, stored there and nowhere else (#266).
+        Like ``router._audit``, a lost row never fails what it records.
         """
         if self.finished:
             return
@@ -160,30 +165,35 @@ class Operation:
         finally:
             if self.holds_slot and self._slots is not None:
                 self._slots.give(self.profile.name)
-            try:
-                record_gateway_call(
-                    self.profile.name,
-                    self.backend,
-                    self.tool,
-                    self.outcome.value,
-                    int((time.monotonic() - self.started) * 1000),
-                    self.reason,
-                    bytes_arrived=self.received,
-                    bytes_delivered=self.sent,
-                    destination=self.destination,
-                    destination_kind=(
-                        self.destination_kind.value
-                        if self.destination and self.destination_kind
-                        else None
-                    ),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "perimeter: audit row lost backend=%s profile=%s err=%s",
-                    self.backend,
-                    self.profile.name,
-                    exc_kind(exc),
-                )
+            if not self.only_on_finding or self.reason is not None:
+                self._record()
+
+    def _record(self) -> None:
+        """Write this operation's one ``gateway_calls`` row."""
+        try:
+            record_gateway_call(
+                self.profile.name,
+                self.backend,
+                self.tool,
+                self.outcome.value,
+                int((time.monotonic() - self.started) * 1000),
+                self.reason,
+                bytes_arrived=self.received,
+                bytes_delivered=self.sent,
+                destination=self.destination,
+                destination_kind=(
+                    self.destination_kind.value
+                    if self.destination and self.destination_kind
+                    else None
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "perimeter: audit row lost backend=%s profile=%s err=%s",
+                self.backend,
+                self.profile.name,
+                exc_kind(exc),
+            )
 
 
 class Relayed(StreamingResponse):
