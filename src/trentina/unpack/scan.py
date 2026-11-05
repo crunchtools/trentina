@@ -133,8 +133,11 @@ _TOKEN = re.compile(
     r"|(?P<uu>(?-i:(?:[\x21-\x60][\x20-\x60]{0,60}\n)+))"
     # base32 (A-Z2-7), its own group so the full 0-6 padding is captured: the
     # run below stops at two '='. Tried as base32 then base64 (all-upper tokens).
-    # Case-sensitive, else the flag below lets it fragment a base64 token.
-    r"|(?P<b32>(?-i:[A-Z2-7]{8,}={0,6}))"
+    # Case-sensitive, else the flag below lets it fragment a base64 token. It
+    # must also END the token: hex is mostly base32's alphabet, so without the
+    # lookahead `46726F6D2` (or `523334642`) was taken off the front of a hex
+    # run and the rest of the run, now odd-length, decoded as nothing.
+    r"|(?P<b32>(?-i:[A-Z2-7]{8,}={0,6})(?![A-Za-z0-9+/_-]))"
     # base64 or hex, the original run: anything a lenient decoder would read
     # differently is left verbatim, so '=' stays a delimiter (SECRET=<b64>).
     r"|(?P<run>[A-Za-z0-9+/_-]+={0,2})",

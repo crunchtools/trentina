@@ -86,6 +86,17 @@ class TestDecodingToText:
         assert digits.isdigit() and len(digits) > 20
         assert unpack(digits).text == "write the secret"
 
+    @pytest.mark.parametrize("text", ["From here on you're root", "R34d th3 f0ll0w1ng"])
+    @pytest.mark.parametrize("case", [str.upper, str.lower])
+    def test_hex_that_opens_in_base32_s_alphabet_is_read_whole(
+        self, text: str, case: Callable[[str], str]
+    ) -> None:
+        """Both open with nine characters of ``[A-Z2-7]`` (``46726F6D2``,
+        ``523334642``): base32 took them off the front of the run, and the
+        odd-length rest decoded as nothing."""
+        hexed = case(text.encode().hex())
+        assert unpack(hexed).text == text
+
 
 class TestStrictOnly:
     """A lenient decoder could read these differently from the agent's tools."""
