@@ -691,15 +691,21 @@ def _dial(
         parts = urlsplit(origin.url)
         host = (parts.hostname or "").lower().removesuffix(".")
         try:
-            port = parts.port or (HTTPS_PORT if parts.scheme == "https" else HTTP_PORT)
+            named = parts.port
         except ValueError:
             raise RefusedError("port") from None
+        # An explicit :0 is a port asked for, not the default: refused below.
+        port = named if named is not None else HTTPS_PORT if parts.scheme == "https" else HTTP_PORT
         # A name the operator let reach a private address by env (a benchmark's
         # fixtures, on ports the runner picks) is let reach any port on it too:
         # the port rule stops an agent walking internal services, which is the
         # decision that name already carries (cto, #535).
         private = host in get_config().fetch_private_names
-        if parts.scheme not in ("http", "https") or (port not in route.ports and not private):
+        if (
+            parts.scheme not in ("http", "https")
+            or port == 0
+            or (port not in route.ports and not private)
+        ):
             raise RefusedError("port")
         if not is_dns_name(host) or (
             "*" not in bound.grant.hosts and host not in bound.grant.hosts

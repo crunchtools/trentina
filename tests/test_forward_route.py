@@ -92,6 +92,8 @@ class TestWhereItGoes:
             ("https://10.0.0.7/x", "host_not_listed"),  # an address is never a host
             (f"https://{HOST}:8443/x", "port"),
             ("ftp://aeb-fixture.test/x", "bad_url"),
+            ("http://[::1/x", "bad_url"),  # malformed: a refusal, never a 500
+            (f"http://{HOST}:0/x", "port"),  # :0 is asked for, not the default
             ("not a url", "bad_url"),
         ],
     )

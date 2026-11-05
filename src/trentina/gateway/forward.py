@@ -105,12 +105,17 @@ class ForwardRoute(Route[ForwardAdmitted, Context]):
         urls = parse_qs(wire.query, keep_blank_values=True).get("url", [])
         if len(urls) != 1:
             raise RefusedError("bad_url")
-        parts = urlsplit(urls[0])
-        if parts.scheme not in ("http", "https") or not parts.hostname or parts.username:
+        try:
+            parts = urlsplit(urls[0])
+            hostname = parts.hostname
+        except ValueError:
+            # An unmatched IPv6 bracket and the like: malformed, not a 500.
+            raise RefusedError("bad_url") from None
+        if parts.scheme not in ("http", "https") or not hostname or parts.username:
             raise RefusedError("bad_url")
         if wire.method.upper() not in grant.methods:
             raise RefusedError("method_not_listed")
-        host = parts.hostname.lower()
+        host = hostname.lower()
         return ForwardAdmitted(
             origin=AgentUrl(urls[0]),
             # The caller's host and a fingerprint of its path: never the path,

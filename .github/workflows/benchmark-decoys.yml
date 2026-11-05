@@ -654,8 +654,13 @@ jobs:
               --method-repository https://github.com/luckyPipewrench/agent-egress-bench \
               --method-commit "$BENCH_REF" --tool-version "$GITHUB_SHA" \
               --output "/results/fetch-$AEB_TRENTINA_MODE.json" \
-              > "results/fetch-$AEB_TRENTINA_MODE.log" 2>&1 || true
+              > "results/fetch-$AEB_TRENTINA_MODE.log" 2>&1 || rc=$?
           grep -v '^{' "results/fetch-$AEB_TRENTINA_MODE.log" | tee -a "$GITHUB_STEP_SUMMARY"
+          # The runner exits nonzero on an incomplete measurement, which a run
+          # with unserved transports always is; that still publishes. No summary
+          # at all is an infrastructure failure, and fails the job.
+          echo "runner exit: ${rc:-0}" | tee -a "$GITHUB_STEP_SUMMARY"
+          test -s "results/fetch-$AEB_TRENTINA_MODE.json"
 
       - name: Stop the gateway
         if: always()
