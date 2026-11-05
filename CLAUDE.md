@@ -125,9 +125,9 @@ uv run trentina
   unlinks one only when something reads its key, and an abandoned flow never
   is read again.
 - `CLASSIFIER_MODEL` — the L2 model, by name under `/models` (#350). Default
-  `prompt-injection-guard-small` (Horizon-Labs, Apache-2.0), the one model the
-  image ships (#362 dropped `prompt-guard-2-86m`, which fails the obfuscation
-  gate). A model directory carries `trentina-model.json` (id, pinned
+  `prompt-injection-guard-small-ct`, Horizon-Labs' `prompt-injection-guard-small`
+  (Apache-2.0) fine-tuned on benign tool replies (#17), the one model the image
+  ships (#362 dropped `prompt-guard-2-86m`, which fails the obfuscation gate). A model directory carries `trentina-model.json` (id, pinned
   revision, threshold, which outputs are malicious, the window it is scanned
   in), written by
   `scripts/export_l2_model.py`; without one, labels come from `config.json`
@@ -151,8 +151,8 @@ uv run trentina
   gate a shipped pack must pass; `docs/l3-prompt-tuning.md` is the guide.
 - `CLASSIFIER_MODEL_PATH` — any model directory; wins over `CLASSIFIER_MODEL`.
   How to try a model the image does not ship.
-- `CLASSIFIER_THRESHOLD` — overrides the model's own threshold (0.7 for
-  Horizon, 0.5 for Prompt Guard 2; 0.5 with no manifest). A profile's
+- `CLASSIFIER_THRESHOLD` — overrides the model's own threshold (0.5 for
+  the shipped `-ct`, 0.7 for Horizon's base model; 0.5 with no manifest). A profile's
   `defense.l2_threshold` is unset by default and can only make L2 stricter.
 - `CLASSIFIER_MAX_TOKENS` — L2's CPU budget in tokens; 0 removes it, leaving
   L3's context as the cap (default: 32768)
