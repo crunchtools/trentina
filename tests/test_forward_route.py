@@ -145,6 +145,37 @@ class TestThePrivateAddressRule:
         assert status == 200
         assert len(seen) == 1
 
+    def test_a_private_name_is_exempt_from_the_port_rule_too(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A benchmark's fixtures listen on ports the runner picks (cto, #535);
+        the name's env opt-in covers the port, and only that name's."""
+        from trentina import config as config_mod
+
+        monkeypatch.setenv("TRENTINA_FETCH_PRIVATE_NAMES", HOST)
+        monkeypatch.setattr(config_mod, "_config", None)
+        status, _, seen, _ = _go(
+            monkeypatch, tmp_path, _fetch(f"http://{HOST}:8443/x"), reply(200, "{}")
+        )
+        assert (status, len(seen)) == (200, 1)
+        _, body, seen, _ = _go(
+            monkeypatch, tmp_path, _fetch("http://other.example:8443/x"), reply(200, "{}")
+        )
+        assert (body["error"]["reason"], seen) == ("port", [])
+
+    def test_a_listed_name_that_does_not_resolve_is_not_containment(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Unreachable is not refused: a deny marker here would score a dead
+        name as a block (SPEC R15)."""
+        status, body, seen, rows = _go(
+            monkeypatch, tmp_path, _fetch(f"https://{HOST}/x"), reply(200, "{}"), addresses=[]
+        )
+        assert (status, body["error"]["reason"]) == (502, "upstream_unreachable")
+        assert "blocked" not in body
+        assert seen == []
+        assert rows[0]["outcome"] == "backend_error"
+
 
 class TestWhatItCarries:
     def test_a_flagged_request_never_leaves(

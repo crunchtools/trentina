@@ -27,7 +27,7 @@ under that name.
   redirect, injects no credential, and judges both edges. A refusal carries
   the egress-benchmark deny marker only when the gateway denied or blocked.
   `TRENTINA_FETCH_PRIVATE_NAMES` lets exact names (a benchmark's fixtures)
-  resolve to a private address. This is what #507's benchmark run needs, as
+  resolve to a private address on any port; `fetch` honours it too. This is what #507's benchmark run needs, as
   config alone.
 - **Route plugins (`trentina.transports.v1`).** An operator-installed route
   type is served at `/proxy/<name>/<instance>/`. The spine owns auth, the

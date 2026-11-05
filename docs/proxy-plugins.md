@@ -84,12 +84,11 @@ benchmark drives.
 - **Hosts.** The host must be named in both the instance's `hosts` and the
   grant's, and is checked by name before it is resolved. A literal address is
   never a host.
-- **Ports.** http on 80 and https on 443 only.
+- **Ports.** 80 or 443 only.
 - **Redirects and addresses.** No redirect is followed. Every answer for the
   name is checked on every call and never cached.
 - **Judging.** The request line, query, headers and body are judged before
-  they leave (the layers, the credential detector, and the gatekeeper where
-  configured). The response is judged before it is delivered.
+  they leave (the layers and the credential detector). The response is judged before it is delivered.
 - **Credentials.** None is ever injected. A `forward` instance or grant that
   names one is refused.
 - **Refusals.** A refusal is JSON:
@@ -100,9 +99,9 @@ benchmark drives.
     containment.
 
 `TRENTINA_FETCH_PRIVATE_NAMES` (comma-separated exact names, warned at startup)
-lets those names resolve to a loopback or private address. It exists for a
-benchmark's local fixtures. Every other name is still held to the address
-rule.
+lets those names resolve to a loopback or private address, on any port. It
+exists for a benchmark's local fixtures, which listen on ports the runner
+picks. Every other name is still held to the address rule and the port rule.
 
 ## Route plugins (`dist:`)
 
@@ -144,7 +143,7 @@ class Acme(Route[AcmeAdmitted, Context]):
     def render(self, refused: RefusedError) -> Any:
         return refused.reason        # your wire shape; never refused.detail
 
-def make(options):                   # options: the instance's options:
+def make(options):                   # called once, with {}; one Route serves every instance
     return Acme()
 ```
 
@@ -161,7 +160,7 @@ proxies:
     type: "acme-route:acme"
     origins: {api: https://api.acme.example}         # https, no userinfo
     credential: {header: Authorization, prefix: "Bearer "}
-    options: {region: eu}                            # handed to make(); never dialled
+    options: {region: eu}                            # admit reads instance.options; never dialled
 # under profiles.agent1:
 #   proxies:
 #     acme: {origins: [api], token_env: ACME_TOKEN}

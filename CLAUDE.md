@@ -257,8 +257,8 @@ new pattern goes into that file's attack, benign and linearity tables.
 - `GET|POST /proxy/forward/{instance}/fetch?url=` — an agent-chosen URL
   (#535, for #507): host in the instance's and the grant's `hosts`, by name,
   ports 80/443, no redirect, no credential, both edges judged.
-  `TRENTINA_FETCH_PRIVATE_NAMES` (exact names, warned) lets a fixture name
-  reach a private address. `/proxy/<name>/{instance}/...` for a `dist:` route
+  `TRENTINA_FETCH_PRIVATE_NAMES` (exact names, warned) exempts a fixture
+  name from the address rule and the port rule. `/proxy/<name>/{instance}/...` for a `dist:` route
   plugin. Every `/proxy/*` path and CONNECT is mounted by
   `transports.registry.mount_routes`/`start_listeners`; nothing else serves one.
 - `GET|POST /proxy/git/{remote}/{owner}/{repo}[.git]/{info/refs,git-upload-pack,git-receive-pack}` —

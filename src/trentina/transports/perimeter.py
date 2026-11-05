@@ -40,6 +40,7 @@ from starlette.requests import ClientDisconnect
 from starlette.responses import Response
 
 from .. import logsafe
+from ..config import get_config
 from ..errors import EgressRefusedError as GuardRefusedError
 from ..gateway.auth import resolve_profile_by_token
 from ..gateway.backend import response_byte_cap
@@ -332,8 +333,8 @@ def _bind_route(asked: Binding, route: str) -> Bound | None:
 
 
 #: How each built-in route type finds an instance and a profile's grant on it,
-#: in the configuration blocks it had before ``proxies:``. #535 R12 replaces
-#: this table with the one lookup.
+#: in the configuration blocks ``proxies:`` normalizes into (#535 R12: one home
+#: per fact, so these read the same objects whichever spelling the file used).
 _BINDERS = {
     "http": _bind_http,
     "llm": _bind_llm,
@@ -470,9 +471,10 @@ class PinnedUpstream(Upstream):
         mode = effective_mode(self.op.profile, self.bound.grant.enforcement)
         sent = dict(headers)
         warning = await self._judge_request(method, path, query, sent, content, mode)
-        # The profile's credential goes on after judging: it is never judged or logged.
+        # The profile's credential goes on after judging: it is never judged or
+        # logged, and never sent where the agent chose the destination.
         secret: str | None = None
-        if (credential := _credential(self.bound)) is not None:
+        if not self.agent and (credential := _credential(self.bound)) is not None:
             header, value, secret = credential
             sent[header] = value
         url = build_url(self.origin.url, path, query)
@@ -584,6 +586,10 @@ class PinnedUpstream(Upstream):
                     response_headers(list(resp.headers.items())),
                 )
         except GuardRefusedError as exc:
+            if self.agent and exc.reason == "unresolvable":
+                # An agent-chosen name that does not resolve is not reached,
+                # not refused: no deny marker may stand for it (#535 R15).
+                raise RefusedError("upstream_unreachable") from None
             raise _from_guard(exc) from None
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             logger.warning("perimeter: upstream unreachable err=%s", logsafe.exc_kind(exc))
@@ -688,7 +694,12 @@ def _dial(
             port = parts.port or (HTTPS_PORT if parts.scheme == "https" else HTTP_PORT)
         except ValueError:
             raise RefusedError("port") from None
-        if parts.scheme not in ("http", "https") or port not in route.ports:
+        # A name the operator let reach a private address by env (a benchmark's
+        # fixtures, on ports the runner picks) is let reach any port on it too:
+        # the port rule stops an agent walking internal services, which is the
+        # decision that name already carries (cto, #535).
+        private = host in get_config().fetch_private_names
+        if parts.scheme not in ("http", "https") or (port not in route.ports and not private):
             raise RefusedError("port")
         if not is_dns_name(host) or (
             "*" not in bound.grant.hosts and host not in bound.grant.hosts
