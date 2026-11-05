@@ -155,17 +155,15 @@ ASCII_EQUIVALENTS: dict[str, str] = {
 _FOLD = str.maketrans(ASCII_EQUIVALENTS)
 
 
-def _fold(line: str) -> str:
-    # Each character becomes at most one: a character the regex engine does
-    # not equate with an ASCII letter cannot spell a literal whatever it
-    # lowers to, so lowering it is an over-approximation and never a miss.
-    return "".join(ch.lower() if len(ch.lower()) == 1 else ch for ch in line.translate(_FOLD))
-
-
 def unlock(line: str) -> Unlocked:
     """The patterns that could match ``line``, or its ROT13 or reversed form."""
     if line.isascii():
         plain, rot, rev = _AUTOMATON.scan(line.lower())
         return Unlocked(frozenset(plain), frozenset(rot), frozenset(rev))
-    plain, _, _ = _AUTOMATON.scan(_fold(line))
+    # Once ASCII_EQUIVALENTS are folded, ``lower`` maps each character to
+    # exactly one (U+0130 is the only expanding lowercase, and it is folded
+    # first; ``tests/test_l1_prefilter.py`` sweeps every code point to hold
+    # this). Lowering a character the regex engine does not equate with an
+    # ASCII letter is an over-approximation and never a miss.
+    plain, _, _ = _AUTOMATON.scan(line.translate(_FOLD).lower())
     return Unlocked(frozenset(plain), None, None)
