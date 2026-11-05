@@ -352,7 +352,9 @@ def _ready_to_serve(llm_providers: Mapping[str, Any]) -> None:
     check_secret_sources(secret_env_names() - set(FILE_FORM_SECRETS))
     _warm_classifier()
     check_l2_gate()
-    scrub_startup_secrets(provider.api_key_env for provider in llm_providers.values())
+    scrub_startup_secrets(
+        provider.api_key_env for provider in llm_providers.values() if provider.api_key_env
+    )
 
 
 def _body_cap(*mcp_paths: str) -> list[Any]:

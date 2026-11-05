@@ -895,8 +895,14 @@ CASES["connect-denied-address"] = tunnel_case(_connect(f"{HOST}:443"), HELLO, pr
 # =========================================================================== the check
 
 
+@pytest.mark.parametrize("spelling", ["blocks", "proxies"])
 @pytest.mark.parametrize("name", sorted(CASES))
-def test_golden(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_golden(name: str, spelling: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    if spelling == "proxies" and g.RECORDING:
+        pytest.skip("fixtures are recorded from the older spelling only")
+    monkeypatch.setitem(
+        g.SPELLING, "config", g.CONFIG_PROXIES if spelling == "proxies" else g.CONFIG
+    )
     record = asyncio.run(CASES[name](monkeypatch))
     path = g.fixture_path(name)
     if g.RECORDING:
@@ -909,6 +915,22 @@ def test_golden(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
     if name in DELTAS:
         expected = DELTAS[name](expected)
     assert actual == expected
+
+
+def test_both_spellings_load_the_same_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``proxies:`` is a spelling, not a second model (#535 R12): the file in
+    either spelling is the same configuration, every field compared."""
+    from trentina.gateway.loader import load_profiles
+
+    for name, value in g.ENV.items():
+        monkeypatch.setenv(name, value)
+    blocks, proxies = load_profiles(g.CONFIG), load_profiles(g.CONFIG_PROXIES)
+    assert proxies == blocks
+    assert proxies.deprecated_keys == ()
+    assert blocks.deprecated_keys == (
+        "egress_upstreams", "git_remotes", "llm_providers", "matrix",
+        "profiles.*.client_egress", "profiles.*.egress_http", "profiles.*.git",
+    )  # fmt: skip
 
 
 def test_every_fixture_has_a_case() -> None:

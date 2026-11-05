@@ -1715,9 +1715,8 @@ class TestWhoMayChangeIt:
             config=GatewayConfig(profiles={"agent1": plain}),
             llm_providers={},
             alert_route_registered=False,
-            matrix_route_registered=False,
             oauth_route_registered=False,
-            git_route_registered=registered,
+            routes_mounted=frozenset({"git"}) if registered else frozenset(),
         )
 
     def test_a_first_remote_on_a_gateway_with_no_route_needs_a_restart(

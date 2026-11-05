@@ -218,7 +218,7 @@ def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
             "alert_ingress added but /alert was not registered at "
             "startup (no profile had one) — restart to serve it"
         )
-    if not active.matrix_route_registered and any(
+    if "matrix" not in active.routes_mounted and any(
         p.matrix_ingress is not None for p in new_config.profiles.values()
     ):
         notes.append(
@@ -240,12 +240,12 @@ def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
             "client_egress added but its listener was not started (no profile "
             "had one at startup) — restart to serve it"
         )
-    if not active.git_route_registered and new_config.git_remotes:
+    if "git" not in active.routes_mounted and new_config.git_remotes:
         notes.append(
             "git_remotes added but /git was not registered at startup (the "
             "file had none) — restart to serve it"
         )
-    if not active.egress_route_registered and new_config.egress_upstreams:
+    if "http" not in active.routes_mounted and new_config.egress_upstreams:
         notes.append(
             "egress_upstreams added but /egress was not registered at startup "
             "(the file had none) — restart to serve it"
@@ -420,12 +420,14 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
     # and responses a gatekeeper judges (#456), and which federated peers may
     # authenticate — a key an agent adds could mint any caller (#592). llm_keys
     # is not held and git/egress_http are: a key buys model calls, one more
-    # pattern is one more place a talked-round agent can send to.
+    # pattern is one more place a talked-round agent can send to. route_grants
+    # are the same kind of grant on a forward or plugin route (#535): held whole.
     for block in (
         "matrix_bridge",
         "client_egress",
         "git",
         "egress_http",
+        "route_grants",
         "semantic_request_guards",
         "semantic_response_guards",
         "federation",

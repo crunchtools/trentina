@@ -59,6 +59,51 @@ FORBIDDEN_MODULES: frozenset[str] = frozenset(
     {"httpx", "socket", "subprocess", "ctypes", "urllib", "http", "requests", "aiohttp", "ftplib"}
 )
 
+#: Modules a ROUTE plugin must not import, beyond a transform's. A route runs in
+#: the gateway's process, with live request and response streams, so nothing
+#: holds it but the contract (#535): it gets no socket, no file, no process, and
+#: no way to read the gateway's own state. Each of these offers one of those —
+#: a dialer, a file or process, or introspection that reaches the spine's
+#: locals (the profile, a token) — and a route needs none of them.
+ROUTE_FORBIDDEN_MODULES: frozenset[str] = FORBIDDEN_MODULES | frozenset(
+    {
+        "anyio", "trio", "httpcore", "h11", "h2", "websockets", "ssl", "multiprocessing",
+        "importlib", "os", "sys", "builtins", "io", "codecs", "pathlib", "shutil",
+        "tempfile", "pickle", "marshal", "shelve", "inspect", "gc", "ctypes", "mmap",
+        "signal", "resource", "pty", "fcntl", "select", "selectors", "threading",
+        "concurrent", "runpy", "code", "pdb", "types", "weakref", "atexit",
+    }
+)  # fmt: skip
+
+#: Names a route plugin may not call or reach: the builtins that read files,
+#: run strings as code or reach objects by name past an import scan.
+ROUTE_FORBIDDEN_NAMES: frozenset[str] = frozenset(
+    {
+        "open", "exec", "eval", "compile", "__import__", "getattr", "setattr", "delattr",
+        "globals", "locals", "vars", "breakpoint", "input", "memoryview", "__builtins__",
+    }
+)  # fmt: skip
+
+#: Attributes a route plugin may not reach on any object: the dialers and
+#: process launchers a permitted module (asyncio) still offers, and an event
+#: loop's own.
+ROUTE_FORBIDDEN_ATTRIBUTES: frozenset[str] = frozenset(
+    {
+        "open_connection", "open_unix_connection", "start_server", "start_unix_server",
+        "create_subprocess_exec", "create_subprocess_shell", "create_connection",
+        "create_server", "create_datagram_endpoint", "create_unix_connection",
+        "create_unix_server", "sock_connect", "sock_accept", "subprocess_exec",
+        "subprocess_shell", "connect_read_pipe", "connect_write_pipe", "to_thread",
+        "run_in_executor", "f_globals", "f_locals", "f_back", "gi_frame", "cr_frame",
+        "tb_frame",
+    }
+)  # fmt: skip
+
+#: Dunder attributes a route plugin may still use: what an ordinary class needs.
+_ROUTE_DUNDERS: frozenset[str] = frozenset(
+    {"__init__", "__name__", "__post_init__", "__eq__", "__hash__", "__repr__", "__str__"}
+)
+
 #: The canary a conformance run feeds the plugin: if it appears in a log record,
 #: the plugin logged the payload it was handed (#262).
 _CANARY = "zqx7conformancecanary"
@@ -118,10 +163,59 @@ def scan_source(source: str, scan: _Scan) -> None:
             _check_module(node.module, scan)
 
 
-def scan_imports(dist: str) -> list[str]:
+class _RouteScan(ast.NodeVisitor):
+    """Every import, name and attribute in a route plugin's module, held to the
+    route lists. Each ``visit_`` records what it finds and keeps walking."""
+
+    def __init__(self, scan: _Scan) -> None:
+        self.scan = scan
+
+    def _module(self, module: str) -> None:
+        top = module.split(".", 1)[0]
+        if top in ROUTE_FORBIDDEN_MODULES:
+            self.scan.violations.append(f"forbidden-import:{top}")
+        elif top == "trentina" and not _allowed_trentina(module):
+            self.scan.violations.append(f"private-import:{module}")
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            self._module(alias.name)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.level == 0 and node.module is not None:
+            self._module(node.module)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if node.id in ROUTE_FORBIDDEN_NAMES:
+            self.scan.violations.append(f"forbidden-name:{node.id}")
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        attr = node.attr
+        if attr in ROUTE_FORBIDDEN_ATTRIBUTES:
+            self.scan.violations.append(f"forbidden-attribute:{attr}")
+        elif attr.startswith("__") and attr.endswith("__") and attr not in _ROUTE_DUNDERS:
+            self.scan.violations.append(f"forbidden-dunder:{attr}")
+        self.generic_visit(node)
+
+
+def scan_route_source(source: str, scan: _Scan) -> None:
+    """``scan_source`` for a route plugin: the stricter module list, and every
+    forbidden name, attribute and dunder reached anywhere in the module."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        scan.violations.append("unparseable-source")
+        return
+    _RouteScan(scan).visit(tree)
+
+
+def scan_imports(dist: str, *, route: bool = False) -> list[str]:
     """The load-bearing, synchronous check: the import boundary over every
     source file the distribution ships. Returns a list of violation reasons,
     empty when the distribution imports only the public contract.
+
+    ``route`` holds it to the route lists (``scan_route_source``): a route
+    plugin runs in the gateway's process, so it is held to far more.
 
     A distribution with no readable file list cannot be vouched for, which is
     itself a violation (``no-files``)."""
@@ -144,7 +238,7 @@ def scan_imports(dist: str) -> list[str]:
             # is a file we cannot vouch for — a violation, not a skip.
             scan.violations.append(f"unreadable:{path}")
             continue
-        scan_source(source, scan)
+        (scan_route_source if route else scan_source)(source, scan)
     if not saw_python:
         # Files but no Python source — a compiled-only distribution the scan
         # cannot read. It does not pass by default; the operator must trust it

@@ -234,6 +234,59 @@ def register_route(name: str, route: Route[Any, Any]) -> None:
     _insert(ROUTES, "route", name, route)
 
 
+#: The entry-point group a route plugin registers under: ``dist:name`` names one.
+#: The version is part of the name; a v2 contract would be a new group.
+ROUTE_GROUP = "trentina.transports.v1"
+
+
+def resolve_route(ref: str, options: Mapping[str, Any]) -> Route[Any, Any]:
+    """The route plugin ``ref`` (``dist:name``) names, scanned, built and registered.
+
+    The distribution's source is held to the route lists BEFORE anything of it
+    is imported (``testing.scan_imports``): loading an entry point runs the
+    plugin's code. Then its factory is called with the instance's ``options``,
+    and what it returns must be a ``Route`` calling itself ``name``, which
+    ``register_route`` holds to the rest of the contract. A plugin that is not
+    installed, imports what a route may not, fails to build or is not a route
+    is refused by name at config load, never at the first request.
+
+    Raises:
+        ProfileConfigError: any of the above.
+    """
+    from ..gateway.errors import ProfileConfigError
+    from ..plugins.registry import discover, installed_version
+    from ..testing.suite import scan_imports
+
+    dist, _, entry = ref.partition(":")
+    if installed_version(dist) is None:
+        raise ProfileConfigError(f"route plugin {ref!r}: distribution {dist!r} is not installed")
+    if violations := scan_imports(dist, route=True):
+        raise ProfileConfigError(
+            f"route plugin {ref!r}: refused before loading, it reaches past the "
+            f"route contract: {sorted(set(violations))}"
+        )
+    found = discover(ROUTE_GROUP)
+    if ref not in found:
+        here = sorted(k for k in found if k.startswith(f"{dist}:"))
+        raise ProfileConfigError(
+            f"route plugin {ref!r}: {dist!r} exposes no route {entry!r}; it exposes {here}"
+        )
+    try:
+        route = found[ref].load()(options)
+    except Exception as exc:
+        raise ProfileConfigError(f"route plugin {ref!r} failed to load or build") from exc
+    if not isinstance(route, Route):
+        raise ProfileConfigError(
+            f"route plugin {ref!r} did not return a trentina.transports.base.Route "
+            f"(got {type(route).__name__}); a Listener is built in only"
+        )
+    try:
+        register_route(entry, route)
+    except (TypeError, ValueError) as exc:
+        raise ProfileConfigError(f"route plugin {ref!r}: {exc}") from exc
+    return route
+
+
 def configured(name: str, config: GatewayConfig, providers: Mapping[str, Any]) -> bool:
     """Whether the file configures any instance of the built-in route ``name``.
     A route with nothing to reach is not mounted, as before #535."""
@@ -268,6 +321,12 @@ def configure_listeners(host: str, port: int) -> None:
 
     for name, (listener, kind) in _listener_seed().items():
         LISTENERS[name] = ListenerMount(listener, kind, (host, port))
+
+
+def listener_configured(config: GatewayConfig) -> bool:
+    """Whether a profile asks for the CONNECT listener (#442). With none, there
+    is no second socket."""
+    return any(p.client_egress is not None for p in config.profiles.values())
 
 
 async def start_listeners() -> None:

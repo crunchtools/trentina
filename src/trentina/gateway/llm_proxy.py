@@ -130,9 +130,13 @@ class LlmProvider(BaseModel):
         default="",
         description="Prefix before the key value",
     )
-    api_key_env: str = Field(
-        ...,
-        description="Env var holding the real API key",
+    api_key_env: str | None = Field(
+        default=None,
+        description=(
+            "Env var holding a gateway-wide key. Optional: the proxy injects each "
+            "profile's own llm_keys entry, and a key named here is still read (and "
+            "fails closed when unset) so an older file keeps its meaning"
+        ),
     )
     api_key: SecretStr = Field(
         default=SecretStr(""),
@@ -202,6 +206,9 @@ def load_llm_providers(
             )
             raise ProfileConfigError(f"llm_providers.{name}: {reasons}") from exc
         if not provider.enabled:
+            continue
+        if provider.api_key_env is None:
+            providers[name] = provider
             continue
         key = read_secret_env(provider.api_key_env)
         if not key:

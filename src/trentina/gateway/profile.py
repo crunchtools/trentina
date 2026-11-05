@@ -12,6 +12,7 @@ profile YAML are a hard error at load time.
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import re
 from fnmatch import fnmatchcase
@@ -30,6 +31,7 @@ from pydantic import (
 )
 
 from ..config import MODE_NAMES, SUPPORTED_PROVIDERS, canonical_mode
+from ..credential_shapes import kinds as credential_kinds
 from .key_store import KEY_NAME_RE
 
 logger = logging.getLogger(__name__)
@@ -2472,6 +2474,105 @@ class EgressUpstream(BaseModel):
         return self.upstream.removeprefix("https://")
 
 
+#: A route type with no block of its own before ``proxies:`` (#535): the
+#: agent-chosen ``forward`` route, or an operator-installed ``dist:name`` plugin.
+_ROUTE_TYPE_RE = re.compile(r"^(forward|[a-z0-9][a-z0-9._-]*:[a-z][a-z0-9-]{0,31})$")
+
+
+def _no_credential_in(options: dict[str, Any], where: str) -> dict[str, Any]:
+    """Refuse an ``options`` value shaped like a credential.
+
+    ``options`` is a route's own settings, which the gateway cannot read; a
+    secret there would be one no rule masks, no log holds and no approval
+    shows. A credential belongs in an env var a grant names (``token_env``).
+    """
+    if credential_kinds(json.dumps(options, default=str)):
+        raise ValueError(f"{where}: a value is shaped like a credential; name it in token_env")
+    return options
+
+
+class RouteInstance(BaseModel):
+    """One ``proxies.<name>`` instance of a type that had no block before #535:
+    ``forward`` or a ``dist:name`` route plugin.
+
+    Its destinations are typed, so every rule that reads where the gateway may
+    go reads them: ``origins`` (keyed https origins the operator names) or
+    ``hosts`` (names an agent may choose, or ``*``). ``options`` is the route's
+    own settings and is never dialled.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    type: str = Field(..., description="forward, or a dist:name route plugin")
+    origins: dict[str, str] = Field(default_factory=dict, description="key -> https origin")
+    hosts: list[str] = Field(default_factory=list, description="DNS names an agent may name, or *")
+    options: dict[str, Any] = Field(default_factory=dict, description="the route's own settings")
+
+    @field_validator("type")
+    @classmethod
+    def _a_route_type(cls, value: str) -> str:
+        if not _ROUTE_TYPE_RE.match(value):
+            raise ValueError(f"type {value!r} is neither forward nor a dist:name route plugin")
+        return value
+
+    @field_validator("origins")
+    @classmethod
+    def _https_origins(cls, value: dict[str, str]) -> dict[str, str]:
+        for key, origin in value.items():
+            parts = urlsplit(origin)
+            if parts.scheme != "https" or not parts.hostname or parts.query or parts.fragment:
+                raise ValueError(f"origins.{key}: an https origin is required")
+        return value
+
+    @field_validator("hosts")
+    @classmethod
+    def _dns_names(cls, value: list[str]) -> list[str]:
+        for host in value:
+            if host != "*" and not is_dns_name(host):
+                raise ValueError(f"hosts: {host!r} is not a DNS name (an address is never listed)")
+        return value
+
+    @field_validator("options")
+    @classmethod
+    def _options_hold_no_secret(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _no_credential_in(value, "options")
+
+
+class RouteGrant(BaseModel):
+    """What one profile may do on one ``RouteInstance``: ``proxies.<name>`` under
+    the profile. ``origins`` and ``hosts`` narrow the instance's; a credential
+    is named by ``token_env`` and injected by the spine, never held by the route.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    origins: list[str] = Field(default_factory=list, description="instance origin keys")
+    hosts: list[str] = Field(default_factory=list, description="names the profile may reach")
+    methods: list[str] = Field(default_factory=lambda: ["GET", "HEAD"])
+    token_env: str | None = Field(default=None, description="env var naming the injected token")
+    token: SecretStr | None = Field(default=None, exclude=True, description="resolved at load")
+    enforcement: EnforcementMode = Field(default="block")
+    options: dict[str, Any] = Field(default_factory=dict, description="the route's grant terms")
+
+    @field_validator("hosts")
+    @classmethod
+    def _dns_names(cls, value: list[str]) -> list[str]:
+        for host in value:
+            if host != "*" and not is_dns_name(host):
+                raise ValueError(f"hosts: {host!r} is not a DNS name (an address is never listed)")
+        return value
+
+    @field_validator("methods")
+    @classmethod
+    def _methods_upper(cls, value: list[str]) -> list[str]:
+        return [method.upper() for method in value]
+
+    @field_validator("options")
+    @classmethod
+    def _options_hold_no_secret(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _no_credential_in(value, "options")
+
+
 class EgressGrant(BaseModel):
     """What one profile may do on one egress upstream (#511): ``egress_http.<name>``.
 
@@ -3229,6 +3330,13 @@ class Profile(BaseModel):
         description=(
             "HTTP(S) destinations the profile may reach through the terminating "
             "egress route, keyed by an egress_upstreams name (optional, #511)"
+        ),
+    )
+    route_grants: dict[str, RouteGrant] = Field(
+        default_factory=dict,
+        description=(
+            "Grants on forward and dist: route instances, written as the "
+            "profile's proxies: entries for them (#535). Never a key in the file."
         ),
     )
     semantic_request_guards: SemanticGuardsConfig | None = Field(

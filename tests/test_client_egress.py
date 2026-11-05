@@ -613,9 +613,8 @@ class TestAFirstBlockNeedsARestart:
             config=GatewayConfig(profiles={"agent1": plain}),
             llm_providers={},
             alert_route_registered=False,
-            matrix_route_registered=False,
             oauth_route_registered=False,
-            egress_listener_configured=listening,
+            routes_mounted=frozenset({"egress"}) if listening else frozenset(),
         )
 
     def test_a_block_added_to_a_gateway_with_no_listener_is_reported(self, tmp_path: Path) -> None:

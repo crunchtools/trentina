@@ -53,6 +53,11 @@ if TYPE_CHECKING:
 
 HERE = Path(__file__).resolve().parent / "golden"
 CONFIG = HERE / "config.yaml"
+#: The same gateway in the ``proxies:`` spelling (#535 R12): it must load equal
+#: and replay every fixture identically.
+CONFIG_PROXIES = HERE / "config-proxies.yaml"
+#: Which spelling a run loads; ``test_perimeter_golden`` runs every case on both.
+SPELLING: dict[str, Path] = {"config": CONFIG}
 FIXTURES = HERE / "fixtures"
 
 #: Inject an injection / make the judge unavailable, wherever the text is judged.
@@ -455,7 +460,7 @@ async def stack(monkeypatch: Any) -> AsyncIterator[Stack]:
     net = Network()
     _install_network(monkeypatch, net)
     _Seams.reset()
-    config = load_profiles(CONFIG)
+    config = load_profiles(SPELLING["config"])
     app = _Seams.build_app(config)
     _Seams.register(config)
     yield Stack(app=app, net=net)

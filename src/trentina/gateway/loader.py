@@ -39,10 +39,12 @@ from .profile import (
     MatrixIngressConfig,
     ProcessorChainConfig,
     Profile,
+    RouteInstance,
     federation_audience,
     is_matrix_user_id,
     same_gateway_key,
 )
+from .proxies import normalize as normalize_proxies
 from .transform import resolve
 
 if TYPE_CHECKING:
@@ -59,6 +61,12 @@ class GatewayConfig:
     matrix: dict[str, Any] = field(default_factory=dict)
     git_remotes: dict[str, GitRemote] = field(default_factory=dict)
     egress_upstreams: dict[str, EgressUpstream] = field(default_factory=dict)
+    #: ``forward`` and ``dist:`` route instances: the types that had no block
+    #: before ``proxies:`` (#535). A built-in type never lands here.
+    route_instances: dict[str, RouteInstance] = field(default_factory=dict)
+    #: The blocks the file still writes in the spelling before ``proxies:``.
+    #: Not part of what the configuration IS, so two spellings compare equal.
+    deprecated_keys: tuple[str, ...] = field(default=(), compare=False)
     session_ttl_seconds: float = 300.0
     max_sessions_per_profile: int = 10
     approval_enrol_window_seconds: float = DEFAULT_ENROL_WINDOW_SECONDS
@@ -800,6 +808,11 @@ def _resolve_grant_tokens(name: str, profile: Profile) -> None:
     for upstream, egress in profile.egress_http.items():
         if egress.token_env is not None:
             egress.token = _require_env(name, egress.token_env, f"egress_http.{upstream} token")
+    for instance, route_grant in profile.route_grants.items():
+        if route_grant.token_env is not None:
+            route_grant.token = _require_env(
+                name, route_grant.token_env, f"proxies.{instance} token"
+            )
 
 
 def _require_key(name: str, key_name: str, what: str) -> SecretStr:
@@ -1532,6 +1545,10 @@ def load_profiles(path: Path | str) -> GatewayConfig:
     if not isinstance(cfg_data, dict):
         raise ProfileConfigError(f"Profiles file {config_path} must contain a top-level mapping")
 
+    # `proxies:` read into the blocks every rule reads, one home per fact (#535).
+    normalized = normalize_proxies(cfg_data)
+    cfg_data = normalized.document
+
     profiles_section = cfg_data.get("profiles")
     if not isinstance(profiles_section, dict) or not profiles_section:
         raise ProfileConfigError(
@@ -1593,6 +1610,8 @@ def load_profiles(path: Path | str) -> GatewayConfig:
         matrix=matrix_section if isinstance(matrix_section, dict) else {},
         git_remotes=git_remotes,
         egress_upstreams=egress_upstreams,
+        route_instances=normalized.route_instances,
+        deprecated_keys=normalized.older_spelling,
         service_identity=service_identity,
         session_ttl_seconds=float(gateway_section.get("session_ttl_seconds", 300.0)),
         max_sessions_per_profile=int(gateway_section.get("max_sessions_per_profile", 10)),
@@ -1636,14 +1655,29 @@ class ActiveConfig:
     config: GatewayConfig
     llm_providers: dict[str, Any]
     alert_route_registered: bool
-    matrix_route_registered: bool
     oauth_route_registered: bool
-    egress_listener_configured: bool = False
-    git_route_registered: bool = False
-    egress_route_registered: bool = False
+    #: The perimeter routes and listeners mounted at startup, by name (#535).
+    #: A route the file gains later is not served until a restart.
+    routes_mounted: frozenset[str] = frozenset()
+
+    @property
+    def egress_listener_configured(self) -> bool:
+        """Whether the CONNECT listener binds: a profile asked for it (#442)."""
+        return "egress" in self.routes_mounted
 
 
 _active: ActiveConfig | None = None
+
+
+def mounted_routes(config: GatewayConfig, providers: dict[str, Any]) -> frozenset[str]:
+    """The perimeter routes and listeners ``config`` mounts, by name: the one
+    predicate the registry mounts by, so the two cannot disagree."""
+    from ..transports.registry import configured, listener_configured
+
+    routes = {
+        name for name in ("http", "git", "llm", "matrix") if configured(name, config, providers)
+    }
+    return frozenset(routes | ({"egress"} if listener_configured(config) else set()))
 
 
 def register_active_config(
@@ -1663,14 +1697,8 @@ def register_active_config(
         config=config,
         llm_providers=llm_providers if llm_providers is not None else {},
         alert_route_registered=any(p.alert_ingress is not None for p in config.profiles.values()),
-        matrix_route_registered=bool(config.matrix.get("enabled")),
         oauth_route_registered=oauth_route_registered,
-        # Bound before serving, and only when a profile asked for it (#442).
-        egress_listener_configured=any(
-            p.client_egress is not None for p in config.profiles.values()
-        ),
-        git_route_registered=bool(config.git_remotes),
-        egress_route_registered=bool(config.egress_upstreams),
+        routes_mounted=mounted_routes(config, llm_providers or {}),
     )
 
 
@@ -1693,11 +1721,8 @@ def replace_active_config(config: GatewayConfig) -> None:
         config=config,
         llm_providers=_active.llm_providers,
         alert_route_registered=_active.alert_route_registered,
-        matrix_route_registered=_active.matrix_route_registered,
         oauth_route_registered=_active.oauth_route_registered,
-        egress_listener_configured=_active.egress_listener_configured,
-        git_route_registered=_active.git_route_registered,
-        egress_route_registered=_active.egress_route_registered,
+        routes_mounted=_active.routes_mounted,
     )
 
 
