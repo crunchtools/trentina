@@ -22,9 +22,8 @@ name: Benchmark - decoy tools
 # run inside the image so the response axis is L1/L2/L3 as production runs it.
 # `agent-egress-bench` is the third-party agent-egress-bench (#507), pinned by
 # commit, driving the shipped image configured by benchmarks/agent_egress/ and
-# nothing else: its fetch adapter through a `forward` instance, its MCP gateway
-# adapter through a profile whose backend is the bench's own fixture, each in
-# flag and in block.
+# nothing else: its fetch adapter through a `forward` instance, in flag and in
+# block. The bench's runner gets no secret and no Docker socket.
 # `tune` is benchmarks/prompt_pack.py for one judge
 # with a candidate pack handed in as an input (#397): the pack is data the
 # merged harness reads, so a pack can be tuned without unreviewed code ever
@@ -591,8 +590,7 @@ jobs:
         run: docker build -f Containerfile -t trentina:bench .
 
       # The bench at the pinned commit, its runner built in a Go container. The
-      # bench is third-party code: it gets no secret, and the runner it builds
-      # holds only the per-run bench token.
+      # bench is third-party code: neither its build nor its run sees a secret.
       - name: Build the bench runner
         run: |
           set -eu
@@ -605,14 +603,19 @@ jobs:
 
       # The gateway runs as production runs it, from this image, judging on the
       # pinned model; the bench's fixture names resolve to its loopback fixtures.
-      - name: Gateway launcher
+      # Only this step holds the provider key. The shim gives the bench's fetch
+      # adapter the per-run bearer.
+      - name: Start the gateway and the shim
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           set -eu
-          echo "BENCH_TOKEN=$(openssl rand -hex 24)" >> "$GITHUB_ENV"
+          token=$(openssl rand -hex 24)
+          echo "::add-mask::$token"
           mkdir -p results kit-run && chmod 777 results kit-run
           cat > run-gateway.sh <<'EOF'
           #!/bin/sh
-          exec docker run --rm ${AEB_DETACH:-} --name "aeb-$AEB_ROLE" --network host \
+          exec docker run -d --name aeb-gateway --network host \
             --add-host aeb-fixture.test:127.0.0.1 --add-host cdn.fixture.example.com:127.0.0.2 \
             --read-only --tmpfs /tmp --cap-drop=all --security-opt no-new-privileges \
             -v "$GITHUB_WORKSPACE/kit-run:/cfg:ro" \
@@ -623,51 +626,40 @@ jobs:
             trentina:bench "$@"
           EOF
           chmod +x run-gateway.sh
-
-      - name: Fetch adapter, through forward
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        run: |
-          set -eu
-          echo "::add-mask::$BENCH_TOKEN"
-          kit="$GITHUB_WORKSPACE/benchmarks/agent_egress"
-          AEB_TRENTINA_WORK="$GITHUB_WORKSPACE/kit-run" AEB_TRENTINA_RUN="$GITHUB_WORKSPACE/run-gateway.sh" \
-            AEB_ROLE=fetch AEB_DETACH=-d "$kit/start-gateway.sh" fetch
-          sed "s|@BENCH_TOKEN@|$BENCH_TOKEN|" "$kit/shim.conf" > shim.conf
+          BENCH_TOKEN="$token" AEB_TRENTINA_WORK="$GITHUB_WORKSPACE/kit-run" \
+            AEB_TRENTINA_RUN="$GITHUB_WORKSPACE/run-gateway.sh" \
+            benchmarks/agent_egress/start-gateway.sh
+          sed "s|@BENCH_TOKEN@|$token|" benchmarks/agent_egress/shim.conf > shim.conf
           docker run -d --name aeb-shim --network host \
             -v "$PWD/shim.conf:/etc/nginx/nginx.conf:ro" docker.io/library/nginx:1.27-alpine
+          rm shim.conf run-gateway.sh
           for _ in $(seq 120); do curl -sf http://127.0.0.1:8000/health >/dev/null && break; sleep 5; done
-          cd bench
-          ./aeb-runner --cases cases --profile "$kit/tool-profile.json" --adapter proxy \
-            --proxy-addr 127.0.0.1:18899 --fixtures --timeout 120s \
-            --adapter-owner crunchtools --target-config "$GITHUB_WORKSPACE/kit-run/profiles.yaml" \
-            --method-repository https://github.com/luckyPipewrench/agent-egress-bench \
-            --method-commit "$BENCH_REF" --tool-version "$GITHUB_SHA" \
-            --output "$GITHUB_WORKSPACE/results/fetch-$AEB_TRENTINA_MODE.json" \
-            > "$GITHUB_WORKSPACE/results/fetch-$AEB_TRENTINA_MODE.log" 2>&1 || true
-          grep -v '^{' "$GITHUB_WORKSPACE/results/fetch-$AEB_TRENTINA_MODE.log" | tee -a "$GITHUB_STEP_SUMMARY"
-          docker rm -f aeb-fetch aeb-shim >/dev/null
+          curl -sf http://127.0.0.1:8000/health
 
-      - name: MCP gateway adapter
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      # The bench's runner in a container of its own: the host network to reach
+      # the shim and its own fixtures, no key, no Docker socket, read-only.
+      - name: Run the fetch adapter through forward
         run: |
           set -eu
-          echo "::add-mask::$BENCH_TOKEN"
-          kit="$GITHUB_WORKSPACE/benchmarks/agent_egress"
-          export AEB_TRENTINA_KIT="$kit" AEB_TRENTINA_WORK="$GITHUB_WORKSPACE/kit-run" \
-            AEB_TRENTINA_RUN="$GITHUB_WORKSPACE/run-gateway.sh" AEB_ROLE=mcp \
-            AEB_BENCH_TOKEN="$BENCH_TOKEN" QUARANTINE_MODEL="$MODEL"
-          cd bench
-          ./aeb-runner --cases cases --profile "$kit/tool-profile.json" --adapter mcp-gateway \
-            --gateway-plugin "$kit/mcp-plugin.json" --fixtures --timeout 180s \
-            --adapter-owner crunchtools --target-config "$GITHUB_WORKSPACE/kit-run/profiles.yaml" \
-            --method-repository https://github.com/luckyPipewrench/agent-egress-bench \
-            --method-commit "$BENCH_REF" --tool-version "$GITHUB_SHA" \
-            --output "$GITHUB_WORKSPACE/results/mcp-$AEB_TRENTINA_MODE.json" \
-            > "$GITHUB_WORKSPACE/results/mcp-$AEB_TRENTINA_MODE.log" 2>&1 || true
-          grep -v '^{' "$GITHUB_WORKSPACE/results/mcp-$AEB_TRENTINA_MODE.log" | tee -a "$GITHUB_STEP_SUMMARY"
-          docker rm -f aeb-mcp >/dev/null 2>&1 || true
+          docker run --rm --network host --read-only --tmpfs /tmp --cap-drop=all \
+            --security-opt no-new-privileges \
+            -v "$GITHUB_WORKSPACE/bench:/bench:ro" \
+            -v "$GITHUB_WORKSPACE/benchmarks/agent_egress:/kit:ro" \
+            -v "$GITHUB_WORKSPACE/kit-run:/kit-run:ro" \
+            -v "$GITHUB_WORKSPACE/results:/results" -w /bench \
+            docker.io/library/golang:1.26 /bench/aeb-runner \
+              --cases /bench/cases --profile /kit/tool-profile.json --adapter proxy \
+              --proxy-addr 127.0.0.1:18899 --fixtures --timeout 120s \
+              --adapter-owner crunchtools --target-config /kit-run/profiles.yaml \
+              --method-repository https://github.com/luckyPipewrench/agent-egress-bench \
+              --method-commit "$BENCH_REF" --tool-version "$GITHUB_SHA" \
+              --output "/results/fetch-$AEB_TRENTINA_MODE.json" \
+              > "results/fetch-$AEB_TRENTINA_MODE.log" 2>&1 || true
+          grep -v '^{' "results/fetch-$AEB_TRENTINA_MODE.log" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop the gateway
+        if: always()
+        run: docker rm -f aeb-gateway aeb-shim >/dev/null 2>&1 || true
 
       - name: Upload results
         if: always() && hashFiles('results/*.json') != ''

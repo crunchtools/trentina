@@ -16,3 +16,11 @@ file = "src/trentina/gateway/approval_routes.py"
 evidence = "{\"ok\": False, \"message\": str(exc)}, HTTPStatus.BAD_REQUEST, headers=_HEADERS"
 status = "not-a-bug"
 reason = "Registration's specific messages are returned only after _registration_binding has authorised the registrant (fresh session with CSRF, or the live enrolment code); every unauthenticated failure still gets the shared _NOTHING_JSON answer. The ApproverError texts are constant strings that echo nothing submitted, so an authorised person learns why their own enrolment failed and a stranger learns nothing. cto ruling 2026-11-04."
+
+[[findings]]
+agent = "general"
+category = "quality"
+file = "src/trentina/transports/registry.py"
+evidence = "def _table() -> dict[str, Transport]:\n    if \"mcp\" not in _TRANSPORTS:\n        importlib.import_module(\"trentina.gateway\")\n        from .mcp import mcp_transport"
+status = "not-a-bug"
+reason = "Deliberate cycle break (#535 R4): the mcp transport and the gateway package import each other, and importing the registry before the gateway cycled on main too. Seeding on first use, after the gateway has loaded as it has on every serving path, is what lets the registry be imported alone (route plugins reach it); an explicit init step would add a second way to get an unseeded table."

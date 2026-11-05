@@ -1,5 +1,5 @@
 # Fixture for trentina-httpx-follow-redirects.
-import httpx
+import httpx  # nosemgrep: trentina-network-reach-in-transports -- fixture for another rule
 
 
 async def fetch(url):

@@ -41,8 +41,8 @@ under that name.
 - `benchmarks/agent_egress/` and the `agent-egress-bench` job in
   `benchmark-decoys.yml` run the third-party agent-egress-bench (#507) against
   the shipped image, configured and nothing else: the fetch adapter through
-  `forward`, the MCP gateway adapter through a profile whose backend is the
-  bench's own fixture, in `flag` and in `block`.
+  `forward`, in `flag` and in `block`. The bench's MCP gateway adapter cannot
+  prove delivery through an aggregating gateway; the kit's README says why.
 
 ### Changed
 

@@ -146,7 +146,7 @@ rules:
         - "**/trentina/gateway/client_egress.py"
         - "**/trentina/gateway/matrix_proxy.py"
         - "**/trentina/gateway/forward.py"
-        - "**/.semgrep/tests/**"
+        - "**/.semgrep/tests/network_reach_in_transports.py"
       exclude:
         - "**/trentina/transports/perimeter.py"
     pattern-either:
