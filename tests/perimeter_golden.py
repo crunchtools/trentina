@@ -257,6 +257,8 @@ def _install_network(monkeypatch: Any, net: Network) -> None:
     transport = httpx.MockTransport(net.handle)
     monkeypatch.setattr(egress, "_lookup", lambda _host, _port: list(net.addresses))
     monkeypatch.setattr(upstream, "PinnedTransport", lambda _backend, **_kw: transport)
+    # An agent-chosen destination (forward) is one pinned request, not the pool.
+    monkeypatch.setattr(egress, "PinnedTransport", lambda _backend, **_kw: transport)
     upstream._pool.clear()
     upstream.forget_checked()
 

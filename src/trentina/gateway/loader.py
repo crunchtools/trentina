@@ -1501,6 +1501,16 @@ def _check_egress_grants(
             )
 
 
+def _check_route_plugins(instances: dict[str, RouteInstance]) -> None:
+    """Every ``dist:`` route type an instance names is installed and passes the
+    route scan, checked WITHOUT importing it: this runs on a candidate no person
+    may have approved yet (#535). Mounting, at startup, imports it."""
+    from ..transports.registry import check_route_plugin
+
+    for ref in sorted({i.type for i in instances.values() if ":" in i.type}):
+        check_route_plugin(ref)
+
+
 def load_profiles(path: Path | str) -> GatewayConfig:
     """Load gateway configuration from YAML.
 
@@ -1548,6 +1558,7 @@ def load_profiles(path: Path | str) -> GatewayConfig:
     # `proxies:` read into the blocks every rule reads, one home per fact (#535).
     normalized = normalize_proxies(cfg_data)
     cfg_data = normalized.document
+    _check_route_plugins(normalized.route_instances)
 
     profiles_section = cfg_data.get("profiles")
     if not isinstance(profiles_section, dict) or not profiles_section:

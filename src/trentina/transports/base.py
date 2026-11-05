@@ -190,6 +190,8 @@ Destination = OperatorOrigin | AgentUrl
 
 #: The port an origin is reached on unless the operator names another.
 HTTPS_PORT = 443
+#: The port an agent-chosen http (not https) destination defaults to.
+HTTP_PORT = 80
 
 
 @dataclass(frozen=True)
@@ -200,6 +202,16 @@ class Origin:
     host: str
     port: int = HTTPS_PORT
     base: str = ""
+    #: https for every origin the operator names; http only for an agent-chosen
+    #: destination a route's ``ports`` admits.
+    scheme: str = "https"
+
+    @property
+    def url(self) -> str:
+        """What every request to this origin starts with."""
+        default = HTTPS_PORT if self.scheme == "https" else HTTP_PORT
+        port = "" if self.port == default else f":{self.port}"
+        return f"{self.scheme}://{self.host}{port}{self.base}"
 
 
 @dataclass(frozen=True)
@@ -441,6 +453,8 @@ class Route(ABC, Generic[A, C]):
     slots: int | None = 8
     audit: Audit = Audit.ALWAYS
     idle: float = 300.0
+    #: The ports an agent-chosen destination (``AgentUrl``) may be on.
+    ports: frozenset[int] = frozenset({HTTPS_PORT})
     api_version: int = 1
 
     @property
@@ -454,7 +468,10 @@ class Route(ABC, Generic[A, C]):
 
     @abstractmethod
     async def deliver(self, admitted: A, ctx: C) -> Any:
-        """Carry the admitted request and return the response to send back."""
+        """Carry the admitted request and return what to send back: the
+        ``Delivered`` an ``Upstream.send`` returned, which the spine answers
+        with (its finding on ``x-trentina-warning``), or a response of the
+        route's own."""
 
     @abstractmethod
     def render(self, refused: RefusedError) -> Any:

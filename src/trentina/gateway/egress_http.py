@@ -63,6 +63,7 @@ from ..transports.base import (
     Admitted,
     Bearer,
     Context,
+    Delivered,
     Grant,
     Instance,
     OperatorOrigin,
@@ -153,7 +154,7 @@ class HttpRoute(Route[HttpAdmitted, Context]):
             path=path,
         )
 
-    async def deliver(self, admitted: HttpAdmitted, ctx: Context) -> Response:
+    async def deliver(self, admitted: HttpAdmitted, ctx: Context) -> Delivered:
         """Read the body, forward the allowed headers and hand back the judged answer.
 
         A compressed body is refused: what is judged must be what the
@@ -178,17 +179,8 @@ class HttpRoute(Route[HttpAdmitted, Context]):
             body = json.dumps(parsed, separators=(",", ":")).encode()
         allowed = ctx.instance.options.get("headers_allow", ())
         fwd = forward_request_headers(list(wire.headers.items()), allowed)
-        delivered = await ctx.upstream.send(
+        return await ctx.upstream.send(
             wire.method, admitted.path, query=wire.query, headers=fwd, content=body
-        )
-        headers = dict(delivered.headers)
-        if delivered.warning:
-            headers[WARNING_HEADER] = delivered.warning
-        return Response(
-            content=delivered.body,
-            status_code=delivered.status,
-            media_type=delivered.content_type or None,
-            headers=headers,
         )
 
     def render(self, refused: RefusedError) -> Response:

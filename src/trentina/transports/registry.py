@@ -178,6 +178,7 @@ def build_transport(name: str) -> Transport:
 def _seed() -> Mapping[str, tuple[Route[Any, Any], DestinationKind]]:
     from ..gateway.destination import DestinationKind
     from ..gateway.egress_http import HttpRoute
+    from ..gateway.forward import ForwardRoute
     from ..gateway.git_transport import GitRoute
     from ..gateway.llm_proxy import LlmRoute
     from ..gateway.matrix_proxy import MatrixRoute
@@ -188,6 +189,7 @@ def _seed() -> Mapping[str, tuple[Route[Any, Any], DestinationKind]]:
             "git": (GitRoute(), DestinationKind.GIT),
             "llm": (LlmRoute(), DestinationKind.MODEL),
             "matrix": (MatrixRoute(), DestinationKind.MATRIX),
+            "forward": (ForwardRoute(), DestinationKind.EGRESS),
         }
     )
 
@@ -240,39 +242,25 @@ ROUTE_GROUP = "trentina.transports.v1"
 
 
 def resolve_route(ref: str, options: Mapping[str, Any]) -> Route[Any, Any]:
-    """The route plugin ``ref`` (``dist:name``) names, scanned, built and registered.
+    """The route plugin ``ref`` (``dist:name``) names, checked, built and registered.
 
-    The distribution's source is held to the route lists BEFORE anything of it
-    is imported (``testing.scan_imports``): loading an entry point runs the
-    plugin's code. Then its factory is called with the instance's ``options``,
-    and what it returns must be a ``Route`` calling itself ``name``, which
-    ``register_route`` holds to the rest of the contract. A plugin that is not
-    installed, imports what a route may not, fails to build or is not a route
-    is refused by name at config load, never at the first request.
+    ``check_route_plugin`` first: the source is held to the route lists BEFORE
+    anything of it is imported, since loading an entry point runs the plugin's
+    code. Then its factory is called with ``options``, and what it returns must
+    be a ``Route`` calling itself ``name``, which ``register_route`` holds to
+    the rest of the contract. Refused by name at startup, never at the first
+    request.
 
     Raises:
         ProfileConfigError: any of the above.
     """
     from ..gateway.errors import ProfileConfigError
-    from ..plugins.registry import discover, installed_version
-    from ..testing.suite import scan_imports
+    from ..plugins.registry import discover
 
-    dist, _, entry = ref.partition(":")
-    if installed_version(dist) is None:
-        raise ProfileConfigError(f"route plugin {ref!r}: distribution {dist!r} is not installed")
-    if violations := scan_imports(dist, route=True):
-        raise ProfileConfigError(
-            f"route plugin {ref!r}: refused before loading, it reaches past the "
-            f"route contract: {sorted(set(violations))}"
-        )
-    found = discover(ROUTE_GROUP)
-    if ref not in found:
-        here = sorted(k for k in found if k.startswith(f"{dist}:"))
-        raise ProfileConfigError(
-            f"route plugin {ref!r}: {dist!r} exposes no route {entry!r}; it exposes {here}"
-        )
+    check_route_plugin(ref)
+    entry = ref.partition(":")[2]
     try:
-        route = found[ref].load()(options)
+        route = discover(ROUTE_GROUP)[ref].load()(options)
     except Exception as exc:
         raise ProfileConfigError(f"route plugin {ref!r} failed to load or build") from exc
     if not isinstance(route, Route):
@@ -295,8 +283,39 @@ def configured(name: str, config: GatewayConfig, providers: Mapping[str, Any]) -
         "git": config.git_remotes,
         "llm": providers,
         "matrix": config.matrix.get("enabled"),
+        "forward": [i for i in config.route_instances.values() if i.type == "forward"],
     }
     return bool(instances.get(name))
+
+
+def plugin_types(config: GatewayConfig) -> list[str]:
+    """Every ``dist:name`` route type an instance in ``config`` names."""
+    return sorted({i.type for i in config.route_instances.values() if ":" in i.type})
+
+
+def check_route_plugin(ref: str) -> None:
+    """At config load: the route plugin ``ref`` names is installed, exposes the
+    entry point and passes the route scan. Nothing of it is imported: a
+    configuration being validated, perhaps one no person has approved yet,
+    must not run plugin code (cto, #535). ``resolve_route`` imports it at mount.
+
+    Raises:
+        ProfileConfigError: not installed, no such route, or the scan refused it.
+    """
+    from ..gateway.errors import ProfileConfigError
+    from ..plugins.registry import discover, installed_version
+    from ..testing.suite import scan_imports
+
+    dist, _, entry = ref.partition(":")
+    if installed_version(dist) is None:
+        raise ProfileConfigError(f"route plugin {ref!r}: distribution {dist!r} is not installed")
+    if violations := scan_imports(dist, route=True):
+        raise ProfileConfigError(
+            f"route plugin {ref!r}: refused before loading, it reaches past the "
+            f"route contract: {sorted(set(violations))}"
+        )
+    if ref not in discover(ROUTE_GROUP):
+        raise ProfileConfigError(f"route plugin {ref!r}: {dist!r} exposes no route {entry!r}")
 
 
 #: The routes this gateway serves, by name, as mounted at startup.
@@ -367,3 +386,11 @@ def mount_routes(
         if configured(name, config, loaded):
             MOUNTED[name] = Mount(route, kind, config, in_tree=True, providers=loaded)
             mount(server, MOUNTED[name], profiles)
+    # A plugin route is mounted beside them, never seeded, so it is handed a
+    # Context and nothing of the gateway's own (#535).
+    from ..gateway.destination import DestinationKind
+
+    for ref in plugin_types(config):
+        plugin = ROUTES.get(ref.partition(":")[2]) or resolve_route(ref, {})
+        MOUNTED[plugin.name] = Mount(plugin, DestinationKind.EGRESS, config)
+        mount(server, MOUNTED[plugin.name], profiles)

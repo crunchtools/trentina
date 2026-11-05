@@ -226,7 +226,8 @@ async def check_url(url: str | httpx.URL) -> ResolvedTarget:
     addresses = await _resolve(host, port)
     if not addresses:
         raise EgressRefusedError("unresolvable")
-    if not get_config().fetch_allow_private:
+    config = get_config()
+    if not config.fetch_allow_private and host.lower() not in config.fetch_private_names:
         for answer in addresses:
             try:
                 ip = ipaddress.ip_address(answer)

@@ -75,7 +75,14 @@ class TestDestinationsArePersonApproved:
         grants = _grants(_load(tmp_path, _forward(["*"], ["*"])))
         assert grants["proxies:bench.hosts.*"].startswith("ANY host")
 
-    def test_a_plugin_origin_is_a_grant_and_its_options_are_not(self, tmp_path: Path) -> None:
+    def test_a_plugin_origin_is_a_grant_and_its_options_are_not(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from trentina.transports import registry
+
+        # Which plugin is installed is not what this asks; that it is checked
+        # at load is tests/test_plugin_route.py's.
+        monkeypatch.setattr(registry, "check_route_plugin", lambda _ref: None)
         document = {
             "proxies": {
                 "acme": {

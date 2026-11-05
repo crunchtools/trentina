@@ -28,6 +28,7 @@ import asyncio
 import base64
 import contextlib
 import logging
+from contextlib import asynccontextmanager
 from dataclasses import InitVar, dataclass, field
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
@@ -36,11 +37,13 @@ from urllib.parse import urlsplit
 import httpx
 from starlette.datastructures import Headers
 from starlette.requests import ClientDisconnect
+from starlette.responses import Response
 
 from .. import logsafe
 from ..errors import EgressRefusedError as GuardRefusedError
 from ..gateway.auth import resolve_profile_by_token
 from ..gateway.backend import response_byte_cap
+from ..gateway.context import profile_context
 from ..gateway.destination import Destination as AuditDestination
 from ..gateway.egress_policy import build_url, request_document, response_headers
 from ..gateway.gatekeeper import judge_egress
@@ -52,7 +55,7 @@ from ..gateway.outbound import (
     body_text,
     judge_input,
 )
-from ..gateway.profile import profile_for_address
+from ..gateway.profile import is_dns_name, profile_for_address
 from ..gateway.relay import NO_OPERATION, Operation, Relayed, Slots, upstream_outcome
 from ..gateway.upstream import (
     MAX_POOL_CONNECTIONS,
@@ -66,8 +69,10 @@ from ..logsafe import exc_kind
 from ..modes import Mode
 from ..orchestrator import judge_egress_response, judge_outbound
 from ..outcomes import Outcome
+from ..reach.egress import check_url, open_pinned
 from ..seal import UNSEALED, Seal, require
 from .base import (
+    HTTP_PORT,
     HTTPS_PORT,
     Admitted,
     AgentUrl,
@@ -79,7 +84,6 @@ from .base import (
     Grant,
     Instance,
     Listener,
-    OperatorOrigin,
     Origin,
     PeerAddress,
     RefusedError,
@@ -108,6 +112,8 @@ _AUTHORIZATION = "authorization"
 _FORWARDED_FOR = "x-forwarded-for"
 #: Headers only the gateway writes on a response; an upstream's are dropped.
 _OURS = "x-trentina-"
+#: Where a delivered finding rides back on a judged response.
+WARNING_HEADER = "x-trentina-warning"
 #: Seconds a request or response judge may take before it counts as unjudged.
 JUDGE_DEADLINE = 60.0
 #: How much of a body is sniffed for a NUL byte before it is taken as text.
@@ -283,6 +289,48 @@ def _bind_matrix(asked: Binding) -> Bound | None:
     )
 
 
+def _reachable(instance: list[str], grant: list[str]) -> frozenset[str]:
+    """The hosts both the instance and the grant allow; ``*`` on either side
+    is whatever the other allows, and on both is any host."""
+    if "*" in instance:
+        return frozenset(grant)
+    if "*" in grant:
+        return frozenset(instance)
+    return frozenset(instance) & frozenset(grant)
+
+
+def _bind_route(asked: Binding, route: str) -> Bound | None:
+    """A ``forward`` or ``dist:`` instance of ``route`` and the profile's grant
+    on it (#535): the hosts and origins both allow, and the token the grant
+    names, sent only to the instance's own origins."""
+    instance = asked.config.route_instances.get(asked.name)
+    grant = asked.profile.route_grants.get(asked.name)
+    if instance is None or grant is None:
+        return None
+    if instance.type != route and instance.type.rpartition(":")[2] != route:
+        return None
+    origins = {
+        key: Origin(parts.hostname or "", parts.port or HTTPS_PORT, parts.path.rstrip("/"))
+        for key, parts in ((k, urlsplit(v)) for k, v in instance.origins.items())
+    }
+    credential = instance.credential
+    return Bound(
+        instance=Instance(
+            name=asked.name, type=instance.type, origins=origins, options=dict(instance.options)
+        ),
+        grant=Grant(
+            origins=frozenset(grant.origins or origins) & frozenset(origins),
+            methods=frozenset(grant.methods),
+            enforcement=Mode(grant.enforcement),
+            options=dict(grant.options),
+            hosts=_reachable(instance.hosts, grant.hosts),
+        ),
+        secret=grant.token if credential is not None else None,
+        injection=HeaderToken(credential.header, credential.prefix) if credential else None,
+        secret_label=grant.token_env or asked.name,
+    )
+
+
 #: How each built-in route type finds an instance and a profile's grant on it,
 #: in the configuration blocks it had before ``proxies:``. #535 R12 replaces
 #: this table with the one lookup.
@@ -305,8 +353,9 @@ def bind(
     name: str,
 ) -> Bound | None:
     """The instance ``name`` of ``route`` and ``profile``'s grant on it, or None."""
+    asked = Binding(config, providers, profile, name)
     binder = _BINDERS.get(route)
-    return binder(Binding(config, providers, profile, name)) if binder is not None else None
+    return binder(asked) if binder is not None else _bind_route(asked, route)
 
 
 def _credential(bound: Bound) -> tuple[str, str, str] | None:
@@ -400,6 +449,9 @@ class PinnedUpstream(Upstream):
     bound: Bound
     origin: Origin
     idle: float
+    #: An agent-chosen destination: its address is checked on every send, never
+    #: pooled or cached, and no redirect is followed.
+    agent: bool = False
     _seal: InitVar[Seal] = UNSEALED
 
     def __post_init__(self, _seal: Seal) -> None:
@@ -423,8 +475,7 @@ class PinnedUpstream(Upstream):
         if (credential := _credential(self.bound)) is not None:
             header, value, secret = credential
             sent[header] = value
-        port = "" if self.origin.port == HTTPS_PORT else f":{self.origin.port}"
-        url = build_url(f"https://{self.origin.host}{port}", path, query)
+        url = build_url(self.origin.url, path, query)
         raw, status, content_type, hdrs = await self._fetch(method, url, sent, content)
         return await self._judge_response(raw, status, content_type, hdrs, mode, warning, secret)
 
@@ -518,9 +569,7 @@ class PinnedUpstream(Upstream):
         """
         cap = response_byte_cap()
         try:
-            async with pinned_send(
-                self.op.profile, method, url, idle=self.idle, headers=headers, content=content
-            ) as resp:
+            async with self._open(method, url, headers, content) as resp:
                 if content is not None:
                     self.op.sent = len(content)
                 buffer = bytearray()
@@ -544,6 +593,26 @@ class PinnedUpstream(Upstream):
         except httpx.HTTPError as exc:
             logger.warning("perimeter: upstream failed err=%s", logsafe.exc_kind(exc))
             raise RefusedError("upstream_failed", executed=True) from None
+
+    @asynccontextmanager
+    async def _open(
+        self, method: str, url: str, headers: dict[str, str], content: bytes | None
+    ) -> AsyncIterator[httpx.Response]:
+        """The send: the pinned pool for an operator origin; for an agent-chosen
+        URL, a fresh check of its address and one pinned request, no redirect."""
+        if not self.agent:
+            async with pinned_send(
+                self.op.profile, method, url, idle=self.idle, headers=headers, content=content
+            ) as resp:
+                yield resp
+            return
+        # The guard caps lookups per calling profile (#291), read off the bound caller.
+        with profile_context(self.op.profile):
+            target = await check_url(url)
+        async with open_pinned(
+            method, url, target, idle=self.idle, headers=headers, content=content
+        ) as resp:
+            yield resp
 
     async def _judge_response(
         self,
@@ -604,32 +673,42 @@ class PinnedUpstream(Upstream):
 def _dial(
     op: Operation, route: Route[Any, Any], bound: Bound, admitted: Admitted
 ) -> PinnedUpstream:
-    """The ``Upstream`` for the origin ``admitted`` named in its own instance.
+    """The ``Upstream`` for where ``admitted`` says the request goes.
 
-    A key the instance does not hold, or the grant does not cover, is refused:
-    a route names an origin, it never supplies one.
+    An operator origin is a KEY the instance and the grant both hold: a route
+    names one, it never supplies one. An agent-chosen URL is held to the hosts
+    both allow, by NAME before anything is resolved — never an address — and
+    to the route's ports; its address is checked when it is sent.
     """
     origin = admitted.origin
-    if (
-        not isinstance(origin, OperatorOrigin)
-        or origin.key not in bound.instance.origins
-        or origin.key not in bound.grant.origins
-    ):
+    if isinstance(origin, AgentUrl):
+        parts = urlsplit(origin.url)
+        host = (parts.hostname or "").lower().removesuffix(".")
+        try:
+            port = parts.port or (HTTPS_PORT if parts.scheme == "https" else HTTP_PORT)
+        except ValueError:
+            raise RefusedError("port") from None
+        if parts.scheme not in ("http", "https") or port not in route.ports:
+            raise RefusedError("port")
+        if not is_dns_name(host) or (
+            "*" not in bound.grant.hosts and host not in bound.grant.hosts
+        ):
+            raise RefusedError("host_not_listed")
+        target = Origin(host, port, scheme=parts.scheme)
+        agent = True
+    elif origin.key in bound.instance.origins and origin.key in bound.grant.origins:
+        target, agent = bound.instance.origins[origin.key], False
+    else:
         raise RefusedError("unknown_upstream")
     return PinnedUpstream(
         op=op,
         route=route.name,
         bound=bound,
-        origin=bound.instance.origins[origin.key],
+        origin=target,
         idle=route.idle,
+        agent=agent,
         _seal=_UPSTREAM_SEAL,
     )
-
-
-def _base(origin: Origin) -> str:
-    """The URL every request to ``origin`` starts with."""
-    port = "" if origin.port == HTTPS_PORT else f":{origin.port}"
-    return f"https://{origin.host}{port}{origin.base}"
 
 
 async def send_exempt(
@@ -715,7 +794,7 @@ class InTree(Context):
         whose upstream answers a client that expects both (a Matrix homeserver).
         The response is closed when the operation finishes.
         """
-        url = f"{_base(self.origin)}/{path}" + (f"?{query}" if query else "")
+        url = f"{self.origin.url}/{path}" + (f"?{query}" if query else "")
         resp = await send_exempt(self.profile, method, url, self.idle, headers, content)
         self.op.upstream.push_async_callback(resp.aclose)
         return resp
@@ -751,7 +830,7 @@ class InTree(Context):
         sent = dict(headers)
         if (credential := _credential(self.bound)) is not None:
             sent[credential[0]] = credential[1]
-        url = f"{_base(self.origin)}/{path}" + (f"?{query}" if query else "")
+        url = f"{self.origin.url}/{path}" + (f"?{query}" if query else "")
         try:
             return await self.op.upstream.enter_async_context(
                 pinned_send(
@@ -904,9 +983,25 @@ async def serve(mount: Mount, request: Request, profiles: dict[str, Profile]) ->
         op.settle(Outcome.GATEWAY_ERROR, op.reason)
         await op.finish()
         raise
+    if isinstance(response, Delivered):
+        response = _answer_with(response)
     if not isinstance(response, Relayed):
         await op.finish()
     return response
+
+
+def _answer_with(delivered: Delivered) -> Response:
+    """A judged delivery as the response: its status, headers and body, and the
+    finding a ``flag`` grant forwarded on ``x-trentina-warning``."""
+    headers = dict(delivered.headers)
+    if delivered.warning:
+        headers[WARNING_HEADER] = delivered.warning
+    return Response(
+        content=delivered.body,
+        status_code=delivered.status,
+        media_type=delivered.content_type or None,
+        headers=headers,
+    )
 
 
 async def _carry(mount: Mount, request: Request, op: Operation) -> Any:

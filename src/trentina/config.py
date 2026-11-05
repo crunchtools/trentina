@@ -157,6 +157,16 @@ def insecure_opt_in(name: str, warning: str) -> bool:
     return on
 
 
+def insecure_names(name: str, warning: str) -> frozenset[str]:
+    """Read a security escape hatch that names hosts (default none), lower-cased,
+    and WARN when it names any — the ``insecure_opt_in`` shape, for a list."""
+    raw = os.environ.get(name, "").replace(",", " ").split()
+    names = frozenset(host.strip().lower().removesuffix(".") for host in raw)
+    if names:
+        logger.warning(warning)
+    return names
+
+
 def part_settings() -> tuple[int, int, int]:
     """``TRENTINA_PART_TOKENS``, ``TRENTINA_MAX_PARTS`` and
     ``TRENTINA_PART_TTL_SECONDS`` (#340): the part size a paged response aims
@@ -362,6 +372,14 @@ class Config:
             "[WARNING] TRENTINA_FETCH_ALLOW_PRIVATE is on: fetch can reach loopback, "
             "private and link-local addresses, including this host's other services. "
             "Unset it unless a trusted internal site must be fetched.",
+        )
+        # Exact names whose non-global answers are accepted (#535): a narrower
+        # hatch than TRENTINA_FETCH_ALLOW_PRIVATE, for a fixture or a lab host,
+        # that leaves the address rule on for every other name.
+        self.fetch_private_names: frozenset[str] = insecure_names(
+            "TRENTINA_FETCH_PRIVATE_NAMES",
+            "[WARNING] TRENTINA_FETCH_PRIVATE_NAMES is set: those names may resolve to a "
+            "loopback, private or link-local address; every other name may not.",
         )
         # Federation's escape hatch (#592): lets a `federated:` backend be reached
         # over plain http, where its 60 s primary JWT is replayable by an on-path peer.

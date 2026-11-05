@@ -8,10 +8,11 @@ gateway will: scan the source, then load, build and register.
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -133,3 +134,52 @@ def test_a_route_named_for_another_entry_is_refused(site: Path) -> None:
 def test_a_plugin_that_is_not_installed_is_refused() -> None:
     with pytest.raises(ProfileConfigError, match="not installed"):
         registry.resolve_route("nobody-here:acme", {})
+
+
+def test_a_plugin_named_in_proxies_is_mounted_and_serves(
+    site: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole path an operator takes: install, declare an instance and a
+    grant in proxies:, and the spine serves it — the token injected by the spine
+    into a request the plugin never saw it in."""
+    import yaml
+
+    from tests import perimeter_golden as g
+    from tests.perimeter_golden import Call, bearer, drive, reply
+
+    _install(site, "acme-route", "acme_route", _CLEAN)
+    monkeypatch.setenv("ACME_TOKEN", "acme-secret-value-for-the-plugin")
+    document = {
+        "proxies": {
+            "acme1": {
+                "type": "acme-route:acme",
+                "origins": {"api": "https://api.acme.example"},
+                "credential": {"header": "Authorization", "prefix": "Bearer "},
+            }
+        },
+        "profiles": {
+            "agent1": {
+                "auth": {"bearer_token_env": "GOLDEN_AGENT1_TOKEN"},
+                "proxies": {"acme1": {"origins": ["api"], "token_env": "ACME_TOKEN"}},
+            }
+        },
+    }
+    path = tmp_path / "profiles.yaml"
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    monkeypatch.setattr(g, "SPELLING", {"config": path})
+
+    async def run() -> tuple[Any, list[dict[str, Any]]]:
+        async with g.stack(monkeypatch) as s:
+            s.net.handlers["api.acme.example"] = reply(200, '{"from":"acme"}')
+            exchange = await drive(
+                s.app, Call("GET", "/proxy/acme/acme1/things", headers=bearer("agent1"))
+            )
+            return exchange, s.net.seen
+
+    exchange, seen = asyncio.run(run())
+    status = next(m["status"] for m in exchange["messages"] if m["type"] == "start")
+    assert status == 200
+    [sent] = seen
+    assert sent["url"] == "https://api.acme.example/things"
+    assert ["authorization", "Bearer acme-secret-value-for-the-plugin"] in sent["headers"]
+    assert "acme" not in registry.BUILTIN_ROUTES

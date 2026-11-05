@@ -2507,6 +2507,20 @@ class RouteInstance(BaseModel):
     origins: dict[str, str] = Field(default_factory=dict, description="key -> https origin")
     hosts: list[str] = Field(default_factory=list, description="DNS names an agent may name, or *")
     options: dict[str, Any] = Field(default_factory=dict, description="the route's own settings")
+    credential: EgressCredential | None = Field(
+        default=None,
+        description="How a grant's token is sent to this instance's origins; never to a host",
+    )
+
+    @model_validator(mode="after")
+    def _a_token_goes_only_where_the_operator_named(self) -> RouteInstance:
+        """An agent-chosen host never receives a profile's token: a credential
+        belongs to an instance whose destinations the operator wrote down."""
+        if self.credential is not None and (self.hosts or self.type == "forward"):
+            raise ValueError(
+                "credential: an instance an agent chooses the destination of takes none"
+            )
+        return self
 
     @field_validator("type")
     @classmethod
