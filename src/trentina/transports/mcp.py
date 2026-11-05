@@ -1344,6 +1344,15 @@ async def _dispatch(
         # bug must not become a request to a URL that is not one.
         raise BackendCallError(f"backend {backend_name!r} has nothing to call")
     if not backend.is_internal:
+        if backend.federated is not None:
+            # A secondary Trentina resolves its own mode, and an omitted one
+            # falls to ITS profile default, which its per-tool guard may deny.
+            # Carry the mode this gateway resolved, with the redact question,
+            # in the spelling any client sends (#711).
+            forwarded = {
+                **forwarded,
+                MODE_PARAM: {"redact": prompt} if mode.value == "redact" and prompt else mode.value,
+            }
         return await call_backend_tool(backend_name, backend, tool_name, forwarded)
 
     # The internal tools judge their own ingress, so they get the RESOLVED

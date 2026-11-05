@@ -10,6 +10,15 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A federated tool accepts `trentina_mode={"redact": "<question>"}` (#711).**
+  The primary resolved the mode and stripped it, so the secondary saw none and
+  fell to its profile default, which a per-tool `deny: [flag]` guard refused
+  with a list that named the requested mode. The primary now sends the resolved
+  mode, with the redact question, to a `federated:` backend in the spelling any
+  client uses (no wire change). A mode refusal also names the mode it resolved.
+
 ## [6.5.0] - 2026-11-04
 
 ### Added
