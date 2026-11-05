@@ -16,3 +16,15 @@ the gateway under test is the shipped image with `profiles.yaml` below.
 adapters in `flag` and in `block` and uploads each summary JSON. The bench's
 http_proxy (TLS-intercepting CONNECT) and websocket rows are not served: known
 gap 26, reported as measured.
+
+## What the MCP gateway adapter can and cannot measure here
+
+The bench's MCP fixture offers a case's tools only to a `tools/list` carrying
+that case's `_meta.aeb_request_identity` (and session). The adapter assumes a
+pass-through gateway. Trentina is not one: it aggregates every backend's tools,
+caches and pins each list, and never forwards a client's `_meta` upstream —
+which is the rug-pull defense. So the fixture's per-case tools never reach the
+served list, and the adapter reports `delivery_unavailable` ("Unknown tool")
+rather than a verdict. Those rows are published as measured, not as blocks or
+misses; changing the gateway's caching to suit the harness is not on the table.
+The scored run is the fetch adapter through `forward`.

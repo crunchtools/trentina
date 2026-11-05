@@ -1,4 +1,6 @@
 # agent-egress-bench (#507): the perimeter under test, as config alone.
+gateway:
+  max_sessions_per_profile: 64   # the runner opens a session per case
 proxies:
   # The judge's provider: llm_keys names it. No profile is granted the route.
   openrouter:

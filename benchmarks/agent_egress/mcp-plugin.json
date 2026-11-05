@@ -15,7 +15,7 @@
     "api_endpoint": ""
   },
   "client": {
-    "endpoint": "${AEB_GATEWAY_URL}gateway/bench/mcp",
+    "endpoint": "http://$AEB_GATEWAY_ADDR/gateway/bench/mcp",
     "headers": {"Authorization": "Bearer $AEB_BENCH_TOKEN"}
   },
   "deny_signals": {
