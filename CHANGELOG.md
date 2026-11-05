@@ -10,6 +10,14 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- **The agent-egress-bench run is published** (`docs/benchmark.md`, #507):
+  98.3% containment at a 7.4% false-positive rate under `block`, 86.2% at 0.0%
+  under `flag`, scored by the third-party runner against the shipped image
+  configured by `benchmarks/agent_egress/`. Every miss and every unserved
+  transport is named, with the bench's own "not yet independent" caveat.
+
 ## [6.8.0] - 2026-11-05
 
 ### Added
