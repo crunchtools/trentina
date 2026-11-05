@@ -140,7 +140,26 @@ class _Automaton:
 
 _AUTOMATON = _Automaton(LITERALS)
 
-_DOTLESS_I = unicodedata.lookup("LATIN SMALL LETTER DOTLESS I")
+#: The non-ASCII characters ``re.IGNORECASE`` matches to an ASCII letter,
+#: folded ONE character to one, as the regex engine does. ``casefold`` and
+#: ``lower`` are no substitute: both expand U+0130 to ``i`` plus a combining
+#: dot, which splits ``İgnore`` away from ``ignore``.
+#: ``tests/test_l1_prefilter.py`` sweeps every code point to hold this
+#: complete.
+ASCII_EQUIVALENTS: dict[str, str] = {
+    unicodedata.lookup("LATIN CAPITAL LETTER I WITH DOT ABOVE"): "i",
+    unicodedata.lookup("LATIN SMALL LETTER DOTLESS I"): "i",
+    unicodedata.lookup("LATIN SMALL LETTER LONG S"): "s",
+    unicodedata.lookup("KELVIN SIGN"): "k",
+}
+_FOLD = str.maketrans(ASCII_EQUIVALENTS)
+
+
+def _fold(line: str) -> str:
+    # Each character becomes at most one: a character the regex engine does
+    # not equate with an ASCII letter cannot spell a literal whatever it
+    # lowers to, so lowering it is an over-approximation and never a miss.
+    return "".join(ch.lower() if len(ch.lower()) == 1 else ch for ch in line.translate(_FOLD))
 
 
 def unlock(line: str) -> Unlocked:
@@ -148,8 +167,5 @@ def unlock(line: str) -> Unlocked:
     if line.isascii():
         plain, rot, rev = _AUTOMATON.scan(line.lower())
         return Unlocked(frozenset(plain), frozenset(rot), frozenset(rev))
-    # Fold as re.IGNORECASE does: casefold covers the long s and the Kelvin
-    # sign; the dotless i (U+0131) is the one equivalence it leaves out.
-    folded = line.casefold().replace(_DOTLESS_I, "i")
-    plain, _, _ = _AUTOMATON.scan(folded)
+    plain, _, _ = _AUTOMATON.scan(_fold(line))
     return Unlocked(frozenset(plain), None, None)

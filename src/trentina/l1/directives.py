@@ -240,6 +240,9 @@ class DirectiveStats:
 if set(LITERALS) != set(PATTERNS) | {PREFIX}:
     raise RuntimeError("every pattern needs its literals (#709)")
 
+_ALL_NAMES = frozenset(LITERALS)
+"""Every pattern and the prefix rule: the ungated check."""
+
 
 def matches_exact(line: str, names: frozenset[str] | None = None) -> bool:
     """Whether ``line`` matches the prefix rule or any exact pattern.
@@ -288,12 +291,14 @@ def _matches_ciphered(line: str, unlocked: Unlocked | None = None) -> bool:
     """
     if len(line) < _MIN_CIPHERED:
         return False
-    # One scan of the raw line gates both passes (#709); None runs ungated.
+    # One scan of the raw line gates both passes (#709); None (no verdict)
+    # runs every pattern, never the prefilter again.
     unlocked = unlocked or unlock(line)
-    rot, rev = unlocked.rot13, unlocked.reversed
-    if (rot is None or rot) and matches_exact(codecs.decode(line, "rot13"), rot):
+    rot = _ALL_NAMES if unlocked.rot13 is None else unlocked.rot13
+    rev = _ALL_NAMES if unlocked.reversed is None else unlocked.reversed
+    if rot and matches_exact(codecs.decode(line, "rot13"), rot):
         return True
-    return (rev is None or bool(rev)) and matches_exact(line[::-1], rev)
+    return bool(rev) and matches_exact(line[::-1], rev)
 
 
 def strip_directives(text: str) -> tuple[str, DirectiveStats]:
