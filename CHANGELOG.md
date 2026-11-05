@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.6.0] - 2026-11-05
+
 ### Added
 
 - **The unpack stage decodes the rest of garak's encodings: the NATO
