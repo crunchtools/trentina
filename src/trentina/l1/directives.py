@@ -31,6 +31,7 @@ import re
 from dataclasses import dataclass
 
 from .evasion import collapsed_spacing, corrected_line, scrambled_with_company
+from .prefilter import LITERALS, PREFIX, Unlocked, unlock
 
 _I = re.IGNORECASE
 _TARGETS = r"(?:instructions?|rules?|guidelines?|constraints?|directives?)"
@@ -236,9 +237,26 @@ class DirectiveStats:
     ciphered_detected: int = 0
 
 
-def matches_exact(line: str) -> bool:
-    """Whether ``line`` matches the prefix rule or any exact pattern."""
-    return bool(_PREFIX_PATTERNS.search(line)) or any(p.search(line) for p in PATTERNS.values())
+if set(LITERALS) != set(PATTERNS) | {PREFIX}:
+    raise RuntimeError("every pattern needs its literals (#709)")
+
+
+def matches_exact(line: str, names: frozenset[str] | None = None) -> bool:
+    """Whether ``line`` matches the prefix rule or any exact pattern.
+
+    ``names`` is the prefilter's answer for this line (``prefilter.unlock``):
+    only those patterns run, and the regex still decides. Omitted, it is
+    computed here.
+    """
+    if names is None:
+        names = unlock(line).plain
+    for name in names:
+        if name == PREFIX:
+            if _PREFIX_PATTERNS.search(line):
+                return True
+        elif PATTERNS[name].search(line):
+            return True
+    return False
 
 
 def _matches_evasion(line: str) -> bool:
@@ -261,7 +279,7 @@ _MIN_CIPHERED = 12
 """The shortest line read in ROT13 and reversed: no exact pattern is shorter."""
 
 
-def _matches_ciphered(line: str) -> bool:
+def _matches_ciphered(line: str, unlocked: Unlocked | None = None) -> bool:
     """Whether ``line`` is an exact directive in ROT13 or written backwards.
 
     Held to the exact patterns, which need several words in order: ordinary
@@ -270,7 +288,12 @@ def _matches_ciphered(line: str) -> bool:
     """
     if len(line) < _MIN_CIPHERED:
         return False
-    return matches_exact(codecs.decode(line, "rot13")) or matches_exact(line[::-1])
+    # One scan of the raw line gates both passes (#709); None runs ungated.
+    unlocked = unlocked or unlock(line)
+    rot, rev = unlocked.rot13, unlocked.reversed
+    if (rot is None or rot) and matches_exact(codecs.decode(line, "rot13"), rot):
+        return True
+    return (rev is None or bool(rev)) and matches_exact(line[::-1], rev)
 
 
 def strip_directives(text: str) -> tuple[str, DirectiveStats]:
@@ -285,11 +308,14 @@ def strip_directives(text: str) -> tuple[str, DirectiveStats]:
 
     previous = ""
     for line in _SOFT_BREAK.sub(" ", text).split("\n"):
-        if matches_exact(line) or (previous.rstrip().endswith("]") and _ROLE_LABEL.search(line)):
+        unlocked = unlock(line)
+        if matches_exact(line, unlocked.plain) or (
+            previous.rstrip().endswith("]") and _ROLE_LABEL.search(line)
+        ):
             stats.directives_detected += 1
         elif _matches_evasion(line):
             stats.evasions_detected += 1
-        elif _matches_ciphered(line):
+        elif _matches_ciphered(line, unlocked):
             stats.ciphered_detected += 1
         previous = line
 

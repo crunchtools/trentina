@@ -10,6 +10,10 @@ under that name.
 
 ## [Unreleased]
 
+### Changed
+
+- L1's directive stage checks a word list (Aho-Corasick; plain, ROT13 and reversed spellings in one pass) before running the exact patterns, so lines containing none of their words skip them. Detection is unchanged (#709).
+
 ## [6.6.0] - 2026-11-05
 
 ### Added
