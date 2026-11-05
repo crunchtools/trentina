@@ -323,6 +323,11 @@ class TestShape:
             lambda n: "!" * n,  # uuencode bait: a line that never ends (#546)
             lambda n: ". " * (n // 2),  # Morse bait: groups that never close
             lambda n: "⠁" * n,  # a wall of Braille cells
+            lambda n: "a\u0301\u0302\u0303" * (n // 4),  # Zalgo wall
+            lambda n: "Alfa " * (n // 5),  # NATO words that never decode to text
+            lambda n: "\u2064" * n,  # sneaky bits: one word of n bits
+            lambda n: "Ø" * n,  # a wall of Base2048
+            lambda n: "🀄" * n,  # a wall of Ecoji
         ],
         ids=[
             "long-run",
@@ -333,6 +338,11 @@ class TestShape:
             "uu-bait",
             "morse-bait",
             "braille-wall",
+            "zalgo-wall",
+            "nato-run",
+            "sneaky-word",
+            "base2048-wall",
+            "ecoji-wall",
         ],
     )
     def test_linear(self, make: Callable[[int], str]) -> None:

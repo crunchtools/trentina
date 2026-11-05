@@ -27,8 +27,12 @@ What is changed:
   judges a document, so the encoded text stands alone, which is garak's
   first template.
 
-What is not taken: Base2048, Ecoji and Zalgo, which need third-party
-packages. Base64 and Unicode tag characters are already gate transforms.
+Base2048, Ecoji and Zalgo need third-party packages (dev-only: the gateway
+decodes all three from its own tables), imported when the encoder first runs,
+so this module loads in an image without them. Zalgo draws its marks from
+``zalgolib``'s tables at garak's intensity, 5, with the draw seeded by the text
+as leetspeak's is. Base64 and Unicode tag characters are already gate
+transforms.
 
 These are measured and never gated: ``benchmarks/l2_encodings.py`` scores
 them and ``docs/benchmark.md`` holds the numbers. A transform joins the gate
@@ -39,6 +43,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import io
 import quopri
 import random
 from typing import TYPE_CHECKING
@@ -52,6 +57,7 @@ COMMIT = "93aa9cdec309ec4170559676f1826ea2a679920c"
 LICENSE = "Apache-2.0"
 
 _UU_LINE = 45  # bytes a uuencoded line carries
+_ZALGO_INTENSITY = 5  # garak's: "default value of 50 explodes prompt length"
 _VARIANT_BLOCK = 0xE0100  # Variation Selectors Supplement
 _ROT13 = str.maketrans(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
@@ -130,6 +136,39 @@ def _atbash(s: str) -> str:
     return s.translate(_ATBASH)
 
 
+def _base2048(s: str) -> str:
+    import base2048
+
+    return base2048.encode(s.encode())
+
+
+def _ecoji(s: str) -> str:
+    import ecoji
+
+    out = io.StringIO()
+    ecoji.encode(io.BytesIO(s.encode()), out)
+    return out.getvalue()
+
+
+def _zalgo(s: str) -> str:
+    from zalgolib.diacritics import (
+        DOWN_LEN,
+        DOWN_MARKS,
+        MID_LEN,
+        MID_MARKS,
+        UP_LEN,
+        UP_MARKS,
+    )
+
+    draw = random.Random(s)
+    counts = [round(n * _ZALGO_INTENSITY / 100) for n in (UP_LEN, MID_LEN, DOWN_LEN)]
+    tables = (UP_MARKS, MID_MARKS, DOWN_MARKS)
+    marks = list(zip(tables, counts, strict=True))
+    return "".join(
+        c + "".join(m.strip() for table, k in marks for m in draw.choices(table, k=k)) for c in s
+    )
+
+
 def _leetspeak(s: str) -> str:
     toss = random.Random(s)
     return "".join(
@@ -176,7 +215,7 @@ def _sneaky_bits(s: str) -> str:
 #: time, so a mostly-non-Latin payload is a benign fragment before unpack ever
 #: sees it — measuring unpack's recovery on it measures garak, not the pipeline
 #: (#546, #423). The byte encoders (base*, UU, Ascii85) carry any text.
-LATIN_ONLY = frozenset({"Braille", "Morse"})
+LATIN_ONLY = frozenset({"Braille", "Morse", "NATO alphabet"})
 
 #: The share of a payload's alphanumerics an ASCII-only encoder must be able to
 #: carry for decoding it to be a fair measure of unpack rather than of garak.
@@ -188,7 +227,7 @@ def carries(name: str, text: str) -> bool:
     measures trentina's unpack stage, not garak's lossy encoder (#546).
 
     A non-:data:`LATIN_ONLY` encoder carries everything. A Latin-only one
-    (Braille, Morse) carries ``text`` only when at least
+    (Braille, Morse, NATO) carries ``text`` only when at least
     :data:`CARRY_MIN_ASCII_ALNUM` of its alphanumerics are ASCII a-z/0-9 — the
     characters those alphabets have a code for; garak drops the rest."""
     if name not in LATIN_ONLY:
@@ -216,5 +255,8 @@ ENCODINGS: dict[str, Callable[[str], str]] = {
     "NATO alphabet": _nato,
     "Unicode variant selectors": _variant_selectors,
     "sneaky bits": _sneaky_bits,
+    "Base2048": _base2048,
+    "Ecoji": _ecoji,
+    "Zalgo": _zalgo,
 }
-"""garak's stdlib encodings, by the name the benchmark reports them under."""
+"""garak's encodings, by the name the benchmark reports them under."""

@@ -10,6 +10,20 @@ under that name.
 
 ## [Unreleased]
 
+## [6.6.0] - 2026-11-05
+
+### Added
+
+- **The unpack stage decodes the rest of garak's encodings: the NATO
+  alphabet, sneaky bits, Base2048, Ecoji and Zalgo.** An attack in any of
+  them is read by L1 and L2 as plain text. NATO and sneaky bits passed both
+  layers at 0 of 44 (known gap 23, now closed); Base2048, Ecoji and Zalgo
+  were never measured, because garak needs third-party packages for them.
+  The gateway decodes all five from in-tree tables; the packages are dev-only,
+  for the benchmark. Base2048 and Ecoji are strict (a decode must re-encode
+  to the run), and none of the five touches ordinary Cyrillic, emoji or
+  accented text. `PERIMETER_VERSION` 24 re-judges cached verdicts.
+
 ## [6.5.2] - 2026-11-05
 
 ### Fixed
