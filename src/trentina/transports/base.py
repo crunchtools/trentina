@@ -37,6 +37,8 @@ from ..outcomes import Outcome
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
 
+    from starlette.datastructures import Headers
+
     from ..modes import Mode
 
 
@@ -253,7 +255,9 @@ class RefusedError(Exception):
     (a forge's 403 passed through, against its 500). ``detail`` goes to the
     audit row instead of ``reason`` where a built-in has a more specific fact;
     a plugin's is dropped. ``executed`` says the destination acted before the
-    response was withheld (#425).
+    response was withheld (#425). ``tool`` and ``destination`` are what the
+    route had established before it refused (the git operation and the
+    repository, say), for the audit row; a refusal knows no more than that.
     """
 
     def __init__(
@@ -264,6 +268,8 @@ class RefusedError(Exception):
         outcome: Outcome | None = None,
         executed: bool = False,
         detail: str | None = None,
+        tool: str | None = None,
+        destination: str | None = None,
     ) -> None:
         super().__init__(reason)
         self.reason = reason
@@ -271,6 +277,8 @@ class RefusedError(Exception):
         self.outcome = outcome
         self.executed = executed
         self.detail = detail
+        self.tool = tool
+        self.destination = destination
 
 
 @dataclass(frozen=True)
@@ -287,7 +295,8 @@ class Wire:
     path: str
     raw_path: bytes
     query: str
-    headers: Mapping[str, str]
+    #: Every header as it arrived, repeats kept (``getlist``), less the credential.
+    headers: Headers
     peer: str | None
 
 
@@ -351,12 +360,14 @@ class Upstream(ABC):
 
 @dataclass(frozen=True)
 class Admitted:
-    """What ``admit`` decided: where the request goes, and the audit row's
-    ``destination`` (the caller's text, recorded and nowhere else). A route
-    subclasses it to carry what it parsed on the way."""
+    """What ``admit`` decided: where the request goes, and for the audit row
+    the operation (``tool``, the method when None) and the ``destination`` (the
+    caller's text, recorded and nowhere else). A route subclasses it to carry
+    what it parsed on the way."""
 
     origin: Destination
     destination: str | None = None
+    tool: str | None = None
 
 
 @dataclass

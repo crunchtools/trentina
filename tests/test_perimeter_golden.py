@@ -30,11 +30,43 @@ Case = Callable[[pytest.MonkeyPatch], Awaitable[dict[str, Any]]]
 CASES: dict[str, Case] = {}
 
 #: Observable differences the port is ALLOWED to make, by case. Each is a
-#: tightening named in the CHANGELOG; every other difference is a failure.
-#:   llm-unknown-provider: 6.7.0 answered before the Operation existed, so no row;
-#:     the spine authenticates, then records the refusal like any other.
-#:   llm-no-key: 6.7.0 settled DENIED_ALLOWLIST with no reason; the spine names it.
+#: change to an audit row only — nothing an agent receives — listed in the
+#: CHANGELOG; every other difference is a failure. The spine has one rule where
+#: the routes had several, and each delta is a row that now says more:
+#:   * the row names the instance (``http:github``) once it is bound, before the
+#:     route's own rails; http named it only after them. A request to no
+#:     instance is ``<route>:-`` on every route; git wrote ``git``.
+#:   * the row's tool is the HTTP method until the route says otherwise; git
+#:     wrote ``-`` before it had parsed the service.
+#:   * what ``admit`` established is on the row before the slot, so a busy
+#:     refusal records the destination it refused; http set it after the slot.
 DELTAS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {}
+
+
+def _first_row(**changes: Any) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    def apply(record: dict[str, Any]) -> dict[str, Any]:
+        record["gateway_calls"][0].update(changes)
+        return record
+
+    return apply
+
+
+def _busy_names_its_destination(record: dict[str, Any]) -> dict[str, Any]:
+    served = next(r for r in record["gateway_calls"] if r["error_message"] is None)
+    for row in record["gateway_calls"]:
+        if row["error_message"] == "busy":
+            row["destination"] = served["destination"]
+            row["destination_kind"] = served["destination_kind"]
+    return record
+
+
+for _case in ("http-bad-path", "http-method-not-listed", "http-path-not-listed"):
+    DELTAS[_case] = _first_row(backend="http:github")
+DELTAS["http-busy"] = _busy_names_its_destination
+DELTAS["git-bad-endpoint"] = _first_row(tool="GET")
+DELTAS["git-bad-service"] = _first_row(tool="GET")
+DELTAS["git-unknown-remote"] = _first_row(backend="git:-", tool="GET")
+DELTAS["git-not-granted-profile"] = _first_row(backend="git:-", tool="GET")
 
 
 def case(name: str) -> Callable[[Case], Case]:

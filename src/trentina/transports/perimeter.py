@@ -25,12 +25,14 @@ gateway's own seeded routes receive (``transports/registry.py``).
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from dataclasses import InitVar, dataclass
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
 import httpx
+from starlette.datastructures import Headers
 from starlette.requests import ClientDisconnect
 
 from .. import logsafe
@@ -71,7 +73,7 @@ from .base import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import AsyncIterator, Mapping
 
     from pydantic import SecretStr
     from starlette.requests import Request
@@ -110,6 +112,13 @@ class HeaderToken:
 
 
 @dataclass(frozen=True)
+class BasicAuth:
+    """Inject the profile's secret as HTTP Basic, ``<username>:<secret>``."""
+
+    username: str
+
+
+@dataclass(frozen=True)
 class Bound:
     """An instance and a profile's grant on it, with what the spine alone holds:
     the secret it injects and how, and the label its log redaction carries."""
@@ -117,7 +126,7 @@ class Bound:
     instance: Instance
     grant: Grant
     secret: SecretStr | None
-    injection: HeaderToken | None
+    injection: HeaderToken | BasicAuth | None
     secret_label: str
 
 
@@ -150,6 +159,49 @@ def bind(config: GatewayConfig, profile: Profile, route: str, name: str) -> Boun
             injection=HeaderToken(credential.header, credential.prefix) if credential else None,
             secret_label=grant.token_env or name,
         )
+    if route == "git":
+        remote = config.git_remotes.get(name)
+        lists = profile.git.get(name)
+        if remote is None or lists is None or lists.token is None:
+            return None
+        return Bound(
+            instance=Instance(
+                name=name,
+                type=route,
+                origins={"origin": Origin(remote.host)},
+                options={"hidden_refs": tuple(remote.hidden_refs)},
+            ),
+            grant=Grant(
+                origins=frozenset({"origin"}),
+                methods=frozenset({"GET", "POST"}),
+                enforcement=Mode.BLOCK,
+                # The repository and ref lists, without the token they carry.
+                options={"git": lists.model_copy(update={"token": None})},
+            ),
+            secret=lists.token,
+            injection=BasicAuth(remote.username),
+            secret_label=lists.token_env,
+        )
+    return None
+
+
+def _credential(bound: Bound) -> tuple[str, str, str] | None:
+    """The header the spine injects for ``bound``, its value, and the secret in it.
+
+    Every form a secret is sent in is held from the logs (``logsafe``), the
+    Basic encoding included: the token in the form it is sent is a secret too.
+    """
+    match bound.injection, bound.secret:
+        case BasicAuth(username=username), stored if stored is not None:
+            secret = stored.get_secret_value()
+            encoded = base64.b64encode(f"{username}:{secret}".encode()).decode("ascii")
+            for form in (secret, encoded):
+                logsafe.hold(form, bound.secret_label)
+            return "authorization", f"Basic {encoded}", secret
+        case HeaderToken(header=header, prefix=prefix), stored if stored is not None:
+            secret = stored.get_secret_value()
+            logsafe.hold(secret, bound.secret_label)
+            return header.lower(), f"{prefix}{secret}", secret
     return None
 
 
@@ -244,11 +296,9 @@ class PinnedUpstream(Upstream):
         warning = await self._judge_request(method, path, query, sent, content, mode)
         # The profile's credential goes on after judging: it is never judged or logged.
         secret: str | None = None
-        if self.bound.injection is not None and self.bound.secret is not None:
-            secret = self.bound.secret.get_secret_value()
-            logsafe.hold(secret, self.bound.secret_label)
-            header = self.bound.injection.header.lower()
-            sent[header] = f"{self.bound.injection.prefix}{secret}"
+        if (credential := _credential(self.bound)) is not None:
+            header, value, secret = credential
+            sent[header] = value
         port = "" if self.origin.port == HTTPS_PORT else f":{self.origin.port}"
         url = build_url(f"https://{self.origin.host}{port}", path, query)
         raw, status, content_type, hdrs = await self._fetch(method, url, sent, content)
@@ -456,10 +506,72 @@ def _dial(
 class InTree(Context):
     """The gateway's own routes also get the profile and the operation: they
     judge their own protocol under the profile's settings. Handed only to a
-    route the registry seeded."""
+    route the registry seeded.
+
+    ``open`` is the send that does not judge, for a route that judges its own
+    protocol; ``stream`` is the body as it arrives, uncapped, for a route that
+    bounds it by its own rules. Neither is on ``Upstream``, which a plugin holds.
+    """
 
     profile: Profile
     op: Operation
+    raw: AsyncIterator[bytes]
+    bound: Bound
+    origin: Origin
+    idle: float
+
+    def stream(self) -> AsyncIterator[bytes]:
+        """The request body as it arrives, unread by the spine."""
+        return self.raw
+
+    async def chunks(self, resp: httpx.Response) -> AsyncIterator[bytes]:
+        """An opened response's body as it arrives; a forge that goes quiet or
+        drops the connection part-way is ``upstream_idle``/``upstream_failed``."""
+        try:
+            async for piece in resp.aiter_raw():
+                yield piece
+        except httpx.TimeoutException:
+            raise RefusedError("upstream_idle", executed=True) from None
+        except httpx.HTTPError as exc:
+            logger.warning("perimeter: upstream failed mid-stream err=%s", logsafe.exc_kind(exc))
+            raise RefusedError("upstream_failed", executed=True) from None
+
+    async def open(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: str = "",
+        headers: Mapping[str, str],
+        content: bytes | AsyncIterator[bytes] | None = None,
+    ) -> httpx.Response:
+        """Send to the checked origin with the credential injected; the open
+        response is closed when the operation finishes.
+
+        The guard's ``resolver_busy`` is the gateway's load and ``redirect``
+        the pinned contract's own rule; any other refusal of its is a verdict
+        on the upstream, its reason kept as ``detail``.
+        """
+        sent = dict(headers)
+        if (credential := _credential(self.bound)) is not None:
+            sent[credential[0]] = credential[1]
+        port = "" if self.origin.port == HTTPS_PORT else f":{self.origin.port}"
+        url = f"https://{self.origin.host}{port}/{path}" + (f"?{query}" if query else "")
+        try:
+            return await self.op.upstream.enter_async_context(
+                pinned_send(
+                    self.profile, method, url, idle=self.idle, headers=sent, content=content
+                )
+            )
+        except GuardRefusedError as exc:
+            if exc.reason in (RESOLVER_BUSY, "redirect"):
+                raise RefusedError(exc.reason) from None
+            raise RefusedError("denied_guard", detail=exc.reason) from None
+        except httpx.TimeoutException:
+            raise RefusedError("upstream_idle", executed=True) from None
+        except httpx.HTTPError as exc:
+            logger.warning("perimeter: upstream failed err=%s", logsafe.exc_kind(exc))
+            raise RefusedError("upstream_failed") from None
 
 
 @dataclass
@@ -504,6 +616,8 @@ def _spell(mount: Mount, refused: RefusedError) -> RefusedError:
         outcome=refused.outcome or entry.outcome,
         executed=refused.executed,
         detail=refused.detail if mount.in_tree else None,
+        tool=refused.tool,
+        destination=refused.destination,
     )
 
 
@@ -532,6 +646,8 @@ async def serve(mount: Mount, request: Request, profiles: dict[str, Profile]) ->
         response = await _carry(mount, request, op)
     except RefusedError as raised:
         refused = _spell(mount, raised)
+        op.tool = refused.tool or op.tool
+        op.destination = refused.destination or op.destination
         if refused.outcome is not None:
             op.settle(refused.outcome, refused.detail or refused.reason)
         logger.info(
@@ -568,23 +684,30 @@ async def _carry(mount: Mount, request: Request, op: Operation) -> Any:
     bound = mount.bound(op.profile, name)
     if bound is None:
         raise RefusedError("unknown_upstream")
+    # The row names the instance once it is bound to one.
+    op.backend = f"{route.name}:{name}"
     hidden = {_AUTHORIZATION} | {h.lower() for h in route.auth.fallback_headers}
     wire = Wire(
         method=request.method,
         path=str(request.path_params.get("path", "")),
         raw_path=request.scope.get("raw_path", b""),
         query=request.url.query,
-        headers={k: v for k, v in request.headers.items() if k.lower() not in hidden},
+        headers=Headers(
+            raw=[
+                (k, v) for k, v in request.headers.raw if k.decode("latin-1").lower() not in hidden
+            ]
+        ),
         peer=None,
     )
     admitted = await route.admit(wire, bound.grant, bound.instance)
-    # The row names the instance once the request is admitted to it; a request
-    # refused on its own line or headers is recorded against the route alone.
-    op.backend = f"{route.name}:{name}"
+    # What admit established goes on the row before the slot, so a busy
+    # refusal says what it refused.
+    op.tool = admitted.tool or op.tool
+    op.destination = admitted.destination
     if route.slots is not None and not op.take_slot(mount.slots):
         raise RefusedError("busy")
-    op.destination = admitted.destination
-    body = Body(request.stream(), route.max_request_bytes)
+    raw = request.stream()
+    body = Body(raw, route.max_request_bytes)
     upstream = _dial(op, route, bound, admitted)
     if mount.in_tree:
         ctx: Context = InTree(
@@ -595,6 +718,10 @@ async def _carry(mount: Mount, request: Request, op: Operation) -> Any:
             upstream=upstream,
             profile=op.profile,
             op=op,
+            raw=raw,
+            bound=bound,
+            origin=upstream.origin,
+            idle=route.idle,
         )
     else:
         ctx = Context(

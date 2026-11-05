@@ -178,8 +178,14 @@ def build_transport(name: str) -> Transport:
 def _seed() -> Mapping[str, tuple[Route[Any, Any], DestinationKind]]:
     from ..gateway.destination import DestinationKind
     from ..gateway.egress_http import HttpRoute
+    from ..gateway.git_transport import GitRoute
 
-    return MappingProxyType({"http": (HttpRoute(), DestinationKind.EGRESS)})
+    return MappingProxyType(
+        {
+            "http": (HttpRoute(), DestinationKind.EGRESS),
+            "git": (GitRoute(), DestinationKind.GIT),
+        }
+    )
 
 
 #: The built-in route names: what the seed holds, and no plugin may take.
@@ -227,7 +233,7 @@ def register_route(name: str, route: Route[Any, Any]) -> None:
 def configured(name: str, config: GatewayConfig) -> bool:
     """Whether the file configures any instance of the built-in route ``name``.
     A route with nothing to reach is not mounted, as before #535."""
-    return name == "http" and bool(config.egress_upstreams)
+    return bool({"http": config.egress_upstreams, "git": config.git_remotes}.get(name))
 
 
 #: The routes this gateway serves, by name, as mounted at startup.

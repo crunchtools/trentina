@@ -140,12 +140,11 @@ class _Seams:
     @staticmethod
     def open_slots() -> dict[str, dict[str, int]]:
         """Every perimeter slot table, by route, holding anything."""
-        from trentina.gateway import client_egress, git_transport, llm_proxy
+        from trentina.gateway import client_egress, llm_proxy
         from trentina.transports.registry import MOUNTED
 
         tables = {
             **{name: entry.slots for name, entry in MOUNTED.items()},
-            "git": git_transport._SLOTS,
             "llm": llm_proxy._SLOTS,
             "connect": client_egress._slots,
         }
@@ -179,12 +178,11 @@ class _Seams:
 
     @staticmethod
     def reset() -> None:
-        from trentina.gateway import client_egress, git_transport, llm_proxy
+        from trentina.gateway import client_egress, llm_proxy
         from trentina.gateway.relay import Slots
         from trentina.transports.registry import MOUNTED
 
         MOUNTED.clear()
-        git_transport._SLOTS = Slots(git_transport._SLOTS._limit)
         llm_proxy._SLOTS = Slots(llm_proxy._SLOTS._limit)
         client_egress._slots = Slots(client_egress._slots._limit)
 

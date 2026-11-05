@@ -82,7 +82,6 @@ _NOT_PERIMETER = {
 #: Perimeter paths not yet moved onto the spine. Each port removes its module;
 #: #535 R11 leaves this empty, and then a perimeter path has one way in.
 _NOT_YET_ON_THE_SPINE = {
-    "gateway/git_transport.py",
     "gateway/llm_proxy.py",
     "gateway/matrix_proxy.py",
     "gateway/client_egress.py",
