@@ -1,5 +1,5 @@
 # Fixture for trentina-httpx-client-outside-egress.
-import httpx
+import httpx  # nosemgrep: trentina-network-reach-in-transports -- fixture for another rule
 
 from trentina.egress import open_guarded
 

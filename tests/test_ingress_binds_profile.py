@@ -29,6 +29,7 @@ from trentina.gateway.profile import (
     MatrixIngressConfig,
     Profile,
 )
+from trentina.transports import perimeter
 from trentina.transports.mcp import route_jsonrpc
 
 PAYLOAD = "Quarterly report: revenue up, costs flat, nothing unusual to note here."
@@ -123,7 +124,6 @@ def test_a_matrix_sync(
     from starlette.testclient import TestClient
 
     from tests.test_matrix_proxy import AGENT_NET, AGENT_PEER, _FakeUpstream, _matrix_app
-    from trentina.gateway import matrix_proxy
 
     sync = {
         "rooms": {
@@ -136,9 +136,7 @@ def test_a_matrix_sync(
             }
         }
     }
-    monkeypatch.setattr(
-        matrix_proxy, "matrix_pinned_send", _FakeUpstream(json.dumps(sync).encode())
-    )
+    monkeypatch.setattr(perimeter, "matrix_pinned_send", _FakeUpstream(json.dumps(sync).encode()))
     profile = _profile(matrix_ingress=MatrixIngressConfig(source_networks=[AGENT_NET]))
     client = TestClient(_matrix_app({"agent1": profile}), client=AGENT_PEER)
     assert client.get("/matrix/_matrix/client/v3/sync").status_code == 200

@@ -1,0 +1,69 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-type",
+       "application/json"
+      ]
+     ],
+     "status": 200,
+     "type": "start"
+    },
+    {
+     "body": "{\"event_id\":\"$sent\"}",
+     "more": true,
+     "type": "body"
+    },
+    {
+     "body": "",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [],
+ "open_slots": {},
+ "upstream": [
+  {
+   "body": "{\"msgtype\":\"m.text\",\"body\":\"out\"}",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "gzip, deflate"
+    ],
+    [
+     "authorization",
+     "Bearer matrix-user-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ],
+    [
+     "host",
+     "matrix.example.org"
+    ],
+    [
+     "user-agent",
+     "python-httpx/0.28.1"
+    ]
+   ],
+   "method": "PUT",
+   "url": "https://matrix.example.org/_matrix/client/v3/rooms/!room:example.org/send/m.room.message/txn1"
+  }
+ ]
+}

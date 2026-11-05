@@ -24,7 +24,7 @@ import socket
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import uvicorn
@@ -34,7 +34,9 @@ from starlette.responses import Response
 from starlette.routing import Route
 
 from trentina.gateway import git_transport
+from trentina.gateway.destination import DestinationKind
 from trentina.gateway.profile import AuthConfig, GitGrant, GitRemote, Profile
+from trentina.transports import perimeter
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
@@ -258,13 +260,25 @@ async def serving(app: Starlette) -> AsyncIterator[int]:
         listener.close()
 
 
+#: The route under test, as the registry mounts it: its slots are the table a
+#: test inspects. Rebuilt by every ``gateway_app``.
+MOUNT = perimeter.Mount(
+    git_transport.GitRoute(), DestinationKind.GIT, cast("Any", None), in_tree=True
+)
+
+
 def gateway_app(profiles: dict[str, Profile]) -> Starlette:
-    """The route under test, as ``register_git_routes`` wires it."""
+    """The route under test, mounted on the perimeter spine as the registry mounts it."""
+    global MOUNT
+    route = git_transport.GitRoute()
+    MOUNT = perimeter.Mount(route, DestinationKind.GIT, cast("Any", None), in_tree=True)
+    entry = MOUNT
 
     async def endpoint(request: Request) -> Response:
-        return await git_transport.serve(request, profiles)
+        response: Response = await perimeter.serve(entry, request, profiles)
+        return response
 
-    return Starlette(routes=[Route(git_transport.ROUTE, endpoint, methods=git_transport.METHODS)])
+    return Starlette(routes=[Route(route.path, endpoint, methods=list(route.methods))])
 
 
 async def raw_request(port: int, head: str, body: bytes = b"") -> tuple[int, dict[str, str], bytes]:

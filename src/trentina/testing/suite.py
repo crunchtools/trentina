@@ -33,8 +33,12 @@ import importlib.metadata as im
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+from starlette.datastructures import Headers
 
 from .. import logsafe
+from ..modes import Mode
 from ..transforms.base import (
     Applied,
     Declined,
@@ -43,6 +47,16 @@ from ..transforms.base import (
     TransformContext,
     TransformResult,
 )
+from ..transports.base import (
+    SPINE_REFUSALS,
+    Admitted,
+    Grant,
+    Instance,
+    RefusedError,
+    Route,
+    Wire,
+)
+from ..transports.registry import route_breaches
 from .hygiene import capture_logs, leaked
 
 #: The only ``trentina`` modules a plugin may import — the public contract. A
@@ -57,6 +71,51 @@ PUBLIC_MODULES: frozenset[str] = frozenset(
 #: courtesy.)
 FORBIDDEN_MODULES: frozenset[str] = frozenset(
     {"httpx", "socket", "subprocess", "ctypes", "urllib", "http", "requests", "aiohttp", "ftplib"}
+)
+
+#: Modules a ROUTE plugin must not import, beyond a transform's. A route runs in
+#: the gateway's process, with live request and response streams, so nothing
+#: holds it but the contract (#535): it gets no socket, no file, no process, and
+#: no way to read the gateway's own state. Each of these offers one of those —
+#: a dialer, a file or process, or introspection that reaches the spine's
+#: locals (the profile, a token) — and a route needs none of them.
+ROUTE_FORBIDDEN_MODULES: frozenset[str] = FORBIDDEN_MODULES | frozenset(
+    {
+        "anyio", "trio", "httpcore", "h11", "h2", "websockets", "ssl", "multiprocessing",
+        "importlib", "os", "sys", "builtins", "io", "codecs", "pathlib", "shutil",
+        "tempfile", "pickle", "marshal", "shelve", "inspect", "gc", "ctypes", "mmap",
+        "signal", "resource", "pty", "fcntl", "select", "selectors", "threading",
+        "concurrent", "runpy", "code", "pdb", "types", "weakref", "atexit",
+    }
+)  # fmt: skip
+
+#: Names a route plugin may not call or reach: the builtins that read files,
+#: run strings as code or reach objects by name past an import scan.
+ROUTE_FORBIDDEN_NAMES: frozenset[str] = frozenset(
+    {
+        "open", "exec", "eval", "compile", "__import__", "getattr", "setattr", "delattr",
+        "globals", "locals", "vars", "breakpoint", "input", "memoryview", "__builtins__",
+    }
+)  # fmt: skip
+
+#: Attributes a route plugin may not reach on any object: the dialers and
+#: process launchers a permitted module (asyncio) still offers, and an event
+#: loop's own.
+ROUTE_FORBIDDEN_ATTRIBUTES: frozenset[str] = frozenset(
+    {
+        "open_connection", "open_unix_connection", "start_server", "start_unix_server",
+        "create_subprocess_exec", "create_subprocess_shell", "create_connection",
+        "create_server", "create_datagram_endpoint", "create_unix_connection",
+        "create_unix_server", "sock_connect", "sock_accept", "subprocess_exec",
+        "subprocess_shell", "connect_read_pipe", "connect_write_pipe", "to_thread",
+        "run_in_executor", "f_globals", "f_locals", "f_back", "gi_frame", "cr_frame",
+        "tb_frame",
+    }
+)  # fmt: skip
+
+#: Dunder attributes a route plugin may still use: what an ordinary class needs.
+_ROUTE_DUNDERS: frozenset[str] = frozenset(
+    {"__init__", "__name__", "__post_init__", "__eq__", "__hash__", "__repr__", "__str__"}
 )
 
 #: The canary a conformance run feeds the plugin: if it appears in a log record,
@@ -118,10 +177,59 @@ def scan_source(source: str, scan: _Scan) -> None:
             _check_module(node.module, scan)
 
 
-def scan_imports(dist: str) -> list[str]:
+class _RouteScan(ast.NodeVisitor):
+    """Every import, name and attribute in a route plugin's module, held to the
+    route lists. Each ``visit_`` records what it finds and keeps walking."""
+
+    def __init__(self, scan: _Scan) -> None:
+        self.scan = scan
+
+    def _module(self, module: str) -> None:
+        top = module.split(".", 1)[0]
+        if top in ROUTE_FORBIDDEN_MODULES:
+            self.scan.violations.append(f"forbidden-import:{top}")
+        elif top == "trentina" and not _allowed_trentina(module):
+            self.scan.violations.append(f"private-import:{module}")
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            self._module(alias.name)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.level == 0 and node.module is not None:
+            self._module(node.module)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if node.id in ROUTE_FORBIDDEN_NAMES:
+            self.scan.violations.append(f"forbidden-name:{node.id}")
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        attr = node.attr
+        if attr in ROUTE_FORBIDDEN_ATTRIBUTES:
+            self.scan.violations.append(f"forbidden-attribute:{attr}")
+        elif attr.startswith("__") and attr.endswith("__") and attr not in _ROUTE_DUNDERS:
+            self.scan.violations.append(f"forbidden-dunder:{attr}")
+        self.generic_visit(node)
+
+
+def scan_route_source(source: str, scan: _Scan) -> None:
+    """``scan_source`` for a route plugin: the stricter module list, and every
+    forbidden name, attribute and dunder reached anywhere in the module."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        scan.violations.append("unparseable-source")
+        return
+    _RouteScan(scan).visit(tree)
+
+
+def scan_imports(dist: str, *, route: bool = False) -> list[str]:
     """The load-bearing, synchronous check: the import boundary over every
     source file the distribution ships. Returns a list of violation reasons,
     empty when the distribution imports only the public contract.
+
+    ``route`` holds it to the route lists (``scan_route_source``): a route
+    plugin runs in the gateway's process, so it is held to far more.
 
     A distribution with no readable file list cannot be vouched for, which is
     itself a violation (``no-files``)."""
@@ -144,7 +252,7 @@ def scan_imports(dist: str) -> list[str]:
             # is a file we cannot vouch for — a violation, not a skip.
             scan.violations.append(f"unreadable:{path}")
             continue
-        scan_source(source, scan)
+        (scan_route_source if route else scan_source)(source, scan)
     if not saw_python:
         # Files but no Python source — a compiled-only distribution the scan
         # cannot read. It does not pass by default; the operator must trust it
@@ -234,3 +342,76 @@ async def conformance(ref: str, transform: Transform) -> Conformance:
         scan.violations.append("name-mismatch")
     await _probe_behaviour(transform, scan)
     return Conformance(ref=ref, failures=tuple(scan.violations))
+
+
+def _hostile_wire(route: Route[Any, Any]) -> Wire:
+    """A request carrying the canary everywhere a caller chooses a value."""
+    return Wire(
+        method=route.methods[0] if route.methods else "GET",
+        path=f"{_CANARY}/../{_CANARY}",
+        raw_path=f"/{_CANARY}".encode(),
+        query=f"{_CANARY}={_CANARY}",
+        headers=Headers(raw=[(b"x-conformance", _CANARY.encode())]),
+        peer=None,
+    )
+
+
+def _text(rendered: object) -> str:
+    """A rendered refusal as text, whatever the route built it as."""
+    body = getattr(rendered, "body", rendered)
+    return body.decode("utf-8", "replace") if isinstance(body, bytes) else repr(body)
+
+
+async def _probe_admit(route: Route[Any, Any], scan: _Scan) -> None:
+    """``admit`` on a request it has no grant for answers ``Admitted`` or a
+    refusal the route declared, and logs nothing the caller sent."""
+    grant = Grant(frozenset(), frozenset(route.methods), Mode.BLOCK, {})
+    instance = Instance("conformance", route.name, {}, {})
+    with capture_logs() as handler:
+        try:
+            admitted = await route.admit(_hostile_wire(route), grant, instance)
+        except Exception as exc:
+            if not isinstance(exc, RefusedError):
+                scan.violations.append(f"raised-on-admit:{logsafe.exc_kind(exc)}")
+            elif exc.reason not in route.refusals and exc.reason not in SPINE_REFUSALS:
+                scan.violations.append("undeclared-refusal")
+        else:
+            if not isinstance(admitted, Admitted):
+                scan.violations.append("bad-result-on-admit")
+    if leaked(handler, _CANARY):
+        scan.violations.append("logs-payload")
+
+
+def _probe_render(route: Route[Any, Any], scan: _Scan) -> None:
+    """``render`` answers every refusal the spine or the route can raise, and
+    never puts a refusal's ``detail`` — a caller's value — on the wire (#262)."""
+    for reason, refusal in {**SPINE_REFUSALS, **route.refusals}.items():
+        refused = RefusedError(
+            reason, status=refusal.status, outcome=refusal.outcome, detail=_CANARY
+        )
+        try:
+            rendered = route.render(refused)
+        except Exception as exc:
+            scan.violations.append(f"raised-on-render:{logsafe.exc_kind(exc)}")
+            continue
+        if _CANARY in _text(rendered):
+            scan.violations.append("render-echoes-detail")
+
+
+async def route_conformance(ref: str, route: Route[Any, Any]) -> Conformance:
+    """The full suite over a BUILT route plugin, ``ref`` its ``dist:name``.
+
+    The distribution is held to the route import lists, the route to the
+    contract ``register_route`` enforces, ``admit`` to answering a request it
+    has no grant for with a declared refusal, and ``render`` to answering every
+    refusal without echoing a caller's value. Returns the checks it failed,
+    empty when it passed. Nothing here dials: ``deliver`` reaches the network
+    only through the spine, which the gateway's own tests hold.
+    """
+    dist, _, name = ref.partition(":")
+    scan = _Scan(violations=list(scan_imports(dist, route=True)))
+    scan.violations.extend(route_breaches(name, route))
+    if isinstance(route, Route):
+        await _probe_admit(route, scan)
+        _probe_render(route, scan)
+    return Conformance(ref=ref, failures=tuple(dict.fromkeys(scan.violations)))

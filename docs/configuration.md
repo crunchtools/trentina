@@ -29,6 +29,7 @@ sections:
 | Section | Description |
 |---------|-------------|
 | `profiles` | One entry per consumer. See [Per-Agent Profiles](profiles.md). |
+| `proxies` | Every perimeter route instance: `http`, `git`, `llm`, `matrix`, `connect`, `forward` or a `dist:` route plugin. A profile's own `proxies:` holds its grants. See [Proxies](proxy-plugins.md). The four rows below are the older spelling, which loads with a deprecation warning until the next major. |
 | `llm_providers` | The providers the [LLM proxy](llm-proxying.md) may reach. |
 | `matrix` | The [Matrix reverse proxy](network-isolation.md). |
 | `git_remotes` | The forges the [git transport](git-transport.md) may reach; a profile's `git` block names them. |

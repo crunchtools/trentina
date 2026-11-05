@@ -73,10 +73,12 @@ class TestQueryAndUrl:
         assert canonical_query("") == ""
 
     def test_url_is_built_from_origin_and_path(self) -> None:
-        assert build_url(_upstream(), "repos/x", "k=1") == "https://api.example.com/repos/x?k=1"
+        up = _upstream()
+        assert build_url(up.upstream, "repos/x", "k=1") == "https://api.example.com/repos/x?k=1"
 
     def test_url_has_no_query_when_none(self) -> None:
-        assert build_url(_upstream(), "repos/x", "") == "https://api.example.com/repos/x"
+        up = _upstream()
+        assert build_url(up.upstream, "repos/x", "") == "https://api.example.com/repos/x"
 
 
 class TestHeaders:
@@ -87,7 +89,8 @@ class TestHeaders:
             ("X-Forwarded-For", "10.0.0.1"),
             ("Accept", "application/json"),
         ]
-        out = forward_request_headers(arrived, _upstream())
+        up = _upstream()
+        out = forward_request_headers(arrived, up.headers_allow)
         assert "authorization" not in out
         assert "cookie" not in out
         assert not any(k.startswith("x-forwarded") for k in out)
@@ -97,7 +100,7 @@ class TestHeaders:
     def test_only_base_and_declared_headers_pass(self) -> None:
         up = _upstream(headers_allow=["X-GitHub-Api-Version"])
         arrived = [("X-GitHub-Api-Version", "2026-01"), ("X-Secret-Thing", "no")]
-        out = forward_request_headers(arrived, up)
+        out = forward_request_headers(arrived, up.headers_allow)
         assert out["x-github-api-version"] == "2026-01"
         assert "x-secret-thing" not in out
 

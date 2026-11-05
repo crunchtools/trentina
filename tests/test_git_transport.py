@@ -25,14 +25,16 @@ from starlette.responses import Response, StreamingResponse
 from trentina import config as config_mod
 from trentina import database as database_mod
 from trentina.errors import EGRESS_REASONS
-from trentina.gateway import git_transport, upstream
+from trentina.gateway import git_transport, loader, upstream
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.git_wire import REASONS, GitRefusedError
 from trentina.gateway.loader import ActiveConfig, GatewayConfig, load_profiles
 from trentina.gateway.profile import AuthConfig, GitGrant, GitRemote, Profile
+from trentina.gateway.relay import Operation, Relayed
 from trentina.outcomes import Outcome
 from trentina.reach import egress
 from trentina.tools.reload import _hold_perimeter_fields, _unapplied
+from trentina.transports.registry import mount_routes
 
 from . import git_harness as harness
 from .egress_harness import PUBLIC_ADDRESS
@@ -71,9 +73,9 @@ def no_slot_is_left_held() -> Iterator[None]:
     # The pinned pool caches a client per origin across tests; each test points
     # PinnedTransport at its own forge, so start from an empty pool (#511, Phase 2).
     upstream._pool.clear()
-    git_transport._SLOTS._open.clear()
+    harness.MOUNT.slots._open.clear()
     yield
-    assert not any(git_transport._SLOTS._open.values()), git_transport._SLOTS._open
+    assert not any(harness.MOUNT.slots._open.values()), harness.MOUNT.slots._open
     upstream._checked.clear()
 
 
@@ -115,7 +117,7 @@ class _Stack(SimpleNamespace):
 async def _stack(monkeypatch: pytest.MonkeyPatch, forge: Any) -> AsyncIterator[_Stack]:
     profiles = {"agent1": harness.profile()}
     active = SimpleNamespace(config=SimpleNamespace(git_remotes=harness.remotes()))
-    monkeypatch.setattr(git_transport, "get_active_config", lambda: active)
+    monkeypatch.setattr(loader, "get_active_config", lambda: active)
     monkeypatch.setattr(egress, "_lookup", lambda _host, _port: [PUBLIC_ADDRESS])
     async with harness.serving(forge.app()) as forge_port:
         transport = harness.ToForge(forge_port)
@@ -190,7 +192,8 @@ class TestWhoIsCalling:
     ) -> None:
         stack.profiles["agent1"].git.clear()
         row = await _refused(audit_db, await stack.client.get(stack.url + REFS), 403, "remote")
-        assert (row["backend"], row["tool"], row["outcome"]) == ("git", "-", "denied_allowlist")
+        # Bound to no instance: ``git:-``, the method until git names the operation (#535).
+        assert (row["backend"], row["tool"], row["outcome"]) == ("git:-", "GET", "denied_allowlist")
         assert row["destination"] is None
         assert stack.forge.requests == []
 
@@ -199,7 +202,7 @@ class TestWhoIsCalling:
     ) -> None:
         url = stack.url.replace("/forge", "/elsewhere") + REFS
         row = await _refused(audit_db, await stack.client.get(url), 403, "remote")
-        assert (row["backend"], row["outcome"]) == ("git", "denied_allowlist")
+        assert (row["backend"], row["outcome"]) == ("git:-", "denied_allowlist")
         assert stack.forge.requests == []
 
 
@@ -389,7 +392,8 @@ class TestWhatItMayAsk:
             "GET /proxy/git/forge/acme/wid..gets/info/refs?service=git-upload-pack HTTP/1.1",
         )
         (row,) = await _settled(audit_db)
-        assert (row["destination"], row["tool"]) == (None, "-")
+        # Nothing the caller named is recorded; the tool is the method (#535).
+        assert (row["destination"], row["tool"]) == (None, "GET")
 
     @pytest.mark.parametrize("value", ["version=3", "version=2:side-band", "VERSION=2", ""])
     async def test_a_git_protocol_not_on_the_list_is_refused(
@@ -418,7 +422,7 @@ class TestWhatItMayAsk:
     ) -> None:
         remote = GitRemote(upstream=f"https://{harness.FORGE_HOST}", username="oauth2")
         active = SimpleNamespace(config=SimpleNamespace(git_remotes={harness.REMOTE: remote}))
-        monkeypatch.setattr(git_transport, "get_active_config", lambda: active)
+        monkeypatch.setattr(loader, "get_active_config", lambda: active)
         assert (await stack.client.get(stack.url + REFS)).status_code == 200
         credential = stack.forge.requests[0]["authorization"].removeprefix("Basic ")
         assert b64decode(credential).decode() == f"oauth2:{harness.FORGE_TOKEN}"
@@ -669,7 +673,7 @@ class TestWhatIsListedBack:
             upstream=f"https://{harness.FORGE_HOST}", hidden_refs=["refs/merge-requests/"]
         )
         active = SimpleNamespace(config=SimpleNamespace(git_remotes={harness.REMOTE: remote}))
-        monkeypatch.setattr(git_transport, "get_active_config", lambda: active)
+        monkeypatch.setattr(loader, "get_active_config", lambda: active)
         stack.forge.body = _listing(ONE + b" refs/heads/main", TWO + b" refs/merge-requests/3/head")
         response = await stack.client.get(stack.url + REFS)
         assert response.content == _listing(ONE + b" refs/heads/main")
@@ -792,12 +796,9 @@ class TestWhatAPushMayMove:
                 taken.append(index)
                 yield piece
 
-        op = git_transport.Operation(
-            harness.profile(), backend=git_transport.BACKEND, destination="acme/widgets"
-        )
-        request = SimpleNamespace(stream=pieces)
+        op = Operation(harness.profile(), backend="git:forge", destination="acme/widgets")
         with pytest.raises(GitRefusedError) as caught:
-            await git_transport._push(request, op, harness.profile().git[harness.REMOTE])
+            await git_transport._push(pieces(), op, harness.profile().git[harness.REMOTE])
         assert caught.value.reason == "malformed"
         assert taken == [0, 1]
 
@@ -1061,11 +1062,11 @@ class TestBounds:
             return Response(FLUSH, media_type=ADVERT)
 
         stack.forge.answer = answer
-        cap = git_transport.MAX_OPERATIONS_PER_PROFILE
+        cap = git_transport.GitRoute.slots
         held = [asyncio.create_task(stack.client.get(stack.url + REFS)) for _ in range(cap)]
         for _ in range(cap):
             await asyncio.wait_for(arrived.acquire(), 5)
-        assert git_transport._SLOTS._open == {"agent1": cap}
+        assert harness.MOUNT.slots._open == {"agent1": cap}
 
         over = await stack.client.get(stack.url + REFS)
         assert (over.status_code, over.headers["x-trentina-reason"]) == (503, "busy")
@@ -1078,13 +1079,13 @@ class TestBounds:
         assert again.status_code == 200, "the slots came back"
 
     async def test_a_refusal_before_the_cap_takes_no_slot(self, stack: _Stack) -> None:
-        git_transport._SLOTS._open["agent1"] = git_transport.MAX_OPERATIONS_PER_PROFILE
+        harness.MOUNT.slots._open["agent1"] = git_transport.GitRoute.slots
         try:
             url = f"{stack.url}/other/thing/info/refs?service=git-upload-pack"
             response = await stack.client.get(url)
             assert response.headers["x-trentina-reason"] == "repo_not_listed"
         finally:
-            git_transport._SLOTS._open.clear()
+            harness.MOUNT.slots._open.clear()
 
     async def test_a_client_that_goes_quiet_mid_body_is_refused(
         self, stack: _Stack, audit_db: Path, monkeypatch: pytest.MonkeyPatch
@@ -1092,6 +1093,7 @@ class TestBounds:
         """A chunked push that sends one command and then nothing: not its
         flush, not the end of the body."""
         monkeypatch.setattr(git_transport, "IDLE_TIMEOUT", 0.2)
+        monkeypatch.setattr(git_transport.GitRoute, "idle", 0.2)
         piece = pkt(ONE + b" " + TWO + b" refs/heads/agent/x\n")
         reader, writer = await asyncio.open_connection("127.0.0.1", stack.port)
         head = (
@@ -1126,22 +1128,21 @@ class TestBounds:
         writer.write(head.encode() + f"{len(piece):x}\r\n".encode() + piece + b"\r\n")
         await writer.drain()
         for _ in range(200):
-            if git_transport._SLOTS._open.get("agent1"):
+            if harness.MOUNT.slots._open.get("agent1"):
                 break
             await asyncio.sleep(0.01)
-        assert git_transport._SLOTS._open == {"agent1": 1}, (
-            "the push is in flight, reading its body"
-        )
+        assert harness.MOUNT.slots._open == {"agent1": 1}, "the push is in flight, reading its body"
         writer.close()
         (row,) = await _settled(audit_db)
         assert (row["tool"], row["outcome"], row["error_message"]) == ("push", "cancelled", None)
-        assert git_transport._SLOTS._open == {}, "the slot came back, and no entry is kept"
+        assert harness.MOUNT.slots._open == {}, "the slot came back, and no entry is kept"
         assert stack.forge.requests == []
 
     async def test_a_forge_that_never_answers_is_given_up_on(
         self, stack: _Stack, audit_db: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(git_transport, "IDLE_TIMEOUT", 0.2)
+        monkeypatch.setattr(git_transport.GitRoute, "idle", 0.2)
         release = asyncio.Event()
 
         async def answer(_request: Request) -> Response:
@@ -1160,6 +1161,7 @@ class TestBounds:
         self, stack: _Stack, audit_db: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(git_transport, "IDLE_TIMEOUT", 0.2)
+        monkeypatch.setattr(git_transport.GitRoute, "idle", 0.2)
         release = asyncio.Event()
 
         async def answer(_request: Request) -> Response:
@@ -1207,13 +1209,10 @@ class TestBounds:
     async def test_a_client_that_stops_reading_is_given_up_on(self, audit_db: Path) -> None:
         """The answer's every ``send`` is held to the idle timeout, and the
         operation is finished once however the response ends."""
-        op = git_transport.Operation(
-            harness.profile(),
-            backend=git_transport.BACKEND,
-            tool="fetch",
-            destination="acme/widgets",
+        op = Operation(
+            harness.profile(), backend="git:forge", tool="fetch", destination="acme/widgets"
         )
-        op.take_slot(git_transport._SLOTS)
+        op.take_slot(harness.MOUNT.slots)
 
         async def pack() -> AsyncIterator[bytes]:
             yield b"PACK"
@@ -1222,9 +1221,7 @@ class TestBounds:
             if message["type"] == "http.response.body":
                 await asyncio.Event().wait()
 
-        answer = git_transport.Relayed(
-            pack(), op, media_type="application/x-git-upload-pack-result", idle=0.1
-        )
+        answer = Relayed(pack(), op, media_type="application/x-git-upload-pack-result", idle=0.1)
         scope = {"type": "http", "asgi": {"spec_version": "2.4"}}
         with pytest.raises(ClientDisconnect):
             await answer(scope, never_drains, never_drains)
@@ -1718,9 +1715,8 @@ class TestWhoMayChangeIt:
             config=GatewayConfig(profiles={"agent1": plain}),
             llm_providers={},
             alert_route_registered=False,
-            matrix_route_registered=False,
             oauth_route_registered=False,
-            git_route_registered=registered,
+            routes_mounted=frozenset({"git"}) if registered else frozenset(),
         )
 
     def test_a_first_remote_on_a_gateway_with_no_route_needs_a_restart(
@@ -1749,15 +1745,17 @@ class TestWhoMayChangeIt:
             _register_proxies(server, GatewayConfig(profiles=profiles, git_remotes=remotes))
             return registered
 
-        assert startup(harness.remotes()) == [git_transport.ROUTE]
+        assert startup(harness.remotes()) == [git_transport.GitRoute().path]
         assert startup({}) == []
 
-    def test_no_route_is_registered_without_a_remote(self) -> None:
+    def test_no_route_is_mounted_without_a_remote(self) -> None:
         registered: list[str] = []
         server = SimpleNamespace(
             custom_route=lambda path, methods: lambda fn: registered.append(path)
         )
-        git_transport.register_git_routes(server, {}, {})
+        profiles = {"agent1": harness.profile()}
+        mount_routes(server, GatewayConfig(profiles=profiles), profiles)
         assert registered == []
-        git_transport.register_git_routes(server, harness.remotes(), {})
-        assert registered == [git_transport.ROUTE]
+        with_remote = GatewayConfig(profiles=profiles, git_remotes=harness.remotes())
+        mount_routes(server, with_remote, profiles)
+        assert registered == [git_transport.GitRoute().path]

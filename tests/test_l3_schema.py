@@ -32,6 +32,7 @@ from trentina.quarantine.prompts import (
 )
 from trentina.quarantine.providers.base import ProviderResult
 from trentina.quarantine.schema import conform
+from trentina.transports import perimeter
 
 pytestmark = pytest.mark.usefixtures("standalone_l3")
 
@@ -284,7 +285,6 @@ class TestMatrixAnnotate:
             _matrix_app,
             _matrix_profile,
         )
-        from trentina.gateway import matrix_proxy
 
         sync = {
             "rooms": {
@@ -305,7 +305,7 @@ class TestMatrixAnnotate:
             "next_batch": "s1",
         }
         monkeypatch.setattr(
-            matrix_proxy, "matrix_pinned_send", _FakeUpstream(json.dumps(sync).encode())
+            perimeter, "matrix_pinned_send", _FakeUpstream(json.dumps(sync).encode())
         )
         monkeypatch.setattr("trentina.defense._l3_provider_configured", lambda _d: True)
         monkeypatch.setattr(f"{AGENT}.get_provider", lambda *a, **k: _provider("null", "null"))

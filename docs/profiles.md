@@ -866,7 +866,8 @@ the Matrix proxy's credential, #330), nor its own `client_egress` block
 (#442), nor its own `git` block (#453); each is reported under
 `operator_only`. Adding the first `client_egress` block needs a restart,
 because its listener is bound at startup, and so does adding the first
-`git_remotes` entry, because its route is. Once that route exists, an
+`git_remotes` entry, because its route is, or the first `proxies:` instance of
+a `forward` or `dist:` type ([proxies](proxy-plugins.md)). Once that route exists, an
 operator reload applies an edit to `git_remotes` or to a `git` block.
 
 ## Related

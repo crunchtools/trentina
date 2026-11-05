@@ -1,0 +1,53 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "191"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ]
+     ],
+     "status": 400,
+     "type": "start"
+    },
+    {
+     "body": "{\"error\": {\"type\": \"trentina_refused\", \"reason\": \"malformed_body\", \"message\": \"refused by Trentina: malformed_body\"}, \"blocked\": true, \"block_reason\": \"malformed_body\", \"scanner\": \"trentina\"}",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "llm:anthropic",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": null,
+   "destination_kind": null,
+   "detections_digest": null,
+   "error_message": "malformed_body",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "denied_guard",
+   "profile": "agent1",
+   "session": null,
+   "success": 0,
+   "tool": "-"
+  }
+ ],
+ "open_slots": {},
+ "upstream": []
+}

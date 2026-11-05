@@ -37,6 +37,7 @@ from trentina.gateway.profile import (
     Profile,
     SemanticGuardsConfig,
 )
+from trentina.gateway.relay import Operation
 from trentina.l1.pipeline import run_l1
 from trentina.unpack.scan import unpack
 
@@ -368,9 +369,8 @@ async def test_a_pack_and_a_ref_name_cross_the_git_transport_unjudged() -> None:
     it was sent. And it reads a ref listing only to drop hidden and
     malformed names: an instruction spelled as a branch name is listed. A
     route that began judging either would change what this relays."""
-    op = git_transport.Operation(
-        Profile(name="agent1", auth=AuthConfig(bearer_token_env="TOK")),
-        backend=git_transport.BACKEND,
+    op = Operation(
+        Profile(name="agent1", auth=AuthConfig(bearer_token_env="TOK")), backend="git:forge"
     )
     pack = b"PACK" + _ATTACK.encode()
 
@@ -378,7 +378,9 @@ async def test_a_pack_and_a_ref_name_cross_the_git_transport_unjudged() -> None:
         async def aiter_raw(self) -> AsyncIterator[bytes]:
             yield pack
 
-    relayed = [piece async for piece in git_transport._relay(op, cast("Any", _Answer()), None)]
+    # The route's view of the operation: the answer's body as it arrives.
+    ctx = SimpleNamespace(op=op, chunks=lambda resp: resp.aiter_raw())
+    relayed = [piece async for piece in git_transport._relay(cast("Any", ctx), _Answer(), None)]
     assert b"".join(relayed) == pack
     assert (op.received, op.outcome.value) == (len(pack), "ok")
 
@@ -441,13 +443,13 @@ def test_a_binary_egress_response_is_read_by_no_layer() -> None:
     so a body a layer cannot positively read is the ``binary_unread`` gap
     (withheld under ``block``, delivered with a warning under ``flag``). A route
     that began reading binary bodies would change this."""
-    from trentina.gateway import egress_http
+    from trentina.transports import perimeter
 
-    assert egress_http._is_text("text/html; charset=utf-8") is True
-    assert egress_http._is_text("application/json") is True
-    assert egress_http._is_text("application/octet-stream") is False
-    assert egress_http._is_text("image/png") is False
-    assert egress_http._is_text("") is False  # fail closed: unknown is not text
+    assert perimeter._is_text("text/html; charset=utf-8") is True
+    assert perimeter._is_text("application/json") is True
+    assert perimeter._is_text("application/octet-stream") is False
+    assert perimeter._is_text("image/png") is False
+    assert perimeter._is_text("") is False  # fail closed: unknown is not text
 
     page = Path(__file__).parents[1].joinpath("docs/defense-pipeline.md").read_text()
     assert "32. **A binary egress response is not read**" in page

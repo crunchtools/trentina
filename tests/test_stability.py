@@ -22,6 +22,7 @@ from trentina.gateway.profile import (
     FederationConfig,
     FederationPeer,
     Profile,
+    RouteInstance,
 )
 from trentina.stability import PREVIEW_SURFACES, in_use, warn_preview_surfaces
 
@@ -144,8 +145,24 @@ def _profile(
             _config(a=_profile("a", operator=True), b=_profile("b", offers=True)),
             ["config-api", "federation"],
         ),
+        (
+            GatewayConfig(
+                profiles={"a": _profile("a")},
+                route_instances={"bench": RouteInstance(type="forward", hosts=["a.example"])},
+            ),
+            ["proxy-plugins"],
+        ),
     ],
-    ids=["empty", "neither", "offers", "consumes", "one-of-two", "operator", "both-surfaces"],
+    ids=[
+        "empty",
+        "neither",
+        "offers",
+        "consumes",
+        "one-of-two",
+        "operator",
+        "both-surfaces",
+        "route-instance",
+    ],
 )
 def test_in_use_detects_the_surfaces_a_config_actually_uses(
     config: GatewayConfig, expected: list[str]

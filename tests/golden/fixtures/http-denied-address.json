@@ -1,0 +1,57 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "137"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "x-trentina-reason",
+       "denied_guard"
+      ]
+     ],
+     "status": 403,
+     "type": "start"
+    },
+    {
+     "body": "{\"error\": {\"type\": \"trentina_refused\", \"reason\": \"denied_guard\"}, \"blocked\": true, \"block_reason\": \"denied_guard\", \"scanner\": \"trentina\"}",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "http:github",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "api.github.com#e6ba2dd7fd19f164",
+   "destination_kind": "egress",
+   "detections_digest": null,
+   "error_message": "non_global_address",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "blocked_defense",
+   "profile": "agent1",
+   "session": null,
+   "success": 0,
+   "tool": "GET"
+  }
+ ],
+ "open_slots": {},
+ "upstream": []
+}

@@ -451,12 +451,13 @@ class TestProxies:
     ) -> None:
         from trentina import orchestrator
         from trentina.gateway import matrix_proxy
+        from trentina.gateway.relay import Operation
 
         from .test_matrix_proxy import _matrix_profile
 
         resp = httpx.Response(200, content=f"{{not json {CANARY}".encode())
         profile = _matrix_profile()
-        op = matrix_proxy.Operation(profile, backend=matrix_proxy.BACKEND, tool="GET")
+        op = Operation(profile, backend=matrix_proxy.BACKEND, tool="GET")
         # The text-fallback defend() lives in the orchestrator now; patch it there
         # so the fallback path still fails and logs (its message moved with it).
         with patch.object(orchestrator, "defend", side_effect=RuntimeError(f"said {CANARY}")):
@@ -489,7 +490,7 @@ class TestProxies:
         caller chose, through a carried fetch, a carried push and five
         refusals. The repository is in the upstream URL httpx would log."""
         from trentina import database
-        from trentina.gateway import git_transport, upstream
+        from trentina.gateway import loader, upstream
         from trentina.reach import egress
 
         from . import git_harness as harness
@@ -502,7 +503,7 @@ class TestProxies:
         upstream._pool.clear()
         profiles = {"agent1": harness.profile(fetch=("acme/*",), push=("acme/*",))}
         active = SimpleNamespace(config=SimpleNamespace(git_remotes=harness.remotes()))
-        monkeypatch.setattr(git_transport, "get_active_config", lambda: active)
+        monkeypatch.setattr(loader, "get_active_config", lambda: active)
         monkeypatch.setattr(egress, "_lookup", lambda _host, _port: [PUBLIC_ADDRESS])
         forge = harness.Scripted()
         bearer = {"Authorization": f"Bearer {harness.GATEWAY_TOKEN}", "X-Canary": CANARY}
@@ -559,7 +560,8 @@ class TestProxies:
             upstream._checked.clear()
         assert statuses == [200, 200, 400, 400, 404, 400, 403, 403]
         assert len(forge.requests) == 2
-        assert any("git transport: refused" in r.getMessage() for r in captured.records)
+        # The refusal is logged by the spine, the route named and nothing the caller sent.
+        assert any("perimeter: refused route=git" in r.getMessage() for r in captured.records)
 
 
 # ------------------------------------------------------------ refusals and housekeeping (#292)

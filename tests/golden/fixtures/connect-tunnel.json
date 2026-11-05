@@ -1,0 +1,31 @@
+{
+ "exchanges": [
+  {
+   "client_received": "HTTP/1.1 200 OK\r\n\r\nGOLDEN-SERVER-HELLO"
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "egress",
+   "bytes_arrived": 19,
+   "bytes_delivered": 84,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "api.example.com:443",
+   "destination_kind": "tunnel",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "ok",
+   "profile": "agent2",
+   "session": null,
+   "success": 1,
+   "tool": "connect"
+  }
+ ],
+ "open_slots": {},
+ "origin_received": "\u0016\u0003\u0001\u0000G\u0001\u0000\u0000C\u0003\u0003\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0011\u0000\u0000\u0002\u0013\u0001\u0001\u0000\u0000\u0018\u0000\u0000\u0000\u0014\u0000\u0012\u0000\u0000\u000fapi.example.comapp-data"
+}
