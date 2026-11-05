@@ -206,33 +206,53 @@ _ROUTE_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
 ROUTES: dict[str, Route[Any, Any]] = {}
 
 
-def register_route(name: str, route: Route[Any, Any]) -> None:
-    """Add a route that is not the gateway's own, or fail closed.
+#: Each way a route breaks the contract a route that is not ours is held to,
+#: by the reason code ``route_breaches`` and the conformance suite report.
+_ROUTE_BREACHES: Mapping[str, str] = MappingProxyType(
+    {
+        "not-a-route": "not a Route (a Listener is built in only)",
+        "api-version": (
+            "declares an api_version this build does not run; "
+            f"supported: {sorted(SUPPORTED_TRANSPORT_API)}"
+        ),
+        "name": "not a free route name matching the route's own",
+        "path": "is served under /proxy/<name>/ and nowhere else",
+        "audit": "records every call; ON_FINDING is built in only",
+    }
+)
 
-    Refuses, by name: anything that is not a ``Route`` (a ``Listener`` is built
-    in only: a new port is a larger surface than a path); an ``api_version`` this
-    build does not run; a name that is not a route name or is a built-in's; a
-    path outside ``/proxy/<name>/``; and
-    ``Audit.ON_FINDING``, since a route that is not ours does not get to leave
-    its clean calls unrecorded. The table is unchanged on every refusal.
+
+def route_breaches(name: str, route: object) -> list[str]:
+    """The contract breaches of ``route`` registered as ``name``, by reason code.
+
+    A ``Listener`` is built in only: a new port is a larger surface than a path.
+    The name must be a route name and not a built-in's, the path under
+    ``/proxy/<name>/``, and the audit ``ALWAYS``: a route that is not ours does
+    not get to leave its clean calls unrecorded.
+    """
+    if not isinstance(route, Route):
+        return ["not-a-route"]
+    found = [] if _supported_api(route) else ["api-version"]
+    if not _ROUTE_NAME.fullmatch(name) or name in BUILTIN_ROUTES or route.name != name:
+        found.append("name")
+    if not route.path.startswith(f"/proxy/{name}/"):
+        found.append("path")
+    if route.audit is not Audit.ALWAYS:
+        found.append("audit")
+    return found
+
+
+def register_route(name: str, route: Route[Any, Any]) -> None:
+    """Add a route that is not the gateway's own, or fail closed on its first
+    breach (``route_breaches``). The table is unchanged on every refusal.
 
     Raises:
         TypeError: ``route`` is not a ``Route``.
-        ValueError: any other refusal above.
+        ValueError: any other breach.
     """
-    if not isinstance(route, Route):
-        raise TypeError(f"route {name!r}: not a Route (a Listener is built in only)")
-    if not _supported_api(route):
-        raise ValueError(
-            f"route {name!r}: declares an api_version this build does not run; "
-            f"supported: {sorted(SUPPORTED_TRANSPORT_API)}"
-        )
-    if not _ROUTE_NAME.fullmatch(name) or name in BUILTIN_ROUTES or route.name != name:
-        raise ValueError(f"route {name!r}: not a free route name matching the route's own")
-    if not route.path.startswith(f"/proxy/{name}/"):
-        raise ValueError(f"route {name!r}: is served under /proxy/{name}/ and nowhere else")
-    if route.audit is not Audit.ALWAYS:
-        raise ValueError(f"route {name!r}: records every call; ON_FINDING is built in only")
+    if breaches := route_breaches(name, route):
+        error = TypeError if breaches[0] == "not-a-route" else ValueError
+        raise error(f"route {name!r}: {_ROUTE_BREACHES[breaches[0]]}")
     _insert(ROUTES, "route", name, route)
 
 

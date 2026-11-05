@@ -16,6 +16,7 @@ import yaml
 
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.loader import GatewayConfig, load_profiles
+from trentina.transports import registry
 
 if TYPE_CHECKING:
     from typing import Any
@@ -84,17 +85,24 @@ class TestWhereEachKindLands:
     def test_a_grant_token_is_resolved_like_any_other(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("PROXIES_BENCH_TOKEN", "bench-token-value")
+        monkeypatch.setenv("PROXIES_ACME_TOKEN", "acme-token-value")
+        monkeypatch.setattr(registry, "check_route_plugin", lambda _ref: None)
         config = _load(
             tmp_path,
             {
-                "proxies": {"bench": {"type": "forward", "hosts": ["*"]}},
-                **_agent(proxies={"bench": {"hosts": ["*"], "token_env": "PROXIES_BENCH_TOKEN"}}),
+                "proxies": {
+                    "acme": {
+                        "type": "acme-route:acme",
+                        "origins": {"api": "https://api.acme.example"},
+                        "credential": {"header": "Authorization", "prefix": "Bearer "},
+                    }
+                },
+                **_agent(proxies={"acme": {"token_env": "PROXIES_ACME_TOKEN"}}),
             },
         )
-        token = config.profiles["agent1"].route_grants["bench"].token
+        token = config.profiles["agent1"].route_grants["acme"].token
         assert token is not None
-        assert token.get_secret_value() == "bench-token-value"
+        assert token.get_secret_value() == "acme-token-value"
 
     def test_a_matrix_instance_joins_a_block_that_holds_only_the_bridge(
         self, tmp_path: Path
@@ -226,6 +234,22 @@ class TestWhereEachKindLands:
             "shaped like a credential",
             id="credential-in-options",
         ),
+        pytest.param(
+            {
+                "proxies": {"bench": {"type": "forward", "hosts": ["*"]}},
+                **_agent(proxies={"bench": {"hosts": ["*"], "token_env": "PROXIES_FORGE_TOKEN"}}),
+            },
+            "no credential",
+            id="token-on-forward",
+        ),
+        pytest.param(
+            {
+                "proxies": {"bench": {"type": "forward", "hosts": ["*"]}},
+                **_agent(proxies={"bench": {"origins": ["api"]}}),
+            },
+            "not the instance's",
+            id="unknown-origin-key",
+        ),
     ],
 )
 def test_a_malformed_proxies_block_is_refused(
@@ -233,3 +257,46 @@ def test_a_malformed_proxies_block_is_refused(
 ) -> None:
     with pytest.raises(ProfileConfigError, match=refusal):
         _load(tmp_path, document)
+
+
+class TestARouteTypeTheFileGainsIsARestart:
+    """``mount_routes`` runs once: a reload that adds the first instance of a
+    route type validates, and says the route is not served until a restart."""
+
+    @staticmethod
+    def _notes(tmp_path: Path, mounted: frozenset[str]) -> list[str]:
+        from trentina.gateway.loader import ActiveConfig
+        from trentina.tools.reload import _unapplied
+
+        config = _load(
+            tmp_path,
+            {
+                "proxies": {"bench": {"type": "forward", "hosts": ["a.example"]}},
+                **_agent(proxies={"bench": {"hosts": ["a.example"]}}),
+            },
+        )
+        active = ActiveConfig(
+            path=tmp_path / "profiles.yaml",
+            config=GatewayConfig(profiles=config.profiles),
+            llm_providers={},
+            alert_route_registered=False,
+            oauth_route_registered=False,
+            routes_mounted=mounted,
+        )
+        return _unapplied(active, config)
+
+    def test_a_first_forward_instance_needs_a_restart(self, tmp_path: Path) -> None:
+        notes = self._notes(tmp_path, frozenset())
+        assert any("proxies.bench" in note and "restart" in note for note in notes)
+
+    def test_one_under_a_mounted_route_is_not_reported(self, tmp_path: Path) -> None:
+        assert not any("proxies.bench" in n for n in self._notes(tmp_path, frozenset({"forward"})))
+
+    def test_startup_counts_forward_and_plugins_as_mounted(self, tmp_path: Path) -> None:
+        from trentina.gateway.loader import mounted_routes
+
+        config = _load(
+            tmp_path,
+            {"proxies": {"bench": {"type": "forward", "hosts": ["a.example"]}}, **_agent()},
+        )
+        assert "forward" in mounted_routes(config, {})

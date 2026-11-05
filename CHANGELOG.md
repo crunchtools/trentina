@@ -10,6 +10,69 @@ under that name.
 
 ## [Unreleased]
 
+## [6.8.0] - 2026-11-05
+
+### Added
+
+- **The perimeter is config: `proxies:` (#535).** Every route out that is not
+  a tool call is declared as a named instance of a type: `http`, `git`,
+  `llm`, `matrix`, `connect`, `forward`, or a `dist:` route plugin. Each
+  profile names its grants under its own `proxies:`. One grammar for every
+  type, so the approval page sees every destination: a new origin, a new host
+  or `*` is staged for a person, and so is `enforcement: flag` on any grant.
+  See [docs/proxy-plugins.md](docs/proxy-plugins.md).
+- **`forward`, the agent-chosen route.**
+  `/proxy/forward/<instance>/fetch?url=` carries a request to a host named
+  in both the instance and the grant, on port 80 or 443. It follows no
+  redirect, injects no credential, and judges both edges. A refusal carries
+  the egress-benchmark deny marker only when the gateway denied or blocked.
+  `TRENTINA_FETCH_PRIVATE_NAMES` lets exact names (a benchmark's fixtures)
+  resolve to a private address. This is what #507's benchmark run needs, as
+  config alone.
+- **Route plugins (`trentina.transports.v1`).** An operator-installed route
+  type is served at `/proxy/<name>/<instance>/`. The spine owns auth, the
+  slot, the dial, judging, credential injection and the audit row; the route
+  owns `admit`, `deliver` and `render`. Its source is scanned before it is
+  imported. `trentina.testing.route_conformance` is the author's suite. A
+  route plugin is gateway code: nothing holds the process.
+- `quarantine_stats` (operator) reports `routes`: what is mounted, and each
+  installed route plugin by `dist:name` and version.
+- `forward` and route plugins are the new `proxy-plugins` preview surface.
+
+### Changed
+
+- **Every `/proxy/*` path and the CONNECT listener run on one spine**
+  (`transports/perimeter.py`). What an agent receives is byte-identical,
+  held by 108 recorded cases replayed on both config spellings. Audit rows
+  changed where the spine has one rule and the routes had several:
+  - a row names the instance (`http:github`) as soon as it is bound;
+    a request to no instance is `<route>:-` on every route (git wrote `git`);
+  - a row's tool is the HTTP method until the route names one (git wrote `-`);
+  - a `busy` refusal records the destination it refused;
+  - the slot is taken before any body byte, so an llm `busy` row no longer
+    names an endpoint or model;
+  - an llm request to an unknown provider now writes a row, and its no-key
+    refusal names its reason;
+  - a known caller's Matrix request outside `_matrix/` is now recorded.
+- A reload that adds the first instance of a `forward` or `dist:` type says
+  the route needs a restart, as it already did for git and http.
+
+### Deprecated
+
+- `egress_upstreams`, `git_remotes`, `llm_providers`, `matrix.enabled` and
+  `matrix.upstream`, and a profile's `egress_http`, `git` and
+  `client_egress` still load, each with one warning, and are removed at the
+  next major. `config_tool get` lists them under `deprecated_keys`. A file
+  may not write one kind both ways.
+
+### Security
+
+- `enforcement: flag` on an `egress_http` grant is now staged for a person as
+  a defense downgrade (`flag_grants`). Before, it applied at once.
+- A route grant naming a `token_env` its instance has no `credential:` slot
+  for, or an origin key its instance does not declare, is refused at load
+  rather than loading and doing nothing.
+
 ## [6.7.0] - 2026-11-05
 
 ### Added

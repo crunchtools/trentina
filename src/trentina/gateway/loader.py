@@ -1511,6 +1511,25 @@ def _check_route_plugins(instances: dict[str, RouteInstance]) -> None:
         check_route_plugin(ref)
 
 
+def _check_route_grants(registry: dict[str, Profile], instances: dict[str, RouteInstance]) -> None:
+    """A route grant names only what its instance has: an origin key it
+    declares, and a token only where the instance has a ``credential:`` slot to
+    send it in. Either mistake would load and quietly do nothing — the token
+    above all, since a ``forward`` instance never takes one (#535)."""
+    for name, profile in registry.items():
+        for key, grant in profile.route_grants.items():
+            instance = instances[key]
+            if unknown := sorted(set(grant.origins) - set(instance.origins)):
+                raise ProfileConfigError(
+                    f"profiles.{name}.proxies.{key}: origins {unknown} are not the instance's"
+                )
+            if grant.token_env is not None and instance.credential is None:
+                raise ProfileConfigError(
+                    f"profiles.{name}.proxies.{key}: token_env, but the instance has no "
+                    "credential: to send it in (a forward instance never takes one)"
+                )
+
+
 def load_profiles(path: Path | str) -> GatewayConfig:
     """Load gateway configuration from YAML.
 
@@ -1600,6 +1619,7 @@ def load_profiles(path: Path | str) -> GatewayConfig:
         _check_judges(registry)
         _check_matrix_networks(registry)
         _check_egress_networks(registry)
+        _check_route_grants(registry, normalized.route_instances)
         git_remotes = _load_git_remotes(cfg_data.get("git_remotes"), registry)
         egress_upstreams = _load_egress_upstreams(cfg_data.get("egress_upstreams"), registry)
 
@@ -1683,12 +1703,16 @@ _active: ActiveConfig | None = None
 def mounted_routes(config: GatewayConfig, providers: dict[str, Any]) -> frozenset[str]:
     """The perimeter routes and listeners ``config`` mounts, by name: the one
     predicate the registry mounts by, so the two cannot disagree."""
-    from ..transports.registry import configured, listener_configured
+    from ..transports.registry import configured, listener_configured, plugin_types
 
     routes = {
-        name for name in ("http", "git", "llm", "matrix") if configured(name, config, providers)
+        name
+        for name in ("http", "git", "llm", "matrix", "forward")
+        if configured(name, config, providers)
     }
-    return frozenset(routes | ({"egress"} if listener_configured(config) else set()))
+    listener = {"egress"} if listener_configured(config) else set()
+    plugins = {ref.partition(":")[2] for ref in plugin_types(config)}
+    return frozenset(routes | listener | plugins)
 
 
 def register_active_config(

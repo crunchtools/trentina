@@ -33,8 +33,12 @@ import importlib.metadata as im
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+from starlette.datastructures import Headers
 
 from .. import logsafe
+from ..modes import Mode
 from ..transforms.base import (
     Applied,
     Declined,
@@ -43,6 +47,16 @@ from ..transforms.base import (
     TransformContext,
     TransformResult,
 )
+from ..transports.base import (
+    SPINE_REFUSALS,
+    Admitted,
+    Grant,
+    Instance,
+    RefusedError,
+    Route,
+    Wire,
+)
+from ..transports.registry import route_breaches
 from .hygiene import capture_logs, leaked
 
 #: The only ``trentina`` modules a plugin may import — the public contract. A
@@ -328,3 +342,76 @@ async def conformance(ref: str, transform: Transform) -> Conformance:
         scan.violations.append("name-mismatch")
     await _probe_behaviour(transform, scan)
     return Conformance(ref=ref, failures=tuple(scan.violations))
+
+
+def _hostile_wire(route: Route[Any, Any]) -> Wire:
+    """A request carrying the canary everywhere a caller chooses a value."""
+    return Wire(
+        method=route.methods[0] if route.methods else "GET",
+        path=f"{_CANARY}/../{_CANARY}",
+        raw_path=f"/{_CANARY}".encode(),
+        query=f"{_CANARY}={_CANARY}",
+        headers=Headers(raw=[(b"x-conformance", _CANARY.encode())]),
+        peer=None,
+    )
+
+
+def _text(rendered: object) -> str:
+    """A rendered refusal as text, whatever the route built it as."""
+    body = getattr(rendered, "body", rendered)
+    return body.decode("utf-8", "replace") if isinstance(body, bytes) else repr(body)
+
+
+async def _probe_admit(route: Route[Any, Any], scan: _Scan) -> None:
+    """``admit`` on a request it has no grant for answers ``Admitted`` or a
+    refusal the route declared, and logs nothing the caller sent."""
+    grant = Grant(frozenset(), frozenset(route.methods), Mode.BLOCK, {})
+    instance = Instance("conformance", route.name, {}, {})
+    with capture_logs() as handler:
+        try:
+            admitted = await route.admit(_hostile_wire(route), grant, instance)
+        except Exception as exc:
+            if not isinstance(exc, RefusedError):
+                scan.violations.append(f"raised-on-admit:{logsafe.exc_kind(exc)}")
+            elif exc.reason not in route.refusals and exc.reason not in SPINE_REFUSALS:
+                scan.violations.append("undeclared-refusal")
+        else:
+            if not isinstance(admitted, Admitted):
+                scan.violations.append("bad-result-on-admit")
+    if leaked(handler, _CANARY):
+        scan.violations.append("logs-payload")
+
+
+def _probe_render(route: Route[Any, Any], scan: _Scan) -> None:
+    """``render`` answers every refusal the spine or the route can raise, and
+    never puts a refusal's ``detail`` — a caller's value — on the wire (#262)."""
+    for reason, refusal in {**SPINE_REFUSALS, **route.refusals}.items():
+        refused = RefusedError(
+            reason, status=refusal.status, outcome=refusal.outcome, detail=_CANARY
+        )
+        try:
+            rendered = route.render(refused)
+        except Exception as exc:
+            scan.violations.append(f"raised-on-render:{logsafe.exc_kind(exc)}")
+            continue
+        if _CANARY in _text(rendered):
+            scan.violations.append("render-echoes-detail")
+
+
+async def route_conformance(ref: str, route: Route[Any, Any]) -> Conformance:
+    """The full suite over a BUILT route plugin, ``ref`` its ``dist:name``.
+
+    The distribution is held to the route import lists, the route to the
+    contract ``register_route`` enforces, ``admit`` to answering a request it
+    has no grant for with a declared refusal, and ``render`` to answering every
+    refusal without echoing a caller's value. Returns the checks it failed,
+    empty when it passed. Nothing here dials: ``deliver`` reaches the network
+    only through the spine, which the gateway's own tests hold.
+    """
+    dist, _, name = ref.partition(":")
+    scan = _Scan(violations=list(scan_imports(dist, route=True)))
+    scan.violations.extend(route_breaches(name, route))
+    if isinstance(route, Route):
+        await _probe_admit(route, scan)
+        _probe_render(route, scan)
+    return Conformance(ref=ref, failures=tuple(dict.fromkeys(scan.violations)))

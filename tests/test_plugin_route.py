@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import importlib
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -17,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from trentina.gateway.errors import ProfileConfigError
+from trentina.testing import route_conformance
 from trentina.transports import registry
 from trentina.transports.base import Route
 
@@ -183,3 +185,38 @@ def test_a_plugin_named_in_proxies_is_mounted_and_serves(
     assert sent["url"] == "https://api.acme.example/things"
     assert ["authorization", "Bearer acme-secret-value-for-the-plugin"] in sent["headers"]
     assert "acme" not in registry.BUILTIN_ROUTES
+
+
+#: A route that breaks each behavioural rule the suite holds: it logs what the
+#: caller sent, raises outside the contract, and echoes a refusal's detail.
+_CARELESS = _CLEAN.replace(
+    '        return AcmeAdmitted(OperatorOrigin("api"), path=wire.path)',
+    "        import logging\n"
+    "        logging.getLogger('acme').warning('path %s', wire.path)\n"
+    "        raise ValueError(wire.path)",
+).replace("        return refused.reason", "        return f'{refused.reason}: {refused.detail}'")
+
+
+def test_route_conformance_passes_a_clean_route(site: Path) -> None:
+    _install(site, "acme-route", "acme_route", _CLEAN)
+    route = registry.resolve_route("acme-route:acme", {})
+    result = asyncio.run(route_conformance("acme-route:acme", route))
+    assert result.ok, result.failures
+
+
+def test_route_conformance_names_each_breach(site: Path) -> None:
+    _install(site, "acme-careless", "acme_careless", _CARELESS)
+    route = importlib.import_module("acme_careless").make({})
+    result = asyncio.run(route_conformance("acme-careless:acme", route))
+    assert set(result.failures) == {
+        "raised-on-admit:ValueError",
+        "logs-payload",
+        "render-echoes-detail",
+    }
+
+
+def test_route_conformance_holds_the_declaration(site: Path) -> None:
+    _install(site, "acme-route", "acme_route", _CLEAN, entry="other")
+    route = importlib.import_module("acme_route").make({})
+    result = asyncio.run(route_conformance("acme-route:other", route))
+    assert "name" in result.failures

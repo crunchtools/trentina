@@ -254,6 +254,13 @@ new pattern goes into that file's attack, benign and linearity tables.
 
 - A second listener, `--egress-port` (8021): HTTP `CONNECT` only, for a
   profile's `client_egress` (#442). Not a route on the app below.
+- `GET|POST /proxy/forward/{instance}/fetch?url=` — an agent-chosen URL
+  (#535, for #507): host in the instance's and the grant's `hosts`, by name,
+  ports 80/443, no redirect, no credential, both edges judged.
+  `TRENTINA_FETCH_PRIVATE_NAMES` (exact names, warned) lets a fixture name
+  reach a private address. `/proxy/<name>/{instance}/...` for a `dist:` route
+  plugin. Every `/proxy/*` path and CONNECT is mounted by
+  `transports.registry.mount_routes`/`start_listeners`; nothing else serves one.
 - `GET|POST /proxy/git/{remote}/{owner}/{repo}[.git]/{info/refs,git-upload-pack,git-receive-pack}` —
   the git transport (#453), registered only when the file has `git_remotes`.
   Bearer token picks the profile, as on `/proxy/llm`. (Renamed from `/git` in
@@ -896,11 +903,12 @@ replaced.
   module instead of up from the tunnel. Operator-named hosts only; `fetch`'s
   agent-chosen URLs stay on `egress.open_guarded`, never cached or pooled.
 - `gateway/client_egress.py` — the CONNECT listener (#442) on `--egress-port`
-  (8021), bound only when a profile has `client_egress`, started and stopped
-  by `warmup.trentina_lifespan`. The peer address picks the profile (no
+  (8021), `ConnectListener` on the spine since #535, bound only when a profile
+  has `client_egress`, started and stopped by `registry.start_listeners` from
+  `warmup.trentina_lifespan`. The peer address picks the profile (no
   credential, as #330); the name must be in `hosts`, port 443, and pass
   `egress.check_url`; the tunnel connects to a checked address
-  (`open_upstream` is the test seam). `upstream.checked_target` is one lookup
+  (`perimeter.open_stream` is the test seam). `upstream.checked_target` is one lookup
   per burst (#449): tunnels to a name share the check in flight and its answer
   for `CHECKED_TTL`; `resolver_busy` is 503 `denied_guard`, not a defense block. After `200` the first TLS record must
   be a ClientHello whose SNI is the CONNECT host, or the tunnel closes before
@@ -934,6 +942,21 @@ replaced.
   streamed body, idle timeout, no deadline, and any 3xx refused as
   `redirect`. `open_guarded` (deadline, redirects followed and checked) is
   still the call for a fetch.
+- `transports/perimeter.py` — the perimeter spine (#535, `docs/proxy-plugins.md`).
+  Every `/proxy/*` route and the CONNECT listener is a `Route` or `Listener`
+  (`transports/base.py`, the public contract) served by `serve()`/`accept()`:
+  auth, instance + grant (`bind()`), the slot BEFORE any body byte, the sealed
+  `PinnedUpstream` dial (`_UPSTREAM_SEAL`), judging both edges, credential
+  injection and echo scrub, the refusal spelling, and the one audit row. A
+  route says only `admit` (an origin KEY), `deliver` and `render`. In-tree
+  privilege (`InTree`: own judging, raw stream, ON_FINDING) is the registry
+  seed, never a declaration. `tests/test_perimeter_golden.py` replays 108
+  recorded cases on both config spellings; a new difference is a failure
+  unless named in `DELTAS`. `proxies:` (`gateway/proxies.py`) normalizes the
+  built-in types into their older fields, one home per fact; only `forward`
+  and `dist:` instances live in `route_instances`/`route_grants`. A `dist:`
+  route is scanned before import (`testing.suite.scan_route_source`) and is
+  gateway code: nothing holds the process.
 - `tools/` — Tool implementations called by server.py wrappers
 - `database.py` — SQLite blocklist for cumulative detection memory, keyed on
   (profile, source) since #263: `is_blocked(source, profile)` sees the

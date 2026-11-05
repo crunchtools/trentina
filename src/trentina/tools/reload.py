@@ -191,6 +191,29 @@ def _compression_surface(profiles: dict[str, Profile]) -> set[tuple[str, bool]]:
     }
 
 
+def _unmounted_routes(mounted: frozenset[str], new_config: GatewayConfig) -> list[str]:
+    """The perimeter routes the new file uses that were not mounted at startup:
+    ``mount_routes`` runs once, so a route type the file gains is a restart."""
+    notes: list[str] = []
+    if "git" not in mounted and new_config.git_remotes:
+        notes.append(
+            "git_remotes added but /git was not registered at startup (the "
+            "file had none) — restart to serve it"
+        )
+    if "http" not in mounted and new_config.egress_upstreams:
+        notes.append(
+            "egress_upstreams added but /egress was not registered at startup "
+            "(the file had none) — restart to serve it"
+        )
+    for instance, route in sorted(new_config.route_instances.items()):
+        if route.type.rpartition(":")[2] not in mounted:
+            notes.append(
+                f"proxies.{instance} added but its route type was not mounted at "
+                "startup (the file had no instance of it) — restart to serve it"
+            )
+    return notes
+
+
 def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
     """Name every edit in the new file that a reload cannot put into force.
 
@@ -240,16 +263,7 @@ def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
             "client_egress added but its listener was not started (no profile "
             "had one at startup) — restart to serve it"
         )
-    if "git" not in active.routes_mounted and new_config.git_remotes:
-        notes.append(
-            "git_remotes added but /git was not registered at startup (the "
-            "file had none) — restart to serve it"
-        )
-    if "http" not in active.routes_mounted and new_config.egress_upstreams:
-        notes.append(
-            "egress_upstreams added but /egress was not registered at startup "
-            "(the file had none) — restart to serve it"
-        )
+    notes.extend(_unmounted_routes(active.routes_mounted, new_config))
     notes.extend(_unapplied_delegated(current, new_config))
     for name, profile in sorted(new_config.profiles.items()):
         notes.extend(_unapplied_proxy_oauth_for(current.profiles.get(name), profile, name))

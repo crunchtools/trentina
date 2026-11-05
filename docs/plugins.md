@@ -223,23 +223,18 @@ Trentina's own in-tree transforms — the in-tree transforms implement this *sam
 public contract (core code gets no privileged hook between transform and gate),
 so there is nothing to rewrite.
 
-## Transports — registration is open, external plugins are not
+## Route plugins and transports
 
-The transport registry is the second of the two registries, and it is only
-partway open. A transport is a `Face` (wire in and out) plus a `Carrier` (to the
-backend); `orchestrator.crossing` runs the two halves in the one order it owns —
-parse, carry, deliver, wrap — which is the security property a transport cannot
-reorder. In-tree code may `transports.registry.register_transport(name,
-transport)` to add a transport the crossing resolves by name, and the
-conformance suite exercises a second, non-`mcp` transport through that path.
+A **route plugin** (`trentina.transports.v1`, #535) adds a perimeter route
+type: an HTTP path under `/proxy/<name>/` that an operator instantiates under
+`proxies:`. It is installed the way a transform is, and it is held to the
+`Route` contract in `trentina.transports.base` and to a stricter import scan.
+[proxy-plugins.md](proxy-plugins.md) covers writing, testing
+(`route_conformance`) and what a route plugin can and cannot reach. Read its
+"gateway code" section before installing one.
 
-What is **not** accepted yet is an EXTERNAL `dist:name` transport plugin. Unlike
-the transform contract, the `Face`/`Carrier` signatures in
-`transports/base.py` are still typed `Any`, and `api_version` is the only frozen
-part of them — so there is no entry-point group to discover against, and
-publishing one now would announce an ABI that #535 (the typed transport
-framework and the face/carrier split) will change. `build_transport` refuses a
-`dist:name` transport by name until then. Registration is also not dispatch: the
-only transport a profile's backend is dispatched over is the built-in `mcp`
-(`TransportName` mirrors what is dispatchable), and wiring a registered transport
-into per-backend dispatch is the first piece of #535, not this door.
+An MCP **transport** (a `Face` plus a `Carrier`, the protocol a backend is
+dispatched over) is still in-tree only. `register_transport` adds one the
+crossing resolves by name, and `build_transport` refuses a `dist:name`
+transport by name. The only transport a backend is dispatched over is the
+built-in `mcp`.

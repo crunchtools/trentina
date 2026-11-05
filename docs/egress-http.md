@@ -111,6 +111,13 @@ under `block`, the request — already past the layers — is judged for intent
 (destination, first contact, flagged session) before it is sent, and anything
 but an explicit allow is one `403` with `block_reason: gatekeeper`.
 
+The same instance under [`proxies:`](proxy-plugins.md), the spelling that
+replaces these blocks at the next major, is
+`proxies: {github: {type: http, upstream: ..., credential: ...}}`, with
+`profiles.agent1.proxies.github` holding the grant. For a destination the
+agent chooses rather than one you name, use the `forward` type in the same
+document.
+
 `egress_upstreams` are shared; `egress_http` grants are per profile, mirroring
 `git_remotes`/`git`. An agent reload cannot add or widen its own `egress_http`
 (held, reported `operator_only`, #511): which destinations it may reach is the
