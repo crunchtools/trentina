@@ -65,7 +65,22 @@ from functools import partial
 from typing import TYPE_CHECKING
 
 from . import office
-from .alphabets import decode_braille, decode_morse
+from .alphabets import (
+    B2048_ALPHABET,
+    ECOJI_ALPHABET,
+    NATO_WORD,
+    SNEAKY_ONE,
+    SNEAKY_SPACE,
+    SNEAKY_ZERO,
+    ZALGO_MARKS,
+    decode_base2048,
+    decode_braille,
+    decode_ecoji,
+    decode_morse,
+    decode_nato,
+    decode_sneaky_bits,
+    decode_zalgo,
+)
 from .archive import OPENABLE, ZIP, Budget, Entry, open_archive
 from .ocr import MAX_IMAGE_BYTES, MAX_IMAGES, ImageText, read_images
 from .pdf import SECTIONS, PdfReading, read_pdf
@@ -119,12 +134,26 @@ couple of hundred bytes."""
 _TOKEN = re.compile(
     r"(?P<uri>data:(?P<type>[a-z0-9.+-]{1,127}/[a-z0-9.+-]{1,127})"
     r"(?:;[a-z0-9=.+-]{1,64}){0,4};base64,(?P<payload>[A-Za-z0-9+/]*={0,2}))"
+    # Zalgo: two or more characters, each under three or more combining marks
+    # (gap 23). Marks and the character under them are disjoint classes, so the
+    # run is linear. Before the letter groups, so it wins where a word starts.
+    rf"|(?P<zalgo>(?:[^{ZALGO_MARKS}][{ZALGO_MARKS}]{{3,}}){{2,}})"
     # Braille cells (U+2800 block), with spaces, tabs and newlines between them.
     r"|(?P<braille>[⠁-⣿][⠀-⣿ \t\n\r]*)"
     # Morse: two or more code groups, separated by spaces or word slashes. Each
     # atom is BOUNDED (a Morse letter is at most six symbols), so a long run
     # that is not Morse costs O(1) per start position, never O(n) (ReDoS).
     r"|(?P<morse>[.-]{1,6}(?:[ /]{1,6}[.-]{1,6})+)"
+    # NATO alphabet: eight or more code words, one space apart. Each atom is a
+    # fixed word bounded by \b, so a run that stops short costs O(1) a start.
+    rf"|(?P<nato>(?:\b(?:{NATO_WORD})\b ){{7,}}\b(?:{NATO_WORD})\b)"
+    # Sneaky bits: invisible 0s and 1s, words split by a zero-width space.
+    rf"|(?P<sneaky>[{SNEAKY_ZERO}{SNEAKY_ONE}][{SNEAKY_ZERO}{SNEAKY_ONE}{SNEAKY_SPACE}]{{11,}})"
+    # Base2048 and Ecoji: runs of their own alphabets, which hold no ASCII.
+    # Twelve characters (16 bytes) at the least for Base2048, whose alphabet
+    # holds whole Cyrillic, Greek and Latin-1 words; two Ecoji blocks.
+    f"|(?P<b2048>[{re.escape(B2048_ALPHABET)}]{{12,}})"
+    f"|(?P<ecoji>[{re.escape(ECOJI_ALPHABET)}](?:\n?[{re.escape(ECOJI_ALPHABET)}]){{7,}})"
     # uuencode: one or more b2a_uu lines (data is 0x20-0x60, no lower case, so a
     # lower-case base64 token on its own line is never mistaken for one). The
     # ranges are case-sensitive despite the flag below, or they catch lower case.
@@ -834,7 +863,8 @@ def _uu_decoded(token: str, depth: int, state: _Pass) -> str | None:
 def _cipher(
     token: str, depth: int, state: _Pass, *, decode: Callable[[str], str | None]
 ) -> str | None:
-    """A Braille or Morse run, decoded and read as text, or None to leave it.
+    """A Braille, Morse, NATO, sneaky-bits or Zalgo run, decoded and read as text,
+    or None to leave it.
 
     ``decode`` returns the plain text, which must still read as text: a run of
     cells or code groups that spells nothing is left as it arrived.
@@ -848,13 +878,31 @@ def _cipher(
     return None if text is None else _text(text, depth, state)
 
 
+def _strict_text(
+    token: str, depth: int, state: _Pass, *, decode: Callable[[str], bytes | None]
+) -> str | None:
+    """A Base2048 or Ecoji run that decodes to TEXT, read in its place; anything
+    else is left as it arrived. Never a binary label: Base2048's alphabet holds
+    whole words of other scripts, and labelling one would hide it from L2."""
+    if len(token) > MAX_TOKEN:
+        return None
+    decoded = decode(token)
+    text = None if decoded is None else _as_text(decoded)
+    return None if text is None else _text(text, depth, state)
+
+
 _CIPHERS: tuple[tuple[str, Callable[..., str | None]], ...] = (
+    ("zalgo", partial(_cipher, decode=decode_zalgo)),
     ("braille", partial(_cipher, decode=decode_braille)),
     ("morse", partial(_cipher, decode=decode_morse)),
+    ("nato", partial(_cipher, decode=decode_nato)),
+    ("sneaky", partial(_cipher, decode=decode_sneaky_bits)),
+    ("b2048", partial(_strict_text, decode=decode_base2048)),
+    ("ecoji", partial(_strict_text, decode=decode_ecoji)),
     ("uu", _uu_decoded),
     ("b32", _base32_token),
 )
-"""Token group -> decoder, tried in order after the data-URI group (#546).
+"""Token group -> decoder, tried in order after the data-URI group (#546, gap 23).
 base32 is last so the common base64/hex ``run`` is reached quickly."""
 
 

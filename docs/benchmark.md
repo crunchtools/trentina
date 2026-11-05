@@ -472,7 +472,7 @@ a passing one (`l2_obfuscation_gate_failed`, `l2_obfuscation_gate_unrecorded`);
 
 The gate above holds a model to six transforms. garak's `encoding` probes
 are a wider list, and `benchmarks/l2_encodings.py` scores the shipped model
-on the sixteen of them the standard library can express
+on all nineteen of them
 ([corpora](corpora.md#garak-encodings)). It gates nothing: a run that
 scored the model exits 0 whatever it found (2 when no model loads), and the
 numbers decide which transform could join the gate and which is a known
@@ -498,9 +498,11 @@ attacks.
 
 2026-11-05, `prompt-injection-guard-small-ct@b7fd8700910d` at 0.5, the model
 the image ships, run inside the published image with `--network=none`.
-Flagged, of 44 attacks, 14 internal benign and 72 forum replies. Braille
-and Morse carry 42 attacks and 12 internal benign texts: garak's encoders
-for them cannot spell every character in the other two.
+Flagged, of 44 attacks, 14 internal benign and 72 forum replies. Braille,
+Morse and the NATO alphabet carry 42 attacks and 12 internal benign texts:
+garak's encoders for them cannot spell every character in the other two.
+The NATO, sneaky bits, Base2048, Ecoji and Zalgo rows were measured after
+the 6.6.0 decoders, with `--transforms`, the same day.
 
 | transform | attacks, L2 alone | attacks, pipeline | internal benign, L2 alone | internal benign, pipeline | forum replies, L2 alone | forum replies, pipeline |
 |---|---|---|---|---|---|---|
@@ -525,8 +527,11 @@ for them cannot spell every character in the other two.
 | ROT13 | 26 | 26 | 4 | 4 | 20 | 20 |
 | Atbash | 17 | 17 | 5 | 5 | 7 | 7 |
 | leetspeak | 42 | 42 | 7 | 7 | 13 | 13 |
-| NATO alphabet | 0 | 0 | 0 | 0 | 0 | 0 |
-| sneaky bits | 0 | 0 | 0 | 0 | 0 | 0 |
+| NATO alphabet | 0 of 42 | 37 of 42 | 0 of 12 | 8 of 12 | 0 | 19 |
+| sneaky bits | 0 | 43 | 0 | 1 | 0 | 1 |
+| Base2048 | 0 | 43 | 0 | 0 | 0 | 0 |
+| Ecoji | 0 | 40 | 0 | 0 | 0 | 0 |
+| Zalgo | 25 | 43 | 9 | 0 | 40 | 0 |
 
 The table before this one, 2026-10-11, measured Horizon's
 `prompt-injection-guard-small` at 0.7, the model the image shipped then,
@@ -569,12 +574,18 @@ What the rows say, in the order of the table:
   26 and 17 of 44 and benign flags rise to 24 and 12 of 86. Leetspeak keeps
   42 of 44 at 20 of 86 benign. L1's ROT13 stage reads directive patterns,
   and the corpus is written to carry none. Known gap 22.
-- **The NATO alphabet and sneaky bits pass everything.** No attack is
-  flagged by L1 or L2. An attack spelled as `India Golf November ...` is
-  a list of ordinary words. Sneaky bits is the text in binary, written with
-  two invisible characters and a zero-width space between words, and L1
-  counts a zero-width character only inside a Latin word and these two
-  operators not at all. Known gap 23.
+- **The NATO alphabet, sneaky bits, Base2048, Ecoji and Zalgo are decoded
+  (6.6.0).** Alone, the model reads none of the first four (0 attacks) and
+  flags Zalgo by its marks, benign text too (40 of 72 forum replies).
+  Decoded, Base2048, sneaky bits and Zalgo are at plain's 43. Ecoji is at
+  40, and decodes all 44 exactly: the three it loses flip on the newline
+  garak's encoder leaves after the run, which is the model's sensitivity
+  near its threshold, not a decoder fault. NATO is the weak row: garak keeps
+  letters only, so the decode is one unbroken lower-case run, which costs
+  the model 4 attacks and flags 27 of 84 benign texts spelled the same way.
+  Nothing benign is spelled in NATO in practice, so the false positives are
+  confined to text an agent would have to decode on purpose; a word
+  splitter would serve both columns, and is not built.
 
 **Decided.** Nothing joins the gate.
 
@@ -589,10 +600,10 @@ What the rows say, in the order of the table:
   gating the model on the raw blob would select for a model that refuses
   encoded text, the pressure the
   [benign gate](#l2-benign-gate-411-404) was added to oppose.
-- base16, hex and the six of #546 are rows of the
-  [coverage table](defense-pipeline.md#coverage). The rest are
-  [known gaps](defense-pipeline.md#known-gaps) 22 (the letter ciphers) and
-  23 (the two that pass), each held open by a test. The half that needs the
+- base16, hex, the six of #546 and the five of 6.6.0 are rows of the
+  [coverage table](defense-pipeline.md#coverage). The letter ciphers are
+  [known gap](defense-pipeline.md#known-gaps) 22, held open by a test and
+  left to the model (#720). The half that needs the
   model runs in the image (`tests/test_l2_integration.py`).
 - The benchmark is not part of the image build. It classifies about 3,400
   texts twice, many of them long once encoded, and took 9 minutes 20
