@@ -1,0 +1,85 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "27"
+      ],
+      [
+       "content-type",
+       "text/plain; charset=utf-8"
+      ]
+     ],
+     "status": 502,
+     "type": "start"
+    },
+    {
+     "body": "Matrix upstream unreachable",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "matrix",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "_matrix/client/v3/sync",
+   "destination_kind": "matrix",
+   "detections_digest": null,
+   "error_message": "upstream_unreachable",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "backend_error",
+   "profile": "agent1",
+   "session": null,
+   "success": 0,
+   "tool": "GET"
+  }
+ ],
+ "open_slots": {},
+ "upstream": [
+  {
+   "body": "",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "gzip, deflate"
+    ],
+    [
+     "authorization",
+     "Bearer matrix-user-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "host",
+     "matrix.example.org"
+    ],
+    [
+     "user-agent",
+     "python-httpx/0.28.1"
+    ]
+   ],
+   "method": "GET",
+   "url": "https://matrix.example.org/_matrix/client/v3/sync"
+  }
+ ]
+}

@@ -1,0 +1,64 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "249"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ]
+     ],
+     "status": 200,
+     "type": "start"
+    },
+    {
+     "body": "{\"next_batch\": \"s2\", \"rooms\": {\"join\": {\"!room:example.org\": {\"timeline\": {\"events\": [{\"type\": \"m.room.message\", \"event_id\": \"$e1\", \"sender\": \"@alice:example.org\", \"origin_server_ts\": 1, \"content\": {\"msgtype\": \"m.text\", \"body\": \"hello there\"}}]}}}}}",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [],
+ "open_slots": {},
+ "upstream": [
+  {
+   "body": "",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "gzip, deflate"
+    ],
+    [
+     "authorization",
+     "Bearer matrix-user-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "host",
+     "matrix.example.org"
+    ],
+    [
+     "user-agent",
+     "python-httpx/0.28.1"
+    ]
+   ],
+   "method": "GET",
+   "url": "https://matrix.example.org/_matrix/client/v3/sync?since=s1"
+  }
+ ]
+}

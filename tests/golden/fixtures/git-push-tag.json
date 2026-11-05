@@ -1,0 +1,57 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "25"
+      ],
+      [
+       "content-type",
+       "text/plain; charset=utf-8"
+      ],
+      [
+       "x-trentina-reason",
+       "tag"
+      ]
+     ],
+     "status": 403,
+     "type": "start"
+    },
+    {
+     "body": "refused by Trentina: tag\n",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "git:forge",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "acme/widgets refs/tags/v2",
+   "destination_kind": "git",
+   "detections_digest": null,
+   "error_message": "tag",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "denied_guard",
+   "profile": "agent1",
+   "session": null,
+   "success": 0,
+   "tool": "push"
+  }
+ ],
+ "open_slots": {},
+ "upstream": []
+}

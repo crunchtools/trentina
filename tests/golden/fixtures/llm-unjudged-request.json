@@ -1,0 +1,98 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "x-trentina-warning",
+       "unjudged"
+      ]
+     ],
+     "status": 200,
+     "type": "start"
+    },
+    {
+     "body": "{\"id\": \"msg_1\", \"type\": \"message\", \"role\": \"assistant\", \"content\": [{\"type\": \"text\", \"text\": \"hi there\"}], \"stop_reason\": \"end_turn\"}",
+     "more": true,
+     "type": "body"
+    },
+    {
+     "body": "",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "llm:anthropic",
+   "bytes_arrived": 133,
+   "bytes_delivered": 98,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "claude-golden",
+   "destination_kind": "model",
+   "detections_digest": null,
+   "error_message": "not_fully_judged",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "ok",
+   "profile": "agent1",
+   "session": null,
+   "success": 1,
+   "tool": "messages"
+  }
+ ],
+ "open_slots": {},
+ "upstream": [
+  {
+   "body": "{\"model\":\"claude-golden\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"GOLDEN-UNJUDGED\"}]}",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "anthropic-version",
+     "2023-06-01"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ],
+    [
+     "host",
+     "api.anthropic.com"
+    ],
+    [
+     "user-agent",
+     "python-httpx/0.28.1"
+    ],
+    [
+     "x-api-key",
+     "golden-agent1-anthropic-key"
+    ]
+   ],
+   "method": "POST",
+   "url": "https://api.anthropic.com/v1/messages"
+  }
+ ]
+}

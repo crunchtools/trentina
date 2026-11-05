@@ -1,0 +1,93 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "24"
+      ],
+      [
+       "content-type",
+       "text/plain; charset=utf-8"
+      ]
+     ],
+     "status": 502,
+     "type": "start"
+    },
+    {
+     "body": "LLM upstream unreachable",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "llm:anthropic",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "claude-golden",
+   "destination_kind": "model",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "backend_error",
+   "profile": "agent1",
+   "session": null,
+   "success": 0,
+   "tool": "messages"
+  }
+ ],
+ "open_slots": {},
+ "upstream": [
+  {
+   "body": "{\"model\":\"claude-golden\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "anthropic-version",
+     "2023-06-01"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ],
+    [
+     "host",
+     "api.anthropic.com"
+    ],
+    [
+     "user-agent",
+     "python-httpx/0.28.1"
+    ],
+    [
+     "x-api-key",
+     "golden-agent1-anthropic-key"
+    ]
+   ],
+   "method": "POST",
+   "url": "https://api.anthropic.com/v1/messages"
+  }
+ ]
+}

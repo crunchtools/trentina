@@ -1,0 +1,94 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "cache-control",
+       "no-cache"
+      ],
+      [
+       "content-type",
+       "application/x-git-upload-pack-advertisement"
+      ]
+     ],
+     "status": 200,
+     "type": "start"
+    },
+    {
+     "body": "000eversion 2\n000cls-refs\n000afetch\n0000",
+     "more": true,
+     "type": "body"
+    },
+    {
+     "body": "",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "git:forge",
+   "bytes_arrived": 40,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "acme/widgets",
+   "destination_kind": "git",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "ok",
+   "profile": "agent1",
+   "session": null,
+   "success": 1,
+   "tool": "fetch"
+  }
+ ],
+ "open_slots": {},
+ "upstream": [
+  {
+   "body": "",
+   "headers": [
+    [
+     "accept",
+     "application/x-git-upload-pack-advertisement"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "authorization",
+     "Basic eC1hY2Nlc3MtdG9rZW46Z29sZGVuLWFnZW50MS1mb3JnZS10b2tlbg=="
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "git-protocol",
+     "version=2"
+    ],
+    [
+     "host",
+     "git.example.com"
+    ],
+    [
+     "user-agent",
+     "git/trentina"
+    ]
+   ],
+   "method": "GET",
+   "url": "https://git.example.com/acme/widgets.git/info/refs?service=git-upload-pack"
+  }
+ ]
+}
