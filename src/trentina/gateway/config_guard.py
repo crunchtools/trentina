@@ -327,9 +327,24 @@ def default_posture() -> dict[str, Any]:
     return _posture_of(DefenseConfig())
 
 
+def _flag_grants(profile: Profile) -> list[str]:
+    """The profile's egress grants that forward a finding rather than refuse it.
+
+    ``enforcement: flag`` on a grant is the researcher grant on that one way out,
+    the same downgrade as ``flag`` on the whole ``defense`` block, just narrower;
+    it went unstaged until #535.
+    """
+    named = [f"egress_http.{n}" for n, g in profile.egress_http.items() if g.enforcement == "flag"]
+    named += [f"proxies.{n}" for n, g in profile.route_grants.items() if g.enforcement == "flag"]
+    return sorted(named)
+
+
 def defense_posture(profiles: dict[str, Profile]) -> dict[str, dict[str, Any]]:
     """What each profile's perimeter still enforces, by profile."""
-    return {name: _posture_of(profile.defense) for name, profile in profiles.items()}
+    return {
+        name: {**_posture_of(profile.defense), "flag_grants": _flag_grants(profile)}
+        for name, profile in profiles.items()
+    }
 
 
 def defense_downgraded(
@@ -353,6 +368,7 @@ def defense_downgraded(
                 now["llm_completion"] == UNENFORCED_MODE
                 and was["llm_completion"] != UNENFORCED_MODE
             )
+            or set(now["flag_grants"]) - set(was.get("flag_grants", []))
         ):
             downgraded[name] = {"before": was, "after": now}
     return downgraded
@@ -394,6 +410,7 @@ def egress_grants(
     profiles: dict[str, Profile],
     egress_upstreams: dict[str, Any],
     llm_providers: dict[str, Any],
+    route_instances: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Every destination this gateway may carry an agent's traffic to.
 
@@ -451,7 +468,35 @@ def egress_grants(
     for name, provider in llm_providers.items():
         if isinstance(provider, dict) and provider.get("enabled"):
             grants[f"llm_providers:{name}"] = _origin_only(provider.get("upstream"))
+    grants.update(_route_grants(profiles, route_instances or {}))
     return grants
+
+
+def _route_grants(profiles: dict[str, Profile], instances: dict[str, Any]) -> dict[str, str]:
+    """The destinations a ``forward`` or ``dist:`` route may reach (#535).
+
+    Only ``origins`` and ``hosts`` are destinations: the spine dials nothing a
+    route names in its ``options``, so a URL there reaches nothing and is not a
+    grant. ``*`` is spelled out, because "any host" is what a person approves.
+    """
+    grants: dict[str, str] = {}
+    for name, instance in instances.items():
+        for key, origin in instance.origins.items():
+            grants[f"proxies:{name}.{key}"] = _origin_only(origin)
+        for host in instance.hosts:
+            grants[f"proxies:{name}.hosts.{host}"] = _agent_host(host)
+    for profile_name, profile in profiles.items():
+        for name, grant in profile.route_grants.items():
+            for host in grant.hosts:
+                grants[f"proxies:{profile_name}.{name}.{host}"] = _agent_host(host)
+    return grants
+
+
+def _agent_host(host: str) -> str:
+    """How an agent-chosen destination reads on the approval page."""
+    if host == "*":
+        return "ANY host the agent names, judged both ways"
+    return f"{host}, a URL the agent names on it, judged both ways"
 
 
 #: The networks that may open a profile's tunnels, by profile. A

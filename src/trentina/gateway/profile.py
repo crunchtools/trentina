@@ -2520,8 +2520,15 @@ class RouteInstance(BaseModel):
     def _https_origins(cls, value: dict[str, str]) -> dict[str, str]:
         for key, origin in value.items():
             parts = urlsplit(origin)
-            if parts.scheme != "https" or not parts.hostname or parts.query or parts.fragment:
-                raise ValueError(f"origins.{key}: an https origin is required")
+            if (
+                parts.scheme != "https"
+                or not parts.hostname
+                or parts.username is not None
+                or parts.query
+                or parts.fragment
+            ):
+                # No userinfo: an origin is shown to the person approving it.
+                raise ValueError(f"origins.{key}: an https origin is required, with no userinfo")
         return value
 
     @field_validator("hosts")

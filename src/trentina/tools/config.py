@@ -711,7 +711,9 @@ _Proposal = tuple[pending.Kind, dict[str, str]]
 
 #: The three fields of a ``defense`` block that decide what it enforces, in the
 #: order a person reads them.
-_DEFENSE_ASPECTS = ("modes", "enforcement", "llm_completion")
+#: What a defense downgrade shows, in reading order; ``flag_grants`` is the
+#: same downgrade on one egress grant (#535).
+_DEFENSE_ASPECTS = ("modes", "enforcement", "llm_completion", "flag_grants")
 
 
 def _profile_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Proposal]:
@@ -820,7 +822,7 @@ def _egress_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Prop
 
     def grants(config: GatewayConfig) -> dict[str, str]:
         return config_guard.egress_grants(
-            config.profiles, config.egress_upstreams, config.llm_providers
+            config.profiles, config.egress_upstreams, config.llm_providers, config.route_instances
         )
 
     # Two comparisons, one question. Destinations diff as strings; who may open
