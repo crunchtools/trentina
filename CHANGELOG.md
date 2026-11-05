@@ -10,6 +10,21 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Upper-case hex (garak's base16) decodes whole (#546).** The base32 token
+  group took a prefix such as `46726F6D2` off the front of a hex run, and the
+  odd-length rest decoded as nothing, so 6 of the 44 corpus attacks in base16
+  (and 1 in lower-case hex) reached L2 as a blob it cannot read. The base32
+  group must now end the token. `PERIMETER_VERSION` 23 re-judges cached
+  verdicts.
+
+### Changed
+
+- **`docs/benchmark.md`'s garak encodings table is measured against the model
+  the image ships** (`prompt-injection-guard-small-ct`) and the pipeline after
+  #546; the previous table was Horizon's, before the six decoders.
+
 ## [6.5.1] - 2026-11-05
 
 ### Fixed
