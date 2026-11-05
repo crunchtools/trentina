@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.5.1] - 2026-11-05
+
 ### Fixed
 
 - **A federated tool accepts `trentina_mode={"redact": "<question>"}` (#711).**
