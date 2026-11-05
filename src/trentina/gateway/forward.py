@@ -66,6 +66,10 @@ ENDPOINT = "fetch"
 #: The outcomes a deny marker stands for: the gateway decided, the destination did not.
 _CONTAINED = frozenset({Outcome.DENIED_GUARD, Outcome.DENIED_ALLOWLIST, Outcome.BLOCKED_DEFENSE})
 
+#: Refusals that are about the request's shape, not its destination or content:
+#: an endpoint this route does not serve is not containment either.
+_NOT_A_DECISION = frozenset({"not_found", "unauthorized"})
+
 REFUSALS: Mapping[str, Refusal] = {
     **SPINE_REFUSALS,
     "bad_url": Refusal(HTTPStatus.BAD_REQUEST, Outcome.DENIED_GUARD),
@@ -133,7 +137,7 @@ class ForwardRoute(Route[ForwardAdmitted, Context]):
         if refused.reason == "unauthorized":
             return Response(content="unauthorized\n", status_code=401, media_type=PLAIN_TEXT)
         body: dict[str, Any] = {"error": {"type": "trentina_refused", "reason": refused.reason}}
-        if refused.outcome in _CONTAINED:
+        if refused.outcome in _CONTAINED and refused.reason not in _NOT_A_DECISION:
             body |= {"blocked": True, "block_reason": refused.reason, "scanner": "trentina"}
         if refused.executed:
             body["executed"] = True

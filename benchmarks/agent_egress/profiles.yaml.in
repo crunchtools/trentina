@@ -1,0 +1,28 @@
+# agent-egress-bench (#507): the perimeter under test, as config alone.
+proxies:
+  # The judge's provider: llm_keys names it. No profile is granted the route.
+  openrouter:
+    type: llm
+    upstream: https://openrouter.ai/api
+    auth_header: authorization
+  bench:
+    type: forward
+    hosts: [aeb-fixture.test, cdn.fixture.example.com]
+profiles:
+  bench:
+    auth:
+      bearer_token_env: BENCH_TOKEN
+    llm_keys:
+      openrouter:
+        api_key_env: OPENROUTER_API_KEY
+    defense:
+      enforcement: @MODE@
+    proxies:
+      bench:
+        hosts: ["*"]
+        methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+        enforcement: @MODE@
+    backends:
+      fixture:
+        url: @FIXTURE_URL@
+        tools_allow: ["*"]

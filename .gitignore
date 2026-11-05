@@ -60,3 +60,4 @@ research_notes/
 # The constitution checkout scripts/gates.sh clones to validate against the
 # pinned tag. A whole second repo, not ours to track.
 .gates/
+benchmarks/agent_egress/.run/

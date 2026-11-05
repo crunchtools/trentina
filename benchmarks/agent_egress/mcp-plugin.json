@@ -1,0 +1,29 @@
+{
+  "_comment": "Trentina behind the runner's mcp-gateway adapter (#507). Authored by crunchtools.",
+  "name": "trentina",
+  "transport": "streamable_http",
+  "gateway": {
+    "start_command": "$AEB_TRENTINA_KIT/start-gateway.sh mcp",
+    "ready_addr": "$AEB_GATEWAY_ADDR",
+    "env_passthrough": ["AEB_TRENTINA_KIT", "AEB_TRENTINA_MODE", "AEB_TRENTINA_RUN", "BENCH_TOKEN", "OPENROUTER_API_KEY", "QUARANTINE_MODEL"]
+  },
+  "fixture_registration": {
+    "method": "start_command",
+    "register_command": "true",
+    "deregister_command": "",
+    "config_template_path": "",
+    "api_endpoint": ""
+  },
+  "client": {
+    "endpoint": "${AEB_GATEWAY_URL}gateway/bench/mcp",
+    "headers": {"Authorization": "Bearer $AEB_BENCH_TOKEN"}
+  },
+  "deny_signals": {
+    "jsonrpc_error_code_range": [0, 0],
+    "http_status_codes": [],
+    "tool_filtered_from_list": true,
+    "connection_closed_no_output": false,
+    "non_zero_exit": false,
+    "custom_body_markers": ["_trentina_refusal"]
+  }
+}

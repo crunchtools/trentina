@@ -38,6 +38,11 @@ under that name.
 - `quarantine_stats` (operator) reports `routes`: what is mounted, and each
   installed route plugin by `dist:name` and version.
 - `forward` and route plugins are the new `proxy-plugins` preview surface.
+- `benchmarks/agent_egress/` and the `agent-egress-bench` job in
+  `benchmark-decoys.yml` run the third-party agent-egress-bench (#507) against
+  the shipped image, configured and nothing else: the fetch adapter through
+  `forward`, the MCP gateway adapter through a profile whose backend is the
+  bench's own fixture, in `flag` and in `block`.
 
 ### Changed
 

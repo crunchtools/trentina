@@ -95,8 +95,8 @@ benchmark drives.
   `{"error": {"type": "trentina_refused", "reason": ...}}`.
   - Only when the gateway denied or blocked does it add
     `"blocked": true, "block_reason", "scanner": "trentina"`.
-  - An unreachable upstream does not get that marker, so it never counts as
-    containment.
+  - An unreachable upstream, or a path the route does not serve, does not get
+    that marker, so it never counts as containment.
 
 `TRENTINA_FETCH_PRIVATE_NAMES` (comma-separated exact names, warned at startup)
 lets those names resolve to a loopback or private address, on any port. It

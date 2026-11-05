@@ -232,3 +232,13 @@ class TestAFailureIsNotContainment:
         _, body, _, _ = _go(monkeypatch, tmp_path, _fetch(f"https://{HOST}/x"), handler)
         assert body["error"]["reason"] == reason
         assert "blocked" not in body
+
+
+def test_an_endpoint_it_does_not_serve_carries_no_deny_marker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A bench's WebSocket case reaches /ws here; not served is not contained."""
+    call = Call("GET", "/proxy/forward/bench/ws", headers=bearer("agent1"), query="url=x")
+    status, body, seen, _ = _go(monkeypatch, tmp_path, call, reply(200, "{}"))
+    assert (status, body["error"]["reason"], seen) == (404, "not_found", [])
+    assert "blocked" not in body
