@@ -180,12 +180,14 @@ def _seed() -> Mapping[str, tuple[Route[Any, Any], DestinationKind]]:
     from ..gateway.egress_http import HttpRoute
     from ..gateway.git_transport import GitRoute
     from ..gateway.llm_proxy import LlmRoute
+    from ..gateway.matrix_proxy import MatrixRoute
 
     return MappingProxyType(
         {
             "http": (HttpRoute(), DestinationKind.EGRESS),
             "git": (GitRoute(), DestinationKind.GIT),
             "llm": (LlmRoute(), DestinationKind.MODEL),
+            "matrix": (MatrixRoute(), DestinationKind.MATRIX),
         }
     )
 
@@ -235,7 +237,12 @@ def register_route(name: str, route: Route[Any, Any]) -> None:
 def configured(name: str, config: GatewayConfig, providers: Mapping[str, Any]) -> bool:
     """Whether the file configures any instance of the built-in route ``name``.
     A route with nothing to reach is not mounted, as before #535."""
-    instances = {"http": config.egress_upstreams, "git": config.git_remotes, "llm": providers}
+    instances = {
+        "http": config.egress_upstreams,
+        "git": config.git_remotes,
+        "llm": providers,
+        "matrix": config.matrix.get("enabled"),
+    }
     return bool(instances.get(name))
 
 

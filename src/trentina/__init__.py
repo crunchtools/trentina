@@ -136,15 +136,17 @@ def _register_push_ingresses(
 
 
 def _register_proxies(mcp_server: FastMCP, gateway_config: GatewayConfig) -> dict[str, Any]:
-    """The routes that carry an agent's own traffic out: model calls, Matrix
-    and git (#453). Each binds at startup, and only if the file configures it.
+    """The routes that carry an agent's own traffic out: model calls, Matrix,
+    git and HTTP (#453, #511), mounted on the perimeter spine (#535). Each binds
+    at startup, and only if the file configures it.
 
     Returns:
         The enabled LLM providers, which the active config and the startup
         scrub both need.
     """
     from .gateway.llm_proxy import load_llm_providers, validate_profile_llm_keys
-    from .gateway.matrix_proxy import register_matrix_routes
+    from .gateway.matrix_proxy import check_upstream
+    from .transports.perimeter import MATRIX_UPSTREAM
     from .transports.registry import mount_routes
 
     llm_providers = load_llm_providers(gateway_config.llm_providers)
@@ -152,11 +154,12 @@ def _register_proxies(mcp_server: FastMCP, gateway_config: GatewayConfig) -> dic
     # not any provider ended up enabled.
     validate_profile_llm_keys(llm_providers, gateway_config.profiles)
     if gateway_config.matrix.get("enabled"):
-        register_matrix_routes(
-            mcp_server,
-            gateway_config.profiles,
-            upstream=gateway_config.matrix.get("upstream", "https://matrix-client.matrix.org"),
-        )
+        check_upstream(gateway_config.matrix.get("upstream", MATRIX_UPSTREAM))
+        if not any(p.matrix_ingress for p in gateway_config.profiles.values()):
+            logger.warning(
+                "matrix_proxy: matrix.enabled is set but no profile has matrix_ingress "
+                "— every request will 401"
+            )
     mount_routes(mcp_server, gateway_config, gateway_config.profiles, llm_providers)
     return llm_providers
 

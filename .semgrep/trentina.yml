@@ -144,6 +144,7 @@ rules:
         - "**/trentina/gateway/git_transport.py"
         - "**/trentina/gateway/llm_proxy.py"
         - "**/trentina/gateway/client_egress.py"
+        - "**/trentina/gateway/matrix_proxy.py"
         - "**/.semgrep/tests/**"
       exclude:
         - "**/trentina/transports/perimeter.py"
@@ -160,6 +161,9 @@ rules:
       - pattern: from ..gateway import upstream
       - pattern: from ..reach.egress import $X
       - pattern: from ..reach import egress
+      - pattern: from .upstream import $X
+      - pattern: from . import upstream
+      - pattern: from ..errors import EgressRefusedError
 
   - id: trentina-log-exception-text
     message: >-

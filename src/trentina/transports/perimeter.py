@@ -59,6 +59,7 @@ from ..gateway.upstream import (
     RESOLVER_BUSY,
     checked_target,
     forget_checked,
+    matrix_pinned_send,
     pinned_send,
 )
 from ..logsafe import exc_kind
@@ -71,6 +72,7 @@ from .base import (
     Admitted,
     AgentUrl,
     Audit,
+    Bearer,
     Body,
     Context,
     Delivered,
@@ -79,6 +81,7 @@ from .base import (
     Listener,
     OperatorOrigin,
     Origin,
+    PeerAddress,
     RefusedError,
     Upstream,
     Wire,
@@ -101,6 +104,8 @@ logger = logging.getLogger(__name__)
 _UPSTREAM_SEAL = Seal("perimeter._dial")
 
 _AUTHORIZATION = "authorization"
+#: A request carrying this may hold an address somebody named, not one that connected.
+_FORWARDED_FOR = "x-forwarded-for"
 #: Headers only the gateway writes on a response; an upstream's are dropped.
 _OURS = "x-trentina-"
 #: Seconds a request or response judge may take before it counts as unjudged.
@@ -257,10 +262,39 @@ def _bind_egress(asked: Binding) -> Bound | None:
     )
 
 
+def _bind_matrix(asked: Binding) -> Bound | None:
+    """The one homeserver ``matrix.upstream`` names, for a profile with ``matrix_ingress``."""
+    if asked.profile.matrix_ingress is None:
+        return None
+    parts = urlsplit(str(asked.config.matrix.get("upstream", MATRIX_UPSTREAM)).rstrip("/"))
+    return Bound(
+        instance=Instance(
+            name=asked.name,
+            type="matrix",
+            origins={"origin": Origin(parts.hostname or "", parts.port or HTTPS_PORT, parts.path)},
+            options={},
+        ),
+        grant=Grant(
+            origins=frozenset({"origin"}), methods=frozenset(), enforcement=Mode.BLOCK, options={}
+        ),
+        secret=None,
+        injection=None,
+        secret_label=asked.name,
+    )
+
+
 #: How each built-in route type finds an instance and a profile's grant on it,
 #: in the configuration blocks it had before ``proxies:``. #535 R12 replaces
 #: this table with the one lookup.
-_BINDERS = {"http": _bind_http, "llm": _bind_llm, "git": _bind_git, "egress": _bind_egress}
+_BINDERS = {
+    "http": _bind_http,
+    "llm": _bind_llm,
+    "git": _bind_git,
+    "egress": _bind_egress,
+    "matrix": _bind_matrix,
+}
+#: The homeserver ``matrix.upstream`` defaults to.
+MATRIX_UPSTREAM = "https://matrix-client.matrix.org"
 
 
 def bind(
@@ -592,6 +626,56 @@ def _dial(
     )
 
 
+def _base(origin: Origin) -> str:
+    """The URL every request to ``origin`` starts with."""
+    port = "" if origin.port == HTTPS_PORT else f":{origin.port}"
+    return f"https://{origin.host}{port}{origin.base}"
+
+
+async def send_exempt(
+    profile: Profile,
+    method: str,
+    url: str,
+    idle: float,
+    headers: Mapping[str, str],
+    content: AsyncIterator[bytes] | None = None,
+) -> httpx.Response:
+    """One pinned send to an operator origin without the terminating contract,
+    the response returned open; the caller closes it.
+
+    Matrix's own client follows a homeserver's redirects and reads its gzip, so
+    neither is refused here. A failure to get an answer is a ``RefusedError``:
+    ``resolver_busy`` (gateway load), ``denied_guard`` with the guard's reason,
+    ``upstream_idle``, ``upstream_unreachable`` or ``upstream_failed``.
+    """
+    try:
+        return await matrix_pinned_send(
+            profile, method, url, idle=idle, headers=dict(headers), content=content
+        )
+    except GuardRefusedError as exc:
+        if exc.reason == RESOLVER_BUSY:
+            raise RefusedError(RESOLVER_BUSY) from None
+        raise RefusedError("denied_guard", detail=exc.reason) from None
+    except httpx.TimeoutException:
+        raise RefusedError("upstream_idle") from None
+    except httpx.ConnectError:
+        raise RefusedError("upstream_unreachable") from None
+    except httpx.HTTPError as exc:
+        logger.warning("perimeter: upstream failed err=%s", logsafe.exc_kind(exc))
+        raise RefusedError("upstream_failed") from None
+
+
+async def read_decoded(resp: httpx.Response) -> AsyncIterator[bytes]:
+    """An exempt response's body, content-encoding undone; a stream that fails
+    part-way is ``upstream_failed``."""
+    try:
+        async for piece in resp.aiter_bytes():
+            yield piece
+    except httpx.HTTPError as exc:
+        logger.warning("perimeter: upstream failed mid-stream err=%s", logsafe.exc_kind(exc))
+        raise RefusedError("upstream_failed", executed=True) from None
+
+
 @dataclass
 class InTree(Context):
     """The gateway's own routes also get the profile and the operation: they
@@ -616,6 +700,25 @@ class InTree(Context):
     def stream(self) -> AsyncIterator[bytes]:
         """The request body as it arrives, unread by the spine."""
         return self.raw
+
+    async def open_exempt(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: str = "",
+        headers: Mapping[str, str],
+        content: AsyncIterator[bytes] | None = None,
+    ) -> httpx.Response:
+        """``open`` without the terminating contract: a 3xx is the caller's to
+        follow and an encoded body is decoded by ``read_decoded``. For a route
+        whose upstream answers a client that expects both (a Matrix homeserver).
+        The response is closed when the operation finishes.
+        """
+        url = f"{_base(self.origin)}/{path}" + (f"?{query}" if query else "")
+        resp = await send_exempt(self.profile, method, url, self.idle, headers, content)
+        self.op.upstream.push_async_callback(resp.aclose)
+        return resp
 
     async def chunks(self, resp: httpx.Response) -> AsyncIterator[bytes]:
         """An opened response's body as it arrives; a forge that goes quiet or
@@ -648,9 +751,7 @@ class InTree(Context):
         sent = dict(headers)
         if (credential := _credential(self.bound)) is not None:
             sent[credential[0]] = credential[1]
-        port = "" if self.origin.port == HTTPS_PORT else f":{self.origin.port}"
-        url = f"https://{self.origin.host}{port}{self.origin.base}/{path}"
-        url += f"?{query}" if query else ""
+        url = f"{_base(self.origin)}/{path}" + (f"?{query}" if query else "")
         try:
             return await self.op.upstream.enter_async_context(
                 pinned_send(
@@ -725,17 +826,43 @@ def _spell(mount: Mount, refused: RefusedError) -> RefusedError:
     return refused
 
 
-async def serve(mount: Mount, request: Request, profiles: dict[str, Profile]) -> Any:
-    """Answer one request on a route: authenticate, admit, slot, deliver, audit."""
-    route = mount.route
-    # The caller's gateway token: Authorization, then each fallback header.
+def _caller(
+    route: Route[Any, Any], request: Request, profiles: dict[str, Profile]
+) -> Profile | None:
+    """The profile a request is from, or None.
+
+    A bearer route reads ``Authorization``, then each fallback header in turn.
+    A peer-address route takes the address that connected, and refuses any
+    request carrying ``X-Forwarded-For``: uvicorn rewrites the peer from it for
+    a trusted proxy, so the address may be one somebody named.
+    """
+    # TRUST: the bearer token, or the peer address, picks the profile (#330)
+    #   untrusted: every header the caller sends
+    #   judged-by: resolve_profile_by_token (constant time, every profile) or
+    #     profile_for_address (one profile per address, loader-checked)
+    #   on-failure: fail-closed; no profile, a refusal with no row
+    #   owner: transports/perimeter._caller
+    #   evidence: T2 uvicorn ProxyHeadersMiddleware rewrites scope["client"] only
+    #     from x-forwarded-for; T3 gateway/auth.py, loader._check_matrix_networks
+    auth = route.auth
+    if isinstance(auth, PeerAddress):
+        if _FORWARDED_FOR in request.headers:
+            return None
+        peer = request.client.host if request.client else None
+        return profile_for_address(peer, profiles, auth.networks)
     presented = request.headers.get(_AUTHORIZATION)
-    for header in route.auth.fallback_headers:
+    for header in auth.fallback_headers:
         if presented is not None:
             break
         value = request.headers.get(header)
         presented = f"Bearer {value}" if value else None
-    profile = resolve_profile_by_token(presented, profiles)
+    return resolve_profile_by_token(presented, profiles)
+
+
+async def serve(mount: Mount, request: Request, profiles: dict[str, Profile]) -> Any:
+    """Answer one request on a route: authenticate, admit, slot, deliver, audit."""
+    route = mount.route
+    profile = _caller(route, request, profiles)
     if profile is None:
         logger.warning("perimeter: refused a caller of route=%s matching no profile", route.name)
         return route.render(_spell(mount, RefusedError("unauthorized")))
@@ -773,7 +900,8 @@ async def serve(mount: Mount, request: Request, profiles: dict[str, Profile]) ->
             logsafe.exc_kind(exc),
             logsafe.exc_where(exc),
         )
-        op.settle(Outcome.GATEWAY_ERROR)
+        # A reason the route settled before it failed is kept: it is the row's.
+        op.settle(Outcome.GATEWAY_ERROR, op.reason)
         await op.finish()
         raise
     if not isinstance(response, Relayed):
@@ -788,9 +916,15 @@ async def _carry(mount: Mount, request: Request, op: Operation) -> Any:
     bound = mount.bound(op.profile, name)
     if bound is None:
         raise RefusedError("unknown_upstream")
-    # The row names the instance once it is bound to one.
-    op.backend = f"{route.name}:{name}"
-    hidden = {_AUTHORIZATION} | {h.lower() for h in route.auth.fallback_headers}
+    # The row names the instance once it is bound to one; a route with one
+    # upstream and no instance segment is named by the route alone.
+    op.backend = f"{route.name}:{name}" if name else route.name
+    # The credential the caller authenticated with never reaches the route. A
+    # peer-address route was handed none, so its Authorization is the caller's
+    # own, for the upstream (a Matrix client's access token for its homeserver).
+    hidden: set[str] = set()
+    if isinstance(route.auth, Bearer):
+        hidden = {_AUTHORIZATION} | {h.lower() for h in route.auth.fallback_headers}
     wire = Wire(
         method=request.method,
         path=str(request.path_params.get("path", "")),
@@ -801,7 +935,9 @@ async def _carry(mount: Mount, request: Request, op: Operation) -> Any:
                 (k, v) for k, v in request.headers.raw if k.decode("latin-1").lower() not in hidden
             ]
         ),
-        peer=None,
+        peer=request.client.host
+        if isinstance(route.auth, PeerAddress) and request.client
+        else None,
     )
     admitted = await route.admit(wire, bound.grant, bound.instance)
     # What admit established goes on the row before the slot, so a busy

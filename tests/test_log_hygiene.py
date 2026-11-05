@@ -451,12 +451,13 @@ class TestProxies:
     ) -> None:
         from trentina import orchestrator
         from trentina.gateway import matrix_proxy
+        from trentina.gateway.relay import Operation
 
         from .test_matrix_proxy import _matrix_profile
 
         resp = httpx.Response(200, content=f"{{not json {CANARY}".encode())
         profile = _matrix_profile()
-        op = matrix_proxy.Operation(profile, backend=matrix_proxy.BACKEND, tool="GET")
+        op = Operation(profile, backend=matrix_proxy.BACKEND, tool="GET")
         # The text-fallback defend() lives in the orchestrator now; patch it there
         # so the fallback path still fails and logs (its message moved with it).
         with patch.object(orchestrator, "defend", side_effect=RuntimeError(f"said {CANARY}")):

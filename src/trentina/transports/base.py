@@ -164,6 +164,10 @@ class PeerAddress:
     networks: str
 
 
+#: Who the caller is: a bearer token, or (built in only) the address that connected.
+Auth = Bearer | PeerAddress
+
+
 @dataclass(frozen=True)
 class OperatorOrigin:
     """A destination the operator named: a KEY into the instance's ``origins``.
@@ -431,7 +435,7 @@ class Route(ABC, Generic[A, C]):
 
     name: str
     methods: tuple[str, ...]
-    auth: Bearer
+    auth: Auth
     refusals: Mapping[str, Refusal]
     max_request_bytes: int
     slots: int | None = 8

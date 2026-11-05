@@ -45,6 +45,8 @@ CASES: dict[str, Case] = {}
 #:     never reads — the price of not buffering 32 MiB per refused request.
 #:   * llm's unknown provider is refused after authentication like any unknown
 #:     instance, so it now has a row; its no-key refusal names its reason.
+#:   * the Matrix proxy refuses a path outside ``_matrix/`` after authentication
+#:     too (it answered before), so a known caller's refusal is recorded.
 DELTAS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {}
 
 
@@ -110,6 +112,14 @@ def _gains_row(**fields: Any) -> Callable[[dict[str, Any]], dict[str, Any]]:
 
 
 DELTAS["llm-busy"] = _busy_reads_no_body
+DELTAS["matrix-not-matrix-path"] = _gains_row(
+    backend="matrix",
+    tool="GET",
+    profile="agent1",
+    outcome="denied_guard",
+    error_message="not_matrix",
+    success=0,
+)
 DELTAS["llm-unknown-provider"] = _gains_row(
     backend="llm:-",
     tool="POST",

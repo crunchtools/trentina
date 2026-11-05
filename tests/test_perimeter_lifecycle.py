@@ -79,11 +79,9 @@ _NOT_PERIMETER = {
     "gateway/app.py",
 }
 
-#: Perimeter paths not yet moved onto the spine. Each port removes its module;
-#: #535 R11 leaves this empty, and then a perimeter path has one way in.
-_NOT_YET_ON_THE_SPINE = {
-    "gateway/matrix_proxy.py",
-}
+#: Perimeter paths not yet moved onto the spine: none, since #535 R10. A
+#: perimeter path has one way in.
+_NOT_YET_ON_THE_SPINE: frozenset[str] = frozenset()
 
 _SPINE = "transports/perimeter.py"
 

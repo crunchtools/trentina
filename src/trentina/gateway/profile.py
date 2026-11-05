@@ -3722,7 +3722,7 @@ class Profile(BaseModel):
         """Each llm_keys dict key must be a provider slug (matches PROVIDER_NAME_RE).
 
         Cross-validation against configured llm_providers happens at wiring time
-        in register_llm_routes (the provider list is not available here).
+        in ``trentina._register_proxies`` (the provider list is not available here).
         """
         for name in v:
             if not PROVIDER_NAME_RE.match(name):

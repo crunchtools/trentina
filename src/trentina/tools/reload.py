@@ -739,7 +739,7 @@ async def reload_profiles() -> dict[str, Any]:
 
     try:
         new_config = load_profiles(path)
-        # Startup runs this via register_llm_routes; a reload has to run it
+        # Startup runs this in _register_proxies; a reload has to run it
         # itself or a profile could name a provider the proxy has never heard
         # of, and the dangling reference would surface as a runtime 502
         # instead of a refused reload.
