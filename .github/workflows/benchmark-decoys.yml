@@ -666,12 +666,15 @@ jobs:
         if: always()
         run: docker rm -f aeb-gateway aeb-shim >/dev/null 2>&1 || true
 
+      # Not hashFiles(): it walks the whole workspace, and the bench checkout
+      # holds files the Go build container wrote as root.
       - name: Upload results
-        if: always() && hashFiles('results/*.json') != ''
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: agent-egress-bench-${{ matrix.mode }}
           path: results/
+          if-no-files-found: error
           retention-days: 90
 
   corpora:
