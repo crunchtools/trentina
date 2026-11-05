@@ -152,6 +152,19 @@ class Bearer:
 
 
 @dataclass(frozen=True)
+class PeerAddress:
+    """The address that connected picks the profile; nothing secret is on the wire.
+
+    ``networks`` names the profile block holding the ``source_networks`` this
+    matches against. A request carrying ``X-Forwarded-For`` matches no profile:
+    the address may then be one somebody named rather than one that connected.
+    Built in only.
+    """
+
+    networks: str
+
+
+@dataclass(frozen=True)
 class OperatorOrigin:
     """A destination the operator named: a KEY into the instance's ``origins``.
     A route names which one; the spine resolves it and checks the address."""
@@ -159,8 +172,16 @@ class OperatorOrigin:
     key: str
 
 
+@dataclass(frozen=True)
+class AgentUrl:
+    """A destination the agent chose (``https://host:port``), held to the grant's
+    ``hosts`` and the route's ports and checked on every call, never cached."""
+
+    url: str
+
+
 #: Where ``admit`` says a request goes.
-Destination = OperatorOrigin
+Destination = OperatorOrigin | AgentUrl
 
 
 #: The port an origin is reached on unless the operator names another.
@@ -206,6 +227,9 @@ class Grant:
     methods: frozenset[str]
     enforcement: Mode
     options: Mapping[str, Any]
+    #: The names an agent-chosen destination may be; empty for a route that
+    #: goes only where the operator named.
+    hosts: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -238,6 +262,9 @@ SPINE_REFUSALS: Mapping[str, Refusal] = {
     "redirect": Refusal(HTTPStatus.BAD_GATEWAY, Outcome.BACKEND_ERROR),
     "upstream_failed": Refusal(HTTPStatus.BAD_GATEWAY, Outcome.BACKEND_ERROR),
     "upstream_unreachable": Refusal(HTTPStatus.BAD_GATEWAY, Outcome.BACKEND_ERROR),
+    "port": Refusal(HTTPStatus.FORBIDDEN, Outcome.DENIED_GUARD),
+    "host_not_listed": Refusal(HTTPStatus.FORBIDDEN, Outcome.DENIED_ALLOWLIST),
+    "malformed_head": Refusal(HTTPStatus.BAD_REQUEST, Outcome.DENIED_GUARD),
     "upstream_idle": Refusal(HTTPStatus.GATEWAY_TIMEOUT, Outcome.BACKEND_ERROR),
     "binary_body": Refusal(HTTPStatus.FORBIDDEN, Outcome.BLOCKED_DEFENSE),
     "credential_in_request": Refusal(HTTPStatus.FORBIDDEN, Outcome.BLOCKED_DEFENSE),
@@ -433,25 +460,34 @@ class Route(ABC, Generic[A, C]):
 class Listener(ABC):
     """A raw stream on a port of its own (CONNECT). Built in only.
 
-    ``admit`` parses the request head; the spine checks the destination, dials
-    it and calls ``relay`` with both ends. ``respond`` is the bytes a refusal
-    answers with before the stream opens.
+    The spine reads the request head (up to ``head_limit`` bytes, within
+    ``head_timeout`` seconds), and ``admit`` names the agent's destination from
+    it. The spine holds that to the grant's ``hosts`` and this listener's
+    ``ports``, takes a slot and dials the checked addresses in turn. ``relay``
+    then owns the stream: its opening answer, any check on what the client
+    sends first, and the copying; a refusal from it closes the stream with no
+    answer, since one has been given. ``respond`` is the answer to a refusal
+    before then. ``name`` and ``operation`` are the row's backend and tool.
     """
 
     name: str
+    operation: str
+    auth: PeerAddress
     refusals: Mapping[str, Refusal]
+    ports: frozenset[int]
+    head_limit: int
+    head_timeout: float
     slots: int = 64
-    idle: float = 900.0
     api_version: int = 1
 
     @abstractmethod
-    def admit(self, head: bytes, grant: Grant) -> Admitted:
-        """Parse the head and name the destination, or raise ``RefusedError``."""
+    def admit(self, head: bytes) -> Admitted:
+        """Name the destination the head asks for, or raise ``RefusedError``."""
 
     @abstractmethod
     async def relay(self, client: Any, upstream: Any, op: Any) -> None:
-        """Carry the stream between the two ends until either closes."""
+        """Open the stream, check it, and carry it until either end closes."""
 
     @abstractmethod
     def respond(self, refused: RefusedError) -> bytes:
-        """The bytes a refusal answers with."""
+        """The bytes a refusal answers with, before the stream opens."""

@@ -299,15 +299,15 @@ async def trentina_lifespan() -> AsyncIterator[dict[str, Any]]:
 
     await asyncio.to_thread(shared_ssl_context)
 
-    # The client-egress listener (#442), on the loop that serves. A no-op
-    # unless startup configured one.
-    from . import client_egress
+    # The perimeter's listeners (#442, #535), on the loop that serves. A no-op
+    # unless startup configured one and a profile asked for it.
+    from ..transports.registry import start_listeners, stop_listeners
 
-    await client_egress.start()
+    await start_listeners()
     try:
         yield {}
     finally:
-        await client_egress.stop()
+        await stop_listeners()
         # Close the pinned connection pool's long-lived clients (#511, Phase 2).
         from .upstream import close_pool
 

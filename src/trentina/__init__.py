@@ -95,11 +95,11 @@ def main() -> None:
             mcp.run(transport="sse", host=args.host, port=args.port, log_level=log_level)
         case _:
             if gateway_enabled:
-                from .gateway import client_egress
+                from .transports.registry import configure_listeners
 
                 # Where the CONNECT listener binds if a profile turns out to
                 # have client_egress; the server's lifespan starts it (#442).
-                client_egress.configure(args.host, args.egress_port)
+                configure_listeners(args.host, args.egress_port)
                 _run_with_gateway(mcp, host=args.host, port=args.port, log_level=log_level)
             else:
                 mcp.run(

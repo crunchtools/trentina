@@ -83,7 +83,6 @@ _NOT_PERIMETER = {
 #: #535 R11 leaves this empty, and then a perimeter path has one way in.
 _NOT_YET_ON_THE_SPINE = {
     "gateway/matrix_proxy.py",
-    "gateway/client_egress.py",
 }
 
 _SPINE = "transports/perimeter.py"
@@ -123,5 +122,7 @@ def test_every_route_in_the_source_is_seeded() -> None:
     either dead or about to be served some other way."""
     from trentina.transports import registry
 
-    seeded = {type(route).__name__ for route, _kind in registry._seed().values()}
+    seeded = {type(route).__name__ for route, _kind in registry._seed().values()} | {
+        type(listener).__name__ for listener, _kind in registry._listener_seed().values()
+    }
     assert _route_classes() == seeded

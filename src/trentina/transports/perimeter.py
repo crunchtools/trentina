@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import logging
 from dataclasses import InitVar, dataclass, field
 from http import HTTPStatus
@@ -51,8 +52,16 @@ from ..gateway.outbound import (
     body_text,
     judge_input,
 )
+from ..gateway.profile import profile_for_address
 from ..gateway.relay import NO_OPERATION, Operation, Relayed, Slots, upstream_outcome
-from ..gateway.upstream import MAX_POOL_CONNECTIONS, RESOLVER_BUSY, pinned_send
+from ..gateway.upstream import (
+    MAX_POOL_CONNECTIONS,
+    RESOLVER_BUSY,
+    checked_target,
+    forget_checked,
+    pinned_send,
+)
+from ..logsafe import exc_kind
 from ..modes import Mode
 from ..orchestrator import judge_egress_response, judge_outbound
 from ..outcomes import Outcome
@@ -60,12 +69,14 @@ from ..seal import UNSEALED, Seal, require
 from .base import (
     HTTPS_PORT,
     Admitted,
+    AgentUrl,
     Audit,
     Body,
     Context,
     Delivered,
     Grant,
     Instance,
+    Listener,
     OperatorOrigin,
     Origin,
     RefusedError,
@@ -132,24 +143,27 @@ class Bound:
 
 
 @dataclass(frozen=True)
-class Configured:
-    """What the gateway loaded: the file, and the LLM providers with their
-    keys resolved (which bind at startup, as before #535)."""
+class Binding:
+    """One question for a binder: the instance ``name`` and ``profile``'s grant
+    on it, in what the gateway loaded — the file, and the LLM providers with
+    their keys resolved (which bind at startup, as before #535)."""
 
     config: GatewayConfig
     providers: Mapping[str, Any]
+    profile: Profile
+    name: str
 
 
-def _bind_http(loaded: Configured, profile: Profile, name: str) -> Bound | None:
+def _bind_http(asked: Binding) -> Bound | None:
     """An ``egress_upstreams`` entry and the profile's ``egress_http`` grant."""
-    upstream = loaded.config.egress_upstreams.get(name)
-    grant = profile.egress_http.get(name)
+    upstream = asked.config.egress_upstreams.get(asked.name)
+    grant = asked.profile.egress_http.get(asked.name)
     if upstream is None or grant is None:
         return None
     credential = upstream.credential
     return Bound(
         instance=Instance(
-            name=name,
+            name=asked.name,
             type="http",
             origins={"origin": Origin(upstream.host)},
             options={"body": upstream.body, "headers_allow": tuple(upstream.headers_allow)},
@@ -162,21 +176,21 @@ def _bind_http(loaded: Configured, profile: Profile, name: str) -> Bound | None:
         ),
         secret=grant.token if credential is not None else None,
         injection=HeaderToken(credential.header, credential.prefix) if credential else None,
-        secret_label=grant.token_env or name,
+        secret_label=grant.token_env or asked.name,
     )
 
 
-def _bind_llm(loaded: Configured, profile: Profile, name: str) -> Bound | None:
+def _bind_llm(asked: Binding) -> Bound | None:
     """A loaded provider and the profile's key for it; a profile without one
     is bound, so its route can say so rather than say the provider is unknown."""
-    provider = loaded.providers.get(name)
+    provider = asked.providers.get(asked.name)
     if provider is None:
         return None
-    key = profile.llm_keys.get(name)
+    key = asked.profile.llm_keys.get(asked.name)
     parts = urlsplit(provider.upstream)
     return Bound(
         instance=Instance(
-            name=name,
+            name=asked.name,
             type="llm",
             origins={
                 "origin": Origin(
@@ -193,19 +207,19 @@ def _bind_llm(loaded: Configured, profile: Profile, name: str) -> Bound | None:
         ),
         secret=key.api_key if key is not None else None,
         injection=HeaderToken(provider.auth_header, provider.auth_prefix),
-        secret_label=(key.api_key_env if key is not None else None) or name,
+        secret_label=(key.api_key_env if key is not None else None) or asked.name,
     )
 
 
-def _bind_git(loaded: Configured, profile: Profile, name: str) -> Bound | None:
+def _bind_git(asked: Binding) -> Bound | None:
     """A ``git_remotes`` entry and the profile's ``git`` lists, with a token."""
-    remote = loaded.config.git_remotes.get(name)
-    lists = profile.git.get(name)
+    remote = asked.config.git_remotes.get(asked.name)
+    lists = asked.profile.git.get(asked.name)
     if remote is None or lists is None or lists.token is None:
         return None
     return Bound(
         instance=Instance(
-            name=name,
+            name=asked.name,
             type="git",
             origins={"origin": Origin(remote.host)},
             options={"hidden_refs": tuple(remote.hidden_refs)},
@@ -223,10 +237,30 @@ def _bind_git(loaded: Configured, profile: Profile, name: str) -> Bound | None:
     )
 
 
+def _bind_egress(asked: Binding) -> Bound | None:
+    """The profile's ``client_egress`` hosts: where its client may tunnel."""
+    block = asked.profile.client_egress
+    if block is None:
+        return None
+    return Bound(
+        instance=Instance(name=asked.name, type="egress", origins={}, options={}),
+        grant=Grant(
+            origins=frozenset(),
+            methods=frozenset(),
+            enforcement=Mode.BLOCK,
+            options={},
+            hosts=frozenset(block.hosts),
+        ),
+        secret=None,
+        injection=None,
+        secret_label=asked.name,
+    )
+
+
 #: How each built-in route type finds an instance and a profile's grant on it,
 #: in the configuration blocks it had before ``proxies:``. #535 R12 replaces
 #: this table with the one lookup.
-_BINDERS = {"http": _bind_http, "llm": _bind_llm, "git": _bind_git}
+_BINDERS = {"http": _bind_http, "llm": _bind_llm, "git": _bind_git, "egress": _bind_egress}
 
 
 def bind(
@@ -238,7 +272,7 @@ def bind(
 ) -> Bound | None:
     """The instance ``name`` of ``route`` and ``profile``'s grant on it, or None."""
     binder = _BINDERS.get(route)
-    return binder(Configured(config, providers), profile, name) if binder is not None else None
+    return binder(Binding(config, providers, profile, name)) if binder is not None else None
 
 
 def _credential(bound: Bound) -> tuple[str, str, str] | None:
@@ -809,3 +843,199 @@ def mount(server: Any, entry: Mount, profiles: dict[str, Profile]) -> None:
 
     server.custom_route(entry.route.path, methods=list(entry.route.methods))(endpoint)
     logger.info("perimeter: mounted route=%s", entry.route.name)
+
+
+# ---- Listeners: a raw stream on a port of its own (CONNECT). -----------------------
+
+#: Seconds one checked address may take to accept a connection before the next.
+CONNECT_TIMEOUT = 10.0
+#: Bytes read from a new connection's buffer at a time.
+_STREAM_LIMIT = 65536
+
+
+async def open_stream(address: str, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Connect to one checked address. A seam: tests point it at a local server."""
+    return await asyncio.open_connection(address, port)
+
+
+async def _dial_stream(
+    profile: Profile, host: str, port: int
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Resolve ``host`` through the egress guard and connect to what was checked,
+    each checked address in turn; one that refuses or times out is passed over."""
+    try:
+        target = await checked_target(profile, host)
+    except GuardRefusedError as exc:
+        if exc.reason == RESOLVER_BUSY:
+            raise RefusedError(RESOLVER_BUSY) from None
+        raise RefusedError("denied_guard", detail=exc.reason) from None
+    for address in target.addresses:
+        with contextlib.suppress(OSError, TimeoutError):
+            return await asyncio.wait_for(open_stream(address, port), CONNECT_TIMEOUT)
+    raise RefusedError("upstream_unreachable")
+
+
+@dataclass
+class ListenerMount:
+    """A built-in listener as the gateway serves it: where it binds, the
+    server once started, and the connections it is carrying."""
+
+    listener: Listener
+    destination_kind: DestinationKind
+    address: tuple[str, int]
+    server: asyncio.Server | None = None
+    tasks: set[asyncio.Task[None]] = field(default_factory=set)
+
+    def __post_init__(self) -> None:
+        self.slots = Slots(self.listener.slots)
+
+    async def start(self) -> None:
+        """Bind and accept, if not already."""
+        if self.server is None:
+            host, port = self.address
+            self.server = await asyncio.start_server(self._accept, host, port, limit=_STREAM_LIMIT)
+            bound = self.server.sockets[0].getsockname()[1]
+            logger.warning("perimeter: listener=%s on port %d", self.listener.name, bound)
+
+    async def stop(self) -> None:
+        """Stop accepting and close every stream it is carrying."""
+        if self.server is None:
+            return
+        self.server.close()
+        for task in list(self.tasks):
+            task.cancel()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+        await self.server.wait_closed()
+        self.server = None
+        self.slots = Slots(self.listener.slots)
+        forget_checked()
+
+    async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            self.tasks.add(task)
+        try:
+            await accept(self, reader, writer)
+        finally:
+            if task is not None:
+                self.tasks.discard(task)
+            writer.close()
+            with contextlib.suppress(OSError, asyncio.CancelledError):
+                await writer.wait_closed()
+
+
+async def _head(entry: ListenerMount, reader: asyncio.StreamReader) -> bytes:
+    """The request head, up to its blank line, within the listener's limits."""
+    listener = entry.listener
+    try:
+        head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), listener.head_timeout)
+    except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError):
+        raise RefusedError("malformed_head") from None
+    if len(head) > listener.head_limit:
+        raise RefusedError("malformed_head")
+    return head
+
+
+def _spell_stream(entry: ListenerMount, refused: RefusedError) -> RefusedError:
+    """``refused`` in the listener's own words; see ``_spell``."""
+    entry_for = entry.listener.refusals.get(refused.reason)
+    if entry_for is not None:
+        refused.reason = entry_for.wire or refused.reason
+        refused.status = refused.status or entry_for.status
+        refused.outcome = refused.outcome or entry_for.outcome
+    return refused
+
+
+async def accept(
+    entry: ListenerMount, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+) -> None:
+    """Carry one connection: who it is from, where it may go, the dial, the row.
+
+    The connection's peer address picks the profile; a caller in no profile's
+    networks is answered without a byte acted on and leaves no row. The
+    destination ``admit`` names is held to the profile's hosts and the
+    listener's ports, then dialled through the egress guard.
+    """
+    # TRUST: the peer address picks the profile (#442, after #330)
+    #   untrusted: every byte the caller sends
+    #   judged-by: nothing; an address is resolved, not judged
+    #   on-failure: fail-closed; an address in no profile's networks is refused
+    #   owner: transports/perimeter.accept
+    #   evidence: T2 the address is the accepted socket's peer, and a listener
+    #     reads no forwarding header; T3 loader._check_egress_networks
+    from ..gateway.loader import get_active_config
+
+    listener = entry.listener
+    active = get_active_config()
+    peer = writer.get_extra_info("peername")
+    profile = None
+    if active is not None and peer:
+        profile = profile_for_address(peer[0], active.config.profiles, listener.auth.networks)
+    if profile is None:
+        logger.warning("perimeter: listener=%s refused a caller in no profile", listener.name)
+        # Read the request before answering, without acting on it: closing on
+        # unread bytes resets the connection and the caller never sees the status.
+        with contextlib.suppress(RefusedError):
+            await _head(entry, reader)
+        await _answer(writer, listener.respond(_spell_stream(entry, RefusedError("unauthorized"))))
+        return
+    op = Operation(
+        profile,
+        backend=listener.name,
+        tool=listener.operation,
+        destination_kind=entry.destination_kind,
+    )
+    upstream: tuple[asyncio.StreamReader, asyncio.StreamWriter] | None = None
+    try:
+        upstream = await _tunnel(entry, reader, op, active.config if active else None)
+        await listener.relay((reader, writer), upstream, op)
+        op.settle(Outcome.OK)
+    except RefusedError as raised:
+        refused = _spell_stream(entry, raised)
+        # Once the upstream is open the stream has been answered; closing is the answer.
+        if upstream is None:
+            await _answer(writer, listener.respond(refused))
+        op.settle(refused.outcome or Outcome.DENIED_GUARD, refused.detail or refused.reason)
+    except OSError as exc:
+        logger.warning("perimeter: listener=%s stream failed err=%s", listener.name, exc_kind(exc))
+        op.settle(Outcome.BACKEND_ERROR, "connect_failed")
+    except asyncio.CancelledError:
+        op.settle(Outcome.CANCELLED)
+        raise
+    finally:
+        if upstream is not None:
+            upstream[1].close()
+        await op.finish()
+
+
+async def _tunnel(
+    entry: ListenerMount,
+    reader: asyncio.StreamReader,
+    op: Operation,
+    config: GatewayConfig | None,
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Decide one stream and dial it: the head, the destination it names, the
+    profile's hosts, the listener's ports, a slot, and the checked addresses.
+
+    Raises:
+        RefusedError: any of those refused it; nothing has been answered yet.
+    """
+    listener, profile = entry.listener, op.profile
+    bound = bind(config, {}, profile, listener.name, listener.name) if config else None
+    admitted = listener.admit(await _head(entry, reader))
+    op.destination = admitted.destination
+    parts = urlsplit(admitted.origin.url if isinstance(admitted.origin, AgentUrl) else "")
+    host, port = parts.hostname or "", parts.port or HTTPS_PORT
+    if port not in listener.ports:
+        raise RefusedError("port")
+    if bound is None or host not in bound.grant.hosts:
+        raise RefusedError("host_not_listed")
+    if not op.take_slot(entry.slots):
+        raise RefusedError("busy")
+    return await _dial_stream(profile, host, port)
+
+
+async def _answer(writer: asyncio.StreamWriter, data: bytes) -> None:
+    writer.write(data)
+    with contextlib.suppress(OSError):
+        await writer.drain()

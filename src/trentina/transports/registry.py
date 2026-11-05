@@ -35,8 +35,8 @@ if TYPE_CHECKING:
     from ..gateway.destination import DestinationKind
     from ..gateway.loader import GatewayConfig
     from ..gateway.profile import Profile
-    from .base import Transport
-    from .perimeter import Mount
+    from .base import Listener, Transport
+    from .perimeter import ListenerMount, Mount
 
 #: Guards the duplicate-name check and the insertion in ``register_transport`` as
 #: one critical section, so "a name is never reassigned" holds even if two
@@ -241,6 +241,47 @@ def configured(name: str, config: GatewayConfig, providers: Mapping[str, Any]) -
 
 #: The routes this gateway serves, by name, as mounted at startup.
 MOUNTED: dict[str, Mount] = {}
+
+
+def _listener_seed() -> Mapping[str, tuple[Listener, DestinationKind]]:
+    from ..gateway.client_egress import ConnectListener
+    from ..gateway.destination import DestinationKind
+
+    return MappingProxyType({"egress": (ConnectListener(), DestinationKind.TUNNEL)})
+
+
+#: The listeners this gateway serves, by name, once ``configure_listeners`` ran.
+LISTENERS: dict[str, ListenerMount] = {}
+
+
+def configure_listeners(host: str, port: int) -> None:
+    """Record where the built-in listener binds. Called at startup, before
+    serving; ``start_listeners`` binds it if a profile asked for it."""
+    from .perimeter import ListenerMount
+
+    for name, (listener, kind) in _listener_seed().items():
+        LISTENERS[name] = ListenerMount(listener, kind, (host, port))
+
+
+async def start_listeners() -> None:
+    """Bind each configured listener, if a profile has the block that uses it.
+
+    With no such block anywhere there is no second socket. A block added by a
+    later reload does not start one: ``reload_profiles`` says a restart is needed.
+    """
+    from ..gateway.loader import get_active_config
+
+    active = get_active_config()
+    if active is None or not active.egress_listener_configured:
+        return
+    for entry in LISTENERS.values():
+        await entry.start()
+
+
+async def stop_listeners() -> None:
+    """Stop every listener and close what it is carrying."""
+    for entry in LISTENERS.values():
+        await entry.stop()
 
 
 def mount_routes(

@@ -76,7 +76,7 @@ class TestTheRequestAsARouteSeesIt:
 
     def test_the_grant_holds_no_secret(self) -> None:
         fields = {f.name for f in dataclasses.fields(Grant)}
-        assert fields == {"origins", "methods", "enforcement", "options"}
+        assert fields == {"origins", "methods", "enforcement", "options", "hosts"}
 
     def test_an_instance_holds_no_secret(self) -> None:
         fields = {f.name for f in dataclasses.fields(Instance)}
@@ -146,7 +146,7 @@ class TestTheHooksAreRequired:
 
     def test_a_listener_without_relay_cannot_be_built(self) -> None:
         class Partial(Listener):
-            def admit(self, head: bytes, grant: Grant) -> Admitted:
+            def admit(self, head: bytes) -> Admitted:
                 return Admitted(OperatorOrigin("api"))
 
             def respond(self, refused: RefusedError) -> bytes:

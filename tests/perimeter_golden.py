@@ -25,7 +25,7 @@ L3's ``quarantine_detect`` answer from sentinels in the text they are handed
 (``GOLDEN-INJECT`` is an injection, ``GOLDEN-UNJUDGED`` is a judge that could not
 answer). The network is fake at the lowest seam the routes share:
 ``egress._lookup`` (DNS) and ``upstream.PinnedTransport`` (the pooled pinned
-client's transport), plus ``client_egress.open_upstream`` for the tunnel.
+client's transport), plus ``perimeter.open_stream`` for the tunnel.
 
 ``_Seams`` is the only part of this module that names a route's internals. A
 port that moves one of them changes ``_Seams``, never a case and never a
@@ -140,12 +140,11 @@ class _Seams:
     @staticmethod
     def open_slots() -> dict[str, dict[str, int]]:
         """Every perimeter slot table, by route, holding anything."""
-        from trentina.gateway import client_egress
-        from trentina.transports.registry import MOUNTED
+        from trentina.transports.registry import LISTENERS, MOUNTED
 
         tables = {
             **{name: entry.slots for name, entry in MOUNTED.items()},
-            "connect": client_egress._slots,
+            **{f"listener:{name}": entry.slots for name, entry in LISTENERS.items()},
         }
         return {name: dict(slots._open) for name, slots in tables.items() if slots._open}
 
@@ -163,26 +162,24 @@ class _Seams:
         monkeypatch: Any, dial: Callable[[str, int], Awaitable[Any]]
     ) -> AsyncIterator[int]:
         """The CONNECT listener on an ephemeral loopback port, dialling ``dial``."""
-        from trentina.gateway import client_egress
+        from trentina.transports import perimeter, registry
 
-        monkeypatch.setattr(client_egress, "open_upstream", dial)
-        client_egress.configure(GATEWAY[0], 0)
-        await client_egress.start()
+        monkeypatch.setattr(perimeter, "open_stream", dial)
+        registry.configure_listeners(GATEWAY[0], 0)
+        await registry.start_listeners()
         try:
-            server = client_egress._server
+            server = registry.LISTENERS["egress"].server
             assert server is not None, "the listener did not start"
             yield server.sockets[0].getsockname()[1]
         finally:
-            await client_egress.stop()
+            await registry.stop_listeners()
 
     @staticmethod
     def reset() -> None:
-        from trentina.gateway import client_egress
-        from trentina.gateway.relay import Slots
-        from trentina.transports.registry import MOUNTED
+        from trentina.transports.registry import LISTENERS, MOUNTED
 
         MOUNTED.clear()
-        client_egress._slots = Slots(client_egress._slots._limit)
+        LISTENERS.clear()
 
 
 # --------------------------------------------------------------------------- models

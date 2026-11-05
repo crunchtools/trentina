@@ -107,7 +107,7 @@ rules:
       address that did not pass egress.check_url can reach a loopback or
       link-local target an agent, a fetched page or a backend named — SSRF
       (obligation O6; #260, #532). Dial only an already-checked address: the
-      CONNECT tunnel (client_egress.py) dials upstream.checked_target's
+      CONNECT tunnel (transports/perimeter.py) dials upstream.checked_target's
       answers, and every other outbound goes through egress.open_guarded or
       egress.open_pinned. If this dial is provably to a checked address,
       suppress inline and say so.
@@ -118,7 +118,6 @@ rules:
     paths:
       exclude:
         - "**/trentina/reach/egress.py"
-        - "**/trentina/gateway/client_egress.py"
         - "**/trentina/transports/perimeter.py"
     pattern-either:
       - pattern: asyncio.open_connection(...)
@@ -144,6 +143,7 @@ rules:
         - "**/trentina/gateway/egress_http.py"
         - "**/trentina/gateway/git_transport.py"
         - "**/trentina/gateway/llm_proxy.py"
+        - "**/trentina/gateway/client_egress.py"
         - "**/.semgrep/tests/**"
       exclude:
         - "**/trentina/transports/perimeter.py"
