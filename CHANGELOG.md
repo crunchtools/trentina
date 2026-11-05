@@ -10,6 +10,28 @@ under that name.
 
 ## [Unreleased]
 
+## [6.7.0] - 2026-11-05
+
+### Added
+
+- **The unpack stage reads back text in ROT13 or any Caesar shift, Atbash
+  or leetspeak.** Every text is valid ciphertext, so a segment is read back
+  only when one cipher turns it English, scored against a 2,000-word list in
+  one lookup per word. With the model already shipping, the pipeline now
+  catches 41 of 44 attacks in ROT13 and in Atbash (was 26 and 17) and flags
+  1 of 86 benign texts in each (was 24 and 12); leetspeak's benign flags
+  fall from 20 to 6 of 86. Nothing plain in the docs, source, tests or
+  corpora is read back. Known gap 22 narrows to ciphers wrapped a few words
+  a line and text in other languages. `PERIMETER_VERSION` 25 re-judges
+  cached verdicts.
+
+### Changed
+
+- **`l2-train` gates on our own runner.** The GPU training stays on
+  RunPod; building the data, exporting and the three L2 gates run on the
+  self-hosted uncached runner when `UNCACHED_RUNNER_LABEL` is set, the gates
+  at once (15 minutes to 5).
+
 ## [6.6.0] - 2026-11-05
 
 ### Added
