@@ -17,6 +17,7 @@ def _auth(url: str | None) -> BackendAuth:
     "url",
     [
         "http://127.0.0.1:8787/oauth/callback",
+        "http://127.0.0.1:54321/oauth/callback",
         "http://[::1]:8787/cb",
         "https://example.com/oauth/callback",
     ],
@@ -40,6 +41,12 @@ def test_valid_callback_urls(url: str) -> None:
         "https://example.com/oauth/backend/start",
         "https://example.com/authorize",
         "ftp://example.com/cb",
+        "https://example.com/cb/",  # a trailing slash is an empty segment
+        "https://example.com/health",  # a route the gateway serves
+        "https://example.com/alert",  # ditto; the list said /alerts and covered nothing
+        "https://example.com/gateway/josui/mcp",  # ditto, under a prefix
+        "http://127.0.0.1:0/cb",  # nothing listens on port 0
+        "http://127.0.0.1:99999/cb",  # out of range
     ],
 )
 def test_invalid_callback_urls(url: str) -> None:

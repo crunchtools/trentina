@@ -46,6 +46,11 @@ class FakeServer:
     revoke_status: int = 200
     revoked: list[dict[str, str]] = field(default_factory=list)
     overrides: dict[tuple[str, str], httpx.Response] = field(default_factory=dict)
+    #: When set, the only redirect URIs this server registers or authorizes —
+    #: a fixed allowlist, as the Red Hat Hub's app has (#725). Anything else is
+    #: refused at registration and at the authorize step, string-compared, which
+    #: is why no reverse-proxy rewrite helps.
+    redirect_allowlist: tuple[str, ...] | None = None
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -109,6 +114,10 @@ class FakeServer:
 
     def register(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
+        if self.redirect_allowlist is not None and any(
+            uri not in self.redirect_allowlist for uri in body["redirect_uris"]
+        ):
+            return httpx.Response(400, json={"error": "invalid_redirect_uri"})
         client_id = f"client-{len(self.clients) + 1}"
         info = {**body, "client_id": client_id}
         if body["token_endpoint_auth_method"] != "none":
@@ -117,8 +126,18 @@ class FakeServer:
         return httpx.Response(201, json=info)
 
     def authorize(self, authorize_url: str) -> tuple[str, str]:
-        """What a human consenting at the server produces: (state, code)."""
+        """What a human consenting at the server produces: (state, code).
+
+        Raises:
+            ValueError: ``redirect_allowlist`` is set and the request's
+                ``redirect_uri`` is not in it, which is where a server with a
+                fixed allowlist stops the flow.
+        """
         query = {k: v[0] for k, v in parse_qs(urlsplit(authorize_url).query).items()}
+        if self.redirect_allowlist is not None and query["redirect_uri"] not in (
+            self.redirect_allowlist
+        ):
+            raise ValueError("invalid_redirect_uri")
         code = f"code-{len(self.codes) + 1}"
         self.codes[code] = query
         return query["state"], code
@@ -147,6 +166,9 @@ class FakeServer:
                 .rstrip("=")
             )
             if asked is None or asked["code_challenge"] != challenge:
+                return httpx.Response(400, json={"error": "invalid_grant"})
+            # RFC 6749 4.1.3: the exchange repeats the URI the code was issued to.
+            if form.get("redirect_uri") != asked["redirect_uri"]:
                 return httpx.Response(400, json={"error": "invalid_grant"})
         elif self.refresh_tokens.pop(form["refresh_token"], None) is None:
             return httpx.Response(400, json={"error": "invalid_grant"})

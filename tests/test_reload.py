@@ -903,6 +903,27 @@ llm_providers:
         assert result["reloaded"] is True
         assert any("matrix_ingress" in note for note in result["not_applied"])
 
+    async def test_a_new_backend_callback_url_is_reported(self, profiles_path: Path) -> None:
+        """A callback route binds at startup, so a path added later is inert (#725)."""
+        profiles_path.write_text(
+            BASE_YAML.replace(
+                "        url: http://wiki:1/mcp\n",
+                "        url: http://wiki:1/mcp\n"
+                "        auth:\n"
+                "          type: oauth\n"
+                "          client_id: hub-client\n"
+                "          callback_url: http://127.0.0.1:8787/oauth/callback\n",
+            ),
+            encoding="utf-8",
+        )
+        result = await _reload_as("alpha")
+
+        assert result["reloaded"] is True
+        assert any(
+            "auth.callback_url" in note and "/oauth/callback" in note
+            for note in result["not_applied"]
+        )
+
     async def test_a_plain_profile_edit_reports_nothing_unapplied(
         self, profiles_path: Path
     ) -> None:

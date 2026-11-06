@@ -633,8 +633,10 @@ _CREDENTIAL_PARAM_RE = re.compile(r"(?i)(token|key|secret|passw|auth|sig|session
 #: a proxy or the router decodes it, so an encoded path is refused outright.
 _CALLBACK_PATH_RE = re.compile(r"^[A-Za-z0-9._~!$&'()*+,;=:@/-]+$")
 #: Path prefixes the gateway already serves; a callback may not shadow one.
-#: KEEP IN SYNC with the routes the gateway mounts: a new top-level route
-#: belongs in this list too.
+#: A new top-level route belongs here too, and
+#: ``TestTheReservedPrefixesCoverEveryRoute`` fails when one is missing rather
+#: than asking anyone to remember — it is what caught ``/alerts``, which
+#: covered no route at all while the real one is ``/alert``.
 #: The default callback path itself is allowed: it is the same handler.
 _MOUNTED_PREFIXES = (
     "/oauth/backend",
@@ -649,7 +651,7 @@ _MOUNTED_PREFIXES = (
     "/mcp",
     "/health",
     "/.well-known",
-    "/alerts",
+    "/alert",
     "/matrix",
     "/_matrix",
 )
