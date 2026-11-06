@@ -37,10 +37,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Protocol, Self, TypeVar
 
-from mcp.shared._stream_protocols import ReadStream as _SdkReadStream
-from mcp.shared._stream_protocols import WriteStream as _SdkWriteStream
 from mcp.shared.message import SessionMessage
 
 from ..outcomes import Outcome
@@ -48,6 +46,7 @@ from ..outcomes import Outcome
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
     from contextlib import AbstractAsyncContextManager
+    from types import TracebackType
 
     from starlette.datastructures import Headers
 
@@ -131,12 +130,64 @@ class Transport:
 # The backend's wire (#740). Frozen under transport API v1: a carrier written
 # against this keeps working until a v2 group exists beside it.
 
-#: What a carrier yields: the session streams ``ClientSession`` takes. Messages
-#: in, messages out; the SDK does the JSON-RPC. They are the SDK's structural
-#: protocols, so a pair of anyio memory streams satisfies them, and naming them
-#: here keeps a carrier off the SDK's private module.
-ReadStream = _SdkReadStream[SessionMessage | Exception]
-WriteStream = _SdkWriteStream[SessionMessage]
+T_co = TypeVar("T_co", covariant=True)
+T_contra = TypeVar("T_contra", contravariant=True)
+
+
+class MessageReader(Protocol[T_co]):
+    """What a carrier hands the session to read from. Structural, and the same
+    shape ``ClientSession`` asks for, so a pair of anyio memory streams is one;
+    declared here so the frozen contract rests on no private SDK module."""
+
+    async def receive(self) -> T_co:
+        """The next message from the backend, or end of stream."""
+
+    async def aclose(self) -> None:
+        """Close the read side."""
+
+    def __aiter__(self) -> MessageReader[T_co]:
+        """Iterate the messages as they arrive."""
+
+    async def __anext__(self) -> T_co:
+        """The next message; ``StopAsyncIteration`` at end of stream."""
+
+    async def __aenter__(self) -> Self:
+        """Enter: the stream is the context."""
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
+        """Exit: close the read side."""
+
+
+class MessageWriter(Protocol[T_contra]):
+    """What a carrier hands the session to write to; see ``MessageReader``."""
+
+    async def send(self, item: T_contra, /) -> None:
+        """Send one message to the backend."""
+
+    async def aclose(self) -> None:
+        """Close the write side."""
+
+    async def __aenter__(self) -> Self:
+        """Enter: the stream is the context."""
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
+        """Exit: close the write side."""
+
+
+#: What a carrier yields: messages in, messages out; the SDK does the JSON-RPC.
+#: An ``Exception`` on the read side is how a wire reports a failure mid-session.
+ReadStream = MessageReader[SessionMessage | Exception]
+WriteStream = MessageWriter[SessionMessage]
 
 
 @dataclass(frozen=True)

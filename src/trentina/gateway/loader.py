@@ -301,7 +301,7 @@ def _build_profile(name: str, body: Any) -> Profile:
     _check_backend_callbacks(name, profile)
     _check_drivers(name, profile)
     _check_plugin_imports(name, profile)
-    _check_transports(name, profile)
+    _check_transports_and_carriers(name, profile)
     _check_destination_params(name, profile)
     _check_guarded_tools(name, profile)
     _check_interim_federation(name, profile)
@@ -352,7 +352,7 @@ def _check_plugin_imports(name: str, profile: Profile) -> None:
                 )
 
 
-def _check_transports(name: str, profile: Profile) -> None:
+def _check_transports_and_carriers(name: str, profile: Profile) -> None:
     """Validate every backend's transport and carrier at load.
 
     A registered transport name ('mcp', plus anything ``register_transport``
