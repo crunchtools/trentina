@@ -27,6 +27,7 @@ from trentina.gateway.context import profile_context
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.llm_proxy import load_llm_providers
 from trentina.gateway.loader import (
+    _expand_backend_url,
     _expand_env_refs,
     _require_env,
     _reset_protected_secret_envs,
@@ -95,6 +96,12 @@ class TestStore:
         with pytest.raises(ProfileConfigError, match="cannot read STORE_LINK"):
             secret_store.read_secret("STORE_LINK")
 
+    def test_a_value_that_is_not_utf8_names_the_secret(self, data_dir: pathlib.Path) -> None:
+        secret_store.put("STORE_X", "the-value")
+        (secret_store.secrets_dir() / "STORE_X").write_bytes(b"\xff\xfe")
+        with pytest.raises(ProfileConfigError, match="cannot read STORE_X"):
+            secret_store.read_secret("STORE_X")
+
     def test_no_file_tool_can_read_the_store(self, data_dir: pathlib.Path) -> None:
         secret_store.put("STORE_X", "the-value")
         with pytest.raises(Exception, match=r"not_found_or_denied|denied|outside"):
@@ -144,6 +151,24 @@ class TestPrecedence:
         secret_store.put("PREC_X", "from-store-value")
         assert _require_env("p", "PREC_X", "t").get_secret_value() == "from-store-value"
         assert _expand_env_refs("Bearer ${PREC_X}", context="t") == "Bearer from-store-value"
+
+    def test_a_stored_value_reaches_a_backend_url(
+        self, data_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("PREC_URL", raising=False)
+        monkeypatch.delenv("PREC_URL_FILE", raising=False)
+        secret_store.put("PREC_URL", "url-safe-value")
+        url = _expand_backend_url("p", "b", "https://b.example/mcp?key=${PREC_URL}")
+        assert url == "https://b.example/mcp?key=url-safe-value"
+
+    def test_a_stored_value_cannot_restructure_a_backend_url(
+        self, data_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("PREC_URL", raising=False)
+        monkeypatch.delenv("PREC_URL_FILE", raising=False)
+        secret_store.put("PREC_URL", "value&other=1")
+        with pytest.raises(ProfileConfigError, match="percent-encode"):
+            _expand_backend_url("p", "b", "https://b.example/mcp?key=${PREC_URL}")
 
     def test_the_refusal_names_the_store(
         self, data_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch

@@ -75,8 +75,13 @@ def read_secret(name: str) -> str:
         raise ProfileConfigError(
             f"secret store: cannot read {name} ({exc.strerror or type(exc).__name__})"
         ) from exc
-    with os.fdopen(fd, "rb") as fh:
-        return fh.read().decode("utf-8").strip()
+    try:
+        with os.fdopen(fd, "rb") as fh:
+            return fh.read().decode("utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ProfileConfigError(
+            f"secret store: cannot read {name} ({type(exc).__name__})"
+        ) from exc
 
 
 def put(name: str, value: str, *, replace: bool = False) -> None:
