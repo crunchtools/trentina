@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.10.0] - 2026-11-06
+
 ### Added
 
 - **A secret store for profile secrets** (#736): a profile naming a git token,
