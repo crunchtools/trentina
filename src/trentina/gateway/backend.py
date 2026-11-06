@@ -1,7 +1,9 @@
 """Backend MCP connection management with persistent tool list caching.
 
-Opens a fresh MCP session per call (streamable_http_client creates anyio
-task groups that cannot cross task boundaries, so pooling is not viable).
+Opens a fresh MCP session per call, over the backend's carrier
+(``transports.registry.carrier_for``, #740): the streamable-HTTP carrier
+creates anyio task groups that cannot cross task boundaries, so pooling is not
+viable.
 Caches tool lists per URL indefinitely — invalidated only on explicit flush
 or reconnect, persisted in SQLite across restarts. Crucially, a fetch failure
 never evicts: a cached backend keeps being served from cache through a transient
@@ -13,25 +15,21 @@ in-flight fetch.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 import time
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
-import httpx2
 from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
-from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.shared.exceptions import MCPError
 from mcp_types import INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND
 
 from ..database import delete_all_tool_lists, delete_tool_list, save_tool_list
 from ..logsafe import exc_kind, redact_source, safe_url
 from ..reserved import PINS_KEY
+from ..transports.base import CarrierTarget, Reading
+from ..transports.registry import carrier_for
 from . import federation_keys
 from .circuit import breaker
 from .context import get_current_profile
@@ -46,14 +44,11 @@ from .errors import (
 from .profile import federation_audience
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import Awaitable, Callable
 
+    from ..transports.base import Carrier
     from .backend_tokens import BackendGrant
     from .profile import Backend, Profile
-
-#: The POSTs whose 401 means "ran nothing, authorize and try again".
-_AUTH_METHODS = frozenset({"initialize", "tools/list", "tools/call"})
-
 
 BYTES_PER_TOKEN = 32
 """Wire bytes allowed per admitted token when capping a backend response (#267).
@@ -85,147 +80,13 @@ def response_byte_cap() -> int:
     return max(MIN_RESPONSE_BYTES, get_config().paged_tokens * BYTES_PER_TOKEN)
 
 
-class _ResponseRefused(httpx2.StreamError):
-    """Raised inside the SDK's read. A ``StreamError`` because that is what
-    the SDK catches there, so the pending request resolves at once as an error
-    instead of waiting out ``timeout_seconds``."""
+#: The per-call record a carrier reports its wire into (#267, #479, #740).
+#: The name is the gateway's; the contract is ``transports.base.Reading``.
+ResponseCap = Reading
 
 
-class _CappedStream(httpx2.AsyncByteStream):
-    """The transport's raw byte stream, counted as it arrives and cut at the cap."""
-
-    def __init__(self, inner: Any, cap: ResponseCap) -> None:
-        self._inner = inner
-        self._cap = cap
-
-    async def __aiter__(self) -> AsyncIterator[bytes]:
-        total = 0
-        async for chunk in self._inner:
-            total += len(chunk)
-            if total > self._cap.limit:
-                self._cap.overflowed = True
-                raise _ResponseRefused(f"backend response over {self._cap.limit} bytes")
-            yield chunk
-
-    async def aclose(self) -> None:
-        await self._inner.aclose()
-
-
-@dataclass
-class ResponseCap:
-    """A byte cap on every response one backend session receives (#267).
-
-    The MCP SDK reads a JSON reply with ``response.aread()`` and an SSE reply
-    through ``EventSource``, both unbounded, and gives no hook between the
-    socket and either. So the cap sits under them, on the transport's RAW
-    stream: an httpx response hook swaps ``response.stream`` for a counting
-    wrapper before the SDK reads a byte. Raw, because httpx decompresses
-    after that stream, and a count taken after decompression is the #276 bug.
-    For the same reason the client asks for ``identity`` and an encoded reply
-    is refused outright rather than inflated.
-
-    One per call. ``overflowed`` is how ``call_backend_tool`` tells a cut
-    read from any other failure, whatever shape the SDK gave the error.
-    """
-
-    limit: int
-    overflowed: bool = False
-    encoded: bool = False
-    #: A request that ran nothing came back 401: the session's ``initialize``
-    #: or the ``tools/list`` / ``tools/call`` itself. A 401 on the SSE GET
-    #: stream is not counted; the SDK carries on past it (#479).
-    unauthorized: bool = False
-    #: The ``tools/call`` POST was answered 2xx: the backend may have run it,
-    #: so nothing about this call is retried, whatever fails after.
-    call_accepted: bool = False
-
-    async def tag(self, request: httpx2.Request) -> None:
-        """Request hook: note which JSON-RPC method a POST carries."""
-        if request.method == "POST":
-            try:
-                method = json.loads(request.content).get("method")
-            except (ValueError, AttributeError, httpx2.RequestNotRead):
-                method = None
-            request.extensions["trentina_method"] = method
-
-    async def hook(self, response: httpx2.Response) -> None:
-        method = response.request.extensions.get("trentina_method")
-        if response.status_code == HTTPStatus.UNAUTHORIZED and method in _AUTH_METHODS:
-            self.unauthorized = True
-        elif method == "tools/call" and response.is_success:
-            self.call_accepted = True
-        encoding = response.headers.get("content-encoding", "")
-        if any(part.strip().lower() not in ("", "identity") for part in encoding.split(",")):
-            self.encoded = True
-            await self._refuse(response, "backend response is content-encoded")
-        declared = response.headers.get("content-length", "")
-        if declared.isdigit() and int(declared) > self.limit:
-            self.overflowed = True
-            await self._refuse(response, f"backend response over {self.limit} bytes")
-        response.stream = _CappedStream(response.stream, self)
-
-    def reset(self) -> None:
-        """Clear what one attempt saw, before the next."""
-        self.overflowed = self.encoded = self.unauthorized = self.call_accepted = False
-
-    @staticmethod
-    async def _refuse(response: httpx2.Response, reason: str) -> None:
-        """Close the unread response and raise. httpx2 closes a response whose
-        hook raised as well; closing here does not depend on that."""
-        await response.aclose()
-        raise _ResponseRefused(reason)
-
-
-def _identity_headers(headers: dict[str, str] | None) -> dict[str, str]:
-    """The backend's headers, with ``Accept-Encoding: identity`` in place of any other."""
-    kept = {k: v for k, v in (headers or {}).items() if k.lower() != "accept-encoding"}
-    kept["Accept-Encoding"] = "identity"
-    return kept
-
-
-@asynccontextmanager
-async def _connect_streamable_http(
-    url: str,
-    headers: dict[str, str] | None,
-    cap: ResponseCap | None = None,
-) -> AsyncIterator[Any]:
-    """Adapt this module's ``headers`` dict onto mcp's ``http_client=`` API.
-
-    ``streamable_http_client`` only manages an ``httpx2.AsyncClient``'s
-    lifecycle when it creates one itself -- passing a pre-configured client
-    makes the caller responsible for closing it.
-
-    The client is ``httpx2``, not ``httpx``: that is the fork the MCP SDK
-    builds on and annotates for. The two are separate distributions with
-    separate import names and coexist happily, so trentina's own ``httpx``
-    use elsewhere (quarantine's Gemini REST calls) is untouched. Passing an
-    ``httpx`` client here does work at runtime -- httpx2 is a fork with the
-    same API -- but it is a type error, and relying on two HTTP stacks
-    staying API-identical is not a bet worth carrying.
-
-    The client comes from the SDK's ``create_mcp_http_client`` so a backend
-    with headers gets the same timeouts (30s connect, 300s read) as one
-    without. A bare ``httpx2.AsyncClient`` inherits httpx's 5-second default,
-    which cut every authenticated call off at ~5s regardless of
-    ``timeout_seconds`` -- that deadline is the caller's ``asyncio.wait_for``
-    and cannot lengthen an HTTP timeout underneath it.
-
-    Yields ``(read, write)``. The SDK has shipped the stream bundle as both a
-    2-tuple and a 3-tuple (trailing session-id callback); that trailing element
-    is unused here, so take the first two either way rather than unpacking a
-    fixed width at the call sites.
-
-    Every session gets its own client now, headers or not, because every
-    response is read under ``cap`` (#267); one is made if the caller has none.
-    """
-    cap = cap or ResponseCap(response_byte_cap())
-    http_client = create_mcp_http_client(headers=_identity_headers(headers))
-    http_client.event_hooks = {"request": [cap.tag], "response": [cap.hook]}
-    async with (
-        http_client,
-        streamable_http_client(url, http_client=http_client) as streams,
-    ):
-        yield streams[0], streams[1]
+def _target(url: str, headers: dict[str, str] | None) -> CarrierTarget:
+    return CarrierTarget(url=url, headers=dict(headers or {}))
 
 
 logger = logging.getLogger(__name__)
@@ -670,7 +531,8 @@ async def _fetch_and_cache(
             headers,
             cap,
             lambda sent: asyncio.wait_for(
-                _do_list_tools(backend.url, sent, cap), timeout=backend.list_timeout_seconds
+                _do_list_tools(backend.url, sent, cap, carrier=carrier_for(backend)),
+                timeout=backend.list_timeout_seconds,
             ),
         )
     # Three the backend ANSWERED: a missing grant, a peer refusing our JWT, and
@@ -897,6 +759,7 @@ async def call_backend_tool(
                     arguments,
                     validate_output=backend.validate_output_schema,
                     cap=cap,
+                    carrier=carrier_for(backend),
                 ),
                 timeout=backend.timeout_seconds,
             ),
@@ -973,11 +836,16 @@ async def call_backend_tool(
 
 
 async def _do_list_tools(
-    url: str, headers: dict[str, str] | None, cap: ResponseCap | None = None
+    url: str,
+    headers: dict[str, str] | None,
+    cap: ResponseCap | None = None,
+    *,
+    carrier: Carrier,
 ) -> Any:
-    """Open a fresh session and call list_tools."""
+    """Open a fresh session over ``carrier`` and call list_tools."""
+    cap = cap or ResponseCap(response_byte_cap())
     async with (
-        _connect_streamable_http(url, headers, cap) as (read, write),
+        carrier.connect(_target(url, headers), cap) as (read, write),
         ClientSession(read, write) as session,
     ):
         await session.initialize()
@@ -992,8 +860,9 @@ async def _do_call_tool(
     *,
     validate_output: bool = True,
     cap: ResponseCap | None = None,
+    carrier: Carrier,
 ) -> Any:
-    """Open a fresh session and call_tool.
+    """Open a fresh session over ``carrier`` and call_tool.
 
     When ``validate_output`` is False, client-side output-schema validation is
     disabled for buggy backends: the cached schemas are cleared and the
@@ -1006,8 +875,9 @@ async def _do_call_tool(
     this flag exists to accommodate -- a misconfiguration that reports as a
     backend failure. So the override asserts it actually patched something.
     """
+    cap = cap or ResponseCap(response_byte_cap())
     async with (
-        _connect_streamable_http(url, headers, cap) as (read, write),
+        carrier.connect(_target(url, headers), cap) as (read, write),
         ClientSession(read, write) as session,
     ):
         await session.initialize()

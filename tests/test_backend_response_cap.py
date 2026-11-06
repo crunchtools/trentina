@@ -42,6 +42,7 @@ from trentina.gateway.errors import (
 )
 from trentina.gateway.profile import Backend
 from trentina.outcomes import Outcome, classify_exception
+from trentina.transports.http_carrier import response_hook
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -237,7 +238,7 @@ class TestResponseCap:
     async def _get(self, cap: ResponseCap, response: httpx2.Response) -> httpx2.Response:
         transport = httpx2.MockTransport(lambda _r: response)
         async with httpx2.AsyncClient(
-            transport=transport, event_hooks={"response": [cap.hook]}
+            transport=transport, event_hooks={"response": [response_hook(cap)]}
         ) as client:
             return await client.get("http://backend/mcp")
 

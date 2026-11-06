@@ -233,8 +233,48 @@ type: an HTTP path under `/proxy/<name>/` that an operator instantiates under
 (`route_conformance`) and what a route plugin can and cannot reach. Read its
 "gateway code" section before installing one.
 
-An MCP **transport** (a `Face` plus a `Carrier`, the protocol a backend is
-dispatched over) is still in-tree only. `register_transport` adds one the
+An MCP **transport** (a `Face` plus a `Dispatch`, the protocol a backend is
+dispatched over) is in-tree only, by decision (#740): the face is the judging
+edge, the last thing to hand to a plugin. `register_transport` adds one the
 crossing resolves by name, and `build_transport` refuses a `dist:name`
 transport by name. The only transport a backend is dispatched over is the
 built-in `mcp`.
+
+## Carriers
+
+A **carrier** (#740) is the wire a backend's MCP sessions ride: `tools/list` and
+`tools/call` both, so a backend is never listed over one wire and called over
+another. The built-in `http` carrier serves every `http(s)://` backend and is
+chosen from the URL; nothing names it. A plugin carrier is an installed
+distribution exposing a `trentina.carriers.v1` entry point whose value is a
+factory `() -> Carrier`, and a backend names it:
+
+```yaml
+backends:
+  hub:
+    url: unix:///run/mcp/hub.sock
+    carrier: acme-carriers:unix
+```
+
+A URL whose scheme no built-in answers needs a `carrier`, and a plugin may not
+take `http`, `https`, `internal` or `decoy`.
+
+The contract in `trentina.transports.base` is `connect(target, reading)`: an
+async context manager yielding the SDK's session streams (`ReadStream`,
+`WriteStream`) to `target.url`. The carrier must count every raw byte it reads
+into `reading` before it parses any of it and stop when `count` raises, set
+`call_accepted` once a `tools/call` has left, and set `unauthorized` only where
+its wire can say a credential was refused before anything ran. Everything else
+stays with the gateway, above the carrier: the circuit breaker (keyed by the
+backend URL, so `reconnect_backend` works unchanged), credentials, retries,
+timeouts, the tool-list cache and every layer of judging. A carrier moves
+messages, so it has nothing to bypass.
+
+At config load a carrier plugin is checked without being imported: installed,
+exposing the entry point, and passing the carrier import scan. That scan allows
+sockets and forbids anything that starts a process, reads files or reaches the
+gateway's state, because the gateway spawns nothing it carries to; the server
+on the other end is started by the host (#724: systemd socket activation, not
+Trentina). The import happens at startup. Like a `dist:` route, a carrier is
+gateway code with the process's reach once loaded, so install only one you
+have read.

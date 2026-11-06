@@ -353,16 +353,21 @@ def _check_plugin_imports(name: str, profile: Profile) -> None:
 
 
 def _check_transports(name: str, profile: Profile) -> None:
-    """Validate every backend's transport at load. A registered name ('mcp',
-    plus anything ``register_transport`` added) resolves; a 'dist:name' external
-    transport plugin is refused by name until the contract is frozen (#535)
-    (``transports.registry.build_transport``). Lazy import avoids the
-    transports→gateway import cycle at module load."""
-    from ..transports.registry import build_transport
+    """Validate every backend's transport and carrier at load.
+
+    A registered transport name ('mcp', plus anything ``register_transport``
+    added) resolves; a 'dist:name' transport is refused by name, since
+    transports are in-tree only (``transports.registry.build_transport``). A
+    named carrier must be registered, or an installed plugin that passes the
+    carrier scan, checked without importing it (``check_carrier``, #740). Lazy
+    import avoids the transports→gateway import cycle at module load."""
+    from ..transports.registry import build_transport, check_carrier
 
     for backend_name, backend in profile.backends.items():
         try:
             build_transport(backend.transport)
+            if backend.carrier is not None:
+                check_carrier(backend.carrier)
         except ProfileConfigError as exc:
             raise ProfileConfigError(f"Profile {name!r} backend {backend_name!r}: {exc}") from exc
 

@@ -1,27 +1,34 @@
-"""The transport contract: a Face in and out, a Carrier to the backend.
+"""The transport contract: a Face in and out, a Dispatch to the backend, and
+the Carrier that is the backend's wire.
 
 A transport speaks one wire protocol. It is two halves:
 
 * A ``Face`` turns wire bytes into parsed data on the way in and a result into
   wire bytes on the way out. It parses the REQUEST edge, runs the RESPONSE
   edge, and wraps the result in the protocol's envelope. It spells no refusal
-  of its own — ``core.render`` is the one refusal composer — and, as the
-  public plugin contract, it constructs no sealed trust type and is handed no
-  ``Posture``/``Profile``/``Principal``.
-* A ``Carrier`` carries a parsed, outbound request to its destination and
+  of its own — ``core.render`` is the one refusal composer — and it constructs
+  no sealed trust type and is handed no ``Posture``/``Profile``/``Principal``.
+* A ``Dispatch`` hands a parsed, outbound request to its destination and
   brings back the reply.
 
 ``orchestrator.crossing`` runs the two halves in ONE order it alone knows —
-parse (request edge), carry, deliver (response edge), wrap — and that order is
-the security property: a transport cannot reorder the steps, so it cannot skip
-the gate (Trentina 3.0 plan §A/§C). Everything a half returns is either the
-next step's input or an ``Early``: a protocol response already built and
+parse (request edge), dispatch, deliver (response edge), wrap — and that order
+is the security property: a transport cannot reorder the steps, so it cannot
+skip the gate (Trentina 3.0 plan §A/§C). Everything a half returns is either
+the next step's input or an ``Early``: a protocol response already built and
 audited, which the crossing returns as-is without running a later step.
 
-This module is the future ``trentina.transports.base`` public surface. In
-Phase 4 it carries only the in-tree MCP transport (``transports.mcp``), whose
-halves reach the gateway's own collaborators directly; the typed plugin
-contract and the line those collaborators sit behind are drawn in Phase 6.
+Both halves are in-tree only and stay untyped (#740): the Face IS the judging
+edge, the last thing to hand to a plugin, and no second agent-facing protocol
+exists to shape a contract against.
+
+What a backend may name is its ``Carrier`` (#740): the wire one MCP session to
+it rides on. It is the frozen v1 plugin contract, typed below, and it sits
+UNDER both ``tools/list`` and ``tools/call``, so no backend is listed over one
+wire and called over another. A carrier moves session messages and counts the
+bytes it read; the circuit breaker, credentials, re-authorization, timeouts,
+the tool-list cache and every layer of judging stay above it in
+``gateway/backend.py`` and the crossing, so a carrier has nothing to bypass.
 """
 
 from __future__ import annotations
@@ -32,10 +39,15 @@ from enum import Enum
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
+from mcp.shared._stream_protocols import ReadStream as _SdkReadStream
+from mcp.shared._stream_protocols import WriteStream as _SdkWriteStream
+from mcp.shared.message import SessionMessage
+
 from ..outcomes import Outcome
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
+    from contextlib import AbstractAsyncContextManager
 
     from starlette.datastructures import Headers
 
@@ -92,11 +104,11 @@ class Face(ABC):
         """Put a delivered result into the protocol's success envelope."""
 
 
-class Carrier(ABC):
-    """Carry a parsed, outbound request to its destination and bring back the reply."""
+class Dispatch(ABC):
+    """Hand a parsed, outbound request to its destination and bring back the reply."""
 
     name: str
-    #: The transport contract version this carrier was written against; see ``Face``.
+    #: The transport contract version this dispatch was written against; see ``Face``.
     api_version: int = 1
 
     @abstractmethod
@@ -110,10 +122,93 @@ class Carrier(ABC):
 
 @dataclass(frozen=True)
 class Transport:
-    """A protocol: its face (in and out) and its carrier (to the backend)."""
+    """A protocol: its face (in and out) and its dispatch (to the backend)."""
 
     face: Face
-    carrier: Carrier
+    dispatch: Dispatch
+
+
+# The backend's wire (#740). Frozen under transport API v1: a carrier written
+# against this keeps working until a v2 group exists beside it.
+
+#: What a carrier yields: the session streams ``ClientSession`` takes. Messages
+#: in, messages out; the SDK does the JSON-RPC. They are the SDK's structural
+#: protocols, so a pair of anyio memory streams satisfies them, and naming them
+#: here keeps a carrier off the SDK's private module.
+ReadStream = _SdkReadStream[SessionMessage | Exception]
+WriteStream = _SdkWriteStream[SessionMessage]
+
+
+@dataclass(frozen=True)
+class CarrierTarget:
+    """Where one session goes: the backend's URL as the operator configured it,
+    and the headers the gateway resolved for this call (its credential among
+    them). A carrier whose wire has no headers ignores them."""
+
+    url: str
+    headers: Mapping[str, str]
+
+
+class ResponseOverflowError(Exception):
+    """Raised by ``Reading.count`` past the limit: stop reading, now."""
+
+
+@dataclass
+class Reading:
+    """What one call's wire did, reported by its carrier (#267, #479).
+
+    The gateway makes one per call and reads it after the call fails, to tell
+    a cut read from a refused credential from anything else. A carrier must
+    ``count`` every raw byte it reads from the backend BEFORE it decodes or
+    parses any of it, and stop when ``count`` raises; set ``call_accepted``
+    once a ``tools/call`` has left, since from then the backend may have acted
+    and nothing is retried; and set ``unauthorized`` only where its wire can
+    say the backend refused the credential before running anything.
+    """
+
+    limit: int
+    overflowed: bool = False
+    #: The backend sent an encoded reply, refused rather than inflated (#276).
+    encoded: bool = False
+    #: A request that ran nothing was refused for its credential.
+    unauthorized: bool = False
+    #: A ``tools/call`` reached the backend: it may have run.
+    call_accepted: bool = False
+    _read: int = 0
+
+    def count(self, n: int) -> None:
+        """Add ``n`` bytes read, or raise ``ResponseOverflowError`` past ``limit``."""
+        self._read += n
+        if self._read > self.limit:
+            self.overflowed = True
+            raise ResponseOverflowError(f"backend response over {self.limit} bytes")
+
+    def reset(self) -> None:
+        """Clear what one attempt saw, before the next."""
+        self.overflowed = self.encoded = self.unauthorized = self.call_accepted = False
+        self._read = 0
+
+
+class Carrier(ABC):
+    """The wire one MCP session to a backend rides on (#740).
+
+    ``connect`` opens it to ``target`` and yields the session's streams; the
+    gateway runs ``ClientSession`` over them, for ``tools/list`` and
+    ``tools/call`` alike, and closes the context when the session ends. A
+    carrier holds no state between calls. It never sees the agent, the
+    profile, or what the layers decide: it carries, and ``reading`` is all
+    it reports.
+    """
+
+    name: str
+    api_version: int = 1
+
+    @abstractmethod
+    def connect(
+        self, target: CarrierTarget, reading: Reading
+    ) -> AbstractAsyncContextManager[tuple[ReadStream, WriteStream]]:
+        """Open the wire to ``target``. Raise on failure: the gateway counts
+        it against the backend's circuit."""
 
 
 # The perimeter shapes (#535). A ``Transport`` above crosses to an MCP backend;

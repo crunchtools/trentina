@@ -32,6 +32,7 @@ from trentina.tools.backend_auth import (
     backend_auth_start,
     backend_auth_status,
 )
+from trentina.transports.http_carrier import response_hook, tag_request
 
 if TYPE_CHECKING:
     from trentina.gateway.profile import Profile
@@ -77,7 +78,9 @@ class _Backend:
         self._next(cap)
         return SimpleNamespace(content=[], is_error=False, structured_content=None)
 
-    async def list(self, _url: str, headers: dict[str, str] | None, cap: Any = None) -> Any:
+    async def list(
+        self, _url: str, headers: dict[str, str] | None, cap: Any = None, **__: Any
+    ) -> Any:
         self.headers.append(headers)
         self._next(cap)
 
@@ -211,8 +214,8 @@ class TestTheHooks:
         async def answer(method: str, url_method: str, status: int) -> None:
             body = b'{"jsonrpc":"2.0","id":1,"method":"%s"}' % method.encode()
             request = httpx2.Request(url_method, "https://mcp.example/mcp", content=body)
-            await cap.tag(request)
-            await cap.hook(httpx2.Response(status, request=request))
+            await tag_request(request)
+            await response_hook(cap)(httpx2.Response(status, request=request))
 
         await answer("x", "GET", 401)
         assert not cap.unauthorized

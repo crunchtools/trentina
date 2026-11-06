@@ -19,7 +19,6 @@ from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TI
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from trentina.gateway.backend import (
-    _connect_streamable_http,
     _tool_list_cache,
     cached_tool_read_only,
     call_backend_tool,
@@ -31,6 +30,8 @@ from trentina.gateway.circuit import State, breaker
 from trentina.gateway.errors import BackendCallError, BackendRejectedCallError
 from trentina.gateway.profile import AuthConfig, Backend, Profile
 from trentina.logsafe import exc_kind
+from trentina.transports.base import CarrierTarget, Reading
+from trentina.transports.http_carrier import HttpCarrier
 
 
 def _backend(
@@ -71,7 +72,7 @@ class TestListBackendToolsCircuit:
         for _ in range(3):
             breaker.record_failure(URL)
 
-        async def should_not_be_called(_url: str, _headers: Any, *_: Any) -> Any:
+        async def should_not_be_called(_url: str, _headers: Any, *_: Any, **__: Any) -> Any:
             raise AssertionError("transport called despite open circuit")
 
         with (
@@ -89,7 +90,7 @@ class TestListBackendToolsCircuit:
         breaker.record_failure(URL)
         assert breaker.get_state(URL) is State.CLOSED
 
-        async def ok_transport(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
+        async def ok_transport(_url: str, _headers: Any, *_: Any, **__: Any) -> ListToolsResult:
             return _tools_result()
 
         with patch(
@@ -105,7 +106,7 @@ class TestListBackendToolsCircuit:
     async def test_failure_records_to_circuit(self) -> None:
         """Transport failure increments the circuit failure counter."""
 
-        async def fail_transport(_url: str, _headers: Any, *_: Any) -> Any:
+        async def fail_transport(_url: str, _headers: Any, *_: Any, **__: Any) -> Any:
             raise ConnectionRefusedError("connection refused")
 
         with (
@@ -122,7 +123,7 @@ class TestListBackendToolsCircuit:
     async def test_three_failures_open_circuit(self) -> None:
         """Three consecutive transport failures open the circuit."""
 
-        async def fail_transport(_url: str, _headers: Any, *_: Any) -> Any:
+        async def fail_transport(_url: str, _headers: Any, *_: Any, **__: Any) -> Any:
             raise TimeoutError("timed out")
 
         with patch(
@@ -145,7 +146,7 @@ class TestListBackendToolsCircuit:
             captured_timeout.append(timeout)
             return await original_wait_for(coro, timeout=timeout)
 
-        async def ok_transport(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
+        async def ok_transport(_url: str, _headers: Any, *_: Any, **__: Any) -> ListToolsResult:
             return _tools_result()
 
         backend = _backend(timeout=30.0, list_timeout=7.5)
@@ -251,7 +252,9 @@ class TestBackendToolListCache:
     async def test_cache_hit_skips_transport(self) -> None:
         call_count = 0
 
-        async def counting_transport(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
+        async def counting_transport(
+            _url: str, _headers: Any, *_: Any, **__: Any
+        ) -> ListToolsResult:
             nonlocal call_count
             call_count += 1
             return _tools_result()
@@ -268,7 +271,9 @@ class TestBackendToolListCache:
     async def test_cache_keyed_by_url(self) -> None:
         urls_called: list[str] = []
 
-        async def tracking_transport(url: str, _headers: Any, *_: Any) -> ListToolsResult:
+        async def tracking_transport(
+            url: str, _headers: Any, *_: Any, **__: Any
+        ) -> ListToolsResult:
             urls_called.append(url)
             return _tools_result()
 
@@ -292,7 +297,7 @@ class TestBackendToolListCache:
         the whole point — a backend blip must not collapse the tool list.
         """
 
-        async def ok_transport(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
+        async def ok_transport(_url: str, _headers: Any, *_: Any, **__: Any) -> ListToolsResult:
             return _tools_result()
 
         with patch(
@@ -307,7 +312,7 @@ class TestBackendToolListCache:
             breaker.record_failure(URL)
         assert breaker.get_state(URL) is State.OPEN
 
-        async def should_not_be_called(_url: str, _headers: Any, *_: Any) -> Any:
+        async def should_not_be_called(_url: str, _headers: Any, *_: Any, **__: Any) -> Any:
             raise AssertionError("transport called despite warm cache")
 
         with patch(
@@ -322,7 +327,7 @@ class TestBackendToolListCache:
     async def test_call_failure_does_not_evict_list_cache(self) -> None:
         """A failed tool call must not evict the cached tool list."""
 
-        async def ok_list(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
+        async def ok_list(_url: str, _headers: Any, *_: Any, **__: Any) -> ListToolsResult:
             return _tools_result()
 
         with patch(
@@ -346,7 +351,7 @@ class TestBackendToolListCache:
 
         assert (URL, "") in _tool_list_cache
 
-        async def should_not_be_called(_url: str, _headers: Any, *_: Any) -> Any:
+        async def should_not_be_called(_url: str, _headers: Any, *_: Any, **__: Any) -> Any:
             raise AssertionError("transport re-fetched after call failure")
 
         with patch(
@@ -361,7 +366,7 @@ class TestBackendToolListCache:
         call_count = 0
         release = asyncio.Event()
 
-        async def slow_transport(_url: str, _headers: Any, *_: Any) -> ListToolsResult:
+        async def slow_transport(_url: str, _headers: Any, *_: Any, **__: Any) -> ListToolsResult:
             nonlocal call_count
             call_count += 1
             await release.wait()
@@ -504,7 +509,7 @@ class TestFederatedErrorKindIsLegible:
     async def test_list_tools_failure_names_the_leaf_kind(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        async def grouped_connect_error(_url: str, _headers: Any, *_: Any) -> Any:
+        async def grouped_connect_error(_url: str, _headers: Any, *_: Any, **__: Any) -> Any:
             raise ExceptionGroup("unhandled errors in a TaskGroup", [httpx.ConnectError("boom")])
 
         with (
@@ -606,11 +611,12 @@ class TestHeaderedBackendHttpTimeouts:
             yield (None, None)
 
         with patch(
-            "trentina.gateway.backend.streamable_http_client",
+            "trentina.transports.http_carrier.streamable_http_client",
             fake_client,
         ):
-            async with _connect_streamable_http(
-                "http://mcp-rotv:8000/mcp", {"Authorization": "Bearer x"}
+            async with HttpCarrier().connect(
+                CarrierTarget("http://mcp-rotv:8000/mcp", {"Authorization": "Bearer x"}),
+                Reading(1024),
             ):
                 pass
 
@@ -710,7 +716,7 @@ class TestOneTenantNeverReadsAnothersToolList:
         alice, bob = self._profile("alice"), self._profile("bob")
         seen: list[str | None] = []
 
-        async def per_credential(_url: str, headers: Any, *_: Any) -> Any:
+        async def per_credential(_url: str, headers: Any, *_: Any, **__: Any) -> Any:
             seen.append((headers or {}).get("Authorization"))
             # A backend that answers per account: the tool name says whose.
             whose = "alice" if "alice-token" in str(headers) else "bob"
@@ -732,7 +738,7 @@ class TestOneTenantNeverReadsAnothersToolList:
 
         with patch(
             "trentina.gateway.backend._do_list_tools",
-            side_effect=lambda *_a: _tools_result(["alice_only_tool"]),
+            side_effect=lambda *_a, **_k: _tools_result(["alice_only_tool"]),
         ):
             await list_backend_tools("b", self._with_headers("alice-token"), alice)
 
@@ -745,7 +751,7 @@ class TestOneTenantNeverReadsAnothersToolList:
         list is the same for everyone, so one row serves every profile."""
         calls = 0
 
-        async def once(*_a: Any) -> Any:
+        async def once(*_a: Any, **__: Any) -> Any:
             nonlocal calls
             calls += 1
             return _tools_result(["public_tool"])
@@ -783,7 +789,7 @@ class TestOneTenantNeverReadsAnothersToolList:
         )
         calls = 0
 
-        async def once(*_a: Any) -> Any:
+        async def once(*_a: Any, **__: Any) -> Any:
             nonlocal calls
             calls += 1
             return _tools_result(["alice_only_tool"])
@@ -800,7 +806,7 @@ class TestOneTenantNeverReadsAnothersToolList:
         alice, bob = self._profile("alice"), self._profile("bob")
         with patch(
             "trentina.gateway.backend._do_list_tools",
-            side_effect=lambda *_a: _tools_result(["t"]),
+            side_effect=lambda *_a, **_k: _tools_result(["t"]),
         ):
             await list_backend_tools("b", self._with_headers("alice-token"), alice)
             await list_backend_tools("b", self._with_headers("bob-token"), bob)
@@ -816,7 +822,7 @@ class TestOneTenantNeverReadsAnothersToolList:
         alice, bob = self._profile("alice"), self._profile("bob")
         with patch(
             "trentina.gateway.backend._do_list_tools",
-            side_effect=lambda *_a: _tools_result(["t"]),
+            side_effect=lambda *_a, **_k: _tools_result(["t"]),
         ):
             await list_backend_tools("b", self._with_headers("alice-token"), alice)
             await list_backend_tools("b", self._with_headers("bob-token"), bob)
@@ -837,7 +843,7 @@ class TestAnAnonymousBackendStillOpensTheBreaker:
     """
 
     @staticmethod
-    async def _refuse(_url: str, _headers: Any, cap: Any = None) -> Any:
+    async def _refuse(_url: str, _headers: Any, cap: Any = None, **__: Any) -> Any:
         # How the transport reports a 401 it read nothing from: the cap flags it
         # and the SDK raises. `_do_list_tools` passes the cap POSITIONALLY —
         # taking it as a keyword here left it None, so the flag was never set

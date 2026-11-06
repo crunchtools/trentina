@@ -234,8 +234,17 @@ ProcessorRef = ProcessorName | PluginRef
 # whole ``TRANSPORTS`` table, which a registered transport may extend without
 # becoming dispatchable; the parity test in ``tests/test_transport_registry.py``
 # holds the Literal and the built-ins in step. A ``dist:name`` ``PluginRef``
-# passes this shape but is refused at load until #535 freezes the contract.
+# passes this shape but is refused at load: transports are in-tree only (#740).
 TransportName = Literal["mcp"]
+
+# The built-in carriers, a backend's wire (#740). Mirrors
+# ``transports.registry.BUILTIN_CARRIERS``, held in step by the same test file.
+# A ``dist:name`` ``PluginRef`` is a ``trentina.carriers.v1`` plugin, checked at
+# load without being imported.
+CarrierName = Literal["http"]
+
+#: A URL scheme, as ``Backend.url`` must start with one.
+_URL_SCHEME_RE = re.compile(r"^([a-z][a-z0-9+.-]*)://.")
 
 # FREE only. `detect` (0.38.0) looks at the payload and runs the minifiers
 # that fit it: html then petit for a page, structured for JSON, email then
@@ -1153,16 +1162,26 @@ class Backend(BaseModel):
         ...,
         description=(
             "Backend location. A streamable-http URL (http(s)://), "
-            "internal://<label> for trentina's own in-process tool surface, or "
-            "decoy://<label> for tools nothing answers (see `decoys`)."
+            "internal://<label> for trentina's own in-process tool surface, "
+            "decoy://<label> for tools nothing answers (see `decoys`), or any "
+            "other scheme a plugin `carrier` answers."
         ),
     )
     transport: TransportName | PluginRef = Field(
         default="mcp",
         description=(
-            "The wire protocol used to reach this backend. 'mcp' (the only "
-            "dispatchable built-in) today; a 'dist:name' transport plugin is "
-            "refused at load until the Face/Carrier contract is frozen (#535)."
+            "The protocol this backend is dispatched over: 'mcp'. Transports are "
+            "in-tree only, so a 'dist:name' one is refused at load; the wire a "
+            "backend rides is its `carrier`."
+        ),
+    )
+    carrier: CarrierName | PluginRef | None = Field(
+        default=None,
+        description=(
+            "The wire this backend's MCP sessions ride (#740). Omitted, it follows "
+            "the URL: 'http' for http(s)://. A 'dist:name' names an installed "
+            "trentina.carriers.v1 plugin, and a URL whose scheme no built-in "
+            "answers requires one."
         ),
     )
     decoys: dict[str, DecoyTool] = Field(
@@ -1424,14 +1443,12 @@ class Backend(BaseModel):
     @field_validator("url")
     @classmethod
     def url_scheme_supported(cls, v: str) -> str:
-        """Allow http(s):// (remote MCP) or internal://<label> (trentina's own tools).
+        """Allow any ``scheme://`` URL; ``carrier_matches_url`` decides whether
+        something carries it.
 
-        SSE and stdio are not supported. An internal:// URL must carry a
-        URL-safe slug label after the scheme (cosmetic, but required so the
-        namespace stays well-formed).
+        An internal:// or decoy:// URL must carry a URL-safe slug label after
+        the scheme (cosmetic, but required so the namespace stays well-formed).
         """
-        if v.startswith(("http://", "https://")):
-            return v
         for scheme in (INTERNAL_SCHEME, DECOY_SCHEME):
             if v.startswith(scheme):
                 if not BACKEND_NAME_RE.match(v[len(scheme) :]):
@@ -1439,9 +1456,40 @@ class Backend(BaseModel):
                         f"{scheme} URL must carry a slug label (^[a-z][a-z0-9-]*$): {v!r}"
                     )
                 return v
-        raise ValueError(
-            f"Backend URL must start with http://, https://, internal:// or decoy://: {v!r}"
-        )
+        if not _URL_SCHEME_RE.match(v):
+            raise ValueError(
+                f"Backend URL must start with a scheme (http://, https://, internal://, "
+                f"decoy://, or one a carrier plugin answers): {v!r}"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def carrier_matches_url(self) -> Backend:
+        """A built-in scheme is carried by its own carrier and no other; any
+        other scheme needs a carrier named (#740).
+
+        So a plugin can never take over an http(s):// backend, and
+        internal:// and decoy://, which ride no wire, name none.
+        """
+        from ..transports.registry import RESERVED_SCHEMES, SCHEME_CARRIERS
+
+        scheme = self.url.partition("://")[0]
+        built_in = SCHEME_CARRIERS.get(scheme)
+        match self.carrier:
+            case None if scheme in RESERVED_SCHEMES:
+                pass
+            case None:
+                raise ValueError(f"a {scheme}:// backend needs a carrier: no built-in answers it")
+            case named if built_in is not None and named != built_in:
+                raise ValueError(
+                    f"a {scheme}:// backend rides the {built_in!r} carrier, not {named!r}"
+                )
+            case _ if scheme in RESERVED_SCHEMES and built_in is None:
+                raise ValueError(f"carrier does not apply to a {scheme}:// backend")
+            case named if built_in is None and named in SCHEME_CARRIERS.values():
+                served = sorted(k for k, v in SCHEME_CARRIERS.items() if v == named)
+                raise ValueError(f"the {named!r} carrier answers {served} only")
+        return self
 
     @model_validator(mode="after")
     def decoys_belong_to_a_decoy_backend(self) -> Backend:

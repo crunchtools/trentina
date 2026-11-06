@@ -952,6 +952,16 @@ replaced.
   streamed body, idle timeout, no deadline, and any 3xx refused as
   `redirect`. `open_guarded` (deadline, redirects followed and checked) is
   still the call for a fetch.
+- `transports/base.py` `Carrier` — a backend's wire (#740, `docs/plugins.md#carriers`),
+  the frozen v1 plugin contract. `registry.carrier_for(backend)` is the one
+  choice of it, made under BOTH `_do_list_tools` and `_do_call_tool`; `http`
+  (`transports/http_carrier.py`) is built in and inferred from the URL, and a
+  `dist:` carrier is a `trentina.carriers.v1` entry point, scanned
+  (`testing.suite.scan_carrier_source`: sockets yes, processes no) before it is
+  imported at startup. Breaker, credentials, reauth, the cap's limit and all
+  judging stay above it; a carrier only reports into `Reading`. The crossing's
+  middle step is `Dispatch`, and Face and Dispatch stay in-tree: a `dist:`
+  transport is refused.
 - `transports/perimeter.py` — the perimeter spine (#535, `docs/proxy-plugins.md`).
   Every `/proxy/*` route and the CONNECT listener is a `Route` or `Listener`
   (`transports/base.py`, the public contract) served by `serve()`/`accept()`:

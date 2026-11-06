@@ -75,7 +75,7 @@ async def crossing(transport: Transport, ctx: Any) -> Any:
     if isinstance(parsed, Early):
         return parsed.response
 
-    carried = await transport.carrier.carry(ctx, parsed)  # to the backend
+    carried = await transport.dispatch.carry(ctx, parsed)  # to the backend
     if isinstance(carried, Early):
         return carried.response
 

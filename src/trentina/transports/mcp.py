@@ -3,12 +3,12 @@
 Trentina 3.0's one in-tree transport. ``route_jsonrpc`` dispatches a profile's
 JSON-RPC (``initialize`` / ``ping`` / ``tools/list`` / ``tools/call``), and a
 ``tools/call`` runs through ``orchestrator.crossing`` driving this module's
-``McpServerFace`` + ``McpClientCarrier``:
+``McpServerFace`` + ``McpDispatch``:
 
 * ``McpServerFace.parse``   — resolve the target, re-check the allowlist, answer
   a decoy or ``read_part`` here, resolve the mode and preprocess switch,
   normalize the arguments, and run the argument guards. The REQUEST edge.
-* ``McpClientCarrier.carry`` — ``_dispatch`` (remote backend or internal
+* ``McpDispatch.carry``      — ``_dispatch`` (remote backend or internal
   tool), with the backend-error refusal.
 * ``McpServerFace.deliver`` — the response guards, then the RESPONSE edge as
   stages (``_assemble``: Arrived → Transformed → Judged → disposed), with the
@@ -94,7 +94,7 @@ from ..outcomes import Outcome, classify_exception
 from ..perimeter_db import perimeter_stamp
 from ..reserved import PINS_KEY, REFUSAL_KEY, WARNING_KEY, with_stripped
 from ..transforms.policy import PREPROCESS_PARAM
-from .base import Carrier, Early, Face, Transport
+from .base import Dispatch, Early, Face, Transport
 from .jsonrpc import (
     JSONRPC_INVALID_PARAMS,
     JSONRPC_METHOD_NOT_FOUND,
@@ -1274,8 +1274,11 @@ class McpServerFace(Face):
         return _ok(ctx.req_id, result)
 
 
-class McpClientCarrier(Carrier):
-    """The MCP client side: dispatch the call to its backend or internal tool."""
+class McpDispatch(Dispatch):
+    """The MCP client side: dispatch the call to its backend or internal tool.
+
+    A remote backend's session rides that backend's carrier
+    (``gateway/backend.py`` via ``registry.carrier_for``, #740), not this."""
 
     name = "mcp_client"
 
@@ -1635,7 +1638,7 @@ async def _crossing_call(profile: Profile, req_id: Any, params: dict[str, Any]) 
     """Run one resolved ``tools/call`` through the orchestrator (Trentina 3.0).
 
     The one call path: ``orchestrator.crossing`` drives the MCP ``Face`` /
-    ``Carrier`` (``transports.mcp``), which resolves the target, re-checks the
+    ``Dispatch`` (``transports.mcp``), which resolves the target, re-checks the
     allowlist, answers a decoy or ``read_part``, resolves the mode and
     preprocess switch, normalizes and guards the arguments, dispatches, and
     judges and shapes the response — writing the one audit row through
@@ -1701,4 +1704,4 @@ async def _discovery_call(
 
 #: The one MCP transport, wired into ``router._route_tools_call`` for a profile
 #: flagged ``orchestrated``. Stateless, so one instance is shared.
-mcp_transport = Transport(face=McpServerFace(), carrier=McpClientCarrier())
+mcp_transport = Transport(face=McpServerFace(), dispatch=McpDispatch())

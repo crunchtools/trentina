@@ -1,4 +1,4 @@
-"""Shared Face/Carrier recording doubles for transport-layer tests.
+"""Shared Face/Dispatch recording doubles for transport-layer tests.
 
 Lifted from ``test_orchestrator.py`` (P7.5) so the orchestrator's crossing
 tests and the transport registry's conformance tests drive the same minimal
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from trentina.transports.base import Carrier, Face
+from trentina.transports.base import Dispatch, Face
 
 
 class RecordingFace(Face):
@@ -34,8 +34,8 @@ class RecordingFace(Face):
         return {"wrapped": result}
 
 
-class RecordingCarrier(Carrier):
-    name = "test_carrier"
+class RecordingDispatch(Dispatch):
+    name = "test_dispatch"
 
     def __init__(self, *, carry_result: Any) -> None:
         self._carry_result = carry_result

@@ -152,6 +152,17 @@ def _profile(
             ),
             ["proxy-plugins"],
         ),
+        (
+            _config(
+                a=Profile(
+                    name="a",
+                    auth=AuthConfig(bearer_token_env="TEST_TOKEN"),
+                    defense=DefenseConfig(enforcement="block"),
+                    backends={"hub": Backend(url="unix:///run/hub.sock", carrier="acme:unix")},
+                )
+            ),
+            ["carriers"],
+        ),
     ],
     ids=[
         "empty",
@@ -162,6 +173,7 @@ def _profile(
         "operator",
         "both-surfaces",
         "route-instance",
+        "carrier-plugin",
     ],
 )
 def test_in_use_detects_the_surfaces_a_config_actually_uses(
