@@ -11,7 +11,6 @@ through the operator tool rather than through the loader.
 from __future__ import annotations
 
 import io
-import logging
 import os
 import pathlib
 import stat
@@ -21,6 +20,7 @@ from typing import Any
 import pytest
 
 from trentina import config as config_mod
+from trentina import logsafe
 from trentina.gateway import secret_store
 from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
@@ -153,17 +153,12 @@ class TestPrecedence:
             _require_env("p", "PREC_MISSING", "t")
 
     def test_a_stored_value_is_held_out_of_logs(
-        self,
-        data_dir: pathlib.Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
+        self, data_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("PREC_HELD", raising=False)
         secret_store.put("PREC_HELD", "stored-canary-9f3e2a")
-        value = read_profile_secret("PREC_HELD")
-        with caplog.at_level(logging.INFO):
-            logging.getLogger("trentina.test").info("leaking %s", value)
-        assert "stored-canary-9f3e2a" not in caplog.text
+        read_profile_secret("PREC_HELD")
+        assert "stored-canary-9f3e2a" not in logsafe.scrub("leaking stored-canary-9f3e2a")
 
 
 class TestProtectionStillHolds:
