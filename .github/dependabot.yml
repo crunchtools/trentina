@@ -28,3 +28,19 @@ updates:
           - "patch"
     ignore:
       - dependency-name: "crunchtools/constitution*"
+
+  # scripts/l2-pod-requirements.txt pins what the RunPod GPU image installs to
+  # train the L2 model. It was covered by security updates only (that is how
+  # transformers' five open advisories reached us as #547 while routine
+  # versions never did), so it is declared here like any other ecosystem
+  # present in the repo (XV.2). Majors wait for a human: a bump here is proved
+  # by the next training round, whose recorded gates a new model must pass.
+  - package-ecosystem: "pip"
+    directory: "/scripts"
+    schedule:
+      interval: "weekly"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
