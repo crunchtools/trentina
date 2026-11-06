@@ -708,6 +708,8 @@ backends:
       # client_id: "..."
       # client_secret_env: ERA_CLIENT_SECRET
       # scopes: [read]
+      # And when that server's redirect allowlist is fixed too:
+      # callback_url: "http://127.0.0.1:8787/oauth/callback"
 ```
 
 - `auth` excludes every other credential: an `Authorization`,
@@ -726,6 +728,33 @@ backends:
 - `issuer` pins the authorization server. Unset, the first one the backend's
   metadata names is used, and a later change is refused until the grant is
   revoked: a backend cannot quietly send its users to a new login server.
+- `callback_url` is the exact `redirect_uri` advertised for this backend, for
+  an authorization server with a **fixed redirect-URI allowlist and no dynamic
+  registration** — the only case where nothing the gateway derives is
+  acceptable and it cannot self-register something that is. Unset, the gateway
+  uses its own `<base>/oauth/backend/callback`.
+
+  The gateway serves this URL's **path** as an extra callback route on its own
+  listener, so the host and port are the deployment's job: publish the port the
+  allowlist names onto the gateway's own port. For
+  `http://127.0.0.1:8787/oauth/callback` that is one more line in the Quadlet
+  unit, `PublishPort=127.0.0.1:8787:8019` — no second listener inside the
+  container, which could not be reached from the browser anyway.
+
+  It is checked at load: absolute, no userinfo, no query, no fragment; a path
+  of at most 128 characters, each segment `[A-Za-z0-9._~-]+`, and not under a
+  prefix the gateway already serves. The **host** is held to one of two
+  things, because the browser carries an authorization code to whatever this
+  names — and for a server that does offer dynamic registration, the gateway
+  registers the URI itself:
+
+  - a loopback literal, `127.0.0.1` or `[::1]`, over plain `http` (RFC 8252 3:
+    the person's own machine, reaching this gateway through a published port);
+  - `https` on the gateway's own host, the one in `TRENTINA_OAUTH_BASE_URL`.
+
+  Any other host is a load error. The path is mounted at startup, so adding
+  one needs a restart — `reload_profiles` says so under `not_applied` rather
+  than reporting success.
 
 How a login runs:
 
@@ -737,8 +766,11 @@ How a login runs:
    backend and the profile before sending the human to the login server.
    Whoever follows it decides whose account that profile uses.
 3. The login server sends the browser back to `<base>/oauth/backend/callback`
-   (allow that URL at the server if it does not take dynamic registration).
-   Each link works once, for 10 minutes; at most three are live per slot.
+   — or to this backend's own `callback_url`, when its allowlist is fixed and
+   that URL is what it holds. Each link works once, for 10 minutes; at most
+   three are live per slot. A `callback_url` path reaches the same handler as
+   the gateway's own: a callback is tied to a flow only by its single-use
+   `state`, so the extra path proves nothing more.
 4. Grants refresh against the token endpoint recorded when they were issued.
    A refused refresh drops the grant (and the registration, for
    `invalid_client`); a busy server drops nothing.

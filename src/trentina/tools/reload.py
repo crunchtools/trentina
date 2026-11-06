@@ -55,6 +55,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from ..gateway.aggregate import invalidate_profile_cache
+from ..gateway.backend_oauth import callback_paths
 from ..gateway.compress import retrigger_compression
 from ..gateway.errors import ScopeError
 from ..gateway.llm_proxy import validate_profile_llm_keys
@@ -72,7 +73,7 @@ from ..gateway.upstream import close_profile
 from ..logsafe import exc_kind, exc_where
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from ..gateway.loader import ActiveConfig, GatewayConfig
     from ..gateway.profile import Backend, Profile
@@ -268,7 +269,31 @@ def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
     for name, profile in sorted(new_config.profiles.items()):
         notes.extend(_unapplied_proxy_oauth_for(current.profiles.get(name), profile, name))
     notes.extend(_unapplied_bridges(current, new_config))
+    notes.extend(_unapplied_callbacks(new_config.profiles.values()))
     return notes
+
+
+def _unapplied_callbacks(profiles: Iterable[Profile]) -> list[str]:
+    """Name the backend callback paths a reload cannot serve (#725).
+
+    Those routes bind at startup, so an ``auth.callback_url`` whose path was
+    not mounted then validates cleanly and is never reached — the silent no-op
+    this whole family of functions exists to prevent. Compared against what
+    startup actually mounted rather than against the previous profile, because
+    another profile may already have named the same path.
+    """
+    active = get_active_config()
+    if active is None:
+        return []
+    missing = sorted(callback_paths(profiles) - active.backend_callback_paths)
+    if not missing:
+        return []
+    return [
+        (
+            f"auth.callback_url names {missing}: the backend OAuth callback "
+            "routes bind at startup — restart to serve them"
+        )
+    ]
 
 
 def _unapplied_bridges(current: GatewayConfig, new_config: GatewayConfig) -> list[str]:
@@ -689,6 +714,7 @@ async def _apply_own_profile(
     restart_required = [
         *_unapplied_delegated_for(before, after, name),
         *_unapplied_proxy_oauth_for(before, after, name),
+        *_unapplied_callbacks([after]),
     ]
 
     logger.warning(

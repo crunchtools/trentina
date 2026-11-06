@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -453,3 +454,165 @@ class TestNothingLeaks:
         assert CANARY not in caplog.text
         assert state not in caplog.text
         assert "access-" not in caplog.text
+
+
+#: What the Red Hat Hub's app allowlists: a loopback port and a path neither of
+#: which the gateway derives on its own (#725).
+HUB_CALLBACK = "http://127.0.0.1:8787/oauth/callback"
+
+
+def _hub_profile(**extra: Any) -> Profile:
+    """A profile whose backend names the one redirect URI its server accepts."""
+    return profile_with_era("josui", client_id="hub-client", callback_url=HUB_CALLBACK, **extra)
+
+
+def _hub_routes(profiles: dict[str, Profile]) -> list[Any]:
+    """The routes ``register_backend_oauth_routes`` mounts for these profiles."""
+    from fastmcp import FastMCP
+
+    mcp = FastMCP("t")
+    backend_oauth.register_backend_oauth_routes(mcp, profiles)
+    return list(mcp._additional_http_routes)
+
+
+def _hub_pages(profiles: dict[str, Profile]) -> TestClient:
+    app = Starlette(routes=_hub_routes(profiles))
+    return TestClient(app, base_url="https://gw.example", follow_redirects=False)
+
+
+def _live(monkeypatch: pytest.MonkeyPatch, profiles: dict[str, Profile]) -> None:
+    """Make these profiles the live config, as the ``profiles`` fixture does:
+    completing a flow reads the backend back out of it."""
+    from trentina.gateway import loader
+
+    active = SimpleNamespace(config=SimpleNamespace(profiles=profiles))
+    monkeypatch.setattr(loader, "get_active_config", lambda: active)
+
+
+class TestABackendsOwnCallback:
+    """#725: an authorization server with a fixed redirect allowlist and no DCR."""
+
+    async def test_the_gateways_own_uri_is_refused_by_such_a_server(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        # The baseline the issue describes: nothing the gateway derives is in
+        # the allowlist, and the string is compared at the authorize step, so
+        # the flow cannot start at all.
+        server.redirect_allowlist = (HUB_CALLBACK,)
+        del profiles
+        # A pre-registered client, so no DCR runs and the authorize step is
+        # where the string comparison happens — as it does at ServiceNow.
+        plain = profile_with_era("josui", client_id="hub-client")
+        link = await start(plain, "era", authorized_by="self")
+        with pytest.raises(ValueError, match="invalid_redirect_uri"):
+            server.authorize(await authorize_url(link))
+
+    async def test_a_dcr_server_with_an_allowlist_refuses_the_registration(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        server.redirect_allowlist = (HUB_CALLBACK,)
+        with pytest.raises(BackendAuthError, match="registration_refused"):
+            await start(profiles["josui"], "era", authorized_by="self")
+
+    async def test_the_named_uri_completes_the_flow(
+        self, server: FakeServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server.redirect_allowlist = (HUB_CALLBACK,)
+        hub = _hub_profile()
+        _live(monkeypatch, {"josui": hub})
+        link = await start(hub, "era", authorized_by="self")
+        authorize = await authorize_url(link)
+        assert parse_qs(urlsplit(authorize).query)["redirect_uri"] == [HUB_CALLBACK]
+        state, code = server.authorize(authorize)
+        await complete(state, code, None, None)
+        grant = await token_store().get_grant("josui", "era", hub.backends["era"])
+        assert grant is not None
+        assert grant.access_token.get_secret_value() == "access-1"
+
+    async def test_the_registration_body_carries_it(self, server: FakeServer) -> None:
+        # A server that does offer DCR is registered with the named URI, not
+        # the gateway's: whichever the operator wrote is the one advertised.
+        server.redirect_allowlist = (HUB_CALLBACK,)
+        named = profile_with_era("josui", callback_url=HUB_CALLBACK)
+        await start(named, "era", authorized_by="self")
+        (client,) = server.clients.values()
+        assert client["redirect_uris"] == [HUB_CALLBACK]
+
+    async def test_the_named_path_serves_the_callback(
+        self, server: FakeServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        hub = _hub_profile()
+        _live(monkeypatch, {"josui": hub})
+        pages = _hub_pages({"josui": hub})
+        link = await start(hub, "era", authorized_by="self")
+        state, code = server.authorize(await authorize_url(link))
+        reply = pages.get("/oauth/callback", params={"state": state, "code": code})
+        assert reply.status_code == 303
+        assert reply.headers["location"] == DONE_PATH
+        assert await token_store().get_grant("josui", "era", hub.backends["era"]) is not None
+
+    def test_the_gateways_own_path_is_served_too(self, server: FakeServer) -> None:
+        del server
+        mounted = {route.path for route in _hub_routes({"josui": _hub_profile()})}
+        assert mounted == {START_PATH, CALLBACK_PATH, DONE_PATH, "/oauth/callback"}
+
+    def test_no_backend_names_one_and_nothing_extra_is_mounted(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        del server
+        mounted = {route.path for route in _hub_routes(profiles)}
+        assert mounted == {START_PATH, CALLBACK_PATH, DONE_PATH}
+
+    def test_the_paths_are_deduplicated(self) -> None:
+        from trentina.gateway.backend_oauth import callback_paths
+
+        shared = [_hub_profile(), profile_with_era("kagetora", callback_url=HUB_CALLBACK)]
+        assert callback_paths(shared) == frozenset({"/oauth/callback"})
+        assert callback_paths([profile_with_era("takeda")]) == frozenset()
+
+
+class TestCallbackUrlValidation:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "/oauth/callback",  # not absolute
+            "ftp://gw.example/oauth/callback",  # not http(s)
+            "http://hub.example/oauth/callback",  # plain http, not loopback
+            "http://localhost:8787/oauth/callback",  # resolves; would receive a code
+            "https://u:p@gw.example/oauth/callback",  # userinfo
+            "https://gw.example/oauth/callback?x=1",  # query
+            "https://gw.example/oauth/callback#f",  # fragment
+            "https://gw.example",  # no path
+            "https://gw.example/",  # names no route
+            "https://gw.example/oauth/callback/",  # trailing slash
+            "https://gw.example//oauth/callback",  # empty segment
+            "https://gw.example/oauth/../callback",  # dot segment
+            "https://gw.example/oauth/call back",  # outside the unreserved set
+            "https://gw.example/health",  # a route the gateway serves
+            "https://gw.example/gateway/josui/mcp",  # ditto, under a prefix
+            f"https://gw.example{CALLBACK_PATH}/x",  # under /oauth/backend
+            "https://gw.example/" + "a" * 200,  # too long
+        ],
+    )
+    def test_refused(self, url: str) -> None:
+        from pydantic import ValidationError
+
+        from trentina.gateway.profile import BackendAuth
+
+        with pytest.raises(ValidationError):
+            BackendAuth(type="oauth", callback_url=url)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            HUB_CALLBACK,
+            "http://127.0.0.1:54321/oauth/callback",
+            "http://[::1]:46817/oauth/callback",
+            "https://gw.example/oauth/callback",
+            "https://gw.example/callback",
+        ],
+    )
+    def test_accepted(self, url: str) -> None:
+        from trentina.gateway.profile import BackendAuth
+
+        assert BackendAuth(type="oauth", callback_url=url).callback_url == url

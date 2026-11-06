@@ -624,6 +624,70 @@ class Honeytoken(BaseModel):
 #: already has one; a second, static one beside it is a config error.
 _CREDENTIAL_HEADERS = frozenset({"authorization", "proxy-authorization", "cookie"})
 _SCOPE_RE = re.compile(r"^[\x21\x23-\x5b\x5d-\x7e]+$")  # RFC 6749 3.3 scope-token
+#: One path segment of a backend's own callback URL: unreserved characters
+#: only (RFC 3986 2.3), so the path the gateway mounts needs no escaping.
+_CALLBACK_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
+#: The loopback literals RFC 8252 3 lets a redirect URI use over plain http.
+#: ``localhost`` is deliberately absent: it resolves, and whatever it resolves
+#: to would receive an authorization code.
+_CALLBACK_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1"})
+#: Longest path a backend's callback URL may name.
+MAX_CALLBACK_PATH_CHARS = 128
+#: Path prefixes the gateway itself serves. A backend's callback path may not
+#: sit under one, so no profile entry can shadow a real route (#725).
+_RESERVED_CALLBACK_PREFIXES = (
+    "/.well-known",
+    "/alert",
+    "/approve",
+    "/auth",
+    "/authorize",
+    "/consent",
+    "/egress",
+    "/gateway",
+    "/git",
+    "/health",
+    "/matrix",
+    "/mcp",
+    "/messages",
+    "/oauth/backend",
+    "/proxy",
+    "/register",
+    "/sse",
+    "/token",
+)
+
+
+def _check_callback_path(path: str) -> None:
+    """Hold a backend callback URL's path to one the gateway can mount.
+
+    Raises:
+        ValueError: the path is not absolute, names no route, is too long,
+            carries a segment outside the unreserved set (``.`` and ``..``
+            among them), or sits under a prefix the gateway already serves.
+    """
+    if not path.startswith("/"):
+        raise ValueError(f"auth.callback_url must carry an absolute path: {path!r}")
+    if path == "/" or path.endswith("/"):
+        raise ValueError(
+            f"auth.callback_url path must name a route, with no trailing slash: {path!r}"
+        )
+    if len(path) > MAX_CALLBACK_PATH_CHARS:
+        raise ValueError(
+            f"auth.callback_url path is longer than {MAX_CALLBACK_PATH_CHARS} characters"
+        )
+    for segment in path[1:].split("/"):
+        if segment in (".", "..") or not _CALLBACK_SEGMENT_RE.match(segment):
+            raise ValueError(
+                f"auth.callback_url path segment {segment!r} is not ^[A-Za-z0-9._~-]+$"
+            )
+    lowered = path.lower()
+    for prefix in _RESERVED_CALLBACK_PREFIXES:
+        if lowered == prefix or lowered.startswith(f"{prefix}/"):
+            raise ValueError(
+                f"auth.callback_url path {path!r} is under {prefix!r}, which the gateway serves"
+            )
+
+
 _ENV_REF_IN_URL_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
 #: A query parameter whose name says it carries a credential.
 _CREDENTIAL_PARAM_RE = re.compile(r"(?i)(token|key|secret|passw|auth|sig|session|cred)")
@@ -636,7 +700,9 @@ class BackendAuth(BaseModel):
     and every grant belongs to the (profile, backend) pair that obtained it.
     The authorization server, registration endpoint and default scopes come
     from the backend's own metadata (RFC 9728, RFC 8414); the fields here are
-    overrides for vendors that do not offer dynamic client registration.
+    overrides for vendors that do not offer dynamic client registration —
+    ``callback_url`` among them, for one whose redirect-URI allowlist is fixed
+    as well (#725).
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
@@ -681,6 +747,18 @@ class BackendAuth(BaseModel):
             "grant is revoked."
         ),
     )
+    callback_url: str | None = Field(
+        default=None,
+        max_length=512,
+        description=(
+            "The exact redirect_uri to advertise for this backend, for an "
+            "authorization server with a fixed redirect-URI allowlist and no "
+            "dynamic registration (#725). The gateway serves this URL's PATH "
+            "as an extra callback route on its own listener; the host and port "
+            "are the deployment's, reached by a published-port mapping. Unset: "
+            "the gateway's own /oauth/backend/callback."
+        ),
+    )
 
     @field_validator("issuer")
     @classmethod
@@ -708,6 +786,38 @@ class BackendAuth(BaseModel):
             for scope in v:
                 if not _SCOPE_RE.match(scope):
                     raise ValueError(f"scope {scope!r} is not a valid RFC 6749 scope-token")
+        return v
+
+    @field_validator("callback_url")
+    @classmethod
+    def callback_url_is_servable(cls, v: str | None) -> str | None:
+        """A redirect URI the gateway can both advertise and serve (#725).
+
+        Absolute, no userinfo, no query, no fragment; plain http only for a
+        loopback literal, since the browser carries an authorization code to
+        whatever this names.
+        """
+        if v is None:
+            return v
+        try:
+            parsed = urlsplit(v)
+            host = (parsed.hostname or "").lower()
+        except ValueError:
+            raise ValueError(f"auth.callback_url is not a URL: {v!r}") from None
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"auth.callback_url must be an http:// or https:// URL: {v!r}")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("auth.callback_url must carry no userinfo")
+        if parsed.query or parsed.fragment:
+            raise ValueError("auth.callback_url must carry no query and no fragment")
+        if not host:
+            raise ValueError(f"auth.callback_url must name a host: {v!r}")
+        if parsed.scheme == "http" and host not in _CALLBACK_LOOPBACK_HOSTS:
+            raise ValueError(
+                "auth.callback_url may be http:// only for the loopback literals "
+                f"{sorted(_CALLBACK_LOOPBACK_HOSTS)} (RFC 8252 3), not {host!r}"
+            )
+        _check_callback_path(parsed.path)
         return v
 
     @model_validator(mode="after")

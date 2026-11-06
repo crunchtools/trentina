@@ -69,7 +69,7 @@ from .context import profile_context
 from .destination import MAX_DESTINATION_CHARS, DestinationKind
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable, Mapping
 
     from starlette.requests import Request
     from starlette.responses import Response
@@ -133,8 +133,38 @@ def public_base_url() -> str:
 
 
 def callback_url() -> str:
-    """The redirect URI every backend client is registered with."""
+    """The gateway's own redirect URI: what a backend uses unless it names one."""
     return f"{public_base_url()}{CALLBACK_PATH}"
+
+
+def backend_callback_url(backend: Backend) -> str:
+    """The redirect URI advertised for one backend (#725).
+
+    An authorization server with a fixed redirect-URI allowlist and no dynamic
+    registration will accept nothing the gateway can derive, so that backend's
+    entry names the exact URI its allowlist holds. Everything else, which is
+    almost everything, uses the gateway's own.
+    """
+    auth = backend.auth
+    if auth is not None and auth.callback_url is not None:
+        return auth.callback_url
+    return callback_url()
+
+
+def callback_paths(profiles: Iterable[Profile]) -> frozenset[str]:
+    """Every extra callback path a backend's ``auth.callback_url`` names (#725).
+
+    The one predicate the routes are mounted by and a reload reports against,
+    so the two cannot disagree about what is served. ``CALLBACK_PATH`` cannot
+    appear here: the schema refuses a ``callback_url`` under ``/oauth/backend``,
+    along with every other path the gateway serves itself.
+    """
+    return frozenset(
+        urlsplit(backend.auth.callback_url).path
+        for profile in profiles
+        for backend in profile.backends.values()
+        if backend.auth is not None and backend.auth.callback_url is not None
+    )
 
 
 # ------------------------------------------------------------------ egress
@@ -416,7 +446,7 @@ async def _client_for(
         raise BackendAuthError("no_usable_auth_method")
     metadata = OAuthClientMetadata.model_validate(
         {
-            "redirect_uris": [callback_url()],
+            "redirect_uris": [backend_callback_url(backend)],
             "token_endpoint_auth_method": method,
             "grant_types": _GRANT_TYPES,
             "response_types": ["code"],
@@ -578,10 +608,13 @@ async def start(profile: Profile, name: str, *, authorized_by: Literal["self", "
     state = secrets.token_urlsafe(32)
     page = secrets.token_urlsafe(32)
     pkce = PKCEParameters.generate()
+    # Pinned into the flow below as well: the token exchange sends the URI this
+    # authorization was granted with, whatever the file says by then.
+    redirect_uri = backend_callback_url(backend)
     params = {
         "response_type": "code",
         "client_id": client.client_id,
-        "redirect_uri": callback_url(),
+        "redirect_uri": redirect_uri,
         "state": state,
         "code_challenge": pkce.code_challenge,
         "code_challenge_method": "S256",
@@ -604,7 +637,7 @@ async def start(profile: Profile, name: str, *, authorized_by: Literal["self", "
         client_id=client.client_id,
         auth_method=client.auth_method,
         verifier=SecretStr(pkce.code_verifier),
-        redirect_uri=callback_url(),
+        redirect_uri=redirect_uri,
         resource=disc.resource,
         scopes=disc.scopes,
         page_key=flow_key(page),
@@ -979,23 +1012,38 @@ async def _done_page(request: Request) -> Response:
     return _page(request, "Signed in", "<p>Signed in. You can close this tab.</p>")
 
 
-def register_backend_oauth_routes(mcp_server: Any) -> None:
-    """Mount the confirmation page, the callback and the done page; only with a store."""
+def register_backend_oauth_routes(
+    mcp_server: Any, profiles: Mapping[str, Profile] | None = None
+) -> None:
+    """Mount the confirmation page, the callback and the done page; only with a store.
+
+    A backend that names its own ``auth.callback_url`` (#725) adds that URL's
+    path, serving the SAME handler. That is not a second trust surface: a
+    callback is tied to a flow only by its single-use ``state``, so reaching
+    the handler by another path proves nothing more. Each extra path carries
+    the same rate limiter.
+    """
     if backend_token_store() is None:
         return
     from starlette.routing import request_response
 
     from .ratelimit import RateLimiter, UnauthenticatedWriteGuard, enabled
 
+    extra = callback_paths((profiles or {}).values())
     limiter = RateLimiter(*PAGE_LIMIT, name="/oauth/backend")
     for path, handler in (
         (START_PATH, _start_page),
         (CALLBACK_PATH, _callback),
         (DONE_PATH, _done_page),
+        *((path, _callback) for path in sorted(extra)),
     ):
         # A plain function is wrapped by the Route itself; an ASGI app is not.
         app: Any = handler
         if enabled() and path != DONE_PATH:
             app = UnauthenticatedWriteGuard(request_response(handler), limiter=limiter)
         mcp_server.custom_route(path, methods=["GET"])(app)
-    logger.info("gateway: backend OAuth pages mounted under /oauth/backend")
+    logger.info(
+        "gateway: backend OAuth pages mounted under /oauth/backend, "
+        "plus %d backend-named callback path(s)",
+        len(extra),
+    )

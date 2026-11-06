@@ -373,6 +373,65 @@ profiles:
             load_profiles(cfg)
 
 
+class TestBackendCallbackHost:
+    """#725: an https auth.callback_url may only name this gateway's own host.
+
+    The authorization code is delivered to whatever the redirect URI names, and
+    for a server offering dynamic registration the gateway registers that URI
+    itself — so another host would be an exfiltration route for a backend's
+    grant.
+    """
+
+    @staticmethod
+    def _yaml(callback_url: str) -> str:
+        return f"""
+profiles:
+  agent1:
+    auth:
+      bearer_token_env: AGENT1_TOK
+    backends:
+      hub:
+        url: https://hub.example/mcp
+        auth:
+          type: oauth
+          client_id: hub-client
+          callback_url: "{callback_url}"
+"""
+
+    def test_another_host_is_refused(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = tmp_path / "profiles.yaml"
+        cfg.write_text(self._yaml("https://evil.example/oauth/callback"))
+        monkeypatch.setenv("AGENT1_TOK", "tok")
+        monkeypatch.setenv("TRENTINA_OAUTH_BASE_URL", "https://gw.example")
+        with pytest.raises(ProfileConfigError, match="not this gateway"):
+            load_profiles(cfg)
+
+    def test_the_gateways_own_host_is_accepted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = tmp_path / "profiles.yaml"
+        cfg.write_text(self._yaml("https://gw.example/oauth/callback"))
+        monkeypatch.setenv("AGENT1_TOK", "tok")
+        monkeypatch.setenv("TRENTINA_OAUTH_BASE_URL", "https://gw.example")
+        loaded = load_profiles(cfg)
+        auth = loaded.profiles["agent1"].backends["hub"].auth
+        assert auth is not None
+        assert auth.callback_url == "https://gw.example/oauth/callback"
+
+    def test_a_loopback_literal_is_accepted_whatever_the_base_url(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # RFC 8252 3: the person's own machine, reaching this gateway through
+        # a published port. The base URL has nothing to say about it.
+        cfg = tmp_path / "profiles.yaml"
+        cfg.write_text(self._yaml("http://127.0.0.1:8787/oauth/callback"))
+        monkeypatch.setenv("AGENT1_TOK", "tok")
+        monkeypatch.setenv("TRENTINA_OAUTH_BASE_URL", "https://gw.example")
+        auth = load_profiles(cfg).profiles["agent1"].backends["hub"].auth
+        assert auth is not None
+        assert auth.callback_url == "http://127.0.0.1:8787/oauth/callback"
+
+
 class TestLoader:
     """End-to-end tests for the YAML profile loader."""
 

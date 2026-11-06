@@ -12,6 +12,26 @@ under that name.
 
 ### Added
 
+- **A backend's own `redirect_uri`: `auth.callback_url` (#725).** An
+  authorization server with a FIXED redirect-URI allowlist and NO dynamic
+  client registration could not be signed into at all: it would not accept the
+  URI the gateway derives, and the gateway could not self-register one it
+  would. That forced an external `mcp-remote` worker, which owns the tokens
+  and sits outside the perimeter. Such a backend now names the exact URI its
+  allowlist holds, and the gateway serves that URL's PATH as an extra callback
+  route on its own listener — same handler, same rate limit, same single-use
+  `state`, so no second trust surface. The host and port stay the
+  deployment's: publish the allowlisted port onto the gateway's own, as
+  `contrib/quadlet/trentina.container` now shows. Checked at load — absolute,
+  no userinfo, query or fragment, a bounded unreserved path, nothing under a
+  prefix the gateway serves, and a host that is either a loopback literal over
+  plain `http` (RFC 8252 3) or `https` on the gateway's own host: the
+  authorization code is delivered to whatever that URI names, and a DCR server
+  registers it for us, so another host would be a way out with a backend's
+  grant. The path binds at startup, and `reload_profiles` reports
+  a later one under `not_applied` instead of reporting success. No subprocess,
+  no new runtime, the hardening contract untouched. See
+  [docs/profiles.md](docs/profiles.md#backend-oauth).
 - **The agent-egress-bench run is published** (`docs/benchmark.md`, #507):
   98.3% containment at a 7.4% false-positive rate under `block`, 86.2% at 0.0%
   under `flag`, scored by the third-party runner against the shipped image

@@ -977,8 +977,41 @@ def _expand_backend_url(name: str, backend_name: str, url: str) -> str:
     return expanded
 
 
+def _check_backend_callback_host(name: str, backend_name: str, callback_url: str) -> None:
+    """An https ``auth.callback_url`` must name THIS gateway's own host (#725).
+
+    The browser carries an authorization code to whatever the redirect URI
+    names, and for a backend whose server offers dynamic registration the
+    gateway registers that URI itself — so an operator-chosen host would be a
+    way to have a backend's code delivered somewhere else. The schema already
+    holds plain http to the loopback literals RFC 8252 allows (the person's own
+    machine, reaching this gateway through a published port); everything else
+    must be the gateway. Env-coupled, so it is checked here and not in the
+    schema.
+
+    Raises:
+        ProfileConfigError: the host is neither loopback nor the gateway's own.
+    """
+    from .backend_oauth import public_base_url
+
+    parsed = urlsplit(callback_url)
+    if parsed.scheme != "https":
+        return
+    host = (parsed.hostname or "").lower()
+    own = (urlsplit(public_base_url()).hostname or "").lower()
+    if host != own:
+        raise ProfileConfigError(
+            f"Profile {name!r} backend {backend_name!r}: auth.callback_url host "
+            f"{host!r} is not this gateway's ({own!r}) — the authorization code "
+            "is delivered there, so only the gateway's own host or a loopback "
+            "literal is accepted"
+        )
+
+
 def _expand_backend_env_refs(name: str, profile: Profile) -> None:
     for backend_name, backend in profile.backends.items():
+        if backend.auth is not None and backend.auth.callback_url is not None:
+            _check_backend_callback_host(name, backend_name, backend.auth.callback_url)
         if backend.auth is not None and backend.auth.client_secret_env:
             backend.auth.client_secret = _require_env(
                 name, backend.auth.client_secret_env, f"backends.{backend_name}.auth client secret"
@@ -1690,6 +1723,10 @@ class ActiveConfig:
     #: The perimeter routes and listeners mounted at startup, by name (#535).
     #: A route the file gains later is not served until a restart.
     routes_mounted: frozenset[str] = frozenset()
+    #: The extra backend-OAuth callback paths mounted at startup (#725). A
+    #: path a backend's ``auth.callback_url`` gains later is not served until
+    #: a restart, and a reload says so rather than reporting success.
+    backend_callback_paths: frozenset[str] = frozenset()
 
     @property
     def egress_listener_configured(self) -> bool:
@@ -1698,6 +1735,14 @@ class ActiveConfig:
 
 
 _active: ActiveConfig | None = None
+
+
+def mounted_callback_paths(config: GatewayConfig) -> frozenset[str]:
+    """The extra backend-OAuth callback paths ``config`` mounts (#725): the one
+    predicate the routes are mounted by, so the two cannot disagree."""
+    from .backend_oauth import callback_paths
+
+    return callback_paths(config.profiles.values())
 
 
 def mounted_routes(config: GatewayConfig, providers: dict[str, Any]) -> frozenset[str]:
@@ -1734,6 +1779,7 @@ def register_active_config(
         alert_route_registered=any(p.alert_ingress is not None for p in config.profiles.values()),
         oauth_route_registered=oauth_route_registered,
         routes_mounted=mounted_routes(config, llm_providers or {}),
+        backend_callback_paths=mounted_callback_paths(config),
     )
 
 
@@ -1758,6 +1804,7 @@ def replace_active_config(config: GatewayConfig) -> None:
         alert_route_registered=_active.alert_route_registered,
         oauth_route_registered=_active.oauth_route_registered,
         routes_mounted=_active.routes_mounted,
+        backend_callback_paths=_active.backend_callback_paths,
     )
 
 

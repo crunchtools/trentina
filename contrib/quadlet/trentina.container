@@ -11,6 +11,11 @@ Image=quay.io/crunchtools/trentina:latest
 ContainerName=trentina
 Network=trentina.network
 PublishPort=127.0.0.1:8019:8019
+# A backend whose authorization server has a FIXED redirect-URI allowlist takes
+# an auth.callback_url naming a URL that allowlist holds (#725). The gateway
+# serves that URL's PATH on the port above, so publish the port the allowlist
+# names onto it as well. For http://127.0.0.1:8787/oauth/callback:
+#PublishPort=127.0.0.1:8787:8019
 # Client egress (--egress-port, 8021) is not published: agents reach it on
 # their own internal network. See docs/client-egress.md.
 Exec=--transport streamable-http --host 0.0.0.0 --port 8019 --no-dbus
