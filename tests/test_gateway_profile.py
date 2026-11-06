@@ -427,6 +427,19 @@ profiles:
         monkeypatch.setenv("TRENTINA_OAUTH_BASE_URL", "https://gw.example")
         assert load_profiles(cfg).profiles["agent1"].backends["hub"].auth is not None
 
+    def test_a_different_scheme_on_the_same_host_and_port_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Live, not theoretical: a gateway reached over plain http on loopback
+        # is a real deployment, and an https callback to it connects to
+        # nothing. The scheme is part of the origin, so it is compared.
+        cfg = tmp_path / "profiles.yaml"
+        cfg.write_text(self._yaml("https://127.0.0.1:8019/oauth/callback"))
+        monkeypatch.setenv("AGENT1_TOK", "tok")
+        monkeypatch.setenv("TRENTINA_OAUTH_BASE_URL", "http://127.0.0.1:8019")
+        with pytest.raises(ProfileConfigError, match="not this"):
+            load_profiles(cfg)
+
     def test_the_gateways_own_host_is_accepted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
