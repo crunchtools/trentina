@@ -269,23 +269,20 @@ def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
     for name, profile in sorted(new_config.profiles.items()):
         notes.extend(_unapplied_proxy_oauth_for(current.profiles.get(name), profile, name))
     notes.extend(_unapplied_bridges(current, new_config))
-    notes.extend(_unapplied_callbacks(new_config.profiles.values()))
+    notes.extend(_unapplied_callbacks(active.backend_callback_paths, new_config.profiles.values()))
     return notes
 
 
-def _unapplied_callbacks(profiles: Iterable[Profile]) -> list[str]:
+def _unapplied_callbacks(mounted: frozenset[str], profiles: Iterable[Profile]) -> list[str]:
     """Name the backend callback paths a reload cannot serve (#725).
 
     Those routes bind at startup, so an ``auth.callback_url`` whose path was
-    not mounted then validates cleanly and is never reached — the silent no-op
-    this whole family of functions exists to prevent. Compared against what
-    startup actually mounted rather than against the previous profile, because
-    another profile may already have named the same path.
+    not in ``mounted`` validates cleanly and is never reached — the silent
+    no-op this whole family of functions exists to prevent. ``mounted`` is what
+    startup actually mounted, not the previous profile's paths, because another
+    profile may already have named the same one.
     """
-    active = get_active_config()
-    if active is None:
-        return []
-    missing = sorted(callback_paths(profiles) - active.backend_callback_paths)
+    missing = sorted(callback_paths(profiles) - mounted)
     if not missing:
         return []
     return [
@@ -294,6 +291,12 @@ def _unapplied_callbacks(profiles: Iterable[Profile]) -> list[str]:
             "routes bind at startup — restart to serve them"
         )
     ]
+
+
+def _mounted_callback_paths() -> frozenset[str]:
+    """What startup mounted, for a caller that holds no ``ActiveConfig``."""
+    active = get_active_config()
+    return active.backend_callback_paths if active is not None else frozenset()
 
 
 def _unapplied_bridges(current: GatewayConfig, new_config: GatewayConfig) -> list[str]:
@@ -714,7 +717,7 @@ async def _apply_own_profile(
     restart_required = [
         *_unapplied_delegated_for(before, after, name),
         *_unapplied_proxy_oauth_for(before, after, name),
-        *_unapplied_callbacks([after]),
+        *_unapplied_callbacks(_mounted_callback_paths(), [after]),
     ]
 
     logger.warning(

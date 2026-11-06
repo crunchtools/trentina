@@ -8,7 +8,10 @@ pinned and refused on a redirect, exactly as in production.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
+import pathlib
+import re
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -616,3 +619,71 @@ class TestCallbackUrlValidation:
         from trentina.gateway.profile import BackendAuth
 
         assert BackendAuth(type="oauth", callback_url=url).callback_url == url
+
+
+class TestTheReservedPrefixesCoverEveryRoute:
+    """``_RESERVED_CALLBACK_PREFIXES`` is hand-written, so a test holds it.
+
+    A route added to the gateway without a prefix there would be shadowable by
+    an ``auth.callback_url`` naming its path. That is an operator footgun
+    rather than a privilege boundary — the operator already writes this file —
+    but a list nothing checks is a list that drifts, so this fails rather than
+    asking anyone to remember.
+    """
+
+    @staticmethod
+    def _declared_paths() -> set[str]:
+        """Every route path the package names.
+
+        Both spellings the gateway actually uses: a literal at a
+        ``custom_route`` call, and a module-level ``PATH``/``*_PATH`` constant
+        in a module that mounts routes. Restricted to those modules so a
+        filesystem default like ``DEFAULT_PROFILES_PATH`` is not read as a
+        route.
+
+        Not exhaustive: a perimeter route and a bridge route are built from a
+        ``Route.path`` template rather than written at the call site, so they
+        do not appear here. Both live under a prefix this list already holds
+        (``/proxy``, ``/matrix``), and `tests/test_perimeter_golden.py` holds
+        their shape.
+        """
+        import trentina
+
+        root = pathlib.Path(trentina.__file__).parent
+        paths: set[str] = set()
+        for file in root.rglob("*.py"):
+            text = file.read_text(encoding="utf-8")
+            if "custom_route" not in text:
+                continue
+            paths |= {m.group(1) for m in re.finditer(r'custom_route\(\s*"(/[^"]*)"', text)}
+            module = importlib.import_module(
+                ".".join(["trentina", *file.relative_to(root).with_suffix("").parts]).removesuffix(
+                    ".__init__"
+                )
+            )
+            paths |= {
+                value
+                for attr, value in vars(module).items()
+                if (attr == "PATH" or attr.endswith("_PATH"))
+                and isinstance(value, str)
+                and value.startswith("/")
+            }
+        return paths
+
+    def test_every_declared_route_path_is_reserved(self) -> None:
+        from trentina.gateway.profile import _check_callback_path
+
+        uncovered = []
+        for path in sorted(self._declared_paths()):
+            # Only a template's fixed head can be compared; a placeholder is
+            # not an unreserved segment. The reservation is always on the head.
+            fixed = path.split("{")[0].rstrip("/") or path
+            try:
+                _check_callback_path(fixed)
+            except ValueError:
+                continue  # reserved, or a shape no callback_url may take either
+            uncovered.append(fixed)
+        assert uncovered == [], (
+            "these gateway route paths are not under _RESERVED_CALLBACK_PREFIXES, "
+            f"so a backend auth.callback_url could shadow them: {uncovered}"
+        )
