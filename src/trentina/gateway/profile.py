@@ -629,6 +629,28 @@ _ENV_REF_IN_URL_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
 _CREDENTIAL_PARAM_RE = re.compile(r"(?i)(token|key|secret|passw|auth|sig|session|cred)")
 
 
+_CALLBACK_PATH_RE = re.compile(r"^[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$")
+#: Path prefixes the gateway already serves; a callback may not shadow one.
+#: The default callback path itself is allowed: it is the same handler.
+_MOUNTED_PREFIXES = (
+    "/oauth/backend",
+    "/authorize",
+    "/token",
+    "/register",
+    "/consent",
+    "/revoke",
+    "/approve",
+    "/proxy",
+    "/gateway",
+    "/mcp",
+    "/health",
+    "/.well-known",
+    "/alerts",
+    "/matrix",
+    "/_matrix",
+)
+
+
 class BackendAuth(BaseModel):
     """How the gateway authenticates to one backend on one profile's behalf (#479).
 
@@ -681,6 +703,51 @@ class BackendAuth(BaseModel):
             "grant is revoked."
         ),
     )
+
+    callback_url: str | None = Field(
+        default=None,
+        description=(
+            "The exact redirect_uri to advertise for this backend, for an "
+            "authorization server with a fixed redirect allowlist. Absolute, "
+            "https (http only on a literal loopback address), no userinfo, "
+            "query or fragment. The gateway mounts its path as an extra "
+            "callback route; the port is a deployment fact (published to the "
+            "gateway's own port)."
+        ),
+    )
+
+    @field_validator("callback_url")
+    @classmethod
+    def callback_url_is_safe(cls, v: str | None) -> str | None:
+        """An absolute redirect URI whose path collides with no mounted route."""
+        if v is None:
+            return v
+        try:
+            parts = urlsplit(v)
+            host, port = parts.hostname or "", parts.port  # a malformed port raises
+        except ValueError:
+            raise ValueError("auth.callback_url is not a valid URL") from None
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+        path = parts.path
+        segments = path[1:].split("/")
+        shadows = any(path == p or path.startswith(p + "/") for p in _MOUNTED_PREFIXES)
+        refusals = (
+            (not host or port == 0, "must be an absolute URL with a valid port"),
+            (parts.scheme not in ("http", "https"), "must be http or https"),
+            (parts.scheme == "http" and not loopback, "http is only for a literal loopback IP"),
+            ("@" in parts.netloc, "must not carry userinfo"),
+            ("?" in v or "#" in v, "must have no query or fragment"),
+            (len(path) > 256 or not _CALLBACK_PATH_RE.match(path), "path must be plain and short"),
+            (any(s in ("", ".", "..") for s in segments), "path has an empty, . or .. segment"),
+            (shadows and path != "/oauth/backend/callback", "path collides with a mounted route"),
+        )
+        for refused, why in refusals:
+            if refused:
+                raise ValueError(f"auth.callback_url {why}")
+        return v
 
     @field_validator("issuer")
     @classmethod

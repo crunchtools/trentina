@@ -12,6 +12,13 @@ under that name.
 
 ### Added
 
+- **`auth.callback_url` on a backend** (#725): the exact redirect_uri to
+  advertise for a pre-registered client whose authorization server holds a fixed
+  redirect allowlist and no DCR (Red Hat Hub). Absolute, `http` only on a literal
+  loopback address, no userinfo, query or fragment, path not colliding with a
+  mounted route. The gateway mounts its path as one more callback route behind
+  the same limiter and single-use `state`; the port is a deployment fact
+  (`PublishPort=127.0.0.1:8787:8019`).
 - **The agent-egress-bench run is published** (`docs/benchmark.md`, #507):
   98.3% containment at a 7.4% false-positive rate under `block`, 86.2% at 0.0%
   under `flag`, scored by the third-party runner against the shipped image

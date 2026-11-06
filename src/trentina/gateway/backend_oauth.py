@@ -132,8 +132,14 @@ def public_base_url() -> str:
     return configured_base_url() or "https://mcp.crunchtools.com"
 
 
-def callback_url() -> str:
-    """The redirect URI every backend client is registered with."""
+def callback_url(backend: Backend | None = None) -> str:
+    """The redirect URI a backend client is registered with and authorizes by.
+
+    A backend whose authorization server holds a fixed redirect allowlist sets
+    ``auth.callback_url``; every other one gets the gateway's own.
+    """
+    if backend is not None and backend.auth is not None and backend.auth.callback_url:
+        return backend.auth.callback_url
     return f"{public_base_url()}{CALLBACK_PATH}"
 
 
@@ -416,7 +422,7 @@ async def _client_for(
         raise BackendAuthError("no_usable_auth_method")
     metadata = OAuthClientMetadata.model_validate(
         {
-            "redirect_uris": [callback_url()],
+            "redirect_uris": [callback_url(backend)],
             "token_endpoint_auth_method": method,
             "grant_types": _GRANT_TYPES,
             "response_types": ["code"],
@@ -581,7 +587,7 @@ async def start(profile: Profile, name: str, *, authorized_by: Literal["self", "
     params = {
         "response_type": "code",
         "client_id": client.client_id,
-        "redirect_uri": callback_url(),
+        "redirect_uri": callback_url(backend),
         "state": state,
         "code_challenge": pkce.code_challenge,
         "code_challenge_method": "S256",
@@ -604,7 +610,7 @@ async def start(profile: Profile, name: str, *, authorized_by: Literal["self", "
         client_id=client.client_id,
         auth_method=client.auth_method,
         verifier=SecretStr(pkce.code_verifier),
-        redirect_uri=callback_url(),
+        redirect_uri=callback_url(backend),
         resource=disc.resource,
         scopes=disc.scopes,
         page_key=flow_key(page),
@@ -979,8 +985,24 @@ async def _done_page(request: Request) -> Response:
     return _page(request, "Signed in", "<p>Signed in. You can close this tab.</p>")
 
 
-def register_backend_oauth_routes(mcp_server: Any) -> None:
-    """Mount the confirmation page, the callback and the done page; only with a store."""
+def _extra_callback_paths(profiles: dict[str, Any] | None) -> list[str]:
+    """The paths backends' ``auth.callback_url`` name, other than the default."""
+    paths: set[str] = set()
+    for profile in (profiles or {}).values():
+        for backend in profile.backends.values():
+            if backend.auth is not None and backend.auth.callback_url:
+                paths.add(urlsplit(backend.auth.callback_url).path)
+    paths.discard(CALLBACK_PATH)
+    return sorted(paths)
+
+
+def register_backend_oauth_routes(mcp_server: Any, profiles: dict[str, Any] | None = None) -> None:
+    """Mount the confirmation page, the callback and the done page; only with a store.
+
+    A backend's own ``auth.callback_url`` path is one more mount of the same
+    callback handler, behind the same limiter: a callback is tied to a flow by
+    its single-use ``state`` alone, so another path proves nothing extra.
+    """
     if backend_token_store() is None:
         return
     from starlette.routing import request_response
@@ -991,6 +1013,7 @@ def register_backend_oauth_routes(mcp_server: Any) -> None:
     for path, handler in (
         (START_PATH, _start_page),
         (CALLBACK_PATH, _callback),
+        *((extra, _callback) for extra in _extra_callback_paths(profiles)),
         (DONE_PATH, _done_page),
     ):
         # A plain function is wrapped by the Route itself; an ASGI app is not.

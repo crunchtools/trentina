@@ -128,7 +128,7 @@ def _register_push_ingresses(
     register_alert_routes(mcp_server, profiles)
     register_bridge_routes(mcp_server, profiles, data_dir, other_agents=other_agents)
     # The return leg of a backend's OAuth flow (#479); mounted only with a key.
-    register_backend_oauth_routes(mcp_server)
+    register_backend_oauth_routes(mcp_server, profiles)
     # Where a person approves what an operator staged (#637). Mounted always:
     # nothing is staged at startup, and a route that appeared only once
     # something was pending would be a signal of its own.
