@@ -29,7 +29,8 @@ What is kept: every name a profile resolved a secret from
 (``loader.profile_env_names``), because ``reload_profiles`` resolves them
 again. A name on both lists is kept. A reload that introduces a reference to a
 name already popped fails closed with the loader's usual "not set" error and
-the running config stays; use the ``_FILE`` form for it.
+the running config stays; put the value in the secret store
+(``gateway/secret_store.py``, #736), which every load reads.
 """
 
 from __future__ import annotations

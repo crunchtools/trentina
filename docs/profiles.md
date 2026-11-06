@@ -841,6 +841,24 @@ backend's tool list, so a profile-only edit re-judges nothing. Changing a
 profile's `defense` thresholds is the exception: the verdicts were reached under
 the old thresholds, so that profile's descriptions are judged again.
 
+### A secret the running gateway was not started with
+
+Every secret a profile names, it names as an env var. A variable is fixed when
+the process starts, so a profile naming a new one — a git token, an
+`llm_keys` key, a `${VAR}` in a header — used to fail validation until a
+restart. Give the gateway the value through the secret store instead, keyed by
+the same name, then reload or write the profile:
+
+```
+podman exec -i trentina python -m trentina.gateway.secret_store put JOSUI_GITHUB_TOKEN < token
+podman exec trentina python -m trentina.gateway.secret_store list
+```
+
+A profile secret resolves from `VAR_FILE`, then `VAR`, then
+`/data/secrets/VAR`, read on every load. `put` refuses a name already stored;
+`--replace` rotates one. No tool takes a value: it would land in the operator's
+transcript and the audit log.
+
 ### A reload is scoped to the caller's role
 
 An **operator** reload is the whole file: every profile, the gateway-wide
