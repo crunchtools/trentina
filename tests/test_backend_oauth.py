@@ -8,8 +8,12 @@ pinned and refused on a redirect, exactly as in production.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
+import pathlib
+import re
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -453,3 +457,190 @@ class TestNothingLeaks:
         assert CANARY not in caplog.text
         assert state not in caplog.text
         assert "access-" not in caplog.text
+
+
+#: What the Red Hat Hub's app allowlists: a loopback port and a path neither of
+#: which the gateway derives on its own (#725).
+HUB_CALLBACK = "http://127.0.0.1:8787/oauth/callback"
+
+
+def _hub_profile(**extra: Any) -> Profile:
+    """A profile whose backend names the one redirect URI its server accepts."""
+    return profile_with_era("josui", client_id="hub-client", callback_url=HUB_CALLBACK, **extra)
+
+
+def _hub_routes(profiles: dict[str, Profile]) -> list[Any]:
+    """The routes ``register_backend_oauth_routes`` mounts for these profiles."""
+    from fastmcp import FastMCP
+
+    mcp = FastMCP("t")
+    backend_oauth.register_backend_oauth_routes(mcp, profiles)
+    return list(mcp._additional_http_routes)
+
+
+def _hub_pages(profiles: dict[str, Profile]) -> TestClient:
+    app = Starlette(routes=_hub_routes(profiles))
+    return TestClient(app, base_url="https://gw.example", follow_redirects=False)
+
+
+def _live(monkeypatch: pytest.MonkeyPatch, profiles: dict[str, Profile]) -> None:
+    """Make these profiles the live config, as the ``profiles`` fixture does:
+    completing a flow reads the backend back out of it."""
+    from trentina.gateway import loader
+
+    active = SimpleNamespace(config=SimpleNamespace(profiles=profiles))
+    monkeypatch.setattr(loader, "get_active_config", lambda: active)
+
+
+class TestABackendsOwnCallback:
+    """#725: an authorization server with a fixed redirect allowlist and no DCR."""
+
+    async def test_the_gateways_own_uri_is_refused_by_such_a_server(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        # The baseline the issue describes: nothing the gateway derives is in
+        # the allowlist, and the string is compared at the authorize step, so
+        # the flow cannot start at all.
+        server.redirect_allowlist = (HUB_CALLBACK,)
+        del profiles
+        # A pre-registered client, so no DCR runs and the authorize step is
+        # where the string comparison happens — as it does at ServiceNow.
+        plain = profile_with_era("josui", client_id="hub-client")
+        link = await start(plain, "era", authorized_by="self")
+        with pytest.raises(ValueError, match="invalid_redirect_uri"):
+            server.authorize(await authorize_url(link))
+
+    async def test_a_dcr_server_with_an_allowlist_refuses_the_registration(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        server.redirect_allowlist = (HUB_CALLBACK,)
+        with pytest.raises(BackendAuthError, match="registration_refused"):
+            await start(profiles["josui"], "era", authorized_by="self")
+
+    async def test_the_named_uri_completes_the_flow(
+        self, server: FakeServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server.redirect_allowlist = (HUB_CALLBACK,)
+        hub = _hub_profile()
+        _live(monkeypatch, {"josui": hub})
+        link = await start(hub, "era", authorized_by="self")
+        authorize = await authorize_url(link)
+        assert parse_qs(urlsplit(authorize).query)["redirect_uri"] == [HUB_CALLBACK]
+        state, code = server.authorize(authorize)
+        await complete(state, code, None, None)
+        grant = await token_store().get_grant("josui", "era", hub.backends["era"])
+        assert grant is not None
+        assert grant.access_token.get_secret_value() == "access-1"
+
+    async def test_the_registration_body_carries_it(self, server: FakeServer) -> None:
+        # A server that does offer DCR is registered with the named URI, not
+        # the gateway's: whichever the operator wrote is the one advertised.
+        server.redirect_allowlist = (HUB_CALLBACK,)
+        named = profile_with_era("josui", callback_url=HUB_CALLBACK)
+        await start(named, "era", authorized_by="self")
+        (client,) = server.clients.values()
+        assert client["redirect_uris"] == [HUB_CALLBACK]
+
+    async def test_the_named_path_serves_the_callback(
+        self, server: FakeServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        hub = _hub_profile()
+        _live(monkeypatch, {"josui": hub})
+        pages = _hub_pages({"josui": hub})
+        link = await start(hub, "era", authorized_by="self")
+        state, code = server.authorize(await authorize_url(link))
+        reply = pages.get("/oauth/callback", params={"state": state, "code": code})
+        assert reply.status_code == 303
+        assert reply.headers["location"] == DONE_PATH
+        assert await token_store().get_grant("josui", "era", hub.backends["era"]) is not None
+
+    def test_the_gateways_own_path_is_served_too(self, server: FakeServer) -> None:
+        del server
+        mounted = {route.path for route in _hub_routes({"josui": _hub_profile()})}
+        assert mounted == {START_PATH, CALLBACK_PATH, DONE_PATH, "/oauth/callback"}
+
+    def test_no_backend_names_one_and_nothing_extra_is_mounted(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        del server
+        mounted = {route.path for route in _hub_routes(profiles)}
+        assert mounted == {START_PATH, CALLBACK_PATH, DONE_PATH}
+
+    def test_the_paths_are_deduplicated(self) -> None:
+        from trentina.gateway.backend_oauth import callback_paths
+
+        shared = [_hub_profile(), profile_with_era("kagetora", callback_url=HUB_CALLBACK)]
+        assert callback_paths(shared) == frozenset({"/oauth/callback"})
+        assert callback_paths([profile_with_era("takeda")]) == frozenset()
+
+
+class TestTheReservedPrefixesCoverEveryRoute:
+    """``_RESERVED_CALLBACK_PREFIXES`` is hand-written, so a test holds it.
+
+    A route added to the gateway without a prefix there would be shadowable by
+    an ``auth.callback_url`` naming its path. That is an operator footgun
+    rather than a privilege boundary — the operator already writes this file —
+    but a list nothing checks is a list that drifts, so this fails rather than
+    asking anyone to remember.
+    """
+
+    @staticmethod
+    def _declared_paths() -> set[str]:
+        """Every route path the package names.
+
+        Both spellings the gateway actually uses: a literal at a
+        ``custom_route`` call, and a module-level ``PATH``/``*_PATH`` constant
+        in a module that mounts routes. Restricted to those modules so a
+        filesystem default like ``DEFAULT_PROFILES_PATH`` is not read as a
+        route.
+
+        Not exhaustive: a perimeter route and a bridge route are built from a
+        ``Route.path`` template rather than written at the call site, so they
+        do not appear here. Both live under a prefix this list already holds
+        (``/proxy``, ``/matrix``), and `tests/test_perimeter_golden.py` holds
+        their shape.
+        """
+        import trentina
+
+        root = pathlib.Path(trentina.__file__).parent
+        paths: set[str] = set()
+        for file in root.rglob("*.py"):
+            text = file.read_text(encoding="utf-8")
+            if "custom_route" not in text:
+                continue
+            paths |= {m.group(1) for m in re.finditer(r'custom_route\(\s*"(/[^"]*)"', text)}
+            module = importlib.import_module(
+                ".".join(["trentina", *file.relative_to(root).with_suffix("").parts]).removesuffix(
+                    ".__init__"
+                )
+            )
+            paths |= {
+                value
+                for attr, value in vars(module).items()
+                if (attr == "PATH" or attr.endswith("_PATH"))
+                and isinstance(value, str)
+                and value.startswith("/")
+            }
+        return paths
+
+    def test_every_declared_route_path_is_reserved(self) -> None:
+        from pydantic import ValidationError
+
+        from trentina.gateway.profile import BackendAuth
+
+        uncovered = []
+        for path in sorted(self._declared_paths()):
+            if path == CALLBACK_PATH:
+                continue  # allowed on purpose: naming it mounts the same handler
+            # Only a template's fixed head can be compared; a placeholder is
+            # not a legal path character. The reservation is always on the head.
+            fixed = path.split("{")[0].rstrip("/") or path
+            try:
+                BackendAuth(type="oauth", callback_url=f"https://gw.example{fixed}")
+            except ValidationError:
+                continue  # reserved, or a shape no callback_url may take either
+            uncovered.append(fixed)
+        assert uncovered == [], (
+            "these gateway route paths are not under _RESERVED_CALLBACK_PREFIXES, "
+            f"so a backend auth.callback_url could shadow them: {uncovered}"
+        )

@@ -69,7 +69,7 @@ from .context import profile_context
 from .destination import MAX_DESTINATION_CHARS, DestinationKind
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable, Mapping
 
     from starlette.requests import Request
     from starlette.responses import Response
@@ -985,18 +985,27 @@ async def _done_page(request: Request) -> Response:
     return _page(request, "Signed in", "<p>Signed in. You can close this tab.</p>")
 
 
-def _extra_callback_paths(profiles: dict[str, Any] | None) -> list[str]:
-    """The paths backends' ``auth.callback_url`` name, other than the default."""
-    paths: set[str] = set()
-    for profile in (profiles or {}).values():
-        for backend in profile.backends.values():
-            if backend.auth is not None and backend.auth.callback_url:
-                paths.add(urlsplit(backend.auth.callback_url).path)
-    paths.discard(CALLBACK_PATH)
-    return sorted(paths)
+def callback_paths(profiles: Iterable[Profile]) -> frozenset[str]:
+    """The extra paths these profiles' ``auth.callback_url`` name (#725).
+
+    The one predicate the routes are mounted by and a reload reports against,
+    so the two cannot disagree about what is served. ``CALLBACK_PATH`` is not
+    in it: that one is always mounted.
+    """
+    return frozenset(
+        {
+            urlsplit(backend.auth.callback_url).path
+            for profile in profiles
+            for backend in profile.backends.values()
+            if backend.auth is not None and backend.auth.callback_url
+        }
+        - {CALLBACK_PATH}
+    )
 
 
-def register_backend_oauth_routes(mcp_server: Any, profiles: dict[str, Any] | None = None) -> None:
+def register_backend_oauth_routes(
+    mcp_server: Any, profiles: Mapping[str, Profile] | None = None
+) -> None:
     """Mount the confirmation page, the callback and the done page; only with a store.
 
     A backend's own ``auth.callback_url`` path is one more mount of the same
@@ -1009,11 +1018,12 @@ def register_backend_oauth_routes(mcp_server: Any, profiles: dict[str, Any] | No
 
     from .ratelimit import RateLimiter, UnauthenticatedWriteGuard, enabled
 
+    extra = callback_paths((profiles or {}).values())
     limiter = RateLimiter(*PAGE_LIMIT, name="/oauth/backend")
     for path, handler in (
         (START_PATH, _start_page),
         (CALLBACK_PATH, _callback),
-        *((extra, _callback) for extra in _extra_callback_paths(profiles)),
+        *((path, _callback) for path in sorted(extra)),
         (DONE_PATH, _done_page),
     ):
         # A plain function is wrapped by the Route itself; an ASGI app is not.
@@ -1021,4 +1031,8 @@ def register_backend_oauth_routes(mcp_server: Any, profiles: dict[str, Any] | No
         if enabled() and path != DONE_PATH:
             app = UnauthenticatedWriteGuard(request_response(handler), limiter=limiter)
         mcp_server.custom_route(path, methods=["GET"])(app)
-    logger.info("gateway: backend OAuth pages mounted under /oauth/backend")
+    logger.info(
+        "gateway: backend OAuth pages mounted under /oauth/backend, "
+        "plus %d backend-named callback path(s)",
+        len(extra),
+    )

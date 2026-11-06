@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.9.0] - 2026-11-05
+
 ### Added
 
 - **`auth.callback_url` on a backend** (#725): the exact redirect_uri to
@@ -17,13 +19,38 @@ under that name.
   redirect allowlist and no DCR (Red Hat Hub). Absolute, `http` only on a literal
   loopback address, no userinfo, query or fragment, path not colliding with a
   mounted route. The gateway mounts its path as one more callback route behind
-  the same limiter and single-use `state`; the port is a deployment fact
-  (`PublishPort=127.0.0.1:8787:8019`).
+  the same limiter and single-use `state` — not a second trust surface, since a
+  callback is tied to a flow by that state alone. The port is a deployment fact
+  (`PublishPort=127.0.0.1:8787:8019`, now in
+  `contrib/quadlet/trentina.container`): a per-backend loopback listener was
+  rejected, because the browser is outside the container and the port must be
+  published either way. No subprocess, no new runtime,
+  `TRENTINA_REQUIRE_HARDENED` untouched; refresh and revoke unchanged. See
+  [docs/profiles.md](docs/profiles.md#backend-oauth).
 - **The agent-egress-bench run is published** (`docs/benchmark.md`, #507):
   98.3% containment at a 7.4% false-positive rate under `block`, 86.2% at 0.0%
   under `flag`, scored by the third-party runner against the shipped image
   configured by `benchmarks/agent_egress/`. Every miss and every unserved
   transport is named, with the bench's own "not yet independent" caveat.
+
+### Fixed
+
+- **An `https` `auth.callback_url` is held to the gateway's own ORIGIN** (#725),
+  not merely checked for shape. The browser carries an authorization code to
+  whatever that URI names, and for a server offering dynamic registration the
+  gateway registers it — so any other origin was a way out with a backend's
+  grant. Scheme, host AND port are compared, since a different port is a
+  different service. A literal loopback address over plain `http` still passes
+  (RFC 8252 3).
+- **`/alert` was shadowable.** The reserved-prefix list said `/alerts`, which
+  covers no route, so a backend could mount a callback over the alert ingress.
+  A test now holds that hand-written list against every route path the package
+  names, and fails rather than asking anyone to remember; it is what found this.
+- **A `callback_url` added by `reload_profiles` is reported, not silently
+  ignored.** The callback routes bind at startup, so the path would validate
+  cleanly and never be reached — the silent validated no-op that reporting
+  exists to prevent. It is now named under `not_applied`. `callback_paths()` is
+  the one predicate the routes are mounted by and the reload reports against.
 
 ## [6.8.0] - 2026-11-05
 
