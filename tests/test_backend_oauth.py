@@ -595,6 +595,8 @@ class TestCallbackUrlValidation:
             "https://gw.example/gateway/josui/mcp",  # ditto, under a prefix
             f"https://gw.example{CALLBACK_PATH}/x",  # under /oauth/backend
             "https://gw.example/" + "a" * 200,  # too long
+            "http://127.0.0.1:0/oauth/callback",  # nothing listens on port 0
+            "http://127.0.0.1:99999/oauth/callback",  # out of range
         ],
     )
     def test_refused(self, url: str) -> None:

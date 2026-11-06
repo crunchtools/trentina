@@ -990,7 +990,9 @@ def _origin_of(url: str) -> tuple[str, str, int]:
     """
     parsed = urlsplit(url)
     scheme = parsed.scheme.lower()
-    return scheme, (parsed.hostname or "").lower(), parsed.port or _DEFAULT_PORTS.get(scheme, 0)
+    # `or` would read an explicit :0 as "unspecified" and fill in the default.
+    port = parsed.port if parsed.port is not None else _DEFAULT_PORTS.get(scheme, 0)
+    return scheme, (parsed.hostname or "").lower(), port
 
 
 def _check_backend_callbacks(name: str, profile: Profile) -> None:

@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.9.0] - 2026-11-05
+
 ### Added
 
 - **A backend's own `redirect_uri`: `auth.callback_url` (#725).** An

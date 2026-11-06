@@ -802,8 +802,13 @@ class BackendAuth(BaseModel):
         try:
             parsed = urlsplit(v)
             host = (parsed.hostname or "").lower()
+            # Reading .port is what validates it: urlsplit itself accepts
+            # :99999 and raises only here.
+            port = parsed.port
         except ValueError:
             raise ValueError(f"auth.callback_url is not a URL: {v!r}") from None
+        if port == 0:
+            raise ValueError("auth.callback_url must not name port 0; nothing listens there")
         if parsed.scheme not in ("http", "https"):
             raise ValueError(f"auth.callback_url must be an http:// or https:// URL: {v!r}")
         if parsed.username is not None or parsed.password is not None:
