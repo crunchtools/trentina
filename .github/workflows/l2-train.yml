@@ -13,7 +13,12 @@ name: L2 - fine-tune
 #
 # Training runs on one RunPod Secure Cloud RTX 4090 (scripts/runpod_train.py),
 # the card the recipe was found on; the runner builds the data, exports and
-# gates. RUNPOD_API_KEY lives in the `runpod` environment, which releases it
+# gates. That runner is our own uncached one when UNCACHED_RUNNER_LABEL is
+# set (the CPU gates took 15 of a run's 26 minutes on GitHub's), and clearing
+# it moves the job back to GitHub-hosted. Only a hand dispatch reaches this
+# job, so no fork or Dependabot code runs there. Containers are podman,
+# rootless on both, so what they write is the runner user's and no step
+# needs sudo. RUNPOD_API_KEY lives in the `runpod` environment, which releases it
 # only to this job, dispatched by hand on main or feature/l2-* (deployment
 # branch policy): no push, pull request or fork run ever sees it. The pod
 # gets only public datasets and the public base model.
@@ -43,7 +48,7 @@ permissions:
 
 jobs:
   train:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.UNCACHED_RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 90
     environment: runpod
     env:
@@ -74,7 +79,7 @@ jobs:
           uv run --no-sync python scripts/l2_train_data.py --out build/l2-train --per-envelope "$PER_ENVELOPE" --replay "$REPLAY"
 
       - name: Build the model-builder stage
-        run: docker build --target model-builder -t l2-builder -f Containerfile .
+        run: podman build --target model-builder -t l2-builder -f Containerfile .
 
       - name: Start the GPU pod
         env:
@@ -99,15 +104,14 @@ jobs:
       # train_l2_model.py wrote (blend-<a>, only with --blends), side by side.
       - name: Export
         run: |
-          sudo chown -R "$(id -u)" build
           shopt -s nullglob  # no blend-* without --blends
           for src in build/l2-model build/l2-model/blend-*; do
             name=$(basename "$src"); [[ "$name" == l2-model ]] && name=blend-1
-            docker run --rm -v "$PWD:/w" -w /w l2-builder python scripts/export_l2_model.py \
+            podman run --rm --security-opt label=disable -v "$PWD:/w" -w /w l2-builder \
+              python scripts/export_l2_model.py \
               --src "$src" --repo "crunchtools/trentina:l2-train" --revision "$GITHUB_SHA" \
               --out "build/l2-export/$name" --id prompt-injection-guard-small-ct --license Apache-2.0 \
               --threshold 0.5 --window-tokens 512 --malicious-labels INJECTION
-            sudo chown -R "$(id -u)" build
             cp "$src/training.json" "build/l2-export/$name/"
             cp scripts/l2-model-NOTICE "build/l2-export/$name/NOTICE"
           done
@@ -120,12 +124,19 @@ jobs:
           set -o pipefail
           passed=0
           for model in build/l2-export/blend-*; do
+            [[ -d "$model" ]] || continue
+            # The three gates at once, four threads each: twelve, the
+            # runner's CPU quota. Reported in a fixed order once all are in.
+            for gate in l2_benign l2_envelopes l2_obfuscation; do
+              CLASSIFIER_THREADS=4 CLASSIFIER_MODEL_PATH="$model" uv run --no-sync \
+                python "benchmarks/$gate.py" > "$model.$gate.log" 2>&1 &
+            done
             status=0
+            for job in $(jobs -p); do wait "$job" || status=1; done
             echo "# $(basename "$model")" | tee -a "$GITHUB_STEP_SUMMARY"
             for gate in l2_benign l2_envelopes l2_obfuscation; do
               echo "## $gate" | tee -a "$GITHUB_STEP_SUMMARY"
-              CLASSIFIER_MODEL_PATH="$model" uv run --no-sync python "benchmarks/$gate.py" \
-                | tee -a "$GITHUB_STEP_SUMMARY" || status=1
+              grep -v '^transform:' "$model.$gate.log" | tee -a "$GITHUB_STEP_SUMMARY"
             done
             echo "$(basename "$model"): $([[ $status == 0 ]] && echo pass || echo FAIL)" \
               | tee -a "$GITHUB_STEP_SUMMARY"

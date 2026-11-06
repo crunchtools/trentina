@@ -1,0 +1,94 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "cache-control",
+       "no-cache"
+      ],
+      [
+       "content-type",
+       "application/x-git-upload-pack-result"
+      ]
+     ],
+     "status": 200,
+     "type": "start"
+    },
+    {
+     "body": "0008NAK\nPACK\u0000\u0000\u0000\u0002\u0000\u0000\u0000\u0000ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ",
+     "more": true,
+     "type": "body"
+    },
+    {
+     "body": "",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "git:forge",
+   "bytes_arrived": 60,
+   "bytes_delivered": 77,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "acme/widgets",
+   "destination_kind": "git",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "ok",
+   "profile": "agent1",
+   "session": null,
+   "success": 1,
+   "tool": "fetch"
+  }
+ ],
+ "open_slots": {},
+ "upstream": [
+  {
+   "body": "0040want aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa side-band-64k\n00000009done\n",
+   "headers": [
+    [
+     "accept",
+     "application/x-git-upload-pack-result"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "authorization",
+     "Basic eC1hY2Nlc3MtdG9rZW46Z29sZGVuLWFnZW50MS1mb3JnZS10b2tlbg=="
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "content-type",
+     "application/x-git-upload-pack-request"
+    ],
+    [
+     "host",
+     "git.example.com"
+    ],
+    [
+     "user-agent",
+     "git/trentina"
+    ]
+   ],
+   "method": "POST",
+   "url": "https://git.example.com/acme/widgets.git/git-upload-pack"
+  }
+ ]
+}

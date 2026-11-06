@@ -1,0 +1,447 @@
+{
+ "detections": [],
+ "exchanges": [
+  "{\"messages\": [{\"headers\": [[\"content-length\", \"121\"], [\"content-type\", \"application/json\"], [\"x-trentina-reason\", \"busy\"]], \"status\": 503, \"type\": \"start\"}, {\"body\": \"{\\\"error\\\": {\\\"type\\\": \\\"trentina_refused\\\", \\\"reason\\\": \\\"busy\\\"}, \\\"blocked\\\": true, \\\"block_reason\\\": \\\"busy\\\", \\\"scanner\\\": \\\"trentina\\\"}\", \"more\": false, \"type\": \"body\"}], \"raised\": null}",
+  "{\"messages\": [{\"headers\": [[\"content-length\", \"8\"], [\"content-type\", \"application/json\"]], \"status\": 200, \"type\": \"start\"}, {\"body\": \"{\\\"ok\\\":1}\", \"more\": false, \"type\": \"body\"}], \"raised\": null}",
+  "{\"messages\": [{\"headers\": [[\"content-length\", \"8\"], [\"content-type\", \"application/json\"]], \"status\": 200, \"type\": \"start\"}, {\"body\": \"{\\\"ok\\\":1}\", \"more\": false, \"type\": \"body\"}], \"raised\": null}",
+  "{\"messages\": [{\"headers\": [[\"content-length\", \"8\"], [\"content-type\", \"application/json\"]], \"status\": 200, \"type\": \"start\"}, {\"body\": \"{\\\"ok\\\":1}\", \"more\": false, \"type\": \"body\"}], \"raised\": null}",
+  "{\"messages\": [{\"headers\": [[\"content-length\", \"8\"], [\"content-type\", \"application/json\"]], \"status\": 200, \"type\": \"start\"}, {\"body\": \"{\\\"ok\\\":1}\", \"more\": false, \"type\": \"body\"}], \"raised\": null}",
+  "{\"messages\": [{\"headers\": [[\"content-length\", \"8\"], [\"content-type\", \"application/json\"]], \"status\": 200, \"type\": \"start\"}, {\"body\": \"{\\\"ok\\\":1}\", \"more\": false, \"type\": \"body\"}], \"raised\": null}",
+  "{\"messages\": [{\"headers\": [[\"content-length\", \"8\"], [\"content-type\", \"application/json\"]], \"status\": 200, \"type\": \"start\"}, {\"body\": \"{\\\"ok\\\":1}\", \"more\": false, \"type\": \"body\"}], \"raised\": null}",
+  "{\"messages\": [{\"headers\": [[\"content-length\", \"8\"], [\"content-type\", \"application/json\"]], \"status\": 200, \"type\": \"start\"}, {\"body\": \"{\\\"ok\\\":1}\", \"more\": false, \"type\": \"body\"}], \"raised\": null}",
+  "{\"messages\": [{\"headers\": [[\"content-length\", \"8\"], [\"content-type\", \"application/json\"]], \"status\": 200, \"type\": \"start\"}, {\"body\": \"{\\\"ok\\\":1}\", \"more\": false, \"type\": \"body\"}], \"raised\": null}"
+ ],
+ "gateway_calls": [
+  {
+   "backend": "http:github",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": null,
+   "destination_kind": null,
+   "detections_digest": null,
+   "error_message": "busy",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "denied_guard",
+   "profile": "agent1",
+   "session": null,
+   "success": 0,
+   "tool": "GET"
+  },
+  {
+   "backend": "http:github",
+   "bytes_arrived": 8,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "api.github.com#e6ba2dd7fd19f164",
+   "destination_kind": "egress",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "ok",
+   "profile": "agent1",
+   "session": null,
+   "success": 1,
+   "tool": "GET"
+  },
+  {
+   "backend": "http:github",
+   "bytes_arrived": 8,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "api.github.com#e6ba2dd7fd19f164",
+   "destination_kind": "egress",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "ok",
+   "profile": "agent1",
+   "session": null,
+   "success": 1,
+   "tool": "GET"
+  },
+  {
+   "backend": "http:github",
+   "bytes_arrived": 8,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "api.github.com#e6ba2dd7fd19f164",
+   "destination_kind": "egress",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "ok",
+   "profile": "agent1",
+   "session": null,
+   "success": 1,
+   "tool": "GET"
+  },
+  {
+   "backend": "http:github",
+   "bytes_arrived": 8,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "api.github.com#e6ba2dd7fd19f164",
+   "destination_kind": "egress",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "ok",
+   "profile": "agent1",
+   "session": null,
+   "success": 1,
+   "tool": "GET"
+  },
+  {
+   "backend": "http:github",
+   "bytes_arrived": 8,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "api.github.com#e6ba2dd7fd19f164",
+   "destination_kind": "egress",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "ok",
+   "profile": "agent1",
+   "session": null,
+   "success": 1,
+   "tool": "GET"
+  },
+  {
+   "backend": "http:github",
+   "bytes_arrived": 8,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "api.github.com#e6ba2dd7fd19f164",
+   "destination_kind": "egress",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "ok",
+   "profile": "agent1",
+   "session": null,
+   "success": 1,
+   "tool": "GET"
+  },
+  {
+   "backend": "http:github",
+   "bytes_arrived": 8,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "api.github.com#e6ba2dd7fd19f164",
+   "destination_kind": "egress",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "ok",
+   "profile": "agent1",
+   "session": null,
+   "success": 1,
+   "tool": "GET"
+  },
+  {
+   "backend": "http:github",
+   "bytes_arrived": 8,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "api.github.com#e6ba2dd7fd19f164",
+   "destination_kind": "egress",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "ok",
+   "profile": "agent1",
+   "session": null,
+   "success": 1,
+   "tool": "GET"
+  }
+ ],
+ "open_slots": {},
+ "upstream": [
+  {
+   "body": "",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "authorization",
+     "Bearer golden-agent1-github-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "host",
+     "api.github.com"
+    ],
+    [
+     "user-agent",
+     "trentina-egress"
+    ]
+   ],
+   "method": "GET",
+   "url": "https://api.github.com/repos/acme/widgets"
+  },
+  {
+   "body": "",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "authorization",
+     "Bearer golden-agent1-github-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "host",
+     "api.github.com"
+    ],
+    [
+     "user-agent",
+     "trentina-egress"
+    ]
+   ],
+   "method": "GET",
+   "url": "https://api.github.com/repos/acme/widgets"
+  },
+  {
+   "body": "",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "authorization",
+     "Bearer golden-agent1-github-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "host",
+     "api.github.com"
+    ],
+    [
+     "user-agent",
+     "trentina-egress"
+    ]
+   ],
+   "method": "GET",
+   "url": "https://api.github.com/repos/acme/widgets"
+  },
+  {
+   "body": "",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "authorization",
+     "Bearer golden-agent1-github-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "host",
+     "api.github.com"
+    ],
+    [
+     "user-agent",
+     "trentina-egress"
+    ]
+   ],
+   "method": "GET",
+   "url": "https://api.github.com/repos/acme/widgets"
+  },
+  {
+   "body": "",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "authorization",
+     "Bearer golden-agent1-github-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "host",
+     "api.github.com"
+    ],
+    [
+     "user-agent",
+     "trentina-egress"
+    ]
+   ],
+   "method": "GET",
+   "url": "https://api.github.com/repos/acme/widgets"
+  },
+  {
+   "body": "",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "authorization",
+     "Bearer golden-agent1-github-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "host",
+     "api.github.com"
+    ],
+    [
+     "user-agent",
+     "trentina-egress"
+    ]
+   ],
+   "method": "GET",
+   "url": "https://api.github.com/repos/acme/widgets"
+  },
+  {
+   "body": "",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "authorization",
+     "Bearer golden-agent1-github-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "host",
+     "api.github.com"
+    ],
+    [
+     "user-agent",
+     "trentina-egress"
+    ]
+   ],
+   "method": "GET",
+   "url": "https://api.github.com/repos/acme/widgets"
+  },
+  {
+   "body": "",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "authorization",
+     "Bearer golden-agent1-github-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "host",
+     "api.github.com"
+    ],
+    [
+     "user-agent",
+     "trentina-egress"
+    ]
+   ],
+   "method": "GET",
+   "url": "https://api.github.com/repos/acme/widgets"
+  }
+ ]
+}

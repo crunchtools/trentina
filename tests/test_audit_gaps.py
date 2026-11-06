@@ -18,15 +18,16 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
+from tests.refusal_shape import refused, refused_text
 from trentina.client import fetch_url
 from trentina.database import get_db, issue_tool_names
 from trentina.errors import QuarantineAgentError, SearchCanaryLeakedError
 from trentina.gateway import internal
-from trentina.gateway import router as router_mod
 from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import route_jsonrpc
 from trentina.logsafe import redact_source
+from trentina.transports import mcp as mcp_mod
+from trentina.transports.mcp import route_jsonrpc
 
 from .egress_harness import route
 from .mode_harness import layers
@@ -120,8 +121,11 @@ class TestMalformedCalls:
 
 class TestCatchAll:
     async def test_an_escaped_exception_is_a_gateway_error_row(self) -> None:
+        # ``resolve_call`` runs on the orchestrated request edge
+        # (``transports.mcp`` parse); a bug there escapes every audited path and
+        # lands in ``_route_tools_call``'s outer except as the one gateway_error row.
         with (
-            patch.object(router_mod, "resolve_call", side_effect=RuntimeError("bug")),
+            patch("trentina.transports.mcp.resolve_call", side_effect=RuntimeError("bug")),
             pytest.raises(RuntimeError),
         ):
             await _call(_profile(), {"name": f"web{NAMESPACE_SEP}fetch_tool", "arguments": {}})
@@ -129,20 +133,28 @@ class TestCatchAll:
 
     async def test_a_cancelled_call_is_a_cancelled_row(self) -> None:
         with (
-            patch.object(router_mod, "resolve_call", side_effect=asyncio.CancelledError),
+            patch("trentina.transports.mcp.resolve_call", side_effect=asyncio.CancelledError),
             pytest.raises(asyncio.CancelledError),
         ):
             await _call(_profile(), {"name": f"web{NAMESPACE_SEP}fetch_tool", "arguments": {}})
         assert _rows() == [("", redact_source(f"web{NAMESPACE_SEP}fetch_tool"), "cancelled")]
 
     async def test_a_path_that_audited_before_raising_is_not_counted_twice(self) -> None:
+        # Dispatch returns, then assembly raises: the response edge's
+        # ``McpServerFace._assemble`` is the orchestrated equivalent of the old
+        # ``router._assemble_call_result``. Its failure is audited gateway_error
+        # by ``audit._audit_assembly_failure`` (deliver's except), which sets the
+        # audited flag so the outer except does not count it a second time.
         with (
             patch.object(
-                router_mod,
+                mcp_mod,
                 "_dispatch",
                 return_value=SimpleNamespace(content=[], structured_content=None, is_error=False),
             ),
-            patch.object(router_mod, "_assemble_call_result", side_effect=RuntimeError("bug")),
+            patch(
+                "trentina.transports.mcp.McpServerFace._assemble",
+                side_effect=RuntimeError("bug"),
+            ),
             pytest.raises(RuntimeError),
         ):
             await _call(
@@ -169,11 +181,11 @@ class TestFetchAdvisory:
                     "arguments": {"url": "https://x.example/"},
                 },
             )
-        data = resp["error"]["data"]
+        data = refused(resp)
         assert data["reason"] == "security advisory (suspicious_http_415)"
         assert data["security_advisory"]["pattern"] == "suspicious_http_415"
         assert data["alternatives"] == []
-        assert "curl" in resp["error"]["message"], "the text says what not to do, too"
+        assert "curl" in refused_text(resp), "the text says what not to do, too"
         assert _rows() == [("web", "fetch_tool", "blocked_defense")]
         emitted.assert_called_once()
         assert emitted.call_args.kwargs["disposition"] == "refused"
@@ -201,5 +213,5 @@ class TestSearchFailures:
                 _profile(),
                 {"name": f"web{NAMESPACE_SEP}search_tool", "arguments": {"query": "q"}},
             )
-        assert resp["error"]["data"]["flagged_by"] == "l0"
+        assert refused(resp)["flagged_by"] == "l0"
         assert _rows() == [("web", "search_tool", "blocked_defense")]

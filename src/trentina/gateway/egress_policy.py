@@ -19,9 +19,8 @@ from urllib.parse import parse_qsl, quote, urlencode
 from .proxy_utils import filter_response_headers
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from http import HTTPStatus
-
-    from .profile import EgressUpstream
 
 #: Every refusal reason the route can carry. Closed, like ``git_wire.REASONS``.
 REASONS = frozenset(
@@ -38,7 +37,7 @@ REASONS = frozenset(
         "credential_in_request",
         "flagged",
         "not_fully_judged",
-        "gatekeeper",  # the guarded-execution judge refused the request's intent (#511)
+        "gatekeeper",  # the semantic-request-guards judge refused the request's intent (#511)
         "busy",  # the profile's in-flight slots are all taken
         "resolver_busy",
         "denied_guard",  # the address rail refused before a byte left (SSRF/
@@ -106,7 +105,7 @@ def canonical_query(raw: str) -> str:
     return urlencode(parse_qsl(raw, keep_blank_values=True))
 
 
-def build_url(upstream: EgressUpstream, path: str, query: str) -> str:
+def build_url(base: str, path: str, query: str) -> str:
     """The upstream URL, built from the operator's origin and a validated path.
 
     The host is never anything the caller sent. ``path`` is already normalized
@@ -115,21 +114,21 @@ def build_url(upstream: EgressUpstream, path: str, query: str) -> str:
     that slipped through becomes ``%3F``/``%23`` and cannot re-split the URL into
     a different endpoint, query or fragment at the destination.
     """
-    url = f"{upstream.upstream}/{quote(path.lstrip('/'), safe='/')}"
+    url = f"{base}/{quote(path.lstrip('/'), safe='/')}"
     canonical = canonical_query(query)
     return f"{url}?{canonical}" if canonical else url
 
 
 def forward_request_headers(
-    arrived: list[tuple[str, str]], upstream: EgressUpstream
+    arrived: list[tuple[str, str]], headers_allow: Iterable[str]
 ) -> dict[str, str]:
     """The caller's headers that may go upstream: an allowlist, never a strip-list.
 
-    ``BASE_REQUEST_HEADERS`` plus the upstream's ``headers_allow``, minus the
+    ``BASE_REQUEST_HEADERS`` plus the instance's ``headers_allow``, minus the
     credential and forwarding headers that never leave whatever a list says.
     The injected credential is added later, by the route, and is not judged.
     """
-    allowed = BASE_REQUEST_HEADERS | set(upstream.headers_allow)
+    allowed = BASE_REQUEST_HEADERS | set(headers_allow)
     out: dict[str, str] = {}
     for name, value in arrived:
         lower = name.lower()

@@ -6,21 +6,30 @@ import contextlib
 from typing import TYPE_CHECKING, Any, Literal
 
 from fastmcp import FastMCP
+from fastmcp.tools import ToolResult
+from mcp.types import TextContent
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
+from .errors import BlockedSourceError, EgressRefusedError, FileReadError
+from .gateway.diagnose import diagnose_visibility
+from .gateway.results import _refusal_text
 from .modes import current_policy, parse_mode_arg
 from .tools import (
+    approval_enrol,
     audit_verify,
     backend_auth_revoke,
     backend_auth_start,
     backend_auth_status,
     cache_flush,
+    federation_keygen,
     fetch_page,
     get_trentina_stats,
     judge_content,
     list_dir,
+    manage_config,
     manage_tool_pins,
+    profile_token,
     read_file,
     reconnect_backend,
     reload_profiles,
@@ -28,7 +37,7 @@ from .tools import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable
 
 
 @contextlib.asynccontextmanager
@@ -98,12 +107,54 @@ def _as_arg(mode: str | RedactMode | None) -> str | dict[str, str] | None:
     return {"redact": mode.redact} if isinstance(mode, RedactMode) else mode
 
 
+def _refusal_result(refusal: dict[str, Any]) -> ToolResult:
+    """A policy refusal as an ordinary tool result, the way the gateway sends it
+    (#550): ``isError`` false, the one-line ``[TRENTINA] Refused (...)`` an agent
+    reads even if it strips structured fields, and ``_trentina_refusal`` for one
+    that reads them. The gateway path is unchanged; this is only the standalone
+    boundary, where a raised exception would otherwise become ``isError`` true
+    and a stock agent's strike-breaker would count the refusal against us."""
+    return ToolResult(
+        content=[TextContent(type="text", text=_refusal_text(refusal))],
+        structured_content={"_trentina_refusal": refusal},
+    )
+
+
+async def _delivered(coro: Awaitable[dict[str, Any]]) -> dict[str, Any] | ToolResult:
+    """Await a standalone tool's work, turning a REFUSAL into an ordinary result.
+
+    A ``BlockedSourceError`` carries its own ``refusal`` (a defense block, the
+    blocklist, a fetch advisory, a confinement denial); ``FileReadError`` and
+    ``EgressRefusedError`` carry a closed ``reason`` a refusal is built from.
+    Every other exception — a timeout, a provider failure, an oversize scan —
+    is a genuine failure and still raises, so it stays ``isError`` true.
+
+    Only STANDALONE converts: these same tools back the gateway's ``internal://``
+    backend, where the dispatcher binds a profile for the call and expects the
+    raise so it can shape the refusal and audit it ``blocked_defense`` (#550). A
+    bound profile is exactly that gateway dispatch; standalone binds none. Behind
+    a gateway the exception is re-raised and the gateway path is unchanged."""
+    try:
+        return await coro
+    except (BlockedSourceError, FileReadError, EgressRefusedError) as exc:
+        from .gateway.context import _current_profile
+
+        if _current_profile.get() is not None:
+            raise  # behind a gateway: the internal backend shapes and audits it
+        refusal = (
+            exc.refusal
+            if isinstance(exc, BlockedSourceError)
+            else {"reason": exc.reason, "alternatives": []}
+        )
+        return _refusal_result(refusal)
+
+
 @mcp.tool()
 async def fetch_tool(
     url: str,
     trentina_mode: str | RedactMode | None = None,
     trentina_preprocess: bool | list[str] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | ToolResult:
     """Fetch a URL through all three layers.
 
     IMPORTANT: If this returns a security_advisory, the URL is behaving like a
@@ -118,11 +169,13 @@ async def fetch_tool(
     """
     name, question = parse_mode_arg(_as_arg(trentina_mode))
     mode = current_policy().resolve(name)
-    return await fetch_page(
-        url,
-        mode,
-        question or "Extract the main content from this page.",
-        trentina_preprocess,
+    return await _delivered(
+        fetch_page(
+            url,
+            mode,
+            question or "Extract the main content from this page.",
+            trentina_preprocess,
+        )
     )
 
 
@@ -131,7 +184,7 @@ async def read_tool(
     path: str,
     trentina_mode: str | RedactMode | None = None,
     trentina_preprocess: bool | list[str] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | ToolResult:
     """Read a local text file through all three layers. Binary is rejected.
 
     Args:
@@ -141,11 +194,13 @@ async def read_tool(
     """
     name, question = parse_mode_arg(_as_arg(trentina_mode))
     mode = current_policy().resolve(name)
-    return await read_file(
-        path,
-        mode,
-        question or "Extract the main content from this file.",
-        trentina_preprocess,
+    return await _delivered(
+        read_file(
+            path,
+            mode,
+            question or "Extract the main content from this file.",
+            trentina_preprocess,
+        )
     )
 
 
@@ -153,7 +208,7 @@ async def read_tool(
 async def dir_tool(
     path: str,
     trentina_mode: str | RedactMode | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | ToolResult:
     """List a directory through all three layers.
 
     File names are judged like any other text. A directory where a .py file
@@ -167,7 +222,9 @@ async def dir_tool(
     """
     name, question = parse_mode_arg(_as_arg(trentina_mode))
     mode = current_policy().resolve(name)
-    return await list_dir(path, mode, question or "Summarize what this directory contains.")
+    return await _delivered(
+        list_dir(path, mode, question or "Summarize what this directory contains.")
+    )
 
 
 @mcp.tool()
@@ -176,7 +233,7 @@ async def content_tool(
     content_type: str = "text/plain",
     trentina_mode: str | RedactMode | None = None,
     trentina_preprocess: bool | list[str] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | ToolResult:
     """Judge inline text through all three layers. It is always untrusted.
 
     Args:
@@ -187,12 +244,14 @@ async def content_tool(
     """
     name, question = parse_mode_arg(_as_arg(trentina_mode))
     mode = current_policy().resolve(name)
-    return await judge_content(
-        content,
-        mode,
-        question or "Extract the main content.",
-        content_type=content_type,
-        preprocess=trentina_preprocess,
+    return await _delivered(
+        judge_content(
+            content,
+            mode,
+            question or "Extract the main content.",
+            content_type=content_type,
+            preprocess=trentina_preprocess,
+        )
     )
 
 
@@ -201,7 +260,7 @@ async def search_tool(
     query: str,
     num_results: int = 5,
     trentina_mode: str | RedactMode | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | ToolResult:
     """Search the web; the grounded answer, titles and URLs are judged as one.
 
     Returns the answer plus the sources, which can be followed up with
@@ -214,7 +273,9 @@ async def search_tool(
     """
     name, question = parse_mode_arg(_as_arg(trentina_mode))
     mode = current_policy().resolve(name)
-    return await web_search(query, num_results, mode, question or "Summarize the search results.")
+    return await _delivered(
+        web_search(query, num_results, mode, question or "Summarize the search results.")
+    )
 
 
 @mcp.tool()
@@ -246,13 +307,13 @@ async def read_part_tool(
         part's text, a [TRENTINA] line with the next call) and
         ``_trentina_part`` with ``part``, ``parts``, ``delivered`` and, until
         the last part, ``handle`` and ``next``. A part that is refused: one
-        text block saying why, ``isError`` true, ``_trentina_refusal`` and
+        text block saying why, ``isError`` false, ``_trentina_refusal`` and
         ``_trentina_warning``. With no arguments: ``held``, a list of
         ``handle``, ``tool``, ``parts``, ``delivered`` and
         ``expires_in_seconds``.
     """
     # Behind the gateway the router answers this call itself and it never
-    # arrives here (``router._read_part``, #340). Standalone nothing is cut
+    # arrives here (``parts._read_part``, #340). Standalone nothing is cut
     # and nothing is held, so there is never a part to read.
     del handle, part, trentina_mode
     return {"held": [], "note": "Responses are delivered in parts only behind the gateway."}
@@ -321,8 +382,101 @@ async def reconnect_backend_tool(backend: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def config_tool(
+    action: Literal["get", "set", "unset", "normalize"],
+    path: str | None = None,
+    value: str | bool | int | float | list[Any] | dict[str, Any] | None = None,
+    expect_hash: str | None = None,
+) -> dict[str, Any]:
+    """Read and change this gateway's own configuration. Operator profile only.
+
+    The configuration is a YAML file that a person also maintains by hand and
+    keeps in version control, so a write must not be composed blind: read the
+    part you intend to change, then send the `hash` that `get` returned back as
+    `expect_hash`. If the file moved in between, the write is refused rather
+    than overwriting whatever else was done to it. Every successful write
+    returns the new hash, so a run of changes needs one read at the start.
+
+    A change is validated by loading it before anything is replaced, so a
+    refusal has changed nothing, and the previous version is kept inside the
+    gateway. The change is applied the same way `reload_profiles` applies one;
+    whatever needs a restart to take effect is reported in the result.
+
+    Two things you may propose and cannot apply: the operator profile — who holds
+    `role: operator`, and how a caller becomes one — and `trust_verdict`, which
+    makes this gateway serve another gateway's response without scanning it. A
+    write carrying either is STAGED rather than applied. Nothing changes, the
+    result says what a person will be shown, and it takes effect only when one
+    opens `/approve` on this gateway and agrees; `approval_enrol` is how you ask
+    for the passkey or password that lets them. With no approver set there is no
+    way to agree, so both stay refused. Removing trust (`unset`) applies at
+    once, since it only causes more scanning. Everything else about federation
+    is yours, including `federation.peers`.
+
+    A write is refused outright if the file cannot be reproduced byte for byte
+    on the way out, because a one-key change would then silently reformat
+    everything else. `normalize` is the way through that: it rewrites the file
+    once into a form that does reproduce itself, having first proved the
+    rewrite keeps every value and every comment. It needs `expect_hash` like
+    any write, takes no `path`, and reports how many lines and hunks it moved
+    so you can check the file's own diff against a number. It refuses a file
+    that already reproduces itself — there is nothing to do.
+
+    Args:
+        action: `get` reads, `set` writes a value, `unset` removes a key,
+            `normalize` rewrites the whole file so later writes apply cleanly.
+        path: Dotted config keys, e.g.
+            "profiles.myagent.backends.peergw.federated.primary_key_name". Omit on
+            `get` for the whole file, and on `normalize` entirely.
+        value: What to set. A scalar, a list or a mapping. It REPLACES whatever
+            is at that path: setting a mapping removes any keys already there
+            that your mapping does not include, so write the deepest path that
+            covers your change rather than a parent.
+        expect_hash: The `hash` from a previous `get` or write. Required for
+            every write, `normalize` included.
+
+    Returns:
+        `get`: `hash` (of the whole file, whatever `path` you asked for) and
+        `value`. A successful write: `applied`, `hash_before`, `hash_after`,
+        `backup` (where the previous version was kept), and `reload` — read
+        `reload.not_applied` for anything that needs a restart. A `normalize`
+        adds `reshaped` with the `lines` and `hunks` it moved. A refusal:
+        `error`, plus `hash` when the file had moved on.
+    """
+    return await manage_config(action, path, value, expect_hash)
+
+
+@mcp.tool()
+async def federation_keygen_tool(name: str) -> dict[str, Any]:
+    """Mint an Ed25519 keypair for a federated link and return its public key.
+
+    Operator profile only. Setting up federation needs a keypair on each side:
+    a primary key the primary signs its requests with, and a secondary key the
+    secondary vouches for responses with. This creates one without a shell.
+
+    The private half is written inside the gateway, where no file tool can
+    reach it, and is never returned. What comes back is the PUBLIC key, which
+    is what the other gateway pins for this peer — copy it into that side's
+    config. Refer to the key here by the name you gave it, as
+    ``primary_key_name`` or ``secondary_key_name``.
+
+    A name is written once. To rotate, mint a new name and point the config at
+    it, so a key in use is never replaced underneath a live link.
+
+    Args:
+        name: What to call the key: lowercase letters, digits and hyphens
+            (e.g. "primary-to-peergw", "ingress-signing").
+    """
+    return await federation_keygen(name)
+
+
+@mcp.tool()
 async def tool_pins_tool(
-    action: Literal["list", "approve", "reject"], backend: str, tool: str | None = None
+    action: Literal["list", "approve", "reject", "approve_all"],
+    backend: str,
+    tool: str | None = None,
+    hash: str | None = None,
+    set_digest: str | None = None,
 ) -> dict[str, Any]:
     """Release or keep withholding the tools a backend newly offered or changed.
 
@@ -332,11 +486,42 @@ async def tool_pins_tool(
 
     Args:
         action: ``list`` what is held (with the fields that changed and whether
-            a safety hint was loosened), ``approve`` one, or ``reject`` one.
+            a safety hint was loosened), ``approve`` one, ``reject`` one, or
+            ``approve_all`` to release a whole listed set on one decision.
         backend: Backend name, wherever it is configured.
         tool: The held tool's name, for approve and reject.
+        hash: Which held DEFINITION, from ``list``. Needed only where a tool
+            holds more than one, which happens when a backend answers two
+            profiles with different bytes. With one it is implied.
+        set_digest: The ``digest`` ``list`` returned, required by
+            ``approve_all``, which refuses if the held set changed since. A
+            batch releases only definitions whose sole changed fields are
+            ``description`` and ``inputSchema`` — what the gateway's own
+            description compressor rewrites. Anything else, a new tool
+            included, stays one approval at a time.
     """
-    return await manage_tool_pins(action, backend, tool)
+    return await manage_tool_pins(action, backend, tool, hash, set_digest)
+
+
+@mcp.tool()
+async def tool_visibility_tool(
+    backend: str, tool: str, profile: str | None = None
+) -> dict[str, Any]:
+    """Explain why a tool is, or is not, in a profile's served tool list.
+
+    Names the stage that drops it — the backend does not offer it, a pin hold
+    is withholding it, the allowlist or denylist excludes it, or the perimeter
+    withheld its description — so you stop guessing between reconnect, flush and
+    reload. Rebuilds fresh, so a ``served`` answer the client cannot see means
+    the client's cache is stale (run ``cache_flush``).
+
+    Args:
+        backend: The backend's name in the profile.
+        tool: The tool's name AS THE BACKEND OFFERS IT (the real name, not the
+            short name a client sees).
+        profile: Another profile to inspect; operator only. Omit for your own.
+    """
+    return await diagnose_visibility(backend, tool, profile)
 
 
 @mcp.tool()
@@ -372,6 +557,69 @@ async def backend_auth_tool(
 
 
 @mcp.tool()
+async def approval_enrol_tool(action: str = "open") -> dict[str, Any]:
+    """Bring up the page where a person sets how they approve. Operator only.
+
+    Use this when the person says "let me set my passkey in Trentina", "let me
+    change my password in Trentina", "add a passkey", or asks why nothing can
+    be approved. Some changes on this gateway need a person to agree — the
+    operator profile, federation trust and peers, a perimeter going
+    detect-only, a new way out of the network — and a person agrees by signing
+    in with a passkey or the approval password.
+
+    `open` (the default) returns `open_url`: open it in the person's browser,
+    or give it to them. If nothing is set yet, it starts a short window and the
+    link carries a one-time code; the person creates a passkey there. If
+    something is set already, the person signs in and manages passkeys and the
+    password there. `close` shuts an open window early.
+
+    You can ask for this; you cannot answer it. A passkey needs the person's
+    device and a password is a form submission none of your tools makes — that
+    asymmetry is why asking is yours to do.
+
+    Args:
+        action: "open" or "close".
+
+    Returns:
+        `open_url` (absolute, when the gateway knows its address) and `url`,
+        with `opened`, `code` and `open_for_seconds` for a new window, or
+        `already_set`; `closed` for close; `error` otherwise.
+    """
+    return await approval_enrol(action)
+
+
+@mcp.tool()
+async def profile_token_tool(name: str) -> dict[str, Any]:
+    """Mint a bearer token for a profile and return it once. Operator only.
+
+    The last step of provisioning an agent that needed a person. A profile's
+    token could only be named as an environment variable, which the container
+    carries, which means a restart — and worse than a restart: a profile naming
+    a variable that is not set fails validation, so `config_tool` refuses the
+    write and restores the file. There was no way to add an agent profile to a
+    running gateway at all.
+
+    Put the NAME this returns in the profile's `auth.bearer_token_name` and
+    give the token itself to the agent that will use it. The gateway re-reads
+    the token on every reload, so a profile added now authenticates without a
+    restart.
+
+    This is the ONLY time the token comes back. Nothing else in Trentina
+    returns a credential — `federation_keygen` hands back only the public half
+    — so treat it accordingly: there is no second read, and a lost token is
+    rotated by minting a new name and pointing the profile at it.
+
+    Args:
+        name: Lower-case letters, digits and hyphens. It becomes a filename in
+            the gateway's own token store.
+
+    Returns:
+        `token_name` and `token`, or `error`.
+    """
+    return await profile_token(name)
+
+
+@mcp.tool()
 async def reload_profiles_tool() -> dict[str, Any]:
     """Re-read profiles.yaml and apply it without restarting the gateway.
 
@@ -380,7 +628,7 @@ async def reload_profiles_tool() -> dict[str, Any]:
     loaded at startup. Validates the whole file first: if it does not parse,
     the running config is kept and the error is returned.
 
-    Applies live: backends, tools_allow/tools_deny, parameter guards, defense
+    Applies live: backends, tools_allow/tools_deny, request guards, defense
     settings, per-profile llm_keys, bearer tokens, and session limits. Needs a
     restart: the llm_providers and matrix sections, and adding an alert or
     matrix ingress where no route was registered at startup — the result names

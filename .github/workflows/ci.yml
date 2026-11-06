@@ -6,46 +6,25 @@ on:
   pull_request:
     branches: [main]
 
+# A new push supersedes the run it interrupts, on a PR only (#662 follow-up).
+# Without this, four pushes to one branch left four complete sets of runs
+# grinding to completion -- three image builds and a four-way test matrix each.
+#
+# Only PR runs share a group. Everything else keys on `run_id`, which is unique,
+# so no non-PR run ever contends and none can be dropped. `cancel-in-progress:
+# false` would NOT have been enough: a group holds at most one PENDING run, so a
+# third arrival cancels the second. Three quick pushes to main would have dropped
+# the middle one's publish -- a half-finished manifest and a downstream never told
+# to rebuild, which is the thing this is supposed to prevent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        # Every version `requires-python` admits, INCLUDING the one the
-        # container runs. CI previously tested 3.11 and 3.12 -- neither of
-        # which is production (the Containerfile is on 3.14), while the
-        # advertised 3.10 floor could not be installed at all. An untested
-        # floor and an untested production version are how issue #100 happened.
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          version: "latest"
-
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-
-      # --locked fails the run if uv.lock is stale or missing rather than
-      # silently re-resolving. Without it a committed lockfile is decoration:
-      # CI would still drift on a transitive release and the green check would
-      # describe a dependency set nobody chose. See issue #79.
-      - name: Install dependencies
-        run: uv sync --all-extras --locked
-
-      - name: Run linter
-        run: uv run ruff check src tests corpora
-
-      - name: Run type checker
-        run: uv run mypy src
-
-      - name: Run tests
-        run: uv run pytest -v
-        env:
-          GEMINI_API_KEY: "test_key_for_ci"
+  # Lint, types and the suite moved to `security.yml`'s `sdlc ci` job, which
+  # runs them from python-sdlc at the release .pre-commit-config.yaml pins --
+  # the image and commands the laptop runs. What stays here needs a secret or
+  # runs only after merge.
 
   live-l3:
     name: Live L3 Detection (OpenRouter)
@@ -88,7 +67,7 @@ jobs:
           TRENTINA_LIVE_L3: "1"
           TRENTINA_LIVE_L3_PROVIDER: openrouter
           QUARANTINE_MODEL: "google/gemini-2.5-flash"
-        run: uv run pytest tests/test_l3_live.py -v
+        run: uv run pytest -n0 tests/test_l3_live.py -v
 
   boundary-review-eval:
     name: Boundary Review Eval (#90)
@@ -161,114 +140,3 @@ jobs:
   gourmand:
     name: Code Quality (Gourmand)
     uses: crunchtools/gatehouse/.github/workflows/gourmand.yml@v0
-
-  build-container:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Build container image
-        run: |
-          docker build -f Containerfile -t trentina:test .
-
-      - name: Verify container starts
-        run: |
-          # As production runs it, then /health must answer. The default stdio
-          # transport exits on the EOF of a detached stdin, so it proves
-          # nothing. /data is a volume in production; a tmpfs stands in here.
-          mkdir -p ci-gateway
-          printf 'profiles:\n  ci:\n    auth:\n      bearer_token_env: CI_TOKEN\n    backends: {}\n' \
-            > ci-gateway/profiles.yaml
-          openssl rand -hex 16 > ci-gateway/token
-          chmod -R a+rX ci-gateway
-          docker run -d --name trentina-start -p 127.0.0.1:8019:8019 \
-            --read-only --tmpfs /tmp --tmpfs /data:mode=1777 \
-            --cap-drop=all --security-opt no-new-privileges \
-            -v "$PWD/ci-gateway:/etc/trentina:ro" \
-            -e TRENTINA_GATEWAY_ENABLED=1 -e CI_TOKEN_FILE=/etc/trentina/token \
-            trentina:test --transport streamable-http --host 0.0.0.0 --port 8019
-          ok=0
-          for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8019/health; then ok=1; break; fi
-            sleep 2
-          done
-          docker logs trentina-start 2>&1 | tail -20
-          docker rm -f trentina-start >/dev/null
-          test "$ok" -eq 1
-
-      # The real test of a native wheel in a distroless image. The runtime
-      # stage copies only site-packages plus libstdc++, so an extension
-      # needing a shared object from anywhere else fails here and nowhere
-      # else -- which is exactly how onnxruntime broke once already.
-      - name: Verify native extensions import in the distroless image
-        run: |
-          docker run --rm --entrypoint python trentina:test -c "
-          import onnxruntime, vodozemac
-          print('onnxruntime', onnxruntime.__version__)
-          print('vodozemac imported')
-          import cv2, PIL, pypdf, rapidocr, shapely, pyclipper
-          print('opencv', cv2.__version__, 'pillow', PIL.__version__, 'pypdf', pypdf.__version__)
-          "
-
-      - name: Build test runner image (adds shell + pytest to distroless)
-        run: |
-          docker build -f - -t trentina:test-runner . <<'EOF'
-          FROM quay.io/hummingbird/python:3.14-builder AS test-deps
-          USER 0
-          RUN pip install --no-cache-dir --prefix=/usr pytest pytest-asyncio
-
-          FROM trentina:test
-          COPY --from=test-deps /usr/lib/python3.14/site-packages/ /usr/lib/python3.14/site-packages/
-          EOF
-
-      # Once per model the image ships (#350). TRENTINA_REQUIRE_L2_MODEL makes
-      # a model that fails to load FAIL the run: until 0.55.0 this step named
-      # a path the image never had, and every L2 test here skipped. The
-      # corpus's own L2 annotations run here too: outside the image they
-      # always skip, and one went stale under the 0.55.0 default (#353).
-      - name: Run L2 integration tests in container
-        run: |
-          for model in prompt-injection-guard-small-ct; do
-            echo "::group::L2 integration: $model"
-            docker run --rm \
-              --entrypoint python \
-              -v ${{ github.workspace }}/tests:/tests:ro \
-              -v ${{ github.workspace }}/corpora:/corpora:ro \
-              -e GEMINI_API_KEY="test_key_for_ci" \
-              -e CLASSIFIER_MODEL="$model" \
-              -e TRENTINA_REQUIRE_L2_MODEL=1 \
-              trentina:test-runner \
-              -m pytest /tests/test_l2_integration.py \
-                "/tests/test_adversarial_corpus.py::TestLayer2Boundary" -v
-            echo "::endgroup::"
-          done
-
-      # The provider is mocked (fixture responses), so no real key: gating this
-      # on a Gemini secret the repo never had meant it never ran.
-      - name: Run L3 integration tests in container
-        run: |
-          docker run --rm \
-            --entrypoint python \
-            -v ${{ github.workspace }}/tests:/tests:ro \
-            -v ${{ github.workspace }}/corpora:/corpora:ro \
-            -e GEMINI_API_KEY="test_key_for_ci" \
-            trentina:test-runner \
-            -m pytest /tests/test_l3_integration.py -v
-
-      # The real OCR and PDF workers, as child processes of the distroless
-      # image, with no network, a read-only root and no capabilities, as
-      # production runs them (#369, #370). Outside the image these tests
-      # prove the code; only here do they prove that OpenCV, Pillow and the
-      # models load without a shell, a writable disk or a download. /tmp is
-      # for pytest's own files: the workers write nothing.
-      - name: Run the OCR and PDF workers in the container
-        run: |
-          docker run --rm \
-            --network none --read-only --tmpfs /tmp --cap-drop=all \
-            --security-opt no-new-privileges \
-            --entrypoint python \
-            -v ${{ github.workspace }}/tests:/tests:ro \
-            -v ${{ github.workspace }}/corpora:/corpora:ro \
-            -e GEMINI_API_KEY="test_key_for_ci" \
-            trentina:test-runner \
-            -m pytest -p no:cacheprovider /tests/test_unpack_ocr.py /tests/test_unpack_pdf.py -v

@@ -33,17 +33,13 @@ import logging
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from ..gateway.backend import (
-    evict_backend_cache_url,
-    list_backend_tools,
-    refresh_backend_tools,
-)
+from ..gateway.aggregate import invalidate_profile_cache, invalidate_profile_cache_for_backend
+from ..gateway.backend import refresh_backend_tools
 from ..gateway.circuit import breaker
 from ..gateway.compress import get_profiles
 from ..gateway.decoy import served_tools
 from ..gateway.errors import BackendCallError, ScopeError
 from ..gateway.filter import filter_tools
-from ..gateway.router import invalidate_profile_cache, invalidate_profile_cache_for_backend
 from ..gateway.scope import (
     CallerScope,
     current_scope,
@@ -77,7 +73,7 @@ def _safe_endpoint(url: str) -> str:
 def _configured_name(backends: Mapping[str, Any], name: str) -> str:
     """The configured key equal to ``name``, once resolution has matched it.
 
-    ``list_backend_tools`` logs the name it is given. Handing it the key from
+    ``refresh_backend_tools`` logs the name it is given. Handing it the key from
     the configuration rather than the caller's argument makes what reaches the
     log the gateway's own string by construction (#262), which is what the
     CodeQL pack's tool-arg-to-log query checks (#269).
@@ -139,13 +135,21 @@ async def _reset_one(
                 "error": 'needs a grant: authorize with backend_auth (action="start") first',
                 "circuit": breaker.get_state(url).value,
             }
+    elif cfg.federated is not None and holders:
+        # A federated link authenticates with a per-request JWT whose caller is
+        # the primary profile (#592 C1/C2); _credentials mints it only when a
+        # profile is passed. The operator path otherwise passed none, so the
+        # probe went out unauthenticated and the secondary rejected it with an
+        # opaque ExceptionGroup. Hand it an owning profile so the link re-auths.
+        holder = holders[0]
     breaker.reset(url)
     try:
-        if scope.is_operator and holder is None:
-            evict_backend_cache_url(url)
-            tools = await list_backend_tools(backend, cfg)
-        else:
-            tools = await refresh_backend_tools(backend, cfg, holder)
+        # Refresh in place — never evict first. Evicting before the fetch
+        # stranded the primary with no tools when the fetch then failed
+        # (the list was already gone from memory and SQLite). refresh fetches
+        # fresh, replaces on success, and leaves the last-good list untouched
+        # on failure; the aggregate is invalidated below only after a success.
+        tools = await refresh_backend_tools(backend, cfg, holder)
     except BackendCallError as exc:
         return {
             **base,
@@ -191,7 +195,7 @@ async def reconnect_backend(backend: str) -> dict[str, Any]:
             url, cfg = resolve_backend(scope, backend)
             base = {"endpoint": _safe_endpoint(url), "scope": scope.label}
             name = _configured_name(scope.backends, backend)
-            holders = [scope.profile] if scope.profile is not None else []
+            holders = [scope.profile]
             results = [await _reset_one(name, url, cfg, base, scope, holders)]
             return {
                 "backend": backend,
@@ -203,13 +207,17 @@ async def reconnect_backend(backend: str) -> dict[str, Any]:
         # The caller's OWN backend names, which turns a typo into a usable
         # correction. Listing the gateway's, which is what this used to do,
         # turned every typo into a directory of every other agent's backends.
-        refused = current_scope()
+        # An unbound caller has no scope to list — current_scope() refuses it.
+        try:
+            available = sorted(current_scope().backends)
+        except ScopeError:
+            available = []
         logger.warning("reconnect_backend refused: %s", exc_kind(exc))
         return {
             "backend": backend,
             "reconnected": False,
             "error": str(exc),
-            "available": sorted(refused.backends) if refused else [],
+            "available": available,
         }
 
     profiles = get_profiles()

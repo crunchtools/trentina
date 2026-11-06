@@ -24,6 +24,7 @@ from mcp.types import ListToolsResult, Tool
 
 from trentina.database import record_detection, record_gateway_call
 from trentina.gateway import compress
+from trentina.gateway.aggregate import _profile_tools_cache
 from trentina.gateway.backend import _tool_list_cache
 from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
@@ -31,12 +32,14 @@ from trentina.gateway.loader import (
     load_profiles,
     register_active_config,
 )
-from trentina.gateway.router import _profile_tools_cache
 from trentina.outcomes import Outcome
 from trentina.tools.cache import cache_flush
+from trentina.tools.config import manage_config
+from trentina.tools.keygen import federation_keygen
 from trentina.tools.reconnect import reconnect_backend
 from trentina.tools.reload import reload_profiles
 from trentina.tools.stats import get_trentina_stats
+from trentina.tools.token import profile_token
 
 pytestmark = pytest.mark.asyncio
 
@@ -87,8 +90,8 @@ def gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     register_active_config(path, config, {})
     set_profiles(config.profiles)
 
-    _tool_list_cache[ALPHA_URL] = [{"name": "alpha_only_tool"}]
-    _tool_list_cache[BETA_URL] = [{"name": "beta_tool"}]
+    _tool_list_cache[(ALPHA_URL, "")] = [{"name": "alpha_only_tool"}]
+    _tool_list_cache[(BETA_URL, "")] = [{"name": "beta_tool"}]
     _profile_tools_cache["alpha"] = [{"name": "alpha-only-backend__alpha_only_tool"}]
     _profile_tools_cache["beta"] = [{"name": "beta-backend__beta_tool"}]
 
@@ -133,6 +136,18 @@ async def _reload() -> dict[str, Any]:
     return await reload_profiles()
 
 
+async def _keygen() -> dict[str, Any]:
+    return await federation_keygen("alpha")
+
+
+async def _mint_token() -> dict[str, Any]:
+    return await profile_token("alpha")
+
+
+async def _config_read_alphas_profile() -> dict[str, Any]:
+    return await manage_config("get", "profiles.alpha")
+
+
 # (label, call, the argument the caller passed in). A refusal quotes the name
 # it was given, which is the caller's own string and not a disclosure — so it
 # is removed from the answer before the check, and nothing else is forgiven.
@@ -147,6 +162,15 @@ ADMIN_CALLS: list[tuple[str, Callable[[], Any], str | None]] = [
     ),
     ("reconnect_backend (own)", _reconnect_own, None),
     ("reload_profiles", _reload, None),
+    # The name is the caller's own string, and here it is deliberately a
+    # profile name: an agent must not learn that "alpha" means anything.
+    ("federation_keygen (a profile's name as the key name)", _keygen, "alpha"),
+    # Same shape, and it RETURNS a credential, so an agent reaching it would
+    # get a usable token rather than merely a refusal (#635).
+    ("profile_token (a profile's name as the token name)", _mint_token, "alpha"),
+    # The whole config is the operator's to read; an agent asking for another
+    # profile's section must learn nothing, not even that it exists.
+    ("config get (another profile's section)", _config_read_alphas_profile, "alpha"),
 ]
 
 

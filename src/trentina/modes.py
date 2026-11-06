@@ -262,7 +262,7 @@ class ModePolicy:
         """The mode this call runs in. Omission resolves BEFORE the check.
 
         Checking the requested value and then defaulting would let an omitted
-        mode skip the policy entirely — the parameter-guard trap, where a
+        mode skip the policy entirely — the literal-request-guard trap, where a
         missing argument is simply not checked.
         """
         name = self.default.value if requested is None else canonical_mode(str(requested))
@@ -289,14 +289,20 @@ class ModePolicy:
 
 
 def current_policy() -> ModePolicy:
-    """The gateway's policy for this call, else the standalone one from the environment."""
-    from .gateway.context import get_current_policy
+    """The gateway's policy for this call, else the bound profile's own.
+
+    Behind the gateway the calling profile's policy is bound around the internal
+    dispatch. Standalone it is the synthesized operator's ``defense`` policy —
+    which is itself ``TRENTINA_MODE`` / ``TRENTINA_MODES`` (``_mode_policy_env``),
+    so the standalone policy is unchanged, now read through the profile.
+    """
+    from .gateway.context import get_current_policy, get_current_profile
 
     bound = get_current_policy()
     if bound is not None:
         return bound
-    config = get_config()
-    return ModePolicy.of(config.allowed_modes, config.default_mode)
+    defense = get_current_profile().defense
+    return ModePolicy.of(defense.modes or [defense.enforcement], defense.enforcement)
 
 
 BLOCKLIST_REASON = "on the blocklist"

@@ -28,9 +28,13 @@ from ..database import (
 )
 from ..gateway.errors import ScopeError
 from ..gateway.scope import CallerScope, require_caller
+from ..gateway.service import judge_stamp, service_profile
 from ..gateway.surface import TOKEN_NOTE, surface_profiles, surface_report
 from ..logsafe import redact_source
 from ..outcomes import Outcome
+from ..perimeter_db import opened_path as perimeter_opened_path
+from ..perimeter_db import perimeter_stamp
+from ..perimeter_db import snapshot_reader as perimeter_snapshot_reader
 from ..quarantine.classifier import is_classifier_available, model_info
 
 GATEWAY_AUDIT_LOOKBACK_DAYS = 30
@@ -42,7 +46,7 @@ COLUMN_MEANINGS = {
     "ok": "Call returned content.",
     "blocked": (
         "Policy stopped the call: defense pipeline block, allowlist denial, "
-        "or parameter guard. Working as designed — a security metric, not an "
+        "or request guard. Working as designed — a security metric, not an "
         "error rate."
     ),
     "tripped": (
@@ -87,15 +91,15 @@ def _agent_stats(scope: CallerScope) -> dict[str, Any]:
     process defaults, which is both narrower and more accurate: a profile with
     its own provider, model or thresholds was never described by the globals.
     """
-    defense = scope.profile.defense if scope.profile is not None else None
+    defense = scope.profile.defense
     return {
         "scope": scope.label,
         "config": {
-            "provider": defense.provider if defense else None,
-            "model": defense.model if defense else None,
-            "l2_threshold": defense.l2_threshold if defense else None,
-            "enforcement": defense.enforcement if defense else None,
-            "modes": defense.modes if defense else None,
+            "provider": defense.provider,
+            "model": defense.model,
+            "l2_threshold": defense.l2_threshold,
+            "enforcement": defense.enforcement,
+            "modes": defense.modes,
         },
         "classifier": _classifier(),
         "blocklist": get_blocklist_stats(profile=scope.name),
@@ -141,12 +145,22 @@ async def get_trentina_stats() -> dict[str, Any]:
     # Every number below is a SQLite aggregate over the audit tables, about
     # 2.7 s per million rows; on the loop that stalls every profile, and a
     # denied call is a cheap way to add rows (#295).
-    return await asyncio.to_thread(_snapshot, scope, opened_path())
+    #
+    # Both stores are opened HERE, on the loop, because opening is what creates
+    # the schema and the singleton, and both paths are read in the worker below.
+    return await asyncio.to_thread(_snapshot, scope, opened_path(), perimeter_opened_path())
 
 
-def _snapshot(scope: CallerScope, path: str) -> dict[str, Any]:
-    """The caller's view, read on this worker's own connection."""
-    with snapshot_reader(path):
+def _snapshot(scope: CallerScope, path: str, perimeter_path: str) -> dict[str, Any]:
+    """The caller's view, read on this worker's own connections.
+
+    Two readers because there are two stores and a worker may touch either: the
+    blocklist and audit tables for every caller, and the perimeter store for an
+    operator, whose ``federation`` block reaches ``tool_pins.pending``. That
+    second one was missing until 5.0.1 and took ``quarantine_stats`` down with
+    ``ProgrammingError`` on any gateway with a federation link.
+    """
+    with snapshot_reader(path), perimeter_snapshot_reader(perimeter_path):
         return _agent_stats(scope) if not scope.is_operator else _gateway_stats()
 
 
@@ -155,6 +169,17 @@ def _gateway_stats() -> dict[str, Any]:
     config = get_config()
     return {
         "scope": "gateway",
+        # What this gateway scans UNDER, as a federated peer would pin it
+        # (#637). Nothing exposed these before, so an operator asked to vet
+        # another gateway's scanner had no way to read its own for comparison,
+        # and no way to tell a peer what to pin. Both are identities, not
+        # secrets: they name a model, a revision, a threshold and a judge.
+        "perimeter": {
+            "stamp": perimeter_stamp(),
+            # The OPERATOR's own judge. A peer pins the one on its
+            # `federation.shared[]` entry instead (#666).
+            "judge": judge_stamp(service_profile()),
+        },
         "config": {
             "model": config.model,
             "require_l2": config.require_l2,
@@ -185,5 +210,85 @@ def _gateway_stats() -> dict[str, Any]:
         "fanout": get_fanout(),
         "compression": get_compression_stats(),
         "surface": {name: surface_report(name) for name in surface_profiles()},
+        "plugins": _plugins(),
+        "routes": _routes(),
+        "preview_surfaces": _preview_surfaces(),
+        "federation": _federation(),
         "token_note": TOKEN_NOTE,
+    }
+
+
+def _federation() -> dict[str, Any]:
+    """Every federation link this gateway is on, in both directions.
+
+    An operator had no way to read this: `surface` is per profile and
+    `perimeter` is per gateway, so a drifted offered set, an orphaned pin or a
+    trust pin that had quietly stopped matching showed up as an agent saying
+    "I don't have that tool" — or not at all, since a pin matching nothing
+    just costs a full local re-judge and keeps working.
+    """
+    from ..database import get_federated_verdict_stats
+    from ..gateway.federation_report import VERDICT_WINDOW_DAYS, link_report
+    from ..gateway.loader import get_active_config
+
+    active = get_active_config()
+    if active is None:
+        return {"shared": [], "consumed": [], "verdict_window_days": VERDICT_WINDOW_DAYS}
+    return link_report(
+        active.config.profiles, get_federated_verdict_stats(days=VERDICT_WINDOW_DAYS)
+    )
+
+
+def _preview_surfaces() -> list[dict[str, str]]:
+    """The preview surfaces this deployment uses, so "am I running preview
+    code" is answerable from the gateway rather than from the CHANGELOG.
+
+    Each entry names the surface, its issue and its doc — module constants, not
+    anything a profile chose. Empty on a deployment that uses none, which is the
+    answer an operator wants most.
+    """
+    from ..gateway.loader import get_active_config
+    from ..stability import PREVIEW_SURFACES, in_use
+
+    active = get_active_config()
+    if active is None:
+        return []
+    return [
+        {
+            "surface": PREVIEW_SURFACES[name].name,
+            "issue": PREVIEW_SURFACES[name].issue,
+            "doc": PREVIEW_SURFACES[name].doc,
+            "summary": PREVIEW_SURFACES[name].summary,
+        }
+        for name in in_use(active.config)
+    ]
+
+
+def _plugins() -> list[dict[str, Any]]:
+    """The installed transform plugins (the ``trentina.transforms.v1`` entry
+    points), each by ``dist:name`` and version. Entry-point METADATA only — no
+    plugin code is imported or run to report this. Empty in a stock image,
+    which ships no plugin."""
+    from ..plugins.registry import TRANSFORM_GROUP, discover, installed_version
+
+    return [
+        {"ref": ref, "version": installed_version(ref.partition(":")[0])}
+        for ref in sorted(discover(TRANSFORM_GROUP))
+    ]
+
+
+def _routes() -> dict[str, Any]:
+    """The perimeter routes this gateway serves, by name, and the installed
+    route plugins (``trentina.transports.v1``) by ``dist:name`` and version —
+    entry-point metadata, so reporting one imports none. Names are the
+    registry's and the operator's, never a caller's."""
+    from ..plugins.registry import discover, installed_version
+    from ..transports.registry import MOUNTED, ROUTE_GROUP
+
+    return {
+        "mounted": sorted(MOUNTED),
+        "plugins": [
+            {"ref": ref, "version": installed_version(ref.partition(":")[0])}
+            for ref in sorted(discover(ROUTE_GROUP))
+        ],
     }

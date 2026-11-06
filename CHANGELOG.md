@@ -10,11 +10,1577 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- **The agent-egress-bench run is published** (`docs/benchmark.md`, #507):
+  98.3% containment at a 7.4% false-positive rate under `block`, 86.2% at 0.0%
+  under `flag`, scored by the third-party runner against the shipped image
+  configured by `benchmarks/agent_egress/`. Every miss and every unserved
+  transport is named, with the bench's own "not yet independent" caveat.
+
+## [6.8.0] - 2026-11-05
+
+### Added
+
+- **The perimeter is config: `proxies:` (#535).** Every route out that is not
+  a tool call is declared as a named instance of a type: `http`, `git`,
+  `llm`, `matrix`, `connect`, `forward`, or a `dist:` route plugin. Each
+  profile names its grants under its own `proxies:`. One grammar for every
+  type, so the approval page sees every destination: a new origin, a new host
+  or `*` is staged for a person, and so is `enforcement: flag` on any grant.
+  See [docs/proxy-plugins.md](docs/proxy-plugins.md).
+- **`forward`, the agent-chosen route.**
+  `/proxy/forward/<instance>/fetch?url=` carries a request to a host named
+  in both the instance and the grant, on port 80 or 443. It follows no
+  redirect, injects no credential, and judges both edges. A refusal carries
+  the egress-benchmark deny marker only when the gateway denied or blocked.
+  `TRENTINA_FETCH_PRIVATE_NAMES` lets exact names (a benchmark's fixtures)
+  resolve to a private address on any port; `fetch` honours it too. This is what #507's benchmark run needs, as
+  config alone.
+- **Route plugins (`trentina.transports.v1`).** An operator-installed route
+  type is served at `/proxy/<name>/<instance>/`. The spine owns auth, the
+  slot, the dial, judging, credential injection and the audit row; the route
+  owns `admit`, `deliver` and `render`. Its source is scanned before it is
+  imported. `trentina.testing.route_conformance` is the author's suite. A
+  route plugin is gateway code: nothing holds the process.
+- `quarantine_stats` (operator) reports `routes`: what is mounted, and each
+  installed route plugin by `dist:name` and version.
+- `forward` and route plugins are the new `proxy-plugins` preview surface.
+- `benchmarks/agent_egress/` and the `agent-egress-bench` job in
+  `benchmark-decoys.yml` run the third-party agent-egress-bench (#507) against
+  the shipped image, configured and nothing else: the fetch adapter through
+  `forward`, in `flag` and in `block`. The bench's MCP gateway adapter cannot
+  prove delivery through an aggregating gateway; the kit's README says why.
+
 ### Changed
+
+- **Every `/proxy/*` path and the CONNECT listener run on one spine**
+  (`transports/perimeter.py`). What an agent receives is byte-identical,
+  held by 108 recorded cases replayed on both config spellings. Audit rows
+  changed where the spine has one rule and the routes had several:
+  - a row names the instance (`http:github`) as soon as it is bound;
+    a request to no instance is `<route>:-` on every route (git wrote `git`);
+  - a row's tool is the HTTP method until the route names one (git wrote `-`);
+  - a `busy` refusal records the destination it refused;
+  - the slot is taken before any body byte, so an llm `busy` row no longer
+    names an endpoint or model;
+  - an llm request to an unknown provider now writes a row, and its no-key
+    refusal names its reason;
+  - a known caller's Matrix request outside `_matrix/` is now recorded.
+- A reload that adds the first instance of a `forward` or `dist:` type says
+  the route needs a restart, as it already did for git and http.
+
+### Deprecated
+
+- `egress_upstreams`, `git_remotes`, `llm_providers`, `matrix.enabled` and
+  `matrix.upstream`, and a profile's `egress_http`, `git` and
+  `client_egress` still load, each with one warning, and are removed at the
+  next major. `config_tool get` lists them under `deprecated_keys`. A file
+  may not write one kind both ways.
+
+### Security
+
+- `enforcement: flag` on an `egress_http` grant is now staged for a person as
+  a defense downgrade (`flag_grants`). Before, it applied at once.
+- A route grant naming a `token_env` its instance has no `credential:` slot
+  for, or an origin key its instance does not declare, is refused at load
+  rather than loading and doing nothing.
+
+## [6.7.0] - 2026-11-05
+
+### Added
+
+- **The unpack stage reads back text in ROT13 or any Caesar shift, Atbash
+  or leetspeak.** Every text is valid ciphertext, so a segment is read back
+  only when one cipher turns it English, scored against a 2,000-word list in
+  one lookup per word. With the model already shipping, the pipeline now
+  catches 41 of 44 attacks in ROT13 and in Atbash (was 26 and 17) and flags
+  1 of 86 benign texts in each (was 24 and 12); leetspeak's benign flags
+  fall from 20 to 6 of 86. Nothing plain in the docs, source, tests or
+  corpora is read back. Known gap 22 narrows to ciphers wrapped a few words
+  a line and text in other languages. `PERIMETER_VERSION` 25 re-judges
+  cached verdicts.
+
+### Changed
+
+- **`l2-train` gates on our own runner.** The GPU training stays on
+  RunPod; building the data, exporting and the three L2 gates run on the
+  self-hosted uncached runner when `UNCACHED_RUNNER_LABEL` is set, the gates
+  at once (15 minutes to 5).
+
+## [6.6.0] - 2026-11-05
+
+### Added
+
+- **The unpack stage decodes the rest of garak's encodings: the NATO
+  alphabet, sneaky bits, Base2048, Ecoji and Zalgo.** An attack in any of
+  them is read by L1 and L2 as plain text. NATO and sneaky bits passed both
+  layers at 0 of 44 (known gap 23, now closed); Base2048, Ecoji and Zalgo
+  were never measured, because garak needs third-party packages for them.
+  The gateway decodes all five from in-tree tables; the packages are dev-only,
+  for the benchmark. Base2048 and Ecoji are strict (a decode must re-encode
+  to the run), and none of the five touches ordinary Cyrillic, emoji or
+  accented text. `PERIMETER_VERSION` 24 re-judges cached verdicts.
+
+## [6.5.2] - 2026-11-05
+
+### Fixed
+
+- **Upper-case hex (garak's base16) decodes whole (#546).** The base32 token
+  group took a prefix such as `46726F6D2` off the front of a hex run, and the
+  odd-length rest decoded as nothing, so 6 of the 44 corpus attacks in base16
+  (and 1 in lower-case hex) reached L2 as a blob it cannot read. The base32
+  group must now end the token. `PERIMETER_VERSION` 23 re-judges cached
+  verdicts.
+
+### Changed
+
+- **`docs/benchmark.md`'s garak encodings table is measured against the model
+  the image ships** (`prompt-injection-guard-small-ct`) and the pipeline after
+  #546; the previous table was Horizon's, before the six decoders.
+
+## [6.5.1] - 2026-11-05
+
+### Fixed
+
+- **A federated tool accepts `trentina_mode={"redact": "<question>"}` (#711).**
+  The primary resolved the mode and stripped it, so the secondary saw none and
+  fell to its profile default, which a per-tool `deny: [flag]` guard refused
+  with a list that named the requested mode. The primary now sends the resolved
+  mode, with the redact question, to a `federated:` backend in the spelling any
+  client uses (no wire change). A mode refusal also names the mode it resolved.
+
+## [6.5.0] - 2026-11-04
+
+### Added
+
+- **Approve with a passkey (#639).** A person can now sign in to `/approve`
+  with a passkey: the gateway keeps only a public key, the browser binds every
+  signature to this gateway's origin, and there is nothing to brute-force. The
+  check needs no new dependency and no CBOR parser — the browser hands over the
+  key as SubjectPublicKeyInfo, the authenticator data is read by fixed offset,
+  and `cryptography` verifies (`gateway/webauthn.py`). The origin is pinned when
+  the passkey is made and compared exactly afterwards. Once a passkey is
+  enrolled the password can be removed entirely.
+- **`approval_enrol` brings the page up on request.** "Let me set my passkey in
+  Trentina" or "let me change my password in Trentina": it returns an absolute
+  `open_url` (the deployment's public address, or the one the call arrived on)
+  for the agent to open in the person's browser. With nothing set, the link
+  carries the one-time code in its fragment, which never reaches the server;
+  with something set, the person signs in and manages passkeys and the password
+  at `/approve/setup`. `action="close"` shuts an open window early.
+
+### Changed
+
+- **Signing in to the approval page starts a session; the password is no longer
+  written back into the page.** It was carried forward in a hidden field to the
+  decision POST — in the DOM, form history and any shared screen. A session is
+  in memory only, holds no token in the clear, lasts five minutes idle and
+  fifteen at most, is SameSite=Strict with a CSRF token on every form, and is
+  counted down on the page with a Sign out. Changing how approval works needs a
+  sign-in from the last five minutes, and removing a credential signs out every
+  other session.
+- **The approval routes have two rate limits.** Requests that test something (a
+  password, a passkey, an enrolment code) keep the strict 10-burst bucket; page
+  loads, challenges and sign-out get a looser one, so an ordinary visit no
+  longer spends the guesses.
+- `/approve/password` moved to `/approve/setup`; the old path redirects.
+
+## [6.4.2] - 2026-11-04
+
+### Fixed
+
+- **A release tag names the digest main published, again.** The retag used
+  `docker buildx imagetools create`, which wraps a single image manifest in a
+  new one-entry manifest list. Publish has pushed a single manifest since #692,
+  so 6.4.1's tags got a digest `:main` never had (the image inside is the
+  same). The retag is now `skopeo copy --preserve-digests`, and the job fails
+  if a released tag resolves to anything but the recorded digest.
+
+## [6.4.1] - 2026-11-04
+
+### Changed
+
+- **A release promotes the digests main's publish recorded, not whatever
+  `:main` names.** `publish` writes the two digests it pushed (from
+  `podman push --digestfile`) to a `published-digests` artifact, kept 90 days;
+  `promote` reads it from the push-to-main run of `security.yml` for the tag's
+  commit and retags exactly those. It used to resolve `:main` and trust the
+  labels on what it found, and a pull request's token with `packages: write`
+  could push `:main` with any labels it liked. The verifier lookup now also
+  takes only a push to the default branch, never a pull request's run.
+- **Main builds on gloval, on a runner that starts empty.** `sdlc ci` on a push
+  to main ran on a GitHub-hosted machine (16-19 min) so that the published image
+  never came from the self-hosted runner's shared layer cache. It now runs on
+  `crunchtools-uncached`, whose container storage is a tmpfs emptied every job,
+  which keeps that property at gloval's speed. Our pull requests run on
+  `crunchtools-cached`; Dependabot's move to GitHub-hosted, so a third-party
+  package's new release never runs in the cached store. `FAST_RUNNER_LABEL` is
+  replaced by `CACHED_RUNNER_LABEL` and `UNCACHED_RUNNER_LABEL`.
+- **The Containerfile's layers are ordered by how often their input changes.**
+  The dependency install is keyed on the exported, hash-pinned requirements
+  rather than on `pyproject.toml` and `README.md`, so a release bump or a README
+  edit no longer reinstalls ~263 packages. Trentina installs in a stage of its
+  own and is copied into the image as one small layer; the L2 gates test those
+  same bytes. The version label is the last layer, and the machine-id seed no
+  longer changes with every source edit. A new `.containerignore` keeps `.venv`
+  and `.git` out of the build context. The image's contents are unchanged.
+- **Every check runs from python-sdlc, and `scripts/gates.sh` is gone.** One
+  pin in `.pre-commit-config.yaml` fixes the image and every tool in it for the
+  laptop and for CI, which reads the same line. Three commands, configured by
+  the `pyproject.toml` block of the same name: `sdlc commit` runs the ruff
+  fixes in seconds and offline; `sdlc push` renders every verdict and never
+  builds the image; `sdlc ci` -- the `sdlc ci` job in `security.yml`, which
+  replaces `test (3.14)` and `Container Security Scan` as required checks --
+  runs the same image as the laptop and adds the image build and the tests
+  that only mean something inside it. The `/health` startup check and the
+  native-library check became pytest files in `tests/image/` instead of YAML.
+  `publish` now loads and pushes with podman, so the ID it checks is the ID the
+  build produced. Constitution v1.30.0.
+- **Trivy is removed.** All 45 alerts it raised on this repo were Python
+  packages: 38 our own dependencies, which pip-audit catches from `uv.lock`
+  before the push, and 7 pip copies vendored inside the base image, which
+  nothing here can fix and which only ever went into `.trivyignore`. Fleet
+  image scanning moves to a scheduled job (RT #1551).
+- **CodeQL gates the push** on any finding outside `.sdlc/codeql-baseline.json`,
+  the 19 already-triaged findings on `main`. It used to report and pass.
+- **The image is built once per merge, and the bytes we publish are the bytes we
+  scanned** (#689). Every push to main built the production image **three
+  times**: `security.yml:container-scan` (which starts it as production does,
+  runs the suite inside it and scans it), then `container.yml`'s Quay and GHCR
+  jobs, sequentially. The verified build was discarded and the two published
+  builds were scanned by nothing, so the two registries shipped *different
+  bytes* for the same version. `container-scan` now hands the image it verified
+  to a separate `publish` job, which proves the image ID it loaded is the one
+  that was verified — the config digest, which pins every layer — and pushes
+  that to both registries. `publish` is the only job holding a registry
+  credential, the App key or `packages: write`, and it runs on `push` only:
+  `permissions` and `secrets` are job-level, so gating the steps of a job that
+  also runs pull-request code gates nothing. The constitution's claim
+  that a tag "promotes the digest main already built and verified" held only by
+  sequencing; `promote` is unchanged, and the job it asserts ran is now the job
+  that pushed the bytes it promotes.
+- **`container.yml` builds nothing**; it is the release retag and nothing else,
+  and no longer offers `workflow_dispatch`. A hand-started publish is not a
+  property worth keeping for an image-only security product.
+- **Trivy gates every event that scans, not only pull requests.** The gate was
+  scoped to `pull_request` in b4222d2c, a commit about printing findings as a
+  table rather than SARIF — so main and the weekly scheduled scan had no
+  vulnerability gate at all, only a SARIF row. Leaving that while
+  `container-scan` began publishing would have put a fixable CRITICAL on the
+  registry. `ignore-unfixed: true` still means only actionable findings stop a
+  build, and `.trivyignore` is the documented way to accept one.
+- **`container-scan` always builds on a push to main.** Its surface filter was
+  safe while `container.yml` built every merge; now that `:main` comes from this
+  job, a docs-only merge that skipped the build would leave `:main` on the
+  previous commit and `promote` would refuse the next tag. The filter still
+  applies to pull requests.
+- **One test version's failure no longer cancels the others.** `ci.yml`'s matrix
+  sets `fail-fast: false`. On run 41738222976 a timing flake in `test (3.13)`
+  cancelled 3.11 and 3.12, and nothing said so.
+
+## [6.4.0] - 2026-11-03
+
+### Added
+
+- **More than one profile may be the operator, so two agents can administer one
+  gateway** without sharing a login (#661). The one-operator rule existed
+  because `role: operator` was also whose key the gateway's own model calls ran
+  on, and a second one would have let file order decide whose key paid — the
+  defect #138 removed. 6.1.0 moved every such call onto the listing profile's
+  own key, so nothing bills the operator and the rule was protecting two
+  *reported* values: the profile in an approved config write's audit row, and
+  `quarantine_stats`' `perimeter.judge`.
+- **`gateway.service_identity` names the operator the gateway binds and reports
+  as itself.** With one operator it is unnecessary and may be left out, so no
+  existing file changes meaning. With two or more and no setting, the file is
+  **refused** rather than resolved by whichever came first, and the refusal
+  names both: file order deciding an identity is what #138 removed. The setting
+  must name a profile that is present, holds the role, and was written — a
+  derived federation ingress carries its source's role but is not a profile
+  anybody chose.
+- Every operator is equal: each administers the whole gateway on its own
+  credential, and the **keyless-operator refusal now applies to every written
+  operator** rather than only the named one. The reason is per-profile — the
+  admin tools are `internal://` and are judged, so under `block` a keyless
+  operator is served none of them and the gateway cannot be repaired through
+  the API.
+- Moving the role, the credential behind it, or the named identity are three
+  spellings of one decision and all **stage for a person** at `/approve`. The
+  rule compares the *resolved* identity, so demoting the named operator stages
+  too, although `gateway.service_identity` is not in that write. Any operator
+  may propose it, including one that is not the named identity: an operator is
+  root here, and one that can rewrite another's `auth` block could become it
+  anyway, so a restriction naming only the service identity would defend
+  nothing. Adding a second operator takes two writes — name the identity, then
+  grant the role — because the candidate must validate at every step, which
+  puts the choice before the ambiguity.
+
+### Changed
+
+- **The container gate no longer publishes a port to check `/health`.** It
+  starts the built image with no published port and probes it from a sibling
+  container sharing its network namespace. Publishing bound 8019 on the runner,
+  which is the production gateway's port on a real machine: a CI job could fail
+  to bind or, mid-restart, take the port production was about to reclaim. It
+  also means the probe can no longer be answered by something else that happens
+  to be listening, so the gate cannot pass without the built image starting.
+- **Our own pull requests can build on a self-hosted runner.**
+  `Container Security Scan` picks its runner from
+  `vars.FAST_RUNNER_LABEL` for a pull request from this repository, and
+  GitHub-hosted for everything else. A fork's pull request therefore never
+  executes on our hardware, and `main`, releases and the scheduled scan always
+  build on a clean machine, so the published image is never built by the
+  self-hosted runner. Clearing the variable moves every job back with no commit.
+
+- **The image build stops installing PyTorch.** `model-builder` pulls torch,
+  optimum, transformers and sentencepiece, and the default target used it for
+  two things: a model directory that came from the digest-pinned `l2-model`
+  stage anyway, and `libstdc++.so.6`, which ships in the builder base rather
+  than arriving with a pip install. Both are taken from where they come from,
+  so nothing in the default target depends on `model-builder` and the builder
+  skips the stage: 59 s measured cold, of a four-minute build. The stage stays
+  for `l2-train.yml --target model-builder`, which exports what it trains and
+  does need them.
+- **The locked set is installed by `uv pip install`, not `pip`** -- the stage
+  already installs uv to run `uv export`. Same 263 entries, in 18.9 s against
+  42.5 s, measured cold on the same requirements file. The verified install is
+  unchanged: with every hash in the exported file replaced, uv refuses with
+  `Hash mismatch` exactly as pip refuses. (Corrupting ONE hash proves nothing
+  about either: a requirements file lists a hash per artifact and both accept a
+  download matching any of them.)
+- **The local gates run capped**: half the cores, an 8 GB ceiling and a low CPU
+  weight, overridable with `TRENTINA_GATES_CPUS` and `TRENTINA_GATES_MEMORY`.
+  Unbounded they took a 14-core laptop to a load average of 116 and made a
+  video call unusable. `pytest` now follows that budget instead of `-n auto`,
+  and the mypy commit hook is capped the same way. The budget is the smallest of
+  the core count, the CPU affinity mask and the cgroup CPU quota, so a gate run
+  inside a container or a systemd slice sizes itself to its allocation rather
+  than to the host, with a floor of one CPU (pytest then runs in-process rather
+  than starting two xdist workers on one core). The mypy commit hook calls
+  `./scripts/gates.sh mypy` instead of spelling out its own podman line, so
+  there is one budget and one override. Both knobs are validated before they
+  reach bash arithmetic, which evaluates a variable's contents and would run a
+  command substitution hidden in an array subscript.
+
+## [6.3.0] - 2026-11-03
+
+### Added
+
+- **`./scripts/gates.sh commit|push|pr|release`**, one script holding the local
+  gates, tiered, with `commit` and `push` wired as pre-commit hooks (#674,
+  #675). `push` runs the full pytest suite, semgrep and a Gatehouse review of
+  `origin/main...HEAD` -- the pre-commit hook sees one staged diff, so nothing
+  reviewed the branch as a whole and CI kept finding things after the local
+  hook went green. `pr` builds, verifies and scans the image; `release` runs the
+  constitution validator and `make rpm`. Every gate runs from a container image,
+  so the host needs only git, podman, pre-commit and gh. Exit 2 means the gate
+  COULD NOT run and is never 0 and never a warning.
+- **`CONTRIBUTING.md`**: the four tiers, what each costs, what an exit code
+  means, and that `SKIP=<hook>` obliges you to answer the same finding on the
+  pull request.
+
+### Changed
+
+- **A local image build is a gate; publishing is still CI's alone.** Inherits
+  constitution v1.29.0 (Security Gateway profile 1.1.0), where "nothing is built
+  or pushed from a workstation" becomes "nothing is published from one". The old
+  rule was written when the build needed a gated Hugging Face credential, which
+  went at 0.59.0 with Prompt Guard 2 (#362).
+- A new push to a pull request supersedes the run it interrupts (#673). A main
+  push keys on `run_id` instead: a concurrency group holds at most one PENDING
+  run, so three quick pushes to main would have dropped the middle one's
+  publish.
+- The `pip-builder` stage installs the locked dependency set before `src/` is
+  copied in (#676), so a source-only rebuild skips it. Measured at 33 s of the
+  image build, and the dependency install stops happening on a local rebuild.
+- The local constitution gate reads the inherited tag out of the manifest
+  rather than pinning it a second time (#678): `fleet-bump.py` moves `Inherits`,
+  the workflow pins and the pre-commit hook rev, and knows nothing about a
+  repo-local script.
+
+- **One image build per run, and a release that promotes rather than rebuilds.**
+  The image was built three times per pull request: `ci.yml:build-container`,
+  `security.yml:container-scan`, and `container.yml`, which built on a PR and
+  then pushed nothing. Only `Container Security Scan` was a required check, so a
+  broken production image already merged unnoticed. That job is now the one
+  build: it reads the version from `pyproject.toml`, asserts the image's
+  `version` label matches, runs every verification step `ci.yml` used to
+  (`/health` as production runs it, the native-extension imports, L2, L3, and
+  the OCR and PDF workers under `--network none --read-only`) and then scans.
+  `ci.yml:build-container` is deleted and `container.yml` no longer triggers on
+  a pull request.
+- **The build steps run only when the build's inputs change**: everything the
+  Containerfile copies plus everything the verification steps run --
+  `Containerfile`, an ignore file, `pyproject.toml`, `uv.lock`, `src/`,
+  `tests/`, `corpora/`, `benchmarks/`, `scripts/`, `.trivyignore` and the
+  workflows. `benchmarks/` is in that list because the `l2-gate` stage runs
+  `l2_obfuscation.py` and `l2_benign.py` to earn the records the image ships,
+  so a change to a gate that skipped the build would be a gate nobody
+  re-earned. A docs-only PR reports success in about ten seconds (measured: 9).
+  The filter is step-level and fails open: a base commit it cannot resolve
+  builds. It is
+  deliberately not a workflow `paths:` filter (a required context that never
+  reports stays pending forever) and not a job-level `if:` (a job skipped
+  because its `needs` FAILED also reports "skipped", which GitHub counts as
+  satisfying the requirement).
+- **A tag promotes the digest `main` already built and verified**, by
+  `docker buildx imagetools create`, in each registry separately since the two
+  build jobs produce two digests. It refuses unless the digest behind `:main`
+  carries this commit's `revision` label and the version the tag names, and
+  unless the commit's own checks passed -- the contexts read from the branch
+  ruleset rather than copied, and the job that built and verified the image
+  resolved through `security.yml`'s own run rather than by context name,
+  since a name is a string any workflow in the repo could post. A tag must be
+  `vX.Y.Z` with exactly three numbers, since `v1.2.3.4` would otherwise derive
+  the alias `1.2.3` and move that release's tag. Rebuilding at release time
+  would publish bytes nothing had verified and find a broken image at ship
+  time.
+- **The buildx GitHub-Actions layer cache is gone.** It cost 121 s per build in
+  fixed export and import against 67 s of savings, and the `docker-container`
+  driver it requires cost the multithreaded ONNX benign-L2 gate a further 137 s
+  (219 s under buildx, 82 s under plain `docker build`).
+- The scheduled scan stops rebuilding and scans the published
+  `quay.io/crunchtools/trentina:latest`, which is what "a new CVE landed against
+  an unchanged image" actually asks.
+
+### Fixed
+
+- `/health` no longer reads SQLite (#662). `pending_pins` comes from a cache a
+  single-flight task refreshes on its own thread, and is `null` until the first
+  refresh succeeds or whenever the last one failed; the probe answers 200 while
+  the loop is alive.
+- Both stores set `PRAGMA busy_timeout=250` on every connection (SQLite's
+  default is 0).
+- An audit write is attempted three times. One that still fails is counted and
+  recorded in the new `audit_losses` table by the next successful write;
+  `audit_verify` reports `lost_rows` and `ok: false` over an intact chain,
+  since a lost row leaves no break.
+
+## [6.2.0] - 2026-11-02
+
+6.1.0 taught `tool_pins` that a tool can hold more than one definition and that
+an approval names one of them. It never told the MCP tool, so the parameter that
+names a definition could not be sent, and the gateway's own migration then held
+582 definitions that no caller could release. This finishes that feature and
+makes the set, rather than the operator's patience, the unit of decision.
+
+### Added
+
+- **`tool_pins approve_all`**: release a whole held set on one decision.
+  `list` now returns a `digest` — SHA-256 over the sorted `(tool, hash)` pairs
+  still held — and `approve_all` requires it, refusing if the live set has
+  changed since it was read. A count was the first design and is not enough: a
+  re-list swapping N definitions for N others keeps the count, where #469's
+  premise is that an approval names a *definition*.
+
+  The batch refuses unless **every** row's changed fields are a subset of
+  `description` and `inputSchema`, the two the gateway's own description
+  compressor rewrites. `annotations`, `name`, `title`, `outputSchema` and a tool
+  with no approved definition at all (`new`) each refuse the whole batch, name
+  the tool responsible, and stay one approval at a time.
+
+  `inputSchema` qualifies because the compressor rewrites the descriptions
+  inside a schema too, so a third gate keeps it honest: **a schema may differ
+  from the approved one only in its descriptions.** The two are compared with
+  every `description` annotation removed, so a widened `enum`, a changed
+  `type`, a relaxed `additionalProperties`, a dropped property or a new
+  `required` entry each refuse the batch — none of them add a key, and all of
+  them change what a call means. Held entries now carry `schema_shape_changed`
+  alongside `safety_loosened`.
+
+  Nothing is approved unless all of it qualifies, and the refusal names every
+  disqualifying tool (twenty, then a count) rather than the first — stopping at
+  one would make clearing a real backlog a round trip per exception. The write
+  is one transaction (`perimeter_db.set_pin_states`) and requires each row to
+  still be `pending`: if any pair no longer matches, nothing is committed, so a
+  rejection landing mid-write cannot be overwritten. A `rejected` definition is outside the digest, so
+  the batch neither trips over it nor reverses it. It returns the manifest of
+  what it released and writes one `detections` row (`approved_bulk`).
+
+### Fixed
+
+- **`tool_pins` could not release a tool holding two definitions.** 6.1.0 added
+  `hash` to `manage_tool_pins`, but `tool_pins_tool` neither declared nor
+  forwarded it, so the served schema offered `action`, `backend` and `tool`
+  only. The ambiguous case answered "name one with hash" — naming a parameter no
+  MCP caller could send. On a real gateway that left 460 of 582 held definitions
+  unreleasable through the API, which is the state #633 exists to prevent. Every
+  test called `manage_tool_pins` directly, which is how it shipped.
+
+  `tests/test_server.py` now reads every registered tool's signature against the
+  implementation it forwards to and fails on a parameter that is dropped, or
+  declared and then never read. The second half is the worse bug: an argument
+  advertised, accepted and silently discarded, where an undeclared one at least
+  refuses.
+
+### Upgrading
+
+- Nothing to do. `PERIMETER_VERSION` is unchanged at `22`, so the perimeter
+  stamp does not move, cached verdicts stand, and a federated peer's
+  `trust_verdict.perimeter_stamp` pin does not need re-approving.
+- If 6.1.0's compression re-key left you holding a backend's whole tool set (see
+  6.1.0's Upgrading note 5), `tool_pins list` then `approve_all` with the digest
+  it returns is now the way through it. Read the manifest it gives back.
+
+## [6.1.1] - 2026-11-02
+
+6.1.0 moved tool-description judging onto each profile's own key and left a set
+of statements behind saying the opposite, including one in its own release
+notes. This corrects them, and fixes the one place where the code still decided
+something from the operator's judge.
+
+### Added
+
+- `quarantine_stats` `federation.shared[]` entries carry `judge`, the stamp the
+  link asserts and a peer pins (#666). `perimeter.judge` remains the operator's
+  own and was the wrong value to give a peer when the shared profile is not the
+  operator.
+
+### Fixed
+
+- **A reload re-judged every profile's tool descriptions when the OPERATOR's
+  model changed.** `reload_profiles` decided staleness from whether the
+  operator's judge had moved and then invalidated every profile's aggregate,
+  which was right while the operator judged for everyone and became
+  over-invalidation in 6.1.0 — on a production-shaped config, 1,456 descriptions
+  re-judged on nine profiles' own keys because one unrelated profile changed
+  model. It also pushed `notifications/tools/list_changed` to every session.
+  A profile's judge can only move by a change to its own `defense`, which a
+  reload already reports in `changed`, so the check is gone rather than
+  rewritten: derivations are covered because the registry compared is
+  post-`derive_all` and `defense` is carried, and the env default a judge falls
+  back to is not re-read by a reload.
+
+### Changed
+
+- **`reload_profiles` no longer returns `service_identity_moved`.** It reported
+  that the operator's judge had moved, which through 6.0.0 meant every profile
+  was about to be re-judged on the operator's key. Nothing follows from it now:
+  no spend moves, and the operator's own re-judge is already visible in
+  `profiles.changed` and `caches_invalidated`. An operator-only, informational
+  key whose name described a mechanism 6.1.0 removed.
+- The refusal of a keyless operator profile gives its real reason. The rule is
+  unchanged and predates 6.1.0, but it used to be justified by the operator
+  paying for every profile's judging; what justifies it now is that the admin
+  tools are `internal://` and judged like any other description, so a keyless
+  operator under `block` would be served no `quarantine_stats`, `config_tool`
+  or `reload_profiles` — a gateway nobody could repair through the API.
+- The two `service identity:` startup lines no longer say centralized model
+  calls run as the operator, because none do. The judge they name is the
+  operator's own. `docs/operator.md` quotes both and was updated with them.
+- 6.1.0's Upgrading note 3 corrected in place: it claimed a keyless operator
+  would lose its admin tools, a state `load_profiles` refuses outright. The
+  note now says so, and the published 6.1.0 release notes were corrected to
+  match.
+- Documentation and comments that still said the operator pays for the
+  gateway's model work: `docs/operator.md`, `docs/profiles.md`,
+  `docs/llm-proxying.md`, `docs/federation.md`,
+  `docs/internal/gateway-design.md`, and docstrings in `gateway/service.py`,
+  `gateway/loader.py`, `gateway/config_guard.py`, `gateway/profile.py`,
+  `orchestrator.py`, `quarantine/agent.py` and `tools/config.py`.
+
+## [6.1.0] - 2026-11-02
+
+A tenant's tool list is now entirely its own: judged on its own key, compressed
+on its own key, and cached where no other tenant can read it. Three caches were
+shared gateway-wide, and the one nobody had noticed was the worst of them.
+
+### Upgrading
+
+Nothing in a `profiles.yaml` has to change, and nothing that loaded before
+stops loading. Two operational notes:
+
+1. **The first boot after upgrading re-judges and re-compresses every tool
+   description, once per profile.** The verdict and compression keys now carry
+   the owner, and `PERIMETER_VERSION` moves to `22`, so the stored rows sweep
+   on startup. The warm-up paces this and the gateway serves throughout, but it
+   costs real model calls once — in production, 1,456 descriptions across 9
+   profiles. The cached tool lists are rebuilt too, which costs one extra fetch
+   per profile sharing a backend and no model calls.
+2. **A federated peer must re-pin.** `PERIMETER_VERSION` is part of
+   `perimeter_stamp()`, which is what a peer pins in `trust_verdict`. The
+   moment this gateway runs 6.1.0 its stamp changes, so the pin stops matching
+   and the link fails CLOSED — every federated response is judged locally
+   again, visible as `hash_mismatch` in `quarantine_stats`. Read the new stamp
+   from `quarantine_stats` as the operator and write it back into the peer's
+   `trust_verdict.perimeter_stamp`. Nothing is unsafe in the meantime; it is
+   twice the work, quietly.
+
+3. **Give every AGENT profile its own `llm_keys`, and check the ones that have
+   none.** A profile judges its own tool descriptions now, so one with no key
+   for the provider its `defense` resolves to judges nothing — and under
+   `enforcement: block` a description that cannot be judged is withheld, so
+   that profile is served **no tools at all**. Not only its remote ones:
+   `internal://` tool descriptions are judged too (only a decoy's are not).
+
+   Such a profile was already half-broken: every tool RESPONSE reported
+   `l3_unavailable` and block refused it, and the loader has warned about it
+   since RT #1505. What changes is that the failure arrives at `tools/list`
+   instead of at the first call. The loader still only warns, so nothing stops
+   loading; `config_tool` now reports it as `no_llm_key` in the write result as
+   well. Ollama is keyless and exempt.
+
+   The OPERATOR profile is not affected and never was: `load_profiles` has
+   refused a keyless operator since #138, so it cannot reach this state.
+   (This paragraph originally said a keyless operator would lose
+   `quarantine_stats` and `config_tool`. That was wrong — the file is refused
+   outright — and it was corrected in 6.1.1.)
+
+4. **`pending_pins` may not return to zero on its own.** A tool that reverts to
+   an approved definition is served again, and the definition that was held
+   stays held — the "revert" that used to clear it is gone, because with
+   partitioned lists one profile's re-list is no evidence about what another is
+   being served. So `tool_pins list` and `/health`'s `pending_pins` keep
+   carrying it until an operator runs `tool_pins reject`. Expected, and worth
+   knowing before it reads as a stuck counter.
+
+5. **Every tool whose descriptions are COMPRESSED is held for approval once,
+   and an operator has to release it.** This is the step that costs real
+   availability on the first boot, and it was missing from these notes until
+   6.1.1 — found by deploying it. The chain: `tool_compressions` gains an
+   `owner` column and the pre-migration rows are dropped rather than adopted
+   (below); a tool pin is keyed by the hash of the definition as served; a
+   served description is the COMPRESSOR's output; and re-compressing is a fresh
+   model call, so the text is not byte-identical to what was approved. Every
+   such definition therefore reads as changed, and fail-closed means held.
+
+   Measured on the deploy: 356 distinct tools held across one federation link,
+   plus 49 on a backend whose schemas carry account state. `tool_pins list`
+   shows them with `fields=description` or `description,inputSchema`, which is
+   how you tell this from a real upstream change. Release them with `tool_pins
+   approve` once you are satisfied nothing upstream moved — the new text is
+   your own gateway's, over tool lists its own perimeter judged, not a third
+   party's.
+
+   It happens once per store, not on every restart: `tool_compressions`
+   persists, so later restarts reuse the same compressed text and the hashes
+   stay put. Budget for it in the upgrade window, and expect `pending_pins` to
+   jump before it falls.
+
+### Preview
+
+Federation (`federation`): the `trust_verdict` re-pin above. The pin mechanism
+is behaving as designed — any change to the stamp it names fails closed — but
+an operator running a federated pair has to act on it.
+
+### Security
+
+- **A profile was served tool lists that another profile's credential
+  fetched.** `_tool_list_cache` was keyed by backend URL alone, so whichever
+  profile missed the cache first fetched the list with its own token and every
+  other profile on that URL was handed the result — without presenting a
+  credential of its own, and in the case of an `auth` backend without holding
+  a grant at all. For a backend whose tool list or schemas depend on the
+  account (an enum of your projects, a per-tenant description), that is one
+  tenant reading another tenant's data. The cache is now keyed `(url, owner)`,
+  where the owner is empty only for a backend that carries no credential and
+  whose answer is therefore the same for everyone.
+
+  The rule already existed in the right form and the wrong place:
+  `_inflight_key` has keyed an `auth` or federated fetch per profile since
+  #592, while the result cache it fills did not — and header credentials, the
+  common case, were outside even that. One predicate, `carries_credential`,
+  now decides both, so the in-flight slot and the row it writes cannot
+  disagree.
+
+- **A tenant could evict every other tenant's tool-description verdicts.** The
+  verdict cache was one LRU of 4,096 entries holding both descriptions and
+  responses, and descriptions are reloaded from the store only at boot. Enough
+  distinct responses in one profile therefore pushed out another profile's
+  descriptions, which were then re-judged on that profile's key and at its
+  expense. Keying per tenant does not fix this — eviction pressure is shared
+  however the keys are spelled — so the two kinds now have separate stores.
+
+- **A stale static token stopped taking a backend down for its neighbours.** A
+  401 from a `headers:` backend was not an `MCPError` and carried no grant to
+  refresh, so it fell through to `record_failure`: three such calls opened the
+  URL-keyed circuit for 60 seconds for every profile sharing that URL, over a
+  credential only the operator can fix. It now records a success on the
+  circuit, which measures reachability, and refuses the call as
+  `BackendRejectedCallError`.
+
+### Changed
+
+- **Tool-description judging and compression run as the listing profile, on
+  its own key.** Both ran as the operator (#138) through 6.0.0, which meant one
+  tenant's key paid to judge and shorten another tenant's tool list, and made
+  the results shareable. At Scott's instruction: "Everything that a user's
+  account touches should be done by its own key."
+
+  The verdict cache and the compression cache are keyed by `grant_owner`, so a
+  derived federation ingress shares with the profile it was derived from — one
+  tenant reached two ways, spending one credential — and nothing else shares at
+  all. The `tool_compressions` and `tool_list_cache` tables gain an `owner`
+  column; rows written before it existed cannot be attributed to anyone and are
+  dropped rather than adopted into someone's cache.
+
+  Three things deliberately do **not** follow:
+
+  - The approved-`config_tool`-write apply still runs as the operator. It
+    spends nothing: an approval arrives from a browser with no bound caller,
+    and `reload_profiles` applies the whole file only for an operator.
+  - The circuit breaker stays shared. It measures whether a URL is reachable,
+    and partitioning it would hide a down backend from the tenants who share it.
+  - `loggable_tool` still reads every partition. It answers "does the backend
+    publish this name", for the journal rather than for a tenant.
+
+- **A tool pin is a decision about a definition, not about a URL.** With tool
+  lists partitioned, two tenants can legitimately be served different
+  definitions for the same tool, and one row per `(backend, tool)` could not
+  hold both: the second listing overwrote the first's pending hash, an approval
+  given for one tenant's definition appeared to cover the other's, and the two
+  builds then flapped the hold and logged a detection on alternate passes.
+  Pins are now keyed by the definition hash as well, so both coexist, an
+  approval covers every tenant served those exact bytes, and anything else
+  stays held. `tool_pins list` entries gain a `hash`; `approve` and `reject`
+  take an optional `hash`, needed only where a tool has more than one pending
+  definition. `/health`'s `pending_pins` still counts distinct
+  `(backend, tool)`.
+
+- **`precompress_all` dedupes per owner.** It skipped a URL it had already
+  seen, which with a per-owner cache filled only the first holder's partition
+  and left every other holder compressing on first use.
+
+- A profile with no `llm_keys` for its provider is still a warning rather than
+  a load error, and the warning now says that tool descriptions are included
+  and that such a profile re-runs L1 and L2 over every description on every
+  list (an `l3_unavailable` verdict is never persisted). `config_tool` reports
+  the warning in its write result, so the agent that wrote the config sees what
+  only the journal used to carry.
+
+## [6.0.0] - 2026-11-02
+
+A major because of the two config rules below, not because of their size. Both
+refuse a file that loaded before, and profile naming and YAML parsing are
+outside every declared preview surface — constitution rule 1: a change reaching
+outside them is a major, and "mostly confined" is not confined. The federation
+work in this release would have been a minor on its own.
+
+### Upgrading
+
+The gateway refuses to START on items 1 and 3, so a missed one is loud rather
+than silent. `profile_lint` reports item 3 as `duplicate-key` and does not check
+item 1 at all — and a clean lint has never been a guarantee that the gateway
+will start, because the lint reads the raw YAML and never calls
+`load_profiles`. The pre-flight that is a guarantee is the real load in item 3.
+
+1. **Rename any profile named `agent` or `operator`.** Role names are reserved
+   as profile names, and so is any role added later. `role: operator` says what
+   a profile may do; a profile *called* `operator` says nothing and reads as
+   though it did, and both appear in the same sentences — "the operator
+   profile", "an operator reload", `/gateway/operator/mcp`. The rule is
+   equality, not a substring, so `operator-prime` and `agents` still load.
+2. **Anything reading `quarantine_stats` or the audit by these names needs
+   updating.** Three strings a consumer can key on have changed, and the
+   gateway does not emit the old ones: `federation.shared[].seat` is now
+   `federation.shared[].profile`; the staged approval kind `operator seat` is
+   now `operator profile`, which appears in approval requests and in
+   `gateway_calls`; and the approval page's row `Holds the operator seat now`
+   is now `Holds the operator role now`. Rows already in the audit are not
+   rewritten, so a query spanning the upgrade sees both spellings.
+3. **Remove any duplicate key from `profiles.yaml`.** A key written twice in
+   one mapping now refuses the whole file, naming each repeat and its line.
+   `yaml.safe_load` kept the LAST one and said nothing, so the block a reader
+   sees first was not the block that ran. A key arriving through a
+   `<<: *anchor` merge AND written explicitly is *not* a duplicate — that is
+   the override merge keys exist for, and it keeps working.
+
+   `python -m trentina.gateway.profile_lint <profiles.yaml>` now reports this as
+   `duplicate-key`. But the lint works on raw YAML and never calls
+   `load_profiles`, so a clean lint has never been a guarantee the gateway will
+   start. The pre-flight that is, is a real load inside the image being
+   deployed, with the unit's mounts and user:
+
+   ```
+   podman run --rm -v <config>:/config:ro --userns keep-id:uid=65532,gid=65532 \
+     --env-file <env> quay.io/crunchtools/trentina:6.0.0 \
+     python -c "from trentina.gateway.loader import load_profiles; \
+                print(len(load_profiles('/config/profiles.yaml').profiles))"
+   ```
+
+### Changed
+
+- **"Seat" is gone; everything is a "profile".** One word for one concept, at
+  Scott's instruction — the two words meant the same thing and turned up in the
+  same sentences. Three of the renames are visible rather than internal:
+
+  - `quarantine_stats`'s `federation.shared` rows name the sharing profile
+    under `profile` where they said `seat`.
+  - The approval page and the audit spell the staged kind `operator profile`
+    where they said `operator seat`.
+  - The approval page's operator row reads `Holds the operator role now`,
+    because "seat" there meant the **role** rather than a profile — one of
+    several places where a mechanical rename would have produced nonsense
+    ("moving the profile to a new profile"). Where the old word meant the role,
+    it now says role.
+
+  Released CHANGELOG sections keep the word they shipped with: they describe
+  what was released, and rewriting them would be revisionism.
+- **The operator role crosses a federation link.** A profile may now hold
+  `role: operator` and share itself, and the derived ingress carries both the
+  role and that profile's own `internal://` allowlist — so one agent
+  administering a gateway administers its peer through the link it already has.
+  Both halves are required: carrying the role alone leaves every admin tool
+  unreachable, because they are served by `internal://`.
+
+  Only for an operator profile: a shared **agent** profile's peer still gets
+  the paging reader alone, as in 5.x. And a shared operator profile must list
+  its internal tools by exact name — `*` and `read_*` are refused at load,
+  because a pattern names nothing a person can approve and covers every tool a
+  later release adds.
+
+  This gives up half of the directed edge 5.0.0 established. Three
+  consequences, none of them a bug and all of them the trade — the peer's
+  signing key is now its admin credential too, so revoking admin means
+  breaking the link; admin responses arrive on the `trust_verdict` pin if the
+  peer holds one, meaning the secondary judged this gateway's configuration and
+  the primary did not; and the role is transitive, though the offered set still
+  excludes federated backends so the tools are not. `docs/federation.md` has
+  the alternative that keeps all three (a second ordinary backend with its own
+  bearer) for anyone who wants it.
+
+  Promoting a shared profile, or widening its internal allowlist, is staged for
+  a person as `peer becomes operator`; narrowing either applies at once. The
+  promotion cannot happen in one write while another profile holds the role,
+  since the candidate would declare two operators and not validate.
+
+  Two things deliberately do not follow the role. `_check_operator` counts only
+  WRITTEN operators, because a shared operator profile and its derivation are
+  both operators and counting both refuses every such file. And `find_operator`
+  skips derivations, because the gateway's own model calls run as whatever it
+  returns, and taking the first match would let dict order choose the service
+  identity — exactly the defect #138 removed. That second one is silent: the
+  wrong identity has a provider and a key, so the calls succeed and bill to the
+  wrong place.
+- **A duplicate key in `profiles.yaml` is refused instead of silently
+  resolved.** One of mine reached production: a profile carried `defense:`
+  twice, the gateway ran the second, and the comment on the first explained a
+  block that had already lost. They happened to agree, and nothing anywhere
+  would have said so if they had not. `config_tool`'s contract is that the file
+  a person maintains and reviews in a diff is the file in force, and a
+  duplicate key broke that quietly. The scan walks the YAML node tree rather
+  than the loaded mapping, because the evidence is gone by the time there is a
+  mapping and because constructing one trips over merge keys.
+- **A profile may not be named after a role.** Reserved set read from the role
+  enum rather than a hand-kept list, so a role added later is reserved by
+  having been added.
+
+## [5.0.1] - 2026-11-01
+
+### Fixed
+
+- **`quarantine_stats` failed for an operator on any gateway with a federation
+  link.** It raised `ProgrammingError`, so the tool returned nothing at all
+  rather than a report missing its federation block. `get_trentina_stats` runs
+  its SQLite aggregates in a worker thread — they cost seconds on a large audit
+  table and would stall every profile on the event loop — and 5.0.0 added a
+  read of the PERIMETER store on that path (`_federation` → `link_report` →
+  `tool_pins.pending` → `list_pending_pins`). The blocklist store has had a
+  thread-local read-only connection for this since 0.49.0 (#295); the perimeter
+  store had none, and SQLite binds a connection to the thread that opened it.
+  `perimeter_db` now has the same `opened_path`/`snapshot_reader` pair and its
+  five pure readers go through it. `check_same_thread=False` on the singleton
+  was the shorter fix and the wrong one: it shares one connection between the
+  loop's writes and a multi-second read.
+- **Only the first test per process could stand a gateway pair in front of a
+  real remote MCP backend (#657).** Filed against the in-process MCP server
+  stack; it was one global flag. `sse_starlette.sse.AppStatus.should_exit` is a
+  class attribute — one boolean per process — that every uvicorn teardown
+  latches through `_shutdown_watcher`'s signal-handler introspection, and
+  nothing clears. Once set, every SSE response in the process is ended before
+  it is written, and an MCP server answers a POST over SSE. Test-only: a
+  gateway serves one app for the life of its process, so the latch fires once,
+  at the shutdown it is for. Four federation wire tests that were written for
+  5.0.0 and withheld now ship.
+
+### Documentation
+
+- 5.0.0's upgrading item 4 (a backend header may not name an env var the file
+  also declares as a secret) now says which pre-flight catches it. It is
+  startup-fatal, and `profile_lint` reads as though it would catch it and does
+  not: it lints the raw YAML and never calls `load_profiles`. One deploy of
+  mine was rolled back on exactly this after a lint reported clean.
+
+## [5.0.0] - 2026-11-01
+
+### Upgrading
+
+Breaking, so read this before deploying. The gateway refuses to START on items
+1 to 4 and 7, so a missed one is loud rather than silent.
+
+1. **Migrate any interim federation backend.** A backend pointing at
+   `.../gateway/<profile>/mcp` with no `federated:` block is now a load error.
+   Add `federated:` with a `primary_key_name`, use https (or set
+   `TRENTINA_FEDERATION_ALLOW_INSECURE=1` on a trusted network), and add a
+   matching `peers` entry on the secondary.
+2. **Every `federation:` block names at least one peer**, and no two peers
+   share a public key.
+3. **One primary key per secondary**, or ingress profiles with different names.
+   Two federated backends sharing a key and deriving the same audience while
+   pointing at different gateways is refused.
+4. **Rename any backend header or URL variable that the same file also
+   declares under a `*_env` key**, and any that names a gateway secret such as
+   `TRENTINA_OAUTH_JWT_SIGNING_KEY`. Give each backend a variable nothing else
+   in the file names. Note that a name stays protected for the life of the
+   process once any successful load has seen it declared, so retiring one takes
+   a restart.
+
+   `profile_lint` does **not** catch this, and reads as though it would: it
+   lints the raw YAML mapping and never calls `load_profiles`, which is where
+   the rule lives. The pre-flight that catches it is a real load inside the
+   image you are deploying, with the unit's mounts and user:
+
+   ```
+   podman run --rm -v <config>:/config:ro --userns keep-id:uid=65532,gid=65532 \
+     --env-file <env> quay.io/crunchtools/trentina:5.0.0 \
+     python -c "from trentina.gateway.loader import load_profiles; \
+                print(len(load_profiles('/config/profiles.yaml').profiles))"
+   ```
+5. **Upgrade the secondary first, or both together.** The flagged-response
+   digest fix is on the SECONDARY's emit side, so a 5.0 primary against a
+   4.2.3 secondary keeps auditing `hash_mismatch` for flagged responses and
+   re-judging them — the same (safe) behaviour as before, not a regression.
+   Clean responses are unaffected in either direction.
+6. **The primary's part budget must be at least the secondary's.** A federated
+   part larger than this gateway can judge in one call is now refused
+   (`federated_part_oversize`) rather than re-cut, because re-cutting orphaned
+   the peer's remaining parts. Keep `TRENTINA_PART_TOKENS` equal on both, or
+   higher on the primary.
+7. **Move each federation ingress's `federation` block onto the seat it
+   shares, and delete the ingress profile.** Federation is declared on the
+   SEAT whose tools are shared and the gateway derives the
+   `<seat>-federation` ingress from it, so a standalone ingress profile that
+   hand-lists its backends no longer loads. Point the primary at
+   `/gateway/<seat>-federation/mcp`. The path changes, so the audience and the
+   tool-pin key change: expect ONE first connect on each side, which is now
+   reported with its count rather than silent. A shared seat keeps its own
+   `auth` or `oauth` — that is what makes it a seat — and the derived ingress
+   carries neither, since `peers` is its authentication and a bearer there
+   would be tried FIRST and admit a caller with no peer and no `sub`.
+8. **Stop using `backend_auth_tool` across a link.** It is no longer offerable
+   to a peer, and does not need to be: a derived ingress spends its SEAT's
+   OAuth grants, so one sign-in on the seat serves both sides. If you signed
+   the ingress in separately, that grant is now unused; sign in on the seat
+   instead. This also retires the rule that `backend_auth_tool` needed a
+   single-peer ingress, so **several peers on one seat is an ordinary
+   configuration again**.
+9. **Set an approval password before your operator agent needs one.** Three
+   more writes now wait for a person, so without
+   `TRENTINA_APPROVAL_PASSWORD_HASH[_FILE]` they are REFUSED rather than
+   applied: adding or changing a `federation.peers` entry, moving a profile's
+   `defense` to `flag`, and widening `client_egress`, `egress_upstreams` or
+   `llm_providers`. Narrowing any of them still applies at once. Existing
+   configuration keeps working untouched — this bites the next write, not the
+   current file.
+
+### Added — this phase
+
+- **Stability tiers** (`src/trentina/stability.py`,
+  [docs/stability.md](docs/stability.md)). A named set of features is
+  *preview*: a breaking change confined to one is a minor release, so the next
+  federation change does not move the whole program's version. Two surfaces are
+  declared — **federation** (#592) and **`config-api`** (#633), the latter being
+  `config_tool`'s action names, arguments and result keys and NOT the
+  `config_guard` rules deciding what a person must approve. Human approval
+  (#637) stays stable on purpose: it is the one gate an operator agent cannot
+  talk its way past. One `WARNING` per surface in use at startup, and
+  `preview_surfaces` in `quarantine_stats`' operator slice.
+- **`quarantine_stats` carries a `federation` section for an operator**: per
+  shared seat, the derived ingress, peers by key fingerprint, which backends
+  cross, which run on the seat's sign-in, whether the link signs verdicts, and
+  tools held for approval; per federated backend, the audience, whether trust
+  is pinned, how responses were handled and the commonest reason one was
+  re-judged. A `trusted` count of zero beside a climbing `hash_mismatch` is a
+  pin that has quietly stopped matching, which nothing reported before.
+- **The peer approval page says whose account the link will use, and where the
+  tools are**: which of the seat's backends cross, each with its destination,
+  and which run as your sign-in. An approval is bound to the facts a person
+  read, so a destination absent from them was not consented to — and the
+  operator is root over its own `url` fields. Userinfo and a query are
+  fingerprinted rather than printed, either being somewhere a credential can
+  sit, so the binding still covers them.
+- **`profile_lint`**: `federation-no-secondary-key` (a link that signs nothing
+  re-judges everything, invisibly) and `federation-shares-write-tools`.
+
+### Preview
+
+Breaking changes confined to the **federation** preview surface (#592). See
+[docs/stability.md](docs/stability.md): a break inside a declared preview
+surface is a minor release. This one rides a major because the release carries
+breaking changes outside it as well.
+
+- **Federation is declared on the seat that shares it.** `federation` goes on
+  the seat whose tools are shared and the gateway derives the ingress
+  (`<seat>-federation`) from it: the seat's own non-federated remote backends
+  with the seat's guards, defense posture and `llm_keys`, plus an internal
+  backend offering `read_part_tool` alone. A standalone ingress profile that
+  hand-lists its backends no longer loads. Upgrading note 7.
+- **The link spends the seat's OAuth grants**, so `backend_auth_tool` is no
+  longer offerable to a peer and the single-peer rule it needed is gone.
+  Upgrading note 8.
+- **`FEDERATION_INTERNAL_ALLOW` is `read_part_tool` alone.**
+- **One seat may both consume a peer and share itself.** "One profile is one
+  role" existed because a single `Profile` serving both roles deadlocked its
+  own aggregate build; the ingress is a separate object now, and derivation
+  excludes every federated backend, so A→B→C is unsayable rather than refused.
+
+### Added
+
+- **A federated link reaches the secondary's OAuth backends, on one sign-in.**
+  A grant belongs to one profile and a federated call runs as the ingress, so
+  an OAuth backend on the secondary could not be reached through the link at
+  all. The link now spends its SEAT's grants (`Profile.grant_owner`), so a
+  person signs in once — on the seat, with the seat's own `backend_auth` — and
+  both sides are signed in. #656 first solved this by offering
+  `backend_auth_tool` across the link, which made it a shared capability on a
+  multi-peer ingress and needed a further rule refusing it there; neither the
+  tool nor the rule survives, and several peers on one seat is ordinary again.
+
+### Removed
+
+- **BREAKING: the interim static-bearer federation path.** A backend pointing
+  at a gateway's federation endpoint (`.../gateway/<profile>/mcp`) without a
+  `federated:` block is refused at load instead of warned about. It was
+  superseded in 3.1.0, deprecated with a removal announced for 3.2.0, and
+  still only warned through 4.2.3. It goes now because the warning was
+  load-bearing for a promise it could not keep: `_check_federation_topology`
+  refuses an ingress that also mounts a `federated:` backend, which this shape
+  is not, so an ingress could mount the next gateway over a bearer and
+  re-export it — A to B to C, the loop docs/federation.md says cannot exist by
+  construction. Add a `federated:` block with a primary key to migrate.
+
+### Changed
+
+- **BREAKING: a federation block must name at least one peer**, and two peers
+  may not share a public key. `peers` is what authenticates a primary, so a
+  block without one was never an ingress; a shared key left the audited caller
+  a matter of which peer was written first, since `verify_primary_jwt` returns
+  the first key that verifies.
+- **BREAKING: one primary key may not serve two secondaries whose ingress
+  profiles share a name.** The per-request token's audience is the ingress
+  profile name and says nothing about which gateway it was minted for, so that
+  configuration let either secondary replay the other's token inside the
+  60-second window. Refused across the whole file, since two profiles can each
+  hold one half of the pair. Give each secondary its own primary key, or the
+  ingress profiles different names.
+- **BREAKING: a backend header or URL may not reference an env var this file
+  declares as a secret, or one of the gateway's own.** It could resolve any
+  `${VAR}`, so an operator agent could forward this gateway's operator bearer —
+  or `TRENTINA_OAUTH_JWT_SIGNING_KEY` — to an endpoint it chose, with no seat
+  change and no approval. A backend's own credential still works: that variable
+  is referenced, not declared. See docs/profiles.md.
+- **BREAKING: three more config writes are staged for a person** (#637
+  extended): `federation.peers`, a `defense` block reaching `flag`, and the
+  three settings that open a way out of network isolation
+  (`client_egress.hosts` and `.source_networks`, `egress_upstreams`,
+  `llm_providers`). Each was a grant an operator agent could make with nobody
+  watching, and the last is the widest of the five decisions: a trusted peer
+  has at least run three layers over its response, while nothing reads a
+  CONNECT tunnel's bytes at all. Only WIDENING stages — withdrawing a peer,
+  dropping `flag`, removing a host applies at once — and a write needing two
+  approvals is refused rather than shown as one. `federation.peers` was
+  deliberately unguarded in #633 because refusing it would have made an
+  ingress impossible to build through the API; proposing it does not.
+- **BREAKING: a federation ingress may not carry `auth` or `oauth`.** `peers`
+  is its authentication and the gateway tries a static bearer first, so a
+  bearer there admitted a caller with no peer and no `sub` — a null caller in
+  the audit, and, now that held parts belong to `(profile, peer, sub)`, one
+  shared paging owner for every such caller.
+- **A federated `401` no longer opens the circuit breaker.** A federated
+  backend holds no OAuth grant to refresh, so a refusal fell through to
+  `record_failure` on a breaker keyed by URL: one rotated key or a little
+  clock drift took the peer down for every profile federating to it, reported
+  as unreachability. It is now `federation_unauthorized`, the circuit records
+  the success the peer's answer is, and the message names the three causes.
+- **A federated backend's tool pins move with its URL.** Normalising a
+  trailing slash or writing `:443` explicitly presented the peer as new, and a
+  federated first connect approves its whole offered set as a unit. The reload
+  carries the pins across and reports `federated_pins_migrated`. Only the same
+  endpoint spelled differently: a different host is a different peer and gets
+  the first connect it should.
+- **Four name patterns are anchored.** `^...$` with `re.match` admits a
+  trailing newline, so a key name, a profile name, a backend name, a provider
+  name and a federation `sub` all accepted one. A `sub` is the audited actor
+  and part of a paging owner's identity; a key name becomes a filename.
+
+### Fixed
+
+- **Flushing a backend's tool list stopped dropping the profile lists built
+  from it.** `aggregate` registers that cascade when it is imported, and
+  `reset_tool_list_cache` — the test reset — cleared the listener along with
+  the cached data. The suite calls it before every test, so the first test in
+  a process unwired the cascade for the rest of the session: every later test
+  of `cache_flush`, `reconnect_backend` and tool pinning ran against a gateway
+  whose caches cannot cascade, which is not the gateway that ships. The reset
+  now clears cached data only, and two tests hold the wiring.
+- **A federated peer could read another peer's held response parts.** A held
+  paged response was owned by the profile name alone, and a federation ingress
+  is one profile for every primary that calls it; meanwhile the peer's own
+  `read_part` was served to agents as an ordinary tool. One primary could list
+  every handle on the ingress and read another's parts, around the proxy's
+  ordering, its lead-in and its rule that a flagged part withholds the rest.
+  The owner is now `(profile, caller)`, the per-owner caps with it, and a
+  federated backend's `read_part` is withheld from `tools/list` and refused as
+  a direct call.
+- **An approval could be swapped between reading it and agreeing to it.** The
+  review form carried only the `Kind`, and staging replaces silently, so an
+  agent could propose one trust pin, let a person read it, re-stage another,
+  and have the click apply the second. The page now carries a fingerprint of
+  the facts it showed and `approve` requires it to still match.
+- **A flagged federated response could never be trusted.** The emit side
+  digested the content blocks before the `[TRENTINA WARNING]` block was
+  appended, so the signature covered one fewer block than the wire carried and
+  every flagged response was `hash_mismatch` — silently re-judged, and audited
+  as exactly the symptom that is documented to mean a pin has stopped matching.
+- **A 64-bit id broke a federated tool outright.** `content_digest` canonicalized
+  unguarded, and RFC 8785 has no form for an integer past ±(2^53−1), so a leaf
+  returning a GitHub, Discord or Slack id made response assembly raise whether
+  trust was pinned or not. It now yields no digest, the response is delivered
+  unsigned, and the caller re-judges under a new audited reason,
+  `undigestable`.
+- **A trusted verdict's fields reached the agent as the peer wrote them**, and
+  an unknown `flagged_by` was read as "not flagged" — which under `block` would
+  have delivered content the verdict said was flagged. The warning is
+  re-projected through the closed summary, and a layer name this gateway does
+  not know re-judges as `uninterpretable`.
+- `judge_mismatch` is now logged, and the mismatch log dedupes on the peer's
+  own signed stamp rather than on the pin, so a peer that drifts twice is
+  reported twice.
+
+## [4.3.0] - 2026-11-01
+
+### Added
+
+- **A federated profile can sign in to the secondary's OAuth backends.** A grant
+  belongs to one profile, and a federated call runs as the ingress profile, so
+  an OAuth backend on the secondary could not be reached through the link and
+  nothing could start its sign-in. `backend_auth_tool` is now allowed on an
+  ingress when its internal backend lists it; it acts only on that profile's
+  own backends. On the primary it is served with the peer's tag, for example
+  `peergw_backend_auth`.
+
+### Fixed
+
+- **One missing OAuth grant took down a whole federated peer.** "Not authorized"
+  was a JSON-RPC error, so the primary lost the message and counted it against
+  the breaker, and every other tool on that peer went with it. It is now a
+  refusal for every caller; a primary maps it to `needs_auth_secondary` in its
+  own words, naming the sign-in tool as served there.
+- **An image built from a branch labelled itself with the branch name.**
+  `docker/metadata-action`'s `version` output is the ref, so every
+  `:latest` published from a main push carried
+  `org.opencontainers.image.version=main` while the Containerfile's own
+  `version` label — read from `pyproject.toml` through the `VERSION`
+  build-arg — said 4.2.3. One image, two answers, and only a tag build was
+  right. The `pkgver` step now runs before the metadata and overwrites the
+  OCI label, so the two agree on every build.
+
+## [4.2.3] - 2026-11-01
+
+### Fixed
+
+- **A retention sweep that failed took the audit row down with it.**
+  `record_gateway_call` and `is_blocked` both run `_maybe_sweep` inline, so
+  deleting an expired row happened inside the call writing a new one. Any
+  failure in a sweep — a locked table, a full disk, the hash-chain prune —
+  propagated out of `record_gateway_call`, and `gateway/audit.py` logged the
+  row as lost: the audit discarding a row in order to delete one. The sweep is
+  now best-effort and says so when it does not finish. A failed pass leaves
+  `_last_sweep` unset, so the next call retries, and the rows it meant to
+  delete simply stay — the harmless direction.
+
+- **Sixteen router tests passed only by riding on another test's state.**
+  Nine fake configs in `tests/test_gateway_router.py` patched
+  `trentina.database.get_config` with a bare `MagicMock`, leaving
+  `blocklist_ttl_days` a mock that `timedelta` cannot take. The blocklist
+  cutoff is only computed on the first audit write after start, so these tests
+  passed whenever something earlier in the session had already marked the
+  sweep done, and failed alone or on an xdist worker that drew them first —
+  the last of the order dependencies #651 exposed. `conftest` now clears
+  `_last_sweep` per test, which leaves every test with the sweep DUE: the
+  strict reading, and the one production has on its first call.
+
+### Changed
+
+- **The approval page's "no oracle" claim is now held to the bytes.** The
+  wording, the status and the headers of every state a visitor can reach
+  without the password — a wrong one, an empty field, a right one with nothing
+  staged, and a right one naming a kind that is not there — are asserted
+  identical, and the refusal is asserted not to name the gateway's state in
+  either direction. Confirmed against a live gateway as well: with a
+  federation trust staged and with nothing staged, a wrong password returns the
+  same 11,195 bytes under the same headers.
+
+## [4.2.2] - 2026-11-01
+
+### Changed
+
+- **The test suite runs on every core.** `pytest-xdist` joins the `dev` extra
+  and `addopts` sets `-n auto`, locally and in CI; `-n0` runs a single test
+  in-process. CI's test step took 210–265s per Python version on one core; the
+  full suite now runs in 60–90s on a 14-core laptop. Running in parallel
+  surfaced three tests that only passed in serial order: a parametrize whose IDs carried a gzip timestamp, so
+  workers collected different tests; the upstream connection pool, which
+  outlived the event loop that opened it; and a linearity check timed from a
+  single sample.
+- **CI's container build reads the layer cache.** `build-container` was a raw
+  `docker build` with no cache, rebuilding every stage on every run while
+  `container.yml` built the same Containerfile with one. It now uses
+  `docker/build-push-action` with the same `type=gha` cache. The L2
+  integration tests in the image run four workers with one ONNX thread each.
+
+### Fixed
+
+- **The operator-seat approval page did not say what was changing.**
+  `config_guard.operator_seat` compares everything that decides who the
+  operator is *and how a caller becomes one* — `auth`, `oauth`, and the source
+  networks that pick the profile — and the guard used all of it, which is why
+  a credential swap staged correctly. But `_seat_facts` then discarded those
+  values and displayed only the set of profile *names* holding the seat. A
+  write that swaps the bearer credential behind an unchanged seat therefore
+  reached a person as "josui, then josui": a no-op, with nothing to decline.
+
+  That is the shape that matters most. Moving the seat to a new profile is
+  visible on the page; leaving the name alone and changing the key that makes
+  someone that name is the quiet version, and it rendered as nothing. The
+  constitution's Human Approval rule requires the approval to state what is
+  being changed, and for this case it did not.
+
+  Found in QE: a reviewer who had been told to decline, with the page in front
+  of them, approved it — because the page showed no change. Every differing
+  aspect of the seat is now named with its before and its after, and
+  `tests/test_config_tool.py` fails if a credential swap renders identically.
+
+  Rendering the comparison on a page is only safe because the two
+  secret-bearing fields it could reach, `auth.bearer_token` and
+  `oauth.client_secret`, are declared `Field(exclude=True)` and never appear
+  in the dump. That is now asserted rather than assumed, so a new secret field
+  added without the marker fails the suite instead of reaching a web page.
+
+  Showing more also means bounding it. Each fragment was already held to a
+  displayable shape, but the operator writes how many fragments there are — an
+  OAuth allowlist is a list it controls — and burying the one line that
+  matters under a thousand that do not is its own way to get a change
+  approved. A rendered field past 2000 characters refuses the write instead,
+  the way an undisplayable value already did.
+
+## [4.2.1] - 2026-11-01
+
+### Fixed
+
+- **`config_tool`'s own description was a release behind, and it withdrew a
+  feature.** It still told callers that the operator seat and `trust_verdict`
+  are refused and "stays a human edit of the file" — the 3.3.x behaviour. Since
+  4.1.0 a write carrying either is staged for a person to approve at
+  `/approve`. A tool's description is how an operator agent decides what is
+  possible, so a stale one is not a documentation defect: an operator reading
+  it would never attempt either change, and would reach for the shell this
+  feature exists to remove. `tests/test_server.py` now holds the description to
+  saying staged rather than refused.
+
+- **`contrib/tunnel/trentina-tunnel.service` shipped a vhost recipe that could
+  not serve `/approve`.** It gave the anchored pair `^/approve$` and
+  `^/approve/(.*)$`. Apache's `ProxyPassMatch` APPENDS the matched URL to the
+  target when the target carries no backreference, so the first rule forwarded
+  `/approve` as `/approve/approve` and the gateway correctly answered 404. The
+  pair half-works, which is what hides it: the second rule has a `$1` and is
+  right, so the enrolment page is reachable and the approval page never is —
+  found only when someone finally has something to approve. Replaced with one
+  anchored rule that captures the path, and the trap is now written down beside
+  it.
+
+## [4.2.0] - 2026-10-31
+
+### Changed
+
+- **Every page a person sees on a gateway now looks like Trentina.** The
+  approval page, the page where the approval password is set, and the backend
+  sign-in pages each carried their own inline styles and none of them said
+  whose gateway it was. Two of the three ask for a secret, which makes this
+  part of the mechanism rather than a coat of paint: a password prompt with
+  nothing recognisable on it is indistinguishable from one phishing for the
+  same password, and anyone running federation runs two gateways and so holds
+  two approval passwords with nothing to tell them apart. `gateway/page.py` is
+  the one sheet — the mark inlined as a data URI, one inline style block, and
+  the hostname the browser asked for. Each page stays a single response under
+  `default-src 'none'`: nothing runs and nothing is fetched. The hostname comes
+  from a caller-chosen header, so it is matched against a hostname shape and
+  the line is omitted entirely rather than sanitised when it is anything else.
+  The OAuth consent page is unchanged — it is fastmcp's markup, patched on the
+  way out, and not ours to restyle.
+- How long an enrolment window stands is now
+  `gateway.approval_enrol_window_seconds` in `profiles.yaml`, five minutes by
+  default and bounded to 60–3600. It was a fixed ten minutes, which is the
+  wrong shape for it: an operator at the same keyboard as the browser needs
+  seconds, and an agent relaying the URL into a chat somebody reads on a phone
+  needs a round trip. The default is the short one because the window is the
+  one interval in which a gateway's approver can be claimed by whoever holds
+  the code. A value outside the bounds is clamped rather than refused, since
+  both directions are safe and a reload refused over this would strand every
+  other change in the file. A window keeps the length it was opened with — a
+  config write must not be able to stretch one somebody is already inside, and
+  the operator is who writes that file. Reloads without a restart.
+
+### Fixed
+
+- The password page hid the enrolment code field whenever a window was not
+  open, which made it a trap rather than tidier. A person arriving after the
+  window closed met a form asking for a *current* password that, on a gateway
+  with no password set, does not exist — and the refusal there is silent by
+  design, so nothing said why. Found the hard way on a live gateway: three
+  submissions, three identical refusals, no indication that the field needed
+  was missing from the page. Both fields are now always present and either is
+  accepted, so an agent can open a fresh window while the person sits on the
+  page. It discloses nothing: which field was offered, which was wrong, and
+  whether the gateway has a password at all still answer identically.
+
+### Documentation
+
+- `docs/approvals.md` gains why the pages look the way they do, and how to
+  keep the route off the internet when nothing is pending — including why that
+  belongs to the deployment and not to the gateway, since a route that
+  vanished when nothing was staged would make its own existence the signal for
+  when to attack.
+- `contrib/tunnel/trentina-tunnel.service` publishes a laptop gateway's
+  approval page over a reverse tunnel, and is deliberately installed without
+  being enabled: the door opens when a person has something to approve and a
+  transient timer shuts it. Its header carries what the far side needs and the
+  two spellings that silently break it — `restrict` in `authorized_keys` turns
+  forwarding off, so `permitlisten` alone leaves the bind refused; and
+  `permitopen="none"` is valid only in `sshd_config`, since
+  `authorized_keys` reads it as a literal host:port and the whole key line
+  stops authenticating.
+
+## [4.1.1] - 2026-10-31
+
+### Fixed
+
+- `contrib/quadlet/trentina-config-commit.path` allowed five triggers in
+  thirty seconds, which is fewer than two config writes produce: systemd
+  watches the containing directory, and one write touches it three times (the
+  validation candidate, the staging file, the atomic replace). Exceeding a
+  trigger limit *fails* the path unit rather than pacing it, so the
+  auto-commit would have stopped without saying so. Twenty, with the reason
+  written down beside it.
+- `/health`'s `pending_pins` counted tools held for a backend that no longer
+  exists. A pin belongs to the hash of a backend's URL, so changing a URL or
+  removing a backend leaves that identity's rows behind — and `tool_pins`
+  resolves a backend by its *live* URL, so it can neither list nor approve
+  them. The number was therefore an alert with nothing behind it and no way to
+  clear it. Found on a live gateway, which reported one held tool that was
+  being served. The rows are kept rather than swept: a URL that comes back
+  should find its approvals again instead of re-holding everything it offers.
+
+## [4.1.0] - 2026-10-31
+
+### Added
+
+- **Nothing on a Trentina gateway needs a text editor any more.** The two
+  changes an operator agent could not make — who holds the operator seat, and
+  turning on federation trust, which makes this gateway serve another
+  gateway's response without running its own three layers over it — are no
+  longer refused. The agent **proposes**; the gateway stages the change and
+  tells the agent what a person will be shown; a person approves at `/approve`
+  and only then is anything written. See `docs/approvals.md`.
+- **The approval password is set in a browser.** `approval_enrol` is an
+  operator tool that opens a short window and returns a URL; a person opens it
+  and chooses the password. The operator can ask for the prompt and cannot
+  answer it — setting a password is a form submission, and none of Trentina's
+  tools makes one. A deployment that would rather pin the verifier can set
+  `TRENTINA_APPROVAL_PASSWORD_HASH[_FILE]`, which wins. With neither, nothing
+  can be approved and both changes stay refused, exactly as before.
+- **`profile_token`** mints a profile's bearer token and returns it once, the
+  only Trentina tool that returns a credential. `auth.bearer_token_name` names
+  it and is re-read on every load, so a whole new agent profile can be added to
+  a running gateway (#635). Before this a profile naming an unset environment
+  variable did not merely need a restart — it failed validation, so the write
+  was refused and the file restored.
+- **`config_tool(action="normalize")`** rewrites a config file once into a form
+  that reproduces itself, so later writes apply as one-key diffs instead of
+  being refused. Gated on proving the meaning and every comment survive, and on
+  the result round-tripping. Verified against a live 2,209-line config: 34
+  lines in 14 hunks, idempotent, and a following `set` is a 2-line diff.
+- **`gateway_calls.federated_verdict`** records whether a federated response
+  was served on the peer's signed verdict or re-judged here, and why — which
+  `docs/federation.md` had promised and the code did not do. A closed set,
+  never the peer's text; NULL for every non-federated call, and it enters
+  `row_hash` only when non-NULL so older rows still verify.
+- **`quarantine_stats`** gives an operator this gateway's own `perimeter.stamp`
+  and `perimeter.judge` — the values a federated peer pins. Nothing exposed
+  either before, so an operator asked to vet another gateway's scanner could
+  not read its own for comparison.
+
+### Changed
+
+- The project constitution gains a **Human Approval** section (2.11.0). The
+  Trust Allowlist clause is about the allowlist and had been read as governing
+  every trust decision; federation's scan-once trust is a different mechanism
+  and does decide whether a layer runs, so what governs it is now written down
+  rather than inferred from a neighbour. Five places that misattributed the
+  rule are corrected.
+- `tests/test_database.py` holds `SCHEMA` and the migration list to each other.
+  A column has to reach a fresh database and an upgraded one, nothing asserted
+  the two agreed, and this release's first attempt added one to only the
+  migration list — which broke every fresh database at the first insert.
+
+### Note
+
+`federation_trust`, a tool that would fill a trust pin in from the live link,
+is deferred (#640). The only thing a peer signs is a response to a real
+`tools/call`; there is no wire message that returns a standalone signed claim
+of its scanner identity, so "verified at the link" needs a protocol addition
+that both gateways would have to be on. Trust can be set end to end without
+it: `config_tool` stages the pin and the approval page shows the key
+fingerprint with both gateways' scanners side by side.
+
+## [4.0.0] - 2026-10-31
+
+### Changed
+
+- **BREAKING: federation's two gateway roles are renamed.** **Primary** is the
+  gateway that uses the tools; **secondary** is the one that offers them. This
+  replaces downstream/upstream, which was doing two jobs — "upstream" also means
+  the HTTP origin the gateway dials, in `egress_http`, the LLM proxy, the git
+  transport, the Matrix bridge and the `egress_upstreams` config field. Those
+  keep the word, so after this release "upstream" means only a network origin.
+- **BREAKING: four `profiles.yaml` field names change**, with no deprecation
+  shim. A gateway will not start on a config that still uses one: the load
+  refuses it by name and says what to rename it to, which is the whole migration
+  aid there is. Rename them in the same change as the image:
+
+  | old | new |
+  |---|---|
+  | `federated.edge_key_env` | `federated.primary_key_env` |
+  | `federated.edge_key_name` | `federated.primary_key_name` |
+  | `federation.signing_key_env` | `federation.secondary_key_env` |
+  | `federation.signing_key_name` | `federation.secondary_key_name` |
+
+- **BREAKING: two agent- and operator-visible names change.** The refusal reason
+  `tool_held_upstream` becomes `tool_held_secondary`, and `quarantine_stats`
+  reports `held_secondary` where it reported `held_upstream`.
+- `gateway/edge_key.py` is now `gateway/federation_keys.py`: it holds the crypto
+  for both keys, so neither role belongs in the module name. `EdgeKeyError` is
+  `FederationKeyError` and `sign_edge_jwt`/`verify_edge_jwt` are
+  `sign_primary_jwt`/`verify_primary_jwt`.
+- The `federated:` and `federation:` config blocks keep their names. They name
+  the feature, not a role, so they stay accurate.
+
+### Compatibility
+
+The signed-assertion wire format is deliberately unchanged — the envelope's
+`verifier`, `perimeter_stamp` and `judge` keys and `PERIMETER_VERSION` all stay
+as they were. A 4.0.0 primary federates with a 3.3.x secondary and vice versa,
+so the two gateways can be migrated one at a time instead of together. A
+`trust_verdict` pinned before this release keeps matching.
+
+## [3.3.1] - 2026-10-31
+
+### Fixed
+
+- **`config_tool` read a file's layout instead of assuming it, and now refuses a file it cannot reproduce** (#633). ruamel emits one block-sequence style per document; the byte-for-byte test covered the five YAML files in this repo, which all indent a sequence's dash two past its parent key, and the first production config this was pointed at does the opposite in 882 of its 885 sequences. A one-key write therefore reindented hundreds of lists, and an `unset` in that state removed a `session_ttl_seconds` that had been set explicitly. The style is now read off the file by majority, and a write is refused outright unless reading the file and writing it back reproduces it exactly — a file using YAML anchors does not, because those are renumbered when rewritten, so such a file reads fine and refuses to write until it is normalised once by hand.
+
+## [3.3.0] - 2026-10-31
+
+### Added
+
+- **API-driven configuration** (#633): an operator agent can provision and run a gateway — including a federated edge — without editing files and without a restart. `docs/operator.md` already described this loop ("none of this needs a shell"); the product shipped half of it. Two things still need a person: turning on scan-once federation trust (below), and a new profile that authenticates by a bearer token, since the token is an environment variable and a new one of those needs the container restarted.
+  - **`config_tool`** reads and writes `profiles.yaml` itself, then applies the change the same way `reload_profiles` does. The file stays the source of truth: it is not a view over a database and not generated, and a hand edit still wins. `expect_hash` is required, so a write carries the hash of the version it was composed against and a file that moved underneath refuses the write instead of overwriting the other writer. Every successful write returns the next hash. A candidate is validated by loading it before anything is replaced, the previous version is kept under `<data>/config-backups/`, and the replace is atomic.
+  - **`federation_keygen`** mints an Ed25519 keypair inside the gateway and returns only the public half — the half a peer pins. The private half is written under the gateway's own data directory, which the file tools already refuse, and is never returned.
+  - **Keys by name:** `federated.edge_key_name` and `federation.signing_key_name` refer to a minted key instead of an environment variable. They are re-read on every load, and a reload is a load, so a key minted after startup takes effect without a restart. The `_env` forms remain, for podman and Kubernetes secret mounts; exactly one source per key.
+  - Two things are not writable through the API, and not as a privilege boundary — the operator is root on the gateway. They exist because the operator is a model. It cannot create, move or remove the operator seat or change how a caller becomes one. And it cannot set `trust_verdict`, which makes this gateway serve another gateway's response without running its own layers: the constitution keeps trust decisions administrator-set and says trust never changes *whether* a layer runs. Everything else about federation is the operator's, `federation.peers` included — that decides who may authenticate, which is an access grant and not a decision to believe someone's scan.
+
+### Changed
+
+- `contrib/quadlet/trentina-config-commit.{path,service}` commit `profiles.yaml` on the host whenever the gateway writes it, which is the "version controlled" part of logged-backed-up-version-controlled. The gateway cannot commit for itself — its image ships no `git`, and the git transport is a proxy for a caller's client rather than a way to author a commit — and without this every write leaves the config repository dirty for a drift check to find.
+- The reference Quadlet unit gives `profiles.yaml` a **directory of its own**, bound writable, with the existing config directory still read-only. An atomic replace renames over the file and a rename needs the directory — and a real config directory also holds the trust allowlist and a federation signing key, which must not sit somewhere the gateway can write. The writable surface is one directory holding one file. `TRENTINA_REQUIRE_HARDENED` still passes: its checks are `statvfs("/")` and the import path, and a bind mount at the config path is neither. Deployments that want the file hand-edited only can keep the single-file `:ro` bind, and `config_tool` reports that it cannot write.
+- Adds `ruamel.yaml`. Reading config stays pyyaml's job; writing it needs round-trip mode, because `yaml.safe_load` discards the comments and formatting of a file a person maintains.
+
+### Fixed
+
+- A federated backend's "an edge key needs a gateway MCP URL" check tested `edge_key_env` specifically, so the same configuration spelled with a key name would have skipped it. It now asks whether the edge has a key at all, by either source.
+
+## [3.2.0] - 2026-10-31
+
+### Added
+
+- **Federation 1.1 — operability hardening** (#628): the gateway-to-gateway edge is now diagnosable and self-healing, with no change to the trust model.
+  - **Diagnosable federated errors:** `exc_kind` unwraps the MCP SDK's task-group `ExceptionGroup` to the first real leaf, so a failed federated `tools/list`/`tools/call` names its actual cause (e.g. `ConnectError`) in both the operator-visible error and the log, never the opaque wrapper.
+  - **Background auto-refresh:** new optional `federated.poll_seconds` (default 300, `0` disables, floor 30) re-probes each federated upstream on its cadence and rebuilds the sharing profiles under background L3 priority, so a newly approved or changed upstream tool appears without a manual `reconnect_backend`. A backend with an open circuit is skipped and picked up on recovery.
+
+### Fixed
+
+- **Operator reconnect no longer strands a federated edge** (#628): `reconnect_backend` refreshes in place instead of evicting before the fetch (eviction stays in `cache_flush`; a profile's aggregate is invalidated only after a successful fetch), and it passes the caller profile so a federated backend re-authenticates. Previously an operator reconnect of a federated upstream sent an unauthenticated probe, failed with an opaque `ExceptionGroup`, and dropped the backend's entire tool list.
+- Every federated fetch path — reconnect, the new poll, warm-up revalidation, and pre-compression — now carries a caller profile so the edge JWT mints; `_inflight_key` keys a federated edge-key backend by profile so a no-profile fetch can never be joined by an authenticated build; and `_credentials` fails loud (instead of sending an unauthenticated probe that would open the URL-keyed breaker) when a federated edge key has no caller profile.
+
+### Changed
+
+- The interim static-bearer federation deprecation no longer names a dated removal version; it is superseded by the `federated:` block and will be removed in a future release.
+
+## [3.1.0] - 2026-10-30
+
+### Added
+
+- **Gateway-to-gateway federation** (#592): a downstream gateway can mount a second Trentina's *offered* tools over a directed, profile-declared, authenticated edge and **trust the upstream's scan instead of re-judging** — killing the double L1/L2/L3 cost of the interim static-bearer arrangement while keeping the perimeter honest. New config: a `federated:` backend block (downstream) and a `federation:` ingress block (upstream). See [docs/federation.md](docs/federation.md).
+  - **Stateless edge auth:** a per-edge Ed25519 key signs a 60 s RFC 8693 act-chain JWT (real caller as `sub`, downstream as `act.sub`); no shared bearer, no grant store. The upstream audit records the real caller (`caller_peer`) and the downstream as actor; the peer-asserted caller subject (`caller_sub`) is kept in the audit and never logged (#262).
+  - **Scan-once at the trust boundary:** the upstream signs an SLSA-VSA-shaped verdict beside each response; the downstream delivers on it only when the signature, the content hash, the perimeter stamp **and** the L3 judge all match **and** the verdict is fully clean, and fails closed to a full local re-judge otherwise (an incomplete verdict — a gap, oversize or unread binary — is re-judged under the downstream's own policy). A stamp or judge change auto-invalidates the pin. `PERIMETER_VERSION` is unchanged; the carve-out lives in the response edge, never in a layer (Coverage + Known gap 33 in [docs/defense-pipeline.md](docs/defense-pipeline.md)).
+  - **Directed, loop-free:** the upstream can never enumerate or call a downstream-local tool; a mounted tool is never re-exported onward; one profile is one role (a two-way pair is two profiles); a federated backend must be reached over https (the edge JWT is replay-bounded, not nonce-protected) unless `TRENTINA_FEDERATION_ALLOW_INSECURE`.
+  - **Operability:** federated tools keep their short names (origin in the audit + the "why can't profile X see tool Y?" diagnostic); an already-paged response is forwarded via `read_part` rather than re-paged; a federated upstream's first tools/list is approved as a unit (no first-connect pin storm), its held count is surfaced downstream and on `/health`, and a held upstream tool reads "held upstream, awaiting approval" rather than leaking the peer's refusal text.
+- **Pin call gate** (#469/#618): a held or changed remote tool is now refused at call time, not only filtered from `tools/list`.
+
+### Changed
+
+- The prompt-injection promise now reads "stops prompt injection at every ingress — **or at a trusted boundary you declare**" (README + constitution Layer Contract, constitution 2.10.0), reflecting federation's scan-once trust boundary.
+
+### Deprecated
+
+- The interim static-bearer federation path (one gateway mounting another as a plain MCP backend) is deprecated in favour of a first-class `federated:` block; the gateway warns at startup when it sees the pattern. It will be removed in a future release.
+
+### Security
+
+- Bumped `joserfc` to 1.7.7 for CVE-2026-119284.
+
+## [3.0.1] - 2026-10-30
+
+### Added
+
+- **Standalone mode returns a policy refusal as an ordinary tool result** (#550), the way the gateway has since 2.0.0. A `block`-mode refusal, a blocklist hit, a fetch advisory, a confinement denial or an egress refusal now comes back with `isError` false, the `[TRENTINA] Refused (...)` line in `content`, and the structured body under `_trentina_refusal` — instead of a raised exception that a stock agent (hermes) counts against its 3-strike breaker. A genuine failure (a timeout, a provider error, an oversize scan) still raises. The gateway path is unchanged.
+
+### Fixed
+
+- `plugins/registry.py` accepted `api_version = True` as version 1 (`bool` subclasses `int`, `True == 1`); it now requires an exact `int` (`type(v) is int`), matching the fix made to the transport registry in 3.0.0. Regression test added.
+
+### Internal
+
+- Removed dead `scope.profile is not None` branches in `tools/stats.py` and `tools/reconnect.py` (the field is non-optional since 3.0.0) and the vestigial `config.has_api_key` property (no caller since the grounding search fallback was dropped). Renamed `tests/test_ingress_defense.py` to `tests/test_ingress_perimeter.py`, the module having been split into `response_edge`/`tool_list_edge`. Closes #607.
+
+## [3.0.0] - 2026-10-30
+
+### Breaking
+
+- **The guard config keys are renamed to the literal/semantic × request/response vocabulary (#571, #598).** A backend's `parameter_guards` is now `literal_request_guards` and its `response_guards` is now `literal_response_guards`; a profile's `guarded_execution` is now `semantic_request_guards` (the config class `GuardedExecutionConfig` is `SemanticGuardsConfig`). The old keys are removed, and the interim `request_guards` / `intent_guards` names are not adopted — a profile still using any of them fails to load with a specific message, e.g. `parameter_guards was renamed literal_request_guards in 3.0.0` or `guarded_execution was renamed semantic_request_guards in 3.0.0`, rather than Pydantic's generic extra-key error. `tools_allow` / `tools_deny` (the tool guards) keep their names. Behaviour is unchanged, and the audit outcome values (`denied_guard`, `denied_gatekeeper`, …) are unchanged. The agent-facing refusal prefix is now `Refused by semantic request guards:`. See [docs/literal-request-guards.md](docs/literal-request-guards.md), [docs/semantic-request-guards.md](docs/semantic-request-guards.md), [docs/literal-response-guards.md](docs/literal-response-guards.md) and the guard grid in [docs/gateway.md](docs/gateway.md).
+
+- **Standalone is a synthesized operator profile, not a second code path (#579).** Running `trentina` with no gateway bound used to defend through its own `scope is None` / `standalone_policy` branches; now it is one `role: operator` profile built from the environment (`gateway/standalone.py`), read exactly as a `profiles.yaml` operator is. Two consequences are visible. A standalone detection row's `profile` is now `standalone` rather than NULL — an operator reads gateway-wide, so pre-existing NULL rows still count against the blocklist. And L3 and compression resolve through that profile's `llm_keys`, which mirror the environment keys, so a provider+key that produced L3 before produces it now; a keyless standalone server reports `l3_unavailable`, exactly as a gateway with no key does. `current_scope()` now raises when a live gateway has no caller bound instead of acting gateway-wide (fail closed).
+- **The Gemini grounding standalone-only web-search fallback is removed (#579).** Since 0.41.0 web search (L0) ran on OpenRouter's `web` plugin, with Gemini `google_search` grounding kept only as the fallback for a standalone server holding no OpenRouter key. That fallback is gone: `search` resolves through the caller's OpenRouter key on every path, so a `GEMINI_API_KEY`-only standalone server must add `OPENROUTER_API_KEY` to use `search`. L3 and every other model call are unaffected. Each object in the `search` result's `sources` is now `{uri, title}`; the `redirect_failed` field is removed, as OpenRouter's `web` plugin returns direct URLs and there is no grounding redirect left to resolve or to fail. Supersedes the 0.41.0 search behavior.
+
+### Added
+
+- **The transport registry accepts a second, in-process transport** (`transports.registry.register_transport`). The hard-coded single-entry table becomes a real registry: a registered transport resolves by name and `orchestrator.crossing` runs it through the same parse → carry → deliver → wrap order. This is the minimal unlock — an EXTERNAL `dist:name` transport plugin is still refused at load (`build_transport`), because `base.py`'s `Face`/`Carrier` contract is still untyped and only `api_version` is frozen, so there is no entry-point group to publish against until #535. Registration is not dispatch: a profile's backend is still only dispatched over the built-in `mcp` (`TransportName` is unchanged), and per-backend transport selection is #535's work. No behaviour changes for any existing profile. See [docs/plugins.md](docs/plugins.md#transports--registration-is-open-external-plugins-are-not).
+- A per-profile block/flag guard on the `/proxy/llm` **completion** edge: `defense.llm_completion` (`flag` by default, `block` to opt in). `flag` is today's behavior — the completion streams back untouched and is judged post-hoc (`source_type=llm_completion`), recording a flag but never retracting what already streamed, since a token stream has no annotation channel and an interactive seat keeps its time-to-first-token. `block` buffers the whole completion, judges it, and **withholds** a flagged or not-fully-judged one (a timeout, a scan failure, or a body over the scan cap all fail closed to `completion_unjudged`/`completion_oversize`); the agent gets the same deny marker as a request refusal, never the completion. This is a separate knob from the per-provider request `enforcement` because withholding model output is a property of the consuming agent's trust posture, not of which provider answered — the trade an autonomous seat with no human waiting can make. `redact` is meaningless on a stream and refused. The `defend()` call for the completion now lives on the orchestrator's response edge (`judge_llm_completion`). See [docs/llm-proxying.md](docs/llm-proxying.md).
+
+### Fixed
+
+- The surface report's `offered` stage counts the tools pinning holds (#469). It was measured after the hold, so a backend whose tools awaited approval looked smaller than it is and the allowlist's savings were understated: the README demo, in front of a Workspace backend listing 122 tools, reported 17 offered and 61% saved. A held tool is still what the backend offers; it is still withheld from the served list.
+
+## [2.0.0] - 2026-10-26
+
+### Changed
+
+- **BREAKING: a policy refusal is an ordinary tool result, not an error, so Trentina works with stock agent clients.** A defense refusal, a parameter guard, the gatekeeper, a disallowed mode, a response guard, a blocked response, a failed required preprocessor and a refused part now arrive as `result` with `isError: false`, the `[TRENTINA] Refused (...)` line in `content` and the structured body under `_trentina_refusal`; they were JSON-RPC errors (`error.data`) or `isError: true`. Stock hermes-agent counts both as strikes against the server, and behind the gateway every tool is one server: three L1 refusals of article fetches paused all of Kagetora's tools as "unreachable" and halted the weekend report (2026-10-26). OpenClaw accepts either. A malformed request (params or arguments that are not an object, an unknown method or tool) is still a JSON-RPC error. A decoy refuses a disallowed mode word for word as a real tool does. Clients that read `error.data` for a refusal read `result._trentina_refusal`; the shape is in [docs/quarantine-tools.md](docs/quarantine-tools.md#refusals-name-what-to-try-next). Audit outcomes are unchanged. The README demo's refusal scenes read `_trentina_refusal`.
 
 - **The default L2 model is now `prompt-injection-guard-small-ct`, Horizon's `prompt-injection-guard-small` fine-tuned on benign tool replies (#17).** Horizon refused about 150 ordinary tool replies a day (feed entries, Metsuke sweep pages, Nagios rollups, issue lists), L3 agreeing with 6 in a week, and it halted the weekend report. The fine-tune is trained by `l2-train` on a RunPod RTX 4090 (`scripts/runpod_train.py`; GHA run 40311268794) from pinned public sets (#17 lab log in `docs/benchmark.md`), gated there and in the image build, and pulled by digest from `ghcr.io/crunchtools/trentina-l2-model`; NOTICE and `training.json` ship beside it. At its threshold of 0.5, against Horizon at 0.7, on production replies screened locally: sweep pages 0 of 8 flagged (2), sweep records 3 of 276 (16), Miniflux entries 1 of 65 (3); internal attacks caught 43 of 44 (41), hijacking attacks 103 of 128 (80). Known gaps 19 (logs) and 28 (meeting notes with bare links) close and their shapes are gated; gap 31 narrows. **Gap 21 inverts:** attacks in base32, Ascii85, base85, UU, Braille or Morse, which the unpack stage does not decode, now reach L3 alone (1 to 21 of 44 caught by L2, against 37 to 44 when Horizon flagged anything encoded); shipped with the gap open by decision, decoders to follow. Horizon leaves the image, so rolling back is the previous image digest, not `CLASSIFIER_MODEL`. The model change sweeps cached verdicts, as any model change does.
 
-- **BREAKING (major): the three terminating proxy routes are renamed to the `/proxy/*` family (#511).** `/egress/{upstream}/{path}` → `/proxy/http/{upstream}/{path}`, `/git/{remote}/…` → `/proxy/git/{remote}/…`, `/llm/{provider}/…` → `/proxy/llm/{provider}/…`. The old paths now 404. The `/egress` route's audit `backend` prefix is aligned to the family: `egress:<name>` → `http:<name>` (`git:`/`llm:` unchanged); `DestinationKind.EGRESS` is unchanged. The CONNECT tunnel keeps its own `--egress-port` listener and name (it is a forward proxy with no request path). Cutover is lockstep with the deploy: `profiles.yaml` on lotor, any agent base URL, and the constitution instance table must point at `/proxy/*` before the new image serves, or those clients 404. This is also the culmination of the #511 convergence — all five agent-originated outbound paths now share `gateway/upstream.py` (the operator-origin network leg, pinned+pooled) and `gateway/relay.Operation` (the one call lifecycle and audit row).
+- **BREAKING (major): the three terminating proxy routes are renamed to the `/proxy/*` family (#511).** `/egress/{upstream}/{path}` → `/proxy/http/{upstream}/{path}`, `/git/{remote}/…` → `/proxy/git/{remote}/…`, `/llm/{provider}/…` → `/proxy/llm/{provider}/…`. The old paths now 404. The `/egress` route's audit `backend` prefix is aligned to the family: `egress:<name>` → `http:<name>` (`git:`/`llm:` unchanged); `DestinationKind.EGRESS` is unchanged. The CONNECT tunnel keeps its own `--egress-port` listener and name (it is a forward proxy with no request path). Cutover is lockstep with the deploy: the production `profiles.yaml`, any agent base URL, and the constitution instance table must point at `/proxy/*` before the new image serves, or those clients 404. This is also the culmination of the #511 convergence — all five agent-originated outbound paths now share `gateway/upstream.py` (the operator-origin network leg, pinned+pooled) and `gateway/relay.Operation` (the one call lifecycle and audit row).
 
 ### Added
 
@@ -24,6 +1590,9 @@ under that name.
 - Tool pinning: a remote backend's new or changed tool (whole-object SHA-256, annotations included) is withheld from every profile, `*` allowlists too, until an operator approves it with the `tool_pins` tool; each hold writes a detection. Pins live in the perimeter store, which is no longer disposable (#469).
 - `docs/owasp-mapping.md`: Trentina mapped to the OWASP MCP Top 10, the Agentic Top 10 (2026) and LLM01:2025, with ratings and the gap for each (#470).
 - `dir_tool`'s shadow scan now selects files a tool runs by name — `package.json` install scripts, `.npmrc`, `.bashrc`/`.profile`/`.bash_profile`/`.env` and executable `.git/hooks/*` — and reads each for obfuscation (#76). Presence is a count (`shadows_autoexec_files`), informational only; obfuscation inside one is a suspicious detection (`shadows_autoexec_obfuscated`). Build-system and editor configs are deferred. `PERIMETER_VERSION` 19.
+- The audit log is hash-chained (#472): `gateway_calls` rows carry `prev_hash`, `row_hash` (SHA-256 of the RFC 8785 form of the row) and `detections_digest`; the retention sweep and `reset_gateway_calls` write `audit_checkpoints` rows so a pruned or wiped log still verifies. The operator `audit_verify` tool and `trentina-audit-verify` report the first break. See `docs/audit-log.md`.
+- `Case.source` is mandatory for every case a corpus loader returns, filled from the pinned URL and revision for fetched sets and from the module for hand-written ones; `tests/test_corpus_source.py` enforces it (#471).
+- `docs/corpora.md` holds the burn-once holdout rules; `docs/defense-pipeline.md` holds the per-surface default mode and what each mode does when L2 or L3 errors (#471).
 
 ### Fixed
 
@@ -32,12 +1601,6 @@ under that name.
 - Alert ingress under `alert_ingress.enforcement: block` now refuses a payload L2 or L3 could not judge (honouring `TRENTINA_REQUIRE_L2`/`TRENTINA_REQUIRE_L3`) instead of forwarding it (#471).
 - Perimeter bug fixes on `/proxy/llm` and `/proxy/http` (pre-work for the outbound-convergence refactor), two of them caller-visible contract changes: (1) `/proxy/llm` now authenticates **before** the provider lookup and reads the gateway token from `Authorization` or, when absent, `x-api-key` on **any** provider shape (not only Anthropic) — so an unauthenticated probe is `401` whether or not the provider exists and the `404` no longer enumerates provider names; (2) an `/proxy/http` egress-guard address refusal (SSRF / DNS rebind / unresolvable host) is now `403` `denied_guard` with nothing executed, not `502 upstream_failed, executed=True` for a request that never left (matching how `/proxy/git` and the CONNECT tunnel label it). Also: `/proxy/llm` catches every `httpx.HTTPError` on send (a read/protocol error is a `502` with a `gateway_calls` row, not an unlogged `500`), and the post-hoc completion scan is bounded by `JUDGE_DEADLINE`.
 - Internal (no behavior change): the operator-named-origin network leg is now `gateway/upstream.py` — `checked_target` and the per-burst resolver cache, moved out of `gateway/client_egress.py` so `/proxy/http`, `/proxy/git` and the CONNECT tunnel import it from a shared module rather than up from the tunnel (an inverted dependency). The pinned-connection TLS context is built once (`egress.shared_ssl_context`) rather than per request, so the system CA bundle is loaded once at first use (frozen for the process lifetime, as a certifi bump already needs a restart) instead of on every `/proxy/http` and `/proxy/git` call.
-
-### Added
-
-- The audit log is hash-chained (#472): `gateway_calls` rows carry `prev_hash`, `row_hash` (SHA-256 of the RFC 8785 form of the row) and `detections_digest`; the retention sweep and `reset_gateway_calls` write `audit_checkpoints` rows so a pruned or wiped log still verifies. The operator `audit_verify` tool and `trentina-audit-verify` report the first break. See `docs/audit-log.md`.
-- `Case.source` is mandatory for every case a corpus loader returns, filled from the pinned URL and revision for fetched sets and from the module for hand-written ones; `tests/test_corpus_source.py` enforces it (#471).
-- `docs/corpora.md` holds the burn-once holdout rules; `docs/defense-pipeline.md` holds the per-surface default mode and what each mode does when L2 or L3 errors (#471).
 
 ## [1.23.0] - 2026-10-20
 
@@ -2592,7 +4155,7 @@ The modes take OpenRouter's names: Flag, Redact, Block (#200).
 
 ### Fixed
 - **The mode instructions read as three modes, not four.** warn's text
-  carried its own semicolon, the separator between modes, so on lotor it
+  carried its own semicolon, the separator between modes, so in production it
   split into two clauses and clean's "instead" attached to warn.
 
 ## [0.34.0] - 2026-09-24
@@ -2616,14 +4179,14 @@ The modes take OpenRouter's names: Flag, Redact, Block (#200).
 - **Served inputSchemas are compacted, tighten-only** (#199): the pydantic
   null branch, stray null defaults and `$schema` are dropped after the
   perimeter scan, so no verdict changes. About 15k tokens across 800 tools on
-  lotor. `compact_schemas: false` opts a backend out.
+  one production gateway. `compact_schemas: false` opts a backend out.
 
 ## [0.32.1] - 2026-09-24
 
 ### Fixed
 - **L3 is briefed that a tool definition describes invoking a tool.** With
   0.32.0 moving four profiles to a `block` default, L3's `tool_invocation`
-  false positives on descriptions (15 on lotor, L2 ≤ 0.004, L1 clean) became
+  false positives on descriptions (15 in production, L2 ≤ 0.004, L1 clean) became
   withheld tools: `jira_create_issue`, GitHub `list_issues_tool`, and our own
   `fetch_tool` among them. Only cached verdicts L3 flagged before the
   briefing are judged again; clean verdicts stand, so there is no cold-start
@@ -2895,7 +4458,7 @@ this is that release.
   accepted-and-ignored since 0.12.0 and is now rejected by `extra="forbid"`.
 
   A profile still carrying any of these now FAILS TO LOAD, which is loud and
-  recoverable — the alternative was migrating it forever. lotor's
+  recoverable — the alternative was migrating it forever. Production's
   `/etc/trentina/profiles.yaml` was migrated off all of them on 2026-09-23.
 
 ## [0.28.0] - 2026-09-23
@@ -2984,7 +4547,7 @@ this is that release.
   `TRENTINA_LOG_LEVEL=WARNING`, then logged the sweeper's start at INFO — so
   the one line answering "is anything actually removing these records?" was
   discarded on the only box where the question gets asked. Found while
-  verifying the 0.27.2 deploy on lotor, where there was no other way to tell.
+  verifying the 0.27.2 deploy in production, where there was no other way to tell.
 
 ## [0.27.2] - 2026-09-23
 

@@ -8,6 +8,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from trentina.errors import QuarantineAgentError
 from trentina.gateway import compress as compress_mod
@@ -20,6 +22,7 @@ from trentina.gateway.compress import (
     maybe_trigger_compression,
     set_profiles,
 )
+from trentina.gateway.profile import AuthConfig, LlmKeyOverride, Profile
 from trentina.quarantine.providers.base import ProviderResult
 
 
@@ -30,6 +33,26 @@ def _tool(name: str, description: str, schema: dict | None = None) -> dict[str, 
         "inputSchema": schema or {"type": "object", "properties": {}},
     }
 
+
+# A profile to own a compression, and to pay for it. The cache is per grant
+# owner since 6.1.0 and the model call runs on the profile's OWN key, so a
+# profile with no `llm_keys` compresses nothing — `resolve_profile_llm` refuses
+# to bill anyone else's. The key names the provider `standalone_l3` configures.
+PROF = Profile(
+    name="tenant",
+    auth=AuthConfig(bearer_token_env="T"),
+    llm_keys={"gemini": LlmKeyOverride(api_key_env="GEMINI_API_KEY")},
+)
+OWNER = PROF.grant_owner
+
+#: A second tenant, to prove nothing of PROF's reaches it.
+NEIGHBOUR = Profile(
+    name="neighbour",
+    auth=AuthConfig(bearer_token_env="T"),
+    llm_keys={"gemini": LlmKeyOverride(api_key_env="GEMINI_API_KEY")},
+)
+
+pytestmark = pytest.mark.usefixtures("standalone_l3")
 
 SUMMARIZE = {"processors": ["summarize"]}
 
@@ -43,22 +66,22 @@ class TestCompressTools:
     def test_cache_hit_replaces_description(self) -> None:
         original = "This is a very long verbose description that goes on and on"
         h = _hash_description(original)
-        _cache[h] = "Short version."
+        _cache.setdefault(OWNER, {})[h] = "Short version."
 
         tools = [_tool("my_tool", original)]
-        result = compress_tools(tools)
+        result = compress_tools(PROF, tools)
 
         assert result[0]["description"] == "Short version."
 
     def test_cache_miss_passes_through(self) -> None:
         tools = [_tool("my_tool", "Some description not in cache")]
-        result = compress_tools(tools)
+        result = compress_tools(PROF, tools)
 
         assert result[0]["description"] == "Some description not in cache"
 
     def test_empty_cache_returns_original(self) -> None:
         tools = [_tool("a", "desc a"), _tool("b", "desc b")]
-        result = compress_tools(tools)
+        result = compress_tools(PROF, tools)
 
         assert len(result) == 2
         assert result[0]["description"] == "desc a"
@@ -68,10 +91,10 @@ class TestCompressTools:
         schema = {"type": "object", "properties": {"url": {"type": "string"}}}
         original = "Fetch a URL and return content"
         h = _hash_description(original)
-        _cache[h] = "Fetch URL."
+        _cache.setdefault(OWNER, {})[h] = "Fetch URL."
 
         tools = [_tool("fetch", original, schema)]
-        result = compress_tools(tools)
+        result = compress_tools(PROF, tools)
 
         assert result[0]["inputSchema"] == schema
         assert result[0]["name"] == "fetch"
@@ -79,29 +102,29 @@ class TestCompressTools:
     def test_preserves_extra_fields(self) -> None:
         original = "Some verbose description"
         h = _hash_description(original)
-        _cache[h] = "Short."
+        _cache.setdefault(OWNER, {})[h] = "Short."
 
         tool = _tool("t", original)
         tool["title"] = "My Title"
         tool["annotations"] = {"readOnly": True}
 
-        result = compress_tools([tool])
+        result = compress_tools(PROF, [tool])
         assert result[0]["title"] == "My Title"
         assert result[0]["annotations"] == {"readOnly": True}
         assert result[0]["description"] == "Short."
 
     def test_empty_description_passed_through(self) -> None:
         tools = [_tool("t", "")]
-        result = compress_tools(tools)
+        result = compress_tools(PROF, tools)
         assert result[0]["description"] == ""
 
     def test_does_not_mutate_original_tool(self) -> None:
         original = "Long description here"
         h = _hash_description(original)
-        _cache[h] = "Short."
+        _cache.setdefault(OWNER, {})[h] = "Short."
 
         tool = _tool("t", original)
-        compress_tools([tool])
+        compress_tools(PROF, [tool])
         assert tool["description"] == original
 
 
@@ -132,12 +155,15 @@ class TestDatabaseRoundTrip:
         db_module._db = None
         get_db(db_path)
 
-        save_compression("hash1", "original text", "short", "gemini-2.5-flash-lite")
-        save_compression("hash2", "another original", "brief", "gemini-2.5-flash-lite")
+        save_compression(OWNER, "hash1", "original text", "short", "gemini-2.5-flash-lite")
+        save_compression(OWNER, "hash2", "another original", "brief", "gemini-2.5-flash-lite")
+        save_compression("neighbour", "hash1", "original text", "theirs", "m")
 
         result = get_all_compressions()
-        assert result["hash1"] == "short"
-        assert result["hash2"] == "brief"
+        assert result[OWNER]["hash1"] == "short"
+        assert result[OWNER]["hash2"] == "brief"
+        # Same hash, different owner: two rows, and neither reads the other.
+        assert result["neighbour"]["hash1"] == "theirs"
 
         db_module._db = None
 
@@ -153,8 +179,8 @@ class TestDatabaseRoundTrip:
         db_module._db = None
         get_db(db_path)
 
-        save_compression("h1", "a" * 200, "a" * 100, "model")
-        save_compression("h2", "b" * 300, "b" * 150, "model")
+        save_compression(OWNER, "h1", "a" * 200, "a" * 100, "model")
+        save_compression(OWNER, "h2", "b" * 300, "b" * 150, "model")
 
         stats = get_compression_stats()
         assert stats["tools_compressed"] == 2
@@ -186,9 +212,7 @@ class TestCallCompressModel:
             "trentina.gateway.compress.get_provider",
             return_value=mock_prov,
         ):
-            result = await _call_compress_model(
-                [("abc123", "Long verbose description")],
-            )
+            result = await _call_compress_model([("abc123", "Long verbose description")], PROF)
         assert len(result) == 1
         assert result[0] == ("abc123", "Short description.")
 
@@ -202,7 +226,7 @@ class TestCallCompressModel:
             "trentina.gateway.compress.get_provider",
             return_value=mock_prov,
         ):
-            result = await _call_compress_model([("h1", "desc")])
+            result = await _call_compress_model([("h1", "desc")], PROF)
         assert result == []
 
 
@@ -214,7 +238,7 @@ class TestPrecompressBackend:
         _cache.clear()
         desc = "Already cached description"
         h = _hash_description(desc)
-        _cache[h] = "Cached."
+        _cache.setdefault(OWNER, {})[h] = "Cached."
 
         mock_tools = [_tool("t1", desc)]
 
@@ -226,7 +250,7 @@ class TestPrecompressBackend:
             from trentina.gateway.profile import Backend
 
             backend = Backend(url="http://test:8000/mcp")
-            count = await _precompress_backend("test", backend)
+            count = await _precompress_backend("test", backend, PROF)
 
         assert count == 0
 
@@ -257,10 +281,10 @@ class TestPrecompressBackend:
             from trentina.gateway.profile import Backend
 
             backend = Backend(url="http://test:8000/mcp")
-            count = await _precompress_backend("test", backend)
+            count = await _precompress_backend("test", backend, PROF)
 
         assert count == 0
-        assert _hash_description(original) not in _cache
+        assert _hash_description(original) not in _cache.get(OWNER, {})
 
 
 class TestMaybeTriggerCompression:
@@ -362,7 +386,7 @@ class TestRetryLogic:
             ),
             patch("trentina.gateway.compress.RETRY_BASE_DELAY", 0.01),
         ):
-            result = await _call_compress_model([("h1", "Long description")])
+            result = await _call_compress_model([("h1", "Long description")], PROF)
         assert len(result) == 1
         assert mock_prov.generate.call_count == 2
 
@@ -382,7 +406,7 @@ class TestRetryLogic:
             ),
             patch("trentina.gateway.compress.RETRY_BASE_DELAY", 0.01),
         ):
-            result = await _call_compress_model([("h1", "Long description")])
+            result = await _call_compress_model([("h1", "Long description")], PROF)
         assert len(result) == 1
         assert mock_prov.generate.call_count == 2
 
@@ -399,7 +423,7 @@ class TestRetryLogic:
             ),
             patch("trentina.gateway.compress.RETRY_BASE_DELAY", 0.01),
         ):
-            result = await _call_compress_model([("h1", "desc")])
+            result = await _call_compress_model([("h1", "desc")], PROF)
         assert result == []
         assert mock_prov.generate.call_count == 3
 
@@ -413,7 +437,7 @@ class TestRetryLogic:
             "trentina.gateway.compress.get_provider",
             return_value=mock_prov,
         ):
-            result = await _call_compress_model([("h1", "desc")])
+            result = await _call_compress_model([("h1", "desc")], PROF)
         assert result == []
         assert mock_prov.generate.call_count == 1
 
@@ -451,9 +475,9 @@ class TestParameterDescriptions:
             },
             "$defs": {"F": {"properties": {"x": {"description": "Long x."}}}},
         }
-        _cache[compress_mod._param_key("Max. Defaults to 10.", 10)] = "Max."
-        _cache[compress_mod._param_key("Long x.", ...)] = "X."
-        out = compress_tools([_tool("t", "", schema)])[0]["inputSchema"]
+        _cache.setdefault(OWNER, {})[compress_mod._param_key("Max. Defaults to 10.", 10)] = "Max."
+        _cache.setdefault(OWNER, {})[compress_mod._param_key("Long x.", ...)] = "X."
+        out = compress_tools(PROF, [_tool("t", "", schema)])[0]["inputSchema"]
         assert out["properties"]["limit"]["description"] == "Max."
         assert out["properties"]["q"]["description"] == "Query."
         assert out["$defs"]["F"]["properties"]["x"]["description"] == "X."
@@ -482,10 +506,12 @@ class TestParameterDescriptions:
             patch.object(compress_mod, "save_compression"),
             patch.object(compress_mod, "DELAY_BETWEEN_BATCHES", 0),
         ):
-            stored = await compress_mod._precompress_params("b", [_tool("list", "", schema)])
+            stored = await compress_mod._precompress_params("b", PROF, [_tool("list", "", schema)])
         assert stored == 2
-        assert _cache[compress_mod._param_key("Optional. Page number.", ...)] == "Page number."
-        assert _cache[long_key] == "Page size."
+        assert (
+            _cache[OWNER][compress_mod._param_key("Optional. Page number.", ...)] == "Page number."
+        )
+        assert _cache[OWNER][long_key] == "Page size."
         assert model.call_args.kwargs["kind"] == "parameter"
         assert model.call_args.kwargs["context"][long_key] == {"tool": "list", "parameter": "limit"}
 
@@ -501,8 +527,8 @@ class TestParameterDescriptions:
             patch.object(compress_mod, "save_compression"),
             patch.object(compress_mod, "DELAY_BETWEEN_BATCHES", 0),
         ):
-            await compress_mod._precompress_params("b", [_tool("list", "", schema)])
-        assert _cache[key] == long_desc.removeprefix("Optional. ").strip()
+            await compress_mod._precompress_params("b", PROF, [_tool("list", "", schema)])
+        assert _cache[OWNER][key] == long_desc.removeprefix("Optional. ").strip()
 
     @pytest.mark.asyncio
     async def test_a_run_that_banked_anything_rebuilds_the_lists(self) -> None:
@@ -581,3 +607,81 @@ class TestPreprocessToolDescriptions:
             )
         assert out == [("a", "A.")]
         assert "PARAMETER" in generate.call_args.kwargs["system_prompt"]
+
+
+class TestPrecompressForwardsProfile:
+    """_precompress_backend passes the holder profile so a federated backend
+    authenticates its list fetch (#592, F4) — otherwise the cold-cache fetch
+    goes out unauthenticated and the build joins it via single-flight."""
+
+    async def test_profile_reaches_the_list_fetch(self) -> None:
+        from trentina.gateway.profile import AuthConfig, Backend, Profile
+
+        captured: dict[str, Any] = {}
+
+        async def spy_list(_name: str, _backend: Any, profile: Any = None) -> list[Any]:
+            captured["profile"] = profile
+            return []
+
+        prof = Profile(name="josui", auth=AuthConfig(bearer_token_env="T"))
+        backend = Backend(url="http://up:8000/mcp")
+        with patch("trentina.gateway.backend.list_backend_tools", side_effect=spy_list):
+            await _precompress_backend("up", backend, prof)
+
+        assert captured["profile"] is prof
+
+
+class TestOneOwnerNeverReadsAnothersCompression:
+    """A shortened description is a model rewrite one tenant's key paid for
+    (6.1.0). Serving it to another both spends across tenants and tells the
+    second that the first holds the same backend.
+    """
+
+    def test_a_neighbours_entry_is_not_substituted(self) -> None:
+        original = "A very long tool description that would be shortened."
+        _cache.setdefault(OWNER, {})[_hash_description(original)] = "Short."
+
+        mine = compress_tools(PROF, [_tool("t", original)])
+        theirs = compress_tools(NEIGHBOUR, [_tool("t", original)])
+
+        assert mine[0]["description"] == "Short."
+        # Same bytes, same hash, different owner: the original stands.
+        assert theirs[0]["description"] == original
+
+    def test_a_parameter_description_is_partitioned_too(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"page": {"type": "integer", "description": "Page number."}},
+        }
+        key = compress_mod._param_key("Page number.", ...)
+        _cache.setdefault(OWNER, {})[key] = "Page."
+
+        mine = compress_tools(PROF, [_tool("t", "", schema)])[0]["inputSchema"]
+        theirs = compress_tools(NEIGHBOUR, [_tool("t", "", schema)])[0]["inputSchema"]
+
+        assert mine["properties"]["page"]["description"] == "Page."
+        assert theirs["properties"]["page"]["description"] == "Page number."
+
+    def test_a_derived_ingress_reads_its_sources_entries(self) -> None:
+        """One tenant reached two ways, spending one credential."""
+        from trentina.gateway.profile import FederationConfig, FederationPeer
+
+        pem = (
+            Ed25519PrivateKey.generate()
+            .public_key()
+            .public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            .decode()
+        )
+        derived = Profile(
+            name=f"{PROF.name}-federation",
+            federation_of=PROF.name,
+            federation=FederationConfig(peers={"peer": FederationPeer(public_key=pem)}),
+        )
+        original = "A very long tool description that would be shortened."
+        _cache.setdefault(OWNER, {})[_hash_description(original)] = "Short."
+
+        through_the_link = compress_tools(derived, [_tool("t", original)])
+
+        assert through_the_link[0]["description"] == "Short."

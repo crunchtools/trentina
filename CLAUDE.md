@@ -15,16 +15,20 @@ uv run trentina
 ## Environment Variables
 
 - `TRENTINA_MODEL_PROVIDER` + that provider's key (`OPENROUTER_API_KEY`,
-  `ANTHROPIC_API_KEY`, ...) — L3 when no gateway profile is bound. Behind the
-  gateway each profile's `llm_keys` is used instead. `config.has_llm` and
-  `agent.llm_available()` answer "is there an LLM"; `has_api_key` is Gemini's
-  key only. Since 0.41.0 it no longer gates L3 or summarize; it only picks
-  Gemini grounding as the standalone search fallback.
-- `GEMINI_API_KEY` — optional since 0.41.0: Gemini as an L3 provider, and
-  search grounding ONLY standalone (no profile bound) with no
-  `OPENROUTER_API_KEY`; a bound profile searches on its own OpenRouter key or
-  is refused. The lotor gateway
-  holds none, so it never calls Google directly.
+  `ANTHROPIC_API_KEY`, ...) — the standalone server's L3 provider. Standalone is
+  a synthesized operator profile since 3.0.0 (#579) whose `llm_keys` mirror
+  these env keys, so L3 resolves exactly as a bound profile's does; behind the
+  gateway each profile's own `llm_keys` is used instead. `config.has_llm` and
+  `agent.llm_available()` answer "is there an LLM". `has_api_key` (Gemini's key
+  only) no longer selects anything now that grounding search is dropped (below)
+  and is vestigial.
+- `GEMINI_API_KEY` — Gemini as an L3 provider (standalone through the
+  synthesized operator's `llm_keys`, behind the gateway through a profile's
+  `llm_keys`). Since 3.0.0 it no longer enables search: the Gemini grounding
+  standalone-only fallback was dropped (#579), so web search is OpenRouter's
+  `web` plugin on every path and a standalone server needs `OPENROUTER_API_KEY`
+  for `search`. Our production gateway holds no Gemini key, so it never calls
+  Google directly.
 - `OPENROUTER_API_KEY` — standalone key for `TRENTINA_MODEL_PROVIDER=openrouter`;
   a gateway profile uses `llm_keys.openrouter`. Model ids are OpenRouter's
   (`google/gemini-3.5-flash-lite`).
@@ -32,8 +36,8 @@ uv run trentina
   supported judge: its pack passed the briefed pack gate, #397)
 - `QUARANTINE_SEARCH_MODEL` — L0 web search model, an OpenRouter id (default
   `google/gemini-2.5-flash`). L0 is OpenRouter's `web` plugin and nothing else
-  (`_enforce_openrouter_search_quarantine`); the Gemini grounding route strips
-  the `google/` prefix.
+  (`_enforce_openrouter_search_quarantine`). The Gemini grounding search route
+  was removed in 3.0.0 (#579); `search` needs an OpenRouter key on every path.
 - `TRENTINA_REQUIRE_L2` / `TRENTINA_REQUIRE_L3` — default true: block and redact
   refuse when that layer is ABSENT. `false` turns absence into a warning; a
   partial read is never excused. `QUARANTINE_FALLBACK` was removed in 0.31.0
@@ -55,7 +59,10 @@ uv run trentina
   blocklist (default: `perimeter.db` beside `QUARANTINE_DB`). See `perimeter_db.py`
   for why it is its own file. It also holds `tool_pins` (#469, `gateway/tool_pins.py`):
   deleting it costs a slow restart AND every remote tool held for re-approval
-  (`tool_pins` operator tool) — dark, not silently trusted.
+  (`tool_pins` operator tool) — dark, not silently trusted. One exception
+  (#592): a `federated:` backend's first reconnect after the store is lost is a
+  first connect, so its offered set is auto-approved as a unit (the trust is the
+  declared link, not the store).
 - `QUARANTINE_TRUST_CONFIG` — Trust allowlist JSON path
 - `TRENTINA_READ_ROOTS` — `os.pathsep`-separated absolute directories that
   `read_tool` and `dir_tool` may reach (#261); a relative entry fails startup.
@@ -118,9 +125,9 @@ uv run trentina
   unlinks one only when something reads its key, and an abandoned flow never
   is read again.
 - `CLASSIFIER_MODEL` — the L2 model, by name under `/models` (#350). Default
-  `prompt-injection-guard-small` (Horizon-Labs, Apache-2.0), the one model the
-  image ships (#362 dropped `prompt-guard-2-86m`, which fails the obfuscation
-  gate). A model directory carries `trentina-model.json` (id, pinned
+  `prompt-injection-guard-small-ct`, Horizon-Labs' `prompt-injection-guard-small`
+  (Apache-2.0) fine-tuned on benign tool replies (#17), the one model the image
+  ships (#362 dropped `prompt-guard-2-86m`, which fails the obfuscation gate). A model directory carries `trentina-model.json` (id, pinned
   revision, threshold, which outputs are malicious, the window it is scanned
   in), written by
   `scripts/export_l2_model.py`; without one, labels come from `config.json`
@@ -144,8 +151,8 @@ uv run trentina
   gate a shipped pack must pass; `docs/l3-prompt-tuning.md` is the guide.
 - `CLASSIFIER_MODEL_PATH` — any model directory; wins over `CLASSIFIER_MODEL`.
   How to try a model the image does not ship.
-- `CLASSIFIER_THRESHOLD` — overrides the model's own threshold (0.7 for
-  Horizon, 0.5 for Prompt Guard 2; 0.5 with no manifest). A profile's
+- `CLASSIFIER_THRESHOLD` — overrides the model's own threshold (0.5 for
+  the shipped `-ct`, 0.7 for Horizon's base model; 0.5 with no manifest). A profile's
   `defense.l2_threshold` is unset by default and can only make L2 stricter.
 - `CLASSIFIER_MAX_TOKENS` — L2's CPU budget in tokens; 0 removes it, leaving
   L3's context as the cap (default: 32768)
@@ -195,7 +202,7 @@ either alone prevents the crash.
 ## Boot warm-up and L3 pacing (#216)
 
 `gateway/warmup.py` runs from the FastMCP lifespan and builds every profile's
-aggregate through `router.ensure_profile_build`, the same single-flight task a
+aggregate through `aggregate.ensure_profile_build`, the same single-flight task a
 client's `tools/list` joins. Descriptions within a backend are judged
 concurrently (`scan_tool_list`); what paces them is the per-judge
 `AdaptiveLimiter` wrapped around every `provider.generate` call via
@@ -247,13 +254,24 @@ new pattern goes into that file's attack, benign and linearity tables.
 
 - A second listener, `--egress-port` (8021): HTTP `CONNECT` only, for a
   profile's `client_egress` (#442). Not a route on the app below.
+- `GET|POST /proxy/forward/{instance}/fetch?url=` — an agent-chosen URL
+  (#535, for #507): host in the instance's and the grant's `hosts`, by name,
+  ports 80/443, no redirect, no credential, both edges judged.
+  `TRENTINA_FETCH_PRIVATE_NAMES` (exact names, warned) exempts a fixture
+  name from the address rule and the port rule. `/proxy/<name>/{instance}/...` for a `dist:` route
+  plugin. Every `/proxy/*` path and CONNECT is mounted by
+  `transports.registry.mount_routes`/`start_listeners`; nothing else serves one.
 - `GET|POST /proxy/git/{remote}/{owner}/{repo}[.git]/{info/refs,git-upload-pack,git-receive-pack}` —
   the git transport (#453), registered only when the file has `git_remotes`.
   Bearer token picks the profile, as on `/proxy/llm`. (Renamed from `/git` in
   2.0.0 with `/proxy/http` and `/proxy/llm`, #511; the old paths now 404.)
-- `GET /health` — unauthenticated liveness probe returning `{status, classifier, profiles}`.
-  A timeout here means the asyncio event loop is blocked, not merely that a
-  backend is slow.
+- `GET /health` — unauthenticated liveness probe returning `{status,
+  classifier, profiles, pending_pins}`, plus `matrix_bridge` counts where a
+  profile is bridged. A timeout here means the asyncio event loop is blocked,
+  not merely that a backend is slow. Everything here is SUMMED, so the
+  unauthenticated probe names no profile; `pending_pins` counts only the
+  backends still configured, since a pin belonging to a URL nothing is
+  configured at any more withholds nothing and `tool_pins` cannot release it.
 
 ## Layer 2 scanning limits
 
@@ -274,7 +292,7 @@ reliably faster and 4096 and 8192 far slower. One cap bounds the scan (#225):
 
 A text response over `Config.whole_tokens` (16K) is not judged in one
 call (#340): `gateway/paging.py` cuts it once into parts of about
-`TRENTINA_PART_TOKENS` (12000; 0 is off), the router delivers part 1
+`TRENTINA_PART_TOKENS` (12000; 0 is off), `gateway/parts.py` delivers part 1
 (`_hold_paged`, `_deliver_part`) and answers the `read_part` tool itself
 (`_read_part`), never forwarding it. Each part crosses `scan_tool_response`
 with the previous part's last 64 tokens as `lead_in`. The remainder is held
@@ -282,7 +300,7 @@ in memory only, by a handle bound to the profile. Wording an agent reads is
 in `paging.py`; say "part", never "page" (wiki and PDF pages own that word).
 A profile without `read_part_tool` on its internal backend is not paged.
 `fetch`, `read` and `content` are paged too (#446), from the other side:
-`router._dispatch` binds a `context.PartsOffer`, `judged.judge_and_deliver`
+`transports.mcp._dispatch` binds a `context.PartsOffer`, `judged.judge_and_deliver`
 cuts and holds, judges part 1 and returns it in the tool's shape under
 `_trentina_part`; parts 2 on take `_read_part` like any other, judged as the
 tool's own source (`Paged.source`), so a late flag blocklists the URL.
@@ -340,7 +358,7 @@ Tools are served under short names (`gateway/names.py`), tagged with a backend
 only on collision, recorded in `tool_names` and never reassigned. Only
 tools/list and tools/call see them; everything behind the edge uses the real
 (backend, tool). A repeated `structuredContent` is dropped before the scan
-(`router._drop_duplicate_structured`).
+(`results._drop_duplicate_structured`).
 
 `tool_discovery` (#473, `gateway/discovery.py`, `docs/tool-discovery.md`)
 lists less for a client without its own tool search: `search` serves a core
@@ -369,7 +387,7 @@ its own posture and nothing enforced it. Now the policy does:
   Flagged → `redact` only, NEVER `flag`; gap-only → `flag`.
 - A response withheld AFTER the backend answered (defense block, response
   guard, byte cap, failed required transform) is not a refusal for a tool
-  that may write (#425): `router._executed` rewords it as "executed, response
+  that may write (#425): `results._executed` rewords it as "executed, response
   withheld", `isError` the backend's own (true at the byte cap, where it was
   never read), `_trentina_refusal.executed` true.
   `_may_have_acted` is the test: remote and not annotated `readOnlyHint`. A
@@ -399,6 +417,13 @@ it.
 - quarantine_stats — role-scoped like the gateway admin tools below: an agent
   profile gets its own audit rows, its own detections and the defense settings
   it runs under; an operator gets the gateway.
+- quarantine_stats — an operator also gets `perimeter`: this gateway's own
+  `stamp` (`perimeter_db.perimeter_stamp()`) and `judge`
+  (`service.judge_stamp`), the OPERATOR's own. A peer pins `stamp` from here
+  (#637) but the `judge` on the `federation.shared[]` entry of the profile it
+  consumes, computed from the derived ingress as the link signs it (#666). Nothing exposed them before, so an operator had no
+  way to read its own for comparison or to tell a peer what to pin. An agent's
+  slice does not carry them: they are the gateway's, not a tenant's.
   `surface` (`gateway/surface.py`) is the tool list offered vs. served;
   `gateway_audit.delivery` is response bytes arrived vs. delivered. Tokens are
   bytes/4 — a comparison, not a bill.
@@ -406,28 +431,72 @@ it.
 ### Operator profile / service identity (#138)
 
 Trentina is AI-native: an Operator agent installs and configures it, and
-`role: operator` is that agent's seat (`docs/operator.md`). At most one per
-file, and it must hold `llm_keys` for its own provider (`loader._check_operator`).
-The gateway's own model calls — compression, perimeter L3 over tool
-descriptions, anything added later — run AS the operator via
-`gateway/service.py` (`service_context()` binds it; the Q-Agent resolves key and
-model from the bound profile). No operator: env-global, logged at startup.
-Verdict keys carry the judging (provider, model) except for the env default,
-which keeps the pre-#137 spelling so persisted verdicts stay reachable.
+`role: operator` is that agent's profile (`docs/operator.md`). MORE THAN ONE IS
+ALLOWED since 6.4.0 (#661), and each must hold `llm_keys` for its own provider
+— that rule is per-profile, since the admin tools are `internal://` and judged.
+`gateway.service_identity` names the one the gateway binds and REPORTS as
+itself (the approved-apply audit row, `quarantine_stats`' `perimeter.judge`);
+two operators and no name refuses the file rather than taking the first in dict
+order, which is #138 again. `loader._check_operator` holds both; the one
+predicate is `service.written_operators`. `service_context()`
+(`gateway/service.py`) binds it, and the Q-Agent resolves key and model from
+the bound profile. No operator: env-global, logged at startup. Moving the role,
+the credential behind it, or the named identity are three spellings of one
+decision and all stage for a person (`config_guard.service_identity` compares
+the RESOLVED name, since demoting the named one moves it without the setting
+being in the write).
+
+**6.1.0 took the tool-description work off it.** Judging a description at the
+perimeter and compressing one run as the LISTING profile, on that profile's own
+key, and both caches are keyed by `grant_owner` — the owner so a derived
+federation ingress reads its source's entries, spending the same credential.
+They ran as the operator through 6.0.0, so one tenant's key paid to read
+another's tool list and the results were shared by every profile with matching
+thresholds and judge. Scott: "Everything that a user's account touches should
+be done by its own key." What is left of the service identity on the request
+path is applying an approved `config_tool` write, which spends nothing — an
+approval has no bound caller, and `reload_profiles` applies the whole file only
+for an operator.
+
+So EVERY profile needs its own `llm_keys`: without one for its resolved
+provider it judges nothing, and under `block` it is served no tool list.
+`loader.keyless_profiles` is the predicate, `_check_judges` warns, and
+`config_tool` reports it as `no_llm_key` because a warning reaches a journal no
+agent reads. Deliberately not a load error — such a profile was already
+non-functional, so refusing the file would surface an existing breakage rather
+than prevent a new one.
+
+Verdict keys carry the owner, the thresholds and the judging (provider, model).
+The pre-#137 spelling that omitted an env-default judge is gone: the owner
+makes every key new and `PERIMETER_VERSION` 22 sweeps the old rows.
+
+Two caches that are NOT the verdict cache follow the same rule.
+`_tool_list_cache` is keyed `(url, owner)` (`backend.carries_credential`,
+`backend.cache_owner`), because a tool list is whatever the backend returned to
+the credential that asked — one row per URL served a profile the list another
+profile's token had earned. And `tool_pins` is keyed by definition hash, so two
+tenants served different definitions of one tool each hold independently; an
+approval covers every tenant served those exact bytes. The circuit breaker
+stays shared on purpose: it measures reachability.
 
 ### Gateway admin
 
-All four are scoped by the calling profile's `role` (`gateway/scope.py`, and
+Scoped by the calling profile's `role` (`gateway/scope.py`, and
 the Roles table in `docs/profiles.md`). `role: agent` — the default — sees and
 acts on its own slice; `role: operator` holds the gateway. Refusals name
 nothing, so a backend in another profile is refused exactly like one that does
 not exist. Standalone (no gateway registered) is single-tenant and therefore
-operator; a live gateway with no bound caller is refused.
+operator; a live gateway with no bound caller is refused. The four below
+narrow for an agent; `config_tool`, `federation_keygen`, `tool_pins` and
+`audit_verify` refuse one outright (`scope.require_operator`).
 
 - cache_flush — flush tool-list caches. Agent: its own aggregate ONLY, with a
-  constant body; the per-URL cache is shared, so an agent flushing it and
-  reporting what was warm was a channel between profiles (#263).
-  Operator: every cache. A name is resolved by EXACT name, never by substring
+  constant body; a credential-free backend's row is still shared by every
+  profile, so an agent flushing it and reporting what was warm was a channel
+  between profiles (#263). Since 6.1.0 the cache is keyed `(url, owner)`, which
+  closes that structurally for any backend carrying a credential — the
+  constant body is kept so one rule covers both.
+  Operator: every cache, every partition of each URL. A name is resolved by EXACT name, never by substring
   over cached URLs — that is how `gw` used to reach `gw-work` and
   `gw-personal` both.
 - reconnect_backend — reset one backend's circuit breaker + re-probe after it
@@ -449,10 +518,205 @@ operator; a live gateway with no bound caller is refused.
   startup. An agent reload also holds its own `git` block (#453);
   `llm_keys` is not held.
 
+## API-driven configuration (#633)
+
+`config_tool` (`tools/config.py`) reads and WRITES `profiles.yaml`; operator
+only. The file stays the source of truth — not a view over a database, not
+generated — so a hand edit still wins: `expect_hash` is REQUIRED and a file
+that moved since that hash refuses the write. `get` returns the hash, and so
+does every successful write.
+
+Order, and it is the point: render the candidate (`gateway/config_patch.py`,
+ruamel round-trip so comments and formatting survive), validate by LOADING it
+from a real temp file through `load_profiles` (the one schema authority),
+compare the operator profile and the trust pins before and after, then either
+STAGE it for a person (below) or commit it — re-read the live file, keep the
+previous text under `<data>/config-backups/`, `os.replace`, apply through
+`reload_profiles`. `_commit` is the only code that replaces the file and is
+shared by the direct and approved paths, so the backup cannot be the step the
+quieter path skipped. Every refusal before the replace has touched nothing; the
+one after it restores the file, because a file ahead of the running gateway
+lies to the next reader. One `asyncio.Lock`: two writes validating against the
+same text would both satisfy their own `expect_hash`.
+
+A write that does not round-trip is refused rather than reformatted (3.3.1,
+after one of mine reindented hundreds of sequences in production and lost a
+setting). `action="normalize"` is the way through: the one write whose bytes are
+MEANT to change, gated on `config_guard.equivalent` — `safe_load` deep equality
+AND every comment still present, because safe_load discards comments entirely
+so a dump that threw the documentation away would satisfy it alone — then on
+the result round-tripping. It refuses a file that already round-trips and
+reports the lines and hunks it moved.
+
+`gateway/config_guard.py` holds the rules, pure: the operator profile (compared
+semantically, since a path check is evaded by writing a parent key — `auth`,
+`oauth`, and the `source_networks` of `matrix_ingress`/`client_egress`, because
+the peer address picks the profile there, #330), `trust_stays_human` (a `set`
+carrying `trust_verdict` at any depth is STAGED for a person rather than
+applied, since #637 — the constitution's Human Approval rule lets an operator
+PROPOSE a trust that stops a layer running and not apply one; `unset` stays
+immediate because it only scans more), `trust_pins` (the pins compared before
+and after, so what a person approves is what LOADING the candidate produced,
+not the mapping the caller sent), and masking `llm_keys.*.api_key`, the one field in the schema that holds a
+credential value rather than the name of one. These are not a privilege
+boundary: the operator is root. They exist because the operator is a model, so
+the question is "can it be talked into it" — and since #637 the answer is that
+it may ask and a person decides, rather than being refused.
+
+Three more rules joined them in 5.0.0, in the same shape and the same file:
+`federation_peers` (who may authenticate to a shared profile; PROFILES only, since a
+derived ingress carries its profile's block verbatim and counting both would show a
+person every peer twice),
+`defense_posture` + `defense_downgraded` (`modes`, `enforcement` or
+`llm_completion` reaching `flag`) and `egress_grants` (`client_egress.hosts`,
+`egress_upstreams`, `llm_providers`). `federation.peers` was deliberately NOT in
+the rule before then, on the ground that refusing an access grant would make a
+federation ingress impossible to create through the API. The second half of that
+stopped being true at #637: a grant is PROPOSED rather than refused, so the
+ingress is still built by an agent in one write and a person still sees who was
+let in.
+
+Two rules hold across all five, and a sixth follows them rather than deciding
+for itself. Each is computed on the LOADED candidate, never on the mapping the
+caller sent, because a write reaches any of them by setting a parent key. And
+only WIDENING stages: withdrawing a peer, dropping `flag`, removing an egress
+host each apply at once, since a gate in front of tightening teaches an operator
+that the page is something to get past. `config_guard.widened` is the shared
+diff; `defense_downgraded` is its own because "stricter" there is not a subset
+test.
+
+`federation_keygen` (`tools/keygen.py`, store in `gateway/key_store.py`) mints
+an Ed25519 pair into `<data>/keys/<name>.pem` (`O_EXCL`, 0600) and returns only
+the public PEM. `primary_key_name`/`secondary_key_name` refer to one by NAME,
+not path, resolved on every load — which is what removes the restart, since a
+reload is a load. Keep `has_primary_key` in mind over testing `primary_key_env`:
+a check naming one source only is how #633 found a gap.
+
+## Human approval (#637)
+
+Five changes an operator may PROPOSE and not apply: the operator profile,
+`trust_verdict`, `federation.peers`, a `defense` block reaching `flag`, and the
+three settings that open a way out of network isolation. `config_tool` stages
+them instead of refusing them, and a person approves at `/approve`.
+`docs/approvals.md` is the statement; the constitution's Human Approval section
+is the rule. Only widening stages — narrowing any of them applies at once — and
+a write needing two approvals is refused rather than shown as one, since a page
+can put one decision in front of a person and the rest would ride along unread.
+
+One mechanism, deliberately. `gateway/pending.py` holds what is staged — in
+memory only, one per `Kind`, expiring, and it RETURNS NOTHING when it stages,
+because a caller holding a handle holds part of the capability it is being held
+away from. `gateway/approver.py` answers "may this request approve" and is the
+seam a passkey or a sign-in joins later (#639). `gateway/approval_routes.py`
+asks for the password first and does not say whether anything is pending, so an
+unauthenticated visitor learns nothing; a wrong password and an idle gateway
+answer identically.
+
+The capability must be something the agent cannot read. The first cut handed
+the staging agent a URL token — an agent reads its own tool result, and an
+operator with a code-execution backend can POST — so it is a password a person
+holds, stored as a scrypt verifier (a config mount is readable in-container; a
+verifier yields nothing submittable). `approval_enrol` (`tools/enrol.py`) opens
+a short window and returns a URL for a person to SET that password: the
+operator can ask for the prompt and cannot answer it, since setting it is a
+form submission and no Trentina tool makes one. No approver configured means
+nothing can be approved and both writes stay refused.
+
+A peer's `perimeter_stamp` and `judge` are PEER-CHOSEN strings shown to the
+person deciding whether to believe that peer, so they pass
+`pending.checked_display` before staging and are escaped again at render.
+`_apply` runs under `service_context()`: an approval has no bound caller, and
+without it the reload would refuse the change and restore the file — approved
+and silently not applied. It also writes the audit row, since an approval is
+not a tools/call and would otherwise have none.
+
+`profile_token` (`tools/token.py`, store in `gateway/token_store.py`) mints a
+profile's bearer token into `<data>/tokens/<name>` (`O_EXCL`, 0600) and returns
+it ONCE — the only Trentina tool that returns a credential, because the agent
+being provisioned has to be told its own token and the alternative is a person
+copying it. `auth.bearer_token_name` names it, re-read on every load, which is
+what lets a whole new profile be added to a running gateway (#635); before it,
+a profile naming an unset env var failed validation and the write was refused
+outright. The token carries a `trt_` lead-in so `credential_shapes` can hold it
+out of a log record, since an opaque string has no shape to recognise.
+
+Federation's two gateway roles are **primary** (uses the tools) and
+**secondary** (offers them), renamed from downstream/upstream in 4.0.0 (#637).
+"Upstream" now means only an HTTP origin the gateway dials — egress, the LLM
+proxy, the git transport, the bridge, `egress_upstreams`. A federated backend
+names its own key with `primary_key_env`/`primary_key_name`; a shared profile
+names its own with `secondary_key_env`/`secondary_key_name`. The wire format
+was deliberately left alone, so gateways on either side of the rename still
+federate.
+
+## Federation is a property of a profile (#592, 5.0.0)
+
+`federation` is declared on the PROFILE whose tools are shared and
+`gateway/federation_link.py` DERIVES the ingress: `<profile>-federation`
+(`INGRESS_SUFFIX`, which lives in `profile.py` because the profile validator needs
+it and `federation_link` imports that module, not the reverse), offering
+`offerable_backends(profile)` — remote, not `federated`, not `decoy://` — plus one
+`internal://` backend allowing `READ_PART_TOOL` alone. `load_profiles` calls
+`derive_all` right after building the registry and before every registry-wide
+check, so an ingress is held to the audience rule like any written profile; a
+derived name colliding with a written one is refused.
+
+Every `Profile` field is decided by name in `CARRIED`, `DROPPED` or
+`CONSTRUCTED`, and `test_every_profile_field_is_decided` fails on a field in
+none of them. Deriving the offered set removes drift; the risk that replaces it
+is a field added later reaching a peer because nobody thought about it, and
+that test is the whole mitigation. Put a new field in one of the sets.
+
+`federation_of` names the profile an ingress was derived from, and
+`Profile.grant_owner` is `federation_of or name`: a derived ingress spends the
+PROFILE's OAuth grants, so a person signs in once. It is a FIELD, not a name
+match, because deriving privilege from `name` would make a hand-written
+`josui-federation` a way to claim josui's grants; `load_profiles` refuses a file
+that sets it. Every grant call site passes `grant_owner`, held by an AST test in
+`tests/test_federation_grants.py`; `_audit` keeps the ACTING profile.
+`_after_login` refreshes every profile spending the grant, or the link answers
+`needs_auth` after a successful sign-in until a cache flush.
+
+One property is structural, not checked: the derived set excludes every
+`federated` backend, so A→B→C is unsayable for TOOLS and ONE PROFILE MAY BOTH
+CONSUME A PEER AND SHARE ITSELF (`_check_federation_topology` lost its
+one-profile-one-role clause, which existed because a single `Profile`
+deadlocked its own single-flight aggregate build). The ingress's internal
+backend is still CONSTRUCTED under `INTERNAL_LABEL`, so a peer cannot reach
+`internal://` by whatever name the operator gave it.
+
+**6.0.0 gave up the other half of the directed edge, at Scott's instruction.**
+`role` is now `CARRIED`, and `_internal_allow` carries an OPERATOR profile's
+own `internal://` allowlist (unioned with `read_part_tool`, which `parts.py`
+needs on every link), so its peer administers this gateway. An agent profile
+still derives the floor — the role and the surface are one change. A shared
+operator's list must be exact names: a glob names nothing a person can approve
+on the `/approve` page and covers every tool a later release adds.
+Both halves are required: carrying the role alone leaves every admin tool
+unreachable, because they are served by `internal://`. The three consequences
+— one credential for peer and admin, admin responses arriving on the
+`trust_verdict` pin, and the role going transitive — are in
+`docs/federation.md` under "Sharing the operator role", and
+`config_guard.peer_becomes_operator` stages the write that starts it.
+`FEDERATION_INTERNAL_REQUIRED` is the floor, not the ceiling it was through
+5.x. Two things that do NOT follow the role: `_check_operator` counts only
+WRITTEN operators (a profile and its derivation are both operators, and
+counting both refuses the file), and `find_operator` skips derivations, because
+taking the first match would let dict order pick the gateway's service
+identity — the defect #138 removed.
+
+Federation is a declared PREVIEW surface (`src/trentina/stability.py`,
+`docs/stability.md`): a breaking change confined to it is a MINOR bump. A
+surface is declared BEFORE the release that relies on it, never during one.
+
+The deployment needs the config DIRECTORY bound writable (a rename needs the
+directory). `TRENTINA_REQUIRE_HARDENED` still passes: its checks are
+`statvfs("/")` and `sys.path`.
+
 ## OAuth token binding (#298)
 
 The proxy has one JWT audience for every proxied profile, so the audience
-cannot separate seats. `gateway/oauth_binding.py` binds the profile the
+cannot separate profiles. `gateway/oauth_binding.py` binds the profile the
 `/authorize` resource names to the flow (keyed on client id + PKCE
 challenge), then to the token's upstream lineage at `/token`; a refresh keeps
 it. `verify_oauth` asks the verifier's `bound_profile` and challenges any
@@ -469,15 +733,31 @@ change to the test.
 
 ## Development
 
+Every check runs from python-sdlc (constitution XII v1.30.0), pinned once in
+`.pre-commit-config.yaml`, configured in `pyproject.toml` under
+`[tool.sdlc.commit]`, `[tool.sdlc.push]` and `[tool.sdlc.ci]`. CI runs the same
+image at the same release. Exit 2 means a check COULD NOT run and is never to be
+worked around. `scripts/gates.sh` is gone.
+
+| Command | What it runs |
+|---|---|
+| `sdlc commit` (pre-commit hook) | ruff fixes, and that the push hook is installed |
+| `sdlc push` (pre-push hook) | mypy, the suite, Gourmand, Gatehouse over `origin/main...HEAD`, semgrep, pip-audit, the constitution validator, CodeQL against `.sdlc/codeql-baseline.json`. Never builds the image |
+| `sdlc ci` (the `sdlc ci` job in `security.yml`) | push's checks except Gourmand and Gatehouse, plus `image` (the build CI publishes) and `image-tests` (`tests/image/` and the L2, L3, OCR and PDF suites, run inside the image with no network) |
+
+`sdlc <check>` runs one: `sdlc image`, `sdlc image-tests`, `sdlc mypy`.
+`SDLC_SKIP=<check>` skips one for a false positive, which must then be answered
+on the PR. `tests/image/` is ignored by the suite outside the image. What causes
+drift is PUSHING a hand-built image, which only CI does.
+
+Underneath, if you want one tool by hand:
+
 ```bash
 uv run ruff check src tests corpora    # Lint
 uv run mypy src                # Type check
 uv run pytest -v               # Test
 TRENTINA_REQUIRE_L2_MODEL=1 CLASSIFIER_MODEL_PATH=<export> uv run pytest tests/test_l2_integration.py  # L2 against a real model; fails, not skips, if it does not load
-podman run --rm -v .:/repo:Z quay.io/crunchtools/gourmand:latest check /repo  # Slop detection
-# Container image: built by GHA (.github/workflows/container.yml), never locally —
-# the model-export stage needs a gated HF credential held only in CI. Push and let
-# the pipeline build it.
+podman run --rm -v .:/src:Z -w /src quay.io/crunchtools/gourmand:latest check --full  # Slop detection, as the hook runs it
 uv run python benchmarks/provider_benchmark.py  # L3 detection benchmark across providers — see docs/benchmark.md
 CLASSIFIER_MODEL_PATH=<export> uv run python benchmarks/l2_lone_flag.py --packs <pack.json> --judged <detonation.json> --corpora <benchmark.json>  # what L2 flags of a judge's stored misses; calls no judge (#404)
 podman run --rm -v .:/src:Z docker.io/semgrep/semgrep semgrep --config /src/.semgrep --error /src/src  # in-repo rules
@@ -524,7 +804,11 @@ replaced.
   `(image/png, 1.1 KB, not read)`; and leaves identifiers, short binary and
   anything non-canonical as it arrived. Binary an agent's tools could open
   (image, PDF, archive) is `Unpacked.unread`, which becomes the
-  `binary_unread` gap: block and redact refuse it, flag warns. Kind names
+  `binary_unread` gap: block and redact refuse it, flag warns. Last,
+  `letters.py` reads back Caesar shifts, Atbash and leetspeak (#720) when the
+  reading is English, judged by `common_words.txt` in one lookup per word
+  (`_READINGS`, not 26 passes); a plain common word in ciphertext stays as
+  it arrived. Kind names
   are a closed set: a data URI's declared type is mapped, never echoed.
   `UnpackStats` rides in L1's `PipelineStats` as `unpacked` and is
   informational, not suspicious. Binary an agent cannot open is labelled
@@ -619,11 +903,12 @@ replaced.
   module instead of up from the tunnel. Operator-named hosts only; `fetch`'s
   agent-chosen URLs stay on `egress.open_guarded`, never cached or pooled.
 - `gateway/client_egress.py` — the CONNECT listener (#442) on `--egress-port`
-  (8021), bound only when a profile has `client_egress`, started and stopped
-  by `warmup.trentina_lifespan`. The peer address picks the profile (no
+  (8021), `ConnectListener` on the spine since #535, bound only when a profile
+  has `client_egress`, started and stopped by `registry.start_listeners` from
+  `warmup.trentina_lifespan`. The peer address picks the profile (no
   credential, as #330); the name must be in `hosts`, port 443, and pass
   `egress.check_url`; the tunnel connects to a checked address
-  (`open_upstream` is the test seam). `upstream.checked_target` is one lookup
+  (`perimeter.open_stream` is the test seam). `upstream.checked_target` is one lookup
   per burst (#449): tunnels to a name share the check in flight and its answer
   for `CHECKED_TTL`; `resolver_busy` is 503 `denied_guard`, not a defense block. After `200` the first TLS record must
   be a ClientHello whose SNI is the CONNECT host, or the tunnel closes before
@@ -657,6 +942,21 @@ replaced.
   streamed body, idle timeout, no deadline, and any 3xx refused as
   `redirect`. `open_guarded` (deadline, redirects followed and checked) is
   still the call for a fetch.
+- `transports/perimeter.py` — the perimeter spine (#535, `docs/proxy-plugins.md`).
+  Every `/proxy/*` route and the CONNECT listener is a `Route` or `Listener`
+  (`transports/base.py`, the public contract) served by `serve()`/`accept()`:
+  auth, instance + grant (`bind()`), the slot BEFORE any body byte, the sealed
+  `PinnedUpstream` dial (`_UPSTREAM_SEAL`), judging both edges, credential
+  injection and echo scrub, the refusal spelling, and the one audit row. A
+  route says only `admit` (an origin KEY), `deliver` and `render`. In-tree
+  privilege (`InTree`: own judging, raw stream, ON_FINDING) is the registry
+  seed, never a declaration. `tests/test_perimeter_golden.py` replays 108
+  recorded cases on both config spellings; a new difference is a failure
+  unless named in `DELTAS`. `proxies:` (`gateway/proxies.py`) normalizes the
+  built-in types into their older fields, one home per fact; only `forward`
+  and `dist:` instances live in `route_instances`/`route_grants`. A `dist:`
+  route is scanned before import (`testing.suite.scan_route_source`) and is
+  gateway code: nothing holds the process.
 - `tools/` — Tool implementations called by server.py wrappers
 - `database.py` — SQLite blocklist for cumulative detection memory, keyed on
   (profile, source) since #263: `is_blocked(source, profile)` sees the
@@ -724,7 +1024,7 @@ replaced.
   crosses; the bytes ride base64 (event `media`, bridge `POST /upload`) and are
   judged WITH the event (`scanned["attachment"]`), read by signature first
   (`media.read_attachment`), capped at `ocr.MAX_IMAGE_BYTES`, thumbnails dropped.
-- `gateway/` — Per-consumer MCP gateway proxy with tool allowlists, parameter guards, and defense pipeline
+- `gateway/` — Per-consumer MCP gateway proxy with tool allowlists, request guards, and defense pipeline
   - `args.py` — schema-driven argument normalization (#241): drops an
     optional that is `""` or `null`, never one equal to its `default`, which
     is only an annotation. An optional that provably fails its schema is

@@ -46,7 +46,7 @@ if str(_REPO_ROOT) not in sys.path:
 from corpora.gatekeeper import CASES, POLICIES, SCENARIOS, GateCase
 from trentina.config import get_config
 from trentina.gateway import gatekeeper
-from trentina.gateway.profile import AuthConfig, Backend, GuardedExecutionConfig, Profile
+from trentina.gateway.profile import AuthConfig, Backend, Profile, SemanticGuardsConfig
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -89,7 +89,7 @@ PROFILES: dict[str, Profile] = {
         name=f"bench-{scenario.replace('_', '-')}",
         auth=AuthConfig(bearer_token_env="BENCH"),
         backends={BACKEND: Backend(url="http://bench:1/mcp", tools_allow=["*"])},
-        guarded_execution=GuardedExecutionConfig(
+        semantic_request_guards=SemanticGuardsConfig(
             policy=POLICIES[scenario],
             tools={BACKEND: sorted({c.tool for c in CASES if c.scenario == scenario})},
         ),
@@ -112,7 +112,7 @@ def _facts(case: GateCase) -> gatekeeper.CallFacts:
 async def judge(case: GateCase) -> Vote:
     """One call through ``gatekeeper.evaluate``, as the router sends it."""
     profile = PROFILES[case.scenario]
-    guarded = profile.guarded_execution
+    guarded = profile.semantic_request_guards
     if guarded is None:
         raise RuntimeError(f"profile for {case.scenario} guards nothing")
     refusal = await gatekeeper.evaluate(profile, guarded, _facts(case), case.arguments)

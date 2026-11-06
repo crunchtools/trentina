@@ -25,8 +25,8 @@ Anything but an explicit allow refuses it.
 Product (Scott, 2026-10-14): a gatekeeper modelled on linux-mcp-server's
 Guarded Command Execution, not a human approval queue. Opt-in per profile;
 only named tools are judged; a "no" refuses outright. Rejected: an approval
-queue (unattended seats have no human to ask), judging every tool not marked
-read-only (cost and false refusals), turning it on for every seat (#270
+queue (unattended profiles have no human to ask), judging every tool not marked
+read-only (cost and false refusals), turning it on for every profile (#270
 keeps the assistants broad).
 
 ### Why after the guards, and why it only subtracts

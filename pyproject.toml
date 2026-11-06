@@ -1,8 +1,8 @@
 [project]
 name = "trentina"
-version = "2.0.0"
+version = "6.8.0"
 description = "MCP gateway for AI agents — prompt-injection defense, token savings, deterministic policy, OAuth, per-agent profiles"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = "AGPL-3.0-or-later"
 authors = [
     { name = "crunchtools.com" }
@@ -14,9 +14,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
@@ -63,6 +60,11 @@ dependencies = [
     "numpy>=1.24",
     "dbus-fast>=2.0",
     "pyyaml>=6.0",
+    # Reading config is pyyaml's job; WRITING it is ruamel's (#633). The
+    # loader's `yaml.safe_load` throws away comments and formatting, which is
+    # fine for reading and fatal for writing back a file a human maintains and
+    # keeps in git. ruamel's round-trip mode is what preserves them.
+    "ruamel.yaml>=0.18",
     "pypdf>=6.19",
     # OCR for images (#370). RapidOCR is Apache-2.0 and ships its three
     # PP-OCR models (31 MB) inside the wheel, so they are hash-pinned by
@@ -99,8 +101,22 @@ bridge = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    # Runs the suite across every core: addopts sets -n auto, and -n0 runs a
+    # single test in-process.
+    "pytest-xdist>=3.6",
     "ruff>=0.8",
     "mypy>=1.13",
+    # A benign out-of-tree transform plugin, the test fixture + worked example
+    # for the Phase 6 registry. A dev-only path source: `uv export` for the
+    # image names only --extra matrix --extra bridge, so it never reaches the
+    # production wheel (and the wheel packages only src/trentina regardless).
+    "petit-plus",
+    # garak's own encoders for Base2048, Ecoji and Zalgo (gap 23), read by
+    # corpora/garak_encodings.py for the benchmark and tests. Dev only: the
+    # gateway decodes all three from in-tree tables (unpack/alphabets.py).
+    "base2048>=0.1.3,<0.2",
+    "ecoji>=0.1.1,<0.2",
+    "zalgolib>=0.2.2,<0.3",
 ]
 
 [project.scripts]
@@ -118,11 +134,32 @@ packages = ["src/trentina"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+# py313, not py314, and the gap is one minor version with one reason: at py314
+# ruff's FORMATTER rewrites every multi-exception handler into PEP 758's
+# unparenthesized `except A, B:`, and Gourmand cannot parse it. Measured on a
+# two-file fixture: with that syntax present Gourmand reports an enum member as
+# dead while the same file still uses it -- no parse error, just lost usages. On
+# this tree it silently stopped seeing 39 files and called
+# DestinationKind.TUNNEL, GIT, MODEL and OAUTH dead, all four of which
+# production constructs. A formatter setting that switches a quality gate off
+# across a third of the package is the wrong trade.
+#
+# py313 still gets everything else 3.12+ -- PEP 695 type parameters (UP047,
+# UP049) included, which Gourmand parses correctly. The constitution's Python
+# Version Coverage section carries the exemption this sits under: target-version
+# governs the syntax the FORMATTER emits, so it is the one name on that list
+# that can write code another gate has to read. Raise it to py314 when Gourmand
+# either parses PEP 758 or fails loudly on what it cannot read:
+# https://github.com/crunchtools/gourmand/issues/29
+target-version = "py313"
 # Known-bad code on purpose: the boundary-review eval (#90) grades a reviewer
 # on catching exactly what lint would flag, and semgrep's --test fixtures
 # carry a rule's true and false positives.
-extend-exclude = ["tests/fixtures/boundary-review", ".semgrep"]
+# benchmarks/, demo/ and docs/ are not linted, as CI never linted them: python-
+# sdlc runs `ruff check .`, and these were outside the `src tests corpora` that
+# CI named. demo/attack-sim holds deliberately malicious code (a stdlib-shadowing
+# struct.py among it), which is the point of it.
+extend-exclude = ["tests/fixtures/boundary-review", ".semgrep", "benchmarks", "demo", "docs"]
 # The pre-commit hook passes files by name; without this ruff lints them anyway.
 force-exclude = true
 
@@ -199,7 +236,7 @@ max-complexity = 10
 # allowed, parameter guard, backend error, response guard -- and each one returns
 # its own refusal. Collapsing them into a single exit would hide which gate fired,
 # which is the one thing an operator reading an audit row needs.
-"src/trentina/gateway/router.py" = ["PLR0911"]
+"src/trentina/transports/mcp.py" = ["PLR0911"]
 # E402: the benchmark inserts the repo root on sys.path before importing the
 # corpus and package, so those imports intentionally follow that setup.
 # PLR0915: render_markdown is a linear report builder — many append statements,
@@ -210,6 +247,7 @@ max-complexity = 10
 "benchmarks/l2_encodings.py" = ["E402"]
 # S106: `bearer_token_env` names an environment variable; it holds no token.
 "benchmarks/l2_benign.py" = ["E402", "S106"]
+"benchmarks/gatekeeper.py" = ["E402", "S106"]
 "benchmarks/l1_briefing.py" = ["E402"]
 # E402 and S106 as l2_benign above; S311: envelope texts are drawn from a fixed seed.
 "benchmarks/l2_envelopes.py" = ["E402", "S106", "S311"]
@@ -241,15 +279,15 @@ max-complexity = 10
 "benchmarks/l2_blob_length.py" = ["E402", "S311"]
 
 [tool.mypy]
-# NOT the 3.11 floor, deliberately. numpy's bundled stubs use PEP 695 `type X =`
-# syntax, which mypy refuses to parse under python_version = "3.11":
-#   numpy/__init__.pyi: error: Type statement is only supported in Python 3.12
-#   and greater  [syntax]
-# That is a blocking error, so type checking stops entirely. 3.11 compatibility
-# is instead enforced where it actually bites -- ruff's target-version = py311,
-# and the CI matrix running the full suite on 3.11, which would fail at import
-# on any 3.12-only syntax.
-python_version = "3.12"
+# The version the image runs, and the only one there is. This used to say 3.12
+# while ruff said py311 and the suite ran on four versions -- three settings
+# that had to be reasoned about together, because numpy's stubs would not parse
+# under the 3.11 floor we advertised. Supporting one version deletes the
+# problem rather than managing it.
+python_version = "3.14"
+# What `mypy` with no arguments checks -- python-sdlc runs it bare, so the
+# target is stated here rather than in a hook.
+files = ["src"]
 strict = true
 warn_return_any = true
 warn_unused_configs = true
@@ -260,6 +298,9 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# tests/image/ runs INSIDE the built image (python-sdlc `pytest-in-image`), so
+# the suite outside it leaves that directory alone.
+addopts = "-n auto --ignore=tests/image"
 testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
@@ -283,3 +324,64 @@ ignore_missing_imports = true
 # instead (see the dependency comment above). A marker that is never true
 # removes the GUI build from every resolution.
 override-dependencies = ["opencv-python ; sys_platform == 'never'"]
+
+# Security floors on TRANSITIVE dependencies (both arrive through fastmcp:
+# authlib directly, dnspython via pydantic[email] -> email-validator). These
+# are constraints, not direct dependencies — we do not import either; we only
+# refuse to resolve a version with a known CVE. authlib is the OAuth/JWT stack
+# behind the gateway's proxy auth, so its advisories are load-bearing here.
+#   authlib < 1.9.0:  CVE-2026-96760, -114615, -114617, -114618, -114620
+#   dnspython < 2.9.0: CVE-2026-114605
+# Raise each floor (never lower it) as fixes land; drop a line only once no
+# resolvable version is affected.
+constraint-dependencies = ["authlib>=1.9.0", "dnspython>=2.9.0"]
+
+[tool.uv.sources]
+# The Phase 6 transform-plugin test fixture, resolved from the repo, never from
+# an index. Dev-only (see the `dev` extra); excluded from the container image.
+petit-plus = { path = "tests/fixtures/plugins/petit_plus" }
+
+# How python-sdlc checks this repo (constitution XII, v1.30.0). Three commands,
+# one block each; a block's `checks` adds to that command's defaults and `skip`
+# removes from them. `sdlc tiers` prints exactly what each one runs.
+#
+#   sdlc commit   pre-commit: ruff fixes, and that the push hook is installed
+#   sdlc push     pre-push: mypy, pytest, gourmand, gatehouse, semgrep,
+#                 pip-audit, constitution, codeql -- no container build
+#   sdlc ci       CI: push's checks except the two reviewers, plus the image
+
+# The integration suites read a key at call time; every provider call in them
+# is mocked. Unit tests drop it (conftest.py), so this reaches only those.
+[tool.sdlc.push.pytest]
+env = { GEMINI_API_KEY = "test_key_for_ci" }
+
+# The in-repo rules scan the package, as CI always has.
+[tool.sdlc.push.semgrep]
+paths = ["src"]
+
+[tool.sdlc.ci]
+checks = ["image", "image-tests"]
+
+# The image CI publishes. Labels carry what `promote` reads off it.
+[tool.sdlc.ci.image]
+kind = "image-build"
+build_args = { VERSION = "@project.version" }
+labels = { "org.opencontainers.image.revision" = "@git.sha", "org.opencontainers.image.version" = "@project.version", "org.opencontainers.image.created" = "@now" }
+
+# Tests that only mean something inside the image: it starts and answers, its
+# native libraries load, L2 runs on the model it ships, and the OCR and PDF
+# workers run as child processes with no network and a read-only root.
+[tool.sdlc.ci.image-tests]
+kind = "pytest-in-image"
+mounts = ["tests", "corpora"]
+args = ["-q", "-rfE", "-n", "4"]
+tests = [
+  "tests/image/",
+  "tests/test_l2_integration.py",
+  "tests/test_adversarial_corpus.py::TestLayer2Boundary",
+  "tests/test_l3_integration.py",
+  "tests/test_unpack_ocr.py",
+  "tests/test_unpack_pdf.py",
+]
+env = { GEMINI_API_KEY = "test_key_for_ci", TRENTINA_REQUIRE_L2_MODEL = "1", CLASSIFIER_THREADS = "1" }
+

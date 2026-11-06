@@ -45,7 +45,7 @@ from __future__ import annotations
 import re
 
 from ..channels import Channel, Kind
-from .base import Applied, Cost, Declined, TransformContext, TransformResult
+from .base import Applied, Cost, Declined, Transform, TransformContext, TransformResult
 
 # A quoted line: any number of ">" markers, optionally spaced, at the start.
 _QUOTE = re.compile(r"^\s{0,4}(?:>\s?){1,10}")
@@ -169,7 +169,7 @@ def _collapse(lines: list[str]) -> tuple[list[str], int, int, int]:
     return out, quoted_dropped, runs_collapsed, signature_dropped
 
 
-class EmailProcessor:
+class EmailProcessor(Transform):
     """FREE. Collapses quoted reply chains and strips signatures."""
 
     name = "email"

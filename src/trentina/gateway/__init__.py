@@ -9,6 +9,7 @@ original design.
 
 from __future__ import annotations
 
+from ..transports.mcp import route_jsonrpc
 from .alert_ingress import register_alert_routes
 from .app import gateway_app, register_with_fastmcp
 from .auth import verify_bearer
@@ -16,7 +17,7 @@ from .backend import BackendCall, call_backend_tool, list_backend_tools
 from .circuit import CircuitBreaker, breaker
 from .errors import AuthError, GatewayError, ProfileConfigError
 from .filter import filter_tools
-from .guards import check_parameter_guards
+from .guards import check_request_guards
 from .internal import (
     call_internal_tool,
     internal_server_registered,
@@ -32,7 +33,6 @@ from .profile import (
     ParameterConstraint,
     Profile,
 )
-from .router import route_jsonrpc
 from .sessions import Session, SessionRegistry, session_registry
 
 __all__ = [
@@ -53,7 +53,7 @@ __all__ = [
     "breaker",
     "call_backend_tool",
     "call_internal_tool",
-    "check_parameter_guards",
+    "check_request_guards",
     "filter_tools",
     "gateway_app",
     "internal_server_registered",

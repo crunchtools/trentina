@@ -7,6 +7,7 @@ gateway routes if loading fails.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -20,24 +21,35 @@ from pydantic import SecretStr, ValidationError
 
 from .. import logsafe
 from ..channels import Channel
+from . import key_store, token_store
+from .approver import DEFAULT_ENROL_WINDOW_SECONDS, clamped_enrol_window
 from .drivers import build_transforms
 from .errors import ProfileConfigError
+from .federation_link import derive_all
 from .filter import filter_tools
 from .profile import (
+    FEDERATION_INTERNAL_REQUIRED,
     GIT_REMOTE_NAME_RE,
     HONEYTOKEN_MIN_CHARS,
+    INGRESS_SUFFIX,
     MATRIX_CHANNEL,
     AlertIngressConfig,
     EgressUpstream,
     GitRemote,
     MatrixIngressConfig,
+    ProcessorChainConfig,
     Profile,
+    RouteInstance,
+    federation_audience,
     is_matrix_user_id,
+    same_gateway_key,
 )
+from .proxies import normalize as normalize_proxies
 from .transform import resolve
 
 if TYPE_CHECKING:
     import ipaddress
+    from collections.abc import Iterator
 
 
 @dataclass(frozen=True)
@@ -49,8 +61,21 @@ class GatewayConfig:
     matrix: dict[str, Any] = field(default_factory=dict)
     git_remotes: dict[str, GitRemote] = field(default_factory=dict)
     egress_upstreams: dict[str, EgressUpstream] = field(default_factory=dict)
+    #: ``forward`` and ``dist:`` route instances: the types that had no block
+    #: before ``proxies:`` (#535). A built-in type never lands here.
+    route_instances: dict[str, RouteInstance] = field(default_factory=dict)
+    #: The blocks the file still writes in the spelling before ``proxies:``.
+    #: Not part of what the configuration IS, so two spellings compare equal.
+    deprecated_keys: tuple[str, ...] = field(default=(), compare=False)
     session_ttl_seconds: float = 300.0
     max_sessions_per_profile: int = 10
+    approval_enrol_window_seconds: float = DEFAULT_ENROL_WINDOW_SECONDS
+    #: ``gateway.service_identity``: which operator the gateway binds and
+    #: reports as ITSELF (#661). None when the file names none, which is legal
+    #: only while there is at most one written operator to bind — see
+    #: ``_check_operator``. Read through ``service.find_operator`` rather than
+    #: directly, so "who is the service identity" has one answer.
+    service_identity: str | None = None
 
 
 logger = logging.getLogger(__name__)
@@ -58,17 +83,166 @@ logger = logging.getLogger(__name__)
 _ENV_REF_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 _URL_SAFE_VALUE_RE = re.compile(r"[A-Za-z0-9._~%-]+")
 
+#: The gateway's OWN secret env vars: read by name through ``read_secret_env``
+#: and never declared in profiles.yaml, so the file-derived set cannot hold
+#: them. A header resolving the token-signing key is worse than any profile's
+#: bearer. Held to the literal call sites by ``test_loader_secrets``.
+_GATEWAY_SECRET_ENVS = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "BRIDGE_OLD_ACCESS_TOKEN",
+        "BRIDGE_PICKLE_KEY",
+        "BRIDGE_RECOVERY_KEY",
+        "GEMINI_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "TRENTINA_APPROVAL_PASSWORD_HASH",
+        "TRENTINA_BACKEND_TOKEN_KEY",
+        "TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET",
+        "TRENTINA_OAUTH_JWT_SIGNING_KEY",
+    }
+)
+
+#: Every env var a backend header or URL may NOT reference: the gateway's own
+#: secrets, plus every ``*_env`` any config loaded in this process has named.
+#: Written by ``_protect``, which says why the history is kept.
+_protected_secret_envs: set[str] = set(_GATEWAY_SECRET_ENVS)
+
+#: Distinct ``*_env`` names ONE config may declare. The bound is on the input,
+#: not on what has been protected: no real file comes near it, and bounding the
+#: protected set instead means shedding protection, which a write can provoke
+#: on purpose (omit a credential's declaration, pad with enough new names to
+#: force the shed, reference the omitted one in a header, all in one write).
+#: Refusing a pathological file cannot be turned into that.
+_MAX_DECLARED_PER_LOAD = 512
+
+
+#: The protected set in force for the load in progress, or None outside one.
+#: A load refuses against this; only a load that RETURNED adds to the history.
+_load_protected: set[str] | None = None
+
+
+@contextlib.contextmanager
+def _protecting(declared: set[str], where: Path) -> Iterator[None]:
+    """Put this file's declarations in force for the duration of its load.
+
+    Restored on the way out, whether the load returned or raised, so a refused
+    candidate leaves the history exactly as it found it.
+    """
+    global _load_protected
+    previous = _load_protected
+    _load_protected = _protected_for(declared, where)
+    try:
+        yield
+    finally:
+        _load_protected = previous
+
+
+def _protected_for(declared: set[str], where: Path) -> set[str]:
+    """What this load must refuse a header from naming: the protected history
+    plus what this file declares. Returned, not committed — see ``_commit_protected``.
+    """
+    if len(declared) > _MAX_DECLARED_PER_LOAD:
+        raise ProfileConfigError(
+            f"Profiles file {where} declares {len(declared)} distinct secret env "
+            f"vars, more than the {_MAX_DECLARED_PER_LOAD} allowed"
+        )
+    return _protected_secret_envs | declared
+
+
+def _commit_protected(declared: set[str]) -> None:
+    """Keep what this load declared, now that the load has SUCCEEDED.
+
+    The history is the point. Rebuilding per load would let one write remove a
+    profile's ``bearer_token_env`` and reference that variable in a header in
+    the same breath — or in the next write — laundering a credential out
+    through the declaration that was protecting it. A secret genuinely retired
+    stays refused until the process restarts, which is the fail-closed
+    direction and is not something an agent can do.
+
+    Only a load that RETURNED contributes, which is what separates this from
+    the first cut. `config_tool` validates a candidate by loading it, so a
+    candidate declaring `bearer_token_env: GITHUB_TOKEN` while the live file
+    reads `${GITHUB_TOKEN}` in a header was correctly refused — and then
+    poisoned the set, so the LIVE file refused too and every later
+    `reload_profiles` failed until the process restarted. A refusal before the
+    replace must touch nothing, including this.
+    """
+    _protected_secret_envs.update(declared)
+
+
+def _reset_protected_secret_envs() -> None:
+    """Forget what earlier loads declared (for tests loading many configs).
+
+    Nothing in the gateway calls this: the growth is the property.
+    """
+    _protected_secret_envs.clear()
+    _protected_secret_envs.update(_GATEWAY_SECRET_ENVS)
+
+
+def _declared_secret_env_names(node: Any) -> set[str]:
+    """Every ``*_env`` value anywhere in the raw config.
+
+    The suffix is the schema's own marker for "this names an env var holding a
+    secret", so a field added later is covered without an edit here. Broader
+    than strictly-credentials by a field or two (``audience_env``), which is
+    the safe direction: none of them belongs in a header.
+
+    What this is for: a backend may legitimately carry its own credential in a
+    header (``Authorization: "Bearer ${SOME_API_TOKEN}"``), and that variable
+    is referenced without being declared, so it is not collected. What is
+    refused is a header naming a variable the file declares as a credential of
+    its own — an operator agent writing a remote backend that points at this
+    gateway's operator endpoint with ``Bearer ${OP_TOKEN}``, which is no profile
+    change and no ``trust_verdict``, so it applied unwatched and handed an
+    outside gateway ``config_tool``. Naming the variable was enough; the agent
+    never had to read its value.
+    """
+    found: set[str] = set()
+    _collect_secret_env_names(node, found)
+    return found
+
+
+def _collect_secret_env_names(node: Any, found: set[str]) -> None:
+    """Walk ``node``, adding into ``found``. One set for the whole walk: a
+    union per child made collection quadratic in the number of names."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(key, str) and key.endswith("_env") and isinstance(value, str) and value:
+                found.add(value)
+            else:
+                _collect_secret_env_names(value, found)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_secret_env_names(item, found)
+
 
 def _expand_env_refs(value: str, *, context: str) -> str:
     """Substitute ${VAR} references in a header value or URL from os.environ.
 
     Fails closed (raises ProfileConfigError) if a referenced var is unset or
     empty — a missing auth secret must not silently become an unauthenticated
-    backend call.
+    backend call — or if it names a protected secret
+    (``_protected_secret_envs``), which is how a backend header reached
+    credentials it was never given.
     """
 
     def _replace(match: re.Match[str]) -> str:
         var_name = match.group(1)
+        # Every production path reaches here inside `_protecting`: this runs
+        # only from `_expand_backend_url` / `_expand_backend_env_refs`, only
+        # from `_build_profile`, only from `load_profiles`. The fallback is for
+        # a direct unit call, and is the committed history — stricter than
+        # nothing, weaker than a load's own set by exactly the names the file
+        # being loaded declares. A new call site outside a load would get that
+        # weaker set, so put it inside one.
+        protected = _protected_secret_envs if _load_protected is None else _load_protected
+        if var_name in protected:
+            raise ProfileConfigError(
+                f"{context}: env var {var_name} holds a secret of this gateway's "
+                "own, so it may not be referenced here; a backend's own credential "
+                "belongs in an env var nothing else names"
+            )
         resolved = read_secret_env(var_name)
         if not resolved:
             raise ProfileConfigError(
@@ -97,6 +271,7 @@ def _build_profile(name: str, body: Any) -> Profile:
         raise ProfileConfigError(
             f"Profile {name!r}: body must be a mapping, got {type(body).__name__}"
         )
+    _check_renamed_federation_keys(name, body)
     try:
         profile = Profile(name=name, **body)
     except ValidationError as exc:
@@ -121,10 +296,15 @@ def _build_profile(name: str, body: Any) -> Profile:
     _resolve_oauth_audience(name, profile)
     _resolve_llm_key_secrets(name, profile)
     _resolve_grant_tokens(name, profile)
+    _resolve_federation_primary_keys(name, profile)
     _expand_backend_env_refs(name, profile)
     _check_drivers(name, profile)
+    _check_plugin_imports(name, profile)
+    _check_transports(name, profile)
     _check_destination_params(name, profile)
     _check_guarded_tools(name, profile)
+    _check_interim_federation(name, profile)
+    _check_federation_topology(name, profile)
     _resolve_bridge_secrets(name, profile)
     if profile.alert_ingress is not None:
         _resolve_alert_ingress_secrets(name, profile.alert_ingress)
@@ -133,6 +313,385 @@ def _build_profile(name: str, body: Any) -> Profile:
         _resolve_matrix_ingress_secrets(name, profile.matrix_ingress)
 
     return profile
+
+
+def _check_plugin_imports(name: str, profile: Profile) -> None:
+    """The load-bearing half of the plugin conformance suite (Phase 6): scan
+    each referenced plugin distribution's own source for import-boundary
+    violations (``trentina.testing.scan_imports``), once per distribution. A
+    plugin that imports a private ``trentina`` module or a network/subprocess
+    module is refused BY NAME at load.
+
+    Only the chains that accept a plugin ref are walked: the profile, each
+    backend's tool-description chain, the matrix ingress and the channel
+    bridges. A per-tool override cannot name a plugin (the ``ToolPreProcess``
+    validator refuses a ``dist:name``), so it carries none.
+    """
+    from ..testing.suite import scan_imports
+
+    chains: list[ProcessorChainConfig] = [profile.preprocess]
+    chains.extend(b.preprocess_tool_descriptions for b in profile.backends.values())
+    if profile.matrix_ingress is not None:
+        chains.append(profile.matrix_ingress.preprocess)
+    chains.extend(bridge.preprocess for bridge in profile.channel_bridges().values())
+
+    scanned: dict[str, list[str]] = {}
+    for chain in chains:
+        required = getattr(chain, "required", None) or []
+        for ref in (*chain.processors, *required):
+            if ":" not in ref:
+                continue
+            dist = ref.partition(":")[0]
+            if dist not in scanned:
+                scanned[dist] = scan_imports(dist)
+            if scanned[dist]:
+                raise ProfileConfigError(
+                    f"Profile {name!r}: plugin {ref!r} violates the plugin contract "
+                    f"(distribution {dist!r}): {scanned[dist]}"
+                )
+
+
+def _check_transports(name: str, profile: Profile) -> None:
+    """Validate every backend's transport at load. A registered name ('mcp',
+    plus anything ``register_transport`` added) resolves; a 'dist:name' external
+    transport plugin is refused by name until the contract is frozen (#535)
+    (``transports.registry.build_transport``). Lazy import avoids the
+    transports→gateway import cycle at module load."""
+    from ..transports.registry import build_transport
+
+    for backend_name, backend in profile.backends.items():
+        try:
+            build_transport(backend.transport)
+        except ProfileConfigError as exc:
+            raise ProfileConfigError(f"Profile {name!r} backend {backend_name!r}: {exc}") from exc
+
+
+#: The 4.0.0 rename (#637), old spelling to new. ``extra="forbid"`` already
+#: refuses the old name, but pydantic's own message is "Extra inputs are not
+#: permitted" against the key that is gone — true and useless. There is no
+#: deprecation shim by decision, so a clear error is the whole migration aid an
+#: operator gets, and it has to name the replacement.
+_RENAMED_FEDERATION_KEYS = {
+    "edge_key_env": "primary_key_env",
+    "edge_key_name": "primary_key_name",
+    "signing_key_env": "secondary_key_env",
+    "signing_key_name": "secondary_key_name",
+}
+
+
+def _check_renamed_federation_keys(name: str, body: dict[str, Any]) -> None:
+    """Refuse a pre-4.0.0 federation key name, naming what it is called now.
+
+    Read off the RAW body, before the model is built, because the model's
+    ``extra="forbid"`` would otherwise get there first with a worse message.
+    Only the two places the schema ever accepted these are checked, so a
+    profile that merely has a string of the same name somewhere is not caught
+    by accident. The key is a schema name, not a value, so it is safe to print.
+    """
+    blocks: list[Any] = [body.get("federation")]
+    backends = body.get("backends")
+    if isinstance(backends, dict):
+        blocks.extend(
+            backend.get("federated") for backend in backends.values() if isinstance(backend, dict)
+        )
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        for old, new in _RENAMED_FEDERATION_KEYS.items():
+            if old in block:
+                raise ProfileConfigError(
+                    f"Profile {name!r}: {old!r} was renamed to {new!r} in 4.0.0, when "
+                    "federation's roles became primary (uses the tools) and secondary "
+                    "(offers them). Rename the field; the value is unchanged."
+                )
+
+
+#: YAML's merge key (``<<: *anchor``). Repeating it is YAML's business, not a
+#: duplicated config key, so the scan below steps over it.
+_MERGE_TAG = "tag:yaml.org,2002:merge"
+
+
+def duplicate_keys(raw_text: str) -> list[tuple[str, int]]:
+    """Every key written twice in one mapping, with the line of the repeat.
+
+    ``yaml.safe_load`` keeps the LAST of a repeated key and reports nothing, so
+    by the time there is data to inspect the evidence is gone. One of mine
+    reached production: its ``josui`` carried ``defense:`` twice, the
+    gateway ran the second, and the comment on the first explained a block that
+    had already lost. They happened to agree. Nothing would have said so if
+    they had not — not the loader, not ``profile_lint``, not a pre-flight.
+
+    Walks the NODE tree rather than the constructed data, for two reasons. The
+    evidence above is only in the nodes. And constructing a mapping to inspect
+    it trips over ``<<:`` merge keys, which real files use heavily: a loader
+    that resolves one raises ``could not determine a constructor for the tag
+    ':merge'`` instead of reporting the duplicate it was asked about.
+
+    Walking nodes also draws the line in the right place. A key that arrives
+    through ``<<: *anchor`` AND is written explicitly is NOT a duplicate — it
+    is the override the merge key exists for, and flagging it would make
+    anchors unusable. Only a key written twice in the same mapping is.
+
+    A syntax error returns nothing: ``safe_load`` has already reported it, with
+    a message that is careful about quoting source lines.
+
+    Args:
+        raw_text: the file's text, as read.
+
+    Returns:
+        ``(key, line)`` for each repeat, in source order.
+    """
+    try:
+        root = yaml.compose(raw_text)
+    except yaml.YAMLError:
+        return []
+
+    # Ordered by the key's byte OFFSET, not its line: the walk is depth-first
+    # over a stack, so sibling mappings come off it in reverse, and two
+    # duplicates on one line (flow style, `{a: 1, a: 2}`) share a line number
+    # and cannot be ordered by it at all.
+    found: list[tuple[int, str, int]] = []
+    # Aliases resolve to the SAME node object, so a shared anchor is reachable
+    # by several paths and a recursive one is reachable from itself. Visit each
+    # node once.
+    seen_nodes: set[int] = set()
+    stack: list[yaml.Node] = [root] if root is not None else []
+    while stack:
+        node = stack.pop()
+        if id(node) in seen_nodes:
+            continue
+        seen_nodes.add(id(node))
+        if isinstance(node, yaml.MappingNode):
+            keys: set[str] = set()
+            for key, value in node.value:
+                if isinstance(key, yaml.ScalarNode) and key.tag != _MERGE_TAG:
+                    if key.value in keys:
+                        found.append((key.start_mark.index, key.value, key.start_mark.line + 1))
+                    keys.add(key.value)
+                stack.append(value)
+        elif isinstance(node, yaml.SequenceNode):
+            stack.extend(node.value)
+    return [(key, line) for _offset, key, line in sorted(found)]
+
+
+def _refuse_derived_fields(config_path: Path, profiles_section: dict[str, Any]) -> None:
+    """Refuse a file that writes a field only the loader may set.
+
+    ``federation_of`` names the profile whose OAuth grants a derived ingress
+    spends. A hand-written profile setting it would claim another profile's grants
+    — the field is privilege, so it has to be loader-derived and never
+    caller-chosen. Checked on the RAW mapping, before any profile is built,
+    because ``exclude=True`` keeps it out of a dump but not out of an input.
+    """
+    for name, body in profiles_section.items():
+        if isinstance(body, dict) and "federation_of" in body:
+            raise ProfileConfigError(
+                f"Profile {name!r}: 'federation_of' is set by the gateway, not by "
+                f"{config_path}. It names the profile a derived federation ingress "
+                "acts for, including whose OAuth grants it spends. Declare "
+                "`federation` on the profile instead and the ingress is derived."
+            )
+
+
+def _add_derived_ingresses(registry: dict[str, Profile]) -> None:
+    """Add each shared profile's derived federation ingress to ``registry``.
+
+    A collision is refused rather than resolved: whichever way it went, an
+    operator would have one profile named after another's link, and the
+    derived one carries the authority to spend that profile's grants.
+    """
+    for name, ingress in derive_all(registry).items():
+        if name in registry:
+            raise ProfileConfigError(
+                f"Profile {name!r} collides with the ingress derived from profile "
+                f"{ingress.federation_of!r}. A profile name ending "
+                f"{INGRESS_SUFFIX!r} is reserved for a derived federation ingress."
+            )
+        registry[name] = ingress
+
+
+def _check_federation_internal_surface(registry: dict[str, Profile]) -> None:
+    """A derived ingress offers no internal tool its source does not.
+
+    The second opinion that ``profile.a_derived_ingress_is_bounded`` used to
+    give and cannot any more. Through 5.x the derivation CONSTRUCTED the
+    internal backend with the paging reader alone, so a per-profile validator
+    could hold it to a constant. Since 6.0.0 it carries the shared profile's own
+    internal allowlist, and whether that is right depends on a profile the
+    model validator cannot see.
+
+    So it is checked here, where the registry is. The cost of a derivation bug
+    is a peer holding an admin tool nobody offered it, which is worth a check
+    that does not share code with the derivation: this one restates the rule and
+    re-reads both profiles, rather than trusting ``_internal_allow``.
+
+    Restating the rule means the ROLE too, not just the source's list. Only an
+    operator profile's allowlist crosses; an agent's derivation gets
+    ``FEDERATION_INTERNAL_REQUIRED`` and nothing else, whatever its own internal
+    backend allows. Comparing an agent ingress against its source's list instead
+    would accept a widened agent ingress — and accept it silently where that
+    list is ``["*"]``, which is the common spelling.
+
+    A glob can therefore only appear on an agent source, where it is now
+    ignored rather than treated as permission. An operator profile that is
+    shared may not use one at all: ``a_shared_profile_is_shareable`` refuses it
+    while the model is built, before this runs.
+
+    Raises:
+        ProfileConfigError: an ingress offers an internal tool its source does
+            not, which can only be a bug in this package.
+    """
+    for name, ingress in registry.items():
+        source_name = ingress.federation_of
+        if source_name is None:
+            continue
+        source = registry.get(source_name)
+        if source is None:
+            continue
+        offered: set[str] = set()
+        for backend in ingress.backends.values():
+            if backend.is_internal:
+                offered.update(backend.tools_allow)
+        allowed: set[str] = set(FEDERATION_INTERNAL_REQUIRED)
+        if source.role == "operator":
+            for backend in source.backends.values():
+                if backend.is_internal:
+                    allowed.update(backend.tools_allow)
+        if extra := sorted(offered - allowed):
+            raise ProfileConfigError(
+                f"Derived ingress {name!r} offers internal tool(s) {extra} that "
+                f"profile {source_name!r} does not. This is a bug in the "
+                "derivation, not in the file."
+            )
+
+
+def _check_federation_audience(registry: dict[str, Profile]) -> None:
+    """One primary key may not serve two secondaries with the same audience.
+
+    The primary JWT's audience is the ingress PROFILE NAME — the path segment
+    before ``/mcp`` (``profile.federation_audience``) — and the secondary
+    checks it against its own name. Nothing in it names which gateway it was
+    minted for, so two federated backends sharing a primary key and deriving
+    the same audience mint tokens each secondary accepts. Secondary B replays
+    one at secondary A inside the 60-second window and A audits a call the
+    primary never made; HTTPS does not help and no on-path position is needed.
+
+    Refused here rather than fixed in the token, because this configuration is
+    the whole precondition. Different keys per secondary already fail: A holds
+    only its own peer key, so B's token does not verify. Same key AND same
+    audience is the one shape that works, and no deployment needs it.
+
+    Over the WHOLE file, not one profile: two profiles can each hold one half
+    of the pair, and a per-profile pass sees one backend and accepts it.
+    Grouped by (key, audience), and any group holding more than one distinct
+    URL is refused — comparing origins would read two independent gateways
+    behind one host on different path prefixes as the same gateway.
+    """
+    seen: dict[tuple[str, str], tuple[str, str, str]] = {}
+    for profile_name, profile in sorted(registry.items()):
+        for backend_name, backend in sorted(profile.backends.items()):
+            federated = backend.federated
+            if federated is None or federated.primary_key is None:
+                continue
+            audience = federation_audience(backend.url) or ""
+            group = (federated.primary_key.get_secret_value(), audience)
+            target = same_gateway_key(backend.url)
+            first = seen.setdefault(group, (profile_name, backend_name, target))
+            if first[2] != target:
+                raise ProfileConfigError(
+                    f"Federated backends {first[0]}.{first[1]} and "
+                    f"{profile_name}.{backend_name} share a primary key and both derive "
+                    f"the audience {audience!r} while pointing at different URLs: either "
+                    "secondary could replay the other's token. Give each secondary its own "
+                    "primary key, or ingress profiles with different names."
+                )
+
+
+def _check_interim_federation(name: str, profile: Profile) -> None:
+    """Refuse the interim static-bearer federation path (#592, D2b).
+
+    Refused since 5.0.0. This docstring used to carry a deadline notice naming
+    that release, which was a promise while it was one and became a false one
+    the moment 5.0.0 was cut — ``tests/test_deprecation_deadlines.py`` fails
+    any notice naming a shipped release, because a reader who sees a past
+    release concludes the removal already happened and stops looking. Here it
+    did happen, so this says so in the past tense instead of promising it.
+
+    A backend that points at a Trentina gateway's federation endpoint
+    (``.../gateway/<profile>/mcp``) without a ``federated:`` block is the
+    pre-3.1 arrangement: it mounts another gateway over a shared static bearer
+    and re-judges everything. First-class federation superseded it in 3.1.0,
+    it was deprecated with a deadline announced for 3.2.0, and it only ever
+    warned — through 4.2.3.
+
+    It is refused now because the warning was load-bearing for a promise it
+    could not keep. docs/federation.md says federation is loop-free by
+    construction, and ``_check_federation_topology`` enforces that by refusing
+    an ingress that also mounts a ``federated:`` backend — which this shape is
+    not. So an ingress profile could mount the next gateway's ingress over a
+    bearer and re-export it: A to B to C, with a ring self-joining
+    ``_profile_inflight`` until the list timeout. "No routing" was a property
+    of the first-class path only, and the prose did not say so.
+
+    Named by profile and backend, never the URL (#262).
+    """
+    for backend_name, backend in profile.backends.items():
+        if backend.federated is not None or not backend.is_remote:
+            continue
+        parts = [p for p in urlsplit(backend.url).path.split("/") if p]
+        # The exact production federation shape `.../gateway/<profile>/mcp` —
+        # "gateway" as the antepenultimate segment — not merely any path that
+        # mentions "gateway" and ends /mcp, so an ordinary MCP server is not
+        # mistaken for the interim path.
+        if len(parts) >= 3 and parts[-1] == "mcp" and parts[-3] == "gateway":
+            raise ProfileConfigError(
+                f"Profile {name!r} backend {backend_name!r} points at a Trentina "
+                "federation endpoint without a 'federated:' block. That interim "
+                "static-bearer arrangement was deprecated in 3.1.0 and is removed: it "
+                "re-judges every response and, on an ingress profile, re-exports the "
+                "next gateway, which is the loop federation is meant not to have. Add a "
+                "'federated:' block with a primary key — see docs/federation.md."
+            )
+
+
+def _check_federation_topology(name: str, profile: Profile) -> None:
+    """Hold the federation topology at load (#592): loop-free, and a secure link.
+
+    A federated backend must be reached over https. The 60 s primary JWT carries
+    no replay nonce, so over plain http an on-path peer could replay it within
+    the window. ``TRENTINA_FEDERATION_ALLOW_INSECURE=1`` lifts this for a
+    trusted local network (warned), as fetch's private-address rule is lifted.
+
+    Loop-freedom used to be the other half of this check: a profile with
+    ``federation.peers`` could not also mount a ``federated`` backend, because
+    one ``Profile`` serving both roles would have its single-flight aggregate
+    build wait on a peer whose build waited back. Since 5.0.0 a profile's ingress
+    is DERIVED, so those are two objects and there is no deadlock — and
+    ``federation_link.offerable_backends`` excludes every ``federated`` backend,
+    so a link cannot re-export the next gateway whatever the profile mounts. A to B
+    to C is now unsayable rather than refused, which is what
+    ``docs/federation.md`` always claimed. One profile may therefore both consume a
+    peer's tools and share its own, which is what an operator wanted all along.
+    """
+    federated = {bn: b for bn, b in profile.backends.items() if b.federated is not None}
+    from ..config import get_config
+
+    allow_insecure = get_config().federation_allow_insecure
+    for backend_name, backend in federated.items():
+        if urlsplit(backend.url).scheme == "https":
+            continue
+        if not allow_insecure:
+            raise ProfileConfigError(
+                f"Profile {name!r} backend {backend_name!r}: a federated backend must "
+                f"use https (the primary JWT is replayable over http); set "
+                f"TRENTINA_FEDERATION_ALLOW_INSECURE=1 for a trusted local network"
+            )
+        logger.warning(
+            "gateway: profile=%s backend=%s federated over insecure http "
+            "(TRENTINA_FEDERATION_ALLOW_INSECURE) — the primary JWT is replayable",
+            name,
+            backend_name,
+        )
 
 
 def _check_destination_params(name: str, profile: Profile) -> None:
@@ -156,18 +715,23 @@ def _check_guarded_tools(name: str, profile: Profile) -> None:
 
     The same reasoning as ``destination_params``: a rule for a tool the agent
     can never call is a misspelling, and the call the operator meant to
-    guard is the one it fails to name.
+    guard is the one it fails to name. Both the request guards (the call) and
+    the response guards (the result) are held to it.
     """
-    if profile.guarded_execution is None:
-        return
-    for backend_name, tools in profile.guarded_execution.tools.items():
-        backend = profile.backends[backend_name]
-        for tool in tools:
-            if not filter_tools([{"name": tool}], backend):
-                raise ProfileConfigError(
-                    f"Profile {name!r}: guarded_execution.tools.{backend_name}."
-                    f"{tool}: the tool is not allowed on this backend"
-                )
+    for block, cfg in (
+        ("semantic_request_guards", profile.semantic_request_guards),
+        ("semantic_response_guards", profile.semantic_response_guards),
+    ):
+        if cfg is None:
+            continue
+        for backend_name, tools in cfg.tools.items():
+            backend = profile.backends[backend_name]
+            for tool in tools:
+                if not filter_tools([{"name": tool}], backend):
+                    raise ProfileConfigError(
+                        f"Profile {name!r}: {block}.tools.{backend_name}."
+                        f"{tool}: the tool is not allowed on this backend"
+                    )
 
 
 def _check_drivers(name: str, profile: Profile) -> None:
@@ -244,6 +808,61 @@ def _resolve_grant_tokens(name: str, profile: Profile) -> None:
     for upstream, egress in profile.egress_http.items():
         if egress.token_env is not None:
             egress.token = _require_env(name, egress.token_env, f"egress_http.{upstream} token")
+    for instance, route_grant in profile.route_grants.items():
+        if route_grant.token_env is not None:
+            route_grant.token = _require_env(
+                name, route_grant.token_env, f"proxies.{instance} token"
+            )
+
+
+def _require_key(name: str, key_name: str, what: str) -> SecretStr:
+    """Read a private key the gateway minted itself, failing closed if it is gone.
+
+    Read here, on every load AND every reload, which is what lets a key minted
+    after startup take effect without one (#633): ``reload_profiles`` re-runs
+    ``load_profiles``, and this runs again with it. The name has already been
+    held to ``KEY_NAME_RE`` by the profile model, so it is a filename.
+    """
+    try:
+        pem = key_store.read_key(key_name)
+    except OSError as exc:
+        raise ProfileConfigError(
+            f"Profile {name!r}: {what} names key {key_name!r}, which the gateway "
+            "has not minted — create it with federation_keygen"
+        ) from exc
+    if not pem.strip():
+        raise ProfileConfigError(f"Profile {name!r}: {what} key {key_name!r} is empty")
+    return SecretStr(pem)
+
+
+def _resolve_federation_primary_keys(name: str, profile: Profile) -> None:
+    """Resolve each federated backend's primary private key (#592, #633).
+
+    The key signs the primary's JWT to the secondary. Either source fails
+    closed, like every other credential: a federated link that names a key must
+    have it, or the link is misconfigured. The model has already refused naming
+    both sources for one key.
+    """
+    for backend_name, backend in profile.backends.items():
+        fed = backend.federated
+        if fed is None:
+            continue
+        what = f"federation primary key for backend {backend_name!r}"
+        if fed.primary_key_env is not None:
+            fed.primary_key = _require_env(name, fed.primary_key_env, what)
+        elif fed.primary_key_name is not None:
+            fed.primary_key = _require_key(name, fed.primary_key_name, what)
+    # The ingress's OWN secondary key (#592, D1): the secondary signs a verdict
+    # assertion with it. On the profile, not a backend — it vouches for every
+    # federated response this ingress serves, whatever backend produced it.
+    federation = profile.federation
+    if federation is None:
+        return
+    what = f"federation signing key for profile {name!r}"
+    if federation.secondary_key_env is not None:
+        federation.secondary_key = _require_env(name, federation.secondary_key_env, what)
+    elif federation.secondary_key_name is not None:
+        federation.secondary_key = _require_key(name, federation.secondary_key_name, what)
 
 
 def _resolve_bearer_token(name: str, profile: Profile) -> None:
@@ -255,9 +874,15 @@ def _resolve_bearer_token(name: str, profile: Profile) -> None:
     """
     if profile.auth is None:
         return
+    if profile.auth.bearer_token_name is not None:
+        profile.auth.bearer_token = _require_token(
+            name, profile.auth.bearer_token_name, "bearer token"
+        )
+        return
     profile.auth.bearer_token = _require_env(
         name,
-        profile.auth.bearer_token_env,
+        # The model guarantees one source and at least one, so this is set.
+        profile.auth.bearer_token_env or "",
         "bearer token",
     )
 
@@ -486,6 +1111,27 @@ def _held(value: str, env_var: str) -> str:
     return value
 
 
+def _require_token(name: str, token_name: str, what: str) -> SecretStr:
+    """Read a bearer token the gateway minted itself, failing closed if it is gone.
+
+    Read on every load AND every reload, which is what lets a profile added
+    after startup authenticate without one (#635) — the same reason
+    ``_require_key`` reads a key here rather than once at startup. The name has
+    already been held to ``KEY_NAME_RE`` by the profile model, so it is a
+    filename.
+    """
+    try:
+        token = token_store.read_token(token_name)
+    except OSError as exc:
+        raise ProfileConfigError(
+            f"Profile {name!r}: {what} names token {token_name!r}, which the gateway "
+            "has not minted — create it with profile_token"
+        ) from exc
+    if not token:
+        raise ProfileConfigError(f"Profile {name!r}: {what} token {token_name!r} is empty")
+    return SecretStr(token)
+
+
 def _require_env(name: str, env_var: str, what: str) -> SecretStr:
     """Read a required secret from the environment, failing closed if absent.
 
@@ -540,63 +1186,154 @@ def _resolve_alert_ingress_secrets(name: str, alert_ingress: AlertIngressConfig)
         alert_ingress.forward_secret = SecretStr(fwd_secret)
 
 
+def keyless_profiles(registry: dict[str, Profile]) -> list[str]:
+    """Every profile with no key for the provider its own L3 runs on.
+
+    Returned as well as warned about, so ``config_tool`` can put it in a write
+    result: a warning reaches the journal, and since #633 the thing writing
+    configs is an agent that never reads one.
+    """
+    from .service import judge_of
+
+    out = []
+    for name, profile in registry.items():
+        provider, _model = judge_of(profile)
+        if provider != "ollama" and provider not in profile.llm_keys:
+            out.append(name)
+    return out
+
+
 def _check_judges(registry: dict[str, Profile]) -> None:
     """Warn about a profile with no key for the provider its L3 runs on.
 
     Each gateway ingress binds the calling profile (RT #1505), and
     ``resolve_profile_llm`` refuses to bill any key but the profile's own, so
     such a profile's L3 reports ``l3_unavailable`` and block refuses what it
-    judges. Its internal tools always behaved that way; before RT #1505 its
-    proxied responses ran unbound on the global key and hid it. A warning,
-    not a load error: a config that never set ``llm_keys`` should learn why
-    before it stops loading.
+    judges. Since 6.1.0 that includes its TOOL DESCRIPTIONS, which the operator
+    used to judge on its behalf — so under ``block`` such a profile is served
+    no tool list at all, not merely unjudged responses.
+
+    Still a warning rather than a load error. The profile was already
+    non-functional under ``block``, so refusing the file surfaces an existing
+    breakage rather than preventing a new one, and a config that never set
+    ``llm_keys`` should learn why before it stops loading. What closes the gap
+    the warning leaves is ``config_tool`` reporting it in the write result
+    (``keyless_profiles``), where the agent that wrote the config will see it.
     """
     from .service import judge_of
 
-    for name, profile in registry.items():
-        provider, _model = judge_of(profile)
-        if provider != "ollama" and provider not in profile.llm_keys:
-            logger.warning(
-                "profile %r judges with provider %r but has no llm_keys.%s: its L3 "
-                "will report l3_unavailable; add the key, or set defense.provider "
-                "to one it holds",
-                name,
-                provider,
-                provider,
+    for name in keyless_profiles(registry):
+        provider, _model = judge_of(registry[name])
+        logger.warning(
+            "profile %r judges with provider %r but has no llm_keys.%s: its L3 will "
+            "report l3_unavailable, for its tool DESCRIPTIONS as well as its "
+            "responses, so under block it is served NO tools — internal:// ones "
+            "included. An l3_unavailable verdict is never persisted "
+            "either, so it re-runs L1 and L2 over every description on every "
+            "list. Add the key, or set defense.provider to one it holds",
+            name,
+            provider,
+            provider,
+        )
+
+
+def _check_operator(registry: dict[str, Profile], service_identity: str | None) -> None:
+    """More than one operator is allowed; which one the gateway IS is not guessed.
+
+    Through 6.3.0 a second written operator was a load error, because the
+    operator was also whose key the gateway's own model calls ran on and a
+    second one would have made that a matter of file order — the defect #138
+    removed. 6.1.0 moved every such call onto the listing profile's own key, so
+    nothing bills the operator any more and two agents administering one gateway
+    costs nothing (#661).
+
+    What two operators would still leave to dict order is which one the gateway
+    binds and reports as ITSELF: the profile in an approved config write's audit
+    row, and ``quarantine_stats``' ``perimeter.judge``. So the rule inverts
+    rather than disappearing — more than one operator is fine, and more than one
+    with no ``gateway.service_identity`` naming one of them is refused. Both
+    names are in the message, because the fix is to choose between them and a
+    refusal that named neither would not say what to choose from. Defaulting to
+    the first instead would be #138 again under a new spelling.
+
+    The setting must name a profile that is here, holds the role, and was
+    WRITTEN: a derived federation ingress carries its source's role since 6.0.0
+    but is not a profile anybody chose, so it can never be the identity this
+    gateway claims.
+
+    The key requirement outlives the reason it was written for. Since 6.1.0 the
+    operator pays for nobody else's judging, so a missing key costs only its own
+    tools — but the operator's tools are the ADMIN set, served by ``internal://``
+    and judged like any other description (only a decoy's are exempt). Under the
+    default ``block`` a keyless operator is therefore served no
+    ``quarantine_stats``, no ``config_tool`` and no ``reload_profiles``: a
+    gateway nobody can repair through the API, when an API is how configs are
+    written since #633. Every other keyless profile degrades to something its
+    operator can still fix; this one degrades to a hand edit and a restart. So
+    it stays a refusal, which on a reload keeps the running config
+    (``reload_profiles``) and puts the reason in the one message a person
+    running the container is sure to read.
+
+    That reason is per-PROFILE, not per-gateway: each operator reaches the admin
+    tools on its own credential and judges its own descriptions on its own key.
+    So every written operator is held to it, not only the one the setting names
+    — a keyless second operator is an admin seat that cannot administer.
+    """
+    from .service import judge_of, written_operators
+
+    # WRITTEN profiles only. Since 6.0.0 a derived ingress carries its source's
+    # role, so a shared operator profile and its derivation are both operators
+    # and counting them would refuse every such file. The derivation is not a
+    # second identity; it is the same one reached by a peer.
+    operators = sorted(written_operators(registry), key=lambda p: p.name)
+    names = [p.name for p in operators]
+    if service_identity is not None and service_identity not in names:
+        raise ProfileConfigError(
+            f"gateway.service_identity names {service_identity!r}, which is not a profile "
+            f"in this file with role: operator. It must name one of: "
+            f"{', '.join(names) or 'none — no profile declares role: operator'}. A derived "
+            f"federation ingress carries its source's role but is not a profile anybody "
+            f"wrote, so it can never be the identity this gateway reports as its own"
+        )
+    if len(operators) > 1 and service_identity is None:
+        raise ProfileConfigError(
+            f"{len(operators)} profiles declare role: operator ({', '.join(names)}), so "
+            f"set gateway.service_identity to whichever one the gateway should bind and "
+            f"report as itself — it names the profile in an approved config write's audit "
+            f"row and in quarantine_stats' perimeter.judge. More than one operator is "
+            f"allowed; picking one of them by file order is not"
+        )
+    for operator in operators:
+        provider, _model = judge_of(operator)
+        if provider != "ollama" and provider not in operator.llm_keys:
+            raise ProfileConfigError(
+                f"operator profile {operator.name!r} judges with provider {provider!r} but "
+                f"has no llm_keys.{provider}; its own admin tools are internal:// and are "
+                f"judged like any other description, so under block it would be served no "
+                f"quarantine_stats, config_tool or reload_profiles and the gateway could "
+                f"not be administered through the API. Add the key, or set defense.provider "
+                f"to one it holds"
             )
 
 
-def _check_operator(registry: dict[str, Profile]) -> None:
-    """At most one operator, and it must be able to pay for its own work.
+def _gateway_service_identity(gateway: dict[str, Any]) -> str | None:
+    """``gateway.service_identity``: a profile name, or None (#661).
 
-    The operator is the gateway's service identity (``service.py``, #138):
-    centralized model calls run on its provider and its key. Two operators
-    would make "whose identity" a matter of file order again, which is the
-    thing #138 removed — so it is a load error, not a tiebreak.
-
-    An operator with no key for its own provider does not fail loudly at call
-    time: L3 reports ``l3_unavailable`` on every tool description, and under
-    block every tool is quietly withheld from every profile. Refusing the
-    file here keeps the running config instead (``reload_profiles``).
+    Shape only. Whether the name resolves to a written operator is
+    ``_check_operator``'s question, and it cannot be asked here: the profiles do
+    not exist yet. A non-string is fatal rather than ignored — a list or a
+    mapping here is somebody's idea of naming two identities, and silently
+    falling back to the one-operator default would bind a profile they did not
+    choose.
     """
-    from .service import judge_of
-
-    operators = sorted(name for name, p in registry.items() if p.role == "operator")
-    if len(operators) > 1:
+    raw = gateway.get("service_identity")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
         raise ProfileConfigError(
-            f"at most one profile may declare role: operator, found {len(operators)}: "
-            f"{', '.join(operators)}"
+            "gateway.service_identity must be the name of one profile that declares role: operator"
         )
-    if not operators:
-        return
-    operator = registry[operators[0]]
-    provider, _model = judge_of(operator)
-    if provider != "ollama" and provider not in operator.llm_keys:
-        raise ProfileConfigError(
-            f"operator profile {operator.name!r} runs the gateway's own model calls on "
-            f"provider {provider!r} but has no llm_keys.{provider}; add the key, or set "
-            f"defense.provider to one it holds"
-        )
+    return raw.strip()
 
 
 def matrix_other_agents(matrix: dict[str, Any]) -> frozenset[str]:
@@ -764,6 +1501,35 @@ def _check_egress_grants(
             )
 
 
+def _check_route_plugins(instances: dict[str, RouteInstance]) -> None:
+    """Every ``dist:`` route type an instance names is installed and passes the
+    route scan, checked WITHOUT importing it: this runs on a candidate no person
+    may have approved yet (#535). Mounting, at startup, imports it."""
+    from ..transports.registry import check_route_plugin
+
+    for ref in sorted({i.type for i in instances.values() if ":" in i.type}):
+        check_route_plugin(ref)
+
+
+def _check_route_grants(registry: dict[str, Profile], instances: dict[str, RouteInstance]) -> None:
+    """A route grant names only what its instance has: an origin key it
+    declares, and a token only where the instance has a ``credential:`` slot to
+    send it in. Either mistake would load and quietly do nothing — the token
+    above all, since a ``forward`` instance never takes one (#535)."""
+    for name, profile in registry.items():
+        for key, grant in profile.route_grants.items():
+            instance = instances[key]
+            if unknown := sorted(set(grant.origins) - set(instance.origins)):
+                raise ProfileConfigError(
+                    f"profiles.{name}.proxies.{key}: origins {unknown} are not the instance's"
+                )
+            if grant.token_env is not None and instance.credential is None:
+                raise ProfileConfigError(
+                    f"profiles.{name}.proxies.{key}: token_env, but the instance has no "
+                    "credential: to send it in (a forward instance never takes one)"
+                )
+
+
 def load_profiles(path: Path | str) -> GatewayConfig:
     """Load gateway configuration from YAML.
 
@@ -796,8 +1562,22 @@ def load_profiles(path: Path | str) -> GatewayConfig:
         # from None: a chained cause would print the snippet in a traceback.
         raise ProfileConfigError(f"Invalid YAML in {config_path}{where}: {problem}") from None
 
+    if duplicates := duplicate_keys(raw_text):
+        where = ", ".join(f"{key!r} at line {line}" for key, line in duplicates)
+        raise ProfileConfigError(
+            f"Duplicate key in {config_path}: {where}. YAML keeps the LAST of a "
+            "repeated key and discards the earlier one silently, so the block a "
+            "reader sees first is not the block that runs. Delete whichever "
+            "should not apply."
+        )
+
     if not isinstance(cfg_data, dict):
         raise ProfileConfigError(f"Profiles file {config_path} must contain a top-level mapping")
+
+    # `proxies:` read into the blocks every rule reads, one home per fact (#535).
+    normalized = normalize_proxies(cfg_data)
+    cfg_data = normalized.document
+    _check_route_plugins(normalized.route_instances)
 
     profiles_section = cfg_data.get("profiles")
     if not isinstance(profiles_section, dict) or not profiles_section:
@@ -805,15 +1585,45 @@ def load_profiles(path: Path | str) -> GatewayConfig:
             f"Profiles file {config_path} must contain a non-empty 'profiles' mapping"
         )
 
-    registry: dict[str, Profile] = {
-        name: _build_profile(name, body) for name, body in profiles_section.items()
-    }
-    _check_operator(registry)
-    _check_judges(registry)
-    _check_matrix_networks(registry)
-    _check_egress_networks(registry)
-    git_remotes = _load_git_remotes(cfg_data.get("git_remotes"), registry)
-    egress_upstreams = _load_egress_upstreams(cfg_data.get("egress_upstreams"), registry)
+    # Before a single profile is built: expanding a backend header or URL
+    # refuses a reference into this set, and which names are in it is a
+    # property of the WHOLE file, not of the profile being built. Collected
+    # here rather than as profiles load, which would make the refusal depend
+    # on the order profiles appear in. In force for this load only until the
+    # load succeeds — `_commit_protected` says why.
+    declared = _declared_secret_env_names(cfg_data)
+    _refuse_derived_fields(config_path, profiles_section)
+
+    # Read BEFORE the profiles are built, because `_check_operator` needs
+    # `service_identity` and it is a registry-wide check. The rest of this
+    # section is read again below, where the GatewayConfig is assembled;
+    # pulling one value forward is cheaper than moving every setting's
+    # defaulting up here, away from the constructor that documents it.
+    gateway_section = cfg_data.get("gateway", {})
+    if not isinstance(gateway_section, dict):
+        gateway_section = {}
+    service_identity = _gateway_service_identity(gateway_section)
+
+    with _protecting(declared, config_path):
+        registry: dict[str, Profile] = {
+            name: _build_profile(name, body) for name, body in profiles_section.items()
+        }
+        # Derived BEFORE every registry-wide check, so an ingress is held to the
+        # audience rule, the judge rule and the rest exactly as a written
+        # profile is. A derived name that collides with a written one is
+        # refused rather than silently winning either way.
+        _add_derived_ingresses(registry)
+        _check_operator(registry, service_identity)
+        _check_federation_internal_surface(registry)
+        _check_federation_audience(registry)
+        _check_judges(registry)
+        _check_matrix_networks(registry)
+        _check_egress_networks(registry)
+        _check_route_grants(registry, normalized.route_instances)
+        git_remotes = _load_git_remotes(cfg_data.get("git_remotes"), registry)
+        egress_upstreams = _load_egress_upstreams(cfg_data.get("egress_upstreams"), registry)
+
+    _commit_protected(declared)
 
     logger.info(
         "gateway: loaded %d profile(s): %s",
@@ -825,18 +1635,24 @@ def load_profiles(path: Path | str) -> GatewayConfig:
     matrix_section = cfg_data.get("matrix", {})
     if isinstance(matrix_section, dict):
         matrix_other_agents(matrix_section)  # validated here, bound at startup
-    gateway_section = cfg_data.get("gateway", {})
-    if not isinstance(gateway_section, dict):
-        gateway_section = {}
-
     return GatewayConfig(
         profiles=registry,
         llm_providers=llm_section if isinstance(llm_section, dict) else {},
         matrix=matrix_section if isinstance(matrix_section, dict) else {},
         git_remotes=git_remotes,
         egress_upstreams=egress_upstreams,
+        route_instances=normalized.route_instances,
+        deprecated_keys=normalized.older_spelling,
+        service_identity=service_identity,
         session_ttl_seconds=float(gateway_section.get("session_ttl_seconds", 300.0)),
         max_sessions_per_profile=int(gateway_section.get("max_sessions_per_profile", 10)),
+        # Clamped at load rather than at use, so what the file says and what
+        # the gateway will do cannot differ (see approver.clamped_enrol_window).
+        approval_enrol_window_seconds=clamped_enrol_window(
+            float(
+                gateway_section.get("approval_enrol_window_seconds", DEFAULT_ENROL_WINDOW_SECONDS)
+            )
+        ),
     )
 
 
@@ -870,14 +1686,33 @@ class ActiveConfig:
     config: GatewayConfig
     llm_providers: dict[str, Any]
     alert_route_registered: bool
-    matrix_route_registered: bool
     oauth_route_registered: bool
-    egress_listener_configured: bool = False
-    git_route_registered: bool = False
-    egress_route_registered: bool = False
+    #: The perimeter routes and listeners mounted at startup, by name (#535).
+    #: A route the file gains later is not served until a restart.
+    routes_mounted: frozenset[str] = frozenset()
+
+    @property
+    def egress_listener_configured(self) -> bool:
+        """Whether the CONNECT listener binds: a profile asked for it (#442)."""
+        return "egress" in self.routes_mounted
 
 
 _active: ActiveConfig | None = None
+
+
+def mounted_routes(config: GatewayConfig, providers: dict[str, Any]) -> frozenset[str]:
+    """The perimeter routes and listeners ``config`` mounts, by name: the one
+    predicate the registry mounts by, so the two cannot disagree."""
+    from ..transports.registry import configured, listener_configured, plugin_types
+
+    routes = {
+        name
+        for name in ("http", "git", "llm", "matrix", "forward")
+        if configured(name, config, providers)
+    }
+    listener = {"egress"} if listener_configured(config) else set()
+    plugins = {ref.partition(":")[2] for ref in plugin_types(config)}
+    return frozenset(routes | listener | plugins)
 
 
 def register_active_config(
@@ -897,14 +1732,8 @@ def register_active_config(
         config=config,
         llm_providers=llm_providers if llm_providers is not None else {},
         alert_route_registered=any(p.alert_ingress is not None for p in config.profiles.values()),
-        matrix_route_registered=bool(config.matrix.get("enabled")),
         oauth_route_registered=oauth_route_registered,
-        # Bound before serving, and only when a profile asked for it (#442).
-        egress_listener_configured=any(
-            p.client_egress is not None for p in config.profiles.values()
-        ),
-        git_route_registered=bool(config.git_remotes),
-        egress_route_registered=bool(config.egress_upstreams),
+        routes_mounted=mounted_routes(config, llm_providers or {}),
     )
 
 
@@ -927,11 +1756,8 @@ def replace_active_config(config: GatewayConfig) -> None:
         config=config,
         llm_providers=_active.llm_providers,
         alert_route_registered=_active.alert_route_registered,
-        matrix_route_registered=_active.matrix_route_registered,
         oauth_route_registered=_active.oauth_route_registered,
-        egress_listener_configured=_active.egress_listener_configured,
-        git_route_registered=_active.git_route_registered,
-        egress_route_registered=_active.egress_route_registered,
+        routes_mounted=_active.routes_mounted,
     )
 
 

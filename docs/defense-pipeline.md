@@ -4,6 +4,8 @@
 
 Trentina runs untrusted content through three independent detection layers before it reaches your agent. Each layer catches attack categories the others miss. No single layer — structural, classifier, or LLM — covers everything.
 
+The three layers are, in a word each: **literal** (L1 — deterministic patterns: does the text *match* a known attack?), **statistical** (L2 — a learned ONNX classifier: does it *resemble* one?), and **semantic** (L3 — an LLM judge: does it *mean* one, in context?). Match → resemble → mean. The two policy *guards* borrow the same literal/semantic words ([the guard grid](gateway.md#the-guard-grid)) — but a guard enforces operator policy, not hostile-content detection, and there is no statistical guard, because a classifier is one fixed model while policy is per-operator.
+
 ## Two roles: guards decide, transforms transform
 
 Everything Trentina wires into a request path is one of exactly two things. If you are adding a driver and it seems to be neither, it is one of them and you have not decided which yet.
@@ -12,8 +14,8 @@ Everything Trentina wires into a request path is one of exactly two things. If y
 
 | guard | what it judges | where |
 |---|---|---|
-| **Parameter guards** | the *arguments* of a `tools/call`, after the tool-name allowlist and before the backend is contacted | `gateway/guards.py`, [parameter-guards.md](parameter-guards.md) |
-| **Response guards** | the backend's *result*, after the call returns and before anything is transformed, scanned or relayed | `gateway/guards.py`, [response-guards.md](response-guards.md) |
+| **Literal request guards** | the *arguments* of a `tools/call`, after the tool-name allowlist and before the backend is contacted | `gateway/guards.py`, [literal-request-guards.md](literal-request-guards.md) |
+| **Literal response guards** | the backend's *result*, after the call returns and before anything is transformed, scanned or relayed | `gateway/guards.py`, [literal-response-guards.md](literal-response-guards.md) |
 | **The scanner** | content, through L1 → L2 → L3 below | `defense.py` — and `defend()` is the only entry point, enforced by `tests/test_defense_contract.py` |
 
 A guard also decides **what it reads**. On a payload too large or too opaque to scan whole, a transform selects which strings reach L1/L2/L3 and accounts for every byte it declined — coverage, a skip histogram by reason, and `low_scan_coverage` below the floor. The guard still makes the call; it is simply told what it is looking at.
@@ -139,7 +141,7 @@ A prompt-injection classifier running on ONNX Runtime (CPU, no GPU required), sl
 
 The image ships that one model. Horizon, the base, shipped until 2.0.0: it refused about 150 ordinary tool replies a day (feeds, monitoring pages, issue lists) that its training had never shown it, and the fine-tune was fixed at model selection ([benchmark](benchmark.md#envelopes-not-prose-17)). Meta's `prompt-guard-2-86m` shipped beside it from 0.55.0 to 0.58.0 and was dropped (#362): it fails five of the six transforms of the obfuscation gate, so one zero-width character blinded it. `CLASSIFIER_MODEL_PATH` still reaches an export of it, or of any model, for research.
 
-**The obfuscation gate is enforced.** The image build classifies every corpus attack plain and under six transforms with the shipped model and writes the result into its `trentina-model.json` (`benchmarks/l2_obfuscation.py --record`); a model that fails stops the build. At startup the gateway reads the record: a model with a failing record, or none, is logged as `l2_obfuscation_gate_failed` or `l2_obfuscation_gate_unrecorded`, and under `TRENTINA_REQUIRE_HARDENED` the gateway refuses to start. The gate's state is part of the verdict stamp. garak's sixteen further encodings are measured against the model and gate nothing (`benchmarks/l2_encodings.py`, #423): the model reads quoted-printable and MIME, which barely change the text, and none of the others; base16 and hex are decoded before it is asked, and the rest are known gaps 21 to 23. To run your own model, export it and record the gate against it before you point `CLASSIFIER_MODEL_PATH` at it.
+**The obfuscation gate is enforced.** The image build classifies every corpus attack plain and under six transforms with the shipped model and writes the result into its `trentina-model.json` (`benchmarks/l2_obfuscation.py --record`); a model that fails stops the build. At startup the gateway reads the record: a model with a failing record, or none, is logged as `l2_obfuscation_gate_failed` or `l2_obfuscation_gate_unrecorded`, and under `TRENTINA_REQUIRE_HARDENED` the gateway refuses to start. The gate's state is part of the verdict stamp. garak's nineteen further encodings are measured against the model and gate nothing (`benchmarks/l2_encodings.py`, #423): the model reads quoted-printable and MIME, which barely change the text, and none of the others; base16, hex, base32, Ascii85, base85, UU, Braille, Morse, the NATO alphabet, sneaky bits, Base2048, Ecoji and Zalgo are decoded before it is asked (base16/hex, the six of #546 and the five of 6.6.0), and ROT13, Atbash and leetspeak are read back when the reading is English (6.7.0, #720; what is not read back is gap 22). To run your own model, export it and record the gate against it before you point `CLASSIFIER_MODEL_PATH` at it.
 
 **So is the benign gate (#411).** The same build then runs the model, at the threshold it ships with, over 296 invented benign cases of the shapes production refused (unit properties, journals, disk-usage and container listings, metrics rows, replies that carry an identifier, agent-forum replies, machine-written meeting notes, writing about attacks), 207 of them gated, each read as the gateway reads a tool response: through the default transforms, the text block and then every string of the structured content, unpacked. A model that flags more than 2% of the held-out cases stops the build (`benchmarks/l2_benign.py --record`). The record carries the threshold it was taken at, so a gateway started with another `CLASSIFIER_THRESHOLD` reports `l2_benign_gate_unrecorded` until the gate is run at that one. Numbers, and the shapes the shipped model still flags (known gap 31), are in [benchmark.md](benchmark.md#l2-benign-gate-411-404).
 
@@ -248,9 +250,9 @@ gaps below.
 | JSON and `structuredContent` | compacted JSON; in a text block, repeated array elements collapsed to a count and a log held in a string reduced to petit's samples and summary (#419); `structuredContent` as it arrived | a text block as delivered; every string of `structuredContent`, keys included | judged |
 | Base64 or hex that decodes to text (canonical only; base16 is hex in upper case) | as it arrived | the decoded text, in place, to two levels | judged; hex and base16 attacks are flagged as often as plain ones (41 of 44) and no benign text is ([benchmark](benchmark.md#garaks-encodings-423)) |
 | URL-safe, unpadded or otherwise non-canonical base64 | as it arrived | the raw blob | judged, but L2 may react to the blob |
-| Text in base32, Ascii85, base85, uuencoding, Braille or Morse | as it arrived | the encoding as it arrived; nothing decodes it | judged, but L2 flags nearly all of it whatever it says (gap 21) |
-| Text in ROT13, Atbash or leetspeak | as it arrived | as it arrived; L1 matches its directive patterns through ROT13 | judged, with L2 detections lost and benign text flagged (gap 22) |
-| Text spelled in the NATO alphabet, or written in invisible binary ("sneaky bits") | as it arrived | as it arrived | judged, and passed by L1 and L2 (gap 23) |
+| Text in base32, Ascii85, base85, UU (uuencode), Braille or Morse | as it arrived | the decoded text, in place (#546); base32, UU, Braille and Morse at any length, Ascii85 and base85 between 16 and 20000 characters | judged; the attack inside is read like the plain text ([benchmark](benchmark.md#garaks-encodings-423)) |
+| Text in the NATO alphabet, sneaky bits, Base2048, Ecoji or Zalgo | as it arrived | the decoded text, in place (6.6.0); NATO from eight code words, sneaky bits from twelve bits, Base2048 from twelve characters, Ecoji from eight emoji, Zalgo from two characters under three or more marks each | judged; NATO reads as one unbroken lower-case run (garak drops the spaces), and sneaky bits' cheapest reading recovers Latin text but can misread long code points (CJK) ([benchmark](benchmark.md#garaks-encodings-423)) |
+| Text in ROT13 or any Caesar shift, Atbash, or leetspeak | as it arrived | read back in place when the reading is English (6.7.0, #720): a segment (a line, cut again at double quotes) whose words are under 30% common English and whose reading under one cipher is at least 30% and 20 points more, with five common words; inside it a common word whose reading is not one stays as it arrived. Leetspeak a token at a time, in a segment where five tokens read as common words. L1 also matches its directive patterns through ROT13 | judged; ROT13 and Atbash attacks are caught 41 of 44 and flag 1 of 86 benign texts, leetspeak 42 of 44 and 6 of 86 ([benchmark](benchmark.md#garaks-encodings-423)); text in another language under a cipher, and a cipher wrapped four words a line, are not read back (gap 22) |
 | Writing about attacks: security documentation, a detector's source, a security gateway's issue list or issue reply | as it arrived | as it arrived | judged, but L2 may flag it whatever it says (gap 31) |
 | Text in quoted-printable or MIME encoding | as it arrived | as it arrived, soft line breaks included | judged; L2 reads through it (42 of 44 attacks against 41 plain, 6 of 86 benign texts flagged) |
 | Text hidden in Unicode variant selectors | as it arrived | as it arrived; L1 counts the run | judged; L1's count alone refuses it, whatever it says |
@@ -275,10 +277,12 @@ gaps below.
 | A binary egress response | its content type | no layer reads it | the `binary_unread` gap: `block` withholds it, `flag` delivers it with the warning (gap 32) |
 | A pack carried by the [git transport](git-transport.md), in either direction: file contents, file names, commit messages | as the forge sent it; a push, as the agent sent it | nothing. The gateway reads the request line, a push's command list and ref listings, and decides on those | not judged; the route decides the repository and the branch and records the bytes (gap 29) |
 | A ref listing on the git transport: branch and tag names | each name that is one token of printable ASCII, at most 255 bytes, outside a hidden namespace | nothing. The gateway reads each line to drop the rest | not judged; names are bounded, not read for meaning (gap 29) |
+| A federated response carrying a valid signed verdict, from a backend whose `federated.trust_verdict` is pinned (#592, D2a) | as the peer delivered it | nothing locally | NOT re-judged here: the peer judged it under the pinned `perimeter_stamp` and `judge`, and the signature binds that verdict to these exact bytes. Fail-closed — a missing, forged, stale or mismatched assertion is re-judged locally (gap 33) |
 | A remote backend's tool that is new or whose definition (description, schema, annotations) changed | withheld from every profile until an operator approves it ([pinning](tool-pinning.md), #469) | the new definition, as any tool description | held, `*` allowlists and flag mode included |
 | Any of those three under `unjudged: annotate` | as it arrived, media with the warning header | nothing | forwarded unjudged, by the operator's choice |
 | A proxied response that is only text, or an internal tool's (`fetch`, `read`, `content`) behind the gateway, over 16K L2 tokens and within 16 parts (192K) | one part of about 12K tokens per call, the first from the call itself and the rest from `read_part` (#340, #446) | each part whole, behind the last 64 tokens of the part before | judged a part at a time; block withholds a flagged part and every later one |
 | Over the admission cap (`CLASSIFIER_MAX_TOKENS`, 32,768 L2 tokens) and not delivered in parts: a response with an image or blob in it, one over 16 parts, any response to a profile without `read_part`, a honeypot's, an internal tool's standalone | block and redact: a refusal; flag: as it arrived | flag: the head only | refused |
+| A FEDERATED peer's part that is larger than this gateway's own whole-response budget (#592, B2) | nothing: a refusal (`federated_part_oversize`) | nothing | refused in every mode. It is not re-cut: the peer holds parts 2..n behind a handle only the proxy can reach, and cutting part 1 again returns before that proxy is built, so the agent would be handed a fragment and told it was the whole. Only reachable when the primary's `TRENTINA_PART_TOKENS` is below the secondary's, which is a misconfiguration the refusal names |
 
 ### Known gaps
 
@@ -333,10 +337,13 @@ one does; the rest name the benchmark that measured them.
 6. **L1 reads two ciphers and three escape forms, and no others** (#363).
    ROT13 and reversed lines are matched against the directive patterns;
    percent, backslash and character-reference escapes are decoded and
-   read for instruction words. Base32, Morse, a Caesar shift other than 13
-   and every other encoding reach L2 and L3 as they arrived. The
-   lookalike counter knows Cyrillic and Greek only. What L2 makes of what
-   reaches it is gaps 21 to 23. Tested.
+   read for instruction words. The unpack stage ahead of L1 decodes base32,
+   Ascii85, base85, UU, Braille and Morse (#546) and the NATO alphabet,
+   sneaky bits, Base2048, Ecoji and Zalgo (6.6.0), and reads back every
+   Caesar shift, Atbash and leetspeak when the reading is English (6.7.0),
+   so L1 reads their plain text. The lookalike counter knows Cyrillic and
+   Greek only. What is not read back is gap 22.
+   Tested.
 7. **L1's own refusal is coarse on invisible characters.** Four of them
    already rate high risk. In the L1 briefing ablation
    ([benchmark](benchmark.md#l1-briefing-ablation)) L1 alone refused 29
@@ -346,7 +353,7 @@ one does; the rest name the benchmark that measured them.
    and without L1's counts, L3's verdicts differed on 13 of 241 payloads in
    both directions, inside its own run-to-run noise.
 9. **L2 flags SSH `authorized_keys` lines** whatever their key: `ssh-rsa
-   ops@lotor` alone scores 0.97 with the default model, and the same line
+   ops@example` alone scores 0.97 with the default model, and the same line
    with its key labelled scores 0.92 (2026-10-04). Horizon reads the shape as
    key planting. Block mode refuses a response that is little else; in a
    longer document the line is diluted (two such lines scored 0.62).
@@ -428,42 +435,49 @@ one does; the rest name the benchmark that measured them.
     scores it 0.007, and none of the four shipped judges flags it. Nothing in
     the text separates it from a real colleague's mail, so detection is the
     wrong control; what stops it is a limit on what the agent may send.
-    [Guarded execution](guarded-execution.md) is that limit (#456): it
+    [Semantic request guards](semantic-request-guards.md) is that limit (#456): it
     judges the call the request leads to, not the request.
     Imperva's bare install instruction is the same shape with a URL: L2
     scores it 0.254, and two of the four shipped judges (Gemini 3.5
     Flash-Lite, Gemini 3.8 Flash) pass it
     ([benchmark](benchmark.md#l3-on-them-2026-10-10-the-four-shipped-judges)).
     L1 and L2 tested, L2 in the image; the judges measured once each.
-21. **An attack in an encoding the unpack stage does not decode reaches
-    L3 alone** (#423, #17). base32, Ascii85, base85, UU, Braille and Morse
-    reach L2 as they arrived (gap 6). Horizon flagged nearly anything in
-    them, attacks (37 to 44 of 44) and benign text alike, so a flag said
-    only that the text was a blob. The fine-tuned model reads neither: it
-    passes benign encoded text and catches 1, 5, 2, 16, 2 and 21 of 44
-    attacks in them, against 43 plain
-    ([benchmark](benchmark.md#garaks-encodings-423)). So these attacks are
-    L3's to catch, and what L3 makes of them is not measured. The fix is a
-    decoder for each in the unpack stage, so L2 reads the plain text, as it
-    does base64, hex and base16 (43 of 44 caught). Shipped with the gap
-    open, by decision (2026-10-26). Tested, L2 in the image: the test fails
-    when a decoder lands.
-22. **A letter cipher costs L2 detections and adds false positives**
-    (#423). Under ROT13 and Atbash the shipped model flags 26 and 17 of 44
-    attacks against 43 plain, and 24 and 12 of 86 benign texts against
-    none. Under leetspeak it now loses only one (42 of 44), but still
-    flags 20 of the 86 benign texts. L1
-    matches its directive patterns through ROT13 only, and those attacks
-    carry none: it counted 1 of 44. Tested, L2 in the image.
-23. **An attack spelled in the NATO alphabet, or written in sneaky bits,
-    passes L1 and L2** (#423). `India Golf November Oscar Romeo Echo` is
-    six ordinary words: no attack of 44 scored above 0.11. Sneaky bits
-    writes a text in binary with two invisible characters (U+2062 and
-    U+2064) and a zero-width space for each space. L2's tokenizer drops
-    all three, so every such text scores 0.004, and L1 counts a zero-width
-    character only inside a Latin word and the two operators nowhere.
-    Neither is flagged once in 44. An agent has to decode either on
-    purpose; L3 is not measured on them. Tested, L2 in the image.
+21. **Closed (#546).** An attack in base32, Ascii85, base85, UU, Braille or
+    Morse used to reach L3 alone; the unpack stage now decodes all six, so L2
+    reads the plain text, as it does base64, hex and base16 (see Coverage,
+    above). base32, UU, Braille and Morse decode at any length; Ascii85 and
+    base85, whose decode is pure Python, are read between 16 and 20000
+    characters, so a blob outside that range is the one remaining sliver.
+    Braille and Morse are ASCII letter/digit alphabets: garak's encoder drops
+    anything else at encode time, so "closed" is measured over the attacks that
+    encoder can carry (`garak_encodings.carries`, at least 90% ASCII
+    alphanumerics) — a mostly-non-Latin payload never becomes a Braille- or
+    Morse-hidden attack to recover. A decoded-but-normalised payload (Braille
+    lowercases and collapses colliding cells) can still read differently to the
+    model within the gate's one-detection tolerance; that is model sensitivity
+    (#17), not a decoder fault.
+22. **A letter cipher wrapped short, or in another language, is not read
+    back** (#423, narrowed in 6.7.0 by #720). Every text is valid
+    ciphertext, so unpack reads a segment back only when one cipher turns it
+    English, judged on its own words with five common ones at the least. An
+    attack in Atbash or a Caesar shift wrapped four words a line, or with a
+    double quote between every few words, is read by no layer as plain text;
+    nor is an attack in another language, whose reading is not English
+    either (the 2 of 44 the pipeline still loses). Inside a segment read
+    back, a rare word whose reading is not a common word is read back
+    anyway, and a leet token whose reading is not one stays as it arrived:
+    leetspeak still flags 6 of 86 benign texts. Retraining L2 on ciphered
+    text was tried twice and taught it nothing ([benchmark](benchmark.md#garaks-encodings-423)).
+    Tested, L2 in the image.
+23. **Closed (6.6.0).** An attack spelled in the NATO alphabet, or written
+    in sneaky bits, used to pass L1 and L2 at 0 of 44: the code words are
+    ordinary words and L2's tokenizer drops the invisible characters. The
+    unpack stage now decodes both, with Base2048, Ecoji and Zalgo, the three
+    garak encodings this list had left out. Two slivers stay: NATO keeps
+    letters only, so the decode is one unbroken lower-case run, and sneaky
+    bits writes code points with nothing between them, so a script of long
+    code points (CJK) can be read wrongly; Latin text comes back whole or
+    nearly. Tested, L2 in the image.
 24. **L2 flags about one post in eight on an agent-written forum feed**
     (#404). On 1,427 posts and comments from one feed the shipped model
     flagged 183 at 0.7; a third of those score 0.98 or more, so no
@@ -564,19 +578,19 @@ one does; the rest name the benchmark that measured them.
     on, keep `push_refs` to a namespace of its own that nothing deploys
     from, and treat a checkout as untrusted content. Tested, the `want`
     against a real git server.
-30. **Guarded execution is a model, and judges one call at a time**
+30. **The semantic request guard is a model, and judges one call at a time**
     (#456). A call to a guarded tool is forwarded when the profile's judge
     answers allow, and nothing else in the gatekeeper reads its content: a
     call that reads as routine to the judge passes, whatever it carries.
     Each call is judged alone. Data sent in many small calls, each within
     the policy, is never seen as one export, and the only memory between
     calls is the first-contact fact and the session's flagged mark. Keep
-    every rule that can be stated exactly in a parameter guard, which no
+    every rule that can be stated exactly in a literal request guard, which no
     answer from a model can override. The same gatekeeper can judge a
     [terminating-egress](egress-http.md) request's intent before it is sent
-    (`guarded_execution.egress_http`, under `block`; #511), with the same one-
+    (`semantic_request_guards.egress_http`, under `block`; #511), with the same one-
     call-at-a-time limit. Measured per scenario by
-    `benchmarks/gatekeeper.py` ([Guarded Execution](guarded-execution.md#measured)).
+    `benchmarks/gatekeeper.py` ([Semantic Request Guards](semantic-request-guards.md#measured)).
     Tested (`tests/test_coverage_gaps.py`).
 31. **L2 flags writing about attacks** (#474). Security documentation,
     the source of a detector and the issue tracker of a security gateway
@@ -608,8 +622,39 @@ one does; the rest name the benchmark that measured them.
     one document), so the gap is the binary body alone. A judged terminating
     proxy buffers and judges the whole response, so byte-for-byte streaming is
     incompatible with judge-before-deliver and stays the tunnel's territory
-    (gap 26); the guarded-execution hook on an egress call has landed (gap 30,
-    `guarded_execution.egress_http`). Tested.
+    (gap 26); the semantic-request-guards hook on an egress call has landed (gap 30,
+    `semantic_request_guards.egress_http`). Tested.
+
+33. **A trusted federated verdict does not bind the peer's defense block**
+    (#592, D2a). When a primary pins a `federated.trust_verdict` (the peer's
+    key, its `perimeter_stamp` and its `judge`), a response carrying a valid
+    signed assertion is delivered without the primary re-running L1/L2/L3 —
+    scan-once at the declared trust boundary. The pin binds the peer's L2 model,
+    its revision, threshold, polarity and gates (the `perimeter_stamp`) AND its
+    L3 judge — the provider, model and prompt pack (`judge`, pinned separately
+    because the stamp does not cover L3) — so a model or judge change on the
+    secondary stops matching and the primary re-judges until the operator
+    re-pins. It does NOT bind the peer profile's `defense` block — its threshold
+    overrides, allowlists and which modes it runs — so a primary trusts that the peer
+    scanned under the stamped model and judge, not that the peer's policy around
+    them is as strict as its own. Fail-closed: a missing, forged, stale,
+    undigestable, uninterpretable, or hash-, stamp-, judge- or mode-mismatched
+    assertion is re-judged locally, never trusted. The trust is a deliberate
+    exception to rule 1 of the [layer contract](#layer-contract), stated here
+    so that rule is not read as covering it.
+
+    Two things it does not reach. **A PAGED response is never trusted**: the
+    secondary signs a delivered response, and a response it delivers in parts
+    is not one — part 1 arrives at the primary with no assertion (`absent`) and
+    every part is judged here, as its own source. So a link whose responses are
+    mostly large runs the layers twice however well the pin matches, and
+    `absent` rather than `trusted` is the honest reading of that, not a broken
+    pin. **The peer's own warning block** rides inside the signature and is
+    delivered once: it is gateway-authored fixed text from the peer's
+    `results._attach_warning`, not an L3 assessment, which is why §III is
+    satisfied by a block this gateway did not write.
+
+    Tested (`tests/test_federation_trust.py`, `tests/test_coverage_gaps.py`).
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 
@@ -756,7 +801,7 @@ The gateway is what most deployments run, so for them the default is `flag`: unj
 | Alert ingress: `block` | Refused (403), the same `Gaps.blocking()` rule | Forwarded |
 | Alert ingress: `flag` | Forwarded, with the warning when flagged | Same |
 
-Two things hold in every row. A layer that ran but read only part of the payload (`l2_truncated`, `l3_truncated`), an over-cap payload and unread binary are never excused by `TRENTINA_REQUIRE_*`: `block` and `redact` refuse them. And `flag` is the only mode that delivers through a gap, so a mode added later fails closed until someone implements it (`ingress_defense.py`).
+Two things hold in every row. A layer that ran but read only part of the payload (`l2_truncated`, `l3_truncated`), an over-cap payload and unread binary are never excused by `TRENTINA_REQUIRE_*`: `block` and `redact` refuse them. And `flag` is the only mode that delivers through a gap, so a mode added later fails closed until someone implements it (`response_edge.py`).
 
 ## Related
 

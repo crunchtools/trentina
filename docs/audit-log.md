@@ -29,6 +29,41 @@ Each gateway call writes one row to the `gateway_calls` table:
 | `session` | text | `3f9a…`: a fingerprint of the MCP session the call arrived on. NULL for a client that sends no session header |
 | `call_ref` | text | `8c1d…`: a random reference for this call. A `detections` row raised by the call carries the same one |
 | `content_digest` | text | `b27e…`: a fingerprint of the delivered result. NULL when nothing was delivered |
+| `federated_verdict` | text | `trusted` when the response was served on a secondary's signed verdict without this gateway's own layers running; otherwise why it was re-judged (`absent`, `bad_signature`, `stamp_mismatch`, `judge_mismatch`, `hash_mismatch`, `mode_mismatch`, `stale`, `undigestable`, `uninterpretable`, `incomplete`). A closed set, never the peer's text. NULL for every non-federated call, and for the later parts of a paged one |
+| `caller_peer` | text | On a federation ingress, the peer whose key verified the request's primary JWT — the actor. NULL for every non-federated call |
+| `caller_sub` | text | The caller that peer asserted (`sub`). Peer-chosen, so it is an audit fact and never an input to scope, role, policy or a guard. NULL for every non-federated call |
+
+### How much of a federated link runs on the peer's scan
+
+`federated_verdict` is the answer, and it is the column to read before deciding
+whether a trust pin is earning anything:
+
+```sql
+-- Of this link's calls, how many were served on the secondary's verdict?
+SELECT federated_verdict, COUNT(*)
+FROM gateway_calls
+WHERE profile = 'myagent' AND backend = 'peergw' AND federated_verdict IS NOT NULL
+GROUP BY federated_verdict;
+```
+
+`trusted` is the saving the pin was for. Anything else means the primary scanned
+it anyway: `stamp_mismatch` or `judge_mismatch` says the secondary changed what
+it scans with and nobody re-pinned, so the pin is now costing a round trip and
+buying nothing. `incomplete` is not a failure — the assertion verified, but the
+secondary could not fully read the content, so the primary applied its own gap
+policy instead.
+
+Read `absent` before concluding anything from a low `trusted` share. A response
+the secondary delivered in PARTS is never trusted: it signs a delivered
+response, and one delivered in parts is not one, so part 1 arrives with no
+assertion and every part is judged here. On a link whose responses are mostly
+large, `absent` dominating is the shape of the feature rather than a broken pin
+([gap 33](defense-pipeline.md#known-gaps)). The later parts carry NULL, like a
+non-federated call, so they do not appear in this query at all.
+
+`undigestable` and `uninterpretable` are the two the peer caused without
+anything being wrong with the link: a response holding a number RFC 8785 cannot
+carry, and a verdict naming a layer this gateway does not know.
 
 ### Joining rows
 
@@ -110,9 +145,10 @@ blocked 34 hostile pages.
 | `ok` | ok | Backend returned content and did not flag an error. |
 | `blocked_defense` | blocked | L1/L2/L3 refused the content. Working as designed. |
 | `denied_allowlist` | blocked | Tool not permitted for this profile. |
-| `denied_guard` | blocked | A parameter guard rejected the arguments. |
-| `denied_response_guard` | blocked | A response guard rejected the backend's result. |
-| `denied_gatekeeper` | blocked | [Guarded execution](guarded-execution.md) refused the call before it was forwarded. The message is the reason code, then what the gatekeeper was told: `first_contact` and `session_flagged`. |
+| `denied_guard` | blocked | A deterministic request-side or egress denial: a literal request guard, a mode/transform policy, or an egress/proxy refusal. |
+| `denied_response_guard` | blocked | A literal response guard rejected the backend's result. |
+| `denied_gatekeeper` | blocked | [Semantic request guards](semantic-request-guards.md) refused the call before it was forwarded. The message is the reason code, then what the gatekeeper was told: `first_contact` and `session_flagged`. |
+| `denied_response_gatekeeper` | blocked | [Semantic response guards](semantic-response-guards.md) refused delivery of the backend's result. The backend was contacted and answered; the answer was withheld. Distinct from `denied_response_guard`, the deterministic literal response guard. |
 | `decoy_tripped` | tripped | A [decoy tool](profiles.md#decoy-tools-and-honeytokens) was called, or a planted credential was in a call's arguments. An alarm about the caller. |
 | `tool_error` | failed | Backend completed but reported `isError`. |
 | `backend_error` | failed | Upstream failed: network, timeout, auth, 4xx/5xx. |
@@ -223,8 +259,9 @@ defense got mistaken for a broken one.
 
 ### Denial Monitoring
 
-`denied_allowlist`, `denied_guard`, `denied_response_guard` and
-`denied_gatekeeper` rows record calls the gateway refused. A consumer repeatedly probing tools outside its
+`denied_allowlist`, `denied_guard`, `denied_response_guard`,
+`denied_gatekeeper` and `denied_response_gatekeeper` rows record calls the
+gateway refused. A consumer repeatedly probing tools outside its
 allowlist is a signal worth alerting on — it can indicate a misconfigured
 client or a hijacked agent. These were previously not recorded at all.
 
@@ -253,10 +290,14 @@ redirect to a binary) is a refusal and audits as `blocked_defense`; until
 provider failed is `backend_error`; one whose L0 leaked its canary is
 `blocked_defense`.
 
-`denied_response_guard` is the one denial that still costs an upstream call:
-the backend answered and the answer was withheld here. A rising rate on it
-means an agent keeps asking for material its profile forbids — see
-[Response Guards](response-guards.md).
+`denied_response_guard` and `denied_response_gatekeeper` are the denials that
+still cost an upstream call: the backend answered and the answer was withheld
+here. A rising rate on either means backend results are being withheld under
+the profile's policy — it reflects what the backend returned, not by itself
+what the agent intended, unlike the request-side `denied_guard` /
+`denied_gatekeeper`, where a rising rate can signal an agent probing. See
+[Literal Response Guards](literal-response-guards.md) and
+[Semantic Response Guards](semantic-response-guards.md).
 
 ### Usage Patterns
 
@@ -291,6 +332,12 @@ The sweep deletes a prefix of the chain, selected by `id` and stopping at the fi
 The tail read and the insert run under `BEGIN IMMEDIATE`, so a second process cannot fork the chain.
 
 **Detections.** They are written before the call row and expire on their own schedule (blocked rows at `TRENTINA_BLOCKLIST_TTL_DAYS`, flag rows never), so they are not chained. The call row holds `detections_digest`, the SHA-256 of the JCS form of its `call_ref`'s detection rows in `id` order, and `row_hash` covers it. The verifier recomputes it while those rows exist. A mismatch on a call older than the blocklist TTL is counted as `detections_expired`, not as a break. A detection with no `call_ref` (for example one from `decoy.py`) is outside the chain.
+
+**Lost rows (#662).** A row that was never written leaves **no break at all.** Its `id` is chosen inside the write transaction from `MAX(id) + 1`, a rolled-back write consumes nothing, and the next row's `prev_hash` is the hash of the last row actually *written* — so the chain stays continuous and a walk of it reports `ok`. The hash chain cannot see a hole it was never told about, which is why the loss is counted instead.
+
+`record_gateway_call` retries a failed write, whatever the error says — the error name cannot tell you whether SQLite already waited, since the busy handler is never invoked for `SQLITE_LOCKED` and `SQLITE_BUSY` comes back at once on a failed transaction upgrade. `AUDIT_ATTEMPTS` and `AUDIT_RETRY_BUDGET` bound it together, because an attempt that spends the `BUSY_TIMEOUT_MS` wait spends it on the event loop. The budget has to bound the stall and not merely the moment a retry begins, so a retry's own busy timeout is cut to what is left of the budget: three attempts still fit, and the total wait is the budget rather than three timeouts. Unbounded, those three attempts would have held the loop for 750 ms. The connection's timeout is restored however the write ends, since every other writer shares it. When it still cannot write, it counts the row and the next successful write records the count in `audit_losses` — not in `audit_checkpoints`, because those rows anchor where a walk *starts*, and a lost row anchors nothing. `verify` sums the table into `lost_rows` and sets `ok` false while it is non-zero: the chain holds **and** the record is short, which are two different facts and are reported as two.
+
+That `ok` is false for good. There is no acknowledgement path, because the record stays incomplete however long ago it happened. An operator reads `lost_rows` to tell this apart from a break, which carries a `first_break` instead.
 
 **What it proves.** Inside the retained rows, an edit, a removal in the middle, or a reorder is detectable.
 

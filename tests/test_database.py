@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -316,3 +317,193 @@ class TestEveryLayersVerdict:
         source = inspect.getsource(database.record_detection)
         names = ", ".join(column for column, _ in database._VERDICT_COLUMNS)
         assert f"{names})" in source
+
+
+class TestSchemaAndMigrationAgree:
+    """A column must reach a FRESH database and an UPGRADED one.
+
+    ``SCHEMA`` builds a new ``gateway_calls``; ``_CALL_COLUMNS`` is what
+    ``_migrate`` adds to one that already exists. A column added to only one of
+    them breaks the other half of the fleet, silently until the first write:
+    added to ``_CALL_COLUMNS`` alone, every fresh database rejects the insert;
+    added to ``SCHEMA`` alone, every existing deployment does. #637 made the
+    first mistake, which is why this test exists.
+    """
+
+    def _fresh_columns(self) -> set[str]:
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.executescript(database.SCHEMA)
+            return {row[1] for row in conn.execute("PRAGMA table_info(gateway_calls)")}
+        finally:
+            conn.close()
+
+    def test_every_migration_column_exists_in_a_fresh_database(self) -> None:
+        missing = {name for name, _ in database._CALL_COLUMNS} - self._fresh_columns()
+        assert not missing, f"in _CALL_COLUMNS but not SCHEMA: {sorted(missing)}"
+
+    def test_the_insert_names_only_columns_that_exist(self) -> None:
+        """The failure mode directly: the insert is written by hand."""
+        bound = set(re.findall(r":([a-z_]+)", database._INSERT_CALL))
+        assert bound <= self._fresh_columns() | {"id"}
+
+    def test_migrating_an_old_table_reaches_the_fresh_column_set(self) -> None:
+        """An upgrade must land on the same shape a fresh install has."""
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        try:
+            # Everything else at its current shape, because _migrate reads the
+            # other tables too; only gateway_calls is rolled back to the shape
+            # it had before any of the additive columns existed.
+            conn.executescript(database.SCHEMA)
+            conn.execute("DROP TABLE gateway_calls")
+            conn.execute(
+                "CREATE TABLE gateway_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "timestamp REAL NOT NULL, profile TEXT, backend TEXT, tool TEXT, "
+                "success INTEGER, duration_ms INTEGER, outcome TEXT, error_message TEXT)"
+            )
+            database._migrate(conn)
+            upgraded = {row["name"] for row in conn.execute("PRAGMA table_info(gateway_calls)")}
+            assert {name for name, _ in database._CALL_COLUMNS} <= upgraded
+        finally:
+            conn.close()
+
+
+class TestFederatedVerdictStats:
+    """How each federated response was handled, per `<profile>.<backend>`.
+
+    The signal an operator cannot otherwise read: whether a trust pin is
+    buying anything. A pin that has quietly stopped matching keeps working and
+    keeps costing a full local re-judge, and the only trace is the reason in
+    these rows.
+    """
+
+    @staticmethod
+    def _rows(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
+        with (
+            patch.object(database, "_db", conn),
+            patch.object(database, "get_db", return_value=conn),
+            patch.object(database, "_read_db", return_value=conn),
+        ):
+            for profile, backend, verdict in (
+                ("down", "peergw", "trusted"),
+                ("down", "peergw", "trusted"),
+                ("down", "peergw", "hash_mismatch"),
+                ("down", "other", "stale"),
+                ("up", "peergw", "trusted"),
+                ("down", "plain", None),  # a non-federated call
+            ):
+                database.record_gateway_call(
+                    profile, backend, "search", "ok", 1, federated_verdict=verdict
+                )
+            return database.get_federated_verdict_stats(days=30)
+
+    def test_counts_are_grouped_by_profile_backend_and_verdict(self) -> None:
+        stats = self._rows(_fresh_db())
+
+        assert stats["down.peergw"] == {"trusted": 2, "hash_mismatch": 1}
+        assert stats["down.other"] == {"stale": 1}
+        # Same backend name, different profile: its own key, not merged.
+        assert stats["up.peergw"] == {"trusted": 1}
+
+    def test_a_non_federated_call_is_not_a_verdict_of_its_own(self) -> None:
+        """`federated_verdict` is NULL on every ordinary call, and counting
+        those as a verdict would bury the ones that mean something."""
+        assert "down.plain" not in self._rows(_fresh_db())
+
+    def test_a_row_outside_the_window_is_left_out(self) -> None:
+        conn = _fresh_db()
+        self._rows(conn)
+        conn.execute("UPDATE gateway_calls SET timestamp = timestamp - ?", (40 * 86400,))
+
+        with (
+            patch.object(database, "_db", conn),
+            patch.object(database, "get_db", return_value=conn),
+            patch.object(database, "_read_db", return_value=conn),
+        ):
+            assert database.get_federated_verdict_stats(days=30) == {}
+            assert database.get_federated_verdict_stats(days=50) != {}
+
+
+class TestTheOwnerKeyedCacheMigration:
+    """6.1.0 keys `tool_compressions` and `tool_list_cache` by grant owner.
+
+    SQLite cannot ALTER a primary key, and a row written before the column
+    existed cannot be attributed to anyone — adopting it into one tenant's
+    cache would grandfather exactly the cross-tenant read and the cross-tenant
+    spend the release removes. So each table is rebuilt empty and refills on
+    the first list, which costs one re-compression per owner and no model calls
+    for the lists themselves (they are re-fetched on every boot anyway, #335).
+    """
+
+    @staticmethod
+    def _old_schema(path: Path) -> None:
+        con = sqlite3.connect(path)
+        con.executescript(
+            "CREATE TABLE tool_compressions (description_hash TEXT PRIMARY KEY, "
+            "original_description TEXT NOT NULL, compressed_description TEXT NOT NULL, "
+            "model TEXT NOT NULL, compressed_at TEXT NOT NULL, "
+            "original_length INTEGER NOT NULL, compressed_length INTEGER NOT NULL);"
+            "CREATE TABLE tool_list_cache (backend_url TEXT PRIMARY KEY, "
+            "tools_json TEXT NOT NULL, cached_at TEXT NOT NULL);"
+            "INSERT INTO tool_compressions VALUES "
+            "('h1', 'a long original', 'short', 'm', 'now', 15, 5);"
+            "INSERT INTO tool_list_cache VALUES ('https://x/mcp', '[{\"name\": \"t\"}]', 'now');"
+        )
+        con.commit()
+        con.close()
+
+    def test_an_old_database_opens_and_is_re_keyed(self, tmp_path: Path) -> None:
+        path = tmp_path / "old.db"
+        self._old_schema(path)
+        database._db = None
+
+        db = database.get_db(str(path))
+
+        for table in ("tool_compressions", "tool_list_cache"):
+            columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+            assert "owner" in columns, table
+
+    def test_the_unattributable_rows_are_not_served_to_anyone(self, tmp_path: Path) -> None:
+        path = tmp_path / "old.db"
+        self._old_schema(path)
+        database._db = None
+        database.get_db(str(path))
+
+        assert database.get_all_compressions() == {}
+        assert database.get_all_tool_lists() == {}
+
+    def test_owner_scoped_writes_and_reads_work_afterwards(self, tmp_path: Path) -> None:
+        path = tmp_path / "old.db"
+        self._old_schema(path)
+        database._db = None
+        database.get_db(str(path))
+
+        database.save_compression("alice", "h", "a long original", "short", "m")
+        database.save_compression("bob", "h", "a long original", "theirs", "m")
+        database.save_tool_list("https://x/mcp", "alice", [{"name": "mine"}])
+        database.save_tool_list("https://x/mcp", "bob", [{"name": "theirs"}])
+
+        # The same hash and the same URL under two owners: two rows each, and
+        # neither owner reads the other's.
+        assert database.get_all_compressions() == {
+            "alice": {"h": "short"},
+            "bob": {"h": "theirs"},
+        }
+        assert database.get_all_tool_lists() == {
+            ("https://x/mcp", "alice"): [{"name": "mine"}],
+            ("https://x/mcp", "bob"): [{"name": "theirs"}],
+        }
+
+    def test_a_current_database_is_left_alone(self, tmp_path: Path) -> None:
+        """The re-key must not fire twice, or every restart would empty the
+        caches it is meant to preserve."""
+        path = tmp_path / "new.db"
+        database._db = None
+        database.get_db(str(path))
+        database.save_compression("alice", "h", "a long original", "short", "m")
+        database._db = None
+
+        database.get_db(str(path))
+
+        assert database.get_all_compressions() == {"alice": {"h": "short"}}

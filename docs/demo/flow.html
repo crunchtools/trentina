@@ -155,13 +155,13 @@ function render(wall) {
   if (t >= 2.6) pillars[3] = true;
   if (t >= 3.4) pillars[2] = true;
 
-  // 5–8.5 s: the demo's real surface (tq surface): 131 tools offered, 6 served.
+  // 5–8.5 s: the demo's real surface (tq surface): 135 tools offered, 6 served.
   if (lit(t, 5.0, 8.5)) {
     const u = ease(ramp(t, 5.2, 8.0));
     const x = lerp(860, 400, u);
     const big = x > 560;
     const w = big ? 250 : 170;
-    packet(x, 190, w, big ? "131 tools · ~54K tokens" : "6 tools · ~2K tokens",
+    packet(x, 190, w, big ? "135 tools · ~56K tokens" : "6 tools · ~2K tokens",
            big ? C.gold : C.green);
     if (x < 620 && x > 450) active.push("policy");
   }

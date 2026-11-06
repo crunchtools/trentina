@@ -1,14 +1,15 @@
 # trentina Constitution
 
-> **Version:** 2.9.0
+> **Version:** 2.16.0
 > **Ratified:** 2026-09-22
-> **Amended:** 2026-10-14
+> **Amended:** 2026-11-04
 > **Status:** Active
-> **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.26.0
+> **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.31.0
 > **Profile:** Security Gateway
 
 This file holds what is specific to Trentina. The fleet rules and the
-Security Gateway profile (image-only distribution, a judging path that fails
+Security Gateway profile (image-only distribution published by CI alone, a
+local build as a gate, a judging path that fails
 closed, delivery of exactly what was judged, a versioned perimeter, declared
 coverage, measured detector changes, hostile parsers in child processes)
 apply at the inherited version and are checked against this repo's files by
@@ -26,7 +27,7 @@ the agent follows because it cannot tell data from instructions.
   whether plain, obfuscated, encoded, hidden in markup, or inside an archive,
   office file, PDF or image; a server steering an agent toward tools that
   bypass the gateway; an agent's own calls leaving its policy (tool filters,
-  parameter and response guards, egress, guarded execution).
+  request and response guards, egress, semantic request guards).
 - **Assumed compromised:** the L3 judge. It reads hostile content, so it has
   no tools, no memory and no ability to act, and its prose is never delivered.
 - **Not defended:** a user jailbreaking their own model directly (the judge
@@ -86,6 +87,19 @@ unread and each layer reads once; layers share findings, never inputs; a
 layer's weakness is fixed inside that layer or at model selection; read time
 is linear) are written in `docs/defense-pipeline.md` under the same heading,
 and `tests/test_layer_contract.py` enforces the first two.
+
+The one boundary at which a payload may be delivered without this gateway
+running its three layers is a **declared federation trust boundary** (#592):
+where an operator has pinned a federated upstream's key, perimeter stamp and
+judge, a response the upstream already scanned is delivered on its signed
+verdict instead of being re-judged. This is not an off switch — the layers ran
+once, at the upstream's ingress, and the downstream serves exactly that
+conclusion, the same "each layer reads once" rule carried over a signed
+channel. It is bound to the exact delivered bytes, the upstream's perimeter
+stamp and its judge, and it is fail-closed: an absent, forged, stale or
+mismatched verdict falls through to the full local pipeline. The carve-out
+lives in the response edge, never in a layer, so the four rules above still
+hold for every other ingress. See `docs/federation.md` and known gap 33.
 
 - **L1 (deterministic):** `l1/` counts obfuscation, hidden markup, encoded
   blobs, exfiltration URLs, delimiters and directives, by type; its counts
@@ -179,15 +193,15 @@ Captured content is not a test fixture. An attack found there enters a
 corpus only rewritten by hand, with every third party's name, handle and
 host replaced (constitution XVII, profile VII).
 
-## Guarded Execution
+## Semantic Request Guards
 
-A profile's `guarded_execution` block names tools whose calls the profile's
+A profile's `semantic_request_guards` block names tools whose calls the profile's
 judge reads, against an operator's policy in plain language, before they are
 forwarded (#456). It asks the judge a second question, and four rules keep
 that inside the threat model, which assumes the judge compromised:
 
 - **It only subtracts.** An allow grants nothing: the call still passes the
-  allowlist, the parameter guards and every other rule, which all run first.
+  allowlist, the literal request guards and every other rule, which all run first.
   No answer from the judge forwards a call another rule refused.
 - **It fails closed.** No judge, an error, a timeout, a malformed or
   off-schema answer, a leaked canary, and any answer but an explicit allow
@@ -233,27 +247,148 @@ agent-controlled. An allowlisted source still runs all three layers; the
 allowlist changes what a finding costs, never whether a layer runs. A
 compromised agent cannot override trust levels.
 
+## Human Approval
+
+The clause above is about the allowlist, and was read for a while as though it
+governed every trust decision in the product. It does not. Federation's
+scan-once trust is a different mechanism in a different file, and it *does*
+decide whether a layer runs — so what governs it is written here rather than
+inferred from a neighbour.
+
+Five decisions are not an operator agent's to make alone. Not because the
+operator lacks the authority — it is root on its gateway — but because it is a
+model, so the question is not whether it may but whether it can be talked into
+it.
+
+1. **Who holds the operator profile**, including how a caller becomes one.
+2. **Turning on a trust that stops a layer running.**
+3. **Who may authenticate** to a federation ingress as a primary gateway.
+4. **Standing a profile's perimeter down** from enforcing to detect-only.
+5. **Opening a way out of network isolation.**
+
+The last three were added by the security hardening pass. Each is a grant an
+operator could previously make with nobody watching, and the fifth is the
+widest of the five: a trusted peer has at least run three layers over the
+response it hands over, while nothing reads the bytes inside a CONNECT tunnel
+at all.
+
+An operator agent MAY **propose** any of them. It MUST NOT be able to **apply**
+one. The gateway holds the proposal, a person approves it, and only then does
+it take effect. Agent-controlled trust stays forbidden; agent-proposed trust
+with a human in the loop is what this permits.
+
+**Only widening needs a person.** Withdrawing a peer, taking `flag` away,
+removing an egress host: each makes the gateway stricter, and each MUST apply
+at once. A gate standing in front of tightening teaches an operator that the
+approval page is something to get past, which costs more than it protects.
+
+**Each approval is one decision.** A write that would need two is refused
+rather than shown as one, because a page can put a single question in front of
+a person and the rest would be applied unseen on the back of the one they read.
+
+What makes several changes ONE decision is that the page states all of them
+and the person reads all of them before answering. "Admit these three gateways
+to this ingress" is one decision with three rows; "move the profile *and* believe
+this peer's scan" is two, because no single page can carry both facts tables
+and whichever is not rendered is applied unread. The test is therefore whether
+anything would be applied that the person was not shown — not how many keys
+the write touched. A rule MAY collapse a set of like grants into one proposal
+when every member is named on the page, and MUST NOT collapse unlike ones.
+
+The corollary is that a proposal has a size past which it stops being read. A
+rule that can collapse grants MUST bound how many it will render and refuse
+beyond it, because one unfamiliar row among forty familiar ones is approved by
+a person who read all forty. Trust pins do not collapse at all: each is its own
+belief about its own scanner and judge, so two pins in one write is two
+decisions and is refused.
+
+Three properties make that real, and each is a requirement:
+
+1. **The approval capability is something the agent cannot read.** Not a token
+   in a tool result, not a file the gateway hands back, not anything returned
+   by the call that staged the proposal. A secret a person holds and the
+   gateway only verifies.
+2. **The approval states what is being changed**, in values a person can
+   check, and nothing a peer chose reaches that page unbounded.
+3. **No approver configured means no approval.** Every one of these decisions
+   stays refused. The absence of a way to approve is never an approval anyone
+   can give.
+
+What does NOT come here is anything high-volume. A gateway holds hundreds of
+tool pins and a restart can re-hold every remote tool at once; routing those
+through a person would push operators toward turning pinning off, which costs
+more than it protects.
+
+## Stability Tiers
+
+Trentina is one program with one version, so a breaking change anywhere used to
+force a major bump for everything. An operator reading a version number could
+not tell whether the break landed in the defense pipeline they depend on or in
+a feature they do not use.
+
+Most of the gateway is **stable**: its configuration keys, wire formats and
+tool shapes change only in a major release. A small, named set of features is
+**preview**, declared in `src/trentina/stability.py` and documented in
+`docs/stability.md`. A breaking change CONFINED to a preview surface is a MINOR
+bump, listed in the changelog under a `### Preview` heading naming the surface.
+
+Three rules, and the tier is worth nothing without all three:
+
+1. A change reaching anything outside every declared preview surface is a
+   major. "Mostly confined" is not confined.
+2. A declaration may never soften how THAT release announces its own break. A
+   feature declared preview in the same MINOR that breaks it has had the break
+   re-characterised after the fact, which is what a version number exists to
+   prevent. Declaring one in a release that is a major anyway changes nothing
+   about how that break is announced and binds only the next release, so it is
+   forward-looking and allowed. The test is the version number the release
+   would have carried without the declaration: if the declaration lowers it,
+   the declaration is too late.
+3. A preview surface carries the same test, lint, review and documentation bar
+   as everything else. The tier is a promise about BLAST RADIUS, not a licence
+   for churn, and not a place to put work that is not finished.
+
+Leaving preview is a deliberate decision, not a reward for surviving long
+enough. The reverse does not exist: a shape that has been promised cannot be
+un-promised, only broken in a major release.
+
 ## Python Version Coverage
 
-Two rules, not negotiable independently; the second only works because the
-first bounds it.
+ONE supported version: the one the container ships. `requires-python`, the CI
+matrix, `mypy`'s `python_version`, ruff's `target-version` and the image the
+local test gate runs in all name it, and they move together or not at all —
+with one narrow exception, stated at the end of this section.
 
-1. Everything that can run on the whole matrix MUST run on the whole
-   matrix: every Python version from the `requires-python` floor to the
-   newest supported release, inclusive, no gaps. A version admitted by
-   `requires-python` but absent from the CI matrix is an untested claim,
-   which is how a floor of 3.10 survived while being uninstallable
-   (issue #100).
-2. Anything that can only run on one version MUST run on the newest
-   supported version, the one the container ships. Work that needs a
-   credential only one job holds, costs live API quota, or runs inside the
-   built image runs where production runs.
+Trentina is distributed as a container image and nothing else (I; nothing on
+PyPI since 0.54.1), so a support matrix described installs nobody performs.
+What it cost was four suites per pull request, a `fail-fast` rule to stop one
+version's flake cancelling the others, and three settings that could only be
+reasoned about together: mypy pinned BELOW the advertised floor because a
+dependency's stubs would not parse under it, and ruff pinned AT the floor to
+enforce what mypy therefore could not. Supporting one version deletes that
+problem rather than managing it.
 
-When a new Python release is adopted, the matrix ceiling and the
-single-version jobs move together. Type checking is exempt from rule 2:
-mypy's `python_version` selects the language semantics checked against and
-should track the floor; where a dependency's stubs make that impossible the
-config MUST record the specific blocker.
+The rule this replaces required every version from the `requires-python` floor
+to the newest, with no gaps, because a version admitted and untested is a false
+claim — which is how a floor of 3.10 survived while being uninstallable
+(issue #100). That hazard does not come back: with one supported version there
+is nothing claimed that is not tested, and the local gate now runs the same
+version as production rather than one nothing ships.
+
+Adopting a new Python release is a single change that moves every name above at
+once, and it is gated on the dependency floor rather than on the release date.
+As of 2026-11-04 the image cannot move to 3.15 — which is released, and which
+`quay.io/hummingbird/python` already publishes — because `onnxruntime` ships no
+cp315 wheel, and Layer 2 has no runtime without it.
+
+One name may lag, under one condition. ruff's `target-version` governs the
+syntax the FORMATTER emits, not what the interpreter accepts, so it is the only
+name here that can write code another tool in the gate has to read. Where a
+gate cannot parse the newest version's syntax, `target-version` MAY sit at the
+newest version every gate parses, and then the config MUST record the specific
+blocker, what it costs, and the upstream ticket it is waiting on. Nothing else
+on the list is exempt: a lagging `requires-python`, matrix, mypy or test image
+would mean production runs a version nothing checked.
 
 ## Test Coverage Specifics
 
@@ -326,3 +461,10 @@ justification in `gourmand-exceptions.toml`.
 | 2.7.0 | 2026-10-11 | The internal tools' responses are delivered in judged parts too (#446), each part judged as the tool's source. L1 counts a line written to look like the gateway's own (#447). Known gap 28: L2 flags machine-written meeting notes that end in bare links (#450) |
 | 2.8.0 | 2026-10-12 | Git transport (#453): a route carries git's smart HTTP to the repositories a profile lists, with the forge token injected by the gateway. The gateway terminates the connection, so it reads and enforces everything that is deterministic text (the path, the service, the protocol, a fetch request, a push's command list, ref listings) and hands none of it to the three layers: a pack is passed on unread and ref names are bounded but not judged, which is known gap 29 and a stated exception to the first rule of the layer contract. The block is perimeter: held on an agent reload, refused on a honeypot. `PERIMETER_VERSION` does not move: the route reaches no verdict a cache holds |
 | 2.9.0 | 2026-10-14 | Guarded execution (#456): a profile names tools whose calls its judge reads against an operator's plain-language policy before they are forwarded. It only subtracts, fails closed, judges the arguments with the three layers before the judge reads them, and returns a closed reason code. The block is perimeter: held on an agent reload, refused on a honeypot. Known gap 30: the gatekeeper is a model and judges one call at a time |
+| 2.10.0 | 2026-10-30 | Gateway-to-gateway federation (#592): a declared trust boundary added to the Layer Contract. Where an operator pins a federated upstream's key, perimeter stamp and judge, a response the upstream already scanned is delivered on its signed verdict instead of being re-judged — bound to the exact bytes, stamp and judge, fail-closed, carved out in the response edge not a layer. The promise reads "at every ingress — or at a trusted boundary you declare". Known gap 33: the stamp binds the upstream's model, gates and judge, not its defense-policy block. `PERIMETER_VERSION` does not move: the local pipeline's conclusions are unchanged |
+| 2.11.0 | 2026-10-31 | Human Approval (#637): the Trust Allowlist clause is about the allowlist, and had been read as governing every trust decision in the product. Federation's scan-once trust is a different mechanism and does decide whether a layer runs, so what governs it is stated rather than inferred. Two decisions — who holds the operator profile, and turning on a trust that stops a layer running — may be PROPOSED by an operator agent and applied only on a person's approval. Three requirements: the approval capability is something the agent cannot read, the approval states what is being changed in values a person can check, and no approver configured means both decisions stay refused. High-volume approvals (tool pins) deliberately stay out. `PERIMETER_VERSION` does not move: no verdict changes |
+| 2.12.0 | 2026-11-01 | Human Approval extended by the federation security hardening pass: three more decisions an operator agent may propose and not apply — who may authenticate to a federation ingress (`federation.peers`), standing a profile's perimeter down to detect-only (`defense.modes`, `enforcement`, `llm_completion` reaching `flag`), and opening a way out of network isolation (`client_egress.hosts`, `egress_upstreams`, `llm_providers`). The last is the widest of the five: a trusted peer has run three layers over its response, while nothing reads a CONNECT tunnel's bytes (known gap 26). Two rules stated rather than left to each rule's author: only WIDENING needs a person, since narrowing only makes the gateway stricter and a gate in front of tightening teaches an operator to click through; and each approval is ONE decision, a write needing two being refused rather than shown as one. `PERIMETER_VERSION` does not move: no verdict changes |
+| 2.13.0 | 2026-11-01 | Stability Tiers: one program with one version meant a break anywhere forced a major bump for everything, so a version number could not say whether the break landed in the defense pipeline or in a feature the operator does not use. Most of the gateway is stable; a named set of surfaces is preview (`src/trentina/stability.py`, `docs/stability.md`), and a break CONFINED to one is a minor. Three rules: a change reaching outside every declared surface is still a major, since "mostly confined" is not confined; a declaration may never soften how THAT release announces its own break, so the test is the version the release would have carried without it and a declaration that lowers it is too late; and a preview surface carries the full test, lint, review and documentation bar, since the tier promises blast radius and not permission to churn. Two surfaces: federation (#592) and `config-api` (#633), the latter being `config_tool`'s action names, arguments and result keys and NOT the `config_guard` rules deciding what a person must approve. Human approval (#637) stays stable on purpose — it is the one gate an operator agent cannot talk its way past, and "we may change how a person authorises a trust pin, in a minor" is the wrong promise to make about it; adding a staged `Kind` or a guard rule needs no surface anyway, being a tightening rather than a break. `PERIMETER_VERSION` does not move: no verdict changes |
+| 2.14.0 | 2026-11-03 | Under constitution v1.29.0 (Security Gateway profile 1.1.0): what the profile forbids is PUBLISHING an image from a workstation, not building one. A local build is a gate the host should run, and `./scripts/gates.sh pr` builds, verifies and scans before the push. The old wording was written when the build needed a gated Hugging Face credential, which went with Prompt Guard 2 (#362); what it left standing was CI building the same image three times per pull request while the inner loop could not build it once. Nothing about what reaches a registry changes: GitHub Actions publishes, and a hand-built image is never pushed, deployed or tagged |
+| 2.15.0 | 2026-11-04 | Python Version Coverage: ONE supported version, the one the image ships, named identically by `requires-python`, the CI matrix, mypy, ruff and the local test image. The matrix existed to keep a promise an image-only product does not make — nothing has been on PyPI since 0.54.1 — and it was not free: four suites per pull request, a `fail-fast` rule so one version's flake did not cancel the rest, and three version settings that could only be reasoned about together, with mypy pinned below the advertised floor because numpy's stubs would not parse under it and ruff pinned at the floor to enforce what mypy then could not. The retired rule's hazard does not return: a version admitted and untested (issue #100's uninstallable 3.10 floor) is impossible when one version is admitted and tested, and the local gate now runs production's version instead of one nothing ships. Adoption of a new release is gated on the dependency floor, not the release date: 3.15 is out and Hummingbird publishes it, but `onnxruntime` has no cp315 wheel and Layer 2 has no runtime without one. One name may lag and only one: ruff's `target-version` governs the syntax the formatter EMITS, so it is the only setting here that can write code another gate has to read, and at `py314` the formatter rewrites every multi-exception handler into PEP 758's unparenthesized form, which Gourmand parses without error and silently loses usages through — 39 files and four live enum members called dead on this tree. It may sit at the newest version every gate parses, with the blocker, its cost and the upstream ticket recorded in the config. Nothing else is exempt: a lagging floor, matrix, mypy or test image means production runs a version nothing checked. `PERIMETER_VERSION` does not move: no verdict changes |
+| 2.16.0 | 2026-11-04 | Under constitution v1.30.0: every check runs from python-sdlc, pinned once in `.pre-commit-config.yaml` and configured by `[tool.sdlc.commit]`, `[tool.sdlc.push]` and `[tool.sdlc.ci]` in `pyproject.toml`. Commit runs the ruff fixes; push renders every verdict and builds no container; CI runs the same image as the laptop and adds the image build and the tests that run inside it (`tests/image/`). `scripts/gates.sh` is deleted, and with it Trivy: all 45 alerts it ever raised were Python packages, which pip-audit catches before the push, or pip copies vendored inside the base image, which nothing here can fix. CodeQL gates the push on findings outside `.sdlc/codeql-baseline.json` |

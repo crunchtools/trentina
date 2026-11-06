@@ -82,6 +82,16 @@ class BackendRejectedCallError(BackendCallError):
     outcome_hint = "tool_error"
 
 
+#: The closed reason a call is refused with when the calling profile holds no
+#: usable grant. A federation ingress mirrors it so its primary can write its
+#: own refusal (#592).
+NEEDS_AUTH_REASON = "needs_auth"
+
+#: The closed reason a federated primary refuses with when its secondary peer
+#: answered a call with ``NEEDS_AUTH_REASON``.
+NEEDS_AUTH_SECONDARY_REASON = "needs_auth_secondary"
+
+
 class BackendNeedsAuthError(BackendCallError):
     """The calling profile holds no usable grant for an ``auth`` backend (#479).
 
@@ -98,6 +108,33 @@ class BackendNeedsAuthError(BackendCallError):
             f"backend {backend!r} is not authorized for this profile: call "
             f'backend_auth with action="start" and backend="{backend}", then send '
             "the link it returns to your human"
+        )
+        self.backend = backend
+
+
+class FederationUnauthorizedError(BackendCallError):
+    """A federated secondary refused this primary's own JWT (#592).
+
+    Its own error, because the OAuth reauth path cannot help: a federated
+    backend holds no grant to refresh — it signs a primary JWT per call — so
+    before this, a 401 fell through to ``record_failure`` and opened the
+    breaker. That breaker is keyed by URL, so clock drift or one rotated key
+    took the peer down for EVERY profile federating to it, and the reason an
+    operator saw was unreachability.
+
+    The backend answered, so the breaker counts a success. The message names
+    the three things that produce a 401 here and nothing about the peer: a
+    reason code is a closed set, not a relay for what the other end said.
+    """
+
+    outcome_hint = "needs_auth"
+
+    def __init__(self, backend: str) -> None:
+        super().__init__(
+            f"federated backend {backend!r} did not accept this gateway's primary "
+            "JWT (federation_unauthorized). The peer holds a different public key "
+            "for us, the audience does not match the URL, or the clocks have "
+            "drifted past the token's window"
         )
         self.backend = backend
 

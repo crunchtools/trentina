@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from .gateway.profile import Profile
     from .gateway.sessions import SessionRegistry
 
-__version__ = "2.0.0"
+__version__ = "6.8.0"
 
 DEFAULT_PORT = 8019
 DEFAULT_EGRESS_PORT = 8021
@@ -39,6 +39,10 @@ if TYPE_CHECKING:
 def main() -> None:
     """Entry point for trentina."""
     log_level = logsafe.configure("TRENTINA_LOG_LEVEL")
+    from . import telemetry
+    from .config import get_config
+
+    telemetry.install(get_config().log_format)
     parser = argparse.ArgumentParser(
         prog="trentina",
         description="MCP gateway: injection defense, token savings, policy and auth for AI agents",
@@ -91,11 +95,11 @@ def main() -> None:
             mcp.run(transport="sse", host=args.host, port=args.port, log_level=log_level)
         case _:
             if gateway_enabled:
-                from .gateway import client_egress
+                from .transports.registry import configure_listeners
 
                 # Where the CONNECT listener binds if a profile turns out to
                 # have client_egress; the server's lifespan starts it (#442).
-                client_egress.configure(args.host, args.egress_port)
+                configure_listeners(args.host, args.egress_port)
                 _run_with_gateway(mcp, host=args.host, port=args.port, log_level=log_level)
             else:
                 mcp.run(
@@ -114,8 +118,10 @@ def _register_push_ingresses(
     other_agents: frozenset[str] = frozenset(),
 ) -> None:
     """The paths content is pushed in on rather than fetched: alerts, the
-    Matrix bridge and backend OAuth callbacks. All bind at startup."""
+    Matrix bridge, backend OAuth callbacks and the approval page. All bind at
+    startup."""
     from .gateway.alert_ingress import register_alert_routes
+    from .gateway.approval_routes import register_approval_routes
     from .gateway.backend_oauth import register_backend_oauth_routes
     from .gateway.matrix_bridge import register_bridge_routes
 
@@ -123,31 +129,38 @@ def _register_push_ingresses(
     register_bridge_routes(mcp_server, profiles, data_dir, other_agents=other_agents)
     # The return leg of a backend's OAuth flow (#479); mounted only with a key.
     register_backend_oauth_routes(mcp_server)
+    # Where a person approves what an operator staged (#637). Mounted always:
+    # nothing is staged at startup, and a route that appeared only once
+    # something was pending would be a signal of its own.
+    register_approval_routes(mcp_server)
 
 
 def _register_proxies(mcp_server: FastMCP, gateway_config: GatewayConfig) -> dict[str, Any]:
-    """The routes that carry an agent's own traffic out: model calls, Matrix
-    and git (#453). Each binds at startup, and only if the file configures it.
+    """The routes that carry an agent's own traffic out: model calls, Matrix,
+    git and HTTP (#453, #511), mounted on the perimeter spine (#535). Each binds
+    at startup, and only if the file configures it.
 
     Returns:
         The enabled LLM providers, which the active config and the startup
         scrub both need.
     """
-    from .gateway.egress_http import register_egress_routes
-    from .gateway.git_transport import register_git_routes
-    from .gateway.llm_proxy import load_llm_providers, register_llm_routes
-    from .gateway.matrix_proxy import register_matrix_routes
+    from .gateway.llm_proxy import load_llm_providers, validate_profile_llm_keys
+    from .gateway.matrix_proxy import check_upstream
+    from .transports.perimeter import MATRIX_UPSTREAM
+    from .transports.registry import mount_routes
 
     llm_providers = load_llm_providers(gateway_config.llm_providers)
-    register_llm_routes(mcp_server, llm_providers, gateway_config.profiles)
+    # A profile naming a provider that does not exist is a misconfig whether or
+    # not any provider ended up enabled.
+    validate_profile_llm_keys(llm_providers, gateway_config.profiles)
     if gateway_config.matrix.get("enabled"):
-        register_matrix_routes(
-            mcp_server,
-            gateway_config.profiles,
-            upstream=gateway_config.matrix.get("upstream", "https://matrix-client.matrix.org"),
-        )
-    register_git_routes(mcp_server, gateway_config.git_remotes, gateway_config.profiles)
-    register_egress_routes(mcp_server, gateway_config.egress_upstreams, gateway_config.profiles)
+        check_upstream(gateway_config.matrix.get("upstream", MATRIX_UPSTREAM))
+        if not any(p.matrix_ingress for p in gateway_config.profiles.values()):
+            logger.warning(
+                "matrix_proxy: matrix.enabled is set but no profile has matrix_ingress "
+                "— every request will 401"
+            )
+    mount_routes(mcp_server, gateway_config, gateway_config.profiles, llm_providers)
     return llm_providers
 
 
@@ -178,10 +191,15 @@ def _run_with_gateway(mcp_server: FastMCP, *, host: str, port: int, log_level: s
     from .gateway.loader import matrix_other_agents, register_active_config
     from .gateway.service import log_service_identity
     from .gateway.sessions import session_registry
+    from .stability import warn_preview_surfaces
 
     profiles_path = Path(os.environ.get("TRENTINA_PROFILES_PATH", "/etc/trentina/profiles.yaml"))
     logger.info("gateway: loading profiles from %s", profiles_path)
     gateway_config = load_profiles(profiles_path)
+    # Before anything else reads the config: an operator should learn that this
+    # deployment uses a preview surface at the top of the log, not by finding a
+    # minor release that broke it.
+    warn_preview_surfaces(gateway_config)
     # Before _ready_to_serve scrubs the environment: the key is read once, here.
     configure_backend_tokens(gateway_config.profiles)
 
@@ -232,7 +250,7 @@ def _run_with_gateway(mcp_server: FastMCP, *, host: str, port: int, log_level: s
     )
 
     from .gateway.backend import load_tool_list_cache
-    from .gateway.ingress_defense import load_verdict_cache
+    from .gateway.verdict_cache import load_verdict_cache
 
     compressions = load_compression_cache()
     tool_lists = load_tool_list_cache()
@@ -257,7 +275,7 @@ def _run_with_gateway(mcp_server: FastMCP, *, host: str, port: int, log_level: s
         else " (COLD: the first tools/list will judge every tool description and may take minutes)",
     )
     set_profiles(gateway_config.profiles)
-    log_service_identity(gateway_config.profiles)
+    log_service_identity(gateway_config.profiles, gateway_config.service_identity)
     # Last, and after every route is wired: this records both the config and
     # the facts about what got wired that a later reload has to respect. See
     # tools/reload.py — without it, an edit to profiles.yaml costs a restart,
@@ -334,7 +352,9 @@ def _ready_to_serve(llm_providers: Mapping[str, Any]) -> None:
     check_secret_sources(secret_env_names() - set(FILE_FORM_SECRETS))
     _warm_classifier()
     check_l2_gate()
-    scrub_startup_secrets(provider.api_key_env for provider in llm_providers.values())
+    scrub_startup_secrets(
+        provider.api_key_env for provider in llm_providers.values() if provider.api_key_env
+    )
 
 
 def _body_cap(*mcp_paths: str) -> list[Any]:
@@ -853,7 +873,7 @@ def _build_proxy_provider(
             "profile(s) "
             f"{', '.join(sorted(proxied))} use the built-in OAuth proxy but "
             "TRENTINA_OAUTH_GOOGLE_CLIENT_ID / _CLIENT_SECRET are not set — "
-            "refusing to start an OAuth seat with no provider"
+            "refusing to start an OAuth profile with no provider"
         )
     from fastmcp.server.auth.providers.google import GoogleProvider
 
@@ -892,7 +912,7 @@ def _build_proxy_provider(
             OAuth profile that is right. With two it is an outage: the pin goes
             to whichever profile sorts first, and the other one's every login
             fails — the 0.8.3 incident, and the reason this gateway ran one
-            OAuth seat until now.
+            OAuth profile until now.
 
             So the indicator is checked here, against every proxied profile's
             resource URL, and then cleared before delegating. Clearing is what
@@ -902,7 +922,7 @@ def _build_proxy_provider(
             Google, which implements no RFC 8707 and ignores it.
 
             The JWT audience stays the single pinned resource (proxy.py:785),
-            so the audience cannot tell two seats apart. The profile the
+            so the audience cannot tell two profiles apart. The profile the
             indicator names is bound to the flow here instead, and from there
             to the token (``gateway/oauth_binding.py``); ``verify_oauth``
             refuses a token at any other profile (#298). A flow naming no
@@ -1069,7 +1089,7 @@ def _build_proxy_provider(
     gateway_resources = frozenset(f"{base_url}/gateway/{name}/mcp" for name in proxied)
     _GatewayGoogleProvider.gateway_resources = gateway_resources
     # The audience of every issued token is `resource_url`, whichever profile
-    # asked for it, so the audience cannot tell two seats apart; the binding
+    # asked for it, so the audience cannot tell two profiles apart; the binding
     # can (gateway/oauth_binding.py, #298).
     _GatewayGoogleProvider.gateway_profiles = profile_resources(base_url, proxied)
 
@@ -1264,13 +1284,28 @@ def _wire_login_notifications(session_registry: Any) -> None:
     A backend with ``auth`` is skipped from a profile's tools/list while the
     profile has no grant; once the human signs in, the client must hear that
     the list changed or it keeps the old one until it reconnects (#479).
+
+    And the grant belongs to the PROFILE, so a sign-in there is also a sign-in for
+    every ingress derived from it (#592): those profiles were skipping the same
+    backend for want of the same grant. Without this the link kept answering
+    ``needs_auth`` after a successful sign-in until something flushed the
+    cache, which is the symptom profile-owned grants exist to remove.
     """
+    from .gateway.aggregate import invalidate_profile_cache
     from .gateway.backend_oauth import on_grant_stored
-    from .gateway.router import invalidate_profile_cache
+    from .gateway.loader import get_active_config
 
     async def _after_login(profile_name: str) -> None:
-        invalidate_profile_cache(profile_name)
-        await session_registry.broadcast_tools_changed(profile_name)
+        active = get_active_config()
+        profiles = active.config.profiles if active else {}
+        spenders = [
+            name
+            for name, profile in profiles.items()
+            if profile.grant_owner == profile_name and name != profile_name
+        ]
+        for name in (profile_name, *spenders):
+            invalidate_profile_cache(name)
+            await session_registry.broadcast_tools_changed(name)
 
     on_grant_stored(_after_login)
 
@@ -1286,8 +1321,8 @@ def _wire_circuit_notifications(
     affected backend URL and broadcasts ``tools/list_changed`` to all
     active sessions for those profiles.
     """
+    from .gateway.aggregate import invalidate_profile_cache
     from .gateway.circuit import State
-    from .gateway.router import invalidate_profile_cache
 
     pending_tasks: set[asyncio.Task[int]] = set()
 

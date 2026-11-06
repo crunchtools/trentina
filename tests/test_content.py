@@ -40,7 +40,7 @@ async def test_the_blocklist_is_keyed_by_hash(env: Path) -> None:
     with (
         layers(env),
         patch(
-            "trentina.tools.judged.is_blocked",
+            "trentina.gateway.scope.is_blocked",
             return_value=True,
         ) as is_blocked,
         pytest.raises(BlockedSourceError),

@@ -25,6 +25,8 @@ from corpora.internal import CORPUS, Case
 from trentina.l1.pipeline import run_l1
 from trentina.quarantine.agent import quarantine_detect
 
+pytestmark = pytest.mark.usefixtures("standalone_l3")
+
 _DETECTOR_META_CASES = [c for c in CORPUS if c.category == "detector_meta"]
 
 _FIXTURE_RESPONSES: dict[str, dict[str, Any]] = {
@@ -369,7 +371,6 @@ class TestL3UniqueCatches:
             ),
         ):
             for cfg in (mock_config, mock_prov_config):
-                cfg.return_value.has_api_key = True
                 cfg.return_value.api_key.get_secret_value.return_value = "test-key"
                 cfg.return_value.model = "gemini-2.5-flash-lite"
                 cfg.return_value.provider = "gemini"
@@ -401,7 +402,6 @@ class TestL3BenignNoFalsePositives:
             ),
         ):
             for cfg in (mock_config, mock_prov_config):
-                cfg.return_value.has_api_key = True
                 cfg.return_value.api_key.get_secret_value.return_value = "test-key"
                 cfg.return_value.model = "gemini-2.5-flash-lite"
                 cfg.return_value.provider = "gemini"
@@ -452,7 +452,6 @@ class TestL3DetectorMetaAttacks:
             ),
         ):
             for cfg in (mock_config, mock_prov_config):
-                cfg.return_value.has_api_key = True
                 cfg.return_value.api_key.get_secret_value.return_value = "test-key"
                 cfg.return_value.model = "gemini-2.5-flash-lite"
                 cfg.return_value.provider = "gemini"

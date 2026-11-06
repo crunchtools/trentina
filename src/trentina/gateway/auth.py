@@ -61,6 +61,41 @@ def verify_bearer(authorization_header: str | None, profile: Profile) -> None:
         raise AuthError("invalid token")
 
 
+def verify_primary_jwt_header(
+    authorization_header: str | None, profile: Profile
+) -> tuple[str, str] | None:
+    """Verify a federated peer's primary JWT, for a profile that is a federation ingress.
+
+    Only a profile with ``federation.peers`` engages this path (#592, C1); for
+    any other profile it returns None so the caller falls through to OAuth or a
+    challenge, exactly as before. Returns ``(peer, sub)`` — the name of the peer
+    whose key verified the token (the actor) and the real caller — on success.
+    Returns None when there is no credential to try. Raises ``AuthError`` (→ 401)
+    when a credential IS presented but fails: a federation ingress's credential
+    is the primary JWT, so a bad one is fail-closed, never a fall-through.
+
+    C1 only authenticates. C2 binds ``(peer, sub)`` into the request context so
+    the secondary's audit and guards see the real caller.
+    """
+    if profile.federation is None or not profile.federation.peers:
+        return None
+    if not authorization_header:
+        return None
+    scheme, _, presented = authorization_header.partition(" ")
+    if scheme.lower() != "bearer" or not presented:
+        return None
+
+    from .federation_keys import FederationKeyError, load_public_key, verify_primary_jwt
+
+    peers = {
+        name: load_public_key(peer.public_key) for name, peer in profile.federation.peers.items()
+    }
+    try:
+        return verify_primary_jwt(presented, peers, aud=profile.name)
+    except FederationKeyError as exc:
+        raise AuthError("invalid primary token") from exc
+
+
 async def verify_oauth(
     authorization_header: str | None,
     profile: Profile,
@@ -122,7 +157,7 @@ async def verify_oauth(
     # Tier: the gateway's own record of which profile a flow named (proxy
     # mode, gateway/oauth_binding.py) or the per-profile audience pin
     # (delegated). One JWT audience covers every proxied profile, so without
-    # this a token issued to an agent seat verified at an operator seat that
+    # this a token issued to an agent profile verified at an operator profile that
     # allowlists the same email (#298). A verifier that cannot say is refused,
     # never assumed bound; a challenge, so the client re-authorizes for here.
     bound_profile = getattr(verifier, "bound_profile", None)

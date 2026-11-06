@@ -1,10 +1,19 @@
 """Decode what decodes to text, label what does not (#367).
 
-One pass over the text, linear in its length. A token qualifies only when
-decoding it is exact: strict base64 whose re-encoding reproduces it, or hex.
-Anything a lenient decoder would read differently (URL-safe characters,
-missing padding, junk after ``=``) is left as it arrived, so the layers and
-the agent's own tools can never disagree about what it says.
+A first pass over the text, then a bounded second pass for Ascii85 and base85
+(``_ascii85_pass``); both linear in the text's length. A token qualifies only
+when decoding it is exact: strict base64, base32, Ascii85 or base85 whose
+re-encoding reproduces it, or hex. Anything a lenient decoder would read
+differently (URL-safe characters, missing padding, junk after ``=``) is left
+as it arrived, so the layers and the agent's own tools can never disagree
+about what it says.
+
+Three more of garak's encodings are decoded by their shape rather than a
+re-encode, because they are lossy (#546): uuencode by its ``b2a_uu`` line
+framing (still re-encode-checked per line), and Braille and Morse by their
+own alphabets (the U+2800 block; ``.-/`` groups), each gated by ``_as_text``.
+Their tables live in ``alphabets.py``, in-tree, because runtime code cannot
+import ``corpora``.
 
 What becomes of a token:
 
@@ -52,17 +61,35 @@ import secrets
 import string
 from collections import Counter
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING
 
 from . import office
+from .alphabets import (
+    B2048_ALPHABET,
+    ECOJI_ALPHABET,
+    NATO_WORD,
+    SNEAKY_ONE,
+    SNEAKY_SPACE,
+    SNEAKY_ZERO,
+    ZALGO_MARKS,
+    decode_base2048,
+    decode_braille,
+    decode_ecoji,
+    decode_morse,
+    decode_nato,
+    decode_sneaky_bits,
+    decode_zalgo,
+)
 from .archive import OPENABLE, ZIP, Budget, Entry, open_archive
+from .letters import read_through
 from .ocr import MAX_IMAGE_BYTES, MAX_IMAGES, ImageText, read_images
 from .pdf import SECTIONS, PdfReading, read_pdf
 from .signatures import OPAQUE, Kind, from_media_type, identify
 from .stats import UnpackStats
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
 LABEL_FLOOR = 64
 """Base64 characters from which binary is labelled. Measured; see the module docstring."""
@@ -108,11 +135,61 @@ couple of hundred bytes."""
 _TOKEN = re.compile(
     r"(?P<uri>data:(?P<type>[a-z0-9.+-]{1,127}/[a-z0-9.+-]{1,127})"
     r"(?:;[a-z0-9=.+-]{1,64}){0,4};base64,(?P<payload>[A-Za-z0-9+/]*={0,2}))"
+    # Zalgo: two or more characters, each under three or more combining marks
+    # (gap 23). Marks and the character under them are disjoint classes, so the
+    # run is linear. Before the letter groups, so it wins where a word starts.
+    rf"|(?P<zalgo>(?:[^{ZALGO_MARKS}][{ZALGO_MARKS}]{{3,}}){{2,}})"
+    # Braille cells (U+2800 block), with spaces, tabs and newlines between them.
+    r"|(?P<braille>[⠁-⣿][⠀-⣿ \t\n\r]*)"
+    # Morse: two or more code groups, separated by spaces or word slashes. Each
+    # atom is BOUNDED (a Morse letter is at most six symbols), so a long run
+    # that is not Morse costs O(1) per start position, never O(n) (ReDoS).
+    r"|(?P<morse>[.-]{1,6}(?:[ /]{1,6}[.-]{1,6})+)"
+    # NATO alphabet: eight or more code words, one space apart. Each atom is a
+    # fixed word bounded by \b, so a run that stops short costs O(1) a start.
+    rf"|(?P<nato>(?:\b(?:{NATO_WORD})\b ){{7,}}\b(?:{NATO_WORD})\b)"
+    # Sneaky bits: invisible 0s and 1s, words split by a zero-width space.
+    rf"|(?P<sneaky>[{SNEAKY_ZERO}{SNEAKY_ONE}][{SNEAKY_ZERO}{SNEAKY_ONE}{SNEAKY_SPACE}]{{11,}})"
+    # Base2048 and Ecoji: runs of their own alphabets, which hold no ASCII.
+    # Twelve characters (16 bytes) at the least for Base2048, whose alphabet
+    # holds whole Cyrillic, Greek and Latin-1 words; two Ecoji blocks.
+    f"|(?P<b2048>[{re.escape(B2048_ALPHABET)}]{{12,}})"
+    f"|(?P<ecoji>[{re.escape(ECOJI_ALPHABET)}](?:\n?[{re.escape(ECOJI_ALPHABET)}]){{7,}})"
+    # uuencode: one or more b2a_uu lines (data is 0x20-0x60, no lower case, so a
+    # lower-case base64 token on its own line is never mistaken for one). The
+    # ranges are case-sensitive despite the flag below, or they catch lower case.
+    # The line body is BOUNDED (b2a_uu emits at most 60 data chars), so a long
+    # newline-free run cannot make each start position rescan the suffix (ReDoS).
+    r"|(?P<uu>(?-i:(?:[\x21-\x60][\x20-\x60]{0,60}\n)+))"
+    # base32 (A-Z2-7), its own group so the full 0-6 padding is captured: the
+    # run below stops at two '='. Tried as base32 then base64 (all-upper tokens).
+    # Case-sensitive, else the flag below lets it fragment a base64 token. It
+    # must also END the token: hex is mostly base32's alphabet, so without the
+    # lookahead `46726F6D2` (or `523334642`) was taken off the front of a hex
+    # run and the rest of the run, now odd-length, decoded as nothing.
+    r"|(?P<b32>(?-i:[A-Z2-7]{8,}={0,6})(?![A-Za-z0-9+/_-]))"
+    # base64 or hex, the original run: anything a lenient decoder would read
+    # differently is left verbatim, so '=' stays a delimiter (SECRET=<b64>).
     r"|(?P<run>[A-Za-z0-9+/_-]+={0,2})",
     re.IGNORECASE,
 )
 _BASE64 = re.compile(r"[A-Za-z0-9+/]+={0,2}")
+_BASE32 = re.compile(r"[A-Z2-7]+={0,6}")
 _HEX = re.compile(r"[0-9a-fA-F]+")
+
+# Ascii85 and base85 are a second pass (``_ascii85_pass``): their alphabets are
+# a superset of base64's, so a shared tokenizer would fragment a bare blob or
+# swallow a base64 '=' delimiter. Pass one leaves a blob it cannot read
+# untouched, so pass two sees it whole and tokenises it on the wider alphabet.
+_WIDE = re.compile(r"[\x21-\x7e]{16,}")
+A85_MIN = 16
+"""Shortest Ascii85 or base85 token decoded. Short blobs decode to a few bytes
+that re-encode canonically by chance; a real encoded attack is far longer, so
+the floor (the ``_WIDE`` minimum) keeps the benign false-positive surface down."""
+A85_MAX = 20_000
+"""Longest Ascii85/base85 blob the second pass decodes. a85/b85 decode is pure
+Python, so an unbounded run would be super-linear; an encoded attack is far
+shorter than this. A longer blob is left (a narrow part of gap 21)."""
 _PLAIN = frozenset(string.printable) - frozenset("\r\x0b\x0c")
 SHORT_TEXT = 32
 """Decodings shorter than this must read as plain text, not merely as UTF-8."""
@@ -239,10 +316,45 @@ def unpack(text: str) -> Unpacked:
     #   on-failure: fail-closed (binary no layer reads is the binary_unread gap); a
     #     token that does not decode strictly is read as it arrived
     #   owner: unpack.scan.unpack
-    #   evidence: T1 b64decode(validate=True) plus re-encode equality; T1 `re` with no
-    #     ambiguous repeat; T4 tests/test_unpack.py linearity; T3 Layer contract rule 1
+    #   evidence: T1 strict decode + re-encode (b64/b32/a85/b85/uu), Braille/Morse
+    #     by alphabet, letter ciphers when the reading is English; T4 linearity
     state = _Pass()
-    return state.result(_unpack(text, 0, state))
+    unpacked = _ascii85_pass(_unpack(text, 0, state), state)
+    # Last, so a cipher inside base64 is read through too (#720, gap 22).
+    read, ciphered = read_through(unpacked)
+    state.stats.text_decoded += ciphered
+    return state.result(read)
+
+
+def _ascii85_pass(text: str, state: _Pass, depth: int = 0) -> str:
+    """Decode Ascii85 and base85 blobs the first pass left whole (#546).
+
+    Only text decodes are taken, each strict (the decode must re-encode to the
+    blob), so a base64 token the first pass already judged is never touched: it
+    does not re-encode as canonical Ascii85 or base85. A decoded blob is read by
+    ``_unpack``, then by this pass again (to ``MAX_DEPTH`` levels, so Ascii85 of
+    Ascii85 is read), like any other decoded text.
+    """
+    if depth >= MAX_DEPTH:
+        return text
+    pieces: list[str] = []
+    last = 0
+    changed = False
+    for match in _WIDE.finditer(text):
+        if match.end() - match.start() > A85_MAX:
+            continue  # skip without copying a long run that cannot qualify
+        plain = _decode_a85(match.group())
+        if plain is None:
+            continue
+        state.stats.text_decoded += 1
+        pieces.append(text[last : match.start()])
+        pieces.append(_ascii85_pass(_unpack(plain, MAX_DEPTH - 1, state), state, depth + 1))
+        last = match.end()
+        changed = True
+    if not changed:
+        return text
+    pieces.append(text[last:])
+    return "".join(pieces)
 
 
 def _unpack(text: str, depth: int, state: _Pass) -> str:
@@ -253,7 +365,12 @@ def _unpack(text: str, depth: int, state: _Pass) -> str:
         if match["uri"] is not None:
             replacement = _data_uri(match, depth, state)
         else:
-            replacement = _run(match["run"], depth, state)
+            for group, decode in _CIPHERS:
+                if match[group] is not None:
+                    replacement = decode(match[group], depth, state)
+                    break
+            else:
+                replacement = _run(match["run"], depth, state)
         if replacement is not None:
             pieces.append(text[last : match.start()])
             pieces.append(replacement)
@@ -269,10 +386,9 @@ def _run(token: str, depth: int, state: _Pass) -> str | None:
     """The replacement for one run of base64 or hex characters, or None."""
     if len(token) > MAX_TOKEN:
         return _long(token, OPAQUE, state)
-    if len(token) < MIN_TOKEN:
-        return None
-    if len(token) <= DECIMAL_MAX and token.isascii() and token.isdigit():
-        return None  # a number
+    number = len(token) <= DECIMAL_MAX and token.isascii() and token.isdigit()
+    if len(token) < MIN_TOKEN or number:
+        return None  # too short to decode, or a plain number
     if _HEX.fullmatch(token) and not len(token) % 2:
         unhexed = bytes.fromhex(token)
         if _as_text(unhexed) is None and len(token) <= HEX_DIGEST_MAX:
@@ -280,6 +396,21 @@ def _run(token: str, depth: int, state: _Pass) -> str | None:
         return _decoded(unhexed, token, depth, state)
     decoded = None if len(token) % 4 else _strict_base64(token)
     return None if decoded is None else _decoded(decoded, token, depth, state)
+
+
+def _base32_token(token: str, depth: int, state: _Pass) -> str | None:
+    """A base32 run (its own group, for the full 0-6 padding), read as base32
+    text first (#546): a padless base32 token is valid base64 too, so trying
+    base64 first would read the wrong bytes. An all-upper token that is not
+    base32 text falls through to base64, which it can also be."""
+    if len(token) > MAX_TOKEN:
+        return _run(token, depth, state)  # _run's _long path, no large base32 decode
+    decoded = _strict_base32(token)
+    if decoded is not None:
+        text = _as_text(decoded)
+        if text is not None:
+            return _text(text, depth, state)
+    return _run(token, depth, state)
 
 
 def _long(token: str, declared: Kind, state: _Pass) -> str | None:
@@ -672,6 +803,111 @@ def _strict_base64(token: str) -> bytes | None:
     except (binascii.Error, ValueError):
         return None
     return decoded if base64.b64encode(decoded).decode("ascii") == token else None
+
+
+def _strict_base32(token: str) -> bytes | None:
+    """Decode only canonical base32 (A-Z2-7), re-encoding to ``token`` (#546)."""
+    if not _BASE32.fullmatch(token) or len(token) % 8:
+        return None
+    try:
+        decoded = base64.b32decode(token)
+    except (binascii.Error, ValueError):
+        return None
+    return decoded if base64.b32encode(decoded).decode("ascii") == token else None
+
+
+_A85_CODECS = (
+    (base64.a85decode, base64.a85encode),
+    (base64.b85decode, base64.b85encode),
+)
+
+
+def _decode_a85(token: str) -> str | None:
+    """Ascii85 or base85 as text, or None (#546). Both alphabets overlap, so
+    each is tried and the one that yields text wins; a decode that is not
+    canonical (does not re-encode to the token) or not text is declined. The
+    caller bounds the length (``A85_MAX``) before paying to copy the token."""
+    for decode, encode in _A85_CODECS:
+        try:
+            blob = decode(token)
+        except (binascii.Error, ValueError):
+            continue
+        if encode(blob).decode("ascii") != token:
+            continue
+        plain = _as_text(blob)
+        if plain is not None:
+            return plain
+    return None
+
+
+def _strict_uu(token: str) -> bytes | None:
+    """Decode garak's uuencode, re-encoding line for line to ``token`` (#546)."""
+    try:
+        chunks = [binascii.a2b_uu(line.encode("ascii")) for line in token.splitlines() if line]
+    except (binascii.Error, ValueError):
+        return None
+    decoded = b"".join(chunks)
+    try:
+        reencoded = "".join(
+            binascii.b2a_uu(decoded[i : i + 45]).decode("ascii") for i in range(0, len(decoded), 45)
+        )
+    except (binascii.Error, ValueError):
+        return None
+    return decoded if reencoded == token else None
+
+
+def _uu_decoded(token: str, depth: int, state: _Pass) -> str | None:
+    """The replacement for a uuencoded block, or None to leave it as it arrived."""
+    if len(token) > MAX_TOKEN:
+        return None
+    decoded = _strict_uu(token)
+    return None if decoded is None else _decoded(decoded, token, depth, state)
+
+
+def _cipher(
+    token: str, depth: int, state: _Pass, *, decode: Callable[[str], str | None]
+) -> str | None:
+    """A Braille, Morse, NATO, sneaky-bits or Zalgo run, decoded and read as text,
+    or None to leave it.
+
+    ``decode`` returns the plain text, which must still read as text: a run of
+    cells or code groups that spells nothing is left as it arrived.
+    """
+    if len(token) > MAX_TOKEN:
+        return None
+    plain = decode(token)
+    if not plain:
+        return None
+    text = _as_text(plain.encode("utf-8"))
+    return None if text is None else _text(text, depth, state)
+
+
+def _strict_text(
+    token: str, depth: int, state: _Pass, *, decode: Callable[[str], bytes | None]
+) -> str | None:
+    """A Base2048 or Ecoji run that decodes to TEXT, read in its place; anything
+    else is left as it arrived. Never a binary label: Base2048's alphabet holds
+    whole words of other scripts, and labelling one would hide it from L2."""
+    if len(token) > MAX_TOKEN:
+        return None
+    decoded = decode(token)
+    text = None if decoded is None else _as_text(decoded)
+    return None if text is None else _text(text, depth, state)
+
+
+_CIPHERS: tuple[tuple[str, Callable[..., str | None]], ...] = (
+    ("zalgo", partial(_cipher, decode=decode_zalgo)),
+    ("braille", partial(_cipher, decode=decode_braille)),
+    ("morse", partial(_cipher, decode=decode_morse)),
+    ("nato", partial(_cipher, decode=decode_nato)),
+    ("sneaky", partial(_cipher, decode=decode_sneaky_bits)),
+    ("b2048", partial(_strict_text, decode=decode_base2048)),
+    ("ecoji", partial(_strict_text, decode=decode_ecoji)),
+    ("uu", _uu_decoded),
+    ("b32", _base32_token),
+)
+"""Token group -> decoder, tried in order after the data-URI group (#546, gap 23).
+base32 is last so the common base64/hex ``run`` is reached quickly."""
 
 
 def _as_text(decoded: bytes) -> str | None:

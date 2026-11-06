@@ -51,6 +51,7 @@ class CredentialKind(str, Enum):
     SLACK_TOKEN = "slack_token"
     JWT = "jwt"
     PEM_PRIVATE_KEY = "pem_private_key"
+    TRENTINA_PROFILE_TOKEN = "trentina_profile_token"
 
 
 # --- named shapes -----------------------------------------------------------
@@ -90,6 +91,10 @@ _KEY_SHAPES: tuple[tuple[CredentialKind, str], ...] = (
     (CredentialKind.GOOGLE_API_KEY, r"AIza[0-9A-Za-z_-]{35,}"),
     (CredentialKind.GOOGLE_OAUTH_TOKEN, r"ya29\.[0-9A-Za-z._-]{20,}"),
     (CredentialKind.MATRIX_TOKEN, r"syt_[A-Za-z0-9_]{20,}"),
+    # A bearer token this gateway minted for one of its own profiles (#635).
+    # An opaque random string has no shape to recognise, which is the whole
+    # reason token_store gives it this lead-in.
+    (CredentialKind.TRENTINA_PROFILE_TOKEN, r"trt_[A-Za-z0-9_-]{20,}"),
     (CredentialKind.GITHUB_TOKEN, r"gh[pousr]_[A-Za-z0-9]{36,}"),
     (CredentialKind.GITHUB_TOKEN, r"github_pat_[A-Za-z0-9_]{22,}"),
     (CredentialKind.SLACK_TOKEN, r"xox[abprs]-[A-Za-z0-9-]{10,}"),
@@ -137,7 +142,7 @@ _FINDERS: tuple[tuple[CredentialKind, re.Pattern[str]], ...] = (
 #: line with none of these (almost every line) is checked once and left, which
 #: is what keeps both the log factory and the request path cheap.
 ANY_SHAPE = re.compile(
-    r"[?&]|://|sk-|AIza|ya29\.|syt_|gh[pousr]_|github_pat_|xox[abprs]-|eyJ"
+    r"[?&]|://|sk-|AIza|ya29\.|syt_|trt_|gh[pousr]_|github_pat_|xox[abprs]-|eyJ"
     r"|A(?:KIA|SIA|GPA|IDA|ROA|NPA|NVA)|-----BEGIN"
     r"|[Bb][Ee][Aa][Rr][Ee][Rr]|[Bb][Aa][Ss][Ii][Cc]"
 )

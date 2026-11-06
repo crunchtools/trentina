@@ -25,6 +25,7 @@ from http import HTTPStatus
 from typing import TYPE_CHECKING, Literal
 
 from ..outcomes import Outcome
+from ..transports.base import RefusedError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -102,21 +103,19 @@ guard's own reason codes. Closed, so the audit never carries the caller's
 text there."""
 
 
-class GitRefusedError(Exception):
+class GitRefusedError(RefusedError):
     """A git request the gateway will not carry, or will not finish carrying.
 
     Most refusals are one of this route's own deterministic rules, so the
     outcome defaults to ``denied_guard``. A refusal by the profile's lists,
-    by the egress guard or of the forge's answer says so.
+    by the egress guard or of the forge's answer says so. It is a
+    ``RefusedError``, so the perimeter spine answers it like any other.
     """
 
     def __init__(
         self, status: HTTPStatus, reason: str, outcome: Outcome = Outcome.DENIED_GUARD
     ) -> None:
-        super().__init__(reason)
-        self.status = status
-        self.reason = reason
-        self.outcome = outcome
+        super().__init__(reason, status=status, outcome=outcome)
 
 
 @dataclass(frozen=True)

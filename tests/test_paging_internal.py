@@ -1,7 +1,7 @@
 """The internal tools' responses are delivered in parts too (#446).
 
 ``fetch``, ``read`` and ``content`` judge at their own ingress
-(``tools/judged.py``), so the router's paging never saw them: over the
+(``gateway/internal_edge.py``), so the router's paging never saw them: over the
 admission cap they were refused, or read head-only under flag. These drive the
 router end to end. Only the edges are faked, as in ``mode_harness``: the page,
 and the layers' model calls. The cut uses the stand-in tokenizer of
@@ -17,17 +17,19 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
+from tests.refusal_shape import refused
 from trentina import config as config_mod
 from trentina import database
 from trentina.errors import ContentSizeError
 from trentina.gateway import internal, paging
 from trentina.gateway.context import PartsOffer, profile_context
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.modes import Mode
 from trentina.outcomes import Outcome
 from trentina.tools.content import judge_content
 from trentina.tools.fetch import fetch_page
+from trentina.transports.mcp import route_jsonrpc
 
 from .judge_key import with_judge_key
 from .mode_harness import BENIGN, EXTRACTION, MALICIOUS, Layers, allowlist, layers
@@ -98,7 +100,7 @@ class _Gateway:
         self.audit = MagicMock()
 
     async def send(self, name: str, **arguments: Any) -> dict[str, Any]:
-        with patch("trentina.gateway.router._audit", self.audit):
+        with patch("trentina.gateway.audit._audit", self.audit):
             return await route_jsonrpc(
                 self.profile,
                 {
@@ -147,7 +149,8 @@ class TestAFetchTooLargeToJudgeInOneCall:
         assert (marker["part"], marker["parts"], marker["next"]) == (1, 4, 2)
         assert f'{READER}(handle="{marker["handle"]}", part=2)' in marker["read_next"]
         assert FETCH in marker["read_next"]
-        assert first["content"] == "".join(part.text for part in paging.held("agent1")[0].parts[:1])
+        one = paging.held(("agent1", None))[0]
+        assert first["content"] == "".join(part.text for part in one.parts[:1])
         assert first["scan"] == {"layers": "complete", "disposition": "delivered"}
 
     async def test_the_parts_read_in_order_are_the_page(self, env: Path) -> None:
@@ -158,7 +161,7 @@ class TestAFetchTooLargeToJudgeInOneCall:
             rest = [await gateway.read(handle=handle) for _ in range(3)]
         assert first["content"] + "".join(_body(part) for part in rest) == LONG
         assert rest[-1][paging.PART_KEY] == {"part": 4, "parts": 4, "delivered": [1, 2, 3, 4]}
-        assert paging.held("agent1") == []
+        assert paging.held(("agent1", None)) == []
         # Every part is audited as the fetch it is part of.
         assert gateway.outcomes() == [("web", "fetch_tool", Outcome.OK)] * 4
 
@@ -185,7 +188,7 @@ class TestAFetchTooLargeToJudgeInOneCall:
             first = await _Gateway(_profile(reader=False)).fetch()
         assert paging.PART_KEY not in first
         assert first["content"] == LONG
-        assert paging.held("agent1") == []
+        assert paging.held(("agent1", None)) == []
 
     async def test_standalone_nothing_is_cut(self, env: Path) -> None:
         with layers(env, payload=LONG):
@@ -261,14 +264,14 @@ class TestAFlaggedPart:
             assert _blocklist_rows() == []
             third = await gateway.read(handle=handle)
         assert _body(second).startswith("w250 ")
-        assert third["isError"] is True
+        assert third["isError"] is False
         assert HOSTILE not in json.dumps(third)
         assert third["_trentina_refusal"]["part"] == 3
         assert _blocklist_rows() == [(URL, 1)]
 
         with layers(env, payload=LONG):
             again = await gateway.send(FETCH, url=URL, trentina_preprocess=False)
-        assert "on the blocklist" in json.dumps(again["error"])
+        assert "on the blocklist" in json.dumps(refused(again))
 
     async def test_flag_does_not_read_on_once_block_has_blocklisted_the_source(
         self, env: Path
@@ -287,7 +290,7 @@ class TestAFlaggedPart:
             redacted = await gateway.read(
                 handle=handle, part=3, trentina_mode={"redact": "What changed?"}
             )
-        assert flagged["isError"] is True
+        assert flagged["isError"] is False
         assert "on the blocklist" in flagged["content"][0]["text"]
         assert HOSTILE not in json.dumps(flagged)
         assert asked == 3  # refused unread, as the tool refuses before any bytes arrive
@@ -298,8 +301,8 @@ class TestAFlaggedPart:
         with layers(env, payload=LONG) as fakes:
             _where(fakes, "w7")
             resp = await gateway.send(FETCH, url=URL, trentina_preprocess=False)
-        assert "flagged by" in json.dumps(resp["error"])
-        assert paging.held("agent1") == []
+        assert "flagged by" in json.dumps(refused(resp))
+        assert paging.held(("agent1", None)) == []
         assert _blocklist_rows() == [(URL, 1)]
 
     async def test_flag_delivers_it_with_its_warning_and_blocklists_nothing(
@@ -329,7 +332,7 @@ class TestAFlaggedPart:
             second = await gateway.read(
                 handle=first[paging.PART_KEY]["handle"], trentina_mode="block"
             )
-        assert second["isError"] is True
+        assert second["isError"] is False
         assert "part 1 was flagged" in second["content"][0]["text"]
 
     async def test_an_allowlisted_source_is_refused_and_not_blocklisted(
@@ -343,7 +346,7 @@ class TestAFlaggedPart:
             handle = first[paging.PART_KEY]["handle"]
             await gateway.read(handle=handle)
             third = await gateway.read(handle=handle)
-        assert third["isError"] is True
+        assert third["isError"] is False
         assert _blocklist_rows() == [("https://example.com/long", 0)]
 
 

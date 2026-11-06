@@ -9,10 +9,10 @@ makes it — no mock of the detector, the rails or the layers:
   and run through the deterministic credential detector
   (``gateway.outbound.detect_credentials``). A credential in the query, body or
   a forwarded header — raw or percent-encoded — should be caught. No judge.
-- **SSRF** (``ssrf``): the request is run through the route's real rails —
-  ``proxy_utils.normalize_proxy_path``, ``egress_http._unsafe_path`` and
-  ``EgressGrant.allows`` — and the closed refusal reason is checked against the
-  case. No judge.
+- **SSRF** (``ssrf``): the request is run through the route's own ``admit``
+  (``egress_http.HttpRoute``: the path normalized, a decoded separator or
+  control character refused, the method and path held to the grant) and the
+  closed refusal reason is checked against the case. No judge.
 - **response_injection**: the response is run through ``defend()`` as ingress
   (``source_type=egress_response``), majority over ``--votes``. Judge-dependent.
 - **benign**: the false-positive suite, on its own axis — a deterministic half
@@ -53,19 +53,29 @@ from corpora.egress_bench import (
     EgressCase,
 )
 from trentina.defense import Provenance, defend
-from trentina.gateway.egress_http import _unsafe_path
+from trentina.gateway.egress_http import ORIGIN, HttpRoute
 from trentina.gateway.egress_policy import forward_request_headers, request_document
 from trentina.gateway.outbound import detect_credentials
-from trentina.gateway.profile import AuthConfig, EgressGrant, EgressUpstream, Profile
-from trentina.gateway.proxy_utils import normalize_proxy_path
-from trentina.modes import gaps_of
+from trentina.gateway.profile import AuthConfig, EgressUpstream, Profile
+from trentina.modes import Mode, gaps_of
 from trentina.quarantine.agent import llm_available
+from trentina.transports.base import Grant, Instance, Origin, RefusedError, Wire
 
 BENCH_PROFILE = Profile(name="egress-bench", auth=AuthConfig(bearer_token_env="BENCH"))
-GRANT = EgressGrant(methods=list(GRANT_METHODS), paths=list(GRANT_PATHS))
 # The upstream the request document is assembled against, so the bench forwards
 # exactly the headers the real route would (the allowlist, user-agent override).
 BENCH_UPSTREAM = EgressUpstream(upstream="https://api.example.com")
+# The route, and the instance and grant its ``admit`` holds a request to.
+ROUTE = HttpRoute()
+INSTANCE = Instance(
+    name=UPSTREAM, type="http", origins={ORIGIN: Origin(BENCH_UPSTREAM.host)}, options={}
+)
+GRANT = Grant(
+    origins=frozenset({ORIGIN}),
+    methods=frozenset(m.upper() for m in GRANT_METHODS),
+    enforcement=Mode.BLOCK,
+    options={"paths": tuple(GRANT_PATHS)},
+)
 
 
 @dataclass
@@ -84,17 +94,25 @@ class Tally:
 def _rail_reason(case: EgressCase) -> str | None:
     """The route's real rail decision for a case, or None when it would pass.
 
-    Mirrors ``egress_http._resolve_upstream`` with the route's own functions:
-    only ``UPSTREAM`` is configured and granted, so any other name is one
-    refusal; then the path is normalized, checked for a decoded separator or
-    control character, and matched against the grant.
+    Only ``UPSTREAM`` is configured and granted, so any other name is the
+    spine's one refusal for an unknown instance; then the route's own ``admit``
+    decides.
     """
     if case.upstream != UPSTREAM:
         return "unknown_upstream"
-    path = normalize_proxy_path(case.path.lstrip("/"))
-    if path is None or _unsafe_path(path):
-        return "bad_path"
-    return GRANT.allows(case.method, f"/{path}")
+    wire = Wire(
+        method=case.method,
+        path=case.path.lstrip("/"),
+        raw_path=case.path.encode(),
+        query=case.query,
+        headers=case.headers,
+        peer=None,
+    )
+    try:
+        asyncio.run(ROUTE.admit(wire, GRANT, INSTANCE))
+    except RefusedError as refused:
+        return refused.reason
+    return None
 
 
 def score_deterministic(case: EgressCase) -> tuple[bool, str | None]:
@@ -114,7 +132,7 @@ def score_deterministic(case: EgressCase) -> tuple[bool, str | None]:
     # — only the allowlist survives and the user-agent is overwritten — so a
     # secret smuggled in a stripped header never reaches the judged document
     # here either, as it never does in production.
-    fwd = forward_request_headers(list(case.headers.items()), BENCH_UPSTREAM)
+    fwd = forward_request_headers(list(case.headers.items()), BENCH_UPSTREAM.headers_allow)
     document = request_document(case.method, case.path, case.query, fwd, case.body)
     return bool(detect_credentials(document)), None
 

@@ -23,19 +23,26 @@ import asyncio
 import contextlib
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
+from .. import perimeter_db
 from ..logsafe import exc_kind, exc_where
 from ..quarantine.limiter import Priority, all_limiters, l3_priority, l3_throttle_budget
+from .aggregate import (
+    ensure_profile_build,
+    invalidate_profile_cache_for_backend,
+    rebuild_profiles,
+)
 from .backend import revalidate_backend_tools
-from .ingress_defense import perimeter_counts
 from .loader import get_active_config
-from .router import ensure_profile_build, invalidate_profile_cache_for_backend
+from .tool_pins import backend_id
+from .verdict_cache import perimeter_counts
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from .profile import Profile
+    from .profile import Backend, Profile
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +51,68 @@ logger = logging.getLogger(__name__)
 WARMUP_THROTTLE_BUDGET = 300.0
 
 _task: asyncio.Task[None] | None = None
+
+# The primary's federation poll (#592, F3): one shared task, started beside
+# _task, that re-probes federated backends on their own cadence so an approved
+# or changed secondary tool appears without a manual reconnect. It idle-ticks
+# when nothing sets poll_seconds.
+IDLE_TICK = 60.0
+_poll_task: asyncio.Task[None] | None = None
+_next_due: dict[str, float] = {}
+
+
+# The pending-pin count `/health` reports (#662). The probe reads
+# `perimeter_db.pending_pins_cached` and never waits; this task keeps it. Its
+# own one-thread pool, not the default executor, which L1 and the tokenizer use:
+# a wedged store would otherwise park one default-pool thread per refresh.
+PINS_REFRESH_SECONDS = 15.0
+PINS_TIMEOUT_SECONDS = 5.0
+_pins_task: asyncio.Task[None] | None = None
+_pins_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="trentina-pins")
+
+
+def _count_pins(path: str, backend_ids: set[str]) -> int:
+    with perimeter_db.snapshot_reader(path):
+        return perimeter_db.count_pending_pins(backend_ids)
+
+
+async def refresh_pending_pins(
+    inflight: asyncio.Future[int] | None = None,
+) -> asyncio.Future[int] | None:
+    """One refresh of ``perimeter_db.pending_pins_cached``; returns the call in flight.
+
+    Single-flight: while the previous call has not returned (a wedged store) no
+    second one is submitted, and the cache reads None. Never raises.
+    """
+    active = get_active_config()
+    if inflight is None or inflight.done():
+        ids = {
+            backend_id(b.url)
+            for p in (active.config.profiles.values() if active else ())
+            for b in p.backends.values()
+        }
+        try:
+            path = perimeter_db.opened_path()
+        except Exception as exc:
+            perimeter_db.pending_pins_cached = None
+            logger.warning("pending pins: refresh failed: %s", exc_kind(exc))
+            return None
+        inflight = asyncio.get_running_loop().run_in_executor(_pins_pool, _count_pins, path, ids)
+    try:
+        perimeter_db.pending_pins_cached = await asyncio.wait_for(
+            asyncio.shield(inflight), PINS_TIMEOUT_SECONDS
+        )
+    except Exception as exc:
+        perimeter_db.pending_pins_cached = None
+        logger.warning("pending pins: refresh failed: %s", exc_kind(exc))
+    return inflight
+
+
+async def _refresh_pins_forever() -> None:
+    inflight: asyncio.Future[int] | None = None
+    while True:
+        inflight = await refresh_pending_pins(inflight)
+        await asyncio.sleep(PINS_REFRESH_SECONDS)
 
 
 async def warm_all() -> None:
@@ -62,22 +131,34 @@ async def warm_all() -> None:
         l3_throttle_budget.reset(budget)
 
 
+async def _revalidate(backends: dict[str, tuple[str, Backend, Profile]]) -> list[str]:
+    """Refetch each backend's tool list, once per URL, all at once; return the
+    URLs whose list changed. A backend that cannot be reached keeps its cached
+    list (``revalidate_backend_tools`` returns False there). The owning profile
+    is passed so a federated backend can mint its primary JWT — without it the
+    probe goes out unauthenticated and the secondary rejects it."""
+    changed = await asyncio.gather(
+        *(
+            revalidate_backend_tools(name, backend, profile)
+            for name, backend, profile in backends.values()
+        )
+    )
+    return [url for url, differs in zip(backends, changed, strict=True) if differs]
+
+
 async def _revalidate_tool_lists(profiles: list[Profile]) -> None:
-    """Refetch each backend's persisted tool list, once per URL, all at once.
+    """Refetch every remote backend's persisted tool list at warm-up.
 
     A client that listed tools while this ran was served the persisted list;
-    its aggregate is dropped when the backend's list turned out to differ.
+    its aggregate is dropped when the backend's list turned out to differ, and
+    ``_warm`` rebuilds it next.
     """
-    backends = {
-        backend.url: (name, backend)
-        for profile in profiles
-        for name, backend in profile.backends.items()
-        if backend.is_remote
-    }
-    changed = await asyncio.gather(
-        *(revalidate_backend_tools(name, backend) for name, backend in backends.values())
-    )
-    stale = [url for url, differs in zip(backends, changed, strict=True) if differs]
+    backends: dict[str, tuple[str, Backend, Profile]] = {}
+    for profile in profiles:
+        for name, backend in profile.backends.items():
+            if backend.is_remote:
+                backends.setdefault(backend.url, (name, backend, profile))
+    stale = await _revalidate(backends)
     for url in stale:
         invalidate_profile_cache_for_backend(url)
     logger.warning(
@@ -85,6 +166,71 @@ async def _revalidate_tool_lists(profiles: list[Profile]) -> None:
         len(backends),
         len(stale),
     )
+
+
+async def _poll_once(now: float) -> float:
+    """One federation-poll tick. Re-probe the federated backends whose interval
+    has elapsed, rebuild the profiles that share a changed one, and return the
+    seconds to sleep before the next tick.
+
+    ``get_active_config`` is read every call: a reload swaps the Profile
+    objects, so a captured list would go stale. ``_next_due`` is seeded at
+    ``now + poll_seconds`` for a URL first seen here — the warm-up just
+    revalidated it — and pruned when a URL stops being polled.
+    """
+    active = get_active_config()
+    if active is None:
+        return IDLE_TICK
+    profiles = list(active.config.profiles.values())
+    polled: dict[str, tuple[str, Backend, Profile]] = {}
+    interval: dict[str, int] = {}
+    for profile in profiles:
+        for name, backend in profile.backends.items():
+            fed = backend.federated
+            if backend.is_remote and fed is not None and fed.poll_seconds > 0:
+                polled.setdefault(backend.url, (name, backend, profile))
+                interval[backend.url] = fed.poll_seconds
+    for url in [u for u in _next_due if u not in polled]:
+        del _next_due[url]
+    for url, secs in interval.items():
+        _next_due.setdefault(url, now + secs)
+    due = {url: nb for url, nb in polled.items() if _next_due[url] <= now}
+    if due:
+        stale = await _revalidate(due)
+        for url in due:
+            _next_due[url] = now + interval[url]
+        if stale:
+            stale_urls = set(stale)
+            sharing = [p for p in profiles if any(b.url in stale_urls for b in p.backends.values())]
+            rebuilt = await rebuild_profiles(sharing)
+            logger.warning(
+                "federation poll: %d backend(s) changed, rebuilt %d profile(s)",
+                len(stale),
+                rebuilt,
+            )
+    return max(1.0, min(_next_due.values()) - now) if _next_due else IDLE_TICK
+
+
+async def _poll_tool_lists() -> None:
+    """The federation poll loop (#592, F3). One shared task; background L3
+    priority like the warm-up, so a rebuild it triggers never competes with a
+    user call. A single bad tick is logged by kind and the loop carries on.
+    """
+    priority = l3_priority.set(Priority.BACKGROUND)
+    budget = l3_throttle_budget.set(WARMUP_THROTTLE_BUDGET)
+    try:
+        while True:
+            try:
+                sleep_for = await _poll_once(time.monotonic())
+            except Exception as exc:
+                logger.warning(
+                    "federation poll: tick failed: %s at %s", exc_kind(exc), exc_where(exc)
+                )
+                sleep_for = IDLE_TICK
+            await asyncio.sleep(sleep_for)
+    finally:
+        l3_priority.reset(priority)
+        l3_throttle_budget.reset(budget)
 
 
 async def _warm(profiles: list[Profile]) -> None:
@@ -139,10 +285,12 @@ async def trentina_lifespan() -> AsyncIterator[dict[str, Any]]:
     FastMCP ref-counts its lifespan, but the module-level task still guards
     against a second warm-up if it is ever entered twice.
     """
-    global _task
+    global _task, _poll_task, _pins_task
     started_here = False
     if get_active_config() is not None and _task is None:
+        _pins_task = asyncio.create_task(_refresh_pins_forever(), name="trentina-pins")
         _task = asyncio.create_task(warm_all(), name="trentina-warmup")
+        _poll_task = asyncio.create_task(_poll_tool_lists(), name="trentina-fed-poll")
         started_here = True
     # Warm the pinned-connection TLS context on a worker thread, so the system
     # CA bundle is loaded here at startup and never on the event loop during the
@@ -151,15 +299,15 @@ async def trentina_lifespan() -> AsyncIterator[dict[str, Any]]:
 
     await asyncio.to_thread(shared_ssl_context)
 
-    # The client-egress listener (#442), on the loop that serves. A no-op
-    # unless startup configured one.
-    from . import client_egress
+    # The perimeter's listeners (#442, #535), on the loop that serves. A no-op
+    # unless startup configured one and a profile asked for it.
+    from ..transports.registry import start_listeners, stop_listeners
 
-    await client_egress.start()
+    await start_listeners()
     try:
         yield {}
     finally:
-        await client_egress.stop()
+        await stop_listeners()
         # Close the pinned connection pool's long-lived clients (#511, Phase 2).
         from .upstream import close_pool
 
@@ -169,6 +317,16 @@ async def trentina_lifespan() -> AsyncIterator[dict[str, Any]]:
             with contextlib.suppress(asyncio.CancelledError):
                 await _task
             _task = None
+        if started_here and _pins_task is not None:
+            _pins_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await _pins_task
+            _pins_task = None
+        if started_here and _poll_task is not None:
+            _poll_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await _poll_task
+            _poll_task = None
         # The Matrix bridges' clients and mapping stores (a no-op without one).
         from .matrix_bridge.routes import close_bridges
 

@@ -1,0 +1,89 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "8"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ]
+     ],
+     "status": 201,
+     "type": "start"
+    },
+    {
+     "body": "{\"id\":7}",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "http:github",
+   "bytes_arrived": 8,
+   "bytes_delivered": 14,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "api.github.com#06a47e1322440920",
+   "destination_kind": "egress",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "ok",
+   "profile": "agent1",
+   "session": null,
+   "success": 1,
+   "tool": "POST"
+  }
+ ],
+ "open_slots": {},
+ "upstream": [
+  {
+   "body": "{\"title\":\"hi\"}",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "authorization",
+     "Bearer golden-agent1-github-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ],
+    [
+     "host",
+     "api.github.com"
+    ],
+    [
+     "user-agent",
+     "trentina-egress"
+    ]
+   ],
+   "method": "POST",
+   "url": "https://api.github.com/repos/acme/widgets/issues"
+  }
+ ]
+}

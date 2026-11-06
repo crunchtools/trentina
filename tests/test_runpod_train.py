@@ -146,6 +146,26 @@ def test_epochs_must_be_finite_and_above_zero(text: str) -> None:
         runpod_train.cli().parse_args(["run", "--host", "h", "--port", "1", "--epochs", text])
 
 
+@pytest.fixture
+def fake_keypair(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`create()` makes two real ed25519 pairs, which needs `ssh-keygen` on PATH.
+
+    These tests are about the export order, the retry and the host-key pinning,
+    not about key generation, and the dependency only shows up somewhere that
+    does not happen to have OpenSSH -- the containerised gate found it. The stub
+    writes a well-formed-looking pair so the pinning assertion still compares
+    known_hosts against the .pub it was built from.
+    """
+
+    def keypair(path: Path) -> Path:
+        path.write_text(f"PRIVATE KEY for {path.name}\n")
+        path.with_suffix(".pub").write_text(f"ssh-ed25519 AAAA{path.name} comment\n")
+        return path
+
+    monkeypatch.setattr(runpod_train, "keypair", keypair)
+
+
+@pytest.mark.usefixtures("fake_keypair")
 def test_create_exports_the_pod_before_waiting_on_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -166,6 +186,7 @@ def test_create_exports_the_pod_before_waiting_on_it(
     assert pinned[1:] == (tmp_path / "pod_host_key.pub").read_text().split()[:2]
 
 
+@pytest.mark.usefixtures("fake_keypair")
 def test_create_gives_up_at_once_on_a_bad_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -191,6 +212,7 @@ def test_run_stops_before_training_when_the_upload_fails(monkeypatch: pytest.Mon
     assert runpod_train.run("192.0.2.1", "10802", 2.0) == 1
 
 
+@pytest.mark.usefixtures("fake_keypair")
 def test_create_waits_out_a_busy_api_then_proceeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

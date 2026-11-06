@@ -54,6 +54,7 @@ from collections import Counter
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from ..gateway.aggregate import invalidate_profile_cache
 from ..gateway.compress import retrigger_compression
 from ..gateway.errors import ScopeError
 from ..gateway.llm_proxy import validate_profile_llm_keys
@@ -63,10 +64,10 @@ from ..gateway.loader import (
     replace_active_config,
 )
 from ..gateway.profile import PREPROCESS_AGENT_FIELDS
-from ..gateway.router import invalidate_profile_cache
 from ..gateway.scope import CallerScope, require_caller
-from ..gateway.service import find_operator, judge_of, log_service_identity
+from ..gateway.service import log_service_identity
 from ..gateway.sessions import session_registry
+from ..gateway.tool_pins import migrate_federated_pins
 from ..gateway.upstream import close_profile
 from ..logsafe import exc_kind, exc_where
 
@@ -109,7 +110,7 @@ def _guard_delta(
     the fact, and the file is the authority on what it changed to.
 
     ``noun`` names what a guard is keyed by, since both guard maps have this
-    shape but not the same subject: parameter guards key on a request
+    shape but not the same subject: request guards key on a request
     parameter, response guards on a result field.
     """
     delta: dict[str, dict[str, list[str]]] = {}
@@ -133,14 +134,22 @@ def _backend_delta(before: Backend, after: Backend) -> dict[str, Any]:
     candidate: dict[str, Any] = {
         "tools_allow": _glob_delta(before.tools_allow, after.tools_allow),
         "tools_deny": _glob_delta(before.tools_deny, after.tools_deny),
-        "parameter_guards": _guard_delta(before.parameter_guards, after.parameter_guards),
-        "response_guards": _guard_delta(
-            before.response_guards, after.response_guards, noun="fields"
+        "literal_request_guards": _guard_delta(
+            before.literal_request_guards, after.literal_request_guards
+        ),
+        "literal_response_guards": _guard_delta(
+            before.literal_response_guards, after.literal_response_guards, noun="fields"
         ),
         "fields_changed": sorted(
             name
             for name in type(before).model_fields
-            if name not in ("tools_allow", "tools_deny", "parameter_guards", "response_guards")
+            if name
+            not in (
+                "tools_allow",
+                "tools_deny",
+                "literal_request_guards",
+                "literal_response_guards",
+            )
             and getattr(before, name) != getattr(after, name)
         ),
     }
@@ -182,6 +191,29 @@ def _compression_surface(profiles: dict[str, Profile]) -> set[tuple[str, bool]]:
     }
 
 
+def _unmounted_routes(mounted: frozenset[str], new_config: GatewayConfig) -> list[str]:
+    """The perimeter routes the new file uses that were not mounted at startup:
+    ``mount_routes`` runs once, so a route type the file gains is a restart."""
+    notes: list[str] = []
+    if "git" not in mounted and new_config.git_remotes:
+        notes.append(
+            "git_remotes added but /git was not registered at startup (the "
+            "file had none) — restart to serve it"
+        )
+    if "http" not in mounted and new_config.egress_upstreams:
+        notes.append(
+            "egress_upstreams added but /egress was not registered at startup "
+            "(the file had none) — restart to serve it"
+        )
+    for instance, route in sorted(new_config.route_instances.items()):
+        if route.type.rpartition(":")[2] not in mounted:
+            notes.append(
+                f"proxies.{instance} added but its route type was not mounted at "
+                "startup (the file had no instance of it) — restart to serve it"
+            )
+    return notes
+
+
 def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
     """Name every edit in the new file that a reload cannot put into force.
 
@@ -209,7 +241,7 @@ def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
             "alert_ingress added but /alert was not registered at "
             "startup (no profile had one) — restart to serve it"
         )
-    if not active.matrix_route_registered and any(
+    if "matrix" not in active.routes_mounted and any(
         p.matrix_ingress is not None for p in new_config.profiles.values()
     ):
         notes.append(
@@ -231,16 +263,7 @@ def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
             "client_egress added but its listener was not started (no profile "
             "had one at startup) — restart to serve it"
         )
-    if not active.git_route_registered and new_config.git_remotes:
-        notes.append(
-            "git_remotes added but /git was not registered at startup (the "
-            "file had none) — restart to serve it"
-        )
-    if not active.egress_route_registered and new_config.egress_upstreams:
-        notes.append(
-            "egress_upstreams added but /egress was not registered at startup "
-            "(the file had none) — restart to serve it"
-        )
+    notes.extend(_unmounted_routes(active.routes_mounted, new_config))
     notes.extend(_unapplied_delegated(current, new_config))
     for name, profile in sorted(new_config.profiles.items()):
         notes.extend(_unapplied_proxy_oauth_for(current.profiles.get(name), profile, name))
@@ -405,17 +428,28 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
         if old != getattr(after.defense, field_name):
             setattr(after.defense, field_name, old)
             held.append(f"defense.{field_name}")
-    # Five blocks are perimeter end to end, so each is held whole: the bridge's
-    # plaintext side (#162); where the agent's client may be tunnelled (#442);
-    # which repositories and branches it may push to (#453); which HTTP
-    # destinations, methods and paths it may reach (#511); and which calls are
-    # judged before they leave (#456). llm_keys is not held and git/egress_http
-    # are: a key buys model calls, while one more pattern is one more place a
-    # talked-round agent can send to.
-    for block in ("matrix_bridge", "client_egress", "git", "egress_http", "guarded_execution"):
+    # Seven blocks are perimeter end to end, held whole: the bridge's plaintext
+    # side (#162), where the client may be tunnelled (#442), which repos it may
+    # push to (#453), which HTTP destinations it may reach (#511), which calls
+    # and responses a gatekeeper judges (#456), and which federated peers may
+    # authenticate — a key an agent adds could mint any caller (#592). llm_keys
+    # is not held and git/egress_http are: a key buys model calls, one more
+    # pattern is one more place a talked-round agent can send to. route_grants
+    # are the same kind of grant on a forward or plugin route (#535): held whole.
+    for block in (
+        "matrix_bridge",
+        "client_egress",
+        "git",
+        "egress_http",
+        "route_grants",
+        "semantic_request_guards",
+        "semantic_response_guards",
+        "federation",
+    ):
         if getattr(after, block) != getattr(before, block):
             setattr(after, block, getattr(before, block))
             held.append(block)
+    held.extend(_hold_federated(before, after))
     held.extend(_hold_matrix_networks(before, after))
     b = before.matrix_ingress
     a = after.matrix_ingress
@@ -428,6 +462,40 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
         if old != getattr(a.preprocess, field_name):
             setattr(a.preprocess, field_name, old)
             held.append(f"matrix_ingress.preprocess.{field_name}")
+    return held
+
+
+def _hold_federated(before: Profile, after: Profile) -> list[str]:
+    """Hold a per-backend ``federated`` block across an AGENT reload (#592).
+
+    ``federated`` names a trust boundary, perimeter in the same sense as the
+    ``defense`` block. On a backend that STAYS, an agent-triggered reload may not
+    add, drop or change it — only an operator reload may; absent is the safe
+    direction, so a backend new to this reload cannot bring federation in.
+
+    Removing the backend outright is deliberately NOT held: that is fail-closed
+    (the profile loses the secondary and gains no trust or reach — the one
+    direction this hold exists to stop), and holding it would make ``backends``
+    the single map an agent reload may not shrink, a broader constraint than
+    #298 took. Preventing an agent from tearing down a federated link, if we
+    want it, is a separate call for C1 beside the ``url`` hold.
+    """
+    held: list[str] = []
+    for name, after_backend in after.backends.items():
+        before_backend = before.backends.get(name)
+        before_fed = before_backend.federated if before_backend is not None else None
+        if after_backend.federated != before_fed:
+            after_backend.federated = before_fed
+            held.append(f"backends.{name}.federated")
+        # The url of a backend that was federated is held too (#592, C1):
+        # repointing it would send the primary key to a different host.
+        if (
+            before_backend is not None
+            and before_fed is not None
+            and after_backend.url != before_backend.url
+        ):
+            after_backend.url = before_backend.url
+            held.append(f"backends.{name}.url")
     return held
 
 
@@ -687,7 +755,7 @@ async def reload_profiles() -> dict[str, Any]:
 
     try:
         new_config = load_profiles(path)
-        # Startup runs this via register_llm_routes; a reload has to run it
+        # Startup runs this in _register_proxies; a reload has to run it
         # itself or a profile could name a provider the proxy has never heard
         # of, and the dangling reference would surface as a runtime 502
         # instead of a refused reload.
@@ -732,6 +800,13 @@ async def reload_profiles() -> dict[str, Any]:
     # Read the startup wiring facts before the swap replaces the holder.
     not_applied = _unapplied(active, new_config)
 
+    # Before the swap, while both URLs are still in hand: a federated backend
+    # whose URL moved keeps its pins. The pin store is keyed by a hash of the
+    # URL, so a trailing slash or an explicit port read as a FIRST CONNECT, and
+    # a first connect approves the peer's whole offered set as a unit (#592,
+    # E1b). Loud since the hardening pass; this stops it happening at all.
+    migrated = migrate_federated_pins(before, after)
+
     # The swap. Every route handler, the compression module and the
     # circuit-breaker wiring hold THIS dict object and read it per request, so
     # refilling it in place is what makes the new config live everywhere at
@@ -742,15 +817,21 @@ async def reload_profiles() -> dict[str, Any]:
     session_registry.session_ttl = new_config.session_ttl_seconds
     session_registry.max_sessions_per_profile = new_config.max_sessions_per_profile
     replace_active_config(replace(new_config, profiles=registry))
-    # A reload can promote, demote or re-key the operator, which moves every
-    # centralized model call to a new identity. Say where they run now.
-    log_service_identity(registry)
+    # A reload can promote, demote or re-key an operator, add a second one, or
+    # move `gateway.service_identity` between them (#661). Say who holds the
+    # service identity now — it binds the approved-config apply, and since
+    # 6.1.0 that is the whole of it.
+    log_service_identity(registry, new_config.service_identity)
 
-    # Every profile's descriptions are judged by the operator's model. When
-    # that moves, every aggregate holds verdicts from the old judge, not only
-    # the aggregates of profiles whose own section changed.
-    judge_moved = judge_of(find_operator(before)) != judge_of(find_operator(after))
-    stale = sorted({*after, *removed}) if judge_moved else [*added, *removed, *changed]
+    # A profile's descriptions are judged by ITS OWN judge (6.1.0), so a judge
+    # that moved makes exactly one profile's aggregate stale, and `changed`
+    # already names it: `judge_of` reads only `profile.defense` plus the env
+    # default, the env is not re-read by a reload, and `_profile_delta` diffs
+    # every model field including `defense`. Derivations are covered too — the
+    # registry compared here is post-`derive_all` and `defense` is CARRIED.
+    # Through 6.0.0 this keyed on whether the OPERATOR's judge moved and then
+    # invalidated EVERY profile, because the operator judged for all of them.
+    stale = [*added, *removed, *changed]
     invalidated = [name for name in stale if invalidate_profile_cache(name)]
     if _compression_surface(before) != _compression_surface(after):
         retrigger_compression()
@@ -768,8 +849,7 @@ async def reload_profiles() -> dict[str, Any]:
         for session in session_registry.get_sessions_for_profile(name)
     )
     notified = {
-        name: await session_registry.broadcast_tools_changed(name)
-        for name in (sorted(after) if judge_moved else [*added, *changed])
+        name: await session_registry.broadcast_tools_changed(name) for name in [*added, *changed]
     }
 
     logger.warning(
@@ -792,8 +872,16 @@ async def reload_profiles() -> dict[str, Any]:
         },
         "changes": changed,
         "caches_invalidated": invalidated,
-        "service_identity_moved": judge_moved,
+        # `service_identity_moved` was dropped in 6.1.1. It reported that the
+        # operator's judge had moved, which through 6.0.0 meant every profile
+        # was about to be re-judged on the operator's key. Since 6.1.0 nothing
+        # follows from it: no spend moves, and the operator's own re-judge is
+        # already visible in `profiles.changed` and `caches_invalidated`.
         "sessions_notified": {k: v for k, v in notified.items() if v},
         "sessions_dropped": dropped_sessions,
         "not_applied": not_applied,
+        # Named rather than counted: an operator who moved a federated URL
+        # needs to see that the pins came with it, because the alternative
+        # outcome is a silent re-trust of everything that peer offers.
+        "federated_pins_migrated": migrated,
     }

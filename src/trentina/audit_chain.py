@@ -133,9 +133,34 @@ def digest(value: Any) -> str:
     return hashlib.sha256(canonical(value)).hexdigest()
 
 
+#: Audited fields added after the chain shipped (#592, C2). They enter the
+#: digest ONLY when present and non-NULL, so a pre-C2 row and every
+#: non-federated row hash exactly as they did before and still verify, while a
+#: federated row commits to its caller. Appending them to ``CHAIN_FIELDS``
+#: instead would change every earlier row's hash and need a version flag.
+_OPTIONAL_CHAIN_FIELDS = (
+    "caller_peer",
+    "caller_sub",
+    "federated_verdict",
+)
+
+
 def row_hash(row: Any) -> str:
-    """The ``row_hash`` of an audit row (or a mapping of its ``CHAIN_FIELDS``)."""
-    return digest({name: row[name] for name in CHAIN_FIELDS})
+    """The ``row_hash`` of an audit row (or a mapping of its ``CHAIN_FIELDS``).
+
+    The ``CHAIN_FIELDS`` always; each of ``_OPTIONAL_CHAIN_FIELDS`` (the C2
+    caller columns) only when the row carries it non-NULL, so a pre-C2 or
+    non-federated row hashes exactly as before and a federated row commits to
+    its caller. Presence is tested against the row's COLUMN NAMES (``keys()``),
+    which is correct for a plain mapping and for a ``sqlite3.Row`` alike — ``in``
+    on a ``sqlite3.Row`` tests its values, not its columns.
+    """
+    fields = {name: row[name] for name in CHAIN_FIELDS}
+    columns = row.keys()
+    for name in _OPTIONAL_CHAIN_FIELDS:
+        if name in columns and row[name] is not None:
+            fields[name] = row[name]
+    return digest(fields)
 
 
 def detections_digest(db: sqlite3.Connection, call_ref: str | None) -> str | None:
@@ -175,6 +200,16 @@ def tail_hash(db: sqlite3.Connection) -> str:
     return str(checkpoint[3]) if checkpoint is not None else GENESIS
 
 
+def _lost_rows(db: sqlite3.Connection) -> int:
+    """Audit rows known to have been lost to failed writes (``audit_losses``, #662)."""
+    try:
+        return int(db.execute("SELECT COALESCE(SUM(rows_lost), 0) FROM audit_losses").fetchone()[0])
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):  # a database from before the table
+            return 0
+        raise
+
+
 def verify(
     db: sqlite3.Connection, *, ttl_seconds: float, now: float | None = None
 ) -> dict[str, Any]:
@@ -188,7 +223,9 @@ def verify(
 
     Returns:
         ``ok``, ``checked`` (rows walked), ``first_break`` (None, or the row
-        ``id`` and a closed ``reason``), ``detections_expired`` (calls whose
+        ``id`` and a closed ``reason``), ``lost_rows`` (rows known lost to
+        failed writes; non-zero makes ``ok`` false with the chain intact),
+        ``detections_expired`` (calls whose
         detection rows are gone past the TTL: noted, not a break) and the
         ``checkpoint`` the walk started from.
     """
@@ -202,7 +239,12 @@ def verify(
         "first_break": None,
         "detections_expired": 0,
         "checkpoint": {"kind": kind, "last_id": last_id},
+        "lost_rows": _lost_rows(db),
     }
+    if report["lost_rows"]:
+        # The chain can hold and the record still be short: a lost row leaves
+        # no break, so this is the only signal (#662).
+        report["ok"] = False
     # Rows at or below the genesis checkpoint predate the chain and carry no hash.
     rows = db.execute(_ROWS_SQL, (max(last_id, genesis_last),))
     names = [column[0] for column in rows.description]

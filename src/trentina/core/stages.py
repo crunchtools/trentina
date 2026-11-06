@@ -10,25 +10,28 @@ it (``Judged``). Each stage holds a back-reference to the one before it, so the
 layer-contract identity assertions (``judged … is transformed …``) have real
 objects to hold once the cutover lands.
 
-Phase 4 state: these are frozen data carriers, not yet sealed. They carry the
-ACTUAL gateway types (``TransformOutcome``, ``IngressDecision``), not plan §B's
-idealized ``Verdict``/``Coverage``. The seal — construction confined to the one
-rail that produces each — lands with the Phase 4 cutover (PR #4), when the
-orchestrator is the sole constructor and ``tests/test_seal.py`` can fence them;
-sealing them while ``router._assemble_call_result`` still runs the default path
-would fence a type both paths build. The disposed result remains the router's
-``Assembled`` until that cutover, for the same reason.
+These carry the ACTUAL gateway types (``TransformOutcome``, ``IngressDecision``),
+not plan §B's idealized ``Verdict``/``Coverage``. Of the three, only ``Judged``
+carries trust: it pairs a verdict with the exact bytes it was reached over, so
+it is one of the four unforgeable types and its construction is confined to the
+orchestrator's ``judge_response`` (``tests/test_seal.py``), which builds one only
+after the gate has run. ``Arrived`` and ``Transformed`` are plain frozen carriers
+— no check stands behind holding one — so they are not sealed. ``Assembled``
+is the disposed result: a plain, mutable carrier of the finished result and
+what the one audit row should say, so it is not sealed either.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from typing import TYPE_CHECKING, Any
+
+from ..seal import UNSEALED, Seal, require
 
 if TYPE_CHECKING:
     from ..defense import Provenance
-    from ..gateway.ingress_defense import IngressDecision
     from ..gateway.transform import TransformOutcome
+    from ..outcomes import Outcome
 
 
 @dataclass(frozen=True)
@@ -36,7 +39,7 @@ class Arrived:
     """A backend result, stripped of the gateway's reserved keys, ready to judge.
 
     The reserved-key strip and the duplicate-``structuredContent`` drop have
-    already run (``router._arrived``). ``is_error`` is the backend's own flag,
+    already run (``results._arrived``). ``is_error`` is the backend's own flag,
     coerced to ``bool`` as the paging hold reads it; the delivered result keeps
     the raw value. ``acted`` is ``_may_have_acted``: the backend has answered,
     so a tool that may write has written (#425).
@@ -66,14 +69,58 @@ class Transformed:
 
 
 @dataclass(frozen=True)
+class IngressDecision:
+    """What the transport should do with a scanned tool response.
+
+    ``refusal`` is set with ``blocked``: the structured body naming the
+    modes the caller may try next. ``extraction`` is set under redact: the
+    verified text that REPLACES the response.
+    """
+
+    warning: dict[str, Any] | None
+    blocked: bool = False
+    refusal: dict[str, Any] | None = None
+    extraction: str | None = None
+
+
+@dataclass(frozen=True)
 class Judged:
     """A transformed response and the perimeter's verdict on it.
 
     Built only for a remote backend's response, which the perimeter scans here;
     an internal tool is judged at its own ingress and reaches no ``Judged``
     stage. ``decision`` is what ``scan_tool_response`` returned, and the
-    disposition — deliver, redact, or block — reads from it.
+    disposition — deliver, redact, or block — reads from it. Sealed to
+    ``orchestrator.judge_response`` so holding one is proof the gate ran on
+    ``transformed.content_blocks`` and no other bytes.
     """
 
     transformed: Transformed
     decision: IngressDecision
+    _seal: InitVar[Seal] = UNSEALED
+
+    def __post_init__(self, _seal: Seal) -> None:
+        require(_seal, _JUDGED_SEAL, "Judged")
+
+
+#: The token ``orchestrator.judge_response`` holds to build a ``Judged``; see ``core.seal``.
+_JUDGED_SEAL = Seal("judge_response")
+
+
+@dataclass
+class Assembled:
+    """A tools/call result and what the audit row should say about it.
+
+    Assembly decides the outcome — the perimeter may block what the backend
+    returned — so the one audit row is written after it, not before. Writing
+    ``ok`` first and ``blocked_defense`` later counted every block twice.
+    """
+
+    result: dict[str, Any]
+    outcome: Outcome
+    error: str | None = None
+    # The perimeter's own warning, kept apart from ``result`` so what
+    # ``_deliver`` writes is built only from gateway parts (#265).
+    warning: dict[str, Any] | None = None
+    # Gateway-reserved keys the backend's response carried and lost (#265).
+    stripped: int = 0

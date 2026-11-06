@@ -8,6 +8,7 @@ perimeter that judges each part as told.
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import re
 from collections.abc import Iterator
@@ -18,16 +19,20 @@ import pytest
 from pydantic import SecretStr
 
 from trentina import config as config_mod
+from trentina.core.stages import IngressDecision
 from trentina.gateway import paging
 from trentina.gateway.backend import BackendCall, _tool_list_cache
-from trentina.gateway.ingress_defense import IngressDecision
 from trentina.gateway.modes_policy import MODE_PARAM, mode_instructions
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.outcomes import Outcome
 from trentina.quarantine.classifier import GUARD_TOKENS
+from trentina.transports.mcp import route_jsonrpc
 
-ROUTER = "trentina.gateway.router"
+PARTS = "trentina.gateway.parts"
+AUDIT = "trentina.gateway.audit"
+MCP = "trentina.transports.mcp"
+ORCH = "trentina.orchestrator"
 URL = "http://docs:8000/mcp"
 GET, SEND = "get_doc", "send_doc"
 READER = f"web{NAMESPACE_SEP}{paging.READ_PART_TOOL}"
@@ -49,7 +54,10 @@ def _paging(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(paging, "token_starts", lambda text: [a for a, _ in _words(text)])
     config_mod._config = None
     paging.reset()
-    _tool_list_cache[URL] = [{"name": SEND}, {"name": GET, "annotations": {"readOnlyHint": True}}]
+    _tool_list_cache[(URL, "")] = [
+        {"name": SEND},
+        {"name": GET, "annotations": {"readOnlyHint": True}},
+    ]
     yield
     paging.reset()
     config_mod._config = None
@@ -126,9 +134,10 @@ class _Gateway:
 
     async def _send(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         with (
-            patch(f"{ROUTER}.call_backend_tool", self.backend),
-            patch(f"{ROUTER}.scan_tool_response", self.perimeter),
-            patch(f"{ROUTER}._audit", self.audit),
+            patch(f"{MCP}.call_backend_tool", self.backend),
+            patch(f"{PARTS}.scan_tool_response", self.perimeter),
+            patch(f"{ORCH}.scan_tool_response", self.perimeter),
+            patch(f"{AUDIT}._audit", self.audit),
         ):
             return await route_jsonrpc(
                 self.profile,
@@ -155,6 +164,16 @@ class _Gateway:
 
     def outcomes(self) -> list[tuple[str, str, Outcome]]:
         return [(c.args[1], c.args[2], c.args[3]) for c in self.audit.call_args_list]
+
+
+@contextlib.contextmanager
+def _as_caller(caller: tuple[str, str] | None) -> Iterator[None]:
+    """Run a request as a federated caller, as ``app.py`` binds one."""
+    token = paging.current_caller.set(caller)
+    try:
+        yield
+    finally:
+        paging.current_caller.reset(token)
 
 
 def _body(result: dict[str, Any]) -> str:
@@ -290,7 +309,7 @@ class TestStore:
 
     def test_a_handle_finds_its_response(self) -> None:
         paged = self._hold()
-        assert paging.find("agent1", paged.handle) is paged
+        assert paging.find(("agent1", None), paged.handle) is paged
 
     def test_handles_are_long_and_never_repeat(self) -> None:
         handles = {self._hold(profile=f"p{i}").handle for i in range(20)}
@@ -300,18 +319,18 @@ class TestStore:
     @pytest.mark.parametrize("handle", ["0" * 32, "", None, 7, ["x"], {"a": 1}])
     def test_a_handle_never_issued_finds_nothing(self, handle: Any) -> None:
         self._hold()
-        assert paging.find("agent1", handle) is None
+        assert paging.find(("agent1", None), handle) is None
 
     def test_another_profiles_handle_finds_nothing(self) -> None:
         paged = self._hold()
-        assert paging.find("agent2", paged.handle) is None
-        assert paging.listing("agent2") == []
+        assert paging.find(("agent2", None), paged.handle) is None
+        assert paging.listing(("agent2", None)) == []
 
     def test_an_idle_response_expires(self, monkeypatch: pytest.MonkeyPatch) -> None:
         paged = self._hold()
         clock = paging.time.monotonic()
         monkeypatch.setattr(paging.time, "monotonic", lambda: clock + 601)
-        assert paging.find("agent1", paged.handle) is None
+        assert paging.find(("agent1", None), paged.handle) is None
 
     def test_an_idle_response_is_dropped_without_anyone_paging_again(
         self, monkeypatch: pytest.MonkeyPatch
@@ -325,39 +344,39 @@ class TestStore:
     def test_evicting_many_at_once_keeps_the_most_recently_read(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(paging, "MAX_OPEN_PER_PROFILE", 1_000)
+        monkeypatch.setattr(paging, "MAX_OPEN_PER_OWNER", 1_000)
         held = [self._hold(words=500) for _ in range(6)]
-        paging.find("agent1", held[0].handle)  # read again: now the newest
-        monkeypatch.setattr(paging, "MAX_BYTES_PER_PROFILE", held[0].size * 3 + 10)
+        paging.find(("agent1", None), held[0].handle)  # read again: now the newest
+        monkeypatch.setattr(paging, "MAX_BYTES_PER_OWNER", held[0].size * 3 + 10)
         last = self._hold(words=500)
-        kept = {p.handle for p in paging.held("agent1")}
+        kept = {p.handle for p in paging.held(("agent1", None))}
         assert kept == {held[0].handle, held[5].handle, last.handle}
 
     def test_reading_a_part_keeps_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
         paged = self._hold()
         clock = paging.time.monotonic()
         monkeypatch.setattr(paging.time, "monotonic", lambda: clock + 500)
-        assert paging.find("agent1", paged.handle) is paged
+        assert paging.find(("agent1", None), paged.handle) is paged
         monkeypatch.setattr(paging.time, "monotonic", lambda: clock + 1_000)
-        assert paging.find("agent1", paged.handle) is paged
+        assert paging.find(("agent1", None), paged.handle) is paged
 
     def test_a_profile_holds_a_few_and_the_oldest_goes(self) -> None:
-        held = [self._hold() for _ in range(paging.MAX_OPEN_PER_PROFILE + 1)]
-        assert paging.find("agent1", held[0].handle) is None
-        assert all(paging.find("agent1", p.handle) is p for p in held[1:])
+        held = [self._hold() for _ in range(paging.MAX_OPEN_PER_OWNER + 1)]
+        assert paging.find(("agent1", None), held[0].handle) is None
+        assert all(paging.find(("agent1", None), p.handle) is p for p in held[1:])
 
     def test_one_profile_filling_up_does_not_evict_another(self) -> None:
         other = self._hold(profile="agent2")
-        for _ in range(paging.MAX_OPEN_PER_PROFILE + 2):
+        for _ in range(paging.MAX_OPEN_PER_OWNER + 2):
             self._hold()
-        assert paging.find("agent2", other.handle) is other
+        assert paging.find(("agent2", None), other.handle) is other
 
     def test_the_byte_cap_evicts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         first = self._hold()
-        monkeypatch.setattr(paging, "MAX_BYTES_PER_PROFILE", first.size + 10)
+        monkeypatch.setattr(paging, "MAX_BYTES_PER_OWNER", first.size + 10)
         second = self._hold()
-        assert paging.find("agent1", first.handle) is None
-        assert paging.find("agent1", second.handle) is second
+        assert paging.find(("agent1", None), first.handle) is None
+        assert paging.find(("agent1", None), second.handle) is second
 
     def test_the_gateway_wide_cap_evicts_across_profiles(
         self, monkeypatch: pytest.MonkeyPatch
@@ -365,8 +384,151 @@ class TestStore:
         first = self._hold(profile="agent1")
         monkeypatch.setattr(paging, "MAX_BYTES", first.size + 10)
         second = self._hold(profile="agent2")
-        assert paging.find("agent1", first.handle) is None
-        assert paging.find("agent2", second.handle) is second
+        assert paging.find(("agent1", None), first.handle) is None
+        assert paging.find(("agent2", None), second.handle) is second
+
+
+class TestCallerIsolation:
+    """A federation ingress is ONE profile for every primary that calls it, so
+    the owner of a held response is ``(profile, caller)`` (#592). Without this,
+    a peer's ``read_part`` listing handed one primary every other primary's
+    handles, and a handle was enough to read their parts."""
+
+    INGRESS = "fed-ingress"
+    ALICE = ("mypeer", "josui")
+    BOB = ("other-primary", "kagetora")
+
+    def _hold(
+        self,
+        caller: tuple[str, str] | None,
+        words: int = 1_000,
+        profile: str | None = None,
+    ) -> paging.Paged:
+        from trentina.defense import Provenance
+        from trentina.modes import Mode
+
+        parts = paging.cut(_document(words))
+        assert parts is not None
+        return paging.hold(
+            paging.Origin(
+                profile or self.INGRESS,
+                "docs",
+                GET,
+                GET,
+                is_error=False,
+                acted=False,
+                caller=caller,
+            ),
+            parts,
+            mode=Mode.BLOCK,
+            prompt=None,
+            provenance=Provenance.EXTERNAL,
+            l3_context=None,
+            hidden=None,
+        )
+
+    def test_one_callers_handle_is_not_anothers(self) -> None:
+        alice = self._hold(self.ALICE)
+        bob = self._hold(self.BOB)
+        assert paging.find((self.INGRESS, self.ALICE), alice.handle) is alice
+        assert paging.find((self.INGRESS, self.BOB), bob.handle) is bob
+        # The handle alone is not enough, which is the whole finding.
+        assert paging.find((self.INGRESS, self.BOB), alice.handle) is None
+        assert paging.find((self.INGRESS, self.ALICE), bob.handle) is None
+
+    def test_a_listing_shows_only_the_callers_own(self) -> None:
+        alice = self._hold(self.ALICE)
+        self._hold(self.BOB)
+        listed = paging.listing((self.INGRESS, self.ALICE))
+        assert [row["handle"] for row in listed] == [alice.handle]
+
+    def test_a_cross_caller_read_is_indistinguishable_from_an_expired_one(self) -> None:
+        """One answer for every reason a handle does not resolve (#263): a
+        caller must not learn that someone else holds it."""
+        alice = self._hold(self.ALICE)
+        never_issued = paging.find((self.INGRESS, self.BOB), "0" * 32)
+        someone_elses = paging.find((self.INGRESS, self.BOB), alice.handle)
+        assert never_issued is someone_elses is None
+
+    def test_two_peers_asserting_the_same_sub_are_different_owners(self) -> None:
+        """The owner is the whole ``(peer, sub)``: ``sub`` is peer-chosen, so
+        two peers can both claim one."""
+        mine = self._hold(("peer-a", "josui"))
+        theirs = self._hold(("peer-b", "josui"))
+        assert paging.find((self.INGRESS, ("peer-b", "josui")), mine.handle) is None
+        assert paging.find((self.INGRESS, ("peer-b", "josui")), theirs.handle) is theirs
+
+    def test_the_profiles_own_agent_is_its_own_owner(self) -> None:
+        local = self._hold(None)
+        assert paging.find((self.INGRESS, None), local.handle) is local
+        assert paging.find((self.INGRESS, self.ALICE), local.handle) is None
+
+    def test_one_caller_cannot_evict_anothers(self) -> None:
+        """``MAX_OPEN_PER_OWNER`` is the OWNER's budget, not the profile's:
+        otherwise one peer filling up drops another peer's held parts."""
+        bob = self._hold(self.BOB)
+        for _ in range(paging.MAX_OPEN_PER_OWNER + 2):
+            self._hold(self.ALICE)
+        assert paging.find((self.INGRESS, self.BOB), bob.handle) is bob
+
+    async def test_the_read_path_derives_the_owner_from_the_bound_caller(self) -> None:
+        """Through ``read_part`` itself, not the store: the binding in
+        ``parts._read_part`` is what the isolation actually rests on."""
+        from trentina.gateway import parts as parts_mod
+
+        assert parts_mod.current_caller is paging.current_caller
+        gateway = _Gateway()
+        with _as_caller(self.ALICE):
+            first = await gateway.call(_document(1_000))
+        handle = first[paging.PART_KEY]["handle"]
+
+        # Bob holds nothing on this profile and cannot reach Alice's handle.
+        with _as_caller(self.BOB):
+            listed = await gateway.read()
+            stolen = await gateway.read(handle=handle, part=2)
+        assert listed["structuredContent"]["held"] == []
+        assert stolen["content"][0]["text"] == paging.UNKNOWN_HANDLE
+
+        # Alice still reads her own, so the binding narrowed and nothing else.
+        with _as_caller(self.ALICE):
+            mine = await gateway.read(handle=handle, part=2)
+        assert mine[paging.PART_KEY]["part"] == 2
+
+    def test_one_peer_rotating_subs_cannot_take_the_gateway(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`sub` is PEER-CHOSEN, so an owner is not a bounded resource.
+
+        With only an owner cap and a gateway cap, a peer minting a new `sub`
+        per call gets a fresh 32 MiB budget each time and walks up to the whole
+        128 MiB, evicting every other profile's parts. The profile pass is what
+        keeps a tenant to its own ceiling however many callers it arrives as.
+        """
+        neighbour = self._hold(None, words=500, profile="someone-else")
+        monkeypatch.setattr(paging, "MAX_BYTES_PER_PROFILE", neighbour.size * 2 + 10)
+
+        # The ingress arrives as a new caller every time.
+        held = [self._hold(("peer", f"sub-{i}"), words=500) for i in range(8)]
+
+        mine = [p for p in paging._store.values() if p.profile == self.INGRESS]
+        assert sum(p.size for p in mine) <= paging.MAX_BYTES_PER_PROFILE
+        assert len(mine) < len(held)  # the profile's own cap bit
+        # And the neighbour is untouched.
+        assert paging.find(("someone-else", None), neighbour.handle) is neighbour
+
+    def test_origin_takes_the_caller_from_the_request_context(self) -> None:
+        """A hold site cannot forget the caller: ``Origin`` reads it, so a new
+        one widens nothing by omission."""
+        token = paging.current_caller.set(self.ALICE)
+        try:
+            origin = paging.Origin(self.INGRESS, "docs", GET, GET, is_error=False, acted=False)
+        finally:
+            paging.current_caller.reset(token)
+        assert origin.caller == self.ALICE
+        assert (
+            paging.Origin(self.INGRESS, "docs", GET, GET, is_error=False, acted=False).caller
+            is None
+        )
 
 
 class TestFirstPart:
@@ -375,7 +537,7 @@ class TestFirstPart:
         result = await gateway.call(_document(400))
         assert result["content"] == [{"type": "text", "text": _document(400)}]
         assert paging.PART_KEY not in result
-        assert paging.listing("agent1") == []
+        assert paging.listing(("agent1", None)) == []
 
     async def test_a_large_response_arrives_as_part_one(self) -> None:
         text = _document(1_000)
@@ -412,7 +574,7 @@ class TestFirstPart:
         gateway = _Gateway(_profile(reader=False))
         result = await gateway.call(text)
         assert result["content"] == [{"type": "text", "text": text}]
-        assert paging.listing("agent1") == []
+        assert paging.listing(("agent1", None)) == []
 
     async def test_a_response_with_an_image_is_not_paged(self) -> None:
         gateway = _Gateway()
@@ -520,7 +682,7 @@ class TestReadPart:
         gateway = _Gateway()
         first = await gateway.call(_document(1_000))
         result = await gateway.read(handle=first[paging.PART_KEY]["handle"], part=part)
-        assert result["isError"] is True
+        assert result["isError"] is False
         assert "has 4 parts; ask for one of 1 to 4" in result["content"][0]["text"]
         assert gateway.outcomes()[-1] == ("docs", GET, Outcome.DENIED_GUARD)
 
@@ -535,7 +697,7 @@ class TestReadPart:
             await mine.read(handle=12),
         ]
         assert {a["content"][0]["text"] for a in answers} == {paging.UNKNOWN_HANDLE}
-        assert all(a["isError"] is True and paging.PART_KEY not in a for a in answers)
+        assert all(a["isError"] is False and paging.PART_KEY not in a for a in answers)
         assert theirs.outcomes()[-1] == ("web", paging.READ_PART_TOOL, Outcome.DENIED_GUARD)
 
     async def test_a_profile_that_lost_the_tool_loses_the_rest_of_its_response(self) -> None:
@@ -590,7 +752,7 @@ class TestBlock:
         await gateway.read(handle=handle, part=2)
         third = await gateway.read(handle=handle, part=3)
         text = third["content"][0]["text"]
-        assert third["isError"] is True
+        assert third["isError"] is False
         assert text.startswith("[TRENTINA] Refused part 3 of 4 of the")
         assert "(flagged by L2). Nothing from part 3 was delivered." in text
         assert "Parts 1 to 2 of it were delivered before this was found" in text
@@ -603,7 +765,7 @@ class TestBlock:
 
         judged = len(gateway.perimeter.calls)
         fourth = await gateway.read(handle=handle, part=4)
-        assert fourth["isError"] is True
+        assert fourth["isError"] is False
         assert (
             "part 3 was flagged by L2, so the response is withheld from there on"
             in (fourth["content"][0]["text"])
@@ -631,7 +793,7 @@ class TestBlock:
         gateway = _Gateway(w5=_flagged())
         first = await gateway.call(_document(1_000))
         text = first["content"][0]["text"]
-        assert first["isError"] is True
+        assert first["isError"] is False
         assert "Refused part 1 of 4" in text
         assert "delivered before this was found" not in text
         assert "Parts 2 to 4 are withheld as well." in text
@@ -663,7 +825,7 @@ class TestBlock:
         handle = first[paging.PART_KEY]["handle"]
         second = await gateway.read(handle=handle, part=2)
         text = second["content"][0]["text"]
-        assert second["isError"] is True
+        assert second["isError"] is False
         assert "Refused part 2 of 4" in text and "(not fully judged: L3 unavailable)" in text
         assert "The gap is this part's, not the response's" in text
         assert "Ask for part 2 again." in text
@@ -684,7 +846,7 @@ class TestOrder:
         handle = first[paging.PART_KEY]["handle"]
         skipped = await gateway.read(handle=handle, part=4)
         text = skipped["content"][0]["text"]
-        assert skipped["isError"] is True
+        assert skipped["isError"] is False
         assert "Part 4" in text and "cannot be read yet" in text and "part 2 is next" in text
         assert f'{READER}(handle="{handle}", part=2)' in text
         assert len(gateway.perimeter.calls) == 1
@@ -747,7 +909,7 @@ class TestNotCut:
         assert judged["content_blocks"] == [{"type": "text", "text": text}]
         assert judged.get("lead_in", "") == ""
         assert paging.PART_KEY not in result
-        assert paging.listing("agent1") == []
+        assert paging.listing(("agent1", None)) == []
 
     async def test_without_a_tokenizer_the_response_is_judged_whole(
         self, monkeypatch: pytest.MonkeyPatch

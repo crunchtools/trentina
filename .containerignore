@@ -1,0 +1,20 @@
+# The build context is what podman uploads before the first layer. Without this
+# file it carried .venv (~500 MB) and .git on every local build. The image needs
+# only what the Containerfile COPYs: pyproject.toml, uv.lock, README.md, src/,
+# scripts/export_l2_model.py, benchmarks/ and corpora/ for the L2 gates.
+.git
+.venv
+.cache
+.mypy_cache
+.ruff_cache
+.pytest_cache
+**/__pycache__
+.sdlc
+.specify
+.claude
+.github
+tests
+docs
+demo
+CHANGELOG.md
+corpora/data

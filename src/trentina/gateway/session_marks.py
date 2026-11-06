@@ -1,7 +1,7 @@
 """Which sessions have been delivered content the layers flagged (#456).
 
 Under ``flag`` a flagged response reaches the agent with a warning attached,
-and the session that read it keeps every tool it had. Guarded execution asks
+and the session that read it keeps every tool it had. Semantic request guards ask
 whether that happened before it lets a guarded call leave, so the router
 marks a session here when it delivers a warning, and the gatekeeper reads it.
 
@@ -20,9 +20,18 @@ the judge is told so, and ``refuse_when_flagged`` refuses it (#457).
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections import OrderedDict
+from typing import TYPE_CHECKING, Any
+
+from ..outcomes import Outcome
+from ..reserved import WARNING_KEY
+from .context import current_call, current_session
+
+if TYPE_CHECKING:
+    from ..core.stages import Assembled
 
 logger = logging.getLogger(__name__)
 
@@ -82,3 +91,43 @@ def clear() -> None:
     global _unknown_until
     _marks.clear()
     _unknown_until = 0.0
+
+
+def _mark_session(assembled: Assembled, internal: Any = None) -> None:
+    """Mark the session when content it receives was flagged or partly judged (#456).
+
+    Semantic request guards read the mark before a guarded call leaves. A refused
+    response reached the agent as a refusal, not as content, so it does not
+    mark. An internal tool judges its own content and says so in the result
+    it returns, which is where its warning is read (``internal``).
+    """
+    if assembled.outcome not in (Outcome.OK, Outcome.TOOL_ERROR):
+        return
+    if assembled.warning is not None or (internal is not None and _carries_warning(internal)):
+        session = current_session.get()
+        if mark_flagged(session):
+            # The taint's origin, once per session: the call_ref joins it to
+            # the audit row of the response that carried the flag (#457).
+            logger.info(
+                "gateway: session %s… marked flagged by call_ref=%s",
+                session[:8],
+                current_call.get() or "?",
+            )
+
+
+def _carries_warning(call_result: Any) -> bool:
+    """Whether an internal tool's result carries the perimeter's ``_trentina_warning``."""
+    structured = call_result.structured_content
+    if isinstance(structured, dict):
+        return bool(structured.get(WARNING_KEY))
+    for block in call_result.content or ():
+        text = block.get("text") if isinstance(block, dict) else None
+        if not isinstance(text, str) or WARNING_KEY not in text:
+            continue
+        try:
+            body = json.loads(text)
+        except ValueError:
+            continue
+        if isinstance(body, dict) and body.get(WARNING_KEY):
+            return True
+    return False

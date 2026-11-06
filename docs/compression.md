@@ -23,11 +23,17 @@ Compression is the `summarize` transform on the tool-description channel
    whose `preprocess_tool_descriptions` names `summarize`, in the background.
 2. **Cache check**: each tool description is hashed (SHA-256); a hit is a dict
    lookup, no model call.
-3. **Batch compression**: misses go to the operator's model (the service
-   identity, [Operator](operator.md)), five tool descriptions or twenty
+3. **Batch compression**: misses go to the LISTING profile's own model and key
+   (6.1.0; it was the operator's, see [Operator](operator.md)), and the result
+   is cached in that profile's own partition — a shortened description is a
+   model rewrite one tenant paid for. Five tool descriptions or twenty
    parameter descriptions per call, with a schema-constrained response.
 4. **Cache storage**: results shorter than the original are stored in SQLite,
-   keyed by hash, so the same text from any backend or profile is one entry.
+   keyed by **owner and hash** (6.1.0), so the same text from any backend is
+   one entry *per grant owner* — shared between a profile and the federation
+   ingress derived from it, which spend one credential, and with nobody else.
+   It was one entry gateway-wide, which meant one tenant's key paid to shorten
+   a description another tenant was then served.
 5. **Passthrough on failure**: a model that is unavailable leaves the original
    description in place.
 6. **Background swap**: nothing compressed is served until the aggregate is
@@ -148,7 +154,7 @@ agent reads was already judged, so the verdict cache is untouched and enabling
 it re-judges nothing. It is on by default; `compact_schemas: false` on a
 backend turns it off.
 
-Measured on the lotor tool cache (800 tools, 26 backends): 519k → 461k schema
+Measured on the production tool cache (800 tools, 26 backends): 519k → 461k schema
 characters, 11%, about 15k tokens.
 
 Since 0.38.0 the same step drops three fields no agent reads: `outputSchema`

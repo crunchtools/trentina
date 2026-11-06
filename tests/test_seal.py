@@ -17,16 +17,28 @@ runtime token is the stricter layer for untrusted authors. It is the same
 structural shape as ``test_disposition_parity``: one rule in one place, no
 enforcement spread across the codebase.
 
-As Trentina 3.0 lands its other trust types each joins ``SEALED`` with the
-function that builds it: ``Posture`` and ``Judged`` when their factories arrive
-with the orchestrator (``identity.posture`` / ``core.gate``, Phase 4), and
-``ResolvedPath`` when the confined open returns one.
+All four of Trentina 3.0's unforgeable trust types are now sealed, each to the
+function that builds it: ``ResolvedTarget`` to ``egress.check_url``,
+``ResolvedPath`` to the confined open, ``Posture`` to ``identity.posture``, and
+``Judged`` to the orchestrator's ``judge_response`` (built only once the gate
+has run).
 """
 
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
+
+import pytest
+
+from trentina.core.dispose import Posture
+from trentina.core.stages import Judged
+from trentina.modes import Mode, ModePolicy
+from trentina.reach.egress import ResolvedTarget
+from trentina.seal import Seal
+from trentina.tools.confine import ResolvedPath
+from trentina.transports.perimeter import PinnedUpstream
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "trentina"
 
@@ -38,6 +50,19 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "trentina"
 SEALED: dict[str, tuple[str, str]] = {
     # A ResolvedTarget is proof an address passed egress.check_url.
     "ResolvedTarget": ("reach/egress.py", "check_url"),
+    # A ResolvedPath is proof a path passed confinement and was opened under
+    # O_NOFOLLOW — so no code can hand read_tool/dir_tool a forged "confined" path.
+    "ResolvedPath": ("tools/confine.py", "open_confined"),
+    # A Posture is built from the bound request identity (honeypot read from the
+    # ambient scope), never assembled ad hoc where a field could drift.
+    "Posture": ("core/identity.py", "posture"),
+    # A Judged binds a gate verdict to the exact transformed bytes it was reached
+    # over — built only after scan_tool_response (the gate) has run, so holding
+    # one is proof the gate ran on those bytes and no others.
+    "Judged": ("orchestrator.py", "judge_response"),
+    # A PinnedUpstream is proof the spine resolved the origin a route named from
+    # that route's own instance (#535): a route sends only where it was handed.
+    "PinnedUpstream": ("transports/perimeter.py", "_dial"),
 }
 
 
@@ -88,3 +113,71 @@ def test_sealed_types_are_constructed_only_by_their_factory() -> None:
         "A sealed trust type is constructed only by the function that checks it; "
         "elsewhere it would be a value no check stands behind:\n  " + "\n  ".join(violations)
     )
+
+
+# The Phase 6 RUNTIME half: each sealed type carries a module-private Seal token
+# its factory alone holds (``core.seal``), so a value of the type is proof the
+# factory built it even for an out-of-tree author who never ran the AST test
+# above. The token name is referenced only where it is defined (the type's
+# module) and where it is passed (the factory's module); a reference anywhere
+# else is a handle to forge the type at runtime, and is forbidden here.
+SEAL_TOKENS: dict[str, frozenset[str]] = {
+    "_TARGET_SEAL": frozenset({"reach/egress.py"}),
+    "_PATH_SEAL": frozenset({"tools/confine.py"}),
+    "_POSTURE_SEAL": frozenset({"core/dispose.py", "core/identity.py"}),
+    "_JUDGED_SEAL": frozenset({"core/stages.py", "orchestrator.py"}),
+    "_UPSTREAM_SEAL": frozenset({"transports/perimeter.py"}),
+}
+
+
+def test_seal_tokens_live_only_with_their_type_and_factory() -> None:
+    violations: list[str] = []
+    for path in SRC.rglob("*.py"):
+        rel = str(path.relative_to(SRC))
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                name = node.id
+            elif isinstance(node, ast.Attribute):
+                name = node.attr
+            else:
+                continue
+            if name in SEAL_TOKENS and rel not in SEAL_TOKENS[name]:
+                violations.append(f"{rel}:{node.lineno}: references seal token {name}")
+    assert not violations, (
+        "A seal token is a handle to forge its type at runtime; it belongs only "
+        "with the type's definition and its factory:\n  " + "\n  ".join(violations)
+    )
+
+
+def _without_seal() -> dict[str, object]:
+    """Each sealed type built with every field BUT the seal token — so what
+    fails is the seal, not a missing argument. Values are placeholders: the
+    seal's ``__post_init__`` runs before anything reads them."""
+    policy = ModePolicy((Mode.FLAG,), Mode.FLAG)
+    st = os.stat(__file__)
+    return {
+        "ResolvedTarget": lambda **k: ResolvedTarget(host="h", port=443, addresses=(), **k),
+        "ResolvedPath": lambda **k: ResolvedPath(fd=0, st=st, path=Path("/"), **k),
+        "Posture": lambda **k: Posture(mode=Mode.FLAG, policy=policy, **k),
+        "Judged": lambda **k: Judged(transformed=object(), decision=object(), **k),
+        "PinnedUpstream": lambda **k: PinnedUpstream(
+            op=object(), route="r", bound=object(), origin=object(), idle=1.0, **k
+        ),
+    }
+
+
+@pytest.mark.parametrize("type_name", sorted(_without_seal()))
+def test_sealed_type_refuses_a_missing_token(type_name: str) -> None:
+    """Direct construction gets the ``UNSEALED`` default and is refused."""
+    build = _without_seal()[type_name]
+    with pytest.raises(TypeError, match="constructed only by"):
+        build()
+
+
+@pytest.mark.parametrize("type_name", sorted(_without_seal()))
+def test_sealed_type_refuses_a_foreign_token(type_name: str) -> None:
+    """A token the forger minted is not the factory's, so identity rejects it."""
+    build = _without_seal()[type_name]
+    with pytest.raises(TypeError, match="constructed only by"):
+        build(_seal=Seal("forger"))

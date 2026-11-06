@@ -3,8 +3,8 @@
 The proxy holds one JWT audience for the whole gateway (FastMCP's
 ``OAuthProxy`` stores a single resource URL), so before #298 a token minted
 for an agent-role profile verified at an operator-role profile that
-allowlisted the same email. The allowlist was the only line between seats,
-and an agent that holds its own seat's token is exactly the caller that line
+allowlisted the same email. The allowlist was the only line between profiles,
+and an agent that holds its own profile's token is exactly the caller that line
 does not stop.
 
 The binding has two halves, both kept in the proxy's own encrypted store:

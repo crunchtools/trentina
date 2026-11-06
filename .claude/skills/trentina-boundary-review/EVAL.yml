@@ -89,9 +89,9 @@ cases:
     must_find:
       - id: guard-denial-unaudited
         obligations: [O3]
-        keywords: [guard_err, check_parameter_guards, denied_guard, DENIED_GUARD, parameter guard]
+        keywords: [guard_err, check_request_guards, denied_guard, DENIED_GUARD, request guard]
         expectation: >-
-          Identifies that the parameter-guard denial returns before _audit, so
+          Identifies that the request-guard denial returns before _audit, so
           a refused call leaves no audit row.
       - id: allowlist-denial-unaudited
         obligations: [O3]

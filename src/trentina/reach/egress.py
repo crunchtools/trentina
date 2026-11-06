@@ -32,7 +32,7 @@ import socket
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from typing import TYPE_CHECKING, Any
 
 import httpcore
@@ -40,6 +40,7 @@ import httpx
 
 from ..config import get_config
 from ..errors import EgressRefusedError
+from ..seal import UNSEALED, Seal, require
 
 if TYPE_CHECKING:
     import ssl
@@ -119,6 +120,14 @@ class ResolvedTarget:
     host: str
     port: int
     addresses: tuple[str, ...]
+    _seal: InitVar[Seal] = UNSEALED
+
+    def __post_init__(self, _seal: Seal) -> None:
+        require(_seal, _TARGET_SEAL, "ResolvedTarget")
+
+
+#: The token ``check_url`` holds to build a ``ResolvedTarget``; see ``core.seal``.
+_TARGET_SEAL = Seal("check_url")
 
 
 def _embedded_v4(ip: ipaddress.IPv6Address) -> list[ipaddress.IPv4Address]:
@@ -208,16 +217,19 @@ async def check_url(url: str | httpx.URL) -> ResolvedTarget:
     if parsed.scheme not in ALLOWED_SCHEMES:
         raise EgressRefusedError("scheme")
     port = DEFAULT_PORTS[parsed.scheme] if parsed.port is None else parsed.port
-    if port not in ALLOWED_PORTS:
-        raise EgressRefusedError("port")
     host = parsed.raw_host.decode("ascii")
+    # A name on TRENTINA_FETCH_PRIVATE_NAMES may reach any port: the operator
+    # let it answer privately by env, which is the decision the port rule makes.
+    private_name = host.lower() in get_config().fetch_private_names
+    if port not in ALLOWED_PORTS and not private_name:
+        raise EgressRefusedError("port")
     if not host:
         raise EgressRefusedError("unresolvable")
 
     addresses = await _resolve(host, port)
     if not addresses:
         raise EgressRefusedError("unresolvable")
-    if not get_config().fetch_allow_private:
+    if not get_config().fetch_allow_private and not private_name:
         for answer in addresses:
             try:
                 ip = ipaddress.ip_address(answer)
@@ -226,7 +238,9 @@ async def check_url(url: str | httpx.URL) -> ResolvedTarget:
             if not is_global_address(ip):
                 log.warning("egress: refused a non-global address")
                 raise EgressRefusedError("non_global_address")
-    return ResolvedTarget(host=host, port=port, addresses=tuple(dict.fromkeys(addresses)))
+    return ResolvedTarget(
+        host=host, port=port, addresses=tuple(dict.fromkeys(addresses)), _seal=_TARGET_SEAL
+    )
 
 
 def is_encoded(response: httpx.Response) -> bool:

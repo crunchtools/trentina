@@ -37,6 +37,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..channels import Channel, Kind
+from ..plugins.registry import TRANSFORM_GROUP, discover, resolve_transform
 from ..transforms import (
     DetectProcessor,
     EmailProcessor,
@@ -101,6 +102,16 @@ CHANNEL_KIND: dict[Channel, Kind] = {
 }
 
 
+def _plugin_config(cfg: ProcessorChainConfig) -> dict[str, object]:
+    """The stable config a plugin factory receives: the chain's scalar size
+    knobs only. Never the pydantic model, never the key provider — a plugin
+    sees budgets, not policy or credentials."""
+    return {
+        "skip_sample_bytes": cfg.skip_sample_bytes,
+        "target_bytes": getattr(cfg, "target_bytes", None),
+    }
+
+
 def build_transforms(
     cfg: ProcessorChainConfig,
     *,
@@ -121,13 +132,27 @@ def build_transforms(
     """
     want = CHANNEL_KIND[channel]
     out: list[Any] = []
+    catalog: dict[str, Any] | None = None
     for name in cfg.processors:
-        factory = TRANSFORMS.get(name)
-        if factory is None:  # pragma: no cover - the Literal blocks this
-            raise ProfileConfigError(
-                f"Profile {profile_name!r}: unknown transform {name!r}; known: {sorted(TRANSFORMS)}"
+        if ":" in name:
+            # An out-of-tree plugin, `dist:name`. The registry builds and
+            # contract-checks it; the channel and kind locks below are the
+            # same it applies to a built-in. Its config is the chain's scalar
+            # knobs, never `keys` (no plugin receives a credential provider).
+            # Discover entry points once per chain, not once per plugin.
+            if catalog is None:
+                catalog = discover(TRANSFORM_GROUP)
+            processor = resolve_transform(
+                name, _plugin_config(cfg), profile_name=profile_name, catalog=catalog
             )
-        processor = factory(cfg, keys)
+        else:
+            factory = TRANSFORMS.get(name)
+            if factory is None:  # pragma: no cover - the Literal blocks this
+                raise ProfileConfigError(
+                    f"Profile {profile_name!r}: unknown transform {name!r}; "
+                    f"known: {sorted(TRANSFORMS)}"
+                )
+            processor = factory(cfg, keys)
         if channel not in processor.channels:
             raise ProfileConfigError(
                 f"Profile {profile_name!r}: transform {processor.name!r} is "

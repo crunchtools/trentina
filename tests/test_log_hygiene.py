@@ -19,6 +19,7 @@ import ast
 import asyncio
 import contextlib
 import functools
+import json
 import logging
 import pathlib
 from collections.abc import Iterator
@@ -40,6 +41,7 @@ from trentina.gateway import internal
 from trentina.gateway.app import gateway_app
 from trentina.gateway.errors import BackendCallError
 from trentina.gateway.loader import GatewayConfig
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -47,9 +49,13 @@ from trentina.gateway.profile import (
     ParameterConstraint,
     Profile,
 )
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
+from trentina.testing.hygiene import LogCapture, capture_logs, leaked
 from trentina.tools import cache as cache_tool
+from trentina.tools import config as config_tool_mod
+from trentina.tools import keygen as keygen_tool
 from trentina.tools import reconnect as reconnect_tool
+from trentina.tools import token as token_tool
+from trentina.transports.mcp import route_jsonrpc
 
 from .mode_harness import MALICIOUS, layers
 
@@ -59,58 +65,19 @@ if TYPE_CHECKING:
 CANARY = "zqx7canary"
 URL = f"https://{CANARY}.example.com/{CANARY}?q={CANARY}"
 
-#: Loggers that do not propagate to the root, so they are watched directly.
-_DETACHED = ("fastmcp",)
-
-
-class _Capture(logging.Handler):
-    def __init__(self) -> None:
-        super().__init__(logging.DEBUG)
-        self.records: list[logging.LogRecord] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record)
-
-
-def _rendered(record: logging.LogRecord) -> str:
-    fmt = logging.Formatter()
-    parts = [record.getMessage()]
-    if record.exc_info:
-        parts.append(fmt.formatException(record.exc_info))
-    if record.exc_text:
-        parts.append(record.exc_text)
-    if record.stack_info:
-        parts.append(fmt.formatStack(record.stack_info))
-    return "\n".join(parts)
+# The capture harness lives in the public `trentina.testing.hygiene`, shared
+# with the plugin conformance suite (Phase 6). `_Capture` stays as the alias
+# this file's ~35 fixtures annotate against.
+_Capture = LogCapture
 
 
 @pytest.fixture
-def captured() -> Iterator[_Capture]:
+def captured() -> Iterator[LogCapture]:
     """Every record at DEBUG, with the production filters and clamps installed."""
-    watched = ["", "httpx", "httpcore", "mcp", "uvicorn.access", *_DETACHED]
-    saved = {name: logging.getLogger(name).level for name in watched}
-    handler = _Capture()
-    root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
-    logging.getLogger("httpx").setLevel(logging.DEBUG)
-    logsafe.install(logging.DEBUG)
-    root.addHandler(handler)
-    for name in _DETACHED:
-        logging.getLogger(name).addHandler(handler)
-    try:
+    with capture_logs() as handler:
         yield handler
-    finally:
-        root.removeHandler(handler)
-        for name in _DETACHED:
-            logging.getLogger(name).removeHandler(handler)
-        for name, level in saved.items():
-            logging.getLogger(name).setLevel(level)
-    leaked = [
-        f"{r.name}:{r.levelname}: {_rendered(r)[:300]}"
-        for r in handler.records
-        if CANARY in _rendered(r)
-    ]
-    assert not leaked, "caller-chosen text reached the log:\n" + "\n".join(leaked)
+    found = leaked(handler, CANARY)
+    assert not found, "caller-chosen text reached the log:\n" + "\n".join(found)
     assert handler.records, "nothing was logged: the path under test did not run"
 
 
@@ -248,6 +215,96 @@ class TestInternalTools:
     async def test_admin_tools_refusing_a_name(self, captured: _Capture) -> None:
         await cache_tool.cache_flush(CANARY)
         await reconnect_tool.reconnect_backend(CANARY)
+        # A key name becomes a filename, so a rejected one must not be logged
+        # either as itself or as part of a path (#633).
+        await keygen_tool.federation_keygen(f"{CANARY}/../escape")
+        # A token name becomes a filename too, and this tool hands back a live
+        # credential, so a rejected name must not be logged either (#635).
+        await token_tool.profile_token(f"{CANARY}/../escape")
+        # A config path is caller-chosen and becomes keys in a file, so neither
+        # the path nor a refusal about it may reach the journal (#633).
+        await config_tool_mod.manage_config("get", f"profiles.{CANARY}")
+        await config_tool_mod.manage_config("set", f"profiles.{CANARY}", 1, "deadbeef")
+
+    async def test_a_wrong_approval_password_never_reaches_a_record(
+        self, captured: _Capture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The approval password is typed by a person into a public page (#637).
+        A wrong one is someone's guess, a right one is the capability itself,
+        and neither may be written down where journal_query can read it."""
+        from trentina.gateway import approver
+
+        monkeypatch.setenv(
+            "TRENTINA_APPROVAL_PASSWORD_HASH", approver.make_verifier("a-real-password-here")
+        )
+        assert approver.verify(CANARY) is False
+        # And a verifier that cannot be parsed logs the KIND, never the attempt.
+        monkeypatch.setenv("TRENTINA_APPROVAL_PASSWORD_HASH", f"scrypt$bad${CANARY}")
+        assert approver.verify(CANARY) is False
+
+    def test_the_passkey_pages_never_log_what_a_browser_sent(
+        self, captured: _Capture, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """The sign-in and passkey routes are unauthenticated and public
+        (#639): every field, header and failure reason reaching a record is a
+        string a stranger chose, so none of them may."""
+        from fastmcp import FastMCP
+        from starlette.applications import Starlette
+        from starlette.testclient import TestClient
+
+        from tests.passkey_helper import Authenticator
+        from trentina import config as config_mod
+        from trentina.gateway import approval_routes, approval_session, approver
+
+        monkeypatch.setenv("QUARANTINE_DB", str(tmp_path / "trentina.db"))
+        monkeypatch.setenv("TRENTINA_RATE_LIMIT", "off")
+        config_mod._config = None
+        approver.set_password("a-real-password-here")
+        mcp = FastMCP("t")
+        approval_routes.register_approval_routes(mcp)
+        client = TestClient(
+            Starlette(routes=mcp._additional_http_routes), base_url="https://gw.example"
+        )
+        json_headers = {"Content-Type": "application/json", "Origin": "https://gw.example"}
+
+        def post(path: str, body: dict[str, Any], **headers: str) -> None:
+            client.post(path, content=json.dumps(body), headers={**json_headers, **headers})
+
+        for ceremony in ("signin", "register", CANARY):
+            post(approval_routes.BEGIN_PATH, {"ceremony": ceremony, "code": CANARY, "csrf": CANARY})
+        post(approval_routes.BEGIN_PATH, {"ceremony": "signin"}, Origin=f"https://{CANARY}.example")
+        challenge = client.post(
+            approval_routes.BEGIN_PATH, content='{"ceremony": "signin"}', headers=json_headers
+        ).json()["challenge"]
+        auth = Authenticator(origin=f"https://{CANARY}.example")
+        post(approval_routes.FINISH_PATH, auth.sign_in_json(challenge, next=CANARY, name=CANARY))
+        post(approval_routes.FINISH_PATH, {"ceremony": "signin", "challenge": CANARY, "id": CANARY})
+        post(approval_routes.FINISH_PATH, {"ceremony": "register", "code": CANARY, "name": CANARY})
+        client.post(approval_routes.PATH, data={"password": CANARY, "next": CANARY})
+        client.post(
+            approval_routes.SETUP_PATH, data={"action": CANARY, "csrf": CANARY, "id": CANARY}
+        )
+        client.post(
+            approval_routes.SETUP_PATH,
+            data={"action": "enrol_password", "code": CANARY, "new": CANARY, "again": CANARY},
+        )
+        # A registration that fails inside the ceremony, with a session behind it.
+        client.post(approval_routes.PATH, data={"password": "a-real-password-here"})
+        page = client.get(approval_routes.SETUP_PATH).text
+        csrf = page.split('name="csrf" value="')[1].split('"')[0]
+        begun = client.post(
+            approval_routes.BEGIN_PATH,
+            content=json.dumps({"ceremony": "register", "csrf": csrf}),
+            headers=json_headers,
+        ).json()
+        post(
+            approval_routes.FINISH_PATH,
+            auth.register_json(begun["challenge"], csrf=csrf, name=CANARY),
+        )
+        # Every one of those was refused: nothing a stranger sent was kept.
+        assert approver.passkeys() == []
+        approval_session.clear()
+        config_mod._config = None
 
 
 # ------------------------------------------------------------ proxied tools
@@ -267,7 +324,7 @@ def _profile() -> Profile:
 class TestProxiedTools:
     async def test_backend_that_fails(self, captured: _Capture) -> None:
         profile = _profile()
-        backend_mod._tool_list_cache["http://mcp-slack:8000/mcp"] = [
+        backend_mod._tool_list_cache[("http://mcp-slack:8000/mcp", "")] = [
             {
                 "name": "post",
                 "inputSchema": {
@@ -302,10 +359,10 @@ class TestProxiedTools:
         profile.backends["mcp-slack"] = Backend(
             url="http://mcp-slack:8000/mcp",
             destination_params={"send_message": "channel"},
-            parameter_guards={"send_message": {"text": ParameterConstraint(deny=["*"])}},
+            literal_request_guards={"send_message": {"text": ParameterConstraint(deny=["*"])}},
         )
         profile.backends["web"] = Backend(url="internal://web")
-        backend_mod._tool_list_cache["http://mcp-slack:8000/mcp"] = [
+        backend_mod._tool_list_cache[("http://mcp-slack:8000/mcp", "")] = [
             {"name": "send_message", "inputSchema": {}}
         ]
         with patch.object(
@@ -364,7 +421,7 @@ class TestProxiedTools:
 )
 def test_loggable_tool(listed: str, name: str, verbatim: bool) -> None:
     url = "http://mcp-slack:8000/mcp"
-    backend_mod._tool_list_cache[url] = [{"name": listed, "inputSchema": {}}]
+    backend_mod._tool_list_cache[(url, "")] = [{"name": listed, "inputSchema": {}}]
     assert (backend_mod.loggable_tool(url, name) == name) is verbatim
 
 
@@ -392,14 +449,18 @@ class TestProxies:
     async def test_matrix_unparseable_response_and_failed_fallback(
         self, captured: _Capture
     ) -> None:
+        from trentina import orchestrator
         from trentina.gateway import matrix_proxy
+        from trentina.gateway.relay import Operation
 
         from .test_matrix_proxy import _matrix_profile
 
         resp = httpx.Response(200, content=f"{{not json {CANARY}".encode())
         profile = _matrix_profile()
-        op = matrix_proxy.Operation(profile, backend=matrix_proxy.BACKEND, tool="GET")
-        with patch.object(matrix_proxy, "defend", side_effect=RuntimeError(f"said {CANARY}")):
+        op = Operation(profile, backend=matrix_proxy.BACKEND, tool="GET")
+        # The text-fallback defend() lives in the orchestrator now; patch it there
+        # so the fallback path still fails and logs (its message moved with it).
+        with patch.object(orchestrator, "defend", side_effect=RuntimeError(f"said {CANARY}")):
             await matrix_proxy._scan_and_forward(
                 resp,
                 {"content-type": "application/json"},
@@ -429,7 +490,7 @@ class TestProxies:
         caller chose, through a carried fetch, a carried push and five
         refusals. The repository is in the upstream URL httpx would log."""
         from trentina import database
-        from trentina.gateway import git_transport, upstream
+        from trentina.gateway import loader, upstream
         from trentina.reach import egress
 
         from . import git_harness as harness
@@ -442,7 +503,7 @@ class TestProxies:
         upstream._pool.clear()
         profiles = {"agent1": harness.profile(fetch=("acme/*",), push=("acme/*",))}
         active = SimpleNamespace(config=SimpleNamespace(git_remotes=harness.remotes()))
-        monkeypatch.setattr(git_transport, "get_active_config", lambda: active)
+        monkeypatch.setattr(loader, "get_active_config", lambda: active)
         monkeypatch.setattr(egress, "_lookup", lambda _host, _port: [PUBLIC_ADDRESS])
         forge = harness.Scripted()
         bearer = {"Authorization": f"Bearer {harness.GATEWAY_TOKEN}", "X-Canary": CANARY}
@@ -499,7 +560,8 @@ class TestProxies:
             upstream._checked.clear()
         assert statuses == [200, 200, 400, 400, 404, 400, 403, 403]
         assert len(forge.requests) == 2
-        assert any("git transport: refused" in r.getMessage() for r in captured.records)
+        # The refusal is logged by the spine, the route named and nothing the caller sent.
+        assert any("perimeter: refused route=git" in r.getMessage() for r in captured.records)
 
 
 # ------------------------------------------------------------ refusals and housekeeping (#292)

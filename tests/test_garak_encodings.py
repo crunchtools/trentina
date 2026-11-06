@@ -126,8 +126,12 @@ class TestHarness:
         assert (encoded.l2, encoded.decoded, encoded.flagged) == (False, True, True)
 
     def test_a_text_nothing_decodes_is_read_as_it_arrived(self) -> None:
+        # Leetspeak is not a cipher the unpack stage reads back, so the model
+        # reads the text as it arrived and never sees the plaintext word it
+        # flags. (base32 stood here until #546, ROT13 until #720.)
         with patch.object(l2_encodings, "classify", _flags("quarterly")):
-            reading = l2_encodings.read(ENCODINGS["base32"]("the quarterly numbers are attached"))
+            leet = ENCODINGS["leetspeak"]("the quarterly numbers are attached")
+            reading = l2_encodings.read(leet)
         assert (reading.l2, reading.decoded, reading.flagged) == (False, False, False)
         assert reading.l1 == 0
 

@@ -8,6 +8,7 @@ deterministic code, which decides whether to record a detection.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -16,12 +17,36 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-from . import audit_chain
+from . import audit_chain, telemetry
 from .config import get_config, int_env
+from .logsafe import exc_kind
 from .outcomes import Outcome, group_of
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+logger = logging.getLogger(__name__)
+
+# Every connection sets `PRAGMA busy_timeout=250` (SQLite's default is 0, #662),
+# so contention waits inside SQLite instead of raising at once. That wait is on
+# the caller's thread, which is the event loop.
+
+BUSY_TIMEOUT_MS = 250
+
+#: Attempts at one audit write, and the wall clock they share. Both bound it:
+#: a fast failure (SQLITE_PROTOCOL) gets every attempt, while one that spent a
+#: busy timeout gets however many fit the budget, and a retry's busy timeout is
+#: cut to what is left of it. Without the budget three attempts could hold the
+#: loop for 750 ms. There is no sleep of our own —
+#: `asyncio.sleep` is not reachable from a synchronous caller.
+AUDIT_ATTEMPTS = 3
+AUDIT_RETRY_BUDGET = 0.3
+
+# Rows given up on since the last successful write, written to `audit_losses`
+# by the next one. Held here because at failure time the store is unwritable.
+_lost_pending = 0
+_lost_reason = ""
+_last_written_id = 0
 
 _db: sqlite3.Connection | None = None
 _db_path = ""  # set by get_db on every open
@@ -42,9 +67,22 @@ CREATE TABLE IF NOT EXISTS audit_checkpoints (
     rows_pruned INTEGER NOT NULL
 )"""
 
+# Audit rows that could not be written (#662). Not a checkpoint: those anchor
+# where `verify` starts walking, and a lost row anchors nothing. A lost row
+# leaves the chain continuous (the next row chains to the last one WRITTEN), so
+# this table is the only trace; `verify` sums it and reports the record
+# incomplete.
 SCHEMA = (
     _CHECKPOINTS_TABLE
     + """;
+
+CREATE TABLE IF NOT EXISTS audit_losses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at REAL NOT NULL,
+    rows_lost INTEGER NOT NULL,
+    last_id INTEGER NOT NULL,
+    reason_kind TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS detections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,6 +128,9 @@ CREATE TABLE IF NOT EXISTS gateway_calls (
     session TEXT,
     call_ref TEXT,
     content_digest TEXT,
+    caller_peer TEXT,
+    caller_sub TEXT,
+    federated_verdict TEXT,
     detections_digest TEXT,
     prev_hash TEXT,
     row_hash TEXT
@@ -98,14 +139,21 @@ CREATE TABLE IF NOT EXISTS gateway_calls (
 CREATE INDEX IF NOT EXISTS idx_gateway_calls_timestamp ON gateway_calls(timestamp);
 CREATE INDEX IF NOT EXISTS idx_gateway_calls_profile_tool ON gateway_calls(profile, backend, tool);
 
+-- Keyed by owner as well as hash since 6.1.0: a compressed description is a
+-- model rewrite one profile's key paid for, and it is served only back to that
+-- owner. The migration below drops rows written before the column existed —
+-- they cannot be attributed to an owner, and adopting them into a tenant's
+-- cache is the cross-tenant spend this release removes.
 CREATE TABLE IF NOT EXISTS tool_compressions (
-    description_hash TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    description_hash TEXT NOT NULL,
     original_description TEXT NOT NULL,
     compressed_description TEXT NOT NULL,
     model TEXT NOT NULL,
     compressed_at TEXT NOT NULL,
     original_length INTEGER NOT NULL,
-    compressed_length INTEGER NOT NULL
+    compressed_length INTEGER NOT NULL,
+    PRIMARY KEY (owner, description_hash)
 );
 
 CREATE TABLE IF NOT EXISTS tool_names (
@@ -118,10 +166,16 @@ CREATE TABLE IF NOT EXISTS tool_names (
     UNIQUE (profile, backend, tool)
 );
 
+-- One row per (URL, owner) since 6.1.0. A tool list is whatever the backend
+-- returned to the credential that asked for it, so a single row per URL served
+-- one holder the list another holder's token had earned. A backend that carries
+-- no credential uses the empty owner, which every profile reads.
 CREATE TABLE IF NOT EXISTS tool_list_cache (
-    backend_url TEXT PRIMARY KEY,
+    backend_url TEXT NOT NULL,
+    owner TEXT NOT NULL,
     tools_json TEXT NOT NULL,
-    cached_at TEXT NOT NULL
+    cached_at TEXT NOT NULL,
+    PRIMARY KEY (backend_url, owner)
 );
 
 -- What a honeypot profile was delivered, whole, with every layer's verdict
@@ -156,6 +210,7 @@ def get_db(db_path: str | None = None) -> sqlite3.Connection:
         _db_path = path
         _db.row_factory = sqlite3.Row
         _db.execute("PRAGMA journal_mode=WAL")
+        _db.execute("PRAGMA busy_timeout=250")  # BUSY_TIMEOUT_MS; PRAGMA takes no parameter
         _db.execute("PRAGMA foreign_keys=ON")
         _db.executescript(SCHEMA)
         _migrate(_db)
@@ -188,6 +243,7 @@ def snapshot_reader(path: str) -> Iterator[None]:
     """
     conn = sqlite3.connect(f"file:{quote(path)}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=250")  # BUSY_TIMEOUT_MS; PRAGMA takes no parameter
     _local.reader = conn
     try:
         yield
@@ -233,6 +289,19 @@ _CALL_COLUMNS = (
     ("session", "TEXT"),
     ("call_ref", "TEXT"),
     ("content_digest", "TEXT"),
+    # The real caller behind a federated request (#592, C2): the peer whose
+    # primary key VERIFIED (the actor) and the sub it ASSERTS. NULL for older rows
+    # and every non-federated call; they enter row_hash only when non-NULL, so
+    # an old row still verifies (audit_chain.row_hash).
+    ("caller_peer", "TEXT"),
+    ("caller_sub", "TEXT"),
+    # Whether a federated response was served on the secondary's signed verdict
+    # or re-judged here, and if re-judged, why (#637): one of
+    # ``vsa.AUDITED_VERDICTS``. NULL for older rows and every non-federated
+    # call, and it enters row_hash only when non-NULL, so an old row still
+    # verifies. Without it there is no way to see how much of a federated link
+    # is actually running on the peer's scan.
+    ("federated_verdict", "TEXT"),
     # The hash chain (#472): a digest of the call's detection rows, the
     # previous row's hash, and this row's.
     ("detections_digest", "TEXT"),
@@ -241,13 +310,52 @@ _CALL_COLUMNS = (
 )
 
 
+#: The two caches 6.1.0 partitions by grant owner, and the column that says a
+#: table has already been rebuilt.
+_OWNER_KEYED = ("tool_compressions", "tool_list_cache")
+
+
+def _rekey_by_owner(db: sqlite3.Connection) -> None:
+    """Rebuild a pre-6.1.0 cache table that had no ``owner`` column.
+
+    Dropped rather than migrated. A row written before the column existed was
+    reached by any profile, so there is no owner to assign it: adopting it into
+    one tenant's cache would grandfather exactly the cross-tenant read and the
+    cross-tenant spend this release removes. Each table refills on the first
+    list, which costs one re-compression per owner and nothing else — the tool
+    lists themselves are re-fetched on every boot anyway (#335).
+
+    ``SCHEMA`` has already run by the time this is called, and its
+    ``CREATE TABLE IF NOT EXISTS`` was a no-op against the old table — so the
+    drop has to be followed by running it again, or the next query meets no
+    table at all.
+    """
+    dropped = []
+    for table in _OWNER_KEYED:
+        present = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+        if present and "owner" not in present:
+            db.execute(f"DROP TABLE {table}")
+            dropped.append(table)
+    if dropped:
+        db.executescript(SCHEMA)
+        logger.info(
+            "db: rebuilt %d cache table(s) for per-owner caching; each refills on the "
+            "next tool list",
+            len(dropped),
+        )
+
+
 def _migrate(db: sqlite3.Connection) -> None:
-    """Apply additive schema migrations to a database created by an older build.
+    """Apply schema migrations to a database created by an older build.
 
     ``CREATE TABLE IF NOT EXISTS`` leaves a pre-existing table untouched, so a
     column added to SCHEMA never reaches an existing deployment without this.
-    Additive only — no column is dropped and no row is rewritten.
+    Additive wherever it can be: no column is dropped and no row rewritten. The
+    two owner-keyed caches in 6.1.0 are the exception — SQLite cannot ALTER a
+    primary key, and their rows cannot be attributed to an owner after the
+    fact, so each is rebuilt empty and refills on the first list.
     """
+    _rekey_by_owner(db)
     columns = {row["name"] for row in db.execute("PRAGMA table_info(gateway_calls)")}
     for column, sql_type in _CALL_COLUMNS:
         if column not in columns:
@@ -349,10 +457,12 @@ _SWEEP_CAPTURES = (
 _INSERT_CALL = (
     "INSERT INTO gateway_calls (id, timestamp, profile, backend, tool, success, duration_ms, "
     "error_message, outcome, bytes_arrived, bytes_delivered, normalized, destination, "
-    "destination_kind, session, call_ref, content_digest, detections_digest, prev_hash, "
-    "row_hash) VALUES (:id, :timestamp, :profile, :backend, :tool, :success, :duration_ms, "
-    ":error_message, :outcome, :bytes_arrived, :bytes_delivered, :normalized, :destination, "
-    ":destination_kind, :session, :call_ref, :content_digest, :detections_digest, "
+    "destination_kind, session, call_ref, content_digest, caller_peer, caller_sub, "
+    "federated_verdict, detections_digest, prev_hash, row_hash) VALUES (:id, :timestamp, "
+    ":profile, :backend, "
+    ":tool, :success, :duration_ms, :error_message, :outcome, :bytes_arrived, "
+    ":bytes_delivered, :normalized, :destination, :destination_kind, :session, :call_ref, "
+    ":content_digest, :caller_peer, :caller_sub, :federated_verdict, :detections_digest, "
     ":prev_hash, :row_hash)"
 )
 
@@ -468,11 +578,21 @@ def _maybe_sweep(db: sqlite3.Connection) -> None:
 
     Run from ``is_blocked`` and ``record_gateway_call``, the first time on the
     first call after start.
+
+    Housekeeping, and it runs INSIDE the two calls that matter most: deleting
+    an expired row is never a reason to lose the row being written or to fail
+    the blocklist answer the perimeter is waiting on. A failed pass leaves the
+    sweep due, so the next call retries it, and the rows it meant to delete
+    stay — which is the harmless direction.
     """
     global _last_sweep
     if _last_sweep is not None and time.monotonic() - _last_sweep < _SWEEP_INTERVAL_SECONDS:
         return
-    removed = max(sweep_expired_blocks(db), sweep_old_gateway_calls(db))
+    try:
+        removed = max(sweep_expired_blocks(db), sweep_old_gateway_calls(db))
+    except Exception as exc:
+        logger.warning("database: a retention sweep did not finish err=%s", exc_kind(exc))
+        return
     if removed < SWEEP_BATCH:
         _last_sweep = time.monotonic()
 
@@ -683,6 +803,9 @@ def record_gateway_call(
     session: str | None = None,
     call_ref: str | None = None,
     content_digest: str | None = None,
+    caller_peer: str | None = None,
+    caller_sub: str | None = None,
+    federated_verdict: str | None = None,
 ) -> None:
     """Record a gateway tools/call invocation.
 
@@ -698,9 +821,73 @@ def record_gateway_call(
     meaning — the call returned usable content — which means a fail-closed
     defense block still reads as ``success = 0``, exactly as it did before.
     """
+    global _lost_pending, _lost_reason
     db = get_db()
     _maybe_sweep(db)
-    success = int(outcome == Outcome.OK.value)
+    fields: dict[str, Any] = {
+        "profile": profile,
+        "backend": backend,
+        "tool": tool,
+        "success": int(outcome == Outcome.OK.value),
+        "duration_ms": duration_ms,
+        "error_message": error_message,
+        "outcome": outcome,
+        "bytes_arrived": bytes_arrived,
+        "bytes_delivered": bytes_delivered,
+        "normalized": json.dumps(normalized) if normalized else None,
+        "destination": destination,
+        "destination_kind": destination_kind,
+        "session": session,
+        "call_ref": call_ref,
+        "content_digest": content_digest,
+        "caller_peer": caller_peer,
+        "caller_sub": caller_sub,
+        "federated_verdict": federated_verdict,
+    }
+    deadline = time.monotonic() + AUDIT_RETRY_BUDGET
+    for attempt in range(AUDIT_ATTEMPTS):
+        try:
+            # A retry may wait only what is left of the budget: the check
+            # below runs between attempts, so an attempt's own busy wait is
+            # what would otherwise carry the total past it.
+            if attempt:
+                _set_busy_timeout(db, _remaining_ms(deadline))
+            row = _write_call(db, fields)
+            break
+        except sqlite3.OperationalError as exc:
+            # Retried whatever it says. Telling apart the errors SQLite already
+            # waited on cannot be done from the error name: the busy handler is
+            # never invoked for SQLITE_LOCKED, and SQLITE_BUSY comes back at
+            # once when a deferred transaction cannot be upgraded.
+            if attempt + 1 < AUDIT_ATTEMPTS and _remaining_ms(deadline) > 0:
+                continue
+            # Given up on. The chain stays continuous without this row, so
+            # `verify` would call the record sound; the count goes to
+            # `audit_losses` with the next write that succeeds.
+            _lost_pending += 1
+            _lost_reason = exc_kind(exc)
+            raise
+        finally:
+            if attempt:
+                _set_busy_timeout(db, BUSY_TIMEOUT_MS)
+    # The row is committed; emit its safe metadata to any telemetry sink. emit
+    # swallows a sink's failure, so this never fails the call (#556).
+    telemetry.emit(telemetry.from_row(row))
+
+
+def _remaining_ms(deadline: float) -> int:
+    """Whole milliseconds left before ``deadline``, never negative."""
+    return max(0, int((deadline - time.monotonic()) * 1000))
+
+
+def _set_busy_timeout(db: sqlite3.Connection, ms: int) -> None:
+    """How long SQLite may wait on a lock before this connection's next statement fails."""
+    db.execute(f"PRAGMA busy_timeout={min(int(ms), BUSY_TIMEOUT_MS)}")
+
+
+def _write_call(db: sqlite3.Connection, fields: dict[str, Any]) -> dict[str, Any]:
+    """One attempt at writing an audit row (and any pending loss record) in one transaction."""
+    global _lost_pending, _last_written_id
     # The tail read and the insert share one write lock (#472): the singleton
     # cannot fork the chain inside this process, but the CLI or a second
     # process could. The id is chosen here, not by AUTOINCREMENT, because
@@ -712,30 +899,26 @@ def record_gateway_call(
         row: dict[str, Any] = {
             "id": max(int(seq[0]) if seq else 0, int(top)) + 1,
             "timestamp": time.time(),
-            "profile": profile,
-            "backend": backend,
-            "tool": tool,
-            "success": success,
-            "duration_ms": duration_ms,
-            "error_message": error_message,
-            "outcome": outcome,
-            "bytes_arrived": bytes_arrived,
-            "bytes_delivered": bytes_delivered,
-            "normalized": json.dumps(normalized) if normalized else None,
-            "destination": destination,
-            "destination_kind": destination_kind,
-            "session": session,
-            "call_ref": call_ref,
-            "content_digest": content_digest,
-            "detections_digest": audit_chain.detections_digest(db, call_ref),
+            **fields,
+            "detections_digest": audit_chain.detections_digest(db, fields["call_ref"]),
             "prev_hash": audit_chain.tail_hash(db),
         }
         row["row_hash"] = audit_chain.row_hash(row)
+        lost = _lost_pending
+        if lost:
+            db.execute(
+                "INSERT INTO audit_losses (at, rows_lost, last_id, reason_kind) "
+                "VALUES (?, ?, ?, ?)",
+                (time.time(), lost, _last_written_id, _lost_reason or "unknown"),
+            )
         db.execute(_INSERT_CALL, row)
         db.commit()
     except BaseException:
         db.rollback()
         raise
+    _lost_pending -= lost
+    _last_written_id = int(row["id"])
+    return row
 
 
 def reset_gateway_calls() -> int:
@@ -761,6 +944,32 @@ def reset_gateway_calls() -> int:
         db.rollback()
         raise
     return int(before)
+
+
+def get_federated_verdict_stats(days: int = 30) -> dict[str, dict[str, int]]:
+    """How each federated response was handled, per ``<profile>.<backend>``.
+
+    The signal an operator cannot otherwise read: whether a trust pin is
+    buying anything. A pin that has quietly stopped matching — the peer rotated
+    a key, or swapped a weaker scanner in — keeps working and keeps costing a
+    full local re-judge, and the only trace is the reason in these rows.
+
+    ``federated_verdict`` is NULL on every non-federated call, so those rows
+    are left out rather than counted as a verdict of their own.
+    """
+    db = _read_db()
+    cutoff = time.time() - (days * 86400)
+    rows = db.execute(
+        "SELECT profile, backend, federated_verdict, COUNT(*) AS cnt FROM gateway_calls "
+        "WHERE timestamp > ? AND federated_verdict IS NOT NULL "
+        "GROUP BY profile, backend, federated_verdict",
+        (cutoff,),
+    ).fetchall()
+    stats: dict[str, dict[str, int]] = {}
+    for row in rows:
+        where = f"{row['profile']}.{row['backend']}"
+        stats.setdefault(where, {})[row["federated_verdict"]] = int(row["cnt"])
+    return stats
 
 
 def get_gateway_call_stats(
@@ -1003,30 +1212,47 @@ def get_recent_destinations(
     return grouped
 
 
-def get_all_compressions() -> dict[str, str]:
-    """Load all cached compressions as {description_hash: compressed_description}."""
+def get_all_compressions() -> dict[str, dict[str, str]]:
+    """Load all cached compressions as {owner: {description_hash: compressed}}.
+
+    Keyed by grant owner since 6.1.0: a compressed description is a rewrite one
+    profile's key paid for, and it is served only back to that owner.
+    """
     db = get_db()
     rows = db.execute(
-        "SELECT description_hash, compressed_description FROM tool_compressions"
+        "SELECT owner, description_hash, compressed_description FROM tool_compressions"
     ).fetchall()
-    return {row["description_hash"]: row["compressed_description"] for row in rows}
+    result: dict[str, dict[str, str]] = {}
+    for row in rows:
+        result.setdefault(row["owner"], {})[row["description_hash"]] = row["compressed_description"]
+    return result
 
 
 def save_compression(
+    owner: str,
     description_hash: str,
     original: str,
     compressed: str,
     model: str,
 ) -> None:
-    """Persist a compressed description to SQLite."""
+    """Persist a compressed description to SQLite, under its owner."""
     db = get_db()
     now = datetime.now(UTC).isoformat()
     db.execute(
         "INSERT OR REPLACE INTO tool_compressions "
-        "(description_hash, original_description, compressed_description, "
+        "(owner, description_hash, original_description, compressed_description, "
         "model, compressed_at, original_length, compressed_length) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (description_hash, original, compressed, model, now, len(original), len(compressed)),
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            owner,
+            description_hash,
+            original,
+            compressed,
+            model,
+            now,
+            len(original),
+            len(compressed),
+        ),
     )
     db.commit()
 
@@ -1053,38 +1279,52 @@ def get_compression_stats() -> dict[str, Any]:
     }
 
 
-def get_all_tool_lists() -> dict[str, list[dict[str, Any]]]:
-    """Load all cached tool lists as {backend_url: tools_list}."""
+def get_all_tool_lists() -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """Load all cached tool lists as {(backend_url, owner): tools_list}.
+
+    Keyed by owner as well as URL since 6.1.0. A tool list is whatever the
+    backend returned to the credential that asked, so serving one holder's list
+    to another handed it data a credential it does not hold had earned. An
+    unauthenticated backend uses the empty owner, which every profile shares.
+    """
     db = get_db()
-    rows = db.execute("SELECT backend_url, tools_json FROM tool_list_cache").fetchall()
-    result: dict[str, list[dict[str, Any]]] = {}
+    rows = db.execute("SELECT backend_url, owner, tools_json FROM tool_list_cache").fetchall()
+    result: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in rows:
-        result[row["backend_url"]] = json.loads(row["tools_json"])
+        result[(row["backend_url"], row["owner"])] = json.loads(row["tools_json"])
     return result
 
 
 def save_tool_list(
     backend_url: str,
+    owner: str,
     tools: list[dict[str, Any]],
 ) -> None:
-    """Persist a tool list to SQLite."""
+    """Persist a tool list to SQLite, under the owner whose credential fetched it."""
     db = get_db()
     now = datetime.now(UTC).isoformat()
     db.execute(
         "INSERT OR REPLACE INTO tool_list_cache "
-        "(backend_url, tools_json, cached_at) VALUES (?, ?, ?)",
-        (backend_url, json.dumps(tools), now),
+        "(backend_url, owner, tools_json, cached_at) VALUES (?, ?, ?, ?)",
+        (backend_url, owner, json.dumps(tools), now),
     )
     db.commit()
 
 
-def delete_tool_list(backend_url: str) -> None:
-    """Delete one backend's cached tool list."""
+def delete_tool_list(backend_url: str, owner: str | None = None) -> None:
+    """Delete a backend's cached tool list: one owner's, or every owner's.
+
+    ``owner=None`` is the operator's flush, which drops every partition for
+    that URL; an agent passes its own owner and reaches only its own.
+    """
     db = get_db()
-    db.execute(
-        "DELETE FROM tool_list_cache WHERE backend_url = ?",
-        (backend_url,),
-    )
+    if owner is None:
+        db.execute("DELETE FROM tool_list_cache WHERE backend_url = ?", (backend_url,))
+    else:
+        db.execute(
+            "DELETE FROM tool_list_cache WHERE backend_url = ? AND owner = ?",
+            (backend_url, owner),
+        )
     db.commit()
 
 

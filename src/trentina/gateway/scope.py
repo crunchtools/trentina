@@ -33,71 +33,67 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..database import is_blocked
+from ..errors import BlockedSourceError
+from ..modes import BLOCKLIST_REASON, Mode, refusal_body
 from .context import get_current_profile
 from .errors import ScopeError
-from .loader import get_active_config
 
 if TYPE_CHECKING:
-    from .profile import Backend, Profile
+    from .profile import Backend, DefenseConfig, Profile
 
 
 @dataclass(frozen=True)
 class CallerScope:
     """What one caller may reach.
 
-    ``profile`` is None only in standalone mode, where ``is_operator`` is True
-    and there is nothing to insulate.
+    ``profile`` is always present: a profile behind a live gateway, or the
+    operator profile synthesized from the environment standalone (#P7.3).
     """
 
-    profile: Profile | None
+    profile: Profile
     is_operator: bool
 
     @property
-    def name(self) -> str | None:
-        """The calling profile's name, or None in standalone mode."""
-        return self.profile.name if self.profile is not None else None
+    def name(self) -> str:
+        """The calling profile's name (``standalone`` for the env operator)."""
+        return self.profile.name
 
     @property
     def label(self) -> str:
-        """A name for logs and result payloads that is never None."""
-        return self.name or "standalone"
+        """A name for logs and result payloads."""
+        return self.profile.name
 
     @property
     def backends(self) -> dict[str, Backend]:
-        """The backends this caller may name. Empty in standalone mode."""
-        return self.profile.backends if self.profile is not None else {}
+        """The backends this caller may name."""
+        return self.profile.backends
 
 
-_STANDALONE = CallerScope(profile=None, is_operator=True)
+def current_scope() -> CallerScope:
+    """The calling profile's scope.
 
-
-def current_scope() -> CallerScope | None:
-    """The calling profile's scope, or None when a live gateway bound no caller.
-
-    Returns the standalone scope — full access, no profile — when the gateway
-    was never initialized.
+    Reads the bound profile from ``get_current_profile``: a profile behind a
+    live gateway, the operator synthesized from the environment standalone, or a
+    ``ScopeError`` when a live gateway bound no caller — a path nobody designed,
+    which fails closed rather than acting gateway-wide.
     """
     profile = get_current_profile()
-    if profile is not None:
-        return CallerScope(profile=profile, is_operator=profile.role == "operator")
-    if get_active_config() is None:
-        return _STANDALONE
-    return None
+    return CallerScope(profile=profile, is_operator=profile.role == "operator")
 
 
 def require_caller(tool: str) -> CallerScope:
-    """The calling scope, or raise.
-
-    Args:
-        tool: Tool name, for the log line and the returned message.
+    """The calling scope, or raise with the tool named.
 
     Raises:
         ScopeError: the gateway is live and no profile is bound to this call.
     """
-    scope = current_scope()
-    if scope is None:
-        raise ScopeError(f"{tool}: no calling profile bound — refusing to act gateway-wide")
-    return scope
+    try:
+        return current_scope()
+    except ScopeError:
+        raise ScopeError(
+            f"{tool}: no calling profile bound — refusing to act gateway-wide"
+        ) from None
 
 
 def require_operator(scope: CallerScope, action: str) -> None:
@@ -134,3 +130,69 @@ def resolve_backend(scope: CallerScope, name: str) -> tuple[str, Backend]:
     if backend is None:
         raise ScopeError(f"backend {name!r} is not in this profile")
     return backend.url, backend
+
+
+# The scope questions an internal tool (fetch/read/dir/content/search) asks
+# before and after it produces a payload: whose blocklist holds the source,
+# whose defense policy judges it, and whether the caller is a honeypot. They
+# live here, beside the one answer to "whose is this?", rather than in the
+# response edge that consumes them.
+
+
+def blocklisted(source: str, mode: Mode) -> BlockedSourceError:
+    """block and flag on a blocklisted source, refused before any bytes arrive.
+
+    Offers redact when the policy allows it, because redact is the mode that
+    proceeds on a blocklisted source. The body is constant (#263): it said
+    ``since {detected_at}`` until then, which handed a caller another
+    profile's timestamp. Nothing in it now depends on anything but the
+    caller's own source and mode policy.
+    """
+    return BlockedSourceError(
+        source,
+        BLOCKLIST_REASON,
+        refusal=refusal_body(BLOCKLIST_REASON, mode, flagged_by="blocklist"),
+    )
+
+
+def _caller() -> tuple[str, bool]:
+    """The calling profile's name, and whether it reads the gateway-wide blocklist.
+
+    Operator and standalone read every row; an agent reads its own. A live
+    gateway with no bound caller never reaches here — ``current_scope`` raises
+    rather than answer "whose is this?" as nobody.
+    """
+    scope = current_scope()
+    return scope.name, scope.is_operator
+
+
+def _caller_defense() -> DefenseConfig:
+    """The calling profile's defense policy."""
+    return current_scope().profile.defense
+
+
+def honeypot_caller() -> str | None:
+    """The calling profile's name when it is a honeypot (#357), else None.
+
+    Every place a tool would tell its caller what the layers made of
+    something asks this first: a honeypot is told nothing, and what it was
+    sent is kept instead.
+    """
+    profile = current_scope().profile
+    return profile.name if profile.honeypot else None
+
+
+def check_blocklist(source: str, mode: Mode) -> bool:
+    """Refuse block and flag on a source the caller's blocklist holds.
+
+    Returns:
+        Whether it is blocklisted, for redact, which proceeds and says so.
+
+    Raises:
+        BlockedSourceError: block or flag, and the source is on it.
+    """
+    profile, gateway_wide = _caller()
+    blocked = is_blocked(source, profile, gateway_wide=gateway_wide)
+    if blocked and mode is not Mode.REDACT:
+        raise blocklisted(source, mode)
+    return blocked

@@ -79,10 +79,29 @@ def redact_source(s: object) -> str:
     return f"sha256:{digest[:12]} len={len(text)}"
 
 
+_MAX_EXC_WALK = 32
+
+
 def exc_kind(exc: BaseException) -> str:
     """The exception's class, never its message: messages embed URLs, paths
     and backend text. An HTTP status, when the exception carries one, is ours
-    to log too."""
+    to log too.
+
+    The MCP SDK raises a backend's real error inside an anyio task group, so a
+    failure arrives as a ``BaseExceptionGroup`` whose own class name
+    ("ExceptionGroup") names nothing an operator can act on. Descend through a
+    group's members — and into a group reached only through ``__cause__`` — to
+    the first leaf, bounded as ``backend._rejection``'s walk is, before naming
+    the kind."""
+    seen = 0
+    while seen < _MAX_EXC_WALK:
+        seen += 1
+        if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+            exc = exc.exceptions[0]
+        elif isinstance(exc.__cause__, BaseExceptionGroup):
+            exc = exc.__cause__
+        else:
+            break
     status = getattr(exc, "status_code", None)
     return (
         f"{type(exc).__name__} status={status}" if isinstance(status, int) else type(exc).__name__

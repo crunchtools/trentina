@@ -83,10 +83,42 @@ bytes the agent would pay for and not read (0.38.0):
   text block again, as JSON or as `{"result": ...}`, it is dropped before
   pre-processing and the scan, so what the perimeter judges is what is
   delivered. Anything else, including a structured copy that differs in one
-  value, is kept and judged. Response guards run on the result as it arrived.
+  value, is kept and judged. Literal response guards run on the result as it arrived.
 - **Minified text.** The text blocks go through the profile's transforms,
   `detect` by default, unless the call passes `trentina_preprocess: false`.
   See [Minifying and exact text](profiles.md#minifying-and-exact-text).
+
+### The guard grid
+
+Above the grid sits the **tool guard** (`tools_allow` / `tools_deny`): a
+deterministic allowlist that decides whether a tool is reachable at all. It is
+the strongest and cheapest check — a denied tool is never called — but it is
+all-or-nothing, so it is not one of the four cells below.
+
+The four guards proper vary on two axes. The primary axis is **how** they
+judge:
+
+- **Literal** guards are per-tool glob constraints on `allow`/`deny` patterns.
+  Deterministic, no model, cannot be argued with.
+- **Semantic** guards hand the call to the profile's judge model with a
+  plain-English policy; anything but an explicit allow refuses.
+
+The secondary axis is **what** they read: the **request** (arguments, before
+the backend is contacted) or the **response** (the backend's result, before it
+is relayed). That gives a 2×2 grid:
+
+| | Request (arguments) | Response (result) |
+|---|---|---|
+| **Literal** (per-tool glob) | [Literal request guards](literal-request-guards.md) — `literal_request_guards` | [Literal response guards](literal-response-guards.md) — `literal_response_guards` |
+| **Semantic** (policy a judge reads) | [Semantic request guards](semantic-request-guards.md) — `semantic_request_guards` | [Semantic response guards](semantic-response-guards.md) — `semantic_response_guards` |
+
+Each guard only subtracts; none can widen what another allows. The
+[defense pipeline](defense-pipeline.md) (L1 ∥ L2 → L3) is a separate
+mechanism and sits outside this grid: it judges content for hostility rather
+than enforcing operator egress/argument policy.
+
+The names changed in 3.0.0: `parameter_guards` → `literal_request_guards`,
+`guarded_execution` → `semantic_request_guards`.
 
 ### Argument Normalization
 
@@ -123,7 +155,7 @@ annotate the read tools of a backend whose clients send placeholders.
 
 A value equal to the schema's `default` is forwarded: it is valid, and
 `default` is only an annotation, so a backend may not apply it on omission.
-Parameter guards judge the arguments as forwarded. Each drop is reported to
+Literal request guards judge the arguments as forwarded. Each drop is reported to
 the agent in `_trentina_warning.normalized` and recorded in the audit row.
 Internal tools are exempt, since they already read an empty value as unset.
 
@@ -163,7 +195,7 @@ to 6.3 KB, before a client adds its own prefix.
 
 A name, once issued to a profile, is recorded and never reassigned, so adding
 a backend later cannot rename a tool an agent already knows: the newcomer
-takes the tag. Only the edge sees short names. Allowlists, parameter guards,
+takes the tag. Only the edge sees short names. Allowlists, literal request guards,
 `preprocess_tools`, the verdict cache and the audit log all keep using the real
 backend and tool names.
 
@@ -202,7 +234,7 @@ whole file. See [Roles](profiles.md#roles) and
 
 The Crunchtools deployment serves 8 profiles over 30 backends. In the 30 days
 to 2026-10-01 it handled 18,724 tool calls: 18,007 succeeded, 180 were refused
-by the defense pipeline, 61 by parameter guards, 11 by response guards and 29
+by the defense pipeline, 61 by literal request guards, 11 by literal response guards and 29
 by allowlists (`gateway_calls`, see [Audit Log](audit-log.md)).
 
 ## Related

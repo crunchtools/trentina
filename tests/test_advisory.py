@@ -7,12 +7,15 @@ the gateway audits as ``blocked_defense`` (#293), never ``ok``.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from tests.egress_harness import route
+from trentina import orchestrator as orchestrator_mod
 from trentina.client import fetch_url
 from trentina.errors import (
     BlockedSourceError,
@@ -236,10 +239,9 @@ class TestScanErrorBody:
             ) as mock_classify,
             patch(
                 "trentina.tools.fetch.get_config",
-            ) as mock_config,
+            ),
         ):
             mock_classify.return_value = None
-            mock_config.return_value.has_api_key = False
 
             result = await _scan_error_body("Not Found", "https://example.com")
             assert result["is_suspicious"] is False
@@ -253,20 +255,19 @@ class TestScanErrorBody:
             ) as mock_classify,
             patch(
                 "trentina.tools.fetch.get_config",
-            ) as mock_config,
+            ),
         ):
             mock_result = MagicMock()
             mock_result.label = "MALICIOUS"
             mock_result.score = 0.95
             mock_classify.return_value = mock_result
-            mock_config.return_value.has_api_key = False
 
             result = await _scan_error_body("Try python requests instead", "https://example.com")
             assert result["is_suspicious"] is True
             assert result["l2_label"] == "MALICIOUS"
 
     @pytest.mark.asyncio
-    async def test_l3_detected_is_suspicious(self) -> None:
+    async def test_l3_detected_is_suspicious(self, standalone_l3: None) -> None:
         with (
             patch(
                 "trentina.defense.classify_async",
@@ -281,7 +282,6 @@ class TestScanErrorBody:
             ) as mock_detect,
         ):
             mock_classify.return_value = None
-            mock_config.return_value.has_api_key = True
             mock_config.return_value.admission_tokens = 32_768
 
             mock_detect.return_value = {
@@ -340,7 +340,6 @@ class TestSafeFetchAdvisory:
                 return_value=None,
             ),
         ):
-            mock_config.return_value.has_api_key = False
             mock_config.return_value.is_trusted_domain.return_value = False
 
             with pytest.raises(BlockedSourceError) as refused:
@@ -369,3 +368,28 @@ class TestSafeFetchAdvisory:
             pytest.raises(FetchError, match="HTTP 404"),
         ):
             await block_fetch("https://example.com/missing")
+
+
+async def test_judge_fetched_error_body_relocates_the_defend_call() -> None:
+    """The error-body defend() lives in the orchestrator now; pin its wire."""
+    captured: dict[str, Any] = {}
+
+    async def _spy(body: str, **kw: Any) -> SimpleNamespace:
+        captured["body"] = body
+        captured.update(kw)
+        return SimpleNamespace(flagged=False)
+
+    with patch.object(orchestrator_mod, "defend", _spy):
+        # Advisory path: carries the fetch tool's steering briefing.
+        await orchestrator_mod.judge_fetched_error_body(
+            "boom", source="https://x/y", l3_context="BRIEF"
+        )
+        assert captured["source"] == "https://x/y"
+        assert captured["source_type"] == "url"
+        assert captured["record"] is False
+        assert captured["l3_context"] == "BRIEF"
+        # Honeypot path: no briefing.
+        captured.clear()
+        await orchestrator_mod.judge_fetched_error_body("boom", source="https://x/y")
+        assert captured["l3_context"] is None
+        assert captured["record"] is False

@@ -41,7 +41,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import timedelta
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
@@ -52,6 +52,7 @@ from ..errors import EgressRefusedError
 from ..logsafe import exc_kind, redact_source
 from ..outcomes import Outcome
 from ..reach import egress
+from . import page
 from .backend_tokens import (
     AuthMethod,
     BackendClient,
@@ -117,11 +118,18 @@ class BackendAuthError(Exception):
         self.code = code
 
 
+def configured_base_url() -> str | None:
+    """``TRENTINA_OAUTH_BASE_URL`` as the deployment set it, or None when unset.
+
+    For a link that must not fall back to another deployment's address: the
+    approval setup page (#639) uses the origin a call arrived on instead.
+    """
+    return os.environ.get("TRENTINA_OAUTH_BASE_URL", "").strip().rstrip("/") or None
+
+
 def public_base_url() -> str:
     """Where the gateway is reached from outside: the root of every link it hands out."""
-    return (
-        os.environ.get("TRENTINA_OAUTH_BASE_URL", "https://mcp.crunchtools.com").strip().rstrip("/")
-    )
+    return configured_base_url() or "https://mcp.crunchtools.com"
 
 
 def callback_url() -> str:
@@ -192,10 +200,7 @@ async def _request(
     return _Reply(status=status, headers=reply_headers, body=bytes(received))
 
 
-_M = TypeVar("_M", bound=BaseModel)
-
-
-def _parse(model: type[_M], reply: _Reply) -> _M | None:
+def _parse[M: BaseModel](model: type[M], reply: _Reply) -> M | None:
     # TRUST: metadata, registration and token replies from a backend's authorization server
     #   untrusted: the whole body; the server is a third party the backend named
     #   judged-by: a pydantic model (unknown fields ignored, types enforced), then the
@@ -361,11 +366,17 @@ def _configured_client(backend: Backend, disc: Discovered) -> BackendClient | No
         return None
     method: AuthMethod = "none"
     if auth.client_secret is not None:
-        method = (
-            "client_secret_post"
-            if "client_secret_basic" not in disc.auth_methods
-            and "client_secret_post" in disc.auth_methods
-            else "client_secret_basic"
+        # Honour the server's advertised preference order (RFC 8414). Some
+        # servers list client_secret_basic but only accept client_secret_post
+        # (the Red Hat AI Factory Workspace MCP does exactly this), so pick the
+        # first secret method the server names, not a fixed basic-first order.
+        method = next(
+            (
+                cast("AuthMethod", m)
+                for m in disc.auth_methods
+                if m in ("client_secret_basic", "client_secret_post")
+            ),
+            "client_secret_basic",
         )
     return BackendClient(
         client_id=auth.client_id,
@@ -386,7 +397,7 @@ async def _client_for(
     configured = _configured_client(backend, disc)
     if configured is not None:
         return configured
-    existing = await store.get_client(profile.name, name, backend)
+    existing = await store.get_client(profile.grant_owner, name, backend)
     if (
         existing is not None
         and existing.issuer == disc.issuer
@@ -396,7 +407,11 @@ async def _client_for(
         return existing
     if disc.registration_endpoint is None:
         raise BackendAuthError("needs_client_id")
-    method = next((m for m in _AUTH_METHODS if m in disc.auth_methods), None)
+    # Pick the first method the server advertises that the gateway supports,
+    # in the server's own preference order (RFC 8414) — not a fixed order of
+    # ours. A server may list client_secret_basic yet only honour
+    # client_secret_post at the token endpoint (Red Hat AI Factory Workspace).
+    method = next((m for m in disc.auth_methods if m in _AUTH_METHODS), None)
     if method is None:
         raise BackendAuthError("no_usable_auth_method")
     metadata = OAuthClientMetadata.model_validate(
@@ -432,7 +447,7 @@ async def _client_for(
         token_endpoint=disc.token_endpoint,
         revocation_endpoint=disc.revocation_endpoint,
     )
-    await store.put_client(profile.name, name, backend, client)
+    await store.put_client(profile.grant_owner, name, backend, client)
     return client
 
 
@@ -455,7 +470,7 @@ async def _client_of(
     """The client a flow or grant was made with, if the slot still holds it."""
     auth = backend.auth
     if auth is not None and auth.client_id == client_id:
-        stored = await store.get_client(profile.name, name, backend)
+        stored = await store.get_client(profile.grant_owner, name, backend)
         method = stored.auth_method if stored and stored.client_id == client_id else None
         return BackendClient(
             client_id=client_id,
@@ -464,7 +479,7 @@ async def _client_of(
             issuer="",
             token_endpoint="",
         )
-    stored = await store.get_client(profile.name, name, backend)
+    stored = await store.get_client(profile.grant_owner, name, backend)
     return stored if stored is not None and stored.client_id == client_id else None
 
 
@@ -536,8 +551,8 @@ async def _prepare(
     # another: a backend that changes its metadata does not get to send the
     # human, or the client, somewhere new. Revoke first, or pin auth.issuer.
     for prior in (
-        await store.get_grant(profile.name, name, backend),
-        await store.get_client(profile.name, name, backend),
+        await store.get_grant(profile.grant_owner, name, backend),
+        await store.get_client(profile.grant_owner, name, backend),
     ):
         if prior is not None and prior.issuer != disc.issuer:
             raise BackendAuthError("issuer_changed")
@@ -578,7 +593,7 @@ async def start(profile: Profile, name: str, *, authorized_by: Literal["self", "
             params["prompt"] = "consent"
     joiner = "&" if "?" in disc.authorization_endpoint else "?"
     flow = BackendFlow(
-        profile=profile.name,
+        profile=profile.grant_owner,
         backend=name,
         origin=backend_origin(backend.url),
         issuer=disc.issuer,
@@ -598,7 +613,7 @@ async def start(profile: Profile, name: str, *, authorized_by: Literal["self", "
     keys = (flow_key(state), flow.page_key)
     for key in keys:
         await store.put_flow(key, flow)
-    live = _live_flows.setdefault(slot_key(profile.name, name), deque())
+    live = _live_flows.setdefault(slot_key(profile.grant_owner, name), deque())
     live.append(keys)
     while len(live) > MAX_FLOWS_PER_SLOT:
         for key in live.popleft():
@@ -777,11 +792,11 @@ async def fresh_grant(
     backend = profile.backends.get(name)
     if store is None or backend is None or backend.auth is None:
         return None
-    grant = await store.get_grant(profile.name, name, backend)
+    grant = await store.get_grant(profile.grant_owner, name, backend)
     if grant is None or _usable(grant, stale_generation):
         return grant
-    async with store.locked(profile.name, name):
-        grant = await store.get_grant(profile.name, name, backend)
+    async with store.locked(profile.grant_owner, name):
+        grant = await store.get_grant(profile.grant_owner, name, backend)
         if grant is None or _usable(grant, stale_generation):
             return grant
         started = time.monotonic()
@@ -818,9 +833,9 @@ async def _refresh(
     if reply.status == 429 or reply.status >= 500:
         raise BackendAuthError("token_endpoint_busy")
     if reply.status != 200:
-        await store.delete_grant(profile.name, name)
+        await store.delete_grant(profile.grant_owner, name)
         if _oauth_error(reply) == "invalid_client":
-            await store.delete_client(profile.name, name)
+            await store.delete_client(profile.grant_owner, name)
         raise BackendAuthError("refresh_rejected")
     fresh = _grant_from(
         reply,
@@ -832,7 +847,7 @@ async def _refresh(
         previous=grant,
     )
     return await store.put_grant(
-        profile.name, name, backend, fresh, expected_generation=grant.generation
+        profile.grant_owner, name, backend, fresh, expected_generation=grant.generation
     )
 
 
@@ -891,30 +906,15 @@ async def revoke_remote(
 # ------------------------------------------------------------------ routes
 
 _REFUSED = "This sign-in link is invalid or has expired. Start again from your agent."
-_HEADERS = {
-    "Cache-Control": "no-store",
-    "Referrer-Policy": "no-referrer",
-    "X-Content-Type-Options": "nosniff",
-    # Nothing on these pages runs; the one link is followed by a click.
-    "Content-Security-Policy": (
-        "default-src 'none'; style-src 'unsafe-inline'; "
-        "sandbox allow-top-navigation-by-user-activation"
-    ),
-}
+# Nothing on these pages runs; the one link is followed by a click.
+_HEADERS = page.headers("sandbox allow-top-navigation-by-user-activation")
 
 
-def _page(title: str, body: str, status: int = 200) -> Response:
+def _page(request: Request, title: str, body: str, status: int = 200) -> Response:
     """A small fixed page. ``body`` is HTML the caller built from escaped values."""
     from starlette.responses import HTMLResponse
 
-    document = (
-        '<!doctype html><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>{html.escape(title)}</title>"
-        '<body style="font:16px/1.5 system-ui,sans-serif;max-width:36rem;margin:3rem auto;'
-        'padding:0 1rem">'
-        f"{body}</body>"
-    )
+    document = page.render(title, body, host=page.served_as(request))
     return HTMLResponse(document, status_code=status, headers=_HEADERS)
 
 
@@ -936,14 +936,15 @@ async def _start_page(request: Request) -> Response:
     try:
         page = _param(request, "flow")
     except BackendAuthError:
-        return _page("Sign-in link refused", f"<p>{_REFUSED}</p>", 400)
+        return _page(request, "Sign-in link refused", f"<p>{_REFUSED}</p>", 400)
     store = backend_token_store()
     flow = await store.peek_flow(flow_key(page)) if store and page else None
     if flow is None:
-        return _page("Sign-in link refused", f"<p>{_REFUSED}</p>", 400)
+        return _page(request, "Sign-in link refused", f"<p>{_REFUSED}</p>", 400)
     backend, profile = html.escape(flow.backend), html.escape(flow.profile)
     issuer = html.escape(urlsplit(flow.issuer).hostname or flow.issuer)
     return _page(
+        request,
         f"Sign in to {flow.backend}",
         f"<h1>Sign in to <b>{backend}</b></h1>"
         f"<p>This signs in the gateway profile <b>{profile}</b>: whatever account you "
@@ -969,13 +970,13 @@ async def _callback(request: Request) -> Response:
         logger.info("backend-oauth: callback refused (%s)", exc.code)
         state = None
     if not state:
-        return _page("Sign-in failed", f"<p>{_REFUSED}</p>", 400)
+        return _page(request, "Sign-in failed", f"<p>{_REFUSED}</p>", 400)
     # A fresh page, so the code leaves the address bar and the history.
     return RedirectResponse(DONE_PATH, status_code=HTTPStatus.SEE_OTHER, headers=_HEADERS)
 
 
-async def _done_page(_request: Request) -> Response:
-    return _page("Signed in", "<p>Signed in. You can close this tab.</p>")
+async def _done_page(request: Request) -> Response:
+    return _page(request, "Signed in", "<p>Signed in. You can close this tab.</p>")
 
 
 def register_backend_oauth_routes(mcp_server: Any) -> None:

@@ -9,137 +9,245 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
+# A new push supersedes the run it interrupts, on a PR only (#662 follow-up).
+# Without this, four pushes to one branch left four complete sets of runs
+# grinding to completion -- three image builds and a four-way test matrix each.
+#
+# Only PR runs share a group. Everything else keys on `run_id`, which is unique,
+# so no non-PR run ever contends and none can be dropped. `cancel-in-progress:
+# false` would NOT have been enough: a group holds at most one PENDING run, so a
+# third arrival cancels the second. Three quick pushes to main would have dropped
+# the middle one's publish -- a half-finished manifest and a downstream never told
+# to rebuild, which is the thing this is supposed to prevent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
   issues: write
   pull-requests: write
   security-events: write
 
+# The published image. Here as well as in container.yml because this workflow
+# publishes it now; container.yml keeps its own copy for `promote`, which reads
+# the same two repositories back.
+env:
+  QUAY_IMAGE: quay.io/crunchtools/trentina
+  GHCR_IMAGE: ghcr.io/crunchtools/trentina
+
 jobs:
   dependency-audit:
     name: Dependency CVE Scan
-    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    uses: crunchtools/constitution/.github/workflows/dependency-audit.yml@v1.31.0
+    with:
+      python-version: "3.14"
+
+  # Every check this repo runs, from python-sdlc at the release
+  # .pre-commit-config.yaml pins -- the same image and the same commands the
+  # laptop runs, so a green push predicts a green CI. `sdlc ci` is push's checks
+  # except Gourmand and Gatehouse (their own workflows run those) plus this
+  # repo's own: build the image and test it from inside (pyproject.toml,
+  # [tool.sdlc.ci]).
+  #
+  # It is also the ONE image build per run (#674, #689), and the image it builds
+  # is the one `publish` pushes. The job name is a required check and is what
+  # container.yml's `promote` looks up (VERIFIER_JOB), so renaming it means
+  # changing both.
+  sdlc:
+    name: sdlc ci
+    # Two runners on gloval, named for their storage (crunchtools/gha-runner):
+    #
+    #   crunchtools-cached    our own pull requests. Its layer cache persists,
+    #                         which is what makes it fast, and every job it runs
+    #                         can write to that cache -- so nothing it builds is
+    #                         ever published.
+    #   crunchtools-uncached  pushes to main and scheduled runs: the build
+    #                         `publish` pushes. Its container storage is a tmpfs,
+    #                         empty at the start of every job, so the published
+    #                         bytes come from storage nothing else has written to.
+    #
+    # Everything else stays on GitHub's machines: a FORK pull request never
+    # lands on our hardware, and neither does a Dependabot one, whose job runs
+    # the new release of a third-party package. The author is checked rather
+    # than the actor, because a person re-running Dependabot's job becomes the
+    # actor. Clearing CACHED_RUNNER_LABEL or UNCACHED_RUNNER_LABEL moves that
+    # runner's jobs back to GitHub-hosted with no commit -- the kill switch for a
+    # runner that is offline.
+    runs-on: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && github.event.pull_request.user.login != 'dependabot[bot]'
+          && (vars.CACHED_RUNNER_LABEL || 'ubuntu-latest')
+          || github.event_name != 'pull_request'
+          && (vars.UNCACHED_RUNNER_LABEL || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    # The image ID -- the config digest, which pins every layer -- of the build
+    # `publish` must load. Empty on anything but a push.
+    outputs:
+      image_id: ${{ steps.handoff.outputs.image_id }}
 
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
         with:
-          version: "latest"
+          persist-credentials: false
 
-      # Single-version job: pinned to the NEWEST supported Python, which is
-      # what the container runs. Anything that cannot run across the whole
-      # matrix is tested on production's version. See constitution III.
-      - name: Set up Python
-        run: uv python install 3.14
-
-      - name: Install dependencies
-        run: uv sync --locked
-
-      - name: Install pip-audit
-        run: uv pip install pip-audit
-
-      - name: Run pip-audit
-        id: audit
-        # pip-audit exits 1 when it finds vulnerabilities; the count below
-        # decides that. A missing or unparseable report must fail the step,
-        # not read as zero -- that is how this gate went silent before.
+      # The release is read from .pre-commit-config.yaml, so it is pinned in
+      # one place for the laptop and CI both.
+      - name: sdlc ci
         run: |
-          uv run pip-audit --format=json --output=audit-results.json || true
-          uv run pip-audit --format=markdown --output=audit-results.md || true
+          set -eu
+          rev=$(awk '/repo: https:\/\/github.com\/crunchtools\/python-sdlc/ {f=1; next}
+                     f && /rev:/ {print $2; exit}' .pre-commit-config.yaml)
+          [ -n "$rev" ] || { echo "no python-sdlc rev in .pre-commit-config.yaml" >&2; exit 2; }
+          git clone -q --depth 1 --branch "$rev" https://github.com/crunchtools/python-sdlc "$RUNNER_TEMP/sdlc"
+          $RUNNER_TEMP/sdlc/bin/sdlc ci
 
-          VULN_COUNT=$(uv run python -c "import json; d=json.load(open('audit-results.json')); print(sum(1 for p in d['dependencies'] if p.get('vulns')))")
-          echo "vuln_count=$VULN_COUNT" >> $GITHUB_OUTPUT
+      # Hand the verified image to `publish`, the only job that holds a
+      # credential. This job HOLDS NOTHING THAT CAN PUBLISH: it runs pull-request
+      # code on our own runner, and `permissions` and `secrets` are job-level
+      # while an `if:` is only step-level.
+      - name: Save the verified image for the publish job
+        id: handoff
+        if: github.event_name == 'push'
+        run: |
+          set -eu
+          podman save --format docker-archive localhost/trentina:sdlc -o image.tar
+          id=$(podman image inspect --format '{{.Id}}' localhost/trentina:sdlc)
+          [ -n "$id" ] || { echo "could not read the built image id" >&2; exit 1; }
+          echo "image_id=$id" >> "$GITHUB_OUTPUT"
+          echo "::notice::handing off $id"
 
-      - name: Upload audit results
-        if: always()
+      - name: Upload the verified image
+        if: github.event_name == 'push'
         uses: actions/upload-artifact@v7
         with:
-          name: security-audit-results
-          path: |
-            audit-results.json
-            audit-results.md
-          retention-days: 30
+          name: verified-image
+          path: image.tar
+          retention-days: 1
+          # The layers inside are already compressed.
+          compression-level: 1
 
-      - name: Create issue for vulnerabilities
-        if: steps.audit.outputs.vuln_count != '0' && github.event_name == 'schedule'
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const fs = require('fs');
-            let body = '## Security Vulnerabilities Detected\n\n';
-            body += 'The weekly security scan found vulnerabilities in project dependencies.\n\n';
-
-            if (fs.existsSync('audit-results.md')) {
-              body += fs.readFileSync('audit-results.md', 'utf8');
-            }
-
-            body += '\n\n### Action Required\n';
-            body += '1. Review the vulnerabilities listed above\n';
-            body += '2. Update affected dependencies\n';
-            body += '3. Run `uv sync` and test\n';
-            body += '4. Create a PR with the fixes\n';
-
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `Security Alert: CVEs found in dependencies (${new Date().toISOString().split('T')[0]})`,
-              body: body,
-              labels: ['security', 'dependencies']
-            });
-
-      - name: Fail on vulnerabilities (PRs only)
-        if: steps.audit.outputs.vuln_count != '0' && github.event_name == 'pull_request'
-        run: |
-          echo "::error::Security vulnerabilities found in dependencies. See audit results."
-          exit 1
-
-  container-scan:
-    name: Container Security Scan
+  # The ONLY job that can publish. Separate from the verifier so that the
+  # verifier -- which runs PR-authored code, on our own runner -- holds no
+  # registry secret, no App key and no `packages: write`.
+  publish:
+    name: Publish the verified image
     runs-on: ubuntu-latest
+    needs: sdlc
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
 
     steps:
-      - uses: actions/checkout@v7
+      - name: Download the verified image
+        uses: actions/download-artifact@v7
+        with:
+          name: verified-image
 
-      - name: Build container image
+      # The invariant that matters: the bytes this job publishes are the bytes
+      # the sdlc job verified. The image ID is the config digest, which pins
+      # every layer's diff ID, so an equal ID across the hand-off means equal
+      # content. `promote` separately proves "this commit, this version" from
+      # the labels on each registry.
+      #
+      # NOT a cross-registry digest comparison. A registry digest is over the
+      # manifest, which is strictly stronger than content equality and can
+      # differ for encoding reasons that say nothing about the image -- so it is
+      # reported below and never gates.
+      - name: Load it, and prove it is what was verified
+        env:
+          EXPECTED: ${{ needs.sdlc.outputs.image_id }}
         run: |
-          docker build -f Containerfile -t trentina:scan .
+          set -eu
+          [ -n "$EXPECTED" ] || { echo "sdlc ci handed over no image id" >&2; exit 1; }
+          podman load -i image.tar
+          got=$(podman image inspect --format '{{ .Id }}' localhost/trentina:sdlc)
+          [ "$got" = "$EXPECTED" ] || {
+            echo "the image that arrived is not the image that was verified:" >&2
+            echo "  verified: $EXPECTED" >&2
+            echo "  arrived:  $got" >&2
+            exit 1
+          }
+          echo "::notice::loaded the verified image $got"
 
-      # Two runs: the SARIF one feeds code scanning and never fails, the table
-      # one gates PRs and prints the findings, which SARIF output hides.
-      - name: Run Trivy vulnerability scanner (SARIF)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: "trentina:scan"
-          scanners: vuln
-          severity: "CRITICAL,HIGH"
-          ignore-unfixed: true
-          trivyignores: .trivyignore
-          format: "sarif"
-          output: "trivy-results.sarif"
-          # Without this, trivy-action drops the severity filter for SARIF
-          limit-severities-for-sarif: true
-          exit-code: "0"
+      # podman, not docker, end to end: `sdlc ci` built the image with podman,
+      # and the identity check above compares podman's ID for it. Passwords go
+      # in on stdin so they never reach a process list.
+      - name: Log in to both registries
+        env:
+          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
+          GHCR_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -eu
+          printf '%s' "$QUAY_PASSWORD" | podman login -u "$QUAY_USERNAME" --password-stdin quay.io
+          printf '%s' "$GHCR_TOKEN" | podman login -u "$OWNER" --password-stdin ghcr.io
 
-      - name: Gate on Trivy findings (PRs only)
-        if: github.event_name == 'pull_request'
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: "trentina:scan"
-          scanners: vuln
-          severity: "CRITICAL,HIGH"
-          ignore-unfixed: true
-          trivyignores: .trivyignore
-          format: "table"
-          exit-code: "1"
-          skip-setup-trivy: true
+      - name: Publish to both registries
+        env:
+          QUAY: ${{ env.QUAY_IMAGE }}
+          GHCR: ${{ env.GHCR_IMAGE }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          for image in "$QUAY" "$GHCR"; do
+            for tag in main latest; do
+              podman tag localhost/trentina:sdlc "$image:$tag"
+              podman push --format v2s2 --digestfile "$RUNNER_TEMP/digest" "$image:$tag"
+            done
+            # The digest the registry stored for what THIS job pushed, recorded
+            # below for `promote`. Read from the push itself, not from asking the
+            # registry what :main is, which any later push can change.
+            case "$image" in "$QUAY") quay=$(cat "$RUNNER_TEMP/digest") ;; *) ghcr=$(cat "$RUNNER_TEMP/digest") ;; esac
+          done
+          printf '{"sha":"%s","quay":"%s","ghcr":"%s"}\n' "$SHA" "$quay" "$ghcr" > published.json
+          cat published.json
+          echo "::notice::published $quay (quay) and $ghcr (ghcr) for $SHA"
 
-      - name: Upload Trivy scan results
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
+      # `promote` releases exactly these digests. It used to resolve `:main` and
+      # trust the labels on whatever it found -- labels the writer chooses, on a
+      # tag that a pull request's GITHUB_TOKEN with packages:write can also push.
+      # This artifact comes from the push-to-main run of security.yml, which runs
+      # main's own workflow file, and from this job alone.
+      - name: Record the published digests for promote
+        uses: actions/upload-artifact@v7
         with:
-          sarif_file: "trivy-results.sarif"
+          name: published-digests
+          path: published.json
+          retention-days: 90
+
+      # The crunchtools-ci App's token, not a personal one: it has its own rate
+      # limit, so a throttled account can't stop this step. Minted HERE rather
+      # than in the sdlc job, so its key is never present in a job that runs
+      # pull-request code.
+      - name: Mint CI token
+        id: ci-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.CRUNCHTOOLS_CI_CLIENT_ID }}
+          private-key: ${{ secrets.CRUNCHTOOLS_CI_APP_KEY }}
+          owner: crunchtools
+
+      # crunchtools/data-collector is built FROM this image. Tell it to rebuild,
+      # as every parent image in the fleet tells its children
+      # (crunchtools/constitution, validate-cascade.py).
+      - name: Trigger downstream rebuilds
+        env:
+          GH_TOKEN: ${{ steps.ci-token.outputs.token }}
+        run: |
+          for repo in data-collector; do
+            gh api repos/crunchtools/$repo/dispatches \
+              -f event_type=parent-image-updated \
+              || echo "::warning::$repo was not told to rebuild; start its build by hand"
+          done
 
   codeql:
     name: CodeQL Analysis

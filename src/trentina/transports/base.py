@@ -28,7 +28,18 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from enum import Enum
+from http import HTTPStatus
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
+
+from ..outcomes import Outcome
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Mapping
+
+    from starlette.datastructures import Headers
+
+    from ..modes import Mode
 
 
 @dataclass(frozen=True)
@@ -54,6 +65,11 @@ class Face(ABC):
     """
 
     name: str
+    #: The transport contract version this face was written against — the compat
+    #: anchor for transport registration. ``registry.register_transport`` refuses
+    #: a face whose version this build does not run; the built-in ``mcp`` face is
+    #: version 1.
+    api_version: int = 1
 
     @abstractmethod
     async def parse(self, ctx: Any) -> Any:
@@ -80,6 +96,8 @@ class Carrier(ABC):
     """Carry a parsed, outbound request to its destination and bring back the reply."""
 
     name: str
+    #: The transport contract version this carrier was written against; see ``Face``.
+    api_version: int = 1
 
     @abstractmethod
     async def carry(self, ctx: Any, parsed: Any) -> Any:
@@ -96,3 +114,401 @@ class Transport:
 
     face: Face
     carrier: Carrier
+
+
+# The perimeter shapes (#535). A ``Transport`` above crosses to an MCP backend;
+# the two below carry an agent's own traffic out of its network. A ``Route`` is
+# an HTTP path under ``/proxy/<type>/<instance>/``, a ``Listener`` a raw stream
+# on a port of its own (CONNECT). Each declares its contract and implements its
+# own policy and wire shape; the spine in ``transports/perimeter.py`` owns
+# everything they share: who the caller is, the instance and grant, the slot,
+# the dial, judging what is sent and what comes back, and the one audit row.
+
+
+class Audit(Enum):
+    """When a route's operation writes its ``gateway_calls`` row.
+
+    ``ALWAYS``: every operation a known caller started. ``ON_FINDING``: only a
+    refusal, an upstream failure or a security finding — for a route whose
+    clean traffic is a continuous poll (Matrix ``/sync``). Built in only: a
+    plugin does not get to silence its clean calls.
+    """
+
+    ALWAYS = "always"
+    ON_FINDING = "on_finding"
+
+
+@dataclass(frozen=True)
+class Bearer:
+    """The caller presents its profile's gateway token.
+
+    ``fallback_headers`` are read, in order, when ``Authorization`` is absent
+    (an SDK that sends its key as ``x-api-key`` to a base URL it does not know
+    wants Bearer). Every one of them is removed before the route sees the
+    request, so a route never holds the caller's token.
+    """
+
+    fallback_headers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PeerAddress:
+    """The address that connected picks the profile; nothing secret is on the wire.
+
+    ``networks`` names the profile block holding the ``source_networks`` this
+    matches against. A request carrying ``X-Forwarded-For`` matches no profile:
+    the address may then be one somebody named rather than one that connected.
+    Built in only.
+    """
+
+    networks: str
+
+
+#: Who the caller is: a bearer token, or (built in only) the address that connected.
+Auth = Bearer | PeerAddress
+
+
+@dataclass(frozen=True)
+class OperatorOrigin:
+    """A destination the operator named: a KEY into the instance's ``origins``.
+    A route names which one; the spine resolves it and checks the address."""
+
+    key: str
+
+
+@dataclass(frozen=True)
+class AgentUrl:
+    """A destination the agent chose (``https://host:port``), held to the grant's
+    ``hosts`` and the route's ports and checked on every call, never cached."""
+
+    url: str
+
+
+#: Where ``admit`` says a request goes.
+Destination = OperatorOrigin | AgentUrl
+
+
+#: The port an origin is reached on unless the operator names another.
+HTTPS_PORT = 443
+#: The port an agent-chosen http (not https) destination defaults to.
+HTTP_PORT = 80
+
+
+@dataclass(frozen=True)
+class Origin:
+    """An https origin the operator configured: a DNS name, a port, and the
+    path every request to it starts with (a provider's ``/api/v1``), if any."""
+
+    host: str
+    port: int = HTTPS_PORT
+    base: str = ""
+    #: https for every origin the operator names; http only for an agent-chosen
+    #: destination a route's ``ports`` admits.
+    scheme: str = "https"
+
+    @property
+    def url(self) -> str:
+        """What every request to this origin starts with."""
+        default = HTTPS_PORT if self.scheme == "https" else HTTP_PORT
+        port = "" if self.port == default else f":{self.port}"
+        return f"{self.scheme}://{self.host}{port}{self.base}"
+
+
+@dataclass(frozen=True)
+class Instance:
+    """One configured instance of a route type, as a route may read it.
+
+    ``origins`` are what ``admit`` may name by key; ``options`` are the
+    instance's own settings for its route. Nothing secret is here.
+    """
+
+    name: str
+    type: str
+    origins: Mapping[str, Origin]
+    options: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class Grant:
+    """What the calling profile may do on one instance.
+
+    ``origins`` are the keys it may reach, ``methods`` the HTTP methods,
+    ``enforcement`` what a finding on its request does (``block`` refuses,
+    ``flag`` forwards it marked). ``options`` are the route's own grant terms
+    (repositories for git, path globs for http). The credential the spine
+    injects is not here: a route never holds it.
+    """
+
+    origins: frozenset[str]
+    methods: frozenset[str]
+    enforcement: Mode
+    options: Mapping[str, Any]
+    #: The names an agent-chosen destination may be; empty for a route that
+    #: goes only where the operator named.
+    hosts: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class Refusal:
+    """What a refusal reason means on one route: its status and audit outcome.
+
+    Reasons are keyed by the spine's canonical names. ``wire`` is this route's
+    own spelling of one, used on its refusal and in its audit row, where a
+    route spoke a different name before the spine existed (git's ``remote``
+    for an unknown instance).
+    """
+
+    status: int
+    outcome: Outcome
+    wire: str | None = None
+
+
+#: The refusals the spine itself raises, on any route: the caller, the instance,
+#: the slot, the dial, and judging what is sent and what comes back. A route's
+#: ``refusals`` extends this table with its own, and may re-spell or re-status an
+#: entry; a reason the route raises that its table does not hold is a gateway
+#: error.
+SPINE_REFUSALS: Mapping[str, Refusal] = {
+    "unauthorized": Refusal(HTTPStatus.UNAUTHORIZED, Outcome.DENIED_GUARD),
+    "unknown_upstream": Refusal(HTTPStatus.FORBIDDEN, Outcome.DENIED_ALLOWLIST),
+    "busy": Refusal(HTTPStatus.SERVICE_UNAVAILABLE, Outcome.DENIED_GUARD),
+    "too_large": Refusal(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, Outcome.DENIED_GUARD),
+    "resolver_busy": Refusal(HTTPStatus.SERVICE_UNAVAILABLE, Outcome.DENIED_GUARD),
+    "denied_guard": Refusal(HTTPStatus.FORBIDDEN, Outcome.BLOCKED_DEFENSE),
+    "redirect": Refusal(HTTPStatus.BAD_GATEWAY, Outcome.BACKEND_ERROR),
+    "upstream_failed": Refusal(HTTPStatus.BAD_GATEWAY, Outcome.BACKEND_ERROR),
+    "upstream_unreachable": Refusal(HTTPStatus.BAD_GATEWAY, Outcome.BACKEND_ERROR),
+    "port": Refusal(HTTPStatus.FORBIDDEN, Outcome.DENIED_GUARD),
+    "host_not_listed": Refusal(HTTPStatus.FORBIDDEN, Outcome.DENIED_ALLOWLIST),
+    "malformed_head": Refusal(HTTPStatus.BAD_REQUEST, Outcome.DENIED_GUARD),
+    "upstream_idle": Refusal(HTTPStatus.GATEWAY_TIMEOUT, Outcome.BACKEND_ERROR),
+    "binary_body": Refusal(HTTPStatus.FORBIDDEN, Outcome.BLOCKED_DEFENSE),
+    "credential_in_request": Refusal(HTTPStatus.FORBIDDEN, Outcome.BLOCKED_DEFENSE),
+    "flagged": Refusal(HTTPStatus.FORBIDDEN, Outcome.BLOCKED_DEFENSE),
+    "not_fully_judged": Refusal(HTTPStatus.FORBIDDEN, Outcome.BLOCKED_DEFENSE),
+    "gatekeeper": Refusal(HTTPStatus.FORBIDDEN, Outcome.DENIED_GATEKEEPER),
+    "response_flagged": Refusal(HTTPStatus.FORBIDDEN, Outcome.BLOCKED_DEFENSE),
+    "response_unjudged": Refusal(HTTPStatus.FORBIDDEN, Outcome.BLOCKED_DEFENSE),
+    "response_binary": Refusal(HTTPStatus.FORBIDDEN, Outcome.BLOCKED_DEFENSE),
+}
+
+
+class RefusedError(Exception):
+    """A refusal, raised by a route's ``admit`` or ``deliver`` or by the spine.
+
+    ``reason`` is one of the route's declared ``refusals``. ``status`` and
+    ``outcome`` override that entry where one reason has more than one answer
+    (a forge's 403 passed through, against its 500). ``detail`` goes to the
+    audit row instead of ``reason`` where a built-in has a more specific fact;
+    a plugin's is dropped. ``executed`` says the destination acted before the
+    response was withheld (#425). ``tool`` and ``destination`` are what the
+    route had established before it refused (the git operation and the
+    repository, say), for the audit row; a refusal knows no more than that.
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        status: int | None = None,
+        outcome: Outcome | None = None,
+        executed: bool = False,
+        detail: str | None = None,
+        tool: str | None = None,
+        destination: str | None = None,
+    ) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.status = status
+        self.outcome = outcome
+        self.executed = executed
+        self.detail = detail
+        self.tool = tool
+        self.destination = destination
+        #: The spine's name for the reason, kept when a route's table re-spells it.
+        self.canonical = reason
+
+
+@dataclass(frozen=True)
+class Wire:
+    """What a route sees of the request: never a Starlette ``Request``, never the body.
+
+    A request object reaches the app and every other route's state; this holds
+    the method, the path below the instance (``raw_path`` as it arrived), the
+    query and the headers with the caller's credential removed. The body is
+    only for ``deliver``, after the route holds a slot.
+    """
+
+    method: str
+    path: str
+    raw_path: bytes
+    query: str
+    #: Every header as it arrived, repeats kept (``getlist``), less the credential.
+    headers: Headers
+    peer: str | None
+
+
+class Body:
+    """The request body, read once, never past the route's ``max_request_bytes``."""
+
+    def __init__(self, chunks: AsyncIterator[bytes], cap: int) -> None:
+        self._chunks = chunks
+        self._cap = cap
+        self._read = False
+
+    async def read(self) -> bytes:
+        """The whole body, or ``RefusedError("too_large")`` past the cap."""
+        if self._read:
+            raise RuntimeError("the request body has been read")
+        self._read = True
+        buffer = bytearray()
+        async for chunk in self._chunks:
+            buffer.extend(chunk)
+            if len(buffer) > self._cap:
+                raise RefusedError("too_large")
+        return bytes(buffer)
+
+
+@dataclass(frozen=True)
+class Delivered:
+    """A response that crossed the spine: judged, scrubbed, ready to hand back.
+
+    ``warning`` is the finding a ``flag`` grant forwards with, or None.
+    """
+
+    status: int
+    headers: Mapping[str, str]
+    content_type: str
+    body: bytes
+    warning: str | None
+
+
+class Upstream(ABC):
+    """The one way out of a route: a send to the destination ``admit`` named.
+
+    The spine builds it, bound to an origin it resolved and checked. A send
+    judges the request before it leaves, injects the profile's credential,
+    dials the checked address, then reads and judges the response, and either
+    returns it as ``Delivered`` or raises ``RefusedError``. A route sees neither
+    the address nor the secret.
+    """
+
+    @abstractmethod
+    async def send(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: str = "",
+        headers: Mapping[str, str],
+        content: bytes | None = None,
+    ) -> Delivered:
+        """Send one request and return the judged response."""
+
+
+@dataclass(frozen=True)
+class Admitted:
+    """What ``admit`` decided: where the request goes, and for the audit row
+    the operation (``tool``, the method when None) and the ``destination`` (the
+    caller's text, recorded and nowhere else). A route subclasses it to carry
+    what it parsed on the way."""
+
+    origin: Destination
+    destination: str | None = None
+    tool: str | None = None
+
+
+@dataclass
+class Context:
+    """What ``deliver`` works with: the request, its body, the instance, the
+    profile's grant on it and the way out."""
+
+    wire: Wire
+    body: Body
+    instance: Instance
+    grant: Grant
+    upstream: Upstream
+
+
+A = TypeVar("A", bound=Admitted)
+C = TypeVar("C", bound=Context, default=Context)
+
+
+class Route(ABC, Generic[A, C]):
+    """An HTTP path, ``/proxy/<name>/<instance>/...``, that carries an agent's request out.
+
+    The class declares its contract; the three methods are the route's own
+    policy and wire shape and have no defaults. ``admit`` decides from the
+    request line and headers, and the profile's grant, whether the request may
+    go and to which origin; the spine then takes a slot. ``deliver`` reads the
+    body, sends through the ``Upstream`` it is handed and returns the response.
+    ``render`` turns a ``RefusedError`` into this route's own refusal.
+    """
+
+    name: str
+    methods: tuple[str, ...]
+    auth: Auth
+    refusals: Mapping[str, Refusal]
+    max_request_bytes: int
+    slots: int | None = 8
+    audit: Audit = Audit.ALWAYS
+    idle: float = 300.0
+    #: The ports an agent-chosen destination (``AgentUrl``) may be on.
+    ports: frozenset[int] = frozenset({HTTPS_PORT})
+    api_version: int = 1
+
+    @property
+    def path(self) -> str:
+        """Where the route is served; the instance is the first segment."""
+        return f"/proxy/{self.name}/{{instance}}/{{path:path}}"
+
+    @abstractmethod
+    async def admit(self, wire: Wire, grant: Grant, instance: Instance) -> A:
+        """Admit the request or raise ``RefusedError``."""
+
+    @abstractmethod
+    async def deliver(self, admitted: A, ctx: C) -> Any:
+        """Carry the admitted request and return what to send back: the
+        ``Delivered`` an ``Upstream.send`` returned, which the spine answers
+        with (its finding on ``x-trentina-warning``), or a response of the
+        route's own."""
+
+    @abstractmethod
+    def render(self, refused: RefusedError) -> Any:
+        """This route's response for a refusal."""
+
+
+class Listener(ABC):
+    """A raw stream on a port of its own (CONNECT). Built in only.
+
+    The spine reads the request head (up to ``head_limit`` bytes, within
+    ``head_timeout`` seconds), and ``admit`` names the agent's destination from
+    it. The spine holds that to the grant's ``hosts`` and this listener's
+    ``ports``, takes a slot and dials the checked addresses in turn. ``relay``
+    then owns the stream: its opening answer, any check on what the client
+    sends first, and the copying; a refusal from it closes the stream with no
+    answer, since one has been given. ``respond`` is the answer to a refusal
+    before then. ``name`` and ``operation`` are the row's backend and tool.
+    """
+
+    name: str
+    operation: str
+    auth: PeerAddress
+    refusals: Mapping[str, Refusal]
+    ports: frozenset[int]
+    head_limit: int
+    head_timeout: float
+    slots: int = 64
+    api_version: int = 1
+
+    @abstractmethod
+    def admit(self, head: bytes) -> Admitted:
+        """Name the destination the head asks for, or raise ``RefusedError``."""
+
+    @abstractmethod
+    async def relay(self, client: Any, upstream: Any, op: Any) -> None:
+        """Open the stream, check it, and carry it until either end closes."""
+
+    @abstractmethod
+    def respond(self, refused: RefusedError) -> bytes:
+        """The bytes a refusal answers with, before the stream opens."""

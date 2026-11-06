@@ -1,0 +1,57 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "29"
+      ],
+      [
+       "content-type",
+       "text/plain; charset=utf-8"
+      ],
+      [
+       "x-trentina-reason",
+       "service"
+      ]
+     ],
+     "status": 400,
+     "type": "start"
+    },
+    {
+     "body": "refused by Trentina: service\n",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "git:forge",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": null,
+   "destination_kind": null,
+   "detections_digest": null,
+   "error_message": "service",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "denied_guard",
+   "profile": "agent1",
+   "session": null,
+   "success": 0,
+   "tool": "-"
+  }
+ ],
+ "open_slots": {},
+ "upstream": []
+}

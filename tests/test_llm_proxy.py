@@ -10,7 +10,7 @@ import sqlite3
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import pytest
 from pydantic import SecretStr, ValidationError
@@ -21,23 +21,39 @@ from starlette.testclient import TestClient
 from trentina import config as config_mod
 from trentina import database as database_mod
 from trentina.gateway import llm_proxy
+from trentina.gateway.destination import DestinationKind
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.llm_proxy import (
     LlmProvider,
-    _proxy_llm,
+    LlmRoute,
     load_llm_providers,
     validate_profile_llm_keys,
 )
 from trentina.gateway.profile import (
     AuthConfig,
+    DefenseConfig,
     LlmKeyOverride,
     Profile,
 )
 from trentina.gateway.proxy_utils import normalize_proxy_path
+from trentina.gateway.relay import Operation
+from trentina.transports import perimeter
+from trentina.transports.base import RefusedError
 
 if TYPE_CHECKING:
     from starlette.requests import Request
     from starlette.responses import Response
+
+#: The route under test, mounted on the perimeter spine as the registry mounts
+#: it; ``_serve_llm`` hands it each test's providers.
+LLM = perimeter.Mount(LlmRoute(), DestinationKind.MODEL, cast("Any", None), in_tree=True)
+
+
+async def _serve_llm(
+    request: Request, providers: dict[str, LlmProvider], profiles: dict[str, Profile]
+) -> Any:
+    LLM.providers = providers
+    return await perimeter.serve(LLM, request, profiles)
 
 
 @pytest.fixture(autouse=True)
@@ -297,7 +313,7 @@ class _FakeUpstreamResp:
         self.status_code = 200
         self.headers = {"content-type": "application/json"}
 
-    async def aiter_bytes(self) -> AsyncIterator[bytes]:
+    async def aiter_raw(self) -> AsyncIterator[bytes]:
         yield b'{"ok": true}'
 
     async def aclose(self) -> None:
@@ -350,12 +366,12 @@ class TestProxyLlm:
         self, providers: dict[str, LlmProvider], profiles: dict[str, Profile]
     ) -> TestClient:
         async def endpoint(request: Request) -> Response:
-            return await _proxy_llm(request, providers, profiles)
+            return await _serve_llm(request, providers, profiles)
 
         app = Starlette(
             routes=[
                 Route(
-                    "/proxy/llm/{provider}/{path:path}",
+                    LLM.route.path,
                     endpoint,
                     methods=["GET", "POST"],
                 )
@@ -431,7 +447,7 @@ class TestProxyLlm:
     ) -> None:
         providers, profiles = self._fixtures()
         fake = _FakeClient()
-        monkeypatch.setattr(llm_proxy, "pinned_send", fake)
+        monkeypatch.setattr(perimeter, "pinned_send", fake)
         client = self._client(providers, profiles)
 
         resp = client.post(
@@ -446,7 +462,7 @@ class TestProxyLlm:
     def test_success_selects_correct_profile_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         providers, profiles = self._fixtures()
         fake = _FakeClient()
-        monkeypatch.setattr(llm_proxy, "pinned_send", fake)
+        monkeypatch.setattr(perimeter, "pinned_send", fake)
         client = self._client(providers, profiles)
 
         client.post(
@@ -489,16 +505,14 @@ class TestProxyAdmission:
     """#297: a provider-run tool never reaches the provider, and every call is audited."""
 
     def _client(self, fake: _FakeClient, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-        monkeypatch.setattr(llm_proxy, "pinned_send", fake)
+        monkeypatch.setattr(perimeter, "pinned_send", fake)
         providers = {"anthropic": _anthropic_provider()}
         profiles = {"agent1": _profile("agent1", "agent1-tok", {"anthropic": "agent1-key"})}
 
         async def endpoint(request: Request) -> Response:
-            return await _proxy_llm(request, providers, profiles)
+            return await _serve_llm(request, providers, profiles)
 
-        app = Starlette(
-            routes=[Route("/proxy/llm/{provider}/{path:path}", endpoint, methods=["GET", "POST"])]
-        )
+        app = Starlette(routes=[Route(LLM.route.path, endpoint, methods=["GET", "POST"])])
         return TestClient(app)
 
     def _post(self, client: TestClient, body: dict[str, Any], **headers: str) -> Any:
@@ -609,20 +623,23 @@ class TestProxyAdmission:
         self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
     ) -> None:
         """A caller that drops while the request is being read/admitted finishes
-        the Operation once as CANCELLED and the disconnect propagates — no slot
-        is leaked (none was taken yet) and no spurious ok/500 row is written."""
+        the Operation once as CANCELLED and the disconnect propagates — the slot
+        it held comes back and no spurious ok/500 row is written."""
         from starlette.requests import ClientDisconnect
+
+        from trentina.transports.base import Body
 
         fake = _FakeClient()
         client = self._client(fake, monkeypatch)
 
-        async def _drops(_request: Any) -> bytes:
+        async def _drops(_body: Any) -> bytes:
             raise ClientDisconnect
 
-        monkeypatch.setattr(llm_proxy, "_read_body", _drops)
+        monkeypatch.setattr(Body, "read", _drops)
         with pytest.raises(ClientDisconnect):
             self._post(client, _PLAIN)
         assert not fake.sent  # nothing forwarded
+        assert LLM.slots._open == {}
         [row] = _rows(audit_db)
         assert row["outcome"] == "cancelled"
 
@@ -632,11 +649,11 @@ class TestProxyAdmission:
         admission, so a refused (unadmitted) request never consumes one."""
         fake = _FakeClient()
         client = self._client(fake, monkeypatch)
-        llm_proxy._SLOTS._open["agent1"] = llm_proxy.MAX_LLM_OPERATIONS_PER_PROFILE
+        LLM.slots._open["agent1"] = llm_proxy.MAX_LLM_OPERATIONS_PER_PROFILE
         try:
             resp = self._post(client, _PLAIN)
         finally:
-            llm_proxy._SLOTS._open.clear()
+            LLM.slots._open.clear()
         assert resp.status_code == 503
         assert resp.json()["block_reason"] == "busy"
         assert not fake.sent  # refused at the slot gate, before the forward
@@ -751,11 +768,9 @@ class TestProxyAdmission:
         profiles = {"agent2": _profile("agent2", "agent2-tok", {})}
 
         async def endpoint(request: Request) -> Response:
-            return await _proxy_llm(request, providers, profiles)
+            return await _serve_llm(request, providers, profiles)
 
-        app = Starlette(
-            routes=[Route("/proxy/llm/{provider}/{path:path}", endpoint, methods=["POST"])]
-        )
+        app = Starlette(routes=[Route(LLM.route.path, endpoint, methods=["POST"])])
         resp = TestClient(app).post(
             "/proxy/llm/anthropic/v1/messages", headers={"authorization": "Bearer agent2-tok"}
         )
@@ -856,18 +871,16 @@ class TestProxyRequestDLP:
         monkeypatch: pytest.MonkeyPatch,
         enforcement: Literal["block", "flag"],
     ) -> TestClient:
-        monkeypatch.setattr(llm_proxy, "pinned_send", fake)
+        monkeypatch.setattr(perimeter, "pinned_send", fake)
         providers = {"gemini": _gemini_provider()}
         profile = _profile("agent1", "agent1-tok", {"gemini": "agent1-key"})
         profile.llm_keys["gemini"].enforcement = enforcement
         profiles = {"agent1": profile}
 
         async def endpoint(request: Request) -> Response:
-            return await _proxy_llm(request, providers, profiles)
+            return await _serve_llm(request, providers, profiles)
 
-        app = Starlette(
-            routes=[Route("/proxy/llm/{provider}/{path:path}", endpoint, methods=["GET", "POST"])]
-        )
+        app = Starlette(routes=[Route(LLM.route.path, endpoint, methods=["GET", "POST"])])
         return TestClient(app)
 
     def _post(self, client: TestClient, body: dict[str, Any]) -> Any:
@@ -1060,7 +1073,9 @@ async def test_post_hoc_completion_scan_timeout_is_logged_not_raised(
     monkeypatch.setattr(defense_mod, "defend", hanging_defend)
     profile = _profile("agent1", "agent1-tok", {"gemini": "agent1-key"})
 
-    with caplog.at_level(logging.WARNING, logger="trentina.gateway.llm_proxy"):
+    # The completion scan (and its timeout log) lives in the orchestrator now;
+    # the proxy only schedules it and records a flag.
+    with caplog.at_level(logging.WARNING, logger="trentina.orchestrator"):
         llm_proxy._schedule_completion_scan(b'{"completion": "x"}', 19, "gemini", profile)
         pending = set(llm_proxy._scan_tasks)
         assert pending, "a scan task should have been scheduled"
@@ -1090,27 +1105,144 @@ async def test_an_upstream_mid_stream_break_is_backend_error(
         def __init__(self) -> None:
             self.headers = {"content-type": "application/json"}
 
-        async def aiter_bytes(self) -> AsyncIterator[bytes]:
+        async def aiter_raw(self) -> AsyncIterator[bytes]:
             yield b"partial"
             raise httpx.RemoteProtocolError("peer closed mid-stream")
 
         async def aclose(self) -> None:
             return None
 
-    op = llm_proxy.Operation(SimpleNamespace(name="agent1"), backend="llm:anthropic")
-    streamed = llm_proxy._streaming_response(
-        op, _Broken(), "anthropic", SimpleNamespace(name="agent1")
+    op = Operation(cast("Any", SimpleNamespace(name="agent1")), backend="llm:anthropic")
+    # The spine's view of the answer: its body, a mid-stream break as a refusal.
+    ctx = cast(
+        "Any",
+        SimpleNamespace(
+            instance=SimpleNamespace(name="anthropic"),
+            chunks=lambda resp: perimeter.InTree.chunks(cast("Any", None), resp),
+        ),
     )
+    streamed = llm_proxy._streaming_response(op, ctx, _Broken())
 
-    chunks: list[bytes] = []
+    relayed: list[bytes] = []
 
     async def _drain() -> None:
         async for chunk in streamed.body_iterator:
-            chunks.append(chunk)
+            relayed.append(chunk)
 
-    with pytest.raises(httpx.RemoteProtocolError):
+    with pytest.raises(RefusedError):
         await _drain()
 
-    assert chunks == [b"partial"]  # what was relayed before the break
+    assert relayed == [b"partial"]  # what was relayed before the break
     assert (op.outcome, op.reason) == (Outcome.BACKEND_ERROR, "upstream_failed")
     assert op.received == len(b"partial")
+
+
+def _block_profile() -> Profile:
+    """An agent1 profile whose /proxy/llm completion edge is set to block."""
+    p = _profile("agent1", "agent1-tok", {"anthropic": "agent1-key"})
+    p.defense = DefenseConfig(llm_completion="block")
+    return p
+
+
+def _stub_completion(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    flagged: bool = False,
+    risk: str = "low",
+    completion_gaps: Any = None,
+) -> None:
+    """Stub both edges for a block-mode completion test.
+
+    The request edge (judge_outbound) resolves gaps in ``trentina.modes``; the
+    completion edge (judge_llm_completion) resolves them in
+    ``trentina.orchestrator``. ``defend`` branches on source_type so the request
+    stays clean while the completion carries the verdict under test.
+    """
+    from trentina import defense as defense_mod
+    from trentina import modes as modes_mod
+    from trentina import orchestrator as orch
+    from trentina.modes import Gaps
+
+    clean = SimpleNamespace(flagged=False, flagged_by=None, risk_level="low")
+    completion = SimpleNamespace(
+        flagged=flagged,
+        flagged_by=SimpleNamespace(value="L2") if flagged else None,
+        risk_level=risk,
+    )
+
+    async def defend(_doc: Any, **kw: Any) -> Any:
+        return completion if kw.get("source_type") == "llm_completion" else clean
+
+    monkeypatch.setattr(defense_mod, "defend", defend)
+    monkeypatch.setattr(modes_mod, "gaps_of", lambda _v: Gaps())
+    monkeypatch.setattr(orch, "gaps_of", lambda _v: completion_gaps or Gaps())
+
+
+class TestLlmCompletionBlock:
+    """defense.llm_completion=block: the completion is buffered, judged, and
+    withheld if flagged or not fully judged (the per-profile product call). flag,
+    the default exercised throughout above, streams through and records post-hoc."""
+
+    def _client(self, fake: _FakeClient, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+        monkeypatch.setattr(perimeter, "pinned_send", fake)
+        providers = {"anthropic": _anthropic_provider()}
+        profiles = {"agent1": _block_profile()}
+
+        async def endpoint(request: Request) -> Response:
+            return await _serve_llm(request, providers, profiles)
+
+        app = Starlette(routes=[Route(LLM.route.path, endpoint, methods=["GET", "POST"])])
+        return TestClient(app)
+
+    def _post(self, client: TestClient, body: dict[str, Any]) -> Any:
+        return client.post(
+            "/proxy/llm/anthropic/v1/messages",
+            headers={"authorization": "Bearer agent1-tok"},
+            content=json.dumps(body).encode(),
+        )
+
+    def test_a_clean_completion_is_delivered_buffered(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        _stub_completion(monkeypatch)
+        resp = self._post(self._client(_FakeClient(), monkeypatch), _PLAIN)
+        assert resp.status_code == 200
+        assert resp.content == b'{"ok": true}'  # delivered intact, not withheld
+        [row] = _rows(audit_db)
+        assert row["outcome"] == "ok"
+
+    def test_a_flagged_completion_is_withheld(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        _stub_completion(monkeypatch, flagged=True, risk="high")
+        resp = self._post(self._client(_FakeClient(), monkeypatch), _PLAIN)
+        assert resp.status_code == 403
+        marker = resp.json()
+        assert marker["blocked"] is True
+        assert marker["block_reason"] == "completion_flagged"
+        assert resp.content != b'{"ok": true}'  # the completion never reaches the agent
+        [row] = _rows(audit_db)
+        assert (row["outcome"], row["error_message"]) == ("blocked_defense", "completion_flagged")
+
+    def test_an_unjudged_completion_is_withheld(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        from trentina.modes import Gaps
+
+        _stub_completion(monkeypatch, completion_gaps=Gaps(oversize=True))
+        resp = self._post(self._client(_FakeClient(), monkeypatch), _PLAIN)
+        assert resp.status_code == 403
+        assert resp.json()["block_reason"] == "completion_unjudged"
+        [row] = _rows(audit_db)
+        assert (row["outcome"], row["error_message"]) == ("blocked_defense", "completion_unjudged")
+
+    def test_a_completion_over_the_scan_cap_is_withheld(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        _stub_completion(monkeypatch)  # would be clean, but the cap is reached first
+        monkeypatch.setattr(llm_proxy, "_MAX_COMPLETION_SCAN_BYTES", 4)
+        resp = self._post(self._client(_FakeClient(), monkeypatch), _PLAIN)
+        assert resp.status_code == 403
+        assert resp.json()["block_reason"] == "completion_oversize"
+        [row] = _rows(audit_db)
+        assert (row["outcome"], row["error_message"]) == ("blocked_defense", "completion_oversize")

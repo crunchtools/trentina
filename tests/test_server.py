@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastmcp.tools import ToolResult
 
 from trentina.modes import Mode
 from trentina.server import mcp
@@ -26,9 +30,16 @@ class TestServerRegistration:
         somebody made, not something that happened. It was 19 until 0.32.0,
         when the mode moved from the tool NAME to an argument (#193).
         ``backend_auth`` (#479) is one tool with an action for the same reason.
+        ``federation_keygen`` and ``config_tool`` (#633) made it 16: provisioning a
+        gateway needs a keypair and a way to write the config, and both were
+        steps that still needed a shell. ``profile_token`` (#635) made it 17 for
+        the same reason — a new profile's bearer token was the last step that
+        needed a person and a restart. ``approval_enrol`` (#637) made it 18: an
+        operator can ask a person to set the approval password, which is the
+        last thing on a new gateway that needed a shell.
         """
         tools = await mcp.list_tools()
-        assert len(tools) == 13, f"Expected 13 tools, got {len(tools)}"
+        assert len(tools) == 18, f"Expected 18 tools, got {len(tools)}"
 
     async def test_every_family_takes_a_mode(self) -> None:
         """The mode is an argument the policy checks, not a name the agent picks."""
@@ -38,6 +49,73 @@ class TestServerRegistration:
             assert "trentina_mode" in props, family
             assert "trentina_prompt" not in props, family  # removed in 0.43.0
             assert "trentina_mode" not in tools[f"{family}_tool"].parameters.get("required", [])
+
+    def test_every_wrapper_declares_every_parameter_it_forwards_to(self) -> None:
+        """A registered tool must expose every argument its implementation takes.
+
+        6.1.0 added ``hash`` to ``manage_tool_pins`` so an operator could say
+        WHICH held definition of a tool to approve, and left
+        ``tool_pins_tool`` declaring ``action``, ``backend`` and ``tool``. The
+        implementation then answered the two-definition case with "name one
+        with hash" — a parameter no MCP caller could send — so 460 of 582 held
+        definitions on a real gateway were unreleasable through the API, which
+        is the state #633 exists to prevent.
+
+        Every test reached ``manage_tool_pins`` directly, which is how a whole
+        release shipped with the feature unreachable. This reads the wrapper's
+        signature instead, resolves the implementation it returns out of the
+        source, and fails on a parameter the wrapper drops. Plumbing a wrapper
+        supplies itself goes in ``supplied_by_the_wrapper``; nothing else may.
+
+        It also fails on a parameter the wrapper DECLARES and never reads,
+        which is the worse half of the same bug: the argument is advertised,
+        accepted and silently discarded, where an undeclared one at least
+        refuses.
+        """
+        from trentina import server
+
+        #: Parameters an implementation takes that its wrapper provides rather
+        #: than accepts. ``_delivered`` is handed the coroutine to run.
+        supplied_by_the_wrapper = {"_delivered": {"coro"}}
+
+        dropped: dict[str, list[str]] = {}
+        ignored: dict[str, list[str]] = {}
+        for node in ast.parse(inspect.getsource(server)).body:
+            if not isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef):
+                continue
+            if not any(
+                isinstance(d, ast.Call) and getattr(d.func, "attr", "") == "tool"
+                for d in node.decorator_list
+            ):
+                continue
+            declared = {a.arg for a in node.args.args + node.args.kwonlyargs}
+            read = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            if unread := sorted(declared - read):
+                ignored[node.name] = unread
+            called = [
+                name
+                for n in ast.walk(node)
+                if isinstance(n, ast.Return) and isinstance(n.value, ast.Await | ast.Call)
+                for call in [n.value.value if isinstance(n.value, ast.Await) else n.value]
+                if isinstance(call, ast.Call)
+                and (name := getattr(call.func, "id", None) or getattr(call.func, "attr", None))
+            ]
+            members = vars(server)
+            impl = members.get(called[-1]) if called else None
+            if impl is None or not callable(impl):
+                continue  # answered in the wrapper itself, nothing to forward
+            exempt = supplied_by_the_wrapper.get(called[-1], set())
+            missing = [
+                p
+                for p in inspect.signature(impl).parameters
+                if p not in declared and p not in exempt
+            ]
+            if missing:
+                dropped[node.name] = missing
+        assert not dropped, f"registered tools that drop a parameter: {dropped}"
+        assert not ignored, (
+            f"registered tools that declare a parameter and never read it: {ignored}"
+        )
 
     async def test_expected_tools_registered(self) -> None:
         """Nothing delivers content except a family tool (#187, #193) and
@@ -52,7 +130,12 @@ class TestServerRegistration:
             "reload_profiles_tool",
             "backend_auth_tool",
             "tool_pins_tool",
+            "tool_visibility_tool",
             "audit_verify_tool",
+            "federation_keygen_tool",
+            "profile_token_tool",
+            "approval_enrol_tool",
+            "config_tool",
         }
         assert tool_names == families | admin | {"read_part_tool"}
 
@@ -65,6 +148,23 @@ class TestServerRegistration:
 
     def test_server_name(self) -> None:
         assert mcp.name == "trentina"
+
+    async def test_config_tool_says_the_two_writes_are_staged_not_refused(self) -> None:
+        """A tool's description is how an operator agent decides what is
+        possible, so a stale one withdraws a feature without changing a line
+        of behaviour.
+
+        #637 turned the operator profile and ``trust_verdict`` from flat refusals
+        into writes a person approves, and this description went on saying they
+        were refused and "stays a human edit of the file" for a whole release.
+        An operator reading that would never attempt either — and would reach
+        for the shell the feature exists to remove.
+        """
+        described = {t.name: t.description or "" for t in await mcp.list_tools()}
+        config = described["config_tool"]
+        assert "staged" in config.lower()
+        assert "/approve" in config
+        assert "human edit of the file" not in config
 
 
 FAMILY_CALLS = [
@@ -101,3 +201,118 @@ async def test_every_family_extracts_what_the_dict_form_asks(
     call = fake.call_args
     assert Mode.REDACT in (*call.args, *call.kwargs.values())
     assert "What ships?" in (*call.args, *call.kwargs.values())
+
+
+# (tool name, patched underlying fn, call kwargs) for all five wrapped tools.
+_STANDALONE_TOOLS = [
+    ("fetch_tool", "fetch_page", {"url": "https://example.com"}),
+    ("read_tool", "read_file", {"path": "/tmp/x"}),
+    ("dir_tool", "list_dir", {"path": "/tmp"}),
+    ("content_tool", "judge_content", {"content": "x"}),
+    ("search_tool", "web_search", {"query": "x"}),
+]
+
+
+def _bound_profile() -> Any:
+    """A profile to bind so ``_delivered`` sees the gateway dispatch path."""
+    from pydantic import SecretStr
+
+    from trentina.gateway.profile import AuthConfig, Profile
+
+    p = Profile(name="p", auth=AuthConfig(bearer_token_env="TEST"), backends={})
+    assert p.auth is not None
+    p.auth.bearer_token = SecretStr("x")
+    return p
+
+
+class TestStandaloneRefusalsAreResults:
+    """#550: a standalone tool returns a policy REFUSAL as an ordinary result
+    (``isError`` false), not a raised exception, so a stock agent's strike
+    breaker does not count the refusal against the server. A genuine failure
+    (a timeout, a provider error) still raises, and behind a gateway (a profile
+    bound) the exception is re-raised so the gateway shapes and audits it.
+    """
+
+    @pytest.mark.parametrize(("tool", "fn", "kwargs"), _STANDALONE_TOOLS)
+    async def test_a_blocked_source_is_a_result_for_every_tool(
+        self, tool: str, fn: str, kwargs: dict[str, str]
+    ) -> None:
+        from trentina import server
+        from trentina.errors import BlockedSourceError
+
+        refusal = {"reason": "on the blocklist", "alternatives": []}
+        with patch(
+            f"trentina.server.{fn}",
+            AsyncMock(side_effect=BlockedSourceError("src", "on the blocklist", refusal=refusal)),
+        ):
+            result = await getattr(server, tool)(**kwargs)
+        assert isinstance(result, ToolResult)
+        assert result.is_error is False
+        assert result.structured_content == {"_trentina_refusal": refusal}
+        assert "[TRENTINA] Refused" in result.content[0].text
+
+    async def test_a_file_read_refusal_is_a_result(self) -> None:
+        from trentina.errors import FileReadError
+        from trentina.server import read_tool
+
+        with patch("trentina.server.read_file", AsyncMock(side_effect=FileReadError("binary"))):
+            result = await read_tool(path="/tmp/x")
+        assert isinstance(result, ToolResult)
+        assert result.is_error is False
+        assert result.structured_content == {
+            "_trentina_refusal": {"reason": "binary", "alternatives": []}
+        }
+
+    async def test_an_egress_refusal_is_a_result(self) -> None:
+        from trentina.errors import EgressRefusedError
+        from trentina.server import fetch_tool
+
+        with patch(
+            "trentina.server.fetch_page",
+            AsyncMock(side_effect=EgressRefusedError("non_global_address")),
+        ):
+            result = await fetch_tool(url="https://example.com")
+        assert isinstance(result, ToolResult)
+        assert result.is_error is False
+        assert result.structured_content == {
+            "_trentina_refusal": {"reason": "non_global_address", "alternatives": []}
+        }
+
+    @pytest.mark.parametrize(("tool", "fn", "kwargs"), _STANDALONE_TOOLS)
+    async def test_a_bound_profile_re_raises_the_refusal(
+        self, tool: str, fn: str, kwargs: dict[str, str]
+    ) -> None:
+        """Behind a gateway a profile is bound; the tool must still RAISE so the
+        internal backend shapes the refusal and audits it blocked_defense."""
+        from trentina import server
+        from trentina.errors import BlockedSourceError
+        from trentina.gateway.context import profile_context
+
+        refusal = {"reason": "on the blocklist", "alternatives": []}
+        with (
+            patch(
+                f"trentina.server.{fn}",
+                AsyncMock(
+                    side_effect=BlockedSourceError("src", "on the blocklist", refusal=refusal)
+                ),
+            ),
+            profile_context(_bound_profile()),
+            pytest.raises(BlockedSourceError),
+        ):
+            await getattr(server, tool)(**kwargs)
+
+    async def test_a_genuine_failure_still_raises(self) -> None:
+        from trentina.server import fetch_tool
+
+        with (
+            patch("trentina.server.fetch_page", AsyncMock(side_effect=TimeoutError("slow"))),
+            pytest.raises(TimeoutError),
+        ):
+            await fetch_tool(url="https://example.com")
+
+    async def test_a_clean_result_passes_through_unchanged(self) -> None:
+        from trentina.server import fetch_tool
+
+        with patch("trentina.server.fetch_page", AsyncMock(return_value={"content": "ok"})):
+            result = await fetch_tool(url="https://example.com")
+        assert result == {"content": "ok"}

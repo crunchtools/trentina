@@ -13,7 +13,7 @@ overlap, and a caller in none gets 401. Nothing secret is in the URL. Until
 timeout, so the token reached agent logs and model context (#330). The
 address is uvicorn's ``scope["client"]``, which it rewrites from
 ``X-Forwarded-For`` for a trusted peer, so a request carrying that header is
-refused (``_caller_address``). Before
+refused (``transports.perimeter._caller``). Before
 any of this the proxy was an open relay. Matrix's OWN auth (the access token
 in the Authorization header) still passes through untouched; this proxy
 never injects or reads Matrix credentials.
@@ -53,49 +53,63 @@ import base64
 import json
 import logging
 import re
+from dataclasses import dataclass
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Literal
 
-import httpx
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import Response
 
 from ..channels import Channel
-from ..defense import defend, defend_selection
-from ..errors import EgressRefusedError
-from ..logsafe import exc_kind, exc_where, redact_source, safe_url
+from ..logsafe import exc_kind, exc_where, redact_source
 from ..matrix.keybackup import KeyBackupProvider
 from ..modes import gaps_of
+from ..orchestrator import (
+    judge_matrix_response,
+    judge_matrix_selection,
+    judge_matrix_text_fallback,
+)
 from ..outcomes import Outcome
-from ..quarantine.prompts import RISK_LEVELS
 from ..reserved import WARNING_KEY, strip_reserved, with_stripped
 from ..transforms import SelectionContext
+from ..transports.base import (
+    SPINE_REFUSALS,
+    Admitted,
+    Audit,
+    Grant,
+    Instance,
+    OperatorOrigin,
+    PeerAddress,
+    Refusal,
+    RefusedError,
+    Route,
+    Wire,
+)
+from ..transports.perimeter import InTree, read_decoded, send_exempt
 from ..unpack.ocr import MAX_IMAGE_BYTES
 from ..warning import build_warning
 from .context import profile_context
-from .destination import MAX_DESTINATION_CHARS, DestinationKind
+from .destination import MAX_DESTINATION_CHARS
 from .drivers import build_transforms
 from .matrix_relation import withheld_relation
-from .profile import profile_for_address
 from .proxy_utils import (
     PLAIN_TEXT,
     filter_response_headers,
     forward_request_headers,
     normalize_proxy_path,
 )
-from .relay import Operation
+from .relay import Relayed
 from .selection import describe, run_l1
-from .upstream import RESOLVER_BUSY, matrix_pinned_send
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator
-
-    from starlette.requests import Request
+    from collections.abc import Iterator, Mapping
 
     from .profile import Profile
+    from .relay import Operation
 
 logger = logging.getLogger(__name__)
 
 #: The audit ``backend`` column for a Matrix proxy row (one per relayed
-#: operation, never per idle ``/sync`` long-poll — see ``_proxy_matrix``).
+#: operation, never per idle ``/sync`` long-poll — see ``MatrixRoute``).
 BACKEND = "matrix"
 
 _DEFAULT_UPSTREAM = "https://matrix-client.matrix.org"
@@ -230,93 +244,167 @@ def _keybackup_send(profile: Profile) -> Any:
 
     The provider's homeserver calls carry the Matrix access token, so they ride
     the SAME pinned pool as the ``/sync`` forward instead of a bare client: the
-    origin is re-checked and pinned before each dial (``matrix_pinned_send`` →
+    origin is re-checked and pinned before each dial (``perimeter.send_exempt`` →
     ``checked_target``), closing the DNS-rebinding window an unpinned client left
     open. The pool is torn down by ``upstream.close_pool`` at shutdown, so there
     is no separate client to leak. The provider owns the response's close.
     """
 
-    async def send(method: str, url: str, headers: dict[str, str]) -> httpx.Response:
-        return await matrix_pinned_send(profile, method, url, idle=_KEYBACKUP_IDLE, headers=headers)
+    async def send(method: str, url: str, headers: dict[str, str]) -> Any:
+        return await send_exempt(profile, method, url, _KEYBACKUP_IDLE, headers)
 
     return send
 
 
-def _caller_address(request: Request) -> str | None:
-    """The address that connected, or None when it may not be that.
+#: The Matrix proxy's refusals: the spine's, and its own three before anything
+#: is sent. A refusal and every finding is a row; a clean poll is not.
+REFUSALS: Mapping[str, Refusal] = {
+    **SPINE_REFUSALS,
+    "not_matrix": Refusal(HTTPStatus.NOT_FOUND, Outcome.DENIED_GUARD),
+    "path_traversal": Refusal(HTTPStatus.BAD_REQUEST, Outcome.DENIED_GUARD),
+}
 
-    uvicorn replaces ``scope["client"]`` with an ``X-Forwarded-For`` entry
-    when the peer is in its trusted list, and only when that header is
-    present (``ProxyHeadersMiddleware``). A request carrying the header may
-    therefore hold an address someone named rather than one that connected,
-    and the address is the credential: it is refused. An agent on its own
-    network calls the gateway directly and sends no such header.
+#: Each refusal's line of text, by canonical reason.
+_PLAIN: Mapping[str, str] = {
+    "unauthorized": "unauthorized",
+    "not_matrix": "not found",
+    "path_traversal": "Path traversal rejected",
+    "upstream_failed": "Matrix upstream error",
+}
+
+#: How a send that never got an answer is worded and recorded, by the spine's
+#: reason: ``(status, text, outcome, reason)``. A guard refusal's own reason
+#: replaces ``reason`` when there is one.
+_UNANSWERED: Mapping[str, tuple[int, str, Outcome, str]] = {
+    "resolver_busy": (503, "Matrix upstream refused", Outcome.DENIED_GUARD, "resolver_busy"),
+    "denied_guard": (403, "Matrix upstream refused", Outcome.BLOCKED_DEFENSE, "denied_guard"),
+    "upstream_idle": (504, "Matrix upstream timeout", Outcome.BACKEND_ERROR, "upstream_timeout"),
+    "upstream_unreachable": (
+        502, "Matrix upstream unreachable", Outcome.BACKEND_ERROR, "upstream_unreachable"
+    ),
+    "upstream_failed": (502, "Matrix upstream error", Outcome.BACKEND_ERROR, "upstream_failed"),
+}  # fmt: skip
+
+#: The origin key of the one homeserver.
+ORIGIN = "origin"
+
+
+@dataclass(frozen=True)
+class MatrixAdmitted(Admitted):
+    """A Client-Server API path, traversal-checked."""
+
+    path: str = ""
+
+
+class MatrixRoute(Route[MatrixAdmitted, InTree]):
+    """``/matrix/_matrix/...``: the agent's Matrix client, to one homeserver.
+
+    The address that connected picks the profile (#330): a token in a homeserver
+    URL is printed by every client that reports a connection error. A row is
+    written only for a refusal, an upstream error or a finding: ``/sync`` is a
+    continuous long-poll, and a row per poll would flood the audit database.
     """
-    # TRUST: the peer address picks the profile (#330)
-    #   untrusted: every header the caller sends
-    #   judged-by: nothing; an address is resolved, not judged
-    #   on-failure: fail-closed; with X-Forwarded-For present, no profile
-    #   owner: matrix_proxy._caller_address
-    #   evidence: T2 uvicorn ProxyHeadersMiddleware rewrites scope["client"]
-    #     only from x-forwarded-for; T3 loader._check_matrix_networks (one
-    #     profile per address)
-    if "x-forwarded-for" in request.headers:
-        return None
-    return request.client.host if request.client else None
+
+    name = "matrix"
+    methods = tuple(MATRIX_HTTP_METHODS)
+    auth = PeerAddress("matrix_ingress")
+    refusals = REFUSALS
+    max_request_bytes = _MAX_SCAN_BYTES
+    slots = None
+    audit = Audit.ON_FINDING
+    idle = _MATRIX_IDLE
+
+    @property
+    def path(self) -> str:
+        """``/matrix/...``: one homeserver, so no instance segment."""
+        return "/matrix/{path:path}"
+
+    async def admit(self, wire: Wire, _grant: Grant, _instance: Instance) -> MatrixAdmitted:
+        """Only ``_matrix/...`` is served (a URL from before 0.51.0, with a token
+        ahead of ``_matrix``, is refused and the token is not echoed), and a
+        path that climbs out is refused."""
+        if not wire.path.startswith("_matrix/"):
+            raise RefusedError("not_matrix")
+        path = normalize_proxy_path(wire.path)
+        if path is None:
+            raise RefusedError("path_traversal")
+        # The caller's path is the destination: stored in the audit row, never
+        # the query (older clients carry state there), never logged (#266).
+        return MatrixAdmitted(
+            origin=OperatorOrigin(ORIGIN), destination=path[:MAX_DESTINATION_CHARS], path=path
+        )
+
+    async def deliver(self, admitted: MatrixAdmitted, ctx: InTree) -> Response:
+        """Forward one request, then judge, withhold or pass through its answer.
+
+        The judging runs on this profile's provider and key (RT #1505). An error
+        the route did not settle is recorded as ``proxy_error``: a refusal that
+        is not a refusal still leaves a row.
+        """
+        op = ctx.op
+        try:
+            with profile_context(ctx.profile):
+                return await self._forward(admitted, ctx)
+        except RefusedError:
+            raise
+        except Exception:
+            if op.reason is None:
+                op.settle(Outcome.GATEWAY_ERROR, "proxy_error")
+            raise
+
+    async def _forward(self, admitted: MatrixAdmitted, ctx: InTree) -> Response:
+        op, wire, path = ctx.op, ctx.wire, admitted.path
+        has_body = wire.method in ("POST", "PUT", "PATCH")
+        try:
+            # Matrix takes none of the terminating-proxy contract — no forced
+            # identity, no redirect/encoded refusal — so a 3xx is forwarded for
+            # the agent's client and a gzipped /sync is decoded on read.
+            resp = await ctx.open_exempt(
+                wire.method,
+                path,
+                query=wire.query,
+                headers=forward_request_headers(list(wire.headers.items())),
+                content=ctx.stream() if has_body else None,
+            )
+        except RefusedError as failed:
+            status, text, outcome, reason = _UNANSWERED[failed.canonical]
+            op.settle(outcome, failed.detail or reason)
+            logger.warning("matrix_proxy: upstream %s", failed.canonical)
+            return Response(content=text, status_code=status, media_type=PLAIN_TEXT)
+        resp_headers = filter_response_headers(list(resp.headers.items()))
+        ct = resp.headers.get("content-type", "application/json")
+        scanner = _SCANNERS.get(_judgement(wire.method, path, resp.status_code, ct) or "")
+        if scanner is not None:
+            return await scanner(resp, resp_headers, ct, ctx.profile, path, op)
+        # Exempt pass-through (acks, /versions, E2EE key traffic): nothing is
+        # judged and nothing is settled, so no row is written. The operation
+        # finishes when the stream does, closing the answer.
+        return Relayed(
+            read_decoded(resp),
+            op,
+            status_code=resp.status_code,
+            headers=resp_headers,
+            media_type=ct,
+        )
+
+    def render(self, refused: RefusedError) -> Response:
+        """Matrix's refusals are a status and a line of text."""
+        return Response(
+            content=_PLAIN.get(refused.canonical, refused.reason),
+            status_code=refused.status or HTTPStatus.FORBIDDEN,
+            media_type=PLAIN_TEXT,
+        )
 
 
-def register_matrix_routes(
-    mcp_server: Any,
-    profiles: dict[str, Profile],
-    *,
-    upstream: str = _DEFAULT_UPSTREAM,
-) -> None:
-    """Wire ``/matrix/{path:path}`` onto the FastMCP server.
-
-    Only ``_matrix/...`` paths are served. A URL from before 0.51.0, with a
-    token ahead of ``_matrix``, gets 404 and the token is not echoed.
+def check_upstream(upstream: str) -> str:
+    """The homeserver origin ``matrix.upstream`` names, or a refusal to start.
 
     Raises:
         ValueError: an upstream that is not https.
     """
     if not upstream.startswith("https://"):
-        raise ValueError(
-            f"Matrix upstream must start with https://: {upstream!r}",
-        )
-    upstream = upstream.rstrip("/")
-
-    matrix_profiles = [name for name, p in profiles.items() if p.matrix_ingress is not None]
-    if not matrix_profiles:
-        logger.warning(
-            "matrix_proxy: matrix.enabled is set but no profile has "
-            "matrix_ingress — every request will 401",
-        )
-
-    async def matrix_proxy_endpoint(request: Request) -> Response:
-        if not request.path_params.get("path", "").startswith("_matrix/"):
-            return Response(content="not found", status_code=404, media_type=PLAIN_TEXT)
-        profile = profile_for_address(_caller_address(request), profiles, "matrix_ingress")
-        if profile is None:
-            return Response(
-                content="unauthorized",
-                status_code=401,
-                media_type=PLAIN_TEXT,
-            )
-        # The sync scan runs on this profile's provider and key (RT #1505).
-        with profile_context(profile):
-            return await _proxy_matrix(request, upstream, profile)
-
-    mcp_server.custom_route(
-        "/matrix/{path:path}",
-        methods=MATRIX_HTTP_METHODS,
-    )(matrix_proxy_endpoint)
-
-    logger.info(
-        "matrix_proxy: registered /matrix/{path} → %s for %d profile(s): %s",
-        safe_url(upstream),
-        len(matrix_profiles),
-        ", ".join(matrix_profiles) or "(none)",
-    )
+        raise ValueError(f"Matrix upstream must start with https://: {upstream!r}")
+    return upstream.rstrip("/")
 
 
 def _judgement(
@@ -340,153 +428,6 @@ def _judgement(
     if method == "GET" and _MEDIA_DOWNLOAD.fullmatch(path) is not None and binary:
         return "media"
     return "json" if "json" in content_type.lower() else "text"
-
-
-async def _proxy_matrix(
-    request: Request,
-    upstream: str,
-    profile: Profile,
-) -> Response:
-    """Forward one Matrix Client-Server API request, and audit it on the ONE
-    lifecycle (``relay.Operation``, #511).
-
-    A ``gateway_calls`` row is written ONLY when the operation was refused, hit
-    an upstream error, or carried a security finding — a flagged response, a
-    blocking gap that withheld events, a withheld or too-large body. A clean
-    response and the exempt pass-through (acks, ``/versions``, E2EE key traffic,
-    media under annotate) write NO row, because ``/sync`` is a continuous
-    long-poll and a row per poll would flood the audit database.
-
-    The row is GATED on a ``reason`` being set, never on the outcome:
-    ``Operation`` defaults its outcome to ``CANCELLED`` but its reason to
-    ``None``, so gating on the outcome would turn any clean path that forgot to
-    settle into a logged row — the exact flood this avoids. A forwarded-with-
-    finding response settles ``(OK, <finding>)``, so the outcome column tells a
-    delivered finding (``ok``) from a withhold/refusal (a block outcome), the
-    way ``/proxy/http`` records a flag. Nothing is registered on ``op.upstream``
-    (the httpx response is closed by ``_buffer``/``_streamed`` as before), so a
-    skipped finish leaks nothing: no slot is taken and no close is pending.
-    """
-    op = Operation(
-        profile, backend=BACKEND, tool=request.method, destination_kind=DestinationKind.MATRIX
-    )
-    try:
-        return await _route(request, upstream, profile, op)
-    except httpx.HTTPError:
-        # A homeserver that drops mid-body (``_buffer`` reads outside the scan's
-        # own try) must still be audited — the Phase 0 /llm bug, not reborn here.
-        if op.reason is None:
-            op.settle(Outcome.BACKEND_ERROR, "upstream_failed")
-        raise
-    except Exception:
-        if op.reason is None:
-            op.settle(Outcome.GATEWAY_ERROR, "proxy_error")
-        raise
-    finally:
-        # The one place a Matrix row is (or is not) written. See the docstring:
-        # a clean or idle operation leaves reason None and is never audited.
-        if op.reason is not None:
-            await op.finish()
-
-
-async def _route(
-    request: Request,
-    upstream: str,
-    profile: Profile,
-    op: Operation,
-) -> Response:
-    """Forward one request; settle ``op`` on each refusal, error or finding."""
-    raw_path = request.path_params.get("path", "")
-    path = normalize_proxy_path(raw_path)
-    if path is None:
-        op.settle(Outcome.DENIED_GUARD, "path_traversal")
-        return Response(
-            content="Path traversal rejected",
-            status_code=400,
-            media_type=PLAIN_TEXT,
-        )
-    # The caller's path is the destination: stored in the audit row, never the
-    # query (older clients carry state there), never logged (#266).
-    op.destination = path[:MAX_DESTINATION_CHARS]
-
-    upstream_url = f"{upstream}/{path}"
-    if request.url.query:
-        upstream_url = f"{upstream_url}?{request.url.query}"
-
-    fwd_headers = forward_request_headers(list(request.headers.items()))
-    has_body = request.method in ("POST", "PUT", "PATCH")
-
-    try:
-        # The pinned pool (#511): the homeserver origin is re-checked and the
-        # connection pinned before the send (Matrix crosses the egress guard now,
-        # like the other proxies), and reused. Matrix takes none of the
-        # terminating-proxy contract — no forced identity, no redirect/encoded
-        # refusal — so a 3xx is forwarded for the agent's client and a gzipped
-        # /sync is decoded by _buffer as before. The response is returned OPEN;
-        # _buffer / _streamed own its close.
-        resp = await matrix_pinned_send(
-            profile,
-            request.method,
-            upstream_url,
-            idle=_MATRIX_IDLE,
-            headers=fwd_headers,
-            content=request.stream() if has_body else None,
-        )
-    except EgressRefusedError as exc:
-        # The egress guard refused the homeserver origin (not global, not 443, or
-        # the resolver was busy). resolver_busy is gateway load (503), not a
-        # verdict on the name; everything else is the address rail (403).
-        if exc.reason == RESOLVER_BUSY:
-            op.settle(Outcome.DENIED_GUARD, exc.reason)
-            status = 503
-        else:
-            op.settle(Outcome.BLOCKED_DEFENSE, exc.reason)
-            status = 403
-        logger.warning("matrix_proxy: upstream refused reason=%s", exc.reason)
-        return Response(
-            content="Matrix upstream refused", status_code=status, media_type=PLAIN_TEXT
-        )
-    except httpx.TimeoutException:
-        op.settle(Outcome.BACKEND_ERROR, "upstream_timeout")
-        return Response(content="Matrix upstream timeout", status_code=504, media_type=PLAIN_TEXT)
-    except httpx.ConnectError as exc:
-        logger.warning("matrix_proxy: connect error: %s", exc_kind(exc))
-        op.settle(Outcome.BACKEND_ERROR, "upstream_unreachable")
-        return Response(
-            content="Matrix upstream unreachable", status_code=502, media_type=PLAIN_TEXT
-        )
-
-    # matrix_pinned_send returns a POOLED, pinned response held OPEN; until
-    # _buffer / _streamed take over its close, an exception in this span would
-    # leak a pinned connection to KEEPALIVE_EXPIRY, so close it here. The outer
-    # _proxy_matrix settles the row (GATEWAY_ERROR / upstream_failed).
-    try:
-        resp_headers = filter_response_headers(list(resp.headers.items()))
-        ct = resp.headers.get("content-type", "application/json")
-        scanner = _SCANNERS.get(_judgement(request.method, path, resp.status_code, ct) or "")
-        if scanner is not None:
-            return await scanner(resp, resp_headers, ct, profile, path, op)
-        # Exempt pass-through (acks, /versions, E2EE key traffic): nothing is
-        # judged and nothing is settled, so no row is written.
-        return _streamed(resp, resp_headers, ct)
-    except Exception:
-        await resp.aclose()
-        raise
-
-
-def _streamed(resp: httpx.Response, headers: dict[str, str], content_type: str) -> Response:
-    """Forward a body as it arrives, unjudged: the exempt set, and media under annotate."""
-
-    async def stream_body() -> AsyncIterator[bytes]:
-        try:
-            async for chunk in resp.aiter_bytes():
-                yield chunk
-        finally:
-            await resp.aclose()
-
-    return StreamingResponse(
-        stream_body(), status_code=resp.status_code, headers=headers, media_type=content_type
-    )
 
 
 _EXTRACTORS: dict[str, Any] = {}
@@ -593,7 +534,7 @@ def reset_extractors() -> None:
     _PROVIDERS.clear()
 
 
-async def _buffer(resp: httpx.Response, path: str) -> bytes | Response:
+async def _buffer(resp: Any, path: str) -> bytes | Response:
     """The whole body, or the refusal to send when it is too big to judge.
 
     Refused under annotate as well (#296). Forwarding it streamed, as this
@@ -603,7 +544,7 @@ async def _buffer(resp: httpx.Response, path: str) -> bytes | Response:
     chunks: list[bytes] = []
     size = 0
     try:
-        async for chunk in resp.aiter_bytes():
+        async for chunk in read_decoded(resp):
             size += len(chunk)
             if size > _MAX_SCAN_BYTES:
                 # Stop BUFFERING: the old guard kept accumulating and only
@@ -625,7 +566,7 @@ async def _buffer(resp: httpx.Response, path: str) -> bytes | Response:
 
 
 async def _scan_and_forward(
-    resp: httpx.Response,
+    resp: Any,
     resp_headers: dict[str, str],
     content_type: str,
     profile: Profile,
@@ -690,22 +631,16 @@ async def _scan_and_forward(
                     path=path,
                 ),
             )
-            verdict = await defend_selection(
+            # Withholding refuses a partial scan anyway, so it is refused at
+            # admission rather than paid for (#227); annotate keeps the head scan
+            # it forwards with. The defend_selection() call lives in the
+            # orchestrator now (the selection edge); the deadline above still
+            # wraps both the extraction and this judge.
+            verdict = await judge_matrix_selection(
                 view,
+                profile=profile,
                 source=f"matrix:{profile.name}:{path}",
-                source_type="matrix_sync",
-                defense=profile.defense,
-                # Withholding refuses a partial scan anyway, so it is refused
-                # at admission rather than paid for (#227). annotate keeps
-                # the head scan it forwards with.
                 stop_on_partial=_withholds(profile),
-                record=True,
-                attribution={
-                    "profile": profile.name,
-                    "backend": "matrix",
-                    "direction": "sync",
-                    "blocked": False,
-                },
             )
     except TimeoutError:
         # Must precede the bare `except Exception`: TimeoutError descends from
@@ -867,7 +802,7 @@ async def _restrip(payload: Any) -> dict[str, Any] | None:
 
 
 async def _media(
-    resp: httpx.Response,
+    resp: Any,
     resp_headers: dict[str, str],
     content_type: str,
     profile: Profile,
@@ -886,7 +821,13 @@ async def _media(
     """
     if not _withholds(profile):
         op.settle(Outcome.OK, "media_unreadable")
-        return _streamed(resp, {**resp_headers, WARNING_HEADER: "unknown"}, content_type)
+        return Relayed(
+            read_decoded(resp),
+            op,
+            status_code=resp.status_code,
+            headers={**resp_headers, WARNING_HEADER: "unknown"},
+            media_type=content_type,
+        )
     if content_type.strip().lower().startswith("image/"):
         return await _scan_text_and_forward(
             resp, resp_headers, content_type, profile, path, op, image=True
@@ -902,7 +843,7 @@ async def _media(
 
 
 async def _scan_text_and_forward(
-    resp: httpx.Response,
+    resp: Any,
     resp_headers: dict[str, str],
     content_type: str,
     profile: Profile,
@@ -935,29 +876,16 @@ async def _scan_text_and_forward(
         if ingress is not None
         else _FALLBACK_SCAN_DEADLINE_SECONDS
     )
-    flagged, unjudged, risk = False, True, "unknown"
-    try:
-        async with asyncio.timeout(deadline):
-            verdict = await defend(
-                base64.b64encode(buffered).decode("ascii")
-                if image
-                else buffered.decode("utf-8", errors="replace"),
-                source=f"matrix:{profile.name}:{path}",
-                source_type="matrix_sync",
-                defense=profile.defense,
-                stop_on_partial=_withholds(profile),
-            )
-        flagged, unjudged = verdict.flagged, gaps_of(verdict).blocking()
-        # A closed set, never L3 prose.
-        risk = verdict.risk_level if verdict.risk_level in RISK_LEVELS else "unknown"
-    except Exception as exc:
-        # TimeoutError too: either way no verdict was reached.
-        logger.error(  # the message may carry the payload (#262)
-            "matrix_proxy: text scan failed for %s: %s at %s",
-            redact_source(path),
-            exc_kind(exc),
-            exc_where(exc),
-        )
+    judgement = await judge_matrix_response(
+        base64.b64encode(buffered).decode("ascii")
+        if image
+        else buffered.decode("utf-8", errors="replace"),
+        profile=profile,
+        source=f"matrix:{profile.name}:{path}",
+        stop_on_partial=_withholds(profile),
+        deadline=deadline,
+    )
+    flagged, unjudged, risk = judgement.flagged, judgement.unjudged, judgement.risk
     if unjudged and _withholds(profile):
         op.settle(Outcome.BLOCKED_DEFENSE, "response_withheld")
         return _refused()
@@ -1177,28 +1105,16 @@ async def _text_fallback_scan(body: bytes, profile: Profile, path: str) -> bool:
     silent clean the recursive-parse fail-open used to produce. Returns whether
     the text was flagged, so the caller can carry it onto the audit row.
     """
-    try:
-        verdict = await defend(
-            body.decode("utf-8", errors="replace"),
-            source=f"matrix:{profile.name}:{path}",
-            source_type="matrix_sync",
-            defense=profile.defense,
-        )
-    except Exception as exc:
-        logger.error(  # the message may carry the payload (#262)
-            "matrix_proxy: text-mode fallback scan failed for %s: %s at %s",
-            redact_source(path),
-            exc_kind(exc),
-            exc_where(exc),
-        )
-        return False
-    if verdict.flagged:
+    judgement = await judge_matrix_text_fallback(
+        body, profile=profile, source=f"matrix:{profile.name}:{path}"
+    )
+    if judgement.flagged:
         logger.error(
             "matrix_proxy: UNPARSEABLE response FLAGGED for profile=%s "
             "path=%s risk=%s — forwarded (no annotation channel); "
             "investigate the sender",
             profile.name,
             redact_source(path),
-            verdict.risk_level,
+            judgement.risk,
         )
-    return verdict.flagged
+    return judgement.flagged

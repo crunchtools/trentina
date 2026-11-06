@@ -12,13 +12,13 @@ from starlette.testclient import TestClient
 from trentina.gateway.app import OAuthContext, gateway_app
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.loader import GatewayConfig
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
     OAuthConfig,
     Profile,
 )
-from trentina.gateway.router import NAMESPACE_SEP
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -160,7 +160,7 @@ class TestGatewayApp:
             )
 
         with patch(
-            "trentina.gateway.router.call_backend_tool",
+            "trentina.transports.mcp.call_backend_tool",
             side_effect=fake_call,
         ):
             resp = client.post(
@@ -200,6 +200,24 @@ class TestHealthEndpoint:
         assert body["status"] == "ok"
         assert body["profiles"] == 1
         assert body["classifier"] in {"loaded", "not-loaded", "failed"}
+        # Read from the refresher's cache, never from SQLite (#662): None until
+        # warm-up has produced a value, and no lifespan runs here.
+        assert body["pending_pins"] is None
+
+    def test_health_reports_the_cached_pin_count(self, client: TestClient) -> None:
+        from trentina import perimeter_db
+
+        perimeter_db.pending_pins_cached = 3
+        try:
+            assert client.get("/health").json()["pending_pins"] == 3
+        finally:
+            perimeter_db.pending_pins_cached = None
+
+    def test_health_makes_no_database_call(self, client: TestClient) -> None:
+        with patch(
+            "trentina.perimeter_db.count_pending_pins", side_effect=AssertionError("db read")
+        ):
+            assert client.get("/health").status_code == 200
 
     def test_health_needs_no_auth(self, client: TestClient) -> None:
         """A probe that requires a per-profile token is useless to a monitor."""
@@ -944,7 +962,7 @@ class TestMultiProfileResourceIndicator:
     """Two OAuth profiles on one gateway (RT #1502).
 
     OAuthProxy stores a single `_resource_url` and refuses every other RFC 8707
-    indicator with `invalid_target`. That is correct for one OAuth seat and an
+    indicator with `invalid_target`. That is correct for one OAuth profile and an
     outage for two: the pin goes to whichever profile sorts first and the other
     one's every login fails — the 0.8.3 incident. Both Claude and Gemini send
     the indicator, so this is not hypothetical.

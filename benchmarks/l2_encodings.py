@@ -36,7 +36,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from corpora.benign_ops import BENIGN
-from corpora.garak_encodings import ENCODINGS
+from corpora.garak_encodings import ENCODINGS, carries
 from corpora.internal import CORPUS
 from trentina.defense import _decide
 from trentina.l1.pipeline import run_l1
@@ -105,11 +105,20 @@ def read(text: str) -> Reading:
     )
 
 
-def measure() -> dict[str, dict[str, list[Reading]]]:
-    """A reading for every text of every set under every transform."""
+def measure(only: frozenset[str] | None = None) -> dict[str, dict[str, list[Reading]]]:
+    """A reading for every text of every set under every transform, or under
+    the transforms ``only`` names.
+
+    A Latin-only encoder (Braille, Morse) is scored only over the texts it can
+    carry (``carries``), the same scoping the gate test applies, so a payload
+    garak drops at encode time is not counted as a loss here either."""
     return {
-        name: {group: [read(change(text)) for text in texts] for group, texts in SETS.items()}
+        name: {
+            group: [read(change(text)) for text in texts if carries(name, text)]
+            for group, texts in SETS.items()
+        }
         for name, change in ROWS.items()
+        if only is None or name in only
     }
 
 
@@ -143,13 +152,21 @@ def report(readings: dict[str, dict[str, list[Reading]]]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--json", type=Path, help="write every reading here")
+    parser.add_argument(
+        "--transforms",
+        help="comma-separated rows to measure (default every row); a full run takes minutes",
+    )
     args = parser.parse_args(argv)
+    only = frozenset(t.strip() for t in args.transforms.split(",")) if args.transforms else None
+    if only is not None and (unknown := sorted(only - ROWS.keys())):
+        print(f"error: unknown transforms: {', '.join(unknown)}", file=sys.stderr)
+        return 2
     model = model_info() if is_classifier_available() else None
     if model is None:
         print("error: no L2 model loaded (set CLASSIFIER_MODEL_PATH)", file=sys.stderr)
         return 2
 
-    readings = measure()
+    readings = measure(only)
     sizes = ", ".join(f"{len(texts)} {group}" for group, texts in SETS.items())
     print(f"{model.id} at {model.threshold:g}; {sizes}\n")
     print(report(readings))

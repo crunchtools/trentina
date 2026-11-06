@@ -15,12 +15,13 @@ from trentina import config as config_mod
 from trentina import database as database_mod
 from trentina import logsafe
 from trentina import perimeter_db as perimeter_db_mod
+from trentina.gateway import upstream as upstream_mod
+from trentina.gateway.aggregate import reset_profile_tools_cache
 from trentina.gateway.backend import reset_tool_list_cache
 from trentina.gateway.circuit import breaker
-from trentina.gateway.ingress_defense import reset_verdict_cache
 from trentina.gateway.loader import reset_active_config
 from trentina.gateway.matrix_proxy import reset_extractors
-from trentina.gateway.router import reset_profile_tools_cache
+from trentina.gateway.verdict_cache import reset_verdict_cache
 from trentina.quarantine.limiter import reset_limiters
 from trentina.quarantine.providers import reset_provider
 
@@ -53,12 +54,65 @@ def _reset_singletons() -> None:
             # part that matters.
             database_mod._db.close()
         database_mod._db = None
+    # The sweep clock is a module global, and "already swept" is the lenient
+    # state: a test that leaves it set makes the next test's first audit write
+    # skip the retention sweep entirely. Clearing it leaves every test with
+    # the sweep DUE, which is the strict reading and the one production has on
+    # its first call after start.
+    database_mod._last_sweep = None
     # Same for the perimeter store, which is a second connection with the
     # same thread affinity.
     if perimeter_db_mod._db is not None:
         with contextlib.suppress(Exception):
             perimeter_db_mod._db.close()
         perimeter_db_mod._db = None
+    # The upstream pool holds httpx clients bound to the event loop of the
+    # test that opened them. A later test on the same worker that closes the
+    # pool (a gateway lifespan exit) then closes them on a dead loop, and
+    # raises "Event loop is closed". Dropping the references is enough: the
+    # loop that owned them is gone.
+    upstream_mod._pool.clear()
+
+
+@pytest.fixture(autouse=True)
+def _sse_drain_latch_is_not_held() -> None:
+    """Keep ``sse_starlette``'s shutdown latch off, for every served app (#657).
+
+    ``sse_starlette.sse.AppStatus.should_exit`` is a CLASS attribute — one
+    boolean for the whole process — and nothing ever sets it back to False.
+    ``_listen_for_exit_signal`` returns the moment it is True, which ends the
+    SSE stream a response is being written to. An MCP server answers a POST
+    over SSE, so a held latch means: transport created, "Closing SSE writer",
+    "Request stream 1 not found", and uvicorn's "ASGI callable returned
+    without completing response". The client sees ``MCPError: SSE stream ended
+    without a response`` on ``initialize``, which reads like a broken gateway
+    and is a library flag left standing.
+
+    A test harness serves uvicorn over and over in one process, and every
+    teardown sets ``server.should_exit``. ``_shutdown_watcher`` polls for that
+    through signal-handler introspection and latches ``AppStatus.should_exit``
+    — so the third served app in a process (the poll is every 0.5 s, which is
+    why it is not the second) could no longer answer a single request. That is
+    #657: it was read as a defect in the in-process MCP server stack that
+    needed a test boundary to work around, and it is neither. It is one global
+    flag, and it is why only the first gateway pair per process worked.
+
+    Disabling the automatic drain is the fix rather than clearing the flag on
+    the way out: the watcher holds a reference to the server that is shutting
+    down and would re-latch within its poll interval, so a reset races it.
+    With the drain off, only a real SIGINT/SIGTERM through
+    ``AppStatus.handle_exit`` can set it, and a test process gets neither.
+    Nothing is lost at shutdown — uvicorn sends ``http.disconnect`` and
+    ``_listen_for_disconnect`` ends the stream on that, which is the path a
+    closing client already takes.
+
+    Production is untouched: a gateway serves one app for the life of the
+    process, so the latch there fires once, at the shutdown it is meant for.
+    """
+    from sse_starlette.sse import AppStatus
+
+    AppStatus.disable_automatic_graceful_drain()
+    AppStatus.should_exit = False
 
 
 @pytest.fixture(autouse=True)
@@ -74,6 +128,35 @@ def _isolated_perimeter_store(tmp_path: pathlib.Path, monkeypatch: pytest.Monkey
     # state directories (#261), and tests read files they wrote to tmp_path.
     monkeypatch.setenv("TRENTINA_PERIMETER_DB", str(tmp_path / "state" / "perimeter.db"))
     config_mod._config = None
+
+
+@pytest.fixture(autouse=True)
+def _isolated_blocklist(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Never let a test write the developer's real blocklist and audit database.
+
+    The perimeter store next door has had this since it was written; this one
+    did not, and only the opt-in ``env`` fixture below set ``QUARANTINE_DB``.
+    Everything else — every ``record_gateway_call``, every block refusal — went
+    to ~/.local/share/trentina/trentina.db, the real one. On this machine that
+    had reached 20 MB of ``agent1`` and ``testp`` rows, which is a suite writing
+    audit history for profiles that never existed.
+
+    It also made the suite flaky rather than merely dirty: pytest runs under
+    xdist here, so several workers opened that one file at once and a migration
+    taking ``BEGIN IMMEDIATE`` raised ``OperationalError`` in whichever worker
+    lost. Those failures land in federation and backend tests that have nothing
+    to do with SQLite, and they pass on a serial re-run, which is the worst
+    shape a failure can have.
+
+    The DB handle is a module global, so it is dropped on the way in as well as
+    out: a cached connection to a previous test's file is the same leak with a
+    shorter reach.
+    """
+    monkeypatch.setenv("QUARANTINE_DB", str(tmp_path / "state" / "trentina.db"))
+    config_mod._config = None
+    database_mod._db = None
+    yield
+    database_mod._db = None
 
 
 @pytest.fixture(autouse=True)
@@ -95,12 +178,40 @@ def _isolated_fastmcp_home(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPat
 
 
 @pytest.fixture(autouse=True)
-def _tools_not_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Tests that are not about pinning (#469) see every tool served.
-    ``tests/test_tool_pins.py`` puts the real check back."""
-    from trentina.gateway import router
+def _reset_oauth_module_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Reset the OAuth modules' process-wide state around every test (#664).
 
-    monkeypatch.setattr(router.tool_pins, "check_tools", lambda url, backend, tools: tools)
+    ``backend_oauth._live_flows`` / ``_on_grant_stored``, the
+    ``backend_tokens._store`` singleton and ``oauth_store``'s cull task are
+    module globals that only some tests replaced, so what a test left behind
+    (a registered hook, a sweeper task holding another test's storage, a store
+    over a finished test's ``tmp_path``) reached whichever test a worker ran
+    next. That made the OAuth failures depend on scheduling order and load.
+    Cost: three attribute sets per test.
+    """
+    from trentina.gateway import backend_oauth, backend_tokens, oauth_store
+
+    monkeypatch.setattr(backend_oauth, "_live_flows", {})
+    monkeypatch.setattr(backend_oauth, "_on_grant_stored", [])
+    monkeypatch.setattr(backend_tokens, "_store", None)
+    oauth_store.reset_cull_task()
+    yield
+    oauth_store.reset_cull_task()
+
+
+@pytest.fixture(autouse=True)
+def _tools_not_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests that are not about pinning (#469) see every tool served and called.
+    ``tests/test_tool_pins.py`` puts the real checks back."""
+    from trentina.gateway import tool_pins
+
+    monkeypatch.setattr(
+        tool_pins, "check_tools", lambda url, backend, tools, *, federated=False: tools
+    )
+    # The call gate too (#469): without this every remote-tool call in the suite
+    # would be refused as unpinned. Patched as a module attr, which is why the
+    # gate calls ``tool_pins.held`` rather than an imported name.
+    monkeypatch.setattr(tool_pins, "held", lambda url, tool: False)
 
 
 @pytest.fixture(autouse=True)
@@ -132,11 +243,13 @@ def _no_startup_scrub(monkeypatch: pytest.MonkeyPatch) -> None:
 def _no_ambient_gemini_key(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Unit tests must not inherit the shell's GEMINI_API_KEY.
 
-    The defense pipeline gates L3 on ``get_config().has_api_key``. With a key
-    in the environment, a test that forgot to patch ``defense.get_config``
-    passes on one machine and fails on another — and worse, one that forgot to
-    mock ``quarantine_detect`` makes a live Gemini call from a unit test.
-    Tests that need a key patch ``defense.get_config`` and say so.
+    L3 resolves its provider through the calling profile's ``llm_keys`` — which
+    standalone are the synthesized operator's, mirroring the environment. With a
+    key in the environment, a test that forgot to patch the provider passes on
+    one machine and fails on another — and worse, one that forgot to mock
+    ``quarantine_detect`` makes a live Gemini call from a unit test. Tests that
+    exercise L3 use the ``standalone_l3`` fixture, which provides a test key and
+    a network tripwire.
 
     The provider integration suite is the one deliberate exception: it exists
     to make live calls and reads the key from the environment at call time.
@@ -166,6 +279,32 @@ def env(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[pat
     database_mod._db = None
 
 
+@pytest.fixture
+def standalone_l3(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Standalone L3: a resolvable Gemini key, plus a network tripwire.
+
+    Since 3.0.0 the standalone server is a synthesized operator profile, so L3
+    resolves its provider through that profile's ``llm_keys`` (which mirror the
+    environment). A unit test exercising L3 therefore needs a key present so
+    ``resolve_profile_llm`` passes and the ``get_provider`` mock runs. The
+    tripwire makes a forgotten mock fail loudly instead of reaching the network
+    or producing a silent ``l3_unavailable`` the test might accept — a stronger
+    safety property than the bare key-strip it layers on.
+    """
+
+    async def _refuse(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("unit test reached the network (httpx.AsyncClient.send)")
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", "gemini")
+    monkeypatch.setattr("httpx.AsyncClient.send", _refuse)
+    config_mod._config = None
+    reset_provider()
+    yield
+    config_mod._config = None
+    reset_provider()
+
+
 @pytest.fixture(autouse=True)
 def _no_ocr_process(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Images are left unread unless a test asks for OCR (``@pytest.mark.ocr``).
@@ -188,8 +327,20 @@ def read_only_tools(monkeypatch: pytest.MonkeyPatch) -> None:
 
     A test whose backend never listed its tools gets an unannotated one, and
     the router treats that as a tool that may write (#425).
+
+    ``cached_tool_read_only`` is bound as a module-local name wherever it is
+    used, so each caller is patched where it resolves it: argument
+    normalization in ``gateway/request_edge.py`` and the acted-vs-refused
+    helper in ``gateway/results.py`` (both lifted out of the router in PR3a).
     """
-    monkeypatch.setattr("trentina.gateway.router.cached_tool_read_only", lambda _url, _tool: True)
+    monkeypatch.setattr(
+        "trentina.gateway.request_edge.cached_tool_read_only",
+        lambda _url, _owner, _tool: True,
+    )
+    monkeypatch.setattr(
+        "trentina.gateway.results.cached_tool_read_only",
+        lambda _url, _owner, _tool: True,
+    )
 
 
 # ------------------------------------------------- backend OAuth (#479)

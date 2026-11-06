@@ -9,6 +9,7 @@ agent toward flag for content a layer flagged.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -16,10 +17,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import SecretStr, ValidationError
 
+from tests.refusal_shape import refused, refused_text
 from trentina.config import get_config
+from trentina.core.stages import IngressDecision
 from trentina.errors import ConfigError, ModeNotPermittedError
 from trentina.gateway.backend import BackendCall
-from trentina.gateway.ingress_defense import IngressDecision
 from trentina.gateway.modes_policy import (
     MODE_PARAM,
     PROMPT_PARAM,
@@ -28,6 +30,7 @@ from trentina.gateway.modes_policy import (
     policy_for,
     strip_params,
 )
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -37,7 +40,10 @@ from trentina.gateway.profile import (
     ParameterConstraint,
     Profile,
 )
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
+
+# The real pin call gate, captured before conftest's autouse fixture replaces
+# the module attribute with a pass-through (#469).
+from trentina.gateway.tool_pins import held as _real_held
 from trentina.modes import (
     Gaps,
     Mode,
@@ -45,8 +51,13 @@ from trentina.modes import (
     parse_mode_arg,
     refusal_body,
 )
+from trentina.transports.mcp import route_jsonrpc
 
-ROUTER = "trentina.gateway.router"
+AGGREGATE = "trentina.gateway.aggregate"
+PARTS = "trentina.gateway.parts"
+AUDIT = "trentina.gateway.audit"
+MCP = "trentina.transports.mcp"
+ORCH = "trentina.orchestrator"
 TOOL = {
     "name": "jira_get_issue",
     "description": "Get an issue",
@@ -89,7 +100,7 @@ def _profile(
 ) -> Profile:
     p = Profile(
         short_names=False,  # calls below use <backend>__<tool>
-        name="agent",
+        name="tenant",
         auth=AuthConfig(bearer_token_env="TEST"),
         defense=DefenseConfig(enforcement=enforcement, modes=modes),
         backends={"jira": Backend(url="http://jira:8000/mcp", **(backend or {}))},
@@ -133,7 +144,7 @@ class TestResolution:
         p = _profile(
             ["block", "redact"],
             backend={
-                "parameter_guards": {
+                "literal_request_guards": {
                     "jira_get_issue": {MODE_PARAM: ParameterConstraint(allow=["redact"])}
                 }
             },
@@ -259,7 +270,7 @@ class TestInstructions:
         p = _profile(["block", "flag", "redact"])
         resp = await route_jsonrpc(p, {"jsonrpc": "2.0", "id": 1, "method": "initialize"})
         text = resp["result"]["instructions"]
-        assert text.startswith("trentina gateway, profile=agent.")
+        assert text.startswith("trentina gateway, profile=tenant.")
         assert text.endswith(mode_instructions(p))
 
 
@@ -306,8 +317,8 @@ class TestRouter:
             },
         }
         with (
-            patch(f"{ROUTER}.list_backend_tools", AsyncMock(return_value=[declared])),
-            patch(f"{ROUTER}.scan_tool_list", side_effect=fake_scan),
+            patch(f"{AGGREGATE}.list_backend_tools", AsyncMock(return_value=[declared])),
+            patch(f"{AGGREGATE}.scan_tool_list", side_effect=fake_scan),
         ):
             resp = await route_jsonrpc(
                 _profile(["block", "redact"]), {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
@@ -331,9 +342,10 @@ class TestRouter:
 
         scan = AsyncMock(return_value=decision or IngressDecision(warning=None))
         with (
-            patch(f"{ROUTER}.call_backend_tool", side_effect=fake_call),
-            patch(f"{ROUTER}.scan_tool_response", scan),
-            patch(f"{ROUTER}._audit"),
+            patch(f"{MCP}.call_backend_tool", side_effect=fake_call),
+            patch(f"{PARTS}.scan_tool_response", scan),
+            patch(f"{ORCH}.scan_tool_response", scan),
+            patch(f"{AUDIT}._audit"),
         ):
             resp = await route_jsonrpc(
                 profile,
@@ -348,6 +360,29 @@ class TestRouter:
                 },
             )
         return resp, forwarded, scan
+
+    async def test_a_held_remote_tool_is_refused_before_the_backend(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The call gate (#469): a held remote tool is refused at the route with
+        # the tool_held reason, before the scan or the backend is reached.
+        from trentina import perimeter_db
+        from trentina.gateway import tool_pins
+        from trentina.gateway.tool_pins import backend_id
+
+        monkeypatch.setattr(tool_pins, "held", _real_held)  # the real gate, not the pass-through
+        perimeter_db.get_perimeter_db()
+        perimeter_db.put_pin(
+            backend_id("http://jira:8000/mcp"),
+            "jira_get_issue",
+            "h",
+            perimeter_db.PIN_PENDING,
+            "{}",
+        )
+        resp, forwarded, scan = await self._call(_profile(["block"]), {"issue_key": "X-1"})
+        assert refused(resp)["reason"] == tool_pins.TOOL_HELD_REASON
+        assert forwarded == {}  # the backend was never reached
+        scan.assert_not_called()
 
     async def test_the_backend_l3_briefing_is_passed_to_the_scan(self) -> None:
         """#204: `Backend.l3_briefing` joins the reducer note in L3's context."""
@@ -374,8 +409,8 @@ class TestRouter:
             _profile(["block", "redact"]),
             {"issue_key": "X-1", MODE_PARAM: "redact", PROMPT_PARAM: "the summary"},
         )
-        assert resp["error"]["code"] == -32602
-        assert "no longer exists" in resp["error"]["message"]
+        assert refused(resp)
+        assert "no longer exists" in refused_text(resp)
         assert forwarded == {}
         scan.assert_not_called()
 
@@ -387,8 +422,8 @@ class TestRouter:
         resp, forwarded, scan = await self._call(
             _profile(["block", "redact"]), {"issue_key": "X-1", MODE_PARAM: "flag"}
         )
-        assert resp["error"]["code"] == -32602
-        assert MODE_PARAM in resp["error"]["message"]
+        assert refused(resp)
+        assert MODE_PARAM in refused_text(resp)
         assert forwarded == {}
         scan.assert_not_called()
 
@@ -401,23 +436,22 @@ class TestRouter:
             IngressDecision(warning={"flagged_by": "L3"}, blocked=True, refusal=refusal),
         )
         result = resp["result"]
-        assert result["isError"] is True
+        assert result["isError"] is False
         assert result["_trentina_refusal"] == refusal
         assert f'{MODE_PARAM}={{"redact": "<what you need>"}}' in result["content"][0]["text"]
 
     async def test_the_question_rides_inside_the_mode(self) -> None:
+        scan = AsyncMock(return_value=IngressDecision(warning=None, extraction="x"))
         with (
+            patch(f"{PARTS}.scan_tool_response", scan),
+            patch(f"{ORCH}.scan_tool_response", scan),
             patch(
-                f"{ROUTER}.scan_tool_response",
-                AsyncMock(return_value=IngressDecision(warning=None, extraction="x")),
-            ) as scan,
-            patch(
-                f"{ROUTER}.call_backend_tool",
+                f"{MCP}.call_backend_tool",
                 AsyncMock(
                     return_value=BackendCall(content=[], is_error=False, structured_content=None)
                 ),
             ) as backend,
-            patch(f"{ROUTER}._audit"),
+            patch(f"{AUDIT}._audit"),
         ):
             await route_jsonrpc(
                 _profile(["block", "redact"]),
@@ -460,7 +494,7 @@ class TestInternalBackend:
 
     def _profile(self, modes: list[ModeName]) -> Profile:
         p = Profile(
-            name="webseat",
+            name="webtenant",
             short_names=False,
             declare_modes=True,
             auth=AuthConfig(bearer_token_env="TEST"),
@@ -478,13 +512,13 @@ class TestInternalBackend:
         saved = internal._server
         internal.register_internal_server(mcp)
         try:
-            with patch(f"{ROUTER}._audit"):
+            with patch(f"{AUDIT}._audit"):
                 return await route_jsonrpc(profile, request)
         finally:
             internal._server = saved
 
     async def test_admin_tools_get_no_mode(self) -> None:
-        with patch(f"{ROUTER}.scan_tool_list", new=_identity):
+        with patch(f"{AGGREGATE}.scan_tool_list", new=_identity):
             resp = await self._route(
                 self._profile(["block", "flag", "redact"]),
                 {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
@@ -495,13 +529,35 @@ class TestInternalBackend:
         stats = tools[f"web{NAMESPACE_SEP}quarantine_stats_tool"]["inputSchema"]
         assert MODE_PARAM not in (stats.get("properties") or {})
 
-    async def test_block_only_seat_sees_no_parameter(self) -> None:
-        with patch(f"{ROUTER}.scan_tool_list", new=_identity):
+    async def test_block_only_profile_sees_no_parameter(self) -> None:
+        with patch(f"{AGGREGATE}.scan_tool_list", new=_identity):
             resp = await self._route(
                 self._profile(["block"]), {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
             )
         for tool in resp["result"]["tools"]:
             assert MODE_PARAM not in (tool["inputSchema"].get("properties") or {}), tool["name"]
+
+    async def test_the_call_gate_is_remote_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Force the hold true; an INTERNAL backend must skip the call gate
+        # (#469, is_remote False), so the call is not refused with tool_held —
+        # a regression that dropped the is_remote guard would be caught here.
+        from trentina.gateway import tool_pins
+
+        monkeypatch.setattr(tool_pins, "held", lambda url, tool: True)
+        with patch(f"{AGGREGATE}.scan_tool_list", new=_identity):
+            resp = await self._route(
+                self._profile(["block"]),
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": f"web{NAMESPACE_SEP}read_part_tool",
+                        "arguments": {"handle": "a" * 32, "part": 2},
+                    },
+                },
+            )
+        assert tool_pins.TOOL_HELD_REASON not in json.dumps(resp)  # the gate did not fire
 
     async def test_a_refused_web_call_names_its_alternatives(self) -> None:
         resp = await self._route(
@@ -516,11 +572,11 @@ class TestInternalBackend:
                 },
             },
         )
-        data = resp["error"]["data"]
+        data = refused(resp)
         assert data["mode"] == "block"
         assert data["flagged_by"]
         assert data["alternatives"] == ["redact"]
-        assert f'{MODE_PARAM}={{"redact": "<what you need>"}}' in resp["error"]["message"]
+        assert f'{MODE_PARAM}={{"redact": "<what you need>"}}' in refused_text(resp)
         assert "ignore previous" not in str(resp), "payload text leaked into the refusal"
 
 
@@ -570,13 +626,13 @@ async def test_a_mode_guard_refuses_at_call_even_when_the_mode_is_omitted() -> N
     p = _profile(
         ["block", "redact"],
         backend={
-            "parameter_guards": {
+            "literal_request_guards": {
                 "jira_get_issue": {MODE_PARAM: ParameterConstraint(allow=["redact"])}
             }
         },
     )
     call = AsyncMock()
-    with patch(f"{ROUTER}.call_backend_tool", call), patch(f"{ROUTER}._audit"):
+    with patch(f"{MCP}.call_backend_tool", call), patch(f"{AUDIT}._audit"):
         for arguments in ({"issue_key": "X-1"}, {"issue_key": "X-1", MODE_PARAM: "block"}):
             resp = await route_jsonrpc(
                 p,
@@ -590,13 +646,13 @@ async def test_a_mode_guard_refuses_at_call_even_when_the_mode_is_omitted() -> N
                     },
                 },
             )
-            assert resp["error"]["code"] == -32602, arguments
+            assert refused(resp), arguments
     call.assert_not_called()
 
 
 def test_a_blocklist_refusal_offers_redact_only_where_allowed() -> None:
     from trentina.gateway.context import profile_context
-    from trentina.tools.judged import blocklisted
+    from trentina.gateway.scope import blocklisted
 
     p = _profile(["block", "flag", "redact"])
     with profile_context(p, ModePolicy((Mode.BLOCK, Mode.FLAG, Mode.REDACT), Mode.BLOCK)):
@@ -717,7 +773,7 @@ class TestInternalModes:
         try:
             with (
                 patch(f"trentina.server.{family_fn}", fake),
-                patch(f"{ROUTER}._audit"),
+                patch(f"{AUDIT}._audit"),
             ):
                 resp = await route_jsonrpc(
                     self._profile(),
@@ -775,7 +831,7 @@ class TestPre035SpellingsAreGone:
             _profile(
                 ["block", "flag", "redact"],
                 backend={
-                    "parameter_guards": {
+                    "literal_request_guards": {
                         "jira_get_issue": {
                             MODE_PARAM: ParameterConstraint(allow=["*"], deny=[value])
                         }
@@ -819,3 +875,36 @@ class TestPre035SpellingsAreGone:
 def test_only_partial_reads_are_redactable(gaps: Gaps, redactable: bool) -> None:
     """The allowlist may send these to redact; an absent layer it may not excuse."""
     assert gaps.redactable_only() is redactable
+
+
+async def test_a_federated_backend_is_sent_the_resolved_mode_and_question() -> None:
+    """#711: a secondary resolves its own mode, so the primary must carry it.
+
+    Omitted, the secondary falls to its profile default, which its per-tool
+    guard (`deny: [flag]`) refuses with a list that contains the mode asked for.
+    """
+    from trentina.gateway.profile import AuthConfig, Backend, FederatedConfig, Profile
+    from trentina.modes import Mode, ModePolicy
+    from trentina.transports.mcp import _dispatch
+
+    backend = Backend(url="http://sec:9000/mcp", tools_allow=["*"], federated=FederatedConfig())
+    profile = Profile(name="p", auth=AuthConfig(bearer_token_env="T"), backends={"sec": backend})
+    policy = ModePolicy.of(["block", "redact"], "block")
+    with patch("trentina.transports.mcp.call_backend_tool", new=AsyncMock()) as call:
+        await _dispatch(
+            profile, backend, "sec", "t", {"a": 1}, policy=policy, mode=Mode.REDACT, prompt="why?"
+        )
+        assert call.await_args.args[3] == {"a": 1, "trentina_mode": {"redact": "why?"}}
+        await _dispatch(
+            profile, backend, "sec", "t", {"a": 1}, policy=policy, mode=Mode.BLOCK, prompt=None
+        )
+        assert call.await_args.args[3] == {"a": 1, "trentina_mode": "block"}
+
+
+def test_a_refusal_names_the_mode_it_resolved() -> None:
+    policy = ModePolicy.of(["block", "redact"], "flag")
+    with pytest.raises(ModeNotPermittedError, match=r"resolved: flag; permitted: block, redact"):
+        policy.resolve(None)
+    with pytest.raises(ModeNotPermittedError) as exc:
+        policy.resolve("secret-text")
+    assert "secret-text" not in str(exc.value)

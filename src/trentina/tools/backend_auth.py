@@ -8,7 +8,7 @@ login, and a name the caller does not hold is refused the same way whether
 or not it exists elsewhere.
 
 Starting a login is gated by the backend entry's ``auth.self_authorize``.
-The operator seat is not: it is the box owner's, acting on its own backends.
+The operator profile is not: it is the box owner's, acting on its own backends.
 Nothing here returns a token, a client secret or a PKCE verifier.
 """
 
@@ -39,8 +39,10 @@ _starts: dict[str, deque[float]] = {}
 
 def _refusal(backend: str, exc: Exception) -> dict[str, Any]:
     """A refusal naming only the caller's own backends, so a miss maps nothing."""
-    scope = current_scope()
-    own = scope.backends if scope else {}
+    try:
+        own = current_scope().backends
+    except ScopeError:
+        own = {}
     return {
         "backend": backend,
         "error": str(exc),
@@ -56,8 +58,6 @@ def _own_oauth_backend(
     _url, cfg = resolve_backend(scope, backend)
     if cfg.auth is None:
         raise ScopeError(f"{tool}: backend {backend!r} does not use auth: oauth")
-    if scope.profile is None:
-        raise ScopeError(f"{tool}: no calling profile")
     if needs_self_authorize and not (scope.is_operator or cfg.auth.self_authorize):
         raise ScopeError(f"{tool}: backend {backend!r} does not allow self_authorize")
     return scope, scope.profile
@@ -113,9 +113,9 @@ async def backend_auth_status(backend: str | None = None) -> dict[str, Any]:
     report = []
     for name in names:
         cfg = scope.backends[name]
-        if cfg.auth is None or scope.profile is None:
+        if cfg.auth is None:
             continue
-        grant = await store.get_grant(scope.profile.name, name, cfg) if store else None
+        grant = await store.get_grant(scope.profile.grant_owner, name, cfg) if store else None
         report.append(
             {
                 "backend": name,
@@ -150,10 +150,10 @@ async def backend_auth_revoke(backend: str) -> dict[str, Any]:
     try:
         # Snapshot and delete under the lock, so no refresh can rotate the tokens
         # we revoke; the network call runs after it is released.
-        async with store.locked(profile.name, backend):
+        async with store.locked(profile.grant_owner, backend):
             cfg = profile.backends[backend]
-            grant = await store.get_grant(profile.name, backend, cfg)
-            revoked = await store.delete_grant(profile.name, backend)
+            grant = await store.get_grant(profile.grant_owner, backend, cfg)
+            revoked = await store.delete_grant(profile.grant_owner, backend)
         if grant is not None:
             remote = await revoke_remote(store, profile, backend, cfg, grant)
     except Exception as exc:

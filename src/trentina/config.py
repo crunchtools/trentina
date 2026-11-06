@@ -145,6 +145,28 @@ def bool_env(name: str, default: bool) -> bool:
     return default
 
 
+def insecure_opt_in(name: str, warning: str) -> bool:
+    """Read a security escape-hatch flag (default off) and WARN when it is on.
+
+    The shape shared by the egress and federation opt-outs: a hatch left open
+    is a standing risk, so its being on is said at startup, once, by name.
+    """
+    on = bool_env(name, False)
+    if on:
+        logger.warning(warning)
+    return on
+
+
+def insecure_names(name: str, warning: str) -> frozenset[str]:
+    """Read a security escape hatch that names hosts (default none), lower-cased,
+    and WARN when it names any — the ``insecure_opt_in`` shape, for a list."""
+    raw = os.environ.get(name, "").replace(",", " ").split()
+    names = frozenset(host.strip().lower().removesuffix(".") for host in raw)
+    if names:
+        logger.warning(warning)
+    return names
+
+
 def part_settings() -> tuple[int, int, int]:
     """``TRENTINA_PART_TOKENS``, ``TRENTINA_MAX_PARTS`` and
     ``TRENTINA_PART_TTL_SECONDS`` (#340): the part size a paged response aims
@@ -279,6 +301,17 @@ class Config:
     gateway. L1 and L2 work without one.
     """
 
+    @functools.cached_property
+    def log_format(self) -> str:
+        """``TRENTINA_LOG_FORMAT``: ``text`` (default) or ``json`` (one JSON
+        object per call on stderr, #556), read once per process. An unknown
+        value warns and falls back to text."""
+        fmt = (os.environ.get("TRENTINA_LOG_FORMAT") or "text").lower()
+        if fmt not in ("text", "json"):
+            logger.warning("TRENTINA_LOG_FORMAT is not text|json; using text")
+            return "text"
+        return fmt
+
     def __init__(self) -> None:
         self.provider: str = os.environ.get(
             "TRENTINA_MODEL_PROVIDER",
@@ -334,13 +367,28 @@ class Config:
                 )
         # The egress guard's one escape hatch (#260): lets fetch reach a
         # non-global address. Scheme, port and redirect rules still hold.
-        self.fetch_allow_private: bool = bool_env("TRENTINA_FETCH_ALLOW_PRIVATE", False)
-        if self.fetch_allow_private:
-            logger.warning(
-                "[WARNING] TRENTINA_FETCH_ALLOW_PRIVATE is on: fetch can reach loopback, "
-                "private and link-local addresses, including this host's other services. "
-                "Unset it unless a trusted internal site must be fetched."
-            )
+        self.fetch_allow_private: bool = insecure_opt_in(
+            "TRENTINA_FETCH_ALLOW_PRIVATE",
+            "[WARNING] TRENTINA_FETCH_ALLOW_PRIVATE is on: fetch can reach loopback, "
+            "private and link-local addresses, including this host's other services. "
+            "Unset it unless a trusted internal site must be fetched.",
+        )
+        # Exact names whose non-global answers are accepted (#535): a narrower
+        # hatch than TRENTINA_FETCH_ALLOW_PRIVATE, for a fixture or a lab host,
+        # that leaves the address rule on for every other name.
+        self.fetch_private_names: frozenset[str] = insecure_names(
+            "TRENTINA_FETCH_PRIVATE_NAMES",
+            "[WARNING] TRENTINA_FETCH_PRIVATE_NAMES is set: those names may resolve to a "
+            "loopback, private or link-local address; every other name may not.",
+        )
+        # Federation's escape hatch (#592): lets a `federated:` backend be reached
+        # over plain http, where its 60 s primary JWT is replayable by an on-path peer.
+        self.federation_allow_insecure: bool = insecure_opt_in(
+            "TRENTINA_FEDERATION_ALLOW_INSECURE",
+            "[WARNING] TRENTINA_FEDERATION_ALLOW_INSECURE is on: a federated link may "
+            "run over http, where its 60 s primary JWT is replayable by an on-path peer. "
+            "Unset it unless the upstream is on a trusted local network.",
+        )
         # The mode policy when no gateway profile is bound (#193): the agent of
         # a standalone server may pass trentina_mode, but only from this set,
         # and an omitted one is TRENTINA_MODE. Both default to block, so an
@@ -492,11 +540,6 @@ class Config:
         """
         return max(self.part_target_tokens * self.max_parts, self.admission_tokens)
 
-    @property
-    def has_api_key(self) -> bool:
-        """Whether a Gemini key is set. Only Gemini's; see ``has_llm``."""
-        return bool(self.api_key.get_secret_value())
-
     def provider_key(self, provider: str) -> str:
         """The global env key for *provider*; empty when unset or keyless."""
         keys = {
@@ -512,9 +555,9 @@ class Config:
         """Whether a standalone model call has somewhere to go.
 
         The global provider or any configured fallback, each either ollama
-        (keyless) or holding its key: the same chain the calls walk.
-        ``has_api_key`` answered this until 0.41.0 and only ever knew about
-        Gemini, so a gateway judging on OpenRouter looked like it had no L3.
+        (keyless) or holding its key: the same chain the calls walk. A
+        Gemini-only predicate answered this until 0.41.0, so a gateway judging
+        on OpenRouter looked like it had no L3; that predicate is gone (3.0.1).
         """
         return any(
             name == "ollama" or bool(self.provider_key(name))

@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from starlette.testclient import TestClient
 
+from trentina import orchestrator
 from trentina.gateway import matrix_proxy
 from trentina.gateway.matrix_proxy import (
     WARNING_HEADER,
@@ -49,7 +50,7 @@ class TestImages:
             return [ImageText(["Lunch is at noon."])] * len(images)
 
         monkeypatch.setattr(scan, "read_images", reader)
-        monkeypatch.setattr(matrix_proxy, "gaps_of", lambda verdict: Gaps())
+        monkeypatch.setattr(orchestrator, "gaps_of", lambda verdict: Gaps())
         _upstream(monkeypatch, _PNG, "image/png")
         calls = _count_judged(monkeypatch)
         resp = _client().get(_DOWNLOAD)

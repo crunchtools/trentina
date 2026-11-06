@@ -1,0 +1,32 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "9"
+      ],
+      [
+       "content-type",
+       "text/plain; charset=utf-8"
+      ]
+     ],
+     "status": 404,
+     "type": "start"
+    },
+    {
+     "body": "not found",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [],
+ "open_slots": {},
+ "upstream": []
+}

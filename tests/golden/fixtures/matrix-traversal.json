@@ -1,0 +1,53 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "23"
+      ],
+      [
+       "content-type",
+       "text/plain; charset=utf-8"
+      ]
+     ],
+     "status": 400,
+     "type": "start"
+    },
+    {
+     "body": "Path traversal rejected",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "matrix",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": null,
+   "destination_kind": null,
+   "detections_digest": null,
+   "error_message": "path_traversal",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "denied_guard",
+   "profile": "agent1",
+   "session": null,
+   "success": 0,
+   "tool": "GET"
+  }
+ ],
+ "open_slots": {},
+ "upstream": []
+}

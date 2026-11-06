@@ -1,0 +1,31 @@
+{
+ "exchanges": [
+  {
+   "client_received": "HTTP/1.1 502 Bad Gateway\r\nX-Trentina-Reason: connect_failed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "egress",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "api.example.com:443",
+   "destination_kind": "tunnel",
+   "detections_digest": null,
+   "error_message": "connect_failed",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "backend_error",
+   "profile": "agent2",
+   "session": null,
+   "success": 0,
+   "tool": "connect"
+  }
+ ],
+ "open_slots": {},
+ "origin_received": ""
+}

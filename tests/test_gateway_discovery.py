@@ -16,6 +16,7 @@ from trentina.database import get_gateway_call_stats
 from trentina.gateway import discovery
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.context import current_session, session_fingerprint
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -23,8 +24,8 @@ from trentina.gateway.profile import (
     Profile,
     ToolDiscoveryConfig,
 )
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.gateway.sessions import SessionRegistry, session_registry
+from trentina.transports.mcp import route_jsonrpc
 
 SEP = NAMESPACE_SEP
 PLANTED = "AKIAFAKEPLANTED00001"
@@ -91,8 +92,8 @@ def backends(tmp_path: Any) -> Iterator[list[tuple[str, str, dict[str, Any]]]]:
 
     db_mod._db = None
     with (
-        patch("trentina.gateway.router.list_backend_tools", side_effect=_list_tools),
-        patch("trentina.gateway.router.call_backend_tool", side_effect=call),
+        patch("trentina.gateway.aggregate.list_backend_tools", side_effect=_list_tools),
+        patch("trentina.transports.mcp.call_backend_tool", side_effect=call),
         patch("trentina.database.get_config") as cfg,
     ):
         cfg.return_value.db_path = str(tmp_path / "audit.db")
@@ -222,13 +223,13 @@ class TestFindAndCall:
             resp = await _call(_profile(), "call_tool", {"name": name, "arguments": {}})
             assert resp["error"]["code"] == -32602
 
-    async def test_guarded_execution_sees_the_real_backend_and_tool(self) -> None:
+    async def test_semantic_request_guards_sees_the_real_backend_and_tool(self) -> None:
         seen: list[tuple[str, str]] = []
 
         async def judge(_p: Any, _b: Any, backend_name: str, tool: str, *_a: Any) -> None:
             seen.append((backend_name, tool))
 
-        with patch("trentina.gateway.router.judge_call", side_effect=judge):
+        with patch("trentina.gateway.request_edge.judge_call", side_effect=judge):
             await _call(
                 _profile(),
                 "call_tool",
@@ -372,7 +373,7 @@ class TestEdges:
 
             with (
                 patch.dict(TOOLS, {"mail": part}),
-                patch("trentina.gateway.router.list_internal_tools", side_effect=internal),
+                patch("trentina.gateway.aggregate.list_internal_tools", side_effect=internal),
             ):
                 names = await _names(p)
             assert f"web{SEP}read_part_tool" in names

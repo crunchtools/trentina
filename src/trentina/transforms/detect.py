@@ -194,7 +194,7 @@ async def _run_chain(fmt: Format, payload: str, ctx: TransformContext) -> list[T
     return records
 
 
-class DetectProcessor:
+class DetectProcessor(Transform):
     """FREE. Picks the minifiers for the payload's format and runs them."""
 
     name = "detect"

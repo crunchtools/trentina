@@ -1,0 +1,31 @@
+{
+ "exchanges": [
+  {
+   "client_received": "HTTP/1.1 403 Forbidden\r\nX-Trentina-Reason: host_not_listed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "egress",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "other.example.org:443",
+   "destination_kind": "tunnel",
+   "detections_digest": null,
+   "error_message": "host_not_listed",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "denied_allowlist",
+   "profile": "agent2",
+   "session": null,
+   "success": 0,
+   "tool": "connect"
+  }
+ ],
+ "open_slots": {},
+ "origin_received": ""
+}

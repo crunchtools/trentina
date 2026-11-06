@@ -14,6 +14,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .errors import ScopeError
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -51,6 +53,27 @@ _current_parts: ContextVar[PartsOffer | None] = ContextVar("current_parts_offer"
 # sends no session header.
 current_session: ContextVar[str] = ContextVar("current_session", default="")
 current_call: ContextVar[str] = ContextVar("current_call", default="")
+# The real caller behind a federated request (#592, C2): the (peer, sub) an
+# primary JWT carried — the primary peer whose key VERIFIED (the actor) and the
+# caller it ASSERTS. None for every non-federated request. Set beside
+# ``current_session`` from one request's ``request.state`` and read by the audit;
+# ``caller_sub`` is peer-chosen and is an audit fact only, never an input to
+# scope, role, policy or a guard (cto ruling, #592 C2).
+current_caller: ContextVar[tuple[str, str] | None] = ContextVar("current_caller", default=None)
+# The origin this request reached the gateway on, as ``page.served_origin``
+# checked it, or None. Read by ``approval_enrol`` (#639) so the link it hands a
+# person is one their browser can open, on the address they already use. Set
+# beside ``current_caller`` for the same reason: from this request alone.
+current_origin: ContextVar[str | None] = ContextVar("current_origin", default=None)
+# Whether a federated response was served on the secondary's verdict or
+# re-judged here, and if re-judged, why (``vsa.AUDITED_VERDICTS``). Decided deep
+# in the response path rather than at the edge, so it is set there and read by
+# the audit — the same channel ``current_caller`` uses. None for every
+# non-federated call. docs/federation.md promises an operator can see which
+# responses were trusted; this is what makes that true.
+current_federated_verdict: ContextVar[str | None] = ContextVar(
+    "current_federated_verdict", default=None
+)
 
 
 def session_fingerprint(session_id: str) -> str:
@@ -104,10 +127,28 @@ def get_current_parts() -> PartsOffer | None:
     return _current_parts.get()
 
 
-def get_current_profile() -> Profile | None:
-    """Get the profile for the current async context.
+def get_current_profile() -> Profile:
+    """The profile bound to the current call.
 
-    Returns None when called outside gateway context (e.g., standalone
-    MCP server mode, tests).
+    Behind a live gateway the router binds one around every internal dispatch.
+    With no gateway registered the process is standalone — a single operator
+    profile synthesized from the environment (``standalone.standalone_profile``),
+    read the same way a bound profile is. A live gateway with nothing bound is a
+    path nobody designed, so the honest answer is to refuse (fail closed) rather
+    than act gateway-wide.
+
+    Raises:
+        ScopeError: a live gateway is registered but no profile is bound to the
+            current call — an undesigned path, refused rather than served.
     """
-    return _current_profile.get()
+    profile = _current_profile.get()
+    if profile is not None:
+        return profile
+    # Lazy: ``loader`` is mid-import when ``context`` is first reached on some
+    # import orders (database → modes → context), so a top-level import cycles.
+    from .loader import get_active_config
+    from .standalone import environment_operator
+
+    if get_active_config() is None:
+        return environment_operator()
+    raise ScopeError("no calling profile bound — refusing to act gateway-wide")

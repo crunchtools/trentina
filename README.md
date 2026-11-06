@@ -8,21 +8,22 @@
 
 Trentina sits between your AI agents and everything they touch: MCP servers,
 the web, Matrix, LLM providers and alerts. It stops prompt injection at every
-ingress, shrinks what reaches the context window, and enforces a policy the
-agent cannot talk its way past. It is named after the 1377 *trentino* of
+ingress — or at a trusted boundary you declare — shrinks what reaches the
+context window, and enforces a policy the agent cannot talk its way past. It is named after the 1377 *trentino* of
 Ragusa, where ships anchored offshore for thirty days before anyone came
 ashore: commerce keeps flowing, and nothing dangerous gets in.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/crunchtools/trentina/main/docs/demo/trentina.gif" alt="Demo: a request crosses Trentina's auth, policy, defense and minify stages; then, in a terminal, a 131-tool list is served as 6 tools, a recipe page with an injection in its comments is refused and then answered through redact, and a send to an outside address is refused while a draft goes through" width="800">
+  <img src="https://raw.githubusercontent.com/crunchtools/trentina/main/docs/demo/trentina.gif" alt="Demo: a request crosses Trentina's auth, policy, defense and minify stages; then, in a terminal, a 135-tool list is served as 6 tools, a recipe page with an injection in its comments is refused and then answered through redact, and a send to an outside address is refused while a draft goes through" width="800">
 </p>
 
 ## Why Trentina
 
 1. **Security.** Untrusted content crosses three independent layers at every
-   ingress: L1 deterministic checks, L2 a local classifier, L3 a quarantined
-   LLM with no tools. [Guarded execution](docs/guarded-execution.md) judges
-   what goes out against a rule you write in English. What is and is not
+   ingress to the trust boundary, which can be [federated](docs/federation.md)
+   with other instances: L1 deterministic checks, L2 a local classifier, L3 a
+   quarantined LLM with no tools. [Semantic request guards](docs/semantic-request-guards.md)
+   judge what goes out against a rule you write in English. What is and is not
    defended is in [Coverage](docs/defense-pipeline.md#coverage).
    [Defense Pipeline](docs/defense-pipeline.md) · [Benchmark](docs/benchmark.md) ·
    [OWASP mapping](docs/owasp-mapping.md)
@@ -32,11 +33,11 @@ ashore: commerce keeps flowing, and nothing dangerous gets in.
    production traffic. [Compression](docs/compression.md) ·
    [Tool Filtering](docs/tool-filtering.md)
 
-3. **Determinism.** Parameter guards, response guards and allowlists are
-   evaluated by the gateway, so an agent that ignores its instructions is
-   stopped before the backend sees the call.
-   [Parameter Guards](docs/parameter-guards.md) ·
-   [Response Guards](docs/response-guards.md)
+3. **Determinism.** Literal request guards, literal response guards and
+   allowlists are evaluated by the gateway, so an agent that ignores its
+   instructions is stopped before the backend sees the call.
+   [Literal Request Guards](docs/literal-request-guards.md) ·
+   [Literal Response Guards](docs/literal-response-guards.md)
 
 4. **Authentication.** Trentina is the OAuth authorization server for web
    clients such as claude.ai: dynamic client registration, a provisioned
@@ -45,7 +46,10 @@ ashore: commerce keeps flowing, and nothing dangerous gets in.
 
 5. **Architectural flexibility.** A personal assistant, a coding agent and a
    swarm each get their own profile, with their own backends, defense mode and
-   credentials. [Profiles](docs/profiles.md) · [Operator](docs/operator.md)
+   credentials — and an operator agent configures all of it through tools,
+   with no shell; the five grants only a person should agree to, it proposes
+   and you approve. [Profiles](docs/profiles.md) · [Operator](docs/operator.md)
+   · [Approvals](docs/approvals.md)
 
 ## Quick Start
 
@@ -119,9 +123,10 @@ Then point Claude Code at it:
 | [Tool Discovery](docs/tool-discovery.md) | Find/call or per-session loading for clients without tool search |
 | [Description Compression](docs/compression.md) | Description compression and schema compaction |
 | [Token Routing](docs/token-routing.md) | Response minifying (implemented); delegation (proposed) |
-| [Guarded Execution](docs/guarded-execution.md) | A judge reads calls to listed tools against a policy in plain English |
-| [Parameter Guards](docs/parameter-guards.md) | Per-tool argument validation |
-| [Response Guards](docs/response-guards.md) | Per-tool result validation |
+| [Semantic Request Guards](docs/semantic-request-guards.md) | A judge reads calls to listed tools against a policy in plain English |
+| [Semantic Response Guards](docs/semantic-response-guards.md) | A judge reads listed tools' responses against a policy before delivery |
+| [Literal Request Guards](docs/literal-request-guards.md) | Per-tool argument validation |
+| [Literal Response Guards](docs/literal-response-guards.md) | Per-tool result validation |
 | [Audit Log](docs/audit-log.md) | Call recording, stats, monitoring |
 | [LLM Key Proxying](docs/llm-proxying.md) | Provider keys kept inside the gateway |
 | [Matrix Bridge](docs/matrix-bridge.md) | E2EE termination and two-way judging |
@@ -129,23 +134,28 @@ Then point Claude Code at it:
 | [Matrix Reverse Proxy](docs/network-isolation.md) | Matrix for agents on an isolated network |
 | [Client Egress](docs/client-egress.md) | A CONNECT tunnel to listed hosts for the agent's own client |
 | [Git Transport](docs/git-transport.md) | Clone, fetch and push to listed repositories and branches |
+| [Stability tiers](docs/stability.md) | Which features may change shape in a minor release, and how you are told |
+| [Approvals](docs/approvals.md) | The six grants an operator proposes and a person agrees to |
+| [Federation](docs/federation.md) | Share a profile with a second gateway: its tools mounted over a trusted link, scanned once |
 | [HTTP(S) Egress](docs/egress-http.md) | An agent's outbound request judged and re-originated to a named destination |
 | [Deployment Hardening](docs/deployment-hardening.md) | Container flags, secrets, egress, the startup check |
+| [Proxies](docs/proxy-plugins.md) | Every perimeter route as config under `proxies:`, the `forward` type, and route plugins |
+| [Plugins](docs/plugins.md) | Write, test, install and name your own transform plugins |
 | [Cockpit Plugin](docs/cockpit-plugin.md) | Live defense pipeline dashboard |
 | [Internal: Gateway Design](docs/internal/gateway-design.md) | Original design document, for contributors |
 
 ## Development
 
 ```bash
-uv sync --all-extras
-uv run ruff check src tests
-uv run mypy src
-uv run pytest -v
+pre-commit install          # wires the commit and push checks
 ```
 
-The container image is built by CI, never locally; see `CLAUDE.md`. The demo
-is recorded by [`demo.yml`](.github/workflows/demo.yml); its fixtures are in
-[`docs/demo/`](docs/demo/).
+[CONTRIBUTING.md](CONTRIBUTING.md) is the page for a person: the three
+commands, what each costs, and what an exit code means. The host needs only
+`git`, `podman`, `pre-commit` and `gh` — every check runs from
+[python-sdlc](https://github.com/crunchtools/python-sdlc), the same image CI
+runs. The demo is recorded by [`demo.yml`](.github/workflows/demo.yml);
+its fixtures are in [`docs/demo/`](docs/demo/).
 
 ## License
 

@@ -1,0 +1,57 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "147"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "x-trentina-reason",
+       "method_not_listed"
+      ]
+     ],
+     "status": 403,
+     "type": "start"
+    },
+    {
+     "body": "{\"error\": {\"type\": \"trentina_refused\", \"reason\": \"method_not_listed\"}, \"blocked\": true, \"block_reason\": \"method_not_listed\", \"scanner\": \"trentina\"}",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "http:-",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": null,
+   "destination_kind": null,
+   "detections_digest": null,
+   "error_message": "method_not_listed",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "denied_allowlist",
+   "profile": "agent1",
+   "session": null,
+   "success": 0,
+   "tool": "DELETE"
+  }
+ ],
+ "open_slots": {},
+ "upstream": []
+}

@@ -26,11 +26,20 @@ from starlette.middleware import Middleware
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from .. import perimeter_db
 from ..httpbody import STATUS_TOO_LARGE, RequestBodyCap, TooLargeError
 from ..logsafe import exc_kind, exc_where, redact_source, safe_address
 from ..quarantine.classifier import classifier_status
-from .auth import verify_bearer, verify_oauth
-from .context import current_session, session_fingerprint
+from ..transports.jsonrpc import JSONRPC_INTERNAL_ERROR
+from ..transports.mcp import route_jsonrpc
+from .auth import verify_bearer, verify_oauth, verify_primary_jwt_header
+from .context import (
+    current_caller,
+    current_federated_verdict,
+    current_origin,
+    current_session,
+    session_fingerprint,
+)
 from .errors import (
     AuthError,
     BackendCallError,
@@ -40,7 +49,7 @@ from .errors import (
 )
 from .google_verifier import token_digest
 from .matrix_bridge.routes import media_refused, outbound_refused
-from .router import JSONRPC_INTERNAL_ERROR, route_jsonrpc
+from .page import served_origin
 from .sessions import SessionRegistry, session_registry
 
 if TYPE_CHECKING:
@@ -175,6 +184,25 @@ async def _authorize(
     auth_header = request.headers.get("authorization")
     if _static_bearer_ok(auth_header, profile):
         return None
+
+    # A federated peer's primary JWT (#592, C1), for a federation-ingress profile.
+    # Only engages when the profile has federation.peers; a bad primary token is
+    # fail-closed (401), never a fall-through.
+    try:
+        caller = verify_primary_jwt_header(auth_header, profile)
+        if caller is not None:
+            # The real caller (peer, sub), carried one hop on request.state and
+            # bound to current_caller beside current_session (#592, C2), so the
+            # audit records who really called through the federation profile.
+            request.state.federation_caller = caller
+            return None
+    except AuthError:
+        # The reason is always the fixed literal "invalid primary token", so there
+        # is nothing to log beyond that it failed (no exc text — O8/#262).
+        logger.info(
+            "gateway: primary auth failed profile=%s [%s]", profile.name, _client_desc(request)
+        )
+        return _plain(401, "Unauthorized")
 
     if profile.oauth is not None and profile.oauth.enabled:
         # A bearer was presented if the header parses as one, whether or not it
@@ -414,6 +442,12 @@ def _health_payload(registry: dict[str, Profile]) -> Response:
         "status": "ok",
         "classifier": classifier_status(),
         "profiles": len(registry),
+        # Tools held pending approval, gateway-wide (#592, E1c), summed so the
+        # unauthenticated probe names no profile. Counts only backends that
+        # still exist: a pin for a URL nothing is configured at holds nothing.
+        # From the warm-up refresher's cache (#662), never SQLite: None until
+        # it first succeeds and whenever its last attempt failed.
+        "pending_pins": perimeter_db.pending_pins_cached,
     }
     # Summed, so the unauthenticated probe names no profile; which one is
     # in quarantine_stats' gateway_audit (backend matrix_bridge, #317).
@@ -682,6 +716,15 @@ async def _handle_post(
     # Each request is its own task, so the binding ends with it. The id is a
     # bearer of the session: only its fingerprint reaches the audit.
     current_session.set(session_fingerprint(session_id))
+    # Unconditionally, from this request's own state (#592, C2): a federated
+    # request carries (peer, sub); every other — including a static-bearer call
+    # to a federation profile — lands None, never a value left by a reused task.
+    current_caller.set(getattr(request.state, "federation_caller", None))
+    current_origin.set(served_origin(request))
+    # The response path decides this one; cleared here for the same reason, so
+    # a reused task cannot carry a previous call's trust decision into this
+    # call's audit row (#637).
+    current_federated_verdict.set(None)
     try:
         response = await route_jsonrpc(profile, body)
     except ProfileNotFoundError:

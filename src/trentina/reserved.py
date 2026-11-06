@@ -44,6 +44,10 @@ RESERVED_ROOT_KEYS: tuple[str, ...] = ("scan", "l1")
 
 WARNING_KEY = RESERVED_PREFIX + "warning"
 REFUSAL_KEY = RESERVED_PREFIX + "refusal"
+# A federated peer's pin state, carried in a tools/list ``_meta`` (#592, E1c):
+# ``{"held": N}``, the count of tools the peer is withholding in this caller's
+# slice. Prefix-reserved, so a backend's own result can never forge it.
+PINS_KEY = RESERVED_PREFIX + "pins"
 
 # What the gateway's own warning calls the count.
 STRIPPED_FIELD = "reserved_stripped"

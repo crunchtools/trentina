@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import pytest
 
+from trentina import orchestrator as orchestrator_mod
 from trentina.defense import Layer
-from trentina.gateway.matrix_bridge import core
 from trentina.gateway.matrix_bridge.appservice import AppService
 from trentina.gateway.matrix_bridge.core import ProfileBridge
 from trentina.gateway.matrix_bridge.mapping import BridgeMapping
@@ -43,7 +43,9 @@ class Wired:
             verdict = self.verdicts.pop(0) if self.verdicts else _verdict()
             return type("JV", (), {"verdict": verdict, "payload": payload})()
 
-        monkeypatch.setattr(core, "defend_json", fake_defend_json)
+        # The defend_json call lives in the orchestrator now (the appservice
+        # response edge shared by the RCS bridge), so the stub is patched there.
+        monkeypatch.setattr(orchestrator_mod, "defend_json", fake_defend_json)
         profile = _resolved(_body())
         cfg = profile.bridges["rcs"]
         assert cfg.bridge_token is not None

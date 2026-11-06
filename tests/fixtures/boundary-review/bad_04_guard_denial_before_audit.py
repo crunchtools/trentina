@@ -1,4 +1,4 @@
-"""tools/call routing: allowlist, parameter guards, dispatch, one audit row.
+"""tools/call routing: allowlist, request guards, dispatch, one audit row.
 
 docs/audit-log.md: "every tools/call is recorded in gateway_calls with its
 outcome".
@@ -10,8 +10,11 @@ import time
 from typing import Any
 
 from trentina.gateway.errors import BackendCallError
-from trentina.gateway.guards import check_parameter_guards
-from trentina.gateway.router import _audit, _dispatch, _err, _ok, filter_tools
+from trentina.gateway.guards import check_request_guards
+from trentina.gateway.audit import _audit
+from trentina.gateway.filter import filter_tools
+from trentina.transports.jsonrpc import _err, _ok
+from trentina.transports.mcp import _dispatch
 from trentina.outcomes import Outcome, classify_exception
 
 JSONRPC_INVALID_PARAMS = -32602
@@ -36,7 +39,7 @@ async def route_tools_call(
             f"Tool {tool_name!r} not permitted on backend {backend_name!r}",
         )
 
-    guard_err = check_parameter_guards(tool_name, arguments, backend)
+    guard_err = check_request_guards(tool_name, arguments, backend)
     if guard_err:
         return _err(req_id, JSONRPC_INVALID_PARAMS, guard_err)
 

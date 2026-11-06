@@ -31,6 +31,8 @@ from trentina.quarantine.prompts import (
 )
 from trentina.quarantine.providers.base import ProviderResult
 
+pytestmark = pytest.mark.usefixtures("standalone_l3")
+
 
 class TestRequestBodyConstruction:
     """Verify the Q-Agent request body has NO tool declarations."""

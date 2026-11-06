@@ -20,7 +20,7 @@ from corpora.internal import CORPUS
 from corpora.jailbreak import CATEGORY_ATTACK
 from trentina import config as config_mod
 from trentina.defense import build_l3_briefing
-from trentina.gateway import ingress_defense, service
+from trentina.gateway import service, verdict_cache
 from trentina.gateway.profile import AuthConfig, DefenseConfig, Profile
 from trentina.l1 import run_l1
 from trentina.quarantine import agent, packs
@@ -198,7 +198,7 @@ class TestWhichPackACallGets:
     def test_the_pack_is_in_the_verdict_key(self, tmp_path: Path) -> None:
         def key(defense: DefenseConfig) -> str:
             profile = Profile(name="p", auth=AuthConfig(bearer_token_env="T"), defense=defense)
-            return ingress_defense._cache_key(profile, "response", "same text", _JUDGE)
+            return verdict_cache._cache_key(profile, "response", "same text", _JUDGE)
 
         plain = key(DefenseConfig())
         packed = key(DefenseConfig(l3_prompt_pack=_file(tmp_path, _pack())))

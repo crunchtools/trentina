@@ -68,6 +68,25 @@ class TestTheFlow:
         assert grant.generation == 1
         assert grant.expires_at is not None
 
+    async def test_honours_server_preferred_auth_method(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        # A server that lists client_secret_post first must get a client
+        # registered for post and authenticate the token exchange with it.
+        # Some servers advertise client_secret_basic but only accept
+        # client_secret_post (the Red Hat AI Factory Workspace MCP), so a
+        # fixed basic-first order failed the exchange with 401 invalid_client.
+        server.auth_methods = ["client_secret_post", "client_secret_basic", "none"]
+        link = await start(profiles["josui"], "era", authorized_by="self")
+        authorize = await authorize_url(link)
+        (client,) = server.clients.values()
+        assert client["token_endpoint_auth_method"] == "client_secret_post"
+        state, code = server.authorize(authorize)
+        await complete(state, code, None, None)
+        grant = await token_store().get_grant("josui", "era", profiles["josui"].backends["era"])
+        assert grant is not None
+        assert grant.access_token.get_secret_value() == "access-1"
+
     async def test_the_registration_is_reused(
         self, server: FakeServer, profiles: dict[str, Profile]
     ) -> None:
@@ -367,6 +386,28 @@ class TestPages:
         reply = pages.get(START_PATH, params={"flow": CANARY})
         assert reply.status_code == 400
         assert CANARY not in reply.text
+
+    async def test_these_pages_wear_the_same_sheet_as_the_approval_page(
+        self, pages: TestClient, profiles: dict[str, Profile]
+    ) -> None:
+        """A person meets one gateway, so they should meet one page (#637).
+        Checked at the route rather than on `page.render`, because what makes
+        it true here is that the handlers pass their request down."""
+        link = await start(profiles["josui"], "era", authorized_by="self")
+        signing_in = pages.get(urlsplit(link).path + "?" + urlsplit(link).query)
+        refused = pages.get(START_PATH, params={"flow": "nope"})
+
+        for reply in (signing_in, refused):
+            assert "data:image/png;base64," in reply.text
+            assert "gw.example" in reply.text
+            assert "img-src data:" in reply.headers["content-security-policy"]
+            assert reply.headers["referrer-policy"] == "no-referrer"
+            assert reply.headers["x-content-type-options"] == "nosniff"
+
+    def test_a_host_that_is_not_a_hostname_shows_no_host_line(self, pages: TestClient) -> None:
+        reply = pages.get(START_PATH, params={"flow": "nope"}, headers={"host": "a b c"})
+        assert reply.status_code == 400
+        assert "a b c" not in reply.text
 
     def test_the_pages_are_rate_limited(
         self, monkeypatch: pytest.MonkeyPatch, server: FakeServer

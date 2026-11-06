@@ -27,7 +27,7 @@ proxy — nothing to configure beyond the allowlist.
 
 ```mermaid
 flowchart TD
-    A([A new client needs a seat on the gateway]) --> D1
+    A([A new client needs a profile on the gateway]) --> D1
     D1{"Can the client send an Authorization<br/>header you choose?"} -- Yes --> P1
     D1 -- No --> D2
     D2{"Can it register itself?<br/>(RFC 7591 dynamic registration)"} -- Yes --> P2
@@ -60,15 +60,15 @@ two separate legs, each with its own credential, doing different jobs.
 credentials. A client that supports dynamic registration asks for a pair and
 gets one; a client that cannot, like gemini.google.com Custom Apps, has an
 operator paste a pair declared in `profiles.yaml`. Either way there is one per
-client, and this is the boundary that separates one seat from another.
+client, and this is the boundary that separates one profile from another.
 
 **Leg 2 — Trentina proves itself to Google.** This is the Google Cloud OAuth
 client (`TRENTINA_OAUTH_GOOGLE_CLIENT_ID` / `_CLIENT_SECRET`), and there is
 exactly **one per server**, not one per profile. It identifies the gateway, so
 Google knows which application is asking and what to name on the consent
 screen. Every proxied profile shares it. A second one would only be a second
-name for the same server; it would not separate two seats, because by the time
-a login reaches this leg, which seat asked is no longer part of the question.
+name for the same server; it would not separate two profiles, because by the time
+a login reaches this leg, which profile asked is no longer part of the question.
 
 The full sequence for one login:
 
@@ -123,9 +123,9 @@ already hold is still cryptographically valid for up to another hour.
 ### A token belongs to one profile
 
 Every proxied profile shares one token audience: FastMCP's proxy holds a single
-resource URL. Until 0.49.0 that meant a token issued for one seat verified at
-every other seat whose `allowed_emails` held the same person, so an agent
-holding its own seat's token could present it at an operator seat (#298).
+resource URL. Until 0.49.0 that meant a token issued for one profile verified at
+every other profile whose `allowed_emails` held the same person, so an agent
+holding its own profile's token could present it at an operator profile (#298).
 
 Now the RFC 8707 `resource` a client sends to `/authorize` decides which
 profile the token is for. Trentina records it against the flow, moves it onto
@@ -155,7 +155,7 @@ lives five minutes.
 One caveat that undoes all of it: **the static bearer is checked first**. A
 profile carrying both `bearer_token_env` and `oauth` has two independent
 credentials, and the never-expiring anonymous one wins. That is intended for
-seats that need both, but a browser-only client cannot send a custom header
+profiles that need both, but a browser-only client cannot send a custom header
 anyway, so leaving a static token on such a profile is a liability with no use.
 
 ## Static bearer
@@ -212,7 +212,7 @@ Prefer it. Each is read once at startup and then removed from `os.environ`,
 but an env var's value stays in `/proc/<pid>/environ` for the life of the
 process; a file-mounted secret never enters the environment at all.
 
-`enabled: true` requires a non-empty `allowed_emails`; a seat open to any Google
+`enabled: true` requires a non-empty `allowed_emails`; a profile open to any Google
 account fails validation.
 
 Pin `allowed_subjects` too. An email address can move to a different Google
@@ -323,7 +323,7 @@ product — so they are URLs rather than patterns.
 ```
 
 A profile's `client_redirect_uris` (the provisioned-client callbacks) are
-included automatically, so a seat configured that way needs nothing extra.
+included automatically, so a profile configured that way needs nothing extra.
 
 #### Why wildcards are refused
 

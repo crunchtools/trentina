@@ -305,7 +305,7 @@ def start_cull_task(storage: Any) -> None:
     # WARNING, not INFO, for the reason describe_limits() is: production runs
     # at TRENTINA_LOG_LEVEL=WARNING, so an INFO line answering "is anything
     # actually removing these records?" is discarded on the one box where the
-    # question gets asked. Verified on lotor at 0.27.2 — this line was missing
+    # question gets asked. Verified in production at 0.27.2 — this line was missing
     # from the journal and there was no other way to tell.
     logger.warning(
         "oauth-store: expired-record sweeper started (every %ds)",

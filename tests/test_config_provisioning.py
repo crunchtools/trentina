@@ -1,0 +1,328 @@
+"""The program's acceptance (#633): an agent provisions a federated edge.
+
+Everything else in this program is tested a piece at a time. This is the claim
+those pieces were built for, end to end and through nothing but the two
+operator tools: starting from a gateway that has never heard of federation,
+mint the keys, declare the ingress, declare the backend, and finish with an
+edge that would actually authenticate — no file editing, no shell, no restart.
+
+The last assertion is the one that matters. It does not check that the config
+looks right; it mints the JWT the primary would really send and verifies it
+against the peer key the secondary really holds.
+"""
+
+from __future__ import annotations
+
+import pathlib
+from collections.abc import Iterator
+from typing import Any
+
+import pytest
+
+from trentina import config as config_mod
+from trentina.gateway import approver, pending
+from trentina.gateway.compress import set_profiles
+from trentina.gateway.context import profile_context
+from trentina.gateway.federation_keys import (
+    load_private_key,
+    load_public_key,
+    sign_primary_jwt,
+    verify_primary_jwt,
+)
+from trentina.gateway.loader import get_active_config, load_profiles, register_active_config
+from trentina.gateway.profile import federation_audience
+from trentina.tools.config import manage_config
+from trentina.tools.keygen import federation_keygen
+from trentina.tools.token import profile_token
+
+pytestmark = pytest.mark.anyio
+
+#: The primary reaches the secondary's DERIVED ingress here, and the edge JWT's
+#: audience is taken from the profile name in this URL. The name follows from
+#: the profile being shared (`shared` -> `shared-federation`) rather than being
+#: invented, which is what stops the two sides drifting apart.
+SECONDARY_PROFILE = "shared"
+SECONDARY_URL = "https://secondary.example/gateway/shared-federation/mcp"
+
+#: A gateway that knows nothing about federation yet: one operator profile, and a
+#: consumer profile with no backends but its own tools.
+BARE = """\
+# Nothing federated here yet.
+profiles:
+  op:
+    role: operator
+    defense:
+      provider: ollama
+    auth:
+      bearer_token_env: OP_TOKEN
+    backends:
+      web:
+        url: "internal://web"
+        tools_allow:
+          - config_tool
+          - federation_keygen_tool
+  down:
+    auth:
+      bearer_token_env: DOWN_TOKEN
+    backends:
+      web:
+        url: "internal://web"
+        tools_allow:
+          - fetch_tool
+    defense:
+      enforcement: block
+"""
+
+
+@pytest.fixture
+def gateway(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[pathlib.Path]:
+    monkeypatch.setenv("QUARANTINE_DB", str(tmp_path / "state" / "trentina.db"))
+    monkeypatch.setenv("OP_TOKEN", "o" * 20)
+    monkeypatch.setenv("DOWN_TOKEN", "d" * 20)
+    # A person can approve on this gateway, so trust can be proposed (#637).
+    monkeypatch.setenv(
+        "TRENTINA_APPROVAL_PASSWORD_HASH", approver.make_verifier("correct horse battery staple")
+    )
+    pending.clear()
+    config_mod._config = None
+    path = tmp_path / "config" / "profiles.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(BARE, encoding="utf-8")
+    config = load_profiles(path)
+    register_active_config(path, config, {})
+    set_profiles(config.profiles)
+    yield path
+    config_mod._config = None
+
+
+async def _op(*args: Any) -> dict[str, Any]:
+    """One call as the operator, the way an Operator agent would make it."""
+    operator = (get_active_config() or pytest.fail("no gateway")).config.profiles["op"]
+    with profile_context(operator):
+        if args and args[0] == "keygen":
+            return await federation_keygen(args[1])
+        if args and args[0] == "mint-token":
+            return await profile_token(args[1])
+        return await manage_config(*args)
+
+
+async def _set(path: str, value: Any) -> dict[str, Any]:
+    """A write, reading the current hash first, as the tool requires."""
+    read = await _op("get")
+    result = await _op("set", path, value, read["hash"])
+    assert result.get("applied") is True, result
+    return result
+
+
+async def _set_approving(path: str, value: Any, kind: pending.Kind) -> dict[str, Any]:
+    """A write a person has to agree to: staged, then approved, then applied.
+
+    Two assertions in the middle rather than one at the end, because the thing
+    worth proving is that the file did NOT move while the proposal stood. The
+    digest is taken from the staged facts, which is what a person's form
+    carries, so a swap between the render and the click would refuse here too.
+    """
+    read = await _op("get")
+    staged = await _op("set", path, value, read["hash"])
+    assert staged.get("staged") is True, staged
+    assert staged["awaiting"] == kind.value, staged
+    shown = pending.outstanding()[kind]
+    return await pending.approve(kind, pending.digest_of(shown))
+
+
+async def test_an_operator_provisions_a_federated_edge_with_no_shell_and_no_restart(
+    gateway: pathlib.Path,
+) -> None:
+    before = gateway.read_text(encoding="utf-8")
+
+    # 1. Each side mints its own key. Only the public halves ever come back.
+    signing = await _op("keygen", "ingress-signing")
+    edge = await _op("keygen", "edge-to-secondary")
+    assert "PRIVATE" not in str(signing) + str(edge)
+
+    # 2. The PROFILE being shared. A profile is a thing an agent signs in to, so it
+    #    gets its own minted token — no shell, nobody copying a secret.
+    await _op("mint-token", SECONDARY_PROFILE)
+
+    #    Then `federation` on that profile: who may authenticate as a primary, and
+    #    the key the profile vouches for its responses with. There is no ingress
+    #    profile to write. The gateway derives `shared-federation` from this
+    #    profile, offering the profile's own non-federated remote backends with the
+    #    profile's guards and posture, so the two can never drift.
+    #
+    #    This step needs one person. `peers` is who may authenticate as a
+    #    primary gateway, which is an access grant, so the operator proposes it
+    #    and a human agrees: still no shell and still no restart, which is what
+    #    the title claims.
+    await _set_approving(
+        f"profiles.{SECONDARY_PROFILE}",
+        {
+            "auth": {"bearer_token_name": SECONDARY_PROFILE},
+            "federation": {
+                "peers": {"down": {"public_key": edge["public_key"]}},
+                "secondary_key_name": "ingress-signing",
+            },
+            # The profile's own tools. Its internal surface is NOT offered — the
+            # derived ingress gets a fresh one with the paging reader alone —
+            # so the profile can keep whatever it needs for itself.
+            "backends": {
+                "wiki": {"url": "http://shared:8000/mcp", "tools_allow": ["*"]},
+                "web": {"url": "internal://web", "tools_allow": ["fetch_tool"]},
+            },
+            "defense": {"enforcement": "block"},
+        },
+        pending.Kind.FEDERATION_PEERS,
+    )
+
+    # 3. The primary side: a federated backend pointing at that ingress,
+    #    signing with the primary key by name.
+    await _set(
+        "profiles.down.backends.secondary",
+        {
+            "url": SECONDARY_URL,
+            "tools_allow": ["*"],
+            "federated": {"primary_key_name": "edge-to-secondary"},
+        },
+    )
+
+    # Both sides are live in the running gateway, with no restart — and the
+    # ingress nobody wrote is serving.
+    running = (get_active_config() or pytest.fail("no gateway")).config.profiles
+    derived = running["shared-federation"]
+    assert derived.federation_of == SECONDARY_PROFILE
+    # The remote backend crossed under its own name; the internal one crossed
+    # as the constructed `trentina` backend with the paging reader alone. This
+    # profile is an AGENT, and 6.0.0 carries the internal allowlist only for an
+    # operator profile -- the role and the surface are one change.
+    assert set(derived.backends) == {"wiki", "trentina"}
+    assert derived.backends["trentina"].tools_allow == ["read_part_tool"]
+    assert derived.auth is None  # `peers` is its authentication
+
+    ingress = derived.federation
+    backend = running["down"].backends["secondary"].federated
+    assert ingress is not None and ingress.secondary_key is not None
+    assert backend is not None and backend.primary_key is not None
+
+    # The edge would authenticate: the token the primary really mints
+    # verifies against the peer key the secondary really holds, and names the
+    # peer as the actor.
+    audience = federation_audience(SECONDARY_URL)
+    assert audience == "shared-federation"
+    token = sign_primary_jwt(
+        load_private_key(backend.primary_key.get_secret_value()), sub="down", aud=audience
+    )
+    peer, caller = verify_primary_jwt(
+        token,
+        {name: load_public_key(p.public_key) for name, p in ingress.peers.items()},
+        aud=audience,
+    )
+    assert (peer, caller) == ("down", "down")
+
+    # And the file a person reads is still the file they wrote, plus the edge.
+    after = gateway.read_text(encoding="utf-8")
+    assert after.startswith("# Nothing federated here yet.")
+    assert "fetch_tool" in before and "fetch_tool" in after
+
+
+async def test_turning_on_scan_once_trust_waits_for_a_person(
+    gateway: pathlib.Path,
+) -> None:
+    """The link above is authenticated and double-scanning, which is where #592
+    says to stop and prove it works. Going further — serving a secondary's
+    response WITHOUT scanning it — the operator may now propose, but only a
+    person can agree to (#637). The file does not move until they do."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    public_pem = (
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+    await _op("keygen", "primary-to-secondary")
+    await _set(
+        "profiles.down.backends.secondary",
+        {
+            "url": SECONDARY_URL,
+            "tools_allow": ["*"],
+            "federated": {"primary_key_name": "primary-to-secondary"},
+        },
+    )
+    before = gateway.read_text(encoding="utf-8")
+
+    read = await _op("get")
+    staged = await _op(
+        "set",
+        "profiles.down.backends.secondary.federated.trust_verdict",
+        {
+            "public_key": public_pem,
+            "perimeter_stamp": "v7:guard-small@abc123:0.7",
+            "judge": "openrouter/google/gemini-3.5-flash-lite/pack-1",
+        },
+        read["hash"],
+    )
+
+    assert staged["staged"] is True
+    assert staged["awaiting"] == "federation trust"
+    assert gateway.read_text(encoding="utf-8") == before
+
+    # And approving it is what applies it — the whole point of the mechanism.
+    # The decision names the proposal a person was shown, which here is
+    # whatever the staging built, so the digest comes from the staged facts.
+    from trentina.gateway import pending
+
+    shown = pending.outstanding()[pending.Kind.FEDERATION_TRUST]
+    await pending.approve(pending.Kind.FEDERATION_TRUST, pending.digest_of(shown))
+    assert gateway.read_text(encoding="utf-8") != before
+    assert "trust_verdict" in gateway.read_text(encoding="utf-8")
+
+
+async def test_an_operator_adds_a_whole_new_agent_profile_in_band(
+    gateway: pathlib.Path,
+) -> None:
+    """#635, and the step that was missing from #633's own promise.
+
+    Before this, a new profile could not be added to a running gateway at all.
+    Its token had to be an environment variable, and a profile naming one that
+    is not set does not merely need a restart — it fails validation, so the
+    write is refused and the file restored. Nothing about it was recoverable
+    from inside the gateway.
+
+    So this is the whole provisioning loop with no shell, no file editing and
+    no restart: mint the token, write the profile, and watch it come up
+    authenticating with what was minted.
+    """
+    del gateway  # the fixture stands up the gateway this runs against
+    minted = await _op("mint-token", "newagent")
+    assert minted["token"].startswith("trt_")
+
+    await _set(
+        "profiles.newagent",
+        {
+            "auth": {"bearer_token_name": "newagent"},
+            "backends": {"web": {"url": "internal://web", "tools_allow": ["fetch_tool"]}},
+        },
+    )
+
+    running = (get_active_config() or pytest.fail("no gateway")).config.profiles
+    assert "newagent" in running, "the profile is serving without a restart"
+    auth = running["newagent"].auth
+    assert auth is not None and auth.bearer_token is not None
+    assert auth.bearer_token.get_secret_value() == minted["token"]
+
+    # And it authenticates: the token the agent was given is the one the
+    # gateway will accept.
+    from trentina.gateway.auth import verify_bearer
+
+    verify_bearer(f"Bearer {minted['token']}", running["newagent"])
+
+
+async def test_the_token_is_returned_once_and_never_again(gateway: pathlib.Path) -> None:
+    """The only credential any Trentina tool hands back, so the shape of that
+    exception matters: once, at creation, and rotation is a new name."""
+    del gateway  # as above
+    first = await _op("mint-token", "newagent")
+    again = await _op("mint-token", "newagent")
+    assert "already exists" in again["error"]
+    assert first["token"] not in str(again)

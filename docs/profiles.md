@@ -22,10 +22,10 @@ llm_providers:              # every name under llm_keys must be one of these
 
 profiles:
   agent2:
-    role: operator          # default: agent (see Roles and operator.md)
+    role: operator          # default: agent; more than one is allowed (see Roles)
     auth:
       bearer_token_env: TRENTINA_PROFILE_AGENT2_TOKEN
-    llm_keys:               # the operator pays for the gateway's own model calls
+    llm_keys:               # every profile judges on its own key, operator included
       gemini:
         api_key_env: TRENTINA_OPERATOR_GEMINI_API_KEY
     backends:
@@ -73,7 +73,7 @@ three modes run all three layers; they differ only in what is delivered (see
 
 ```yaml
 profiles:
-  web-seat:
+  web-profile:
     auth:
       bearer_token_env: TRENTINA_PROFILE_WEB_SEAT_TOKEN
     defense:
@@ -119,7 +119,7 @@ can talk an agent past its own warning is the attack it exists to survive.
 
 Two optional narrowings, neither needed for the base policy: `modes` on one
 backend overrides the profile's set for that backend (it must include the
-default), and a [parameter guard](parameter-guards.md) on `trentina_mode`
+default), and a [literal request guard](literal-request-guards.md) on `trentina_mode`
 narrows one tool.
 
 ## Minifying and exact text
@@ -215,12 +215,17 @@ through the gateway's own admin tools — `cache_flush`, `reconnect_backend`,
 | `reload_profiles` | validates the whole file, applies its own section | applies the whole file and the gateway-wide settings |
 | `backend_auth` | its own OAuth backends; `start` and `revoke` need `auth.self_authorize` | its own OAuth backends, `self_authorize` or not |
 
-Omit `role` and the profile is an agent. There is at most one operator, and it
-belongs to the **Operator agent**: the agent that installs, configures and runs
-Trentina. Every other agent, supervised or not, is a tenant and stays
-`role: agent`. The operator is also the gateway's service identity, so the
-gateway's own model calls run on its key. [operator.md](operator.md) covers the
-whole seat.
+Omit `role` and the profile is an agent. The operator role belongs to the
+**Operator agent**: the agent that installs, configures and runs Trentina.
+Every other agent, supervised or not, is a tenant and stays `role: agent`.
+
+More than one profile may hold the role since 6.4.0, so two agents administer
+one gateway without sharing a login. Each is equal, and
+`gateway.service_identity` names the one the gateway binds and reports as
+*itself* — which since 6.1.0 binds an approved config write and nothing else;
+no model call runs on its key for anyone but itself. With two operators and no
+such name the file is refused. [operator.md](operator.md) covers the whole
+profile and both writes.
 
 An agent profile is not told what it cannot act on. Another profile's backend
 names, allowlist deltas, guarded parameter names, call volumes and blocked URLs
@@ -259,8 +264,8 @@ What remains, with its rate:
 
 | Residual | Bound |
 |---|---|
-| Circuit breaker, healed by any profile holding the URL (#263) | 1 bit per probe, only for profiles sharing that backend |
-| Tool-description verdicts, shared across profiles | 0: the text is the backend's tools/list, which no agent writes through the gateway |
+| Circuit breaker, healed by any profile holding the URL (#263) | 1 bit per probe, only for profiles sharing that backend. Deliberately shared: it measures whether a URL is reachable, and partitioning it would hide a down backend from the profiles that share it |
+| Tool-description verdicts | 0 since 6.1.0: the cache is keyed per grant owner, so a hit is a fact about this profile's own earlier listing. It was shared across profiles with equal thresholds and judge, justified on the ground that no agent writes a backend's tools/list — true for one person's gateway, and not the answer for a service, where a hit told a profile that a neighbour held the same backend |
 | DNS backstop | Takes 16 profiles stalling 4 lookups each; then 1 bit per stalled lookup's lifetime (the OS resolver timeout) |
 | L2 turn-taking | A backlog delays another profile by at most one scan per profile waiting, each under `admission_tokens`; under 1 bit per scan, and noisy |
 | L3 provider quota on a shared key | Profiles given the same `llm_keys` value share the provider's quota for it, which no gateway can split. Give each agent its own key |
@@ -310,6 +315,41 @@ client can do, and the choice is per profile.
 
 All four mechanisms, the `oauth` keys each one needs, and the security rules that
 go with them are in **[Authentication](authentication.md)**.
+
+### A shared profile, and the ingress derived from it
+
+`federation` is declared on the **profile whose tools you are sharing**, and the
+gateway derives the ingress from it: a profile named `<profile>-federation` that
+offers that profile's own non-federated remote backends, with that profile's guards,
+defense posture and `llm_keys`. You do not write the ingress, and a profile name
+ending `-federation` is reserved for a derived one.
+
+Four rules come with sharing a profile, all refused at load rather than warned
+about:
+
+| Rule | Why |
+|---|---|
+| At least one `federation.peers` entry | The peer list *is* the link's authentication. A `federation` block without one would still sign verdict assertions over its responses. |
+| Exact internal tool names, if `role: operator` | A shared operator profile's `internal://` allowlist crosses to its peers, and `tools_allow` entries are fnmatch patterns. `*` or `read_*` names no tool a person can approve and silently covers every tool a later release adds. |
+| `auth` or `oauth` of its own | A profile is something an agent signs in to; a profile no agent can reach has no tools of its own to share. It is also how the pre-5.0.0 standalone ingress profile — which carried neither — is refused. |
+| At least one non-federated remote backend | An empty link admits a peer and costs an approval, then serves it nothing. An `internal://` backend is the gateway's own surface and a federated one would re-export the next gateway, so neither can be offered. |
+
+The derived ingress carries no `auth` and no `oauth`. The gateway tries a static
+bearer first, so a bearer there would admit a caller with no peer and no `sub` —
+a null caller in the audit, and one shared owner for every held response part.
+
+For a shared **agent** profile its internal backend offers only
+`read_part_tool`, so a paged response can be collected and nothing else native
+is reachable. A shared **operator** profile is different since 6.0.0: the
+ingress carries its role and its internal allowlist, so its peers administer
+this gateway. See [Sharing the operator role](federation.md) for what that
+costs and for the alternative that keeps the old property.
+
+The profile's OAuth grants serve the link: sign in once, on the profile. Adding or
+changing a peer is staged for a person — it hands another gateway a profile, and
+the accounts that profile signed in to. Removing one applies at once.
+**[Federation](federation.md)** is the whole statement;
+**[Approvals](approvals.md)** covers the decision.
 
 ## Multi-Agent Deployment
 
@@ -419,9 +459,9 @@ check_trentina_fanout --db /data/trentina.db \
     --hosts-warn 20 --hosts-crit 50 --comms-warn 30 --comms-crit 100
 ```
 
-## Guarded Execution
+## Semantic Request Guards
 
-`guarded_execution` names the tools whose calls the profile's judge reads
+`semantic_request_guards` names the tools whose calls the profile's judge reads
 before they are forwarded, and the rule it reads them against, in plain
 English (#456). Anything but an explicit allow refuses the call.
 
@@ -433,7 +473,7 @@ English (#456). Anything but an explicit allow refuses the call.
         tools_allow: [search_gmail_messages, send_gmail_message]
         destination_params:
           send_gmail_message: to    # gives the gatekeeper its first-contact fact
-    guarded_execution:
+    semantic_request_guards:
       policy: |
         Mail goes only to example.com addresses. No customer data in bulk.
       tools:
@@ -442,11 +482,42 @@ English (#456). Anything but an explicit allow refuses the call.
 
 Guarded tools are exact names on backends the profile has, each allowed by
 that backend's `tools_allow`, or the file does not load. Add
-`refuse_when_flagged: true` on an unattended seat to refuse its guarded calls
+`refuse_when_flagged: true` on an unattended profile to refuse its guarded calls
 outright once the session has been delivered flagged content (#457). The block is
 perimeter: an agent's own reload cannot change it, and a honeypot cannot
 have one. Scenarios, the policy-writing guide, refusal codes and what it
-cannot do are in [Guarded Execution](guarded-execution.md).
+cannot do are in [Semantic Request Guards](semantic-request-guards.md).
+
+## Semantic Response Guards
+
+`semantic_response_guards` is the twin on the other edge: it names the tools
+whose RESPONSES the profile's judge reads against a policy before the agent
+receives them, and refuses delivery on anything but an explicit allow (#456).
+It is the semantic sibling of the literal response guard — a judge, not a glob,
+so it catches restricted material a literal rule misses when it is paraphrased,
+encoded or split. It is purely the policy judge; hostility is still the
+[defense pipeline](defense-pipeline.md)'s job, which scans the response right
+after.
+
+```yaml
+  agent1:
+    backends:
+      memory:
+        url: "http://memory:8000/mcp"
+        tools_allow: [search_memory, read_note]
+    semantic_response_guards:
+      policy: |
+        Nothing about unreleased products, customers by name, or pricing may
+        reach this agent. No credentials in a result.
+      tools:
+        memory: [search_memory, read_note]
+```
+
+Guarded tools are exact names on real backends the profile has, each allowed by
+`tools_allow`, or the file does not load. Like the request twin, the block is
+perimeter — an agent's own reload cannot change it and a honeypot cannot have
+one — and `refuse_when_flagged: true` applies the same way. The full guide is in
+[Semantic Response Guards](semantic-response-guards.md).
 
 ## Decoy Tools and Honeytokens
 
@@ -593,6 +664,31 @@ allowed only after the host, and its value must be URL-safe
     url: "http://rotv:8080/mcp?token=${ROTV_TOKEN}"
 ```
 
+### What a reference may not name
+
+A header or `url` may reference a backend's own credential, and nothing else.
+A `${VAR}` naming a secret the gateway itself holds is a load error:
+
+- any variable this file declares under a `*_env` key — a profile's
+  `auth.bearer_token_env`, an `llm_keys.*.api_key_env`, a federation key, a
+  bridge or ingress secret, anywhere in the file, not only in this profile;
+- the gateway's own secrets, such as `TRENTINA_OAUTH_JWT_SIGNING_KEY`,
+  `TRENTINA_BACKEND_TOKEN_KEY` and the provider API keys.
+
+Without this, a backend header was a way to send one of those to whatever
+endpoint the backend pointed at — including this gateway's own operator
+endpoint, which needs no approval to configure and hands the other side
+`config_tool`. Naming the variable was enough; nothing had to read its value.
+
+The variable your backend authenticates with is referenced and not declared,
+so it is unaffected. Give each backend a variable nothing else in the file
+names.
+
+A name stays protected for the life of the process once any load has seen it
+declared, so removing a declaration does not make it referenceable — otherwise
+one write could retire a credential and forward it in the same breath. A
+secret you genuinely retire is referenceable again after a restart.
+
 ## Backend OAuth
 
 
@@ -667,8 +763,8 @@ The agent drives it with one admin tool, `backend_auth`:
 
 Every call to an `auth` backend carries the calling profile's grant, and only
 that profile's. A profile with no grant gets an error naming the fix
-(`backend_auth` with `start`) instead of a call, and never counts against the
-backend's circuit breaker. A grant the backend refuses (401) is refreshed once
+(`backend_auth` with `start`) as a refusal instead of a call, and never counts
+against the backend's circuit breaker. A grant the backend refuses (401) is refreshed once
 and the request sent again, but only a request the backend never ran: a call
 it accepted is never sent twice. If the refreshed grant is refused too, the
 profile is told to sign in again, and the gateway stops refreshing for a
@@ -770,14 +866,17 @@ the Matrix proxy's credential, #330), nor its own `client_egress` block
 (#442), nor its own `git` block (#453); each is reported under
 `operator_only`. Adding the first `client_egress` block needs a restart,
 because its listener is bound at startup, and so does adding the first
-`git_remotes` entry, because its route is. Once that route exists, an
+`git_remotes` entry, because its route is, or the first `proxies:` instance of
+a `forward` or `dist:` type ([proxies](proxy-plugins.md)). Once that route exists, an
 operator reload applies an edit to `git_remotes` or to a `git` block.
 
 ## Related
 
 - [MCP Gateway](gateway.md) — how the gateway routes calls to backends
 - [Tool Filtering](tool-filtering.md) — allowlist/denylist configuration
-- [Parameter Guards](parameter-guards.md) — argument-level restrictions
+- [Literal Request Guards](literal-request-guards.md) — argument-level restrictions
+- [Semantic Request Guards](semantic-request-guards.md) — a judge reads guarded calls
+- [Semantic Response Guards](semantic-response-guards.md) — a judge reads guarded responses
 - [Defense Pipeline](defense-pipeline.md) — L1/L2/L3 configuration details
 - [Client Egress](client-egress.md) — the `client_egress` block
 - [Git Transport](git-transport.md) — `git_remotes` and the `git` block

@@ -9,10 +9,11 @@ from typing import Any
 
 from ..config import get_config
 from ..errors import FileReadError
+from ..gateway.scope import check_blocklist
 from ..models import ALLOWED_TEXT_EXTENSIONS
 from ..modes import Mode
+from ..orchestrator import judge_and_deliver
 from .confine import REFUSAL_REASONS, open_confined, refused
-from .judged import check_blocklist, judge_and_deliver
 from .preprocess import prepare
 
 MAX_FILE_SIZE = 2_000_000
@@ -42,7 +43,8 @@ def _read_confined(path: str) -> tuple[str, str]:
     confinement checks, the open and the read all happen in the same call and
     nothing is split across threads or back onto the event loop (#267).
     """
-    fd, st, resolved = open_confined(path, "file")
+    opened = open_confined(path, "file")
+    fd, st, resolved = opened.fd, opened.st, opened.path
     with os.fdopen(fd, "rb") as fh:
         if not stat.S_ISREG(st.st_mode):
             raise FileReadError("not_a_file")

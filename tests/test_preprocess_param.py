@@ -16,6 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import SecretStr, ValidationError
 
+from tests.refusal_shape import refused_text
+from trentina.core.stages import IngressDecision
 from trentina.defense import Provenance
 from trentina.errors import (
     TransformFailedError,
@@ -27,12 +29,12 @@ from trentina.gateway.context import (
     profile_context,
 )
 from trentina.gateway.errors import ProfileConfigError
-from trentina.gateway.ingress_defense import IngressDecision
 from trentina.gateway.loader import _check_drivers
 from trentina.gateway.modes_policy import (
     mode_instructions,
     preprocess_policy_for,
 )
+from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import (
     AuthConfig,
     Backend,
@@ -41,7 +43,6 @@ from trentina.gateway.profile import (
     Profile,
     ToolPreProcess,
 )
-from trentina.gateway.router import NAMESPACE_SEP, route_jsonrpc
 from trentina.gateway.transform import resolve, transform_response
 from trentina.modes import Mode
 from trentina.outcomes import Outcome, classify_exception
@@ -50,10 +51,15 @@ from trentina.tools.read import read_file
 from trentina.tools.reload import _hold_preprocess_floor
 from trentina.transforms import Applied, Declined, Failed, TransformResult
 from trentina.transforms.policy import PREPROCESS_PARAM, PreProcessPolicy
+from trentina.transports.mcp import route_jsonrpc
 
 from .mode_harness import layers
 
-ROUTER = "trentina.gateway.router"
+AGGREGATE = "trentina.gateway.aggregate"
+PARTS = "trentina.gateway.parts"
+AUDIT = "trentina.gateway.audit"
+MCP = "trentina.transports.mcp"
+ORCH = "trentina.orchestrator"
 HTML_RUN = "trentina.transforms.html.HtmlProcessor.run"
 SUMMARIZE_RUN = "trentina.transforms.summarize.SummarizeProcessor.run"
 PAGE = (
@@ -76,14 +82,14 @@ def _profile(
 ) -> Profile:
     p = Profile(
         short_names=False,  # calls below use <backend>__<tool>
-        name="agent",
+        name="tenant",
         auth=AuthConfig(bearer_token_env="TEST"),
         defense=DefenseConfig(enforcement="flag", modes=["flag"]),
         backends={
             "cms": Backend(
                 url=url,
                 preprocess_tools=tools or {},
-                parameter_guards=guards or {},
+                literal_request_guards=guards or {},
             )
         },
         preprocess=preprocess or PreProcessConfig(),
@@ -143,7 +149,7 @@ class TestConfig:
             tools={"get_page": ToolPreProcess(processors=["petit"])},
         )
         with pytest.raises(ProfileConfigError, match="not in processors"):
-            _check_drivers("agent", p)
+            _check_drivers("tenant", p)
 
     def test_a_tool_floor_inherits_unless_it_is_set(self) -> None:
         p = _profile(
@@ -176,8 +182,8 @@ class TestToolsList:
             "list_internal_tools" if profile.backends["cms"].is_internal else ("list_backend_tools")
         )
         with (
-            patch(f"{ROUTER}.{lister}", AsyncMock(return_value=[tool])),
-            patch(f"{ROUTER}.scan_tool_list", side_effect=fake_scan),
+            patch(f"{AGGREGATE}.{lister}", AsyncMock(return_value=[tool])),
+            patch(f"{AGGREGATE}.scan_tool_list", side_effect=fake_scan),
         ):
             resp = await route_jsonrpc(profile, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         (listed,) = resp["result"]["tools"]
@@ -233,9 +239,10 @@ class TestProxiedCall:
         scan = AsyncMock(return_value=IngressDecision(warning=None))
         audit = MagicMock()
         with (
-            patch(f"{ROUTER}.call_backend_tool", side_effect=fake_call),
-            patch(f"{ROUTER}.scan_tool_response", scan),
-            patch(f"{ROUTER}._audit", audit),
+            patch(f"{MCP}.call_backend_tool", side_effect=fake_call),
+            patch(f"{PARTS}.scan_tool_response", scan),
+            patch(f"{ORCH}.scan_tool_response", scan),
+            patch(f"{AUDIT}._audit", audit),
         ):
             resp = await route_jsonrpc(
                 profile,
@@ -256,7 +263,7 @@ class TestProxiedCall:
         resp, forwarded, scan, audit = await self._call(
             _profile(), {"id": "1", PREPROCESS_PARAM: "html"}
         )
-        assert "trentina_preprocess" in resp["error"]["message"]
+        assert "trentina_preprocess" in refused_text(resp)
         assert forwarded == {}
         scan.assert_not_awaited()
         assert audit.call_args.args[3] is Outcome.DENIED_GUARD
@@ -333,7 +340,7 @@ class TestProxiedCall:
         with patch(HTML_RUN, side_effect=RuntimeError("parser exploded")):
             resp, _, scan, audit = await self._call(profile, {"id": "1"})
         result = resp["result"]
-        assert result["isError"] is True
+        assert result["isError"] is False
         assert result["_trentina_refusal"]["reason"] == "preprocess_failed"
         assert "Ignore prior instructions" not in str(result)
         scan.assert_not_awaited()
@@ -587,7 +594,7 @@ class TestInternalTools:
         try:
             with (
                 patch(f"trentina.server.{family}", fake),
-                patch(f"{ROUTER}._audit"),
+                patch(f"{AUDIT}._audit"),
             ):
                 resp = await route_jsonrpc(
                     profile,

@@ -36,7 +36,7 @@ unauthenticated request is `401` whether or not `{provider}` exists — the `404
 is only ever returned to a caller with a valid token, and 404-vs-401 cannot be
 used to enumerate configured provider names.
 
-The caller's token (`Authorization` or `x-api-key`) is never forwarded upstream. Trentina's own Q-Agent does not go through `/proxy/llm/`; it calls providers directly, but with the same `llm_keys`. Judging a profile's tool response bills that profile's key. Judging a shared tool description, or compressing one, is the gateway's own work, and bills the operator's key ([operator.md](operator.md#service-identity)). The global `GEMINI_API_KEY` applies only when no operator is declared.
+The caller's token (`Authorization` or `x-api-key`) is never forwarded upstream. Trentina's own Q-Agent does not go through `/proxy/llm/`; it calls providers directly, but with the same `llm_keys`. Judging a profile's tool response bills that profile's key, and since 6.1.0 so does judging or compressing a tool DESCRIPTION: a tenant's tool list is its own work, on its own key, cached in its own partition ([operator.md](operator.md#service-identity)). Both were the operator's through 6.0.0. There is no fallback in either direction: `resolve_profile_llm` raises rather than reach for another profile's key or the global one, so a profile with no `llm_keys` for its resolved provider judges nothing. The global `GEMINI_API_KEY` reaches L3 only on a standalone server, through the operator profile synthesized from the environment (#579).
 
 ### What the Proxy Admits
 
@@ -109,9 +109,22 @@ Three consequences worth stating plainly:
   credential marker, an L-layer risk level, or `unjudged`; the specific gap
   names (`oversize`, `l3_unavailable`, …) are in a `block` refusal body only.
 
-The completion streams back unchanged and is judged after the last frame
-(`source_type=llm_completion`), which records a flag but cannot withhold what
-already streamed (see `_streaming_response`).
+The completion edge is governed per profile by `defense.llm_completion`
+(`flag` by default, `block` to opt in) — a separate knob from the per-provider
+request `enforcement`, because withholding *model output* is a property of the
+consuming agent's trust posture, not of which provider answered.
+
+- **`flag` (default).** The completion streams back unchanged and is judged
+  after the last frame (`source_type=llm_completion`), which records a flag but
+  cannot withhold what already streamed (see `_streaming_response`): a token
+  stream carries no annotation channel, and an interactive profile keeps its
+  time-to-first-token.
+- **`block`.** The completion is buffered, judged, and **withheld** if flagged
+  or not fully judged — a timeout, a scan failure, or a body over the scan cap
+  all fail closed to `completion_unjudged`/`completion_oversize`. The agent gets
+  the same deny marker as a request refusal, never the completion. Buffering
+  forfeits streaming, which is the trade an autonomous profile with no human
+  waiting can make; `redact` is meaningless on a token stream and is refused.
 
 ### What This Buys You
 

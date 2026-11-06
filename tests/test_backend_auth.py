@@ -142,7 +142,7 @@ class TestTheGrantIsSent:
         fake: _Backend,
         profiles: dict[str, Profile],
     ) -> None:
-        with pytest.raises(Exception, match="needs a calling profile"):
+        with pytest.raises(Exception, match="no calling profile"):
             await call_backend_tool("era", profiles["josui"].backends["era"], "spend", {})
 
 
@@ -249,7 +249,7 @@ class TestLists:
         profiles: dict[str, Profile],
     ) -> None:
         era = profiles["josui"].backends["era"]
-        backend._tool_list_cache[era.url] = [{"name": "spend"}]
+        backend._tool_list_cache[(era.url, "")] = [{"name": "spend"}]
         assert await revalidate_backend_tools("era", era) is False
         assert fake.headers == []
 

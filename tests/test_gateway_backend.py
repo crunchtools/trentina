@@ -8,10 +8,12 @@ timeout wrapping, caching, and success/failure recording.
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import patch
 
+import httpx
 import pytest
 from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
@@ -21,12 +23,14 @@ from trentina.gateway.backend import (
     _tool_list_cache,
     cached_tool_read_only,
     call_backend_tool,
+    evict_backend_cache_url,
     list_backend_tools,
     revalidate_backend_tools,
 )
 from trentina.gateway.circuit import State, breaker
-from trentina.gateway.errors import BackendCallError
-from trentina.gateway.profile import Backend
+from trentina.gateway.errors import BackendCallError, BackendRejectedCallError
+from trentina.gateway.profile import AuthConfig, Backend, Profile
+from trentina.logsafe import exc_kind
 
 
 def _backend(
@@ -297,7 +301,7 @@ class TestBackendToolListCache:
         ):
             await list_backend_tools("rotv", _backend())
 
-        assert URL in _tool_list_cache
+        assert (URL, "") in _tool_list_cache
 
         for _ in range(3):
             breaker.record_failure(URL)
@@ -313,7 +317,7 @@ class TestBackendToolListCache:
             tools = await list_backend_tools("rotv", _backend())
 
         assert len(tools) == 1
-        assert URL in _tool_list_cache
+        assert (URL, "") in _tool_list_cache
 
     async def test_call_failure_does_not_evict_list_cache(self) -> None:
         """A failed tool call must not evict the cached tool list."""
@@ -326,7 +330,7 @@ class TestBackendToolListCache:
             side_effect=ok_list,
         ):
             await list_backend_tools("rotv", _backend())
-        assert URL in _tool_list_cache
+        assert (URL, "") in _tool_list_cache
 
         async def fail_call(*_args: Any, **_kwargs: Any) -> Any:
             raise ConnectionRefusedError("backend hiccup")
@@ -340,7 +344,7 @@ class TestBackendToolListCache:
         ):
             await call_backend_tool("rotv", _backend(), "some_tool", {})
 
-        assert URL in _tool_list_cache
+        assert (URL, "") in _tool_list_cache
 
         async def should_not_be_called(_url: str, _headers: Any, *_: Any) -> Any:
             raise AssertionError("transport re-fetched after call failure")
@@ -468,6 +472,122 @@ def test_a_rejection_is_found_in_a_nested_group_and_through_a_cause() -> None:
     assert _rejection(ExceptionGroup("tg", [MCPError(-32603, "x")])) is None
 
 
+def test_exc_kind_unwraps_a_task_group_to_the_real_leaf() -> None:
+    """A federated backend's failure arrives as the SDK's task-group
+    ExceptionGroup; the kind must name the leaf, not the wrapper (F1)."""
+    group = ExceptionGroup("unhandled errors in a TaskGroup", [httpx.ConnectError("boom")])
+    assert exc_kind(group) == "ConnectError"
+
+
+def test_exc_kind_unwraps_a_nested_group_and_a_cause_group() -> None:
+    inner = ExceptionGroup("inner", [httpx.ConnectError("boom")])
+    assert exc_kind(ExceptionGroup("outer", [inner])) == "ConnectError"
+    wrapper = RuntimeError("wrapper")
+    wrapper.__cause__ = ExceptionGroup("caused", [TimeoutError("slow")])
+    assert exc_kind(wrapper) == "TimeoutError"
+
+
+def test_exc_kind_leaves_a_plain_exception_unchanged() -> None:
+    assert exc_kind(ConnectionRefusedError("refused")) == "ConnectionRefusedError"
+
+
+@pytest.mark.asyncio
+class TestFederatedErrorKindIsLegible:
+    """F1: a failed federated probe names the real leaf, not 'ExceptionGroup'.
+
+    Picking up a redeployed federated tool on mypeer failed with an opaque
+    ``list_tools failed: ExceptionGroup`` because the reporter read
+    ``type(exc).__name__`` on the SDK's task-group wrapper. The operator-visible
+    error and the log line must both name the leaf an operator can act on.
+    """
+
+    async def test_list_tools_failure_names_the_leaf_kind(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def grouped_connect_error(_url: str, _headers: Any, *_: Any) -> Any:
+            raise ExceptionGroup("unhandled errors in a TaskGroup", [httpx.ConnectError("boom")])
+
+        with (
+            patch(
+                "trentina.gateway.backend._do_list_tools",
+                side_effect=grouped_connect_error,
+            ),
+            caplog.at_level(logging.WARNING, logger="trentina.gateway.backend"),
+            pytest.raises(BackendCallError) as info,
+        ):
+            await list_backend_tools("rotv", _backend())
+
+        assert "ConnectError" in str(info.value)
+        assert "ExceptionGroup" not in str(info.value)
+        assert "ConnectError" in caplog.text
+        assert "ExceptionGroup" not in caplog.text
+
+
+@pytest.mark.asyncio
+class TestRevalidateForwardsProfile:
+    """revalidate_backend_tools must forward the caller profile to the refresh,
+    so a federated probe can mint its primary JWT (#592, F3). Without it the probe
+    goes out unauthenticated and the upstream rejects it."""
+
+    async def test_profile_reaches_refresh(self) -> None:
+        from trentina.gateway.backend import revalidate_backend_tools
+
+        _tool_list_cache[(URL, "")] = [{"name": "old"}]
+        prof = Profile(name="josui", auth=AuthConfig(bearer_token_env="T"))
+        captured: dict[str, Any] = {}
+
+        async def spy_refresh(_name: str, _backend: Backend, profile: Any = None) -> Any:
+            captured["profile"] = profile
+            return [{"name": "new"}]
+
+        with patch("trentina.gateway.backend.refresh_backend_tools", side_effect=spy_refresh):
+            changed = await revalidate_backend_tools("rotv", _backend(), prof)
+
+        assert changed is True
+        assert captured["profile"] is prof
+
+
+def test_inflight_key_separates_a_federated_edge_by_profile() -> None:
+    """A federated edge-key backend keys its in-flight fetch by profile, so a
+    no-profile fetch is never joined by the authenticated build (#592, F5)."""
+    from pydantic import SecretStr
+
+    from trentina.gateway.backend import _inflight_key
+    from trentina.gateway.profile import FederatedConfig
+
+    fed = Backend(
+        url="http://up:8000/gateway/fed-x/mcp",
+        federated=FederatedConfig(primary_key_env="X_EDGE_KEY", primary_key=SecretStr("k")),
+    )
+    plain = Backend(url="http://plain:8000/mcp")
+    prof = Profile(name="josui", auth=AuthConfig(bearer_token_env="T"))
+
+    assert _inflight_key(fed, None) != _inflight_key(fed, prof)
+    assert _inflight_key(fed, prof) == "http://up:8000/gateway/fed-x/mcp#josui"
+    assert _inflight_key(plain, None) == _inflight_key(plain, prof) == "http://plain:8000/mcp"
+
+
+@pytest.mark.asyncio
+class TestFederatedFetchNeedsProfile:
+    """A federated edge-key fetch with no caller profile fails loud (#592, F6),
+    before the breaker, rather than sending an unauthenticated probe that 401s
+    and opens the URL-keyed circuit for every profile."""
+
+    async def test_no_profile_raises_and_spares_the_breaker(self) -> None:
+        from pydantic import SecretStr
+
+        from trentina.gateway.profile import FederatedConfig
+
+        url = "http://up:8000/gateway/fed-x/mcp"
+        fed = Backend(
+            url=url,
+            federated=FederatedConfig(primary_key_env="X_EDGE_KEY", primary_key=SecretStr("k")),
+        )
+        with pytest.raises(BackendCallError, match="needs a calling profile"):
+            await list_backend_tools("up", fed)  # profile defaults to None
+        assert breaker.get_state(url) is State.CLOSED
+
+
 @pytest.mark.asyncio
 class TestHeaderedBackendHttpTimeouts:
     """A backend with headers must get the SDK's HTTP timeouts, not httpx's 5s.
@@ -504,7 +624,7 @@ class TestRevalidatePersistedList:
     """A list loaded from SQLite is refetched at boot (#335)."""
 
     async def test_a_changed_list_replaces_the_persisted_one(self) -> None:
-        _tool_list_cache[URL] = [{"name": "old_tool", "description": "", "inputSchema": {}}]
+        _tool_list_cache[(URL, "")] = [{"name": "old_tool", "description": "", "inputSchema": {}}]
 
         with patch(
             "trentina.gateway.backend._do_list_tools",
@@ -513,7 +633,7 @@ class TestRevalidatePersistedList:
             changed = await revalidate_backend_tools("rotv", _backend())
 
         assert changed is True
-        assert [t["name"] for t in _tool_list_cache[URL]] == ["new_tool"]
+        assert [t["name"] for t in _tool_list_cache[(URL, "")]] == ["new_tool"]
 
     async def test_an_unchanged_list_reports_no_change(self) -> None:
         with patch(
@@ -527,7 +647,7 @@ class TestRevalidatePersistedList:
 
     async def test_an_unreachable_backend_keeps_its_persisted_list(self) -> None:
         persisted = [{"name": "old_tool", "description": "", "inputSchema": {}}]
-        _tool_list_cache[URL] = persisted
+        _tool_list_cache[(URL, "")] = persisted
 
         with patch(
             "trentina.gateway.backend._do_list_tools",
@@ -536,7 +656,7 @@ class TestRevalidatePersistedList:
             changed = await revalidate_backend_tools("rotv", _backend())
 
         assert changed is False
-        assert _tool_list_cache[URL] is persisted
+        assert _tool_list_cache[(URL, "")] is persisted
 
     async def test_a_backend_with_nothing_persisted_is_not_fetched(self) -> None:
         with patch(
@@ -560,6 +680,200 @@ class TestCachedToolReadOnly:
     )
     def test_only_an_explicit_true_counts(self, tool: dict[str, Any], read_only: bool) -> None:
         """A tool that did not say it only reads may write."""
-        _tool_list_cache[URL] = [tool]
+        _tool_list_cache[(URL, "")] = [tool]
 
-        assert cached_tool_read_only(URL, "t") is read_only
+        assert cached_tool_read_only(URL, "", "t") is read_only
+
+
+class TestOneTenantNeverReadsAnothersToolList:
+    """The leak this release exists to close (6.1.0).
+
+    `_tool_list_cache` was keyed by backend URL alone, so whichever profile
+    missed first fetched the list with its OWN credential and every other
+    profile on that URL was handed the result — without presenting a credential
+    of its own, and for an `auth` backend without holding a grant at all. For a
+    backend whose tool list or schemas depend on the account, that is one
+    tenant reading another tenant's data.
+    """
+
+    @staticmethod
+    def _with_headers(token: str) -> Backend:
+        return Backend(url=URL, headers={"Authorization": f"Bearer {token}"})
+
+    @staticmethod
+    def _profile(name: str) -> Profile:
+        return Profile(name=name, auth=AuthConfig(bearer_token_env="T"))
+
+    async def test_each_credential_gets_its_own_list(self) -> None:
+        """Two profiles, two tokens, one URL: two fetches and two partitions.
+        Before this release the second profile was served the first's list."""
+        alice, bob = self._profile("alice"), self._profile("bob")
+        seen: list[str | None] = []
+
+        async def per_credential(_url: str, headers: Any, *_: Any) -> Any:
+            seen.append((headers or {}).get("Authorization"))
+            # A backend that answers per account: the tool name says whose.
+            whose = "alice" if "alice-token" in str(headers) else "bob"
+            return _tools_result([f"{whose}_only_tool"])
+
+        with patch("trentina.gateway.backend._do_list_tools", side_effect=per_credential):
+            mine = await list_backend_tools("b", self._with_headers("alice-token"), alice)
+            theirs = await list_backend_tools("b", self._with_headers("bob-token"), bob)
+
+        assert [t["name"] for t in mine] == ["alice_only_tool"]
+        assert [t["name"] for t in theirs] == ["bob_only_tool"]
+        # Two fetches, each under its own credential — not one shared answer.
+        assert seen == ["Bearer alice-token", "Bearer bob-token"]
+
+    async def test_a_profile_with_no_credential_is_not_served_anothers_list(self) -> None:
+        """The sharpest form: a profile that presents nothing used to be handed
+        a warm list that another profile's token had earned."""
+        alice = self._profile("alice")
+
+        with patch(
+            "trentina.gateway.backend._do_list_tools",
+            side_effect=lambda *_a: _tools_result(["alice_only_tool"]),
+        ):
+            await list_backend_tools("b", self._with_headers("alice-token"), alice)
+
+        # Bob's own partition is empty, so a cache HIT is impossible for him.
+        assert (URL, "alice") in _tool_list_cache
+        assert (URL, "bob") not in _tool_list_cache
+
+    async def test_a_backend_with_no_credential_is_still_fetched_once(self) -> None:
+        """The partition costs nothing where nothing is at stake: an anonymous
+        list is the same for everyone, so one row serves every profile."""
+        calls = 0
+
+        async def once(*_a: Any) -> Any:
+            nonlocal calls
+            calls += 1
+            return _tools_result(["public_tool"])
+
+        with patch("trentina.gateway.backend._do_list_tools", side_effect=once):
+            await list_backend_tools("b", _backend(), self._profile("alice"))
+            await list_backend_tools("b", _backend(), self._profile("bob"))
+
+        assert calls == 1
+        assert list(_tool_list_cache) == [(URL, "")]
+
+    async def test_a_derived_ingress_shares_its_sources_partition(self) -> None:
+        """One tenant reached two ways, spending one credential — so the
+        ingress reads the profile's row rather than fetching its own."""
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        from trentina.gateway.profile import FederationConfig, FederationPeer
+
+        pem = (
+            Ed25519PrivateKey.generate()
+            .public_key()
+            .public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            .decode()
+        )
+        source = self._profile("alice")
+        # A derivation authenticates through `federation.peers`, never `auth`,
+        # so that is what makes this shaped like a real one.
+        derived = Profile(
+            name="alice-federation",
+            federation_of="alice",
+            federation=FederationConfig(peers={"peer": FederationPeer(public_key=pem)}),
+        )
+        calls = 0
+
+        async def once(*_a: Any) -> Any:
+            nonlocal calls
+            calls += 1
+            return _tools_result(["alice_only_tool"])
+
+        backend = self._with_headers("alice-token")
+        with patch("trentina.gateway.backend._do_list_tools", side_effect=once):
+            await list_backend_tools("b", backend, source)
+            await list_backend_tools("b", backend, derived)
+
+        assert calls == 1
+        assert list(_tool_list_cache) == [(URL, "alice")]
+
+    async def test_an_agent_eviction_reaches_only_its_own_partition(self) -> None:
+        alice, bob = self._profile("alice"), self._profile("bob")
+        with patch(
+            "trentina.gateway.backend._do_list_tools",
+            side_effect=lambda *_a: _tools_result(["t"]),
+        ):
+            await list_backend_tools("b", self._with_headers("alice-token"), alice)
+            await list_backend_tools("b", self._with_headers("bob-token"), bob)
+
+        evict_backend_cache_url(URL, "alice")
+
+        assert (URL, "alice") not in _tool_list_cache
+        assert (URL, "bob") in _tool_list_cache
+
+    async def test_an_operator_eviction_reaches_every_partition(self) -> None:
+        """An operator flushing a backend means the backend may have changed,
+        which is true for every tenant holding it."""
+        alice, bob = self._profile("alice"), self._profile("bob")
+        with patch(
+            "trentina.gateway.backend._do_list_tools",
+            side_effect=lambda *_a: _tools_result(["t"]),
+        ):
+            await list_backend_tools("b", self._with_headers("alice-token"), alice)
+            await list_backend_tools("b", self._with_headers("bob-token"), bob)
+
+        evict_backend_cache_url(URL)
+
+        assert not [key for key in _tool_list_cache if key[0] == URL]
+
+
+class TestAnAnonymousBackendStillOpensTheBreaker:
+    """The 401 carve-out is for a CONFIGURED credential only.
+
+    A stale static bearer is the operator's config problem, not a reachability
+    fact, so it records a breaker success. An anonymous backend refusing
+    everyone is a different thing: it must keep counting, or persistent
+    refusals would never open the circuit. Gatehouse caught the first version
+    of this branch firing on `grant is None` alone, which covered both.
+    """
+
+    @staticmethod
+    async def _refuse(_url: str, _headers: Any, cap: Any = None) -> Any:
+        # How the transport reports a 401 it read nothing from: the cap flags it
+        # and the SDK raises. `_do_list_tools` passes the cap POSITIONALLY —
+        # taking it as a keyword here left it None, so the flag was never set
+        # and the test failed for the wrong reason.
+        if cap is not None:
+            cap.unauthorized = True
+        raise RuntimeError("Server returned an error response")
+
+    async def _three_calls(self, backend: Backend) -> list[Exception]:
+        """Three refused lists, returning what each raised."""
+        profile = Profile(name="ag", auth=AuthConfig(bearer_token_env="T"))
+        breaker.reset(URL)
+        raised: list[Exception] = []
+        with patch("trentina.gateway.backend._do_list_tools", side_effect=self._refuse):
+            for _ in range(3):
+                try:
+                    await list_backend_tools("b", backend, profile)
+                except BackendCallError as exc:
+                    raised.append(exc)
+        return raised
+
+    async def test_an_anonymous_401_counts_toward_the_breaker(self) -> None:
+        raised = await self._three_calls(_backend())
+
+        assert breaker.get_state(URL) is State.OPEN
+        # Not a rejection: the backend refused everyone, which is a fact about
+        # the backend rather than about one operator's token.
+        assert not any(isinstance(exc, BackendRejectedCallError) for exc in raised)
+
+    async def test_a_header_credential_401_does_not(self) -> None:
+        raised = await self._three_calls(
+            Backend(url=URL, headers={"Authorization": "Bearer stale"})
+        )
+
+        assert breaker.get_state(URL) is State.CLOSED
+        assert breaker._get(URL).consecutive_failures == 0
+        # And the caller is told what happened, as a rejection the audit
+        # records as `tool_error` rather than a backend being unreachable.
+        assert [type(exc) for exc in raised] == [BackendRejectedCallError] * 3

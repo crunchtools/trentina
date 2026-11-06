@@ -29,6 +29,7 @@ sections:
 | Section | Description |
 |---------|-------------|
 | `profiles` | One entry per consumer. See [Per-Agent Profiles](profiles.md). |
+| `proxies` | Every perimeter route instance: `http`, `git`, `llm`, `matrix`, `connect`, `forward` or a `dist:` route plugin. A profile's own `proxies:` holds its grants. See [Proxies](proxy-plugins.md). The four rows below are the older spelling, which loads with a deprecation warning until the next major. |
 | `llm_providers` | The providers the [LLM proxy](llm-proxying.md) may reach. |
 | `matrix` | The [Matrix reverse proxy](network-isolation.md). |
 | `git_remotes` | The forges the [git transport](git-transport.md) may reach; a profile's `git` block names them. |
@@ -54,6 +55,7 @@ these variables control the process itself. Profile tokens
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TRENTINA_LOG_LEVEL` | `INFO` | Application log level, sent to stderr. Any standard Python level name. No level prints a secret: a configured key appears as `[REDACTED:<VARIABLE>]`, and credential-shaped text as `[REDACTED]`. |
+| `TRENTINA_LOG_FORMAT` | `text` | `json` additionally writes one compact JSON object per gateway call to stderr (profile, backend, resolved tool, outcome, duration, byte counts, session and call fingerprints, detections digest), for a structured-log collector to pick up. The record carries only this server-controlled metadata — never a caller-chosen string, so no URL, argument or error text. |
 | `TRENTINA_GATEWAY_ENABLED` | unset (disabled) | Turns on the MCP gateway (profiles, auth, allowlists, audit). See [MCP Gateway](gateway.md). |
 | `TRENTINA_PROFILES_PATH` | `/etc/trentina/profiles.yaml` | Path to the gateway's profile YAML file. See [Per-Agent Profiles](profiles.md). |
 | `TRENTINA_LEGACY_MCP` | unset (disabled) | Restores the pre-gateway unguarded `/mcp` endpoint. **Bypasses auth, allowlists and audit** — migration aid only. See [MCP Gateway](gateway.md). |
@@ -64,7 +66,7 @@ these variables control the process itself. Profile tokens
 | `QUARANTINE_MODEL` | `gemini-3.5-flash-lite` | Model used for quarantine agent (L3) extraction/detection calls. See [Supported judges](#supported-judges). |
 | `QUARANTINE_REASONING_EFFORT` | unset | `minimal`, `low`, `medium` or `high`: how long a reasoning judge thinks, sent as OpenRouter's `reasoning.effort`. Unset leaves the model's default. Set `minimal` for Gemini 3.8 Flash, which otherwise takes 6 to 17 s a call. Changing it re-judges cached verdicts. |
 | `TRENTINA_L3_PROMPT_PACK` | unset | Path to an L3 prompt pack: the judge's three system prompts and Layer 2 caveat for one exact (provider, model), for every profile that does not set `defense.l3_prompt_pack`. `generic` turns shipped packs off. See [L3 prompt tuning](l3-prompt-tuning.md). |
-| `QUARANTINE_SEARCH_MODEL` | `google/gemini-3.5-flash-lite` | L0 web search model, an OpenRouter id. Search runs through OpenRouter's `web` plugin; standalone with no OpenRouter key it falls back to Gemini grounding. |
+| `QUARANTINE_SEARCH_MODEL` | `google/gemini-3.5-flash-lite` | L0 web search model, an OpenRouter id. Search runs through OpenRouter's `web` plugin on every path; the standalone-only Gemini grounding fallback was removed in 3.0.0 (#579), so `search` needs an OpenRouter key standalone too. |
 | `TRENTINA_REQUIRE_L2` | `true` | `false` lets `block`/`redact` deliver with a warning when the L2 model is absent, instead of refusing. Never excuses a partial scan. See [Defense Pipeline](defense-pipeline.md). |
 | `TRENTINA_REQUIRE_L3` | `true` | The same for an absent L3 provider. Replaces `QUARANTINE_FALLBACK` (removed in 0.31.0; setting it now fails startup). |
 | `TRENTINA_MODE` | `block` | Standalone only: the mode an omitted `trentina_mode` resolves to. `flag` or `block`. Under the gateway the profile's `defense.enforcement` decides. |
@@ -91,6 +93,8 @@ these variables control the process itself. Profile tokens
 | `TRENTINA_MAX_REGISTRATION_BYTES` | `8192` | Largest `POST /register` body accepted, rejected before it is parsed. `0` or negative disables the cap. |
 | `TRENTINA_MAX_REQUEST_BYTES` | `1048576` | Largest request body accepted on an MCP route (`/gateway/<profile>/mcp`) and the alert ingress. Over it the request gets 413 and the rest is never read, chunked or not. Floored at 1024. |
 | `TRENTINA_BACKEND_TOKEN_KEY_FILE` | unset | A file holding the key that encrypts backend OAuth grants (`auth: {type: oauth}`, see [profiles](profiles.md#backend-oauth)). At least 32 characters; `openssl rand -base64 48`. Unset: those backends report "needs auth". Rotating it drops every grant. |
+| `TRENTINA_APPROVAL_PASSWORD_HASH` | unset | A scrypt verifier for the password that approves a staged change (see [approvals](approvals.md)). The verifier, never the password: `scripts/approval_password.py` prints one. Unset, a person sets a passkey or password in a browser instead, which an operator asks for with `approval_enrol`; set here, it wins over a browser-set password and cannot be changed from the page, though passkeys can still be added beside it. With no passkey and no password, the operator profile and federation trust stay unwritable. |
+| `TRENTINA_APPROVAL_PASSWORD_HASH_FILE` | unset | A file holding `TRENTINA_APPROVAL_PASSWORD_HASH`; wins when both are set, and the better form — put it in the read-only config mount. |
 | `TRENTINA_OAUTH_JWT_SIGNING_KEY_FILE` | unset | A file holding `TRENTINA_OAUTH_JWT_SIGNING_KEY`; wins when both are set. The preferred form: an env var stays readable in `/proc/<pid>/environ` even after startup removes it from `os.environ`. `TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET_FILE` works the same way. |
 | `TRENTINA_OAUTH_BASE_URL` | `https://mcp.crunchtools.com` | Public origin OAuth clients reach; the issuer and redirect URLs are built from it, and so are the backend OAuth pages (`/oauth/backend/*`). **Set it** for any deployment but Crunchtools'. See [Authentication](authentication.md). |
 | `TRENTINA_OAUTH_GOOGLE_CLIENT_ID` | unset | Google OAuth client Trentina proxies login to. Required when any profile uses the OAuth proxy; the secret is `TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET[_FILE]`. |

@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from trentina.gateway.ingress_defense import _collect_response_texts
+from trentina.gateway.collect import _collect_response_texts
 from trentina.unpack import child, ocr, ocr_worker, scan
 from trentina.unpack.ocr import ImageText, read_images
 from trentina.unpack.scan import MAX_TOKEN, SCANNED_PAGE, read_blobs, unpack

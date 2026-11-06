@@ -1,0 +1,94 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "cache-control",
+       "no-cache"
+      ],
+      [
+       "content-type",
+       "application/x-git-receive-pack-result"
+      ]
+     ],
+     "status": 200,
+     "type": "start"
+    },
+    {
+     "body": "000eunpack ok\n001fok refs/heads/agent1/topic\n0000",
+     "more": true,
+     "type": "body"
+    },
+    {
+     "body": "",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "git:forge",
+   "bytes_arrived": 49,
+   "bytes_delivered": 194,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "acme/widgets refs/heads/agent1/topic",
+   "destination_kind": "git",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "ok",
+   "profile": "agent1",
+   "session": null,
+   "success": 1,
+   "tool": "push"
+  }
+ ],
+ "open_slots": {},
+ "upstream": [
+  {
+   "body": "008a0000000000000000000000000000000000000000 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/agent1/topic\u0000report-status side-band-64k\n0000PACK\u0000\u0000\u0000\u0002\u0000\u0000\u0000\u0000ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ",
+   "headers": [
+    [
+     "accept",
+     "application/x-git-receive-pack-result"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "authorization",
+     "Basic eC1hY2Nlc3MtdG9rZW46Z29sZGVuLWFnZW50MS1mb3JnZS10b2tlbg=="
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "content-type",
+     "application/x-git-receive-pack-request"
+    ],
+    [
+     "host",
+     "git.example.com"
+    ],
+    [
+     "user-agent",
+     "git/trentina"
+    ]
+   ],
+   "method": "POST",
+   "url": "https://git.example.com/acme/widgets.git/git-receive-pack"
+  }
+ ]
+}

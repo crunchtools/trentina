@@ -1,0 +1,244 @@
+"""Editing ``profiles.yaml`` without destroying it (#633).
+
+The loader reads config with ``yaml.safe_load``, which discards comments,
+key order detail and formatting. That is the right trade for reading and the
+wrong one for writing: a round trip through it would hand back a file with
+every comment its author wrote stripped out. ``profiles.yaml`` is a file a
+human maintains, reviews in a diff and keeps in git, so a write has to leave
+everything it did not touch exactly as it found it. That is what ruamel's
+round-trip mode is for.
+
+This module edits TEXT and nothing else. It does not validate, does not touch
+the filesystem, and knows nothing about what a profile means. Validation stays
+in ``loader.load_profiles``, which is the one schema authority: the caller
+renders a candidate here and then loads it to find out whether it is allowed.
+
+A path is a sequence of KEY NAMES. There is no list indexing on purpose — a
+list is replaced whole. Indexing would let a write depend on the current order
+of a sequence the operator cannot see in the same call, and ``tools_allow: [a,
+b]`` is one decision, not two.
+"""
+
+from __future__ import annotations
+
+import difflib
+import io
+import re
+from typing import Any
+
+import yaml
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.error import YAMLError
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+
+#: A config key: what appears on the left of a colon in profiles.yaml, which is
+#: a profile name, a backend name or a field name. Not a value, and never a
+#: path — a segment containing a dot or a slash is refused rather than split.
+KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+#: Wide enough that ruamel never re-folds a line it did not have to touch.
+#: The default of 80 would rewrap long descriptions and URLs, which shows up
+#: as a diff in sections nobody edited.
+_WIDTH = 4096
+
+#: Two spaces per level, as every profiles.yaml in the repo is written.
+_INDENT = 2
+
+
+class ConfigPatchError(ValueError):
+    """A patch could not be applied. The message names the reason and the key
+    that failed, never a value."""
+
+
+#: A block sequence item, and the mapping key a sequence hangs under.
+_ITEM_RE = re.compile(r"^( *)- ")
+_KEY_RE = re.compile(r'^( *)["A-Za-z_].*:')
+
+
+def _sequence_offset(text: str) -> int:
+    """How far a block sequence's dash is indented past its parent key, in
+    ``text``, by majority.
+
+    ruamel emits one sequence style for a whole document, and the two in the
+    wild are ``offset=0`` (the dash under its key) and ``offset=2`` (the dash
+    indented past it). Guessing wrong reindents every list in the file, which
+    turns a one-key edit into a diff nobody can review — and that is not a
+    theoretical worry: it reindented 858 sequences in the first real config
+    this was pointed at. So the style is read off the file rather than assumed.
+
+    One forward pass, carrying the last key seen. A sequence item's parent is
+    always the nearest key above it, so nothing needs re-reading — and a
+    backward scan per item would be quadratic in the length of a list, on a
+    file that has lists of several hundred tool names.
+    """
+    votes: dict[int, int] = {}
+    key_indent: int | None = None
+    for line in text.splitlines():
+        # A sequence item starts with a dash, so it never matches the key
+        # pattern, and the two arms cannot both fire on one line.
+        key = _KEY_RE.match(line)
+        if key is not None:
+            key_indent = len(key.group(1))
+            continue
+        item = _ITEM_RE.match(line)
+        if item is not None and key_indent is not None:
+            offset = len(item.group(1)) - key_indent
+            if offset in (0, _INDENT):
+                votes[offset] = votes.get(offset, 0) + 1
+    if not votes:
+        return _INDENT
+    return max(votes, key=lambda offset: votes[offset])
+
+
+def _yaml(like: str) -> YAML:
+    """A round-trip parser that writes in the style ``like`` is written in."""
+    yaml = YAML(typ="rt")
+    yaml.preserve_quotes = True
+    yaml.width = _WIDTH
+    offset = _sequence_offset(like)
+    yaml.indent(mapping=_INDENT, sequence=_INDENT + offset, offset=offset)
+    return yaml
+
+
+def load(text: str) -> Any:
+    """Parse ``text``, keeping comments and formatting."""
+    try:
+        return _yaml(text).load(text) if text.strip() else CommentedMap()
+    except YAMLError:
+        # The parser's message quotes the offending line, which is file content
+        # and not ours to echo (#262), so the cause is dropped with it.
+        raise ConfigPatchError("the file is not valid YAML") from None
+
+
+def dump(document: Any, *, like: str) -> str:
+    """Render ``document`` back to text, written the way ``like`` is written."""
+    stream = io.StringIO()
+    _yaml(like).dump(document, stream)
+    return stream.getvalue()
+
+
+def round_trips(text: str) -> bool:
+    """Whether reading ``text`` and writing it back gives the same bytes.
+
+    The precondition for editing a file at all. ruamel re-emits the WHOLE
+    document, so on a file it cannot reproduce exactly, a one-key write also
+    reformats everything else — silently, in a file a person reviews in a diff
+    and keeps in git. A file that fails this is refused rather than rewritten,
+    which is the same fail-closed choice the rest of the gateway makes: the
+    alternative is an unreviewable diff and, in the worst case, a setting lost
+    in the noise. ``normalized`` is how a file that fails it is brought in.
+    """
+    return dump(load(text), like=text) == text
+
+
+def normalized(text: str) -> tuple[str, dict[str, int]]:
+    """``text`` rewritten so that it reproduces itself, and what that changed.
+
+    The one deliberate reformat. Every other write refuses a file that does not
+    round-trip, which left the feature inert on exactly the files that most
+    needed it: a production config carrying anchors ruamel renumbers, or a few
+    sequences indented against the file's own majority. Rewriting once makes
+    every later write a one-key diff.
+
+    It is not a safe operation on its own — it changes bytes the author wrote,
+    which is the thing the round-trip precondition exists to prevent. What
+    makes it safe is the gate the caller puts around it
+    (``config_guard.equivalent``, then ``round_trips`` on the result), so the
+    counts come back with the text: a reviewer reads the file's own git diff,
+    and a number to check it against.
+    """
+    candidate = dump(load(text), like=text)
+    changes = list(
+        difflib.unified_diff(text.splitlines(), candidate.splitlines(), n=0, lineterm="")
+    )
+    return candidate, {
+        "lines": sum(1 for line in changes if line[:1] in "+-" and line[:3] not in ("+++", "---")),
+        "hunks": sum(1 for line in changes if line.startswith("@@")),
+    }
+
+
+def checked_path(path: tuple[str, ...]) -> tuple[str, ...]:
+    if not path:
+        raise ConfigPatchError("a path must name at least one key")
+    for key in path:
+        if not KEY_RE.match(key):
+            raise ConfigPatchError(f"{key!r} is not a config key")
+    return path
+
+
+def _walk(document: Any, path: tuple[str, ...]) -> Any:
+    """The mapping holding the last key, creating intermediate ones.
+
+    A path through something that is not a mapping is refused rather than
+    overwritten: replacing a scalar with a map because a path ran through it
+    would silently discard whatever was there.
+    """
+    node = document
+    for key in path[:-1]:
+        if not isinstance(node, CommentedMap):
+            raise ConfigPatchError(f"{key!r} is not inside a mapping")
+        if key not in node:
+            node[key] = CommentedMap()
+        node = node[key]
+    if not isinstance(node, CommentedMap):
+        raise ConfigPatchError(f"{path[-1]!r} is not inside a mapping")
+    return node
+
+
+def get_at(text: str, path: tuple[str, ...]) -> Any:
+    """The value at ``path``, or raise ``ConfigPatchError`` if it is not there."""
+    node = load(text)
+    for key in checked_path(path):
+        if not isinstance(node, CommentedMap) or key not in node:
+            raise ConfigPatchError(f"{key!r} is not set")
+        node = node[key]
+    return node
+
+
+def _as_written(value: Any) -> Any:
+    """``value``, with any string the READER would not give back quoted.
+
+    ruamel writes YAML 1.2, where ``yes``, ``no``, ``on``, ``off`` and ``1:30``
+    are strings. The loader is pyyaml, which reads YAML 1.1, where the first
+    four are booleans and the last is 90. Written bare, a string set here comes
+    back as something else — a tool named ``no``, a token spelled ``on``, a
+    value that happens to look like a clock. Quoting what the reader would
+    reinterpret is what makes a write mean the same thing to both parsers.
+
+    Only strings are touched, and only when they would change: a value that
+    round-trips bare stays bare, so nothing is noisily quoted.
+    """
+    if isinstance(value, str):
+        try:
+            reread = yaml.safe_load(value)
+        except yaml.YAMLError:
+            return DoubleQuotedScalarString(value)
+        return value if reread == value else DoubleQuotedScalarString(value)
+    if isinstance(value, dict):
+        # Keys as well as values: a backend or peer named `no` or `on` is a
+        # valid config key (KEY_RE allows it) and would otherwise be written
+        # bare and read back as a boolean key, which is not the one asked for.
+        return {_as_written(key): _as_written(nested) for key, nested in value.items()}
+    if isinstance(value, list):
+        return [_as_written(item) for item in value]
+    return value
+
+
+def set_at(text: str, path: tuple[str, ...], value: Any) -> str:
+    """``text`` with ``path`` set to ``value``, everything else untouched."""
+    document = load(text)
+    holder = _walk(document, checked_path(path))
+    holder[path[-1]] = _as_written(value)
+    return dump(document, like=text)
+
+
+def unset_at(text: str, path: tuple[str, ...]) -> str:
+    """``text`` with ``path`` removed. Removing what is not there is an error,
+    so a typo in a path cannot read as a successful no-op."""
+    document = load(text)
+    holder = _walk(document, checked_path(path))
+    if path[-1] not in holder:
+        raise ConfigPatchError(f"{path[-1]!r} is not set")
+    del holder[path[-1]]
+    return dump(document, like=text)

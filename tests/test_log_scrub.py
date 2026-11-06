@@ -28,7 +28,7 @@ from pydantic import SecretStr
 
 from trentina import config as config_mod
 from trentina import logsafe
-from trentina.gateway import ingress_defense, loader
+from trentina.gateway import loader, modes_policy
 from trentina.gateway.profile import AuthConfig, Backend, Profile
 
 #: A secret with no shape of its own, so only ``hold`` can know it.
@@ -426,6 +426,7 @@ _ATTACKS = [
     ("query-key", f"POST https://h.example/v1/m:generate?key={_TAIL}", _TAIL),
     ("query-token", f"GET /sync?since=s1&access_token={_TAIL}&x=1", _TAIL),
     ("query-api-key", f"GET /v1?API_KEY={_TAIL}", _TAIL),
+    ("trentina-profile-token", f"gateway: profile authenticated trt_{_TAIL}", f"trt_{_TAIL}"),
     ("bearer", f"headers: Authorization: Bearer {_TAIL}", _TAIL),
     ("basic", f"Authorization: Basic {_TAIL}==", _TAIL),
     ("userinfo", "connecting to https://svc:s3cretpass@db.example:5432/x", "s3cretpass"),
@@ -453,6 +454,7 @@ _BENIGN = [
     "perimeter: judgement failed for key=0a1b2c3d4e5f: TimeoutError at agent.py:10 in f",
     "GET /search?monkey=banana&turkey=1",
     "Bearer token authentication for gateway endpoints",
+    "token_store: minted a token under the name trt-like-but-not-one",
     'WWW-Authenticate: Bearer resource_metadata="https://mcp.example.com/x"',
     "matrix_proxy: registered /matrix/{path} → http://conduit:6167 for 2 profile(s): a, b",
     "bridge[josui]: joined @agent:matrix.example.org at https://matrix.example.org/_matrix",
@@ -487,6 +489,8 @@ def test_a_held_name_survives_the_query_pattern() -> None:
 
 _HOSTILE = [
     "?key=",
+    "trt_",
+    "trt_" + "a" * 19,
     "&token=a",
     "Bearer ",
     "Bearer" + " " * 64,
@@ -719,10 +723,10 @@ def test_a_bad_override_does_not_print_its_value(monkeypatch: pytest.MonkeyPatch
         backends={"b": Backend(url="http://b:8000/mcp", tools_allow=["*"])},
     )
     profile.auth.bearer_token = SecretStr("testp-token")
-    monkeypatch.setenv(ingress_defense._OVERRIDE_ENV, _PASTED)
-    out = _printed(ingress_defense.logger.name, lambda _: ingress_defense.effective_mode(profile))
+    monkeypatch.setenv(modes_policy._OVERRIDE_ENV, _PASTED)
+    out = _printed(modes_policy.logger.name, lambda _: modes_policy.effective_mode(profile))
     assert _PASTED not in out
-    assert ingress_defense._OVERRIDE_ENV in out
+    assert modes_policy._OVERRIDE_ENV in out
 
 
 @pytest.mark.parametrize(

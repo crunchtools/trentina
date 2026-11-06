@@ -32,8 +32,16 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from trentina import perimeter_db
 from trentina.gateway import compress
+from trentina.gateway.aggregate import (
+    _profile_tools_cache,
+    invalidate_profile_cache,
+    invalidate_profile_cache_for_backend,
+)
 from trentina.gateway.compress import set_profiles
 from trentina.gateway.context import profile_context
 from trentina.gateway.filter import filter_tools
@@ -44,20 +52,20 @@ from trentina.gateway.loader import (
     replace_active_config,
     reset_active_config,
 )
-from trentina.gateway.router import (
-    _profile_tools_cache,
-    invalidate_profile_cache,
-    invalidate_profile_cache_for_backend,
-    route_jsonrpc,
-)
 from trentina.gateway.sessions import session_registry
+
+# Bound here at import time on purpose: conftest's autouse `_tools_not_pinned`
+# replaces `tool_pins.check_tools` with a pass-through, so a name resolved
+# inside a test body would be the stub. This is the same bypass
+# test_tool_pins.py uses.
+from trentina.gateway.tool_pins import backend_id, check_tools
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.tools.reload import AGENT_SCOPE_NOTE, reload_profiles
+from trentina.transports.mcp import route_jsonrpc
 
 pytestmark = pytest.mark.asyncio
 
-_ROUTER = "trentina.gateway.router"
-_INGRESS = "trentina.gateway.ingress_defense"
+_AGGREGATE = "trentina.gateway.aggregate"
 
 _BENIGN = ClassifierResult(label="BENIGN", score=0.01, latency_ms=1.0)
 
@@ -66,7 +74,7 @@ profiles:
   alpha:
     role: operator
     defense:
-      provider: ollama  # the operator runs the gateway's own calls; keyless
+      provider: ollama  # keyless, so the operator needs no llm_keys
     auth:
       bearer_token_env: TEST_ALPHA_TOKEN
     backends:
@@ -143,7 +151,7 @@ SWAPPED_BACKEND_YAML = DENIED_YAML.replace(
 BETA_GUARDED_YAML = BASE_YAML.replace(
     '      wiki:\n        url: http://wiki:1/mcp\n        tools_allow: ["*"]\n',
     '      wiki:\n        url: http://wiki:1/mcp\n        tools_allow: ["*"]\n'
-    "        parameter_guards:\n"
+    "        literal_request_guards:\n"
     "          wiki_delete_page_tool:\n"
     "            title:\n"
     '              deny: ["Runbook*"]\n',
@@ -297,12 +305,12 @@ class TestAppliedReload:
     async def test_diff_names_guard_parameters_without_echoing_patterns(
         self, profiles_path: Path
     ) -> None:
-        """The motivating edit: a destructive tool gets a parameter guard."""
+        """The motivating edit: a destructive tool gets a request guard."""
         profiles_path.write_text(
             BASE_YAML.replace(
                 "        tools_deny: []\n",
                 "        tools_deny: []\n"
-                "        parameter_guards:\n"
+                "        literal_request_guards:\n"
                 "          jira_delete_issue:\n"
                 "            key:\n"
                 '              deny: ["PROD-*"]\n',
@@ -311,7 +319,7 @@ class TestAppliedReload:
         )
         result = await _reload_as("alpha")
 
-        guards = result["changes"]["alpha"]["backends_changed"]["jira"]["parameter_guards"]
+        guards = result["changes"]["alpha"]["backends_changed"]["jira"]["literal_request_guards"]
         assert guards == {"jira_delete_issue": {"parameters_added": ["key"]}}
         assert "PROD-" not in str(result)
 
@@ -323,7 +331,7 @@ class TestAppliedReload:
             BASE_YAML.replace(
                 "        tools_deny: []\n",
                 "        tools_deny: []\n"
-                "        response_guards:\n"
+                "        literal_response_guards:\n"
                 "          jira_get_issue:\n"
                 "            content:\n"
                 '              deny: ["*NIGHTJAR*"]\n',
@@ -332,7 +340,7 @@ class TestAppliedReload:
         )
         result = await _reload_as("alpha")
 
-        guards = result["changes"]["alpha"]["backends_changed"]["jira"]["response_guards"]
+        guards = result["changes"]["alpha"]["backends_changed"]["jira"]["literal_response_guards"]
         assert guards == {"jira_get_issue": {"fields_added": ["content"]}}
         assert "NIGHTJAR" not in str(result)
 
@@ -387,7 +395,7 @@ class TestAppliedReload:
 
 
 class TestOperatorScope:
-    """The operator seat reloads the file and is told everything that moved."""
+    """The operator profile reloads the file and is told everything that moved."""
 
     async def test_every_profile_that_moved_is_reported(self, profiles_path: Path) -> None:
         profiles_path.write_text(SWAPPED_BACKEND_YAML, encoding="utf-8")
@@ -966,7 +974,7 @@ class TestCacheBehaviour:
         """Only the edited profile's aggregate is thrown away."""
         with (
             patch(
-                f"{_ROUTER}.list_backend_tools",
+                f"{_AGGREGATE}.list_backend_tools",
                 AsyncMock(return_value=_tools_result(["jira_get_issue"])),
             ),
             patch(
@@ -992,10 +1000,10 @@ class TestCacheBehaviour:
         key is (kind, thresholds, text) — none of which a tools_deny edit
         touches — so the rebuilt aggregate is a pure cache read.
         """
-        from trentina.gateway import ingress_defense
+        from trentina import orchestrator
 
         judged: list[str] = []
-        real_defend = ingress_defense.defend
+        real_defend = orchestrator.defend
 
         async def counting_defend(*args: Any, **kwargs: Any) -> Any:
             judged.append(str(kwargs.get("source")))
@@ -1003,13 +1011,13 @@ class TestCacheBehaviour:
 
         # A working L3 matters here, not as scenery: a verdict reached while
         # L3 was unavailable is deliberately NOT cached (see
-        # ingress_defense._cache_put — an outage's "clean" must not outlive
+        # verdict_cache._cache_put — an outage's "clean" must not outlive
         # the outage), and this test is about the cache holding across a
         # reload. Without a judge there is nothing to cache and nothing to
         # measure.
         with (
             patch(
-                f"{_ROUTER}.list_backend_tools",
+                f"{_AGGREGATE}.list_backend_tools",
                 AsyncMock(return_value=_tools_result(["jira_get_issue", "jira_delete_issue"])),
             ),
             patch(
@@ -1021,9 +1029,8 @@ class TestCacheBehaviour:
                 "trentina.defense.quarantine_detect",
                 AsyncMock(return_value={"injection_detected": False, "risk_level": "low"}),
             ),
-            patch(f"{_INGRESS}.defend", counting_defend),
+            patch("trentina.orchestrator.defend", counting_defend),
         ):
-            _cfg.return_value.has_api_key = True
             _cfg.return_value.admission_tokens = 32_768
             assert await _list_tools("alpha") == ["get_issue", "delete_issue"]
             after_warmup = len(judged)
@@ -1077,7 +1084,7 @@ class TestCacheBehaviour:
             # The eviction cascade only knows a profile's backend URLs once an
             # aggregate has been cached, so warm one first — with a fast list.
             with patch(
-                f"{_ROUTER}.list_backend_tools",
+                f"{_AGGREGATE}.list_backend_tools",
                 AsyncMock(return_value=_tools_result(["jira_get_issue"])),
             ):
                 await _list_tools("alpha")
@@ -1085,7 +1092,7 @@ class TestCacheBehaviour:
             # What cache_flush leaves behind: the aggregate gone, the
             # backend-URL map still mapping alpha to jira.
             _profile_tools_cache.pop("alpha")
-            with patch(f"{_ROUTER}.list_backend_tools", slow_list):
+            with patch(f"{_AGGREGATE}.list_backend_tools", slow_list):
                 build = asyncio.create_task(_list_tools("alpha"))
                 await asyncio.sleep(0)
                 invalidate_profile_cache_for_backend("http://jira:1/mcp")
@@ -1110,7 +1117,7 @@ class TestCacheBehaviour:
             return _tools_result(["jira_delete_issue"])
 
         with (
-            patch(f"{_ROUTER}.list_backend_tools", slow_list),
+            patch(f"{_AGGREGATE}.list_backend_tools", slow_list),
             patch(
                 "trentina.defense.classify_async",
                 AsyncMock(return_value=_BENIGN),
@@ -1125,45 +1132,106 @@ class TestCacheBehaviour:
         assert "alpha" not in _profile_tools_cache
 
 
-class TestServiceIdentityMoves:
-    """Every profile's descriptions are judged on the operator's model (#138)."""
+_OPERATOR_JUDGE = "      provider: ollama  # keyless, so the operator needs no llm_keys\n"
+_MOVED_OPERATOR_JUDGE = "      provider: ollama\n      model: another-model\n"
 
-    async def test_a_new_operator_model_invalidates_every_profile(
+# Indented for the YAML block scalar below, and joined rather than interpolated
+# because an f-string may not carry a backslash on 3.11, which CI still tests.
+_PEER_PEM_BLOCK = "\n".join(
+    f"            {line}"
+    for line in Ed25519PrivateKey.generate()
+    .public_key()
+    .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    .decode()
+    .strip()
+    .splitlines()
+)
+
+#: ``beta`` shares itself, so ``load_profiles`` derives ``beta-federation``.
+_FEDERATED_YAML = BASE_YAML.replace(
+    "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n",
+    "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n"
+    "    defense:\n"
+    "      provider: ollama\n"
+    "      model: first-model\n"
+    "    federation:\n"
+    "      peers:\n"
+    "        remote:\n"
+    "          public_key: |\n" + _PEER_PEM_BLOCK + "\n",
+)
+
+
+@pytest.fixture
+def federated_profiles_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """A running gateway whose ``beta`` is shared, so an ingress is derived."""
+    monkeypatch.setenv("TEST_ALPHA_TOKEN", "alpha-secret")
+    monkeypatch.setenv("TEST_BETA_TOKEN", "beta-secret")
+    path = tmp_path / "profiles.yaml"
+    path.write_text(_FEDERATED_YAML, encoding="utf-8")
+    config = load_profiles(path)
+    register_active_config(path, config, {})
+    set_profiles(config.profiles)
+    yield path
+    reset_active_config()
+    compress._profiles = None
+    session_registry.reset()
+
+
+class TestAJudgeMoveInvalidatesOnlyItsOwnProfile:
+    """A profile judges its own descriptions on its own judge (6.1.0).
+
+    Through 6.0.0 the operator judged for everyone, so ``reload_profiles``
+    watched the OPERATOR's judge and, when it moved, invalidated every
+    profile's aggregate and notified every session. That became
+    over-invalidation the moment judging went per profile: one profile's model
+    change re-judged every other profile's descriptions on their own keys. The
+    check is gone, and ``changed`` is what names a stale profile — these tests
+    are the reason it is sufficient.
+    """
+
+    async def test_a_new_operator_model_leaves_the_other_profiles_cached(
         self, profiles_path: Path
     ) -> None:
+        # Both warm: `caches_invalidated` names only a profile that HAD one.
+        _profile_tools_cache["alpha"] = []
         _profile_tools_cache["beta"] = []
         profiles_path.write_text(
-            BASE_YAML.replace(
-                "      provider: ollama  # the operator runs the gateway's own calls; keyless\n",
-                "      provider: ollama\n      model: another-model\n",
-            ),
-            encoding="utf-8",
+            BASE_YAML.replace(_OPERATOR_JUDGE, _MOVED_OPERATOR_JUDGE), encoding="utf-8"
         )
 
         result = await _reload_as("alpha")
 
-        assert result["service_identity_moved"] is True
-        # beta's own section did not change; its verdicts' judge did.
-        assert "beta" in result["caches_invalidated"]
-        assert "beta" not in _profile_tools_cache
+        # The operator's own descriptions ARE re-judged: its defense changed.
+        assert "alpha" in result["caches_invalidated"]
+        assert "alpha" not in _profile_tools_cache
+        # beta judges on its own key and nothing of beta's moved.
+        assert "beta" not in result["caches_invalidated"]
+        assert "beta" in _profile_tools_cache
 
-    async def test_a_new_operator_model_notifies_every_profiles_sessions(
+    async def test_a_new_operator_model_notifies_only_the_operators_sessions(
         self, profiles_path: Path
     ) -> None:
-        """Withheld tools may come back, or go, under the new judge."""
-        sid = session_registry.create_session("beta")
-        queue = session_registry.subscribe(sid)
+        """beta's served list cannot change, so its client is not woken."""
+        beta = session_registry.subscribe(session_registry.create_session("beta"))
+        alpha = session_registry.subscribe(session_registry.create_session("alpha"))
         profiles_path.write_text(
-            BASE_YAML.replace(
-                "      provider: ollama  # the operator runs the gateway's own calls; keyless\n",
-                "      provider: ollama\n      model: another-model\n",
-            ),
-            encoding="utf-8",
+            BASE_YAML.replace(_OPERATOR_JUDGE, _MOVED_OPERATOR_JUDGE), encoding="utf-8"
         )
 
         await _reload_as("alpha")
 
-        assert queue.get_nowait()["method"] == "notifications/tools/list_changed"
+        assert alpha.get_nowait()["method"] == "notifications/tools/list_changed"
+        assert beta.empty()
+
+    async def test_the_dropped_result_key_is_gone(self, profiles_path: Path) -> None:
+        """``service_identity_moved`` reported a mechanism 6.1.0 removed."""
+        profiles_path.write_text(
+            BASE_YAML.replace(_OPERATOR_JUDGE, _MOVED_OPERATOR_JUDGE), encoding="utf-8"
+        )
+
+        result = await _reload_as("alpha")
+
+        assert "service_identity_moved" not in result
 
     async def test_an_unrelated_edit_leaves_the_others_cached(self, profiles_path: Path) -> None:
         _profile_tools_cache["beta"] = []
@@ -1174,14 +1242,38 @@ class TestServiceIdentityMoves:
 
         result = await _reload_as("alpha")
 
-        assert result["service_identity_moved"] is False
+        assert "beta" not in result["caches_invalidated"]
         assert "beta" in _profile_tools_cache
+
+    async def test_a_derived_ingress_follows_its_sources_judge(
+        self, federated_profiles_path: Path
+    ) -> None:
+        """The one case the deleted operator check could have been covering.
+
+        A derived federation ingress has no section in the file, so "its own
+        ``defense`` changed" is only true of it because ``defense`` is CARRIED
+        and the registry diffed by the reload is the one ``derive_all`` built.
+        Asserted rather than argued: if a later release made ``defense``
+        CONSTRUCTED, the ingress would judge on something the diff cannot see
+        and would serve descriptions from the old judge indefinitely.
+        """
+        _profile_tools_cache["beta"] = []
+        _profile_tools_cache["beta-federation"] = []
+        federated_profiles_path.write_text(
+            _FEDERATED_YAML.replace("      model: first-model\n", "      model: second-model\n"),
+            encoding="utf-8",
+        )
+
+        result = await _reload_as("alpha")
+
+        assert "beta-federation" in result["caches_invalidated"]
+        assert "beta-federation" not in _profile_tools_cache
 
 
 BETA_GUARDED_EXECUTION_YAML = BASE_YAML.replace(
     "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n",
     "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n"
-    "    guarded_execution:\n"
+    "    semantic_request_guards:\n"
     "      policy: Edits stay on our own pages.\n"
     "      tools:\n"
     "        wiki: [edit_page]\n",
@@ -1198,10 +1290,10 @@ class TestGuardedExecutionIsOperatorOnly:
         profiles_path.write_text(BASE_YAML, encoding="utf-8")
         result = await _reload_as("beta")
 
-        guarded = _registry()["beta"].guarded_execution
+        guarded = _registry()["beta"].semantic_request_guards
         assert guarded is not None
         assert guarded.guards("wiki", "edit_page")
-        assert "guarded_execution" in result["not_applied"]["operator_only"]
+        assert "semantic_request_guards" in result["not_applied"]["operator_only"]
 
     async def test_agent_cannot_rewrite_the_policy(self, profiles_path: Path) -> None:
         profiles_path.write_text(BETA_GUARDED_EXECUTION_YAML, encoding="utf-8")
@@ -1215,7 +1307,7 @@ class TestGuardedExecutionIsOperatorOnly:
         )
         await _reload_as("beta")
 
-        guarded = _registry()["beta"].guarded_execution
+        guarded = _registry()["beta"].semantic_request_guards
         assert guarded is not None
         assert guarded.policy == "Edits stay on our own pages."
 
@@ -1224,4 +1316,77 @@ class TestGuardedExecutionIsOperatorOnly:
         result = await _reload_as("alpha")
 
         assert result["reloaded"] is True
-        assert _registry()["beta"].guarded_execution is not None
+        assert _registry()["beta"].semantic_request_guards is not None
+
+
+BETA_RESPONSE_GUARD_YAML = BASE_YAML.replace(
+    "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n",
+    "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n"
+    "    semantic_response_guards:\n"
+    "      policy: Nothing about other customers reaches this agent.\n"
+    "      tools:\n"
+    "        wiki: [edit_page]\n",
+)
+
+
+class TestResponseGuardIsOperatorOnly:
+    """#456: which responses are judged, and by what rule, is not the agent's to reload."""
+
+    async def test_agent_cannot_drop_its_own_response_guard(self, profiles_path: Path) -> None:
+        profiles_path.write_text(BETA_RESPONSE_GUARD_YAML, encoding="utf-8")
+        await _reload_as("alpha")
+
+        profiles_path.write_text(BASE_YAML, encoding="utf-8")
+        result = await _reload_as("beta")
+
+        guarded = _registry()["beta"].semantic_response_guards
+        assert guarded is not None
+        assert guarded.guards("wiki", "edit_page")
+        assert "semantic_response_guards" in result["not_applied"]["operator_only"]
+
+    async def test_operator_reload_applies_it(self, profiles_path: Path) -> None:
+        profiles_path.write_text(BETA_RESPONSE_GUARD_YAML, encoding="utf-8")
+        result = await _reload_as("alpha")
+
+        assert result["reloaded"] is True
+        assert _registry()["beta"].semantic_response_guards is not None
+
+
+FED_URL = "https://peer.example/gateway/shared/mcp"
+
+FED_YAML = BASE_YAML.replace(
+    '      wiki:\n        url: http://wiki:1/mcp\n        tools_allow: ["*"]\n',
+    "      wiki:\n"
+    f"        url: {FED_URL}\n"
+    '        tools_allow: ["*"]\n'
+    "        federated:\n"
+    "          primary_key_env: TEST_BETA_TOKEN\n",
+)
+
+
+class TestAFederatedUrlEditKeepsItsPins:
+    """The reload is where the migration has to be wired, not only where the
+    helper is correct. A pin is keyed by a hash of the URL, so without this an
+    operator normalising a trailing slash presents the peer as new — and a
+    federated first connect approves its whole offered set as a unit."""
+
+    async def test_the_reload_carries_the_pins_and_names_what_moved(
+        self, profiles_path: Path
+    ) -> None:
+        profiles_path.write_text(FED_YAML, encoding="utf-8")
+        assert (await _reload_as("alpha"))["reloaded"] is True
+
+        # The peer's first list, approved as a unit at the URL as written.
+        check_tools(FED_URL, "wiki", _tools_result(["echo"]), federated=True)
+        assert perimeter_db.has_pins(backend_id(FED_URL))
+
+        moved_to = FED_URL + "/"
+        profiles_path.write_text(FED_YAML.replace(FED_URL, moved_to), encoding="utf-8")
+        result = await _reload_as("alpha")
+
+        assert result["federated_pins_migrated"] == ["beta.wiki"]
+        assert perimeter_db.has_pins(backend_id(moved_to))
+        assert not perimeter_db.has_pins(backend_id(FED_URL))
+
+    async def test_an_ordinary_reload_reports_nothing_moved(self, profiles_path: Path) -> None:
+        assert (await _reload_as("alpha"))["federated_pins_migrated"] == []

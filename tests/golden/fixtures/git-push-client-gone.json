@@ -1,0 +1,53 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "21"
+      ],
+      [
+       "content-type",
+       "text/plain; charset=utf-8"
+      ]
+     ],
+     "status": 500,
+     "type": "start"
+    },
+    {
+     "body": "Internal Server Error",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": "ClientDisconnect"
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "git:forge",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "acme/widgets",
+   "destination_kind": "git",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "cancelled",
+   "profile": "agent1",
+   "session": null,
+   "success": 0,
+   "tool": "push"
+  }
+ ],
+ "open_slots": {},
+ "upstream": []
+}

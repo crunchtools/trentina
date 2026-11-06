@@ -57,9 +57,9 @@ classification = "by_design"
 
 [[exceptions]]
 check = "single_use_helpers"
-path = "src/trentina/tools/judged.py"
+path = "src/trentina/gateway/scope.py"
 pattern = "_caller"
-justification = "Not single-use: called from check_blocklist (the blocklist read) and from judge_and_deliver (the detection row's profile attribution), verified by grep. The second call sits inside a dict literal passed to an awaited call, which the check appears not to count. Both sites must answer 'whose blocklist is this' the same way (#263), which is why it is one function."
+justification = "Not single-use: called from check_blocklist (the blocklist read, same module) and from internal_edge.prepare_judgement (the detection row's profile attribution), verified by grep. The second call sits inside a dict literal passed to an awaited call, which the check appears not to count. Both sites must answer 'whose blocklist is this' the same way (#263), which is why it is one function."
 classification = "gourmand_bug"
 
 [[exceptions]]
@@ -191,6 +191,24 @@ classification = "by_design"
 check = "copy_paste_detection"
 path = "src/trentina/gateway/profile.py"
 justification = "Four Pydantic field validators that each match a different value against a different pattern and raise a message naming the field that was wrong. The per-field message is what makes a bad profiles.yaml diagnosable; they share only the match-then-raise shape."
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/plugins/worker.py"
+justification = "plugins/worker.main and unpack/pdf_worker.main share the child-process worker idiom — setrlimit CPU and AS, read the request from stdin, do the work, json.dump the answer — because they are the same kind of thing: a hostile-input parser or plugin run in a credential-limited child. The shape is the idiom every worker in this gateway follows (ocr_worker too); collapsing them would couple plugin execution to PDF parsing."
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/plugins/registry.py"
+justification = "resolve_transform (resolve a plugin entry point) and tools/confine.open_confined (open a confined file descriptor) are unrelated — one touches importlib.metadata, the other os.open under O_NOFOLLOW. They share only the shape every fail-closed validator in this gateway has: do a step, raise a named ProfileConfigError/FileReadError on failure, return the proven value. That shape is the idiom, not a copy; collapsing them would couple plugin resolution to filesystem confinement."
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/context.py"
+justification = "get_current_profile, service.service_profile and transforms/policy.current_preprocess_policy are three unrelated scope-resolution questions — the bound profile, the gateway's service identity, the bound preprocess policy — that share only the contextvar/active-config read-or-synthesize shape every unbound fallback in this gateway has. The synthesis itself lives in ONE place (standalone.environment_operator); collapsing the three readers through one helper would couple three independent policies (one of which raises, one returns a declared operator, one returns a default dataclass). The shape is the idiom, not a copy."
 classification = "by_design"
 
 [[exceptions]]
@@ -711,9 +729,9 @@ classification = "gourmand_bug"
 
 [[exceptions]]
 check = "redundant_error_handling"
-path = "src/trentina/gateway/router.py"
+path = "src/trentina/gateway/audit.py"
 pattern = "_audit"
-justification = "The audit row must never fail the tools/call it records, and a write can raise more than sqlite3.Error (thread-affinity ProgrammingError, OSError on a full disk). Logging profile and exception class is the handling: a silently lost audit row was itself a finding on #281."
+justification = "The audit row must never fail the tools/call it records, and a write can raise more than sqlite3.Error (thread-affinity ProgrammingError, OSError on a full disk). Logging profile and exception class is the handling: a silently lost audit row was itself a finding on #281. Lifted from gateway/router.py to gateway/audit.py in PR3a (#579)."
 classification = "by_design"
 
 [[exceptions]]
@@ -974,4 +992,114 @@ classification = "by_design"
 check = "absolute_paths"
 path = "scripts/runpod_train.py"
 justification = "Paths on the training pod, not on this machine: RunPod's workspace directory, the ssh directory where the pod's sshd reads the host key the runner pins, and the pinned image's own entrypoint and start script, which the boot command hands over to (#17)."
+classification = "by_design"
+
+# --- Federation edge-key auth (#592, C1): structural-similarity false positives ---
+# The closed-shape JWT verifier and the Ed25519 PEM/verify wrappers are guard-clause
+# validators and try/except->bool codecs — the house idiom. They share control-flow
+# SHAPE with unrelated code in other files, never logic; collapsing across these trust
+# boundaries (auth vs tool discovery vs pin detection vs JSON parsing vs crypto) would
+# be wrong, and the detector itself forbids contorting code to dodge the match.
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/federation_keys.py"
+pattern = "verify_edge_jwt"
+justification = "A closed-shape JWT verifier is a sequence of fail-closed guard clauses over a parsed object; it shares that SHAPE with tool_pins._pin_one (pin-change detection) but no logic. Both are deliberately literal, auditable guard sequences — the security idiom — and merging JWT verification with pin detection would be nonsense."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/federation_keys.py"
+pattern = "load_public_key"
+justification = "load/isinstance/raise is the idiom for loading a typed key from untrusted PEM; it resembles providers/base.json_object (typed JSON parse) in shape only. Unrelated domains (Ed25519 key loading vs JSON object parsing)."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/app.py"
+pattern = "_static_bearer_ok"
+justification = "Both _static_bearer_ok and federation_keys.verify answer a credential-check as a bool via try/except, but one is a constant-time static-bearer compare and the other an Ed25519 signature verification — different credentials, no shared logic, just the try/except->bool idiom a security gateway uses everywhere."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/discovery.py"
+pattern = "load"
+justification = "discovery.load (per-session tool loading) and federation_keys.verify_primary_jwt (JWT verification) share a guard-clause control-flow shape and nothing else; they are unrelated domains and must stay separate."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/transports/mcp.py"
+pattern = "_federated_continuation"
+justification = "_federated_continuation (hold a federated peer's paging and mark part 1) shares only a guard-clauses-then-build control-flow shape with tool_pins, agent and scan helpers in unrelated domains; collapsing them is impossible and the resemblance is structural, not duplicated logic."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/vsa.py"
+pattern = "verify_assertion"
+justification = "verify_assertion (fail-closed Ed25519 verdict-assertion check) shares only a guard-clauses-then-return control-flow shape with confine.open_confined (path confinement); unrelated domains, no shared logic to collapse."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "EV010-single_use_helpers"
+path = "src/trentina/gateway/approval_routes.py"
+symbol = "_review"
+justification = "A renderer, not an extraction. It sits beside _page and _facts_table as the third of three rendering functions in this module, and it is called once because there is one place a review page is shown. Inlining its nineteen lines of markup into _decide would mix HTML construction into the function that decides whether a person is authorised and what they chose, which is the opposite of what this module separates. No complexity lint was being dodged: _decide is eleven lines."
+classification = "by_design"
+
+[[exceptions]]
+check = "EV010-single_use_helpers"
+path = "src/trentina/gateway/approver.py"
+symbol = "_verifier"
+justification = "Not single-use: _verifier is called from configured() at approver.py:116 and from verify() at approver.py:133, and both of those have production callers (approval_routes.register_approval_routes and tools/config._write). The check appears not to count a call whose result is consumed by an `is not None` comparison."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "DC005-dead_variants"
+path = "src/trentina/gateway/pending.py"
+symbol = "Kind"
+justification = "Both members are read in production, through the module rather than a direct import: tools/config._needs_approval returns pending.Kind.OPERATOR_SEAT at config.py:251 and pending.Kind.FEDERATION_TRUST at config.py:261, and approval_routes resolves them by value through pending.kind_named. The check does not appear to resolve a module.Class.MEMBER access."
+classification = "gourmand_bug"
+
+# --- The (value, reason) guard-clause idiom is a convention, not duplication ---
+# `tool_pins.decide_all` and `matrix_bridge.core._sent_attachment` both read as
+# a run of guard clauses each returning (nothing, why) and a final (result, "").
+# The STRUCTURE matches; nothing else does. One approves pin rows after checking
+# a set digest and a field rule, the other decodes Matrix media bytes after
+# checking a status and a size cap. Extracting the shape they share would couple
+# attachment handling to pin approval to save no logic at all.
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/tool_pins.py"
+pattern = "decide_all"
+justification = "Structural match on the (value, reason) guard-clause idiom with matrix_bridge/core.py _sent_attachment; no shared logic, and extracting it would couple unrelated subsystems"
+classification = "by_design"
+
+[[exceptions]]
+check = "linter_configuration"
+path = ".pre-commit-config.yaml"
+pattern = "ruff-check"
+justification = "ruff runs inside the sdlc-commit hook from python-sdlc (constitution XII v1.30.0), configured by [tool.ruff] in pyproject.toml; Gourmand looks for a literal ruff hook id"
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/webauthn.py"
+justification = "_auth_data reads WebAuthn authenticator data by fixed offset and _public_key holds an SPKI to a COSE algorithm; the matches (_parse_openrouter_search, json_object) are unrelated parsers that share only the bounds-check-then-raise guard shape. Sharing a helper across the passkey check and the L3 provider code would couple the root-gating route to the judge's parsing."
+classification = "by_design"
+
+[[exceptions]]
+check = "hyperbolic_language"
+path = "src/trentina/unpack/common_words.txt"
+justification = "A word list, not prose: the 2,000 commonest words of the L2 training sources' benign text, which the letter-cipher reader (#720) scores readings against. One of them is on the hype list; removing it would change which segments are read back."
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/proxies.py"
+justification = "normalize reads the proxies: block (a guard on its shape, the instances, the grants, the one-spelling check). The detector matched it in turn against packs.parse_pack, letters.read_back and warning.build_warning, three unrelated functions, after two restructures: what they share is the statement shape of a guard-raise-return parser, not code. Nothing to extract."
 classification = "by_design"

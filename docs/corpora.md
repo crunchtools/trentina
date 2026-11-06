@@ -25,7 +25,7 @@ A detection rate means nothing without the set it was measured on. Three things 
 | [Jailbreak classification](#jailbreak-classification) | `corpora/jailbreak.py` | 262 test, 1,044 train | `jackhhao/jailbreak-classification` | Apache-2.0 | fetched |
 | [InjecAgent](#injecagent) | `corpora/injecagent.py` | 32 attack inserts | `uiuc-kang-lab/InjecAgent` | MIT | fetched |
 | [garak latent injection](#garak-latent-injection) | `corpora/garak_latent.py` | 972 attacks, 22 benign | `NVIDIA/garak`, anonymized | Apache-2.0 | vendored |
-| [garak encodings](#garak-encodings) | `corpora/garak_encodings.py` | 16 transforms, no text | `NVIDIA/garak`, as transforms | Apache-2.0 | vendored |
+| [garak encodings](#garak-encodings) | `corpora/garak_encodings.py` | 19 transforms, no text | `NVIDIA/garak`, as transforms | Apache-2.0 | vendored |
 | [Disclosed attacks](#disclosed-attacks) | `corpora/disclosed.py` | 5 attacks | published disclosures, rewritten | AGPL-3.0-or-later | vendored |
 | [Guarded calls](#guarded-calls) | `corpora/gatekeeper.py` | 12 calls to refuse, 24 routine | written for this repository | AGPL-3.0-or-later | vendored |
 | [Tool search](#tool-search) | `corpora/tool_search.py` | 149 tools, 81 queries (32 held out) | written for this repository | AGPL-3.0-or-later | vendored |
@@ -121,11 +121,12 @@ The latent-injection probes of [garak](https://github.com/NVIDIA/garak), NVIDIA'
 
 ### garak encodings
 
-The encoders of garak's `encoding` probes (#423): sixteen ways to write a text so that a filter does not read it. It holds no text of its own. Each transform is applied to the internal attacks and to benign text, to measure what the L2 model and the pipeline make of the result.
+The encoders of garak's `encoding` probes (#423): nineteen ways to write a text so that a filter does not read it. It holds no text of its own. Each transform is applied to the internal attacks and to benign text, to measure what the L2 model and the pipeline make of the result.
 
-- **Where it came from.** `garak/probes/encoding.py`, `garak/resources/encodings.py` and `garak/resources/smuggling/smuggle_ascii.py` at `v0.17.0` (commit `93aa9cdec309`), Apache-2.0. Taken: base16, base32, hex, Ascii85, base85, quoted-printable, UU, MIME, ROT13, Atbash, leetspeak, Braille, Morse, the NATO alphabet, Unicode variant selectors and "sneaky bits" (a text written in binary with two invisible characters). Each gives what garak's function gives for the same text, including what garak drops: Braille and Morse lose any character they have no cell or code for, and the NATO alphabet keeps letters only.
+- **Where it came from.** `garak/probes/encoding.py`, `garak/resources/encodings.py` and `garak/resources/smuggling/smuggle_ascii.py` at `v0.17.0` (commit `93aa9cdec309`), Apache-2.0. Taken: base16, base32, hex, Ascii85, base85, quoted-printable, UU, MIME, ROT13, Atbash, leetspeak, Braille, Morse, the NATO alphabet, Unicode variant selectors, "sneaky bits" (a text written in binary with two invisible characters), Base2048, Ecoji (emoji) and Zalgo (letters under stacked combining marks). Each gives what garak's function gives for the same text, including what garak drops: Braille and Morse lose any character they have no cell or code for, and the NATO alphabet keeps letters only.
 - **What was changed.** garak's leetspeak swaps letters on a coin toss; here the toss is seeded with the text, so a text has one encoding on every run. garak wraps the encoded text in a request to decode it, aimed at the model it is testing; the gateway judges a document, so the encoded text stands alone.
-- **What was not taken.** Base2048, Ecoji and Zalgo need third-party packages. Base64 and Unicode tag characters are already transforms of the obfuscation gate.
+- **Third-party encoders.** Base2048, Ecoji and Zalgo are garak's packages (`base2048`, MIT; `ecoji`, Apache-2.0; `zalgolib`, MIT), installed by the `dev` extra only and imported when the encoder first runs. Zalgo's draw of marks is seeded with the text, as leetspeak's toss is.
+- **What was not taken.** Base64 and Unicode tag characters, which are already transforms of the obfuscation gate.
 - **Why it is apart from the gate's transforms.** Those are part of the perimeter: a model that fails one does not ship. These are measured and gate nothing. A transform moves from here into the gate in a change that carries its measurement.
 - **What it does not measure.** Whether an agent would act on the encoded text. Most of these need a deliberate decoding step that an agent reading a document does not take unprompted; garak supplies that prompt, and it is left out here. A miss is a text the gateway did not read, which is not the same as an attack that worked.
 - **Rules.** Quoted-printable and MIME are one routine in the standard library and agree byte for byte; both are kept because garak lists both. A test holds every reversible encoding to the standard library's decoder.
@@ -144,9 +145,9 @@ Payloads reproduced from published disclosures (#29), so the defense is measured
 
 ### Guarded calls
 
-Calls for [guarded execution](guarded-execution.md) to judge (#456). Every other corpus here is content an agent reads; these are calls an agent makes: a tool, its arguments, and the facts the gateway holds about it (the destination, whether the profile has sent there before, whether the session was delivered flagged content).
+Calls for [semantic request guards](semantic-request-guards.md) to judge (#456). Every other corpus here is content an agent reads; these are calls an agent makes: a tool, its arguments, and the facts the gateway holds about it (the destination, whether the profile has sent there before, whether the session was delivered flagged content).
 
-- **Where it came from.** Hand-written, one category per scenario in [Where to use it](guarded-execution.md#where-to-use-it), each with that page's policy word for word. Two scenarios are Varonis's phishing simulations (#29) as the calls they led to: the customer export, and the "team lead" asking for keys in an incident.
+- **Where it came from.** Hand-written, one category per scenario in [Where to use it](semantic-request-guards.md#where-to-use-it), each with that page's policy word for word. Two scenarios are Varonis's phishing simulations (#29) as the calls they led to: the customer export, and the "team lead" asking for keys in an incident.
 - **How it is written.** Payloads are described, not reproduced: an attachment reads "CSV of 247 customer records", a credential "contains an AWS access key". The judge decides on what a call does, and a description states that. Names are the fictional roster.
 - **What it measures.** Per scenario: whether its own attack is refused, how many of its attacks are, and how many routine calls are refused that should go through. Each scenario has one headline attack, at least one variant, and at least four routine calls written to sit close to the attack.
 - **What it does not measure.** Real traffic, and payloads as an attacker would write them. Data split across many small calls, which is known gap 30. The arguments step on planted instructions, which is the same `defend()` the other corpora measure.

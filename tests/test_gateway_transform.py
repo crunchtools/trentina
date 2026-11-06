@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import SecretStr
@@ -175,7 +176,9 @@ class TestRouterOrdering:
         Reducing after the scan would hand the agent content the perimeter
         never saw, so this pins the order rather than trusting it.
         """
-        from trentina.gateway import router
+        from trentina import orchestrator as orch_mod
+        from trentina.gateway import parts
+        from trentina.transports import mcp
 
         seen: dict[str, Any] = {}
 
@@ -191,19 +194,32 @@ class TestRouterOrdering:
 
             return _D()
 
-        monkeypatch.setattr(router, "scan_tool_response", fake_scan)
+        # The non-paged response edge reaches the scan as
+        # ``orchestrator.scan_tool_response`` (via ``judge_response``), the paged
+        # path as ``parts.scan_tool_response`` — patch both with the same fake so
+        # ``seen`` is populated however the call is routed.
+        monkeypatch.setattr(parts, "scan_tool_response", fake_scan)
+        monkeypatch.setattr(orch_mod, "scan_tool_response", fake_scan)
 
         profile = _profile(PreProcessConfig(enabled=True))
+        profile.short_names = False  # served name is syslog__syslog_tail_tool
 
         class _Result:
             content = _blocks(LOGGY)
             is_error = False
             structured_content = None
 
-        assembled = await router._assemble_call_result(
-            profile, profile.backends["syslog"], "syslog", "syslog_tail_tool", _Result()
-        )
-        result = assembled.result
+        with patch("trentina.transports.mcp.call_backend_tool", AsyncMock(return_value=_Result())):
+            resp = await mcp.route_jsonrpc(
+                profile,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "syslog__syslog_tail_tool", "arguments": {}},
+                },
+            )
+        result = resp["result"]
 
         scanned = seen["blocks"][0]["text"]
         assert len(scanned) < len(LOGGY), "scanner saw the unreduced payload"

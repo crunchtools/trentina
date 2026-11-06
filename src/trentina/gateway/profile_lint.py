@@ -14,13 +14,13 @@ is SAFE, in the ways the #90 audit and its successors found live:
           profiles: [kagetora, takeda]
           reason: "shared memory is the point of this pair (RT #1234)"
 
-- ``toxic-flow``: one seat holds open fetch, a public inbox (alert ingress or
-  Matrix) and an outbound-comms tool with no parameter guard. Untrusted input
+- ``toxic-flow``: one profile holds open fetch, a public inbox (alert ingress or
+  Matrix) and an outbound-comms tool with no request guard. Untrusted input
   arrives, instructions can be fetched, and something can be sent out: the
   incident's shape in one profile.
 - ``require-default-open``: a ``TRENTINA_REQUIRE_*`` switch whose default is
   not fail-closed.
-- ``guarded-tool-no-destination``: a tool under ``guarded_execution`` whose
+- ``guarded-tool-no-destination``: a tool under ``semantic_request_guards`` whose
   backend declares no ``destination_params`` entry for it (#456). The
   gatekeeper is then told the destination is unknown, so it cannot know
   whether the call is a first contact.
@@ -31,7 +31,7 @@ is SAFE, in the ways the #90 audit and its successors found live:
   with ``auth.self_authorize`` on a backend (#479). It can start its own
   logins, so the operator should have meant it.
 
-Both posture checks are for seats that run unattended, such as swarm or
+Both posture checks are for profiles that run unattended, such as swarm or
 coding agents. A personal assistant that a person talks to directly holds
 broad tools on purpose, so declare it, with a reason, in an optional top-level
 ``assistants`` list, which the loader also ignores::
@@ -42,8 +42,8 @@ broad tools on purpose, so declare it, with a reason, in an optional top-level
 
 An assistant is exempt from ``toxic-flow``. A shared write backend is still
 flagged when any profile on it is not an assistant, because an unattended
-seat writing where an assistant reads is the channel this check is for.
-Every profile not listed is linted, so a new seat is checked by default.
+profile writing where an assistant reads is the channel this check is for.
+Every profile not listed is linted, so a new profile is checked by default.
 
 Tool names are judged from the allowlist alone, because the lint runs without
 the backends. A wildcard counts as holding whatever it could admit: a glob that
@@ -66,6 +66,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import yaml
+
+from .loader import duplicate_keys
 
 #: A leading token that makes a tool a write: create_issue, memory_store, deletePostTool.
 WRITE_VERBS = frozenset(
@@ -177,7 +179,7 @@ def held_tools(backend: dict[str, Any]) -> dict[str, set[str]]:
 
 
 def _constrains(guard: dict[str, Any]) -> bool:
-    """A parameter guard that narrows something: an allow list with no catch-all.
+    """A request guard that narrows something: an allow list with no catch-all.
 
     ``allow: ["*"]`` admits every value, and a deny list admits everything it
     did not think of, so neither makes a tool guarded.
@@ -193,7 +195,7 @@ def _guarded(backend: dict[str, Any], pattern: str) -> bool:
     """A literal tool whose guard narrows it. A glob never is: guards key on exact names."""
     if any(c in pattern for c in "*?["):
         return False
-    return _constrains((backend.get("parameter_guards") or {}).get(pattern) or {})
+    return _constrains((backend.get("literal_request_guards") or {}).get(pattern) or {})
 
 
 def _endpoint(url: str) -> str:
@@ -285,7 +287,7 @@ def _open_fetch(body: dict[str, Any]) -> str | None:
             continue
         if not _admits(backend, FETCH_TOOL):
             continue
-        guard = (backend.get("parameter_guards") or {}).get(FETCH_TOOL) or {}
+        guard = (backend.get("literal_request_guards") or {}).get(FETCH_TOOL) or {}
         if not _constrains({"url": guard.get("url")}):
             return str(name)
     return None
@@ -311,7 +313,7 @@ def _unguarded_outbound(body: dict[str, Any]) -> list[str]:
 
 
 def check_toxic_flows(profiles_file: dict[str, Any]) -> list[Finding]:
-    """A seat with open fetch, a public inbox and an unguarded outbound tool together."""
+    """A profile with open fetch, a public inbox and an unguarded outbound tool together."""
     findings = []
     exempt = assistants(profiles_file)
     for profile, body in _profiles(profiles_file).items():
@@ -334,7 +336,7 @@ def check_guarded_destinations(profiles_file: dict[str, Any]) -> list[Finding]:
     """A guarded tool whose destination the audit never records (#456)."""
     findings = []
     for profile, body in _profiles(profiles_file).items():
-        guarded = body.get("guarded_execution")
+        guarded = body.get("semantic_request_guards")
         if not isinstance(guarded, dict):
             continue
         backends = body.get("backends") or {}
@@ -355,7 +357,7 @@ def check_guarded_destinations(profiles_file: dict[str, Any]) -> list[Finding]:
 
 
 def check_oauth_subjects(profiles_file: dict[str, Any]) -> list[Finding]:
-    """An OAuth seat that admits whoever holds an address, not an account (#458)."""
+    """An OAuth profile that admits whoever holds an address, not an account (#458)."""
     findings = []
     for profile, body in _profiles(profiles_file).items():
         oauth = body.get("oauth")
@@ -374,7 +376,7 @@ def check_oauth_subjects(profiles_file: dict[str, Any]) -> list[Finding]:
 
 
 def check_self_authorize(profiles_file: dict[str, Any]) -> list[Finding]:
-    """An agent seat that can start its own backend logins (#479).
+    """An agent profile that can start its own backend logins (#479).
 
     Not an error: a human still consents at the authorization server. But an
     agent that can put an authorize link in front of that human is one more
@@ -392,8 +394,59 @@ def check_self_authorize(profiles_file: dict[str, Any]) -> list[Finding]:
                 findings.append(
                     Finding(
                         "agent-self-authorize",
-                        f"profile {profile!r} is an agent seat that can start its own "
+                        f"profile {profile!r} is an agent profile that can start its own "
                         f"login to backend {backend!r} (auth.self_authorize)",
+                    )
+                )
+    return findings
+
+
+def check_federation_links(profiles_file: dict[str, Any]) -> list[Finding]:
+    """What a shared profile gives a peer, where the operator probably did not mean it.
+
+    Two findings, both specific to sharing a profile:
+
+    ``federation-no-secondary-key`` — the link authenticates but signs no
+    verdict, so the primary re-judges every response it already judged here.
+    That is the double scan federation exists to remove, and it is invisible:
+    the link works, it just costs twice. Not an error — #592 says to prove a
+    link works before turning trust on — but an operator who left it this way
+    by accident should hear so.
+
+    ``federation-shares-write-tools`` — the profile offers a backend that can
+    write, with no parameter guard on it. The peer is another gateway, so
+    whatever reaches it reaches that backend; a glob is read the way
+    ``check_shared_write_backends`` reads one, by asking what it could admit.
+    """
+    findings = []
+    for profile, body in _profiles(profiles_file).items():
+        federation = body.get("federation")
+        if not isinstance(federation, dict):
+            continue
+        if not (federation.get("secondary_key_name") or federation.get("secondary_key_env")):
+            findings.append(
+                Finding(
+                    "federation-no-secondary-key",
+                    f"profile {profile!r} is shared but signs no verdict "
+                    "(federation.secondary_key_name), so a primary re-judges every "
+                    "response this gateway already judged",
+                )
+            )
+        for backend, spec in (body.get("backends") or {}).items():
+            if not isinstance(spec, dict):
+                continue
+            url = str(spec.get("url", ""))
+            if url.startswith((INTERNAL_SCHEME, DECOY_SCHEME)) or spec.get("federated"):
+                continue  # not offered: derivation excludes all three
+            writes = sorted(
+                pattern for pattern, kinds in held_tools(spec).items() if "write" in kinds
+            )
+            if writes and not all(_guarded(spec, pattern) for pattern in writes):
+                findings.append(
+                    Finding(
+                        "federation-shares-write-tools",
+                        f"profile {profile!r} shares backend {backend!r} with a peer and "
+                        f"it can write ({', '.join(writes)}) with no parameter guard",
                     )
                 )
     return findings
@@ -457,16 +510,39 @@ def lint(profiles_file: dict[str, Any], *, config_source: str | None = None) -> 
         *check_guarded_destinations(profiles_file),
         *check_oauth_subjects(profiles_file),
         *check_self_authorize(profiles_file),
+        *check_federation_links(profiles_file),
         *check_require_defaults(config_source),
     ]
 
 
 def lint_file(path: Path | str) -> list[Finding]:
-    """Lint the profiles file at ``path``. Raises OSError or yaml.YAMLError if unreadable."""
-    profiles_file = yaml.safe_load(Path(path).read_text())
+    """Lint the profiles file at ``path``. Raises OSError or yaml.YAMLError if unreadable.
+
+    Reads the text once and lints it two ways. ``lint`` works on the loaded
+    mapping, which is everything posture-shaped; the duplicate-key scan works
+    on the SOURCE, because by the time there is a mapping the repeat is gone —
+    ``safe_load`` kept the last one and said nothing.
+
+    Reported here as well as refused by ``load_profiles`` because this is the
+    command an operator reaches for first, and a lint that comes back clean on
+    a file the gateway will refuse to start on is worse than no lint. It is
+    also exactly the gap that let one of mine through: I ran this, read
+    "0 findings", and deployed a file with two ``defense:`` blocks.
+    """
+    raw_text = Path(path).read_text()
+    profiles_file = yaml.safe_load(raw_text)
     if not isinstance(profiles_file, dict):
         raise yaml.YAMLError(f"{path}: not a mapping")
-    return lint(profiles_file)
+    duplicates = [
+        Finding(
+            "duplicate-key",
+            f"key {key!r} is written twice in the same mapping, at line {line}. "
+            "YAML keeps the LAST one silently, so the block a reader sees first "
+            "is not the block that runs. The gateway refuses to load this file.",
+        )
+        for key, line in duplicate_keys(raw_text)
+    ]
+    return duplicates + lint(profiles_file)
 
 
 def main(argv: list[str] | None = None) -> int:

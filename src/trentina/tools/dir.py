@@ -23,11 +23,12 @@ from typing import Any
 
 from ..config import get_config
 from ..errors import FileReadError
+from ..gateway.scope import check_blocklist
 from ..l1.pipeline import run_l1
 from ..l1.shadows import ShadowScanResult, ShadowStats, scan_shadows
 from ..modes import Mode
+from ..orchestrator import judge_and_deliver
 from .confine import REFUSAL_REASONS, open_confined, refused
-from .judged import check_blocklist, judge_and_deliver
 
 MAX_DIR_ENTRIES = 500
 
@@ -56,7 +57,8 @@ def _list_confined(path: str) -> tuple[list[dict[str, Any]], str, ShadowScanResu
     (#287). It re-listed by path until then, which followed symlinks out of
     the root and could see a different directory from the one delivered.
     """
-    fd, _, confined = open_confined(path, "dir")
+    opened = open_confined(path, "dir")
+    fd, confined = opened.fd, opened.path
     resolved = str(confined)
     try:
         # Listed through the checked descriptor, and lazily: a directory of a

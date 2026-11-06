@@ -4,13 +4,24 @@ Scoped by role. An agent profile drops its own aggregate and nothing else;
 the operator flushes the gateway.
 
 An agent's flush used to evict its backends' entries from the tool-list
-cache and report which were still warm (``backends_flushed``). That cache is
+cache and report which were still warm (``backends_flushed``). That cache was
 keyed by URL and shared by every profile holding the URL, so one profile
 could re-list, flush a chosen subset, and have another read the pattern back:
 a bit per shared backend, per round (#263). An agent's flush therefore leaves
 the shared cache alone and returns a body built from nothing another profile
 can influence. A stale backend list is the operator's to flush, or
 ``reconnect_backend``'s to re-probe.
+
+Since 6.1.0 that cache is keyed ``(url, owner)`` and a profile holding a
+credential has a partition of its own, so the #263 channel is closed
+structurally for those: an agent flushing its own partition tells a neighbour
+nothing, because the neighbour reads a different row. The constant body is
+kept all the same. A backend carrying NO credential still shares one row with
+every profile — correctly, since its answer is the same for everyone — and
+that row is exactly what the channel was made of, so letting an agent flush
+and report on it would reopen #263 for the shared case while closing it for
+the private one. One rule is better than a rule with a carve-out nobody can
+see from the tool's output.
 """
 
 from __future__ import annotations
@@ -18,10 +29,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..gateway.aggregate import _profile_tools_cache, invalidate_profile_cache
 from ..gateway.backend import evict_backend_cache_url, flush_all_caches
 from ..gateway.compress import get_profiles
 from ..gateway.errors import ScopeError
-from ..gateway.router import _profile_tools_cache, invalidate_profile_cache
 from ..gateway.scope import CallerScope, require_caller, resolve_backend
 from ..logsafe import exc_kind
 
@@ -48,6 +59,11 @@ def _flush_named_gateway_wide(backend: str) -> dict[str, Any]:
     Resolves through the profile registry, not through the cache keys, so a
     name means a backend somebody configured — never any URL it happens to be
     a substring of.
+
+    Every partition of each URL, not one: an operator flushing a backend means
+    the backend itself may have changed, which is true for every tenant
+    holding it. ``evicted`` counts URLs, as it did before partitioning, so the
+    number still answers "how many backends did I just drop".
     """
     profiles = get_profiles() or {}
     urls = {

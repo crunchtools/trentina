@@ -15,9 +15,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from trentina.gateway.ingress_defense import _collect_response_texts
+from trentina.gateway.collect import _collect_response_texts
 from trentina.gateway.profile import AuthConfig, Backend, Profile
-from trentina.gateway.router import _drop_duplicate_structured
+from trentina.gateway.results import _drop_duplicate_structured
 from trentina.gateway.transform import transform_response
 from trentina.unpack.scan import unpack
 

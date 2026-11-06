@@ -9,6 +9,7 @@ L2/L3.
 
 from __future__ import annotations
 
+import importlib
 import json
 import sqlite3
 from collections.abc import AsyncIterator, Iterator
@@ -25,8 +26,10 @@ from starlette.testclient import TestClient
 
 from trentina import config as config_mod
 from trentina import database as database_mod
-from trentina.gateway import egress_http
+from trentina.gateway import egress_http, loader
+from trentina.gateway.destination import DestinationKind
 from trentina.gateway.profile import AuthConfig, EgressGrant, EgressUpstream, Profile
+from trentina.transports import perimeter
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -109,10 +112,16 @@ def _clean_verdict() -> SimpleNamespace:
 
 def _stub_judge(monkeypatch: pytest.MonkeyPatch, *, req: Any = None, resp: Any = None) -> None:
     """Stub the request judge (outbound's lazy defend/gaps_of) and the response
-    judge (egress_http's defend/gaps_of). Default: everything clean."""
+    judge (the orchestrator's defend/gaps_of, via judge_egress_response). Default:
+    everything clean."""
     from trentina import defense as defense_mod
     from trentina import modes as modes_mod
+    from trentina import orchestrator as orchestrator_mod
     from trentina.modes import Gaps
+
+    # The trentina.core package re-exports the ``dispose`` function, shadowing the
+    # submodule attribute, so reach the module through importlib to patch its binding.
+    dispose_mod = importlib.import_module("trentina.core.dispose")
 
     async def req_defend(*_a: Any, **_k: Any) -> Any:
         return req if req is not None else _clean_verdict()
@@ -122,8 +131,11 @@ def _stub_judge(monkeypatch: pytest.MonkeyPatch, *, req: Any = None, resp: Any =
 
     monkeypatch.setattr(defense_mod, "defend", req_defend)
     monkeypatch.setattr(modes_mod, "gaps_of", lambda _v: Gaps())
-    monkeypatch.setattr(egress_http, "defend", resp_defend)
-    monkeypatch.setattr(egress_http, "gaps_of", lambda _v: Gaps())
+    monkeypatch.setattr(orchestrator_mod, "defend", resp_defend)
+    # The response judge reads gaps_of for its facts and runs dispose() for the
+    # refuse decision; both resolve gaps on the (stub) verdict, so both are stubbed.
+    monkeypatch.setattr(orchestrator_mod, "gaps_of", lambda _v: Gaps())
+    monkeypatch.setattr(dispose_mod, "gaps_of", lambda _v: Gaps())
 
 
 def _profile(
@@ -142,10 +154,10 @@ def _profile(
         from pydantic import SecretStr
 
         grant.token = SecretStr("forge-token")
-    from trentina.gateway.profile import GuardedExecutionConfig
+    from trentina.gateway.profile import SemanticGuardsConfig
 
     guard = (
-        GuardedExecutionConfig(policy="No bulk customer data leaves.", egress_http=["gh"])
+        SemanticGuardsConfig(policy="No bulk customer data leaves.", egress_http=["gh"])
         if guarded
         else None
     )
@@ -153,7 +165,7 @@ def _profile(
         name="agent1",
         auth=AuthConfig(bearer_token_env="TOK"),
         egress_http={"gh": grant},
-        guarded_execution=guard,
+        semantic_request_guards=guard,
     )
     from pydantic import SecretStr
 
@@ -174,6 +186,7 @@ class _Harness(SimpleNamespace):
     client: TestClient
     net: _Net
     profiles: dict[str, Profile]
+    entry: perimeter.Mount
 
 
 def _harness(
@@ -187,19 +200,19 @@ def _harness(
     net = _Net()
     # pinned_send now owns the checked_target lookup internally, so the one seam
     # is the pooled sender (#511, Phase 2).
-    monkeypatch.setattr(egress_http, "pinned_send", net.pinned_send)
+    monkeypatch.setattr(perimeter, "pinned_send", net.pinned_send)
     up = upstream if upstream is not None else _upstream()
     active = SimpleNamespace(config=SimpleNamespace(egress_upstreams={"gh": up}))
-    monkeypatch.setattr(egress_http, "get_active_config", lambda: active)
+    monkeypatch.setattr(loader, "get_active_config", lambda: active)
     profiles = {"agent1": _profile(enforcement, with_cred=with_cred, guarded=guarded)}
+    route = egress_http.HttpRoute()
+    entry = perimeter.Mount(route, DestinationKind.EGRESS, active.config, in_tree=True)
 
     async def endpoint(request: Request) -> Response:
-        return await egress_http.serve(request, profiles)
+        return await perimeter.serve(entry, request, profiles)
 
-    app = Starlette(
-        routes=[Route("/proxy/http/{upstream}/{path:path}", endpoint, methods=egress_http.METHODS)]
-    )
-    return _Harness(client=TestClient(app), net=net, profiles=profiles)
+    app = Starlette(routes=[Route(route.path, endpoint, methods=list(route.methods))])
+    return _Harness(client=TestClient(app), net=net, profiles=profiles, entry=entry)
 
 
 _AUTH = {"authorization": "Bearer agent1-tok"}
@@ -383,8 +396,13 @@ class TestResponseJudging:
         from trentina.modes import Gaps
 
         _stub_judge(monkeypatch)  # request clean
-        # Make only the RESPONSE judge report a blocking gap.
-        monkeypatch.setattr(egress_http, "gaps_of", lambda _v: Gaps(oversize=True))
+        # Make only the RESPONSE judge report a blocking gap — both where it reads
+        # the facts (orchestrator) and where dispose() decides to refuse (core).
+        from trentina import orchestrator as orchestrator_mod
+
+        dispose_mod = importlib.import_module("trentina.core.dispose")
+        monkeypatch.setattr(orchestrator_mod, "gaps_of", lambda _v: Gaps(oversize=True))
+        monkeypatch.setattr(dispose_mod, "gaps_of", lambda _v: Gaps(oversize=True))
         h = _harness(monkeypatch)
         resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         assert resp.status_code == 403
@@ -457,11 +475,11 @@ class TestUpstreamErrors:
         relay's Slots.take returns False."""
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch)
-        egress_http._SLOTS._open["agent1"] = egress_http.MAX_OPERATIONS_PER_PROFILE
+        h.entry.slots._open["agent1"] = egress_http.HttpRoute.slots
         try:
             resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         finally:
-            egress_http._SLOTS._open.clear()
+            h.entry.slots._open.clear()
         assert resp.status_code == 503
         assert resp.json()["block_reason"] == "busy"
         assert not h.net.sent  # nothing left the gateway
@@ -654,7 +672,7 @@ class TestJsonUpstream:
 
 
 class TestGatekeeper:
-    """#511: the guarded-execution hook, wired into the request path."""
+    """#511: the intent-guards hook, wired into the request path."""
 
     @staticmethod
     def _patch_judge(monkeypatch: pytest.MonkeyPatch, result: Any) -> list[dict[str, Any]]:
@@ -665,7 +683,7 @@ class TestGatekeeper:
             calls.append(kwargs)
             return result()
 
-        monkeypatch.setattr(egress_http, "judge_egress", _stub)
+        monkeypatch.setattr(perimeter, "judge_egress", _stub)
         return calls
 
     def test_a_refusal_blocks_before_sending(

@@ -17,10 +17,10 @@ packages. Three categories are allowed through, each for a stated reason:
 * Types (`ClassifierResult`) — annotations, no behaviour.
 * `quarantine_redact` — redact mode's turns 2 and 3 (extract, verify), which
   run AFTER defend() has detected. They are the mode's delivery, not a second
-  detection path; tools reach them only through tools/judged.py.
+  detection path; tools reach them only through gateway/internal_edge.py.
 
 If you are here because this test failed: you probably want `defend()`,
-`defend_json()`, or `tools.judged.judge_and_deliver()`.
+`defend_json()`, or `orchestrator.judge_and_deliver()`.
 """
 
 from __future__ import annotations
@@ -147,3 +147,109 @@ class TestOnePipeline:
         # modes live in modes.py and decide delivery only.
         for gone in ("advise", "enforce_block"):
             assert not hasattr(defense, gone), f"defense.{gone} is back"
+
+
+class TestGateOwnership:
+    """``core.gate.gate()`` runs the perimeter's one dispose-and-extraction, so
+    the ORDER it runs in — arrive, transform, gate, dispose — is a security
+    property only the orchestrator knows. If the gate could be called from
+    anywhere, a path (or, later, a plugin) could invoke it out of order or skip
+    a step. So only the orchestration layer imports it; every other importer
+    would be a second way into the gate (Trentina 3.0 Phase 4).
+    """
+
+    # The defining package re-exports the name (its own public API); the
+    # orchestrator is the one caller. Nothing else may import ``gate``.
+    ALLOWED = frozenset({"orchestrator.py", "core/__init__.py"})
+
+    @staticmethod
+    def _imports_gate(path: Path) -> bool:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if _resolve(path, node) not in ("core", "core.gate"):
+                continue
+            if any(alias.name == "gate" for alias in node.names):
+                return True
+        return False
+
+    def test_core_gate_is_imported_only_by_the_orchestrator(self) -> None:
+        offenders = sorted(
+            path.relative_to(SRC).as_posix()
+            for path in SRC.rglob("*.py")
+            if "__pycache__" not in path.parts
+            and path.relative_to(SRC).as_posix() not in self.ALLOWED
+            and self._imports_gate(path)
+        )
+        assert not offenders, (
+            "core.gate.gate() is the perimeter's one dispose-and-extraction and "
+            "only the orchestrator may call it — these modules import it, which "
+            "is a second way into the gate:\n  " + "\n  ".join(offenders)
+        )
+
+
+class TestDefendOwnership:
+    """Every ``defend()`` reaches the layers from the orchestration layer.
+
+    ``defend``/``defend_json``/``defend_selection`` (defense.py) are the one way
+    content crosses L1/L2/L3. Trentina 3.0 Phase 5 moved every FACE's defend call
+    — matrix proxy + bridge, alert, the gatekeeper argument guard, egress, llm,
+    fetch's error bodies — onto an ``orchestrator.judge_*`` function, so a face
+    now hands content to the orchestrator and never calls ``defend`` itself.
+    Only the orchestration layer imports it:
+
+    * ``orchestrator.py`` — every ``judge_*`` edge. ``judge_and_deliver`` runs
+      the internal tools' one ``defend`` call (``internal_edge`` does the paging
+      hold and the ``_Call`` accounting around it); ``scan_tool_response`` runs
+      the proxied response edge's ``defend`` (``response_edge`` keeps the
+      verdict cache, the binary-only shortcut and the warning build around it);
+      and ``judge_tool_description`` runs the tool-list edge's ``defend``
+      (``tool_list_edge.scan_tool_list`` keeps the cache and single-flight).
+      Trentina 3.0 Phase 7 folded all of them in.
+
+    A new direct importer is a face reaching past the orchestrator to the layers
+    — the regression this phase closed.
+    """
+
+    ENTRIES = frozenset({"defend", "defend_json", "defend_selection"})
+    ALLOWED = frozenset({"orchestrator.py"})
+
+    @classmethod
+    def _imports_defend(cls, path: Path) -> bool:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if _resolve(path, node) != "defense":
+                continue
+            if any(alias.name in cls.ENTRIES for alias in node.names):
+                return True
+        return False
+
+    def test_defend_is_imported_only_by_the_orchestration_layer(self) -> None:
+        offenders = sorted(
+            path.relative_to(SRC).as_posix()
+            for path in SRC.rglob("*.py")
+            if "__pycache__" not in path.parts
+            and path.relative_to(SRC).as_posix() not in self.ALLOWED
+            and self._imports_defend(path)
+        )
+        assert not offenders, (
+            "defend()/defend_json()/defend_selection() reach the layers, and "
+            "every face routes through an orchestrator.judge_* function instead "
+            "of calling them directly — these modules import one, which is a "
+            "face reaching past the orchestrator:\n  "
+            + "\n  ".join(offenders)
+            + "\n\nAdd an orchestrator judge_* edge for this face (see "
+            "judge_alert, judge_tool_arguments) rather than importing defend."
+        )
+
+    def test_the_allowed_scan_primitives_still_import_defend(self) -> None:
+        """An allowed exemption that no longer imports defend is a stale lie."""
+        for key in self.ALLOWED:
+            path = SRC / key
+            assert path.exists(), f"ALLOWED names a file that no longer exists: {key}"
+            assert self._imports_defend(path), (
+                f"{key} is allowed to import defend but no longer does — remove it from ALLOWED."
+            )

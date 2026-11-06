@@ -12,10 +12,11 @@ profile YAML are a hard error at load time.
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import re
 from fnmatch import fnmatchcase
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 from urllib.parse import parse_qsl, urlparse, urlsplit
 
 from pydantic import (
@@ -24,17 +25,40 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
+    StringConstraints,
     field_validator,
     model_validator,
 )
 
 from ..config import MODE_NAMES, SUPPORTED_PROVIDERS, canonical_mode
+from ..credential_shapes import kinds as credential_kinds
+from .key_store import KEY_NAME_RE
 
 logger = logging.getLogger(__name__)
 
-PROFILE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
-BACKEND_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
-PROVIDER_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+
+def _one_key_source(env: str | None, name: str | None, field: str) -> None:
+    """Hold a private key to exactly one source (#633).
+
+    Both set is a configuration the operator cannot have meant, and picking one
+    silently would make which key signs depend on resolution order rather than
+    on the file.
+    """
+    if env is not None and name is not None:
+        raise ValueError(f"{field}_env and {field}_name are both set; use one")
+
+
+def _is_key_name(v: str | None, field: str) -> str | None:
+    """A key name is joined to the key store's own directory, so its shape is
+    what keeps it a filename rather than a path."""
+    if v is not None and not KEY_NAME_RE.match(v):
+        raise ValueError(f"{field} {v!r} must be lowercase letters, digits and hyphens")
+    return v
+
+
+PROFILE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}\Z")
+BACKEND_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}\Z")
+PROVIDER_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}\Z")
 GLOB_PATTERN_RE = re.compile(r"^[a-zA-Z0-9_*][a-zA-Z0-9_*-]*$")
 # A tool or parameter name in destination_params: exact, never a glob (#266).
 DESTINATION_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,127}")
@@ -72,6 +96,32 @@ HONEYTOKEN_MIN_CHARS = 16
 #: outside. Named one by one: an admin tool, or one that reads the gateway's
 #: own disk, is not something to hand an agent meant to be hijacked.
 HONEYPOT_READS = frozenset({"fetch_tool", "search_tool", "content_tool"})
+
+# What a federation ingress MUST offer a peer, and the floor for a shared
+# profile with no internal backend. A FLOOR since 6.0.0, not the ceiling it was
+# through 5.x: the derived surface follows the shared profile, so an operator's
+# peer reaches admin tools (`federation_link.CARRIED`, `docs/federation.md`).
+# The reader stays required because `parts.py` delivers a peer's paged response
+# through this backend part by part.
+FEDERATION_INTERNAL_REQUIRED = frozenset({"read_part_tool"})
+
+#: The one member of the set above, for the messages that name it singly.
+_READ_PART = "read_part_tool"
+
+#: The only fnmatch metacharacter that can reach the rule below. `tools_allow`
+#: entries are patterns, but `Backend` already refuses every character outside
+#: alphanumerics, underscore, hyphen and `*` -- so `read_part_too?` and
+#: `[rc]onfig_tool` are refused before this, by a narrower rule with a better
+#: message. Carrying `?[]` here too would be a set that looks thought-about and
+#: is unreachable.
+_GLOB_CHARS = frozenset("*")
+
+#: What the ingress profile derived from a profile is named: ``<profile>-federation``.
+#: It lives here rather than in ``federation_link`` because the profile validator
+#: needs it and ``federation_link`` imports this module, not the reverse. The
+#: profile name IS the JWT audience, so this suffix is load-bearing on both
+#: sides: the primary's backend URL ends ``/gateway/<profile>-federation/mcp``.
+INGRESS_SUFFIX = "-federation"
 #: Characters: the longest description and canned result a decoy tool may carry.
 DECOY_DESCRIPTION_MAX_CHARS = 1024
 DECOY_RESULT_MAX_CHARS = 4096
@@ -79,8 +129,9 @@ DECOY_RESULT_MAX_CHARS = 4096
 _REMOTE_ONLY_FIELDS = (
     "headers",
     "auth",
-    "parameter_guards",
-    "response_guards",
+    "federated",
+    "literal_request_guards",
+    "literal_response_guards",
     "destination_params",
     "l3_briefing",
     "preprocess_tools",
@@ -88,7 +139,7 @@ _REMOTE_ONLY_FIELDS = (
 
 # What a profile may reach through the gateway's own admin tools. Two values,
 # because the only distinction that matters is "my slice" versus "the whole
-# gateway" — an agent profile sees and acts on itself, the operator seat holds
+# gateway" — an agent profile sees and acts on itself, the operator profile holds
 # the box. See gateway/scope.py, which is the only place this is interpreted.
 ProfileRole = Literal["agent", "operator"]
 
@@ -168,13 +219,31 @@ ProcessorName = Literal[
     "select",
     "matrix",
 ]
+
+# An out-of-tree plugin reference, `dist:name` (e.g. "petit-plus:dedupe"): the
+# installed distribution and its entry point. Validated here by SHAPE only;
+# resolved against the installed `trentina.transforms.v1` entry points at config
+# load (`plugins.registry` via `build_transforms`), where an unknown dist or name
+# is a ProfileConfigError naming both. The smart union tries ProcessorName first,
+# so a typo'd built-in ("detct") matches neither and is refused as before.
+PluginRef = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*:[a-z0-9_]+$")]
+ProcessorRef = ProcessorName | PluginRef
+
+# The wire protocols a backend may be DISPATCHED over. Mirrors
+# ``transports.registry.BUILTIN_TRANSPORTS`` (what the dispatcher wires), not the
+# whole ``TRANSPORTS`` table, which a registered transport may extend without
+# becoming dispatchable; the parity test in ``tests/test_transport_registry.py``
+# holds the Literal and the built-ins in step. A ``dist:name`` ``PluginRef``
+# passes this shape but is refused at load until #535 freezes the contract.
+TransportName = Literal["mcp"]
+
 # FREE only. `detect` (0.38.0) looks at the payload and runs the minifiers
 # that fit it: html then petit for a page, structured for JSON, email then
 # petit for anything else. Until 0.38.0 the default was all four in a row,
 # and `html` ran first on everything, which is how a mail header lost its
 # addresses (transforms/detect.py). summarize is never a default: METERED,
 # and its output draws unconditional L3.
-_DEFAULT_PROCESSORS: list[ProcessorName] = ["detect"]
+_DEFAULT_PROCESSORS: list[ProcessorRef] = ["detect"]
 
 # Fields of MatrixPreProcessConfig an AGENT may change by reloading its own
 # profile.
@@ -215,14 +284,27 @@ MAX_LIST_TIMEOUT_SECONDS = 60.0
 class AuthConfig(BaseModel):
     """Per-profile bearer-token auth config.
 
-    `bearer_token_env` is the env var name holding the actual token value;
-    `bearer_token` is resolved at load time and never serialized.
+    Either source names the token; `bearer_token` is resolved at load time and
+    never serialized. `bearer_token_env` names an environment variable, which
+    needs the container's environment to carry it and so a restart to add one.
+    `bearer_token_name` names a token the gateway minted itself (#635), re-read
+    on every load — which is what lets an operator agent add a whole profile to
+    a running gateway. Exactly one of the two.
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    bearer_token_env: str = Field(
-        ..., description="Env var name whose value is the profile's bearer token"
+    bearer_token_env: str | None = Field(
+        default=None, description="Env var name whose value is the profile's bearer token"
+    )
+    bearer_token_name: str | None = Field(
+        default=None,
+        description=(
+            "A token minted by `profile_token`, by name (#635). The same thing as "
+            "`bearer_token_env` and the preferred form: a token named here is re-read "
+            "on every reload, so a profile added after startup authenticates without "
+            "one. Exactly one of the two."
+        ),
     )
     bearer_token: SecretStr | None = Field(
         default=None, exclude=True, description="Resolved token (load-time only)"
@@ -230,11 +312,29 @@ class AuthConfig(BaseModel):
 
     @field_validator("bearer_token_env")
     @classmethod
-    def env_name_is_uppercase_identifier(cls, v: str) -> str:
+    def env_name_is_uppercase_identifier(cls, v: str | None) -> str | None:
         """Reject lowercase, leading digits, or non-identifier characters."""
-        if not ENV_NAME_RE.match(v):
+        if v is not None and not ENV_NAME_RE.match(v):
             raise ValueError(f"bearer_token_env {v!r} must be an UPPERCASE env-var identifier")
         return v
+
+    @field_validator("bearer_token_name")
+    @classmethod
+    def token_name_is_a_store_name(cls, v: str | None) -> str | None:
+        return _is_key_name(v, "bearer_token_name")
+
+    @model_validator(mode="after")
+    def one_token_source(self) -> AuthConfig:
+        """One source, and at least one.
+
+        ``_one_key_source`` refuses both; an ``auth`` block with neither names
+        no token at all, which would read as a profile that authenticates and
+        then match nothing.
+        """
+        _one_key_source(self.bearer_token_env, self.bearer_token_name, "bearer_token")
+        if self.bearer_token_env is None and self.bearer_token_name is None:
+            raise ValueError("auth needs bearer_token_env or bearer_token_name")
+        return self
 
 
 class LlmKeyOverride(BaseModel):
@@ -327,7 +427,7 @@ class ProcessorChainConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    processors: list[ProcessorName] = Field(
+    processors: list[ProcessorRef] = Field(
         default_factory=list,
         description="Which processors run, in order. Empty is the no-op.",
     )
@@ -379,7 +479,7 @@ class PreProcessConfig(ProcessorChainConfig):
             "keeps whichever came out smallest."
         ),
     )
-    processors: list[ProcessorName] = Field(
+    processors: list[ProcessorRef] = Field(
         default_factory=lambda: list(_DEFAULT_PROCESSORS),
         description=(
             "Which processors may run, in order. 'summarize' is METERED: it "
@@ -406,7 +506,7 @@ class PreProcessConfig(ProcessorChainConfig):
             "Reduction has a fixed cost and small payloads cannot repay it."
         ),
     )
-    required: list[ProcessorName] = Field(
+    required: list[ProcessorRef] = Field(
         default_factory=list,
         description=(
             "Processors that run on every response, trentina_preprocess: "
@@ -442,10 +542,10 @@ class ToolPreProcess(BaseModel):
 
     enabled: bool | None = None
     strategy: Literal["none", "chain", "best_of", "auto"] | None = None
-    processors: list[ProcessorName] | None = None
+    processors: list[ProcessorRef] | None = None
     target_bytes: int | None = Field(default=None, ge=0)
     min_bytes: int | None = Field(default=None, ge=0)
-    required: list[ProcessorName] | None = Field(
+    required: list[ProcessorRef] | None = Field(
         default=None,
         description=(
             "This tool's floor. Unset inherits the profile's; set, it "
@@ -456,6 +556,20 @@ class ToolPreProcess(BaseModel):
         default=None,
         description="Declare trentina_preprocess on this tool. Unset inherits the profile's.",
     )
+
+    @field_validator("processors", "required")
+    @classmethod
+    def _no_plugin_in_tool_override(cls, v: list[str] | None) -> list[str] | None:
+        """A plugin (``dist:name``) is named only at the operator-held profile or
+        channel level, never in a per-tool override — per-tool overrides can sit
+        closer to agent reach, and resolving a plugin runs its code in-process.
+        Built-ins only here keeps an agent from introducing plugin code."""
+        if v and any(":" in name for name in v):
+            raise ValueError(
+                "a per-tool override names built-in transforms only; name a plugin "
+                "(dist:name) at the profile or channel level instead"
+            )
+        return v
 
 
 #: A backend's L3 briefing says what the backend IS in a sentence or two.
@@ -604,10 +718,363 @@ class BackendAuth(BaseModel):
         return self
 
 
+class TrustVerdict(BaseModel):
+    """What a primary pins to trust a federated secondary's signed verdict
+    (#592, D2a): the secondary's Ed25519 PUBLIC key and the exact
+    ``perimeter_stamp`` it must have scanned under.
+
+    When set, a federated response carrying a valid assertion (signature, the
+    delivered-bytes hash, this stamp, and the resolved mode all matching) is
+    delivered WITHOUT the primary re-running its own L1/L2/L3. A stamp change on
+    the secondary — a different model, threshold or gate — stops matching, and
+    the primary re-judges until the operator re-pins. The stamp covers the model
+    and its gates, NOT the peer profile's ``defense`` block (its thresholds and
+    allowlists), which are trusted unpinned (Known gap).
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    public_key: str = Field(..., description="The secondary's Ed25519 public key, PEM SPKI")
+    perimeter_stamp: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "The exact perimeter_stamp the secondary must have scanned under (L2 + version)"
+        ),
+    )
+    judge: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "The exact L3 judge the secondary must have used (provider/model/pack). The "
+            "perimeter_stamp does not cover L3, so a peer that swapped to a weaker judge is "
+            "caught here and re-judged."
+        ),
+    )
+
+    @field_validator("public_key")
+    @classmethod
+    def public_key_is_ed25519_pem(cls, v: str) -> str:
+        from .federation_keys import FederationKeyError, load_public_key
+
+        try:
+            load_public_key(v)
+        except FederationKeyError as exc:
+            raise ValueError(f"trust_verdict.public_key is not a valid Ed25519 PEM: {exc}") from exc
+        return v
+
+
+#: The primary's federation poll cadence (#592, F3), in seconds: the default
+#: re-probe interval and the floor below which a non-zero value is rejected.
+DEFAULT_POLL_SECONDS = 300
+MIN_POLL_SECONDS = 30
+
+
+class FederatedConfig(BaseModel):
+    """Marks a backend as a federated secondary Trentina — a peer gateway whose
+    own perimeter already judged its responses, not a leaf MCP server (#592).
+
+    The block's presence declares the trust boundary (B1). ``primary_key_env``
+    (C1) makes the PRIMARY side of the link sign a short-lived JWT to the
+    secondary instead of presenting a static bearer. ``trust_verdict`` (D2a) lets
+    the primary trust the secondary's signed verdict and skip its own layers.
+    A field arrives with the code that acts on it — a declared option nothing
+    honours is a faked property — and ``extra="forbid"`` keeps a premature one
+    from loading quietly.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    primary_key_env: str | None = Field(
+        default=None,
+        description=(
+            "Env var (or its _FILE form) holding this primary's Ed25519 PRIVATE key "
+            "(PEM PKCS#8). With it, the primary signs a 60s JWT to the secondary "
+            "(audience = the secondary profile named in this backend's URL) rather "
+            "than a static bearer (#592, C1). Unset: the link uses its "
+            "headers/auth unchanged, so the interim static-bearer link keeps "
+            "working."
+        ),
+    )
+    primary_key_name: str | None = Field(
+        default=None,
+        description=(
+            "A key minted by `federation_keygen`, by name (#633). The same thing "
+            "as `primary_key_env` and the preferred form: a key named here is "
+            "re-read on every reload, so one minted after startup takes effect "
+            "without a restart. Exactly one of the two per key."
+        ),
+    )
+    primary_key: SecretStr | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Resolved primary private key PEM (load-time only, from primary_key_env "
+            "or primary_key_name)"
+        ),
+    )
+    trust_verdict: TrustVerdict | None = Field(
+        default=None,
+        description=(
+            "Pin the secondary's public key + perimeter_stamp to TRUST its signed "
+            "verdict and skip the primary's own L1/L2/L3 (#592, D2a). Unset: "
+            "every federated response is re-judged, as today."
+        ),
+    )
+    poll_seconds: int = Field(
+        default=DEFAULT_POLL_SECONDS,
+        description=(
+            "How often (seconds) the primary re-probes this federated secondary "
+            "in the background, so an approved or changed tool appears without a "
+            "manual reconnect (#592, F3). 0 disables it; the floor is 30. A backend "
+            "with `auth` is not background-revalidated."
+        ),
+    )
+
+    @property
+    def has_primary_key(self) -> bool:
+        """Whether this link signs its requests, by either key source.
+
+        Asked before the key is resolved, so it reads the declaration rather
+        than ``primary_key`` — the two sources must never diverge in behaviour,
+        and a check that named only one is how #633 found a gap.
+        """
+        return self.primary_key_env is not None or self.primary_key_name is not None
+
+    @field_validator("primary_key_env")
+    @classmethod
+    def primary_key_env_is_an_env_name(cls, v: str | None) -> str | None:
+        """Reject lowercase, leading digits, or non-identifier characters."""
+        if v is not None and not ENV_NAME_RE.match(v):
+            raise ValueError(f"primary_key_env {v!r} must be an UPPERCASE env-var identifier")
+        return v
+
+    @field_validator("primary_key_name")
+    @classmethod
+    def primary_key_name_is_a_key_name(cls, v: str | None) -> str | None:
+        return _is_key_name(v, "primary_key_name")
+
+    @model_validator(mode="after")
+    def one_primary_key_source(self) -> FederatedConfig:
+        _one_key_source(self.primary_key_env, self.primary_key_name, "primary_key")
+        return self
+
+    @field_validator("poll_seconds")
+    @classmethod
+    def poll_seconds_off_or_at_least_30(cls, v: int) -> int:
+        """0 disables; otherwise at least 30s — a typo like 3 would hammer the peer."""
+        if v != 0 and v < MIN_POLL_SECONDS:
+            raise ValueError(
+                f"poll_seconds must be 0 (off) or at least {MIN_POLL_SECONDS}, not {v}"
+            )
+        return v
+
+
+class FederationPeer(BaseModel):
+    """One primary peer the secondary's federation profile trusts (#592, C1).
+
+    ``public_key`` is the peer's Ed25519 public key (PEM SubjectPublicKeyInfo).
+    The secondary verifies a primary JWT against each peer's key; the name of the
+    key that verifies is the acting peer (C2 reads the caller from the token).
+    A public key is not a secret, so it is inline, not an env reference.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    public_key: str = Field(..., description="The peer's Ed25519 public key, PEM SPKI")
+
+    @field_validator("public_key")
+    @classmethod
+    def public_key_is_ed25519_pem(cls, v: str) -> str:
+        """Fail at load, not at first call, if the PEM is not an Ed25519 key."""
+        from .federation_keys import FederationKeyError, load_public_key
+
+        try:
+            load_public_key(v)
+        except FederationKeyError as exc:
+            raise ValueError(f"public_key is not a valid Ed25519 PEM: {exc}") from exc
+        return v
+
+
+class FederationConfig(BaseModel):
+    """The secondary (offering) side of federation: the peers this profile trusts.
+
+    A profile with ``federation.peers`` is a federation ingress — a primary
+    peer authenticates to it with a primary JWT signed by one of these keys
+    (#592, C1), which is a way to authenticate, so the profile needs no static
+    bearer. ``secondary_key_env`` (D1) holds the ingress's OWN Ed25519 private key,
+    with which it signs a verdict assertion beside each federated response so a
+    primary that pins the matching public key can trust the scan instead of
+    re-judging (#592, D2a trusts it). The secondary's key is distinct from a
+    peer's primary key: the primary key is the PRIMARY's (it authenticates a
+    caller), this one is the SECONDARY's (it vouches for a response).
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    peers: dict[str, FederationPeer] = Field(
+        default_factory=dict,
+        description="Primary peers that may authenticate with a primary JWT, by name",
+    )
+    secondary_key_env: str | None = Field(
+        default=None,
+        description=(
+            "Env var (or its _FILE form) holding this ingress's Ed25519 PRIVATE "
+            "key (PEM PKCS#8), with which it signs the verdict assertion beside a "
+            "federated response (#592, D1). Unset: no assertion is emitted and a "
+            "primary re-judges, exactly as today."
+        ),
+    )
+    secondary_key_name: str | None = Field(
+        default=None,
+        description=(
+            "A key minted by `federation_keygen`, by name (#633). The same thing "
+            "as `secondary_key_env` and the preferred form: a key named here is "
+            "re-read on every reload, so one minted after startup takes effect "
+            "without a restart. Exactly one of the two per key."
+        ),
+    )
+    secondary_key: SecretStr | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Resolved secondary private key PEM (load-time only, from "
+            "secondary_key_env or secondary_key_name)"
+        ),
+    )
+
+    @field_validator("peers")
+    @classmethod
+    def peers_names_are_well_formed(cls, v: dict[str, FederationPeer]) -> dict[str, FederationPeer]:
+        if not v:
+            raise ValueError("federation.peers, when set, must name at least one peer")
+        for name in v:
+            if not BACKEND_NAME_RE.match(name):
+                raise ValueError(f"federation peer name {name!r} is not a valid name")
+        return v
+
+    @field_validator("secondary_key_env")
+    @classmethod
+    def secondary_key_env_is_an_env_name(cls, v: str | None) -> str | None:
+        """Reject lowercase, leading digits, or non-identifier characters."""
+        if v is not None and not ENV_NAME_RE.match(v):
+            raise ValueError(f"secondary_key_env {v!r} must be an UPPERCASE env-var identifier")
+        return v
+
+    @field_validator("secondary_key_name")
+    @classmethod
+    def secondary_key_name_is_a_key_name(cls, v: str | None) -> str | None:
+        return _is_key_name(v, "secondary_key_name")
+
+    @model_validator(mode="after")
+    def one_secondary_key_source(self) -> FederationConfig:
+        _one_key_source(self.secondary_key_env, self.secondary_key_name, "secondary_key")
+        return self
+
+    @model_validator(mode="after")
+    def an_ingress_names_its_peers(self) -> FederationConfig:
+        """A `federation` block means a federation ingress, so it names peers.
+
+        `peers_names_are_well_formed` only runs when the field is PRESENT, so a
+        block carrying just `secondary_key_name` passed. That left "is this an
+        ingress?" with two answers: the auth path and the directed-ingress rule
+        read `federation.peers`, while the topology check, the refusal mirror
+        and the VSA emit site read `federation is not None`. A profile in the
+        gap skipped the directed-ingress rule entirely — it could be
+        `role: operator` with unrestricted internal tools — and still signed
+        verdict assertions over its responses.
+        """
+        if not self.peers:
+            raise ValueError("federation.peers must name at least one peer")
+        return self
+
+    @model_validator(mode="after")
+    def peer_keys_are_distinct(self) -> FederationConfig:
+        """Two peers may not share a public key.
+
+        `verify_primary_jwt` returns the first peer whose key verifies, so a
+        shared key made the audited actor a matter of YAML order while both
+        peers authenticated — an audit that names the wrong caller is worse
+        than one that names none.
+        """
+        seen: dict[str, str] = {}
+        for name, peer in self.peers.items():
+            first = seen.setdefault(peer.public_key, name)
+            if first != name:
+                raise ValueError(
+                    f"federation peers {first!r} and {name!r} share a public key; "
+                    "each peer needs its own, or the audited caller is YAML order"
+                )
+        return self
+
+
+_DEFAULT_PORTS = {"https": 443, "http": 80}
+
+
+def same_gateway_key(url: str) -> str:
+    """A URL reduced to "which gateway endpoint is this", for comparison only.
+
+    Scheme and host lower-cased, a default port dropped, a trailing slash
+    dropped. Without this, ONE secondary written two ways — `:443`, a trailing
+    slash, a capitalised host — was refused as two gateways sharing an
+    audience, which is a confusing load error for a correct configuration.
+
+    The path AND QUERY are kept. Two gateways can live behind one host on
+    different prefixes, and a token-in-URL backend carries its credential in
+    the query (`_expand_backend_url`), so two URLs differing only there can be
+    two endpoints. Reading those as one is the mistake in the other direction,
+    and it is the dangerous one: it would skip the refusal this feeds.
+
+    It lives here rather than in ``loader.py``, where it started, because the
+    pin migration needs the same question answered — and answered the same way.
+    Two normalisations would be two opinions about which URLs are one gateway,
+    and the looser one would decide.
+    """
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    port = parts.port
+    if port is not None and _DEFAULT_PORTS.get(parts.scheme.lower()) == port:
+        port = None
+    authority = f"{host}:{port}" if port is not None else host
+    query = f"?{parts.query}" if parts.query else ""
+    return f"{parts.scheme.lower()}://{authority}{parts.path.rstrip('/')}{query}"
+
+
+def same_gateway_endpoint(one: str, other: str) -> bool:
+    """Whether two URLs name the same gateway endpoint, spelled differently."""
+    return same_gateway_key(one) == same_gateway_key(other)
+
+
+def federation_audience(url: str) -> str | None:
+    """The secondary profile name a primary JWT is audience-pinned to (#592).
+
+    It is the path segment before ``/mcp`` in a federated backend's gateway URL
+    (``…/gateway/<profile>/mcp`` or the test shape ``…/<profile>/mcp``), or None
+    when the URL is not a gateway MCP endpoint.
+    """
+    parts = [p for p in urlsplit(url).path.split("/") if p]
+    if len(parts) >= 2 and parts[-1] == "mcp":
+        return parts[-2]
+    return None
+
+
 class Backend(BaseModel):
     """Per-profile backend MCP server config."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _guard_fields_renamed(cls, block: Any) -> Any:
+        if isinstance(block, dict):
+            for old, new in (
+                ("parameter_guards", "literal_request_guards"),
+                ("request_guards", "literal_request_guards"),
+                ("response_guards", "literal_response_guards"),
+            ):
+                if old in block:
+                    raise ValueError(f"{old} was renamed {new} in 3.0.0")
+        return block
 
     url: str = Field(
         ...,
@@ -615,6 +1082,14 @@ class Backend(BaseModel):
             "Backend location. A streamable-http URL (http(s)://), "
             "internal://<label> for trentina's own in-process tool surface, or "
             "decoy://<label> for tools nothing answers (see `decoys`)."
+        ),
+    )
+    transport: TransportName | PluginRef = Field(
+        default="mcp",
+        description=(
+            "The wire protocol used to reach this backend. 'mcp' (the only "
+            "dispatchable built-in) today; a 'dist:name' transport plugin is "
+            "refused at load until the Face/Carrier contract is frozen (#535)."
         ),
     )
     decoys: dict[str, DecoyTool] = Field(
@@ -643,6 +1118,18 @@ class Backend(BaseModel):
             "Exclusive with a credential header or a ${VAR} in the URL."
         ),
     )
+    federated: FederatedConfig | None = Field(
+        default=None,
+        description=(
+            "Mark this backend as a federated secondary Trentina — a peer gateway "
+            "whose own perimeter already judged its responses (#592). Inert in "
+            "itself today: the link still runs as a plain MCP backend, so the "
+            "interim static-bearer link keeps working unchanged. Its presence is "
+            "a trust-boundary declaration later items build on (primary-key auth, "
+            "verdict trust). Remote backends only; held across an agent reload "
+            "like the defense block, since it names a trust boundary."
+        ),
+    )
     timeout_seconds: float = Field(
         default=30.0,
         gt=0,
@@ -657,14 +1144,14 @@ class Backend(BaseModel):
             "Timeout for tools/list metadata fetch (streamable-HTTP handshake needs headroom)"
         ),
     )
-    parameter_guards: dict[str, dict[str, ParameterConstraint]] = Field(
+    literal_request_guards: dict[str, dict[str, ParameterConstraint]] = Field(
         default_factory=dict,
         description=(
             "Tool name -> parameter name -> value constraint. "
             "Validated at call time before the backend is contacted."
         ),
     )
-    response_guards: dict[str, dict[str, ParameterConstraint]] = Field(
+    literal_response_guards: dict[str, dict[str, ParameterConstraint]] = Field(
         default_factory=dict,
         description=(
             "Tool name -> response field -> value constraint. Validated on "
@@ -693,10 +1180,11 @@ class Backend(BaseModel):
         default_factory=ProcessorChainConfig,
         description=(
             "Transforms for this backend's tool and parameter descriptions "
-            "(#176). {processors: [summarize]} compresses them with the "
-            "operator's model in the background, cached; until a description "
-            "is compressed it is served as the backend wrote it. Replaced "
-            "compress_descriptions: true (gone since 0.40.0)."
+            "(#176). {processors: [summarize]} compresses them with this "
+            "profile's own model in the background, cached in this profile's "
+            "partition (6.1.0; it was the operator's model, shared); until a "
+            "description is compressed it is served as the backend wrote it. "
+            "Replaced compress_descriptions: true (gone since 0.40.0)."
         ),
     )
     compact_schemas: bool = Field(
@@ -738,14 +1226,14 @@ class Backend(BaseModel):
         default_factory=dict,
         description=(
             "Per-tool response-reduction overrides, keyed by tool name "
-            "(same shape as parameter_guards). Whether reduction helps is a "
+            "(same shape as literal_request_guards). Whether reduction helps is a "
             "property of the tool's OUTPUT SHAPE, not of who called it: "
             "syslog_tail_tool is log-shaped for every profile. Unset tools "
             "use the profile default."
         ),
     )
 
-    @field_validator("parameter_guards")
+    @field_validator("literal_request_guards")
     @classmethod
     def mode_guards_name_real_modes(
         cls, v: dict[str, dict[str, ParameterConstraint]]
@@ -764,7 +1252,7 @@ class Backend(BaseModel):
             for value in (*guard.allow, *guard.deny):
                 if not any(fnmatchcase(mode, value) for mode in MODE_NAMES):
                     raise ValueError(
-                        f"parameter_guards.{tool}.trentina_mode: {value!r} matches no mode; "
+                        f"literal_request_guards.{tool}.trentina_mode: {value!r} matches no mode; "
                         f"use {', '.join(MODE_NAMES)} or a glob over them"
                     )
         return v
@@ -826,6 +1314,38 @@ class Backend(BaseModel):
         named = [k for k, _ in parse_qsl(parts.query, keep_blank_values=True)]
         if any(_CREDENTIAL_PARAM_RE.search(k) for k in named):
             raise ValueError("auth cannot be combined with a credential query parameter in the url")
+        return self
+
+    @model_validator(mode="after")
+    def federated_is_a_remote_peer(self) -> Backend:
+        """Federation is a relationship with another gateway reached over HTTP.
+
+        An ``internal://`` backend is this gateway's own tool surface, not a
+        peer, so it cannot be federated. A ``decoy://`` backend has no server
+        at all — the ``_REMOTE_ONLY_FIELDS`` check refuses ``federated`` there.
+
+        When an primary key is set, by either source, the backend signs a JWT whose
+        audience is the secondary profile named in the URL, so the URL must be a
+        gateway MCP endpoint (``…/<profile>/mcp``) from which that name is
+        derivable.
+        """
+        if self.federated is not None and self.is_internal:
+            raise ValueError("federated does not apply to an internal:// backend")
+        if (
+            self.federated is not None
+            and self.federated.has_primary_key
+            and federation_audience(self.url) is None
+        ):
+            raise ValueError(
+                "a federated backend with an primary key must point at a gateway MCP "
+                "endpoint (.../<profile>/mcp), from which the token audience is taken"
+            )
+        if self.federated is not None and self.federated.poll_seconds > 0 and self.auth is not None:
+            raise ValueError(
+                "a federated backend with poll_seconds cannot also use auth: "
+                "background revalidation skips auth backends, so the poll would "
+                "never run — use the federated primary key, not an auth grant"
+            )
         return self
 
     @field_validator("url")
@@ -1058,6 +1578,21 @@ class DefenseConfig(BaseModel):
             '{"redact": "<question>"}) and any other value is refused. '
             "`enforcement` is the default an omitted mode resolves to, and "
             "must be in this list."
+        ),
+    )
+    llm_completion: EnforcementMode = Field(
+        default="flag",
+        description=(
+            "How an LLM completion streamed back through /proxy/llm is judged "
+            "on the RESPONSE edge, independent of `enforcement` (which governs "
+            "the tool and request edges). flag (default): the completion "
+            "streams to the agent untouched and is scanned post-hoc, the "
+            "finding recorded only — a stream cannot be retracted once sent, "
+            "and an interactive profile keeps time-to-first-token. block: the "
+            "completion is buffered, judged, and WITHHELD if flagged or not "
+            "fully judged — the latency a buffer costs is one an autonomous "
+            "profile with no human waiting can pay. `redact` cannot apply to a "
+            "token stream and is refused here, as for `enforcement`."
         ),
     )
 
@@ -1380,6 +1915,12 @@ CLIENT_EGRESS_PORT = 443
 
 _MAX_EGRESS_HOSTS = 64
 
+#: As many source networks as hosts. Each is one decision an operator made, so
+#: the same bound applies for the same reason; and the approval rule compares
+#: them as address ranges, which costs a containment test per pair, so an
+#: unbounded list would be a write an operator could make slow for itself.
+_MAX_EGRESS_NETWORKS = 64
+
 
 class ClientEgressConfig(BaseModel):
     """Per-profile CONNECT tunnel for the agent's own client (#442).
@@ -1403,6 +1944,7 @@ class ClientEgressConfig(BaseModel):
     source_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = Field(
         ...,
         min_length=1,
+        max_length=_MAX_EGRESS_NETWORKS,
         description=(
             "CIDRs the agent's connections come from; the peer address resolves "
             "the profile. One agent per network, so no two profiles may overlap."
@@ -1438,7 +1980,7 @@ GUARDED_TIMEOUT_MIN = 5.0
 GUARDED_TIMEOUT_MAX = 120.0
 
 
-class GuardedExecutionConfig(BaseModel):
+class SemanticGuardsConfig(BaseModel):
     """Calls to the tools named here are judged before they are forwarded (#456).
 
     The inbound layers judge what an agent reads. A request that reads like a
@@ -1487,7 +2029,7 @@ class GuardedExecutionConfig(BaseModel):
             "Refuse these calls outright, without asking the judge, once the "
             "session has been delivered flagged or partly judged content, and "
             "for the rest of that session (#457). A call whose session the "
-            "gateway cannot identify is refused too. For unattended seats: an "
+            "gateway cannot identify is refused too. For unattended profiles: an "
             "interactive one reads flagged content routinely."
         ),
     )
@@ -1502,7 +2044,7 @@ class GuardedExecutionConfig(BaseModel):
     @classmethod
     def _policy_has_text(cls, policy: str) -> str:
         if not policy.strip():
-            raise ValueError("guarded_execution.policy is empty")
+            raise ValueError("semantic_request_guards.policy is empty")
         return policy
 
     @field_validator("tools")
@@ -1510,13 +2052,13 @@ class GuardedExecutionConfig(BaseModel):
     def _tools_are_exact_names(cls, tools: dict[str, list[str]]) -> dict[str, list[str]]:
         for backend, names in tools.items():
             if not names:
-                raise ValueError(f"guarded_execution.tools.{backend} names no tool")
+                raise ValueError(f"semantic_request_guards.tools.{backend} names no tool")
             if len(set(names)) != len(names):
-                raise ValueError(f"guarded_execution.tools.{backend} lists a tool twice")
+                raise ValueError(f"semantic_request_guards.tools.{backend} lists a tool twice")
             bad = sum(1 for name in names if not DESTINATION_NAME_RE.fullmatch(name))
             if bad:
                 raise ValueError(
-                    f"guarded_execution.tools.{backend}: {bad} entries are not exact "
+                    f"semantic_request_guards.tools.{backend}: {bad} entries are not exact "
                     "tool names (no globs)"
                 )
         return tools
@@ -1525,20 +2067,20 @@ class GuardedExecutionConfig(BaseModel):
     @classmethod
     def _egress_names_are_exact(cls, names: list[str]) -> list[str]:
         if len(set(names)) != len(names):
-            raise ValueError("guarded_execution.egress_http lists an upstream twice")
+            raise ValueError("semantic_request_guards.egress_http lists an upstream twice")
         bad = sum(1 for name in names if not DESTINATION_NAME_RE.fullmatch(name))
         if bad:
             raise ValueError(
-                f"guarded_execution.egress_http: {bad} entries are not exact "
+                f"semantic_request_guards.egress_http: {bad} entries are not exact "
                 "upstream names (no globs)"
             )
         return names
 
     @model_validator(mode="after")
-    def _guards_something(self) -> GuardedExecutionConfig:
+    def _guards_something(self) -> SemanticGuardsConfig:
         """A block that guards nothing is a configuration mistake, not a no-op."""
         if not self.tools and not self.egress_http:
-            raise ValueError("guarded_execution guards nothing: set tools or egress_http")
+            raise ValueError("semantic_request_guards guards nothing: set tools or egress_http")
         return self
 
     def guards(self, backend: str, tool: str) -> bool:
@@ -1932,6 +2474,126 @@ class EgressUpstream(BaseModel):
         return self.upstream.removeprefix("https://")
 
 
+#: A route type with no block of its own before ``proxies:`` (#535): the
+#: agent-chosen ``forward`` route, or an operator-installed ``dist:name`` plugin.
+_ROUTE_TYPE_RE = re.compile(r"^(forward|[a-z0-9][a-z0-9._-]*:[a-z][a-z0-9-]{0,31})$")
+
+
+def _no_credential_in(options: dict[str, Any], where: str) -> dict[str, Any]:
+    """Refuse an ``options`` value shaped like a credential.
+
+    ``options`` is a route's own settings, which the gateway cannot read; a
+    secret there would be one no rule masks, no log holds and no approval
+    shows. A credential belongs in an env var a grant names (``token_env``).
+    """
+    if credential_kinds(json.dumps(options, default=str)):
+        raise ValueError(f"{where}: a value is shaped like a credential; name it in token_env")
+    return options
+
+
+class RouteInstance(BaseModel):
+    """One ``proxies.<name>`` instance of a type that had no block before #535:
+    ``forward`` or a ``dist:name`` route plugin.
+
+    Its destinations are typed, so every rule that reads where the gateway may
+    go reads them: ``origins`` (keyed https origins the operator names) or
+    ``hosts`` (names an agent may choose, or ``*``). ``options`` is the route's
+    own settings and is never dialled.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    type: str = Field(..., description="forward, or a dist:name route plugin")
+    origins: dict[str, str] = Field(default_factory=dict, description="key -> https origin")
+    hosts: list[str] = Field(default_factory=list, description="DNS names an agent may name, or *")
+    options: dict[str, Any] = Field(default_factory=dict, description="the route's own settings")
+    credential: EgressCredential | None = Field(
+        default=None,
+        description="How a grant's token is sent to this instance's origins; never to a host",
+    )
+
+    @model_validator(mode="after")
+    def _a_token_goes_only_where_the_operator_named(self) -> RouteInstance:
+        """An agent-chosen host never receives a profile's token: a credential
+        belongs to an instance whose destinations the operator wrote down."""
+        if self.credential is not None and (self.hosts or self.type == "forward"):
+            raise ValueError(
+                "credential: an instance an agent chooses the destination of takes none"
+            )
+        return self
+
+    @field_validator("type")
+    @classmethod
+    def _a_route_type(cls, value: str) -> str:
+        if not _ROUTE_TYPE_RE.match(value):
+            raise ValueError(f"type {value!r} is neither forward nor a dist:name route plugin")
+        return value
+
+    @field_validator("origins")
+    @classmethod
+    def _https_origins(cls, value: dict[str, str]) -> dict[str, str]:
+        for key, origin in value.items():
+            parts = urlsplit(origin)
+            if (
+                parts.scheme != "https"
+                or not parts.hostname
+                or parts.username is not None
+                or parts.query
+                or parts.fragment
+            ):
+                # No userinfo: an origin is shown to the person approving it.
+                raise ValueError(f"origins.{key}: an https origin is required, with no userinfo")
+        return value
+
+    @field_validator("hosts")
+    @classmethod
+    def _dns_names(cls, value: list[str]) -> list[str]:
+        for host in value:
+            if host != "*" and not is_dns_name(host):
+                raise ValueError(f"hosts: {host!r} is not a DNS name (an address is never listed)")
+        return value
+
+    @field_validator("options")
+    @classmethod
+    def _options_hold_no_secret(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _no_credential_in(value, "options")
+
+
+class RouteGrant(BaseModel):
+    """What one profile may do on one ``RouteInstance``: ``proxies.<name>`` under
+    the profile. ``origins`` and ``hosts`` narrow the instance's; a credential
+    is named by ``token_env`` and injected by the spine, never held by the route.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    origins: list[str] = Field(default_factory=list, description="instance origin keys")
+    hosts: list[str] = Field(default_factory=list, description="names the profile may reach")
+    methods: list[str] = Field(default_factory=lambda: ["GET", "HEAD"])
+    token_env: str | None = Field(default=None, description="env var naming the injected token")
+    token: SecretStr | None = Field(default=None, exclude=True, description="resolved at load")
+    enforcement: EnforcementMode = Field(default="block")
+    options: dict[str, Any] = Field(default_factory=dict, description="the route's grant terms")
+
+    @field_validator("hosts")
+    @classmethod
+    def _dns_names(cls, value: list[str]) -> list[str]:
+        for host in value:
+            if host != "*" and not is_dns_name(host):
+                raise ValueError(f"hosts: {host!r} is not a DNS name (an address is never listed)")
+        return value
+
+    @field_validator("methods")
+    @classmethod
+    def _methods_upper(cls, value: list[str]) -> list[str]:
+        return [method.upper() for method in value]
+
+    @field_validator("options")
+    @classmethod
+    def _options_hold_no_secret(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _no_credential_in(value, "options")
+
+
 class EgressGrant(BaseModel):
     """What one profile may do on one egress upstream (#511): ``egress_http.<name>``.
 
@@ -2255,7 +2917,7 @@ class OAuthConfig(BaseModel):
 
     A profile always carries a static bearer (``auth``). When ``oauth.enabled``
     is set it ALSO accepts a Google-backed OAuth token whose verified email is
-    in ``allowed_emails`` — the seat for a client that cannot send a static
+    in ``allowed_emails`` — the profile for a client that cannot send a static
     ``Authorization`` header (gemini.google.com Custom Apps, which offers only
     "no auth" or OAuth). The static token keeps working for every other client.
 
@@ -2304,7 +2966,7 @@ class OAuthConfig(BaseModel):
         description=(
             "Verified Google account emails permitted through this profile. "
             "Compared case-insensitively. Empty while enabled is a hard error "
-            "— an OAuth seat open to any Google account is never intended."
+            "— an OAuth profile open to any Google account is never intended."
         ),
     )
     allowed_subjects: list[str] = Field(
@@ -2527,7 +3189,7 @@ class OAuthConfig(BaseModel):
         if self.enabled and not self.allowed_emails:
             raise ValueError(
                 "oauth.enabled is true but allowed_emails is empty — refusing "
-                "to expose an OAuth seat open to any Google account"
+                "to expose an OAuth profile open to any Google account"
             )
         return self
 
@@ -2574,6 +3236,18 @@ class Profile(BaseModel):
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _guard_fields_renamed(cls, block: Any) -> Any:
+        if isinstance(block, dict):
+            for old, new in (
+                ("guarded_execution", "semantic_request_guards"),
+                ("intent_guards", "semantic_request_guards"),
+            ):
+                if old in block:
+                    raise ValueError(f"{old} was renamed {new} in 3.0.0")
+        return block
+
     name: str = Field(..., description="Profile name (URL-safe slug)")
     auth: AuthConfig | None = Field(
         default=None,
@@ -2600,7 +3274,7 @@ class Profile(BaseModel):
             "What this profile may see and act on through the gateway's own "
             "admin tools. 'agent' (the default) is self-scope: its own audit "
             "rows, its own backends, its own section of profiles.yaml. "
-            "'operator' is the seat that holds the whole gateway."
+            "'operator' is the profile that holds the whole gateway."
         ),
     )
     defense: DefenseConfig = Field(default_factory=DefenseConfig)
@@ -2632,16 +3306,14 @@ class Profile(BaseModel):
     )
     orchestrated: bool = Field(
         default=False,
+        deprecated=True,
         description=(
-            "Route this profile's tools/call through the Trentina 3.0 "
-            "orchestrator (crossing/edge) instead of the hand-rolled router "
-            "path. A temporary Phase 4 cutover flag: it lets one profile ride "
-            "the new path for byte-identical verification while others stay on "
-            "the old one, and is removed when every profile is cut over. "
-            "Operator scaffolding: set it in profiles.yaml, not per call. While "
-            "the orchestrated path stays byte-identical no agent can observe the "
-            "flag; the hold against an agent reload flipping it lands with the "
-            "cutover that removes the flag."
+            "DEPRECATED, ignored. Every profile's tools/call now runs through "
+            "the Trentina 3.0 orchestrator (crossing/edge) unconditionally; the "
+            "hand-rolled router path is gone. The field is kept, accepted but "
+            "unread, only so a profiles.yaml that still sets it (as the live "
+            "config did during the Phase 4 cutover) continues to load. Remove "
+            "the key from profiles.yaml, then this field, in a later change."
         ),
     )
     alert_ingress: AlertIngressConfig | None = Field(
@@ -2681,16 +3353,56 @@ class Profile(BaseModel):
             "egress route, keyed by an egress_upstreams name (optional, #511)"
         ),
     )
-    guarded_execution: GuardedExecutionConfig | None = Field(
+    route_grants: dict[str, RouteGrant] = Field(
+        default_factory=dict,
+        description=(
+            "Grants on forward and dist: route instances, written as the "
+            "profile's proxies: entries for them (#535). Never a key in the file."
+        ),
+    )
+    semantic_request_guards: SemanticGuardsConfig | None = Field(
         default=None,
         description=(
             "Tools whose calls a gatekeeper judges against a written policy "
             "before they are forwarded (optional, #456)"
         ),
     )
+    semantic_response_guards: SemanticGuardsConfig | None = Field(
+        default=None,
+        description=(
+            "Tools whose RESPONSES a gatekeeper judges against a written policy "
+            "before the agent receives them — the semantic twin of the literal "
+            "response guard. ``tools`` scopes which tools' responses are judged "
+            "(optional, #456)"
+        ),
+    )
     oauth: OAuthConfig | None = Field(
         default=None,
         description="Google-backed OAuth access for this profile (optional)",
+    )
+    federation: FederationConfig | None = Field(
+        default=None,
+        description=(
+            "Share this PROFILE with a peer gateway (#592): the primary peers that "
+            "may authenticate with a primary JWT. The gateway derives a "
+            "`<name>-federation` ingress profile offering this profile's own "
+            "non-federated remote backends, with this profile's guards and defense "
+            "posture. Write this on the profile whose tools you are sharing; there "
+            "is no separate ingress profile to keep in step (optional)"
+        ),
+    )
+    federation_of: str | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Set by the loader, never by the file: the profile this profile was "
+            "DERIVED from (`federation_link.derive_ingress`). It is what makes "
+            "the link first-class rather than a naming convention — the audit, "
+            "the link report and the grant owner all read it. `load_profiles` "
+            "refuses a profiles.yaml that sets it, because a hand-written "
+            "profile naming another profile here would claim that profile's OAuth "
+            "grants; privilege must be loader-derived, never caller-chosen."
+        ),
     )
     tool_discovery: ToolDiscoveryConfig = Field(
         default_factory=ToolDiscoveryConfig,
@@ -2760,7 +3472,8 @@ class Profile(BaseModel):
             "bridges": bool(self.bridges),
             "git": bool(self.git),
             "egress_http": bool(self.egress_http),
-            "guarded_execution": self.guarded_execution is not None,
+            "semantic_request_guards": self.semantic_request_guards is not None,
+            "semantic_response_guards": self.semantic_response_guards is not None,
             # Gateway tools it does not name, and categories that could
             # say which backends are decoys (#473).
             "tool_discovery": self.tool_discovery != ToolDiscoveryConfig(),
@@ -2769,6 +3482,175 @@ class Profile(BaseModel):
         if problems:
             raise ValueError(f"honeypot profile: {'; '.join(problems)}")
         return self
+
+    @model_validator(mode="after")
+    def a_shared_profile_is_shareable(self) -> Profile:
+        """Refuse a profile that cannot be shared as written (#592).
+
+        ``federation`` is declared on the PROFILE whose tools are being shared, and
+        ``federation_link.derive_ingress`` builds the ingress from it. So this
+        rule no longer describes the ingress — derivation constructs that
+        correctly by definition — it holds the profile to being a thing that can
+        legibly be shared.
+
+        An OPERATOR profile may be shared since 6.0.0, so there is no role rule
+        here any more. What replaces it is narrower: an operator profile's
+        ``internal://`` allowlist crosses to its peers, so it must name its
+        tools EXACTLY -- ``tools_allow`` holds fnmatch patterns, and ``*`` or
+        ``read_*`` names nothing a person can approve on the ``/approve`` page
+        while silently covering every tool a later release adds.
+
+        The name must not already end in the ingress suffix, or the derived
+        name would collide with another link's.
+
+        And a shared profile MUST carry ``auth`` or ``oauth``, which is also how the
+        pre-5.0.0 shape is refused. That shape was a standalone ingress profile
+        that hand-listed its backends, and the rule it loaded under refused
+        ``auth`` and ``oauth`` on it outright — ``peers`` was its authentication.
+        So every such profile that loads today has neither, and requiring one
+        here refuses exactly those and nothing that was ever valid. It is a real
+        rule in its own right, not only a discriminator: a profile is something an
+        agent signs in to, and a profile no agent can reach has no tools of its
+        own to share.
+
+        Skipped for a DERIVED ingress, which carries the profile's ``federation``
+        block and would otherwise be judged as a profile itself: its name ends in
+        the reserved suffix and it deliberately has no way in.
+        ``a_derived_ingress_is_bounded`` is the rule that applies to those.
+        """
+        if self.federation is None or self.federation_of is not None:
+            return self
+        problems: list[str] = []
+        # A shared profile MAY be the operator since 6.0.0. The rule here used
+        # to refuse that, saying a derived operator ingress would offer a peer
+        # the gateway's own admin tools -- which overstated its own code, since
+        # `derive_ingress` set `role="agent"` itself and constructed an internal
+        # backend allowing the paging reader alone. Both of those now follow the
+        # shared profile, at Scott's instruction; `docs/federation.md` carries
+        # what it costs, and `config_guard.peer_becomes_operator` puts a person
+        # in front of the change that starts it.
+        if self.name.endswith(INGRESS_SUFFIX):
+            problems.append(
+                f"a profile's name may not end in {INGRESS_SUFFIX!r}, which is "
+                "reserved for the ingress derived from it"
+            )
+        if self.role == "operator":
+            # A shared OPERATOR profile's internal allowlist crosses to its
+            # peers, and approving that grant means reading which admin tools
+            # are in it. `tools_allow` entries are fnmatch patterns, so `*` or
+            # `read_*` names nothing a person can check and silently covers
+            # every tool a later upgrade adds. Exact names only, here, so the
+            # approval page can enumerate the grant and a no-op widening (a
+            # name already matched by a pattern) cannot stage as a new one.
+            for backend_name, backend in self.backends.items():
+                if not backend.is_internal:
+                    continue
+                globbed = sorted(t for t in backend.tools_allow if _GLOB_CHARS & set(t))
+                if globbed:
+                    problems.append(
+                        f"internal backend {backend_name!r} allows {globbed} on an "
+                        "operator profile that is shared. A peer inherits this "
+                        "list, and a pattern names no tool a person can approve "
+                        "and covers every tool a later release adds. List the "
+                        "tools by exact name"
+                    )
+        if self.auth is None and self.oauth is None:
+            problems.append(
+                "a shared profile needs auth or oauth. Since 5.0.0 `federation` is "
+                "declared on the PROFILE whose tools are shared, and the gateway "
+                "derives the `<name>-federation` ingress from it. If this was a "
+                "standalone ingress profile, move its `federation` block onto "
+                "the profile it offers and delete the profile; the primary then "
+                "points at /gateway/<profile>-federation/mcp"
+            )
+        if problems:
+            raise ValueError(f"shared profile: {'; '.join(problems)}")
+        return self
+
+    @model_validator(mode="after")
+    def a_derived_ingress_is_bounded(self) -> Profile:
+        """Hold a DERIVED ingress to its bounds, as a check on the derivation.
+
+        ``derive_ingress`` builds every one of these profiles, so nothing a
+        person writes reaches this rule — ``load_profiles`` refuses a file that
+        sets ``federation_of`` at all. It exists because the cost of a
+        derivation bug is a peer holding a tool nobody offered it, and that is
+        worth a second opinion from a different piece of code.
+
+        The internal backend must still carry the paging reader, because
+        ``parts.py`` delivers a peer's paged response through it part by part
+        and a link without it breaks paging while looking fine. No remote
+        backend may be ``federated``: that is what keeps a link from
+        re-exporting the next one, A to B to C.
+
+        What this rule used to check and no longer can: that the internal
+        backend offered ``read_part_tool`` and nothing else, and
+        that the role was ``agent``. Both followed from the derivation
+        constructing them, and since 6.0.0 both follow the shared profile
+        instead (Scott's instruction; see ``federation_link.CARRIED`` and
+        ``docs/federation.md``). A validator seeing one profile cannot tell
+        whether a widened internal surface matches the profile it came from,
+        because it cannot see that profile — so the check moved to where the
+        registry is visible: ``loader._check_federation_internal_surface``.
+        """
+        if self.federation_of is None:
+            return self
+        problems: list[str] = []
+        for field in ("auth", "oauth"):
+            if getattr(self, field) is not None:
+                problems.append(
+                    f"{field} does not apply: federation.peers is how a primary "
+                    "authenticates here, and a second way in would admit a caller "
+                    "with no peer and no sub"
+                )
+        # An internal backend that EXISTS must carry the paging reader. Not
+        # "must exist": `derive_ingress` always adds one, so requiring it here
+        # would only force profiles hand-built for unrelated tests to grow a
+        # backend, and would check the derivation against itself rather than
+        # against anything a bug could get wrong.
+        for name, backend in self.backends.items():
+            if backend.is_internal and _READ_PART not in backend.tools_allow:
+                problems.append(
+                    f"internal backend {name!r} does not offer {_READ_PART!r}: "
+                    "paging a response to a peer needs it"
+                )
+            if backend.federated is not None:
+                problems.append(
+                    f"backend {name!r} is federated: a derived ingress never "
+                    "re-exports the next gateway"
+                )
+        if problems:
+            raise ValueError(f"derived federation ingress: {'; '.join(problems)}")
+        return self
+
+    @property
+    def grant_owner(self) -> str:
+        """Which profile's OAuth grants this one spends (#479, #592).
+
+        Itself, for every profile a person writes. For a DERIVED federation
+        ingress, the profile it was derived from — so a human signs in ONCE, on
+        the profile, and the link uses that sign-in.
+
+        Before this, a grant belonged to ``(profile, backend)`` and a federated
+        call ran as the ingress, so a profile already signed in to a backend held
+        nothing for the link: the same person had to authorize the same account
+        twice, and the second sign-in had to be driven through a tool offered
+        across the link, which on a multi-peer ingress let one peer revoke
+        another's grant or repoint it at its own human's account.
+
+        The peer reaches a strict subset of what the profile's own agent already
+        can — the offered set IS the profile's backends, with the profile's guards —
+        so spending the profile's grant grants no new reach; it removes a
+        ``needs_auth`` refusal. What it does widen is consent, which is why
+        adding a ``federation`` block to a profile is staged for a person.
+
+        It is a FIELD rather than a name match on purpose. Deriving the owner
+        from ``name`` would make a hand-written ``josui-federation`` a way to
+        claim josui's grants, leaving a name-collision check as the only thing
+        between a typo and someone else's mailbox. ``load_profiles`` refuses a
+        file that sets ``federation_of`` at all.
+        """
+        return self.federation_of or self.name
 
     def channel_bridges(self) -> dict[str, MatrixBridgeConfig]:
         """Every bridge this profile declares, by channel: ``matrix_bridge``
@@ -2839,21 +3721,45 @@ class Profile(BaseModel):
         typo the operator should hear about at load. A decoy is answered by
         nothing, so there is no call to judge.
         """
-        if self.guarded_execution is None:
+        if self.semantic_request_guards is None:
             return self
-        for name in self.guarded_execution.tools:
+        for name in self.semantic_request_guards.tools:
             backend = self.backends.get(name)
             if backend is None:
-                raise ValueError(f"guarded_execution.tools.{name}: no such backend")
+                raise ValueError(f"semantic_request_guards.tools.{name}: no such backend")
             if backend.is_decoy:
-                raise ValueError(f"guarded_execution.tools.{name}: a decoy backend is not judged")
-        for name in self.guarded_execution.egress_http:
+                raise ValueError(
+                    f"semantic_request_guards.tools.{name}: a decoy backend is not judged"
+                )
+        for name in self.semantic_request_guards.egress_http:
             # Guard only a destination this profile may actually reach: a name
             # that is not a grant is a rule that never fires (#511).
             if name not in self.egress_http:
                 raise ValueError(
-                    f"guarded_execution.egress_http.{name}: not an egress_http "
-                    "grant of this profile"
+                    f"semantic_request_guards.egress_http.{name}: "
+                    "not an egress_http grant of this profile"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def guarded_responses_name_real_backends(self) -> Profile:
+        """Every guarded response is on a backend this profile has, and a real one.
+
+        The response twin of ``guarded_tools_name_real_backends`` (#456): a
+        name that matches no backend never fires, and a decoy's response is
+        canned, so there is nothing to judge. ``egress_http`` has no meaning on
+        a response — there is no outbound request to judge the result of — so
+        only ``tools`` is checked.
+        """
+        if self.semantic_response_guards is None:
+            return self
+        for name in self.semantic_response_guards.tools:
+            backend = self.backends.get(name)
+            if backend is None:
+                raise ValueError(f"semantic_response_guards.tools.{name}: no such backend")
+            if backend.is_decoy:
+                raise ValueError(
+                    f"semantic_response_guards.tools.{name}: a decoy backend is not judged"
                 )
         return self
 
@@ -2900,6 +3806,36 @@ class Profile(BaseModel):
             raise ValueError(f"Profile name {v!r} must match ^[a-z][a-z0-9-]*$")
         return v
 
+    @field_validator("name")
+    @classmethod
+    def name_is_not_a_role(cls, v: str) -> str:
+        """A profile may not be NAMED after a role (Scott, 2026-11-02).
+
+        ``role: operator`` says what a profile may do; a profile named
+        ``operator`` says nothing and reads as though it did. Both appear in
+        the same sentences -- "the operator profile", "an operator reload",
+        ``/gateway/operator/mcp`` -- and once one deployment has a profile with
+        that name, every such sentence is ambiguous between the role and the
+        name. Reserving the words is cheaper than disambiguating them forever.
+
+        Derived from ``get_args(ProfileRole)`` rather than a second list, so a
+        role added later is reserved by having been added. A hand-maintained
+        copy is the version that drifts, which is the same argument that put
+        ``INGRESS_SUFFIX`` in this module.
+
+        Case-insensitive even though ``PROFILE_NAME_RE`` already forbids upper
+        case: the two rules are independent, and this one should not quietly
+        stop working if that one is ever loosened.
+        """
+        if v.casefold() in {role.casefold() for role in get_args(ProfileRole)}:
+            raise ValueError(
+                f"Profile name {v!r} is a role name, which is reserved. Roles "
+                "are what a profile HOLDS (`role: " + v.casefold() + "`), so a "
+                "profile of that name makes every sentence about it ambiguous. "
+                "Name it for what it is -- its agent, its owner, or its job."
+            )
+        return v
+
     @field_validator("backends")
     @classmethod
     def backend_names_match_re(cls, v: dict[str, Backend]) -> dict[str, Backend]:
@@ -2915,7 +3851,7 @@ class Profile(BaseModel):
         """Each llm_keys dict key must be a provider slug (matches PROVIDER_NAME_RE).
 
         Cross-validation against configured llm_providers happens at wiring time
-        in register_llm_routes (the provider list is not available here).
+        in ``trentina._register_proxies`` (the provider list is not available here).
         """
         for name in v:
             if not PROVIDER_NAME_RE.match(name):
@@ -2952,21 +3888,26 @@ class Profile(BaseModel):
 
         Until 0.15.0 `auth` was required, so every profile carried a static
         bearer token and this property held by accident. That had a cost: the
-        only way to add OAuth to a seat was to ALSO give it a permanent
+        only way to add OAuth to a profile was to ALSO give it a permanent
         anonymous credential which, because the bearer is checked first,
         bypassed the OAuth entirely — the opposite of what an operator adding
         OAuth believes they are doing.
 
         So the requirement is now what it always meant: at least one way to
-        authenticate, of any kind. A bearer-only agent, an OAuth-only web seat,
+        authenticate, of any kind. A bearer-only agent, an OAuth-only web profile,
         or both together are all valid; neither is not.
         """
         if self.auth is not None:
             return self
         if self.oauth is not None and self.oauth.enabled:
             return self
+        if self.federation is not None and self.federation.peers:
+            # A federation ingress: a primary peer authenticates with a primary
+            # JWT signed by one of these keys (#592), which is authentication.
+            return self
         raise ValueError(
             f"profile {self.name!r} has no authentication: set auth.bearer_token_env, "
-            "or oauth.enabled with allowed_emails, or both. A profile with "
-            "neither would serve its backends to anyone who found the URL"
+            "or oauth.enabled with allowed_emails, or federation.peers, or a "
+            "combination. A profile with none would serve its backends to anyone "
+            "who found the URL"
         )

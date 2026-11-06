@@ -106,8 +106,8 @@ async def test_the_4xx_advisory_carries_no_l3_prose(env: Path) -> None:
 async def test_the_gateway_warning_carries_no_l3_prose(env: Path) -> None:
     from pydantic import SecretStr
 
-    from trentina.gateway.ingress_defense import scan_tool_response
     from trentina.gateway.profile import AuthConfig, Backend, Profile
+    from trentina.orchestrator import scan_tool_response
 
     profile = Profile(
         name="p",

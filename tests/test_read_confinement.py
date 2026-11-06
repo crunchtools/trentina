@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from tests.refusal_shape import refused
 from trentina import config as config_mod
 from trentina.errors import BlockedSourceError, ConfigError, FileReadError
 from trentina.gateway.loader import load_profiles, register_active_config
@@ -464,7 +465,7 @@ class TestAudit:
         from trentina.database import get_db
         from trentina.gateway.names import NAMESPACE_SEP
         from trentina.gateway.profile import AuthConfig, Backend, Profile
-        from trentina.gateway.router import route_jsonrpc
+        from trentina.transports.mcp import route_jsonrpc
 
         profile = Profile(
             short_names=False,
@@ -488,5 +489,5 @@ class TestAudit:
 
         assert row["outcome"] == "blocked_defense"
         assert path not in (row["error_message"] or "")
-        assert resp["error"]["data"]["flagged_by"] == "confinement"
-        assert resp["error"]["data"]["alternatives"] == []
+        assert refused(resp)["flagged_by"] == "confinement"
+        assert refused(resp)["alternatives"] == []

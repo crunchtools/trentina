@@ -1,0 +1,15 @@
+# Copy to the .gitignore of the directory holding the live profiles.yaml
+# (/srv/trentina/live in the reference unit), which is the one bound writable
+# for config_tool (#633).
+#
+# The gateway writes two kinds of transient file in this directory: a random
+# candidate it validates a change in, and the staging file an atomic replace
+# renames from. Both are removed in the normal course of a write; these
+# patterns keep a crash-time leftover out of a commit.
+#
+# A private key never belongs here — federation keys live under the gateway's
+# data directory, not its config directory — but the last line is the kind of
+# mistake worth refusing in advance rather than discovering in a push.
+.profiles-candidate-*
+.profiles.yaml.staged
+*.pem
