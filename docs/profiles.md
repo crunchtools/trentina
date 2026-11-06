@@ -750,9 +750,11 @@ backends:
 
   - a loopback literal, `127.0.0.1` or `[::1]`, over plain `http` (RFC 8252 3:
     the person's own machine, reaching this gateway through a published port);
-  - `https` on the gateway's own host, the one in `TRENTINA_OAUTH_BASE_URL`.
+  - `https` on the gateway's own **origin** — scheme, host and port, from
+    `TRENTINA_OAUTH_BASE_URL`. A different port is a different service, so the
+    host alone is not the check.
 
-  Any other host is a load error. The path is mounted at startup, so adding
+  Any other origin is a load error. The path is mounted at startup, so adding
   one needs a restart — `reload_profiles` says so under `not_applied` rather
   than reporting success.
 

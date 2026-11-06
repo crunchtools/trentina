@@ -25,7 +25,8 @@ under that name.
   `contrib/quadlet/trentina.container` now shows. Checked at load — absolute,
   no userinfo, query or fragment, a bounded unreserved path, nothing under a
   prefix the gateway serves, and a host that is either a loopback literal over
-  plain `http` (RFC 8252 3) or `https` on the gateway's own host: the
+  plain `http` (RFC 8252 3) or `https` on the gateway's own origin — scheme,
+  host AND port, since a different port is a different service: the
   authorization code is delivered to whatever that URI names, and a DCR server
   registers it for us, so another host would be a way out with a backend's
   grant. The path binds at startup, and `reload_profiles` reports

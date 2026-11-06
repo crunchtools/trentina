@@ -298,6 +298,7 @@ def _build_profile(name: str, body: Any) -> Profile:
     _resolve_grant_tokens(name, profile)
     _resolve_federation_primary_keys(name, profile)
     _expand_backend_env_refs(name, profile)
+    _check_backend_callbacks(name, profile)
     _check_drivers(name, profile)
     _check_plugin_imports(name, profile)
     _check_transports(name, profile)
@@ -977,41 +978,56 @@ def _expand_backend_url(name: str, backend_name: str, url: str) -> str:
     return expanded
 
 
-def _check_backend_callback_host(name: str, backend_name: str, callback_url: str) -> None:
-    """An https ``auth.callback_url`` must name THIS gateway's own host (#725).
+#: The port a scheme means when a URL omits it.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin_of(url: str) -> tuple[str, str, int]:
+    """A URL's origin as (scheme, host, effective port), for comparing two.
+
+    The port is part of it: a different port on the same host is a different
+    service, and comparing hosts alone would accept one.
+    """
+    parsed = urlsplit(url)
+    scheme = parsed.scheme.lower()
+    return scheme, (parsed.hostname or "").lower(), parsed.port or _DEFAULT_PORTS.get(scheme, 0)
+
+
+def _check_backend_callbacks(name: str, profile: Profile) -> None:
+    """An https ``auth.callback_url`` must be THIS gateway's own origin (#725).
 
     The browser carries an authorization code to whatever the redirect URI
     names, and for a backend whose server offers dynamic registration the
-    gateway registers that URI itself — so an operator-chosen host would be a
+    gateway registers that URI itself — so an operator-chosen origin would be a
     way to have a backend's code delivered somewhere else. The schema already
     holds plain http to the loopback literals RFC 8252 allows (the person's own
     machine, reaching this gateway through a published port); everything else
-    must be the gateway. Env-coupled, so it is checked here and not in the
-    schema.
+    must be the gateway, port included. Env-coupled, so it is checked here and
+    not in the schema.
 
     Raises:
-        ProfileConfigError: the host is neither loopback nor the gateway's own.
+        ProfileConfigError: the origin is neither loopback nor the gateway's own.
     """
     from .backend_oauth import public_base_url
 
-    parsed = urlsplit(callback_url)
-    if parsed.scheme != "https":
-        return
-    host = (parsed.hostname or "").lower()
-    own = (urlsplit(public_base_url()).hostname or "").lower()
-    if host != own:
-        raise ProfileConfigError(
-            f"Profile {name!r} backend {backend_name!r}: auth.callback_url host "
-            f"{host!r} is not this gateway's ({own!r}) — the authorization code "
-            "is delivered there, so only the gateway's own host or a loopback "
-            "literal is accepted"
-        )
+    own = _origin_of(public_base_url())
+    for backend_name, backend in profile.backends.items():
+        url = backend.auth.callback_url if backend.auth is not None else None
+        if url is None or urlsplit(url).scheme != "https":
+            continue
+        origin = _origin_of(url)
+        if origin != own:
+            raise ProfileConfigError(
+                f"Profile {name!r} backend {backend_name!r}: auth.callback_url "
+                f"origin {origin[0]}://{origin[1]}:{origin[2]} is not this "
+                f"gateway's ({own[0]}://{own[1]}:{own[2]}) — the authorization "
+                "code is delivered there, so only the gateway's own origin or "
+                "a loopback literal is accepted"
+            )
 
 
 def _expand_backend_env_refs(name: str, profile: Profile) -> None:
     for backend_name, backend in profile.backends.items():
-        if backend.auth is not None and backend.auth.callback_url is not None:
-            _check_backend_callback_host(name, backend_name, backend.auth.callback_url)
         if backend.auth is not None and backend.auth.client_secret_env:
             backend.auth.client_secret = _require_env(
                 name, backend.auth.client_secret_env, f"backends.{backend_name}.auth client secret"

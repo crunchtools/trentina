@@ -374,7 +374,7 @@ profiles:
 
 
 class TestBackendCallbackHost:
-    """#725: an https auth.callback_url may only name this gateway's own host.
+    """#725: an https auth.callback_url may only name this gateway's own origin.
 
     The authorization code is delivered to whatever the redirect URI names, and
     for a server offering dynamic registration the gateway registers that URI
@@ -405,6 +405,27 @@ profiles:
         monkeypatch.setenv("TRENTINA_OAUTH_BASE_URL", "https://gw.example")
         with pytest.raises(ProfileConfigError, match="not this gateway"):
             load_profiles(cfg)
+
+    def test_another_port_on_the_same_host_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A different port is a different service, so the host alone is not
+        # the check: something on :4444 would receive the code.
+        cfg = tmp_path / "profiles.yaml"
+        cfg.write_text(self._yaml("https://gw.example:4444/oauth/callback"))
+        monkeypatch.setenv("AGENT1_TOK", "tok")
+        monkeypatch.setenv("TRENTINA_OAUTH_BASE_URL", "https://gw.example")
+        with pytest.raises(ProfileConfigError, match="not this"):
+            load_profiles(cfg)
+
+    def test_the_schemes_default_port_written_out_is_the_same_origin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = tmp_path / "profiles.yaml"
+        cfg.write_text(self._yaml("https://gw.example:443/oauth/callback"))
+        monkeypatch.setenv("AGENT1_TOK", "tok")
+        monkeypatch.setenv("TRENTINA_OAUTH_BASE_URL", "https://gw.example")
+        assert load_profiles(cfg).profiles["agent1"].backends["hub"].auth is not None
 
     def test_the_gateways_own_host_is_accepted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
