@@ -118,6 +118,33 @@ _ROUTE_DUNDERS: frozenset[str] = frozenset(
     {"__init__", "__name__", "__post_init__", "__eq__", "__hash__", "__repr__", "__str__"}
 )
 
+#: Modules a CARRIER plugin must not import (#740). A carrier is the backend's
+#: wire, so it may open sockets (``socket``, ``ssl``, ``anyio``, an HTTP client)
+#: where a route may not. What it may not do is start what it carries to: the
+#: gateway spawns nothing (#724's ruling), so no module that launches a process,
+#: reads the filesystem or the gateway's own state, or runs bytes as code.
+CARRIER_FORBIDDEN_MODULES: frozenset[str] = frozenset(
+    {
+        "subprocess", "multiprocessing", "pty", "os", "sys", "builtins", "importlib",
+        "ctypes", "pickle", "marshal", "shelve", "inspect", "gc", "runpy", "code", "pdb",
+        "signal", "resource", "shutil", "tempfile", "mmap", "concurrent", "atexit",
+    }
+)  # fmt: skip
+
+#: Attributes a carrier plugin may not reach: every process launcher a
+#: permitted module (asyncio, anyio) still offers, and frame introspection.
+CARRIER_FORBIDDEN_ATTRIBUTES: frozenset[str] = frozenset(
+    {
+        "create_subprocess_exec", "create_subprocess_shell", "subprocess_exec",
+        "subprocess_shell", "run_process", "open_process", "to_thread",
+        "run_in_executor", "f_globals", "f_locals", "f_back", "gi_frame", "cr_frame",
+        "tb_frame",
+    }
+)  # fmt: skip
+
+#: Dunders a carrier may use beyond a route's: an async context manager's.
+_CARRIER_DUNDERS: frozenset[str] = frozenset({"__aenter__", "__aexit__", "__aiter__", "__anext__"})
+
 #: The canary a conformance run feeds the plugin: if it appears in a log record,
 #: the plugin logged the payload it was handed (#262).
 _CANARY = "zqx7conformancecanary"
@@ -177,16 +204,20 @@ def scan_source(source: str, scan: _Scan) -> None:
             _check_module(node.module, scan)
 
 
-class _RouteScan(ast.NodeVisitor):
+class _PluginScan(ast.NodeVisitor):
     """Every import, name and attribute in a route plugin's module, held to the
-    route lists. Each ``visit_`` records what it finds and keeps walking."""
+    route lists — or, for a carrier, the carrier lists. Each ``visit_`` records
+    what it finds and keeps walking."""
 
-    def __init__(self, scan: _Scan) -> None:
+    def __init__(self, scan: _Scan, *, carrier: bool = False) -> None:
         self.scan = scan
+        self.modules = CARRIER_FORBIDDEN_MODULES if carrier else ROUTE_FORBIDDEN_MODULES
+        self.attributes = CARRIER_FORBIDDEN_ATTRIBUTES if carrier else ROUTE_FORBIDDEN_ATTRIBUTES
+        self.dunders = _ROUTE_DUNDERS | _CARRIER_DUNDERS if carrier else _ROUTE_DUNDERS
 
     def _module(self, module: str) -> None:
         top = module.split(".", 1)[0]
-        if top in ROUTE_FORBIDDEN_MODULES:
+        if top in self.modules:
             self.scan.violations.append(f"forbidden-import:{top}")
         elif top == "trentina" and not _allowed_trentina(module):
             self.scan.violations.append(f"private-import:{module}")
@@ -205,9 +236,9 @@ class _RouteScan(ast.NodeVisitor):
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         attr = node.attr
-        if attr in ROUTE_FORBIDDEN_ATTRIBUTES:
+        if attr in self.attributes:
             self.scan.violations.append(f"forbidden-attribute:{attr}")
-        elif attr.startswith("__") and attr.endswith("__") and attr not in _ROUTE_DUNDERS:
+        elif attr.startswith("__") and attr.endswith("__") and attr not in self.dunders:
             self.scan.violations.append(f"forbidden-dunder:{attr}")
         self.generic_visit(node)
 
@@ -220,16 +251,28 @@ def scan_route_source(source: str, scan: _Scan) -> None:
     except SyntaxError:
         scan.violations.append("unparseable-source")
         return
-    _RouteScan(scan).visit(tree)
+    _PluginScan(scan).visit(tree)
 
 
-def scan_imports(dist: str, *, route: bool = False) -> list[str]:
+def scan_carrier_source(source: str, scan: _Scan) -> None:
+    """``scan_route_source`` for a carrier plugin (#740): the carrier lists, so
+    a socket is allowed and a process launcher is not."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        scan.violations.append("unparseable-source")
+        return
+    _PluginScan(scan, carrier=True).visit(tree)
+
+
+def scan_imports(dist: str, *, route: bool = False, carrier: bool = False) -> list[str]:
     """The load-bearing, synchronous check: the import boundary over every
     source file the distribution ships. Returns a list of violation reasons,
     empty when the distribution imports only the public contract.
 
     ``route`` holds it to the route lists (``scan_route_source``): a route
     plugin runs in the gateway's process, so it is held to far more.
+    ``carrier`` holds it to the carrier lists (``scan_carrier_source``).
 
     A distribution with no readable file list cannot be vouched for, which is
     itself a violation (``no-files``)."""
@@ -252,7 +295,10 @@ def scan_imports(dist: str, *, route: bool = False) -> list[str]:
             # is a file we cannot vouch for — a violation, not a skip.
             scan.violations.append(f"unreadable:{path}")
             continue
-        (scan_route_source if route else scan_source)(source, scan)
+        if carrier:
+            scan_carrier_source(source, scan)
+        else:
+            (scan_route_source if route else scan_source)(source, scan)
     if not saw_python:
         # Files but no Python source — a compiled-only distribution the scan
         # cannot read. It does not pass by default; the operator must trust it

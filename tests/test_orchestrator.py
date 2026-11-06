@@ -1,7 +1,7 @@
 """Phase 4: the orchestrator is the one MCP ``tools/call`` path.
 
 Every profile's ``tools/call`` runs through ``orchestrator.crossing`` and the MCP
-``Face``/``Carrier`` (``transports.mcp``); the hand-rolled ``router._tools_call``
+``Face``/``Dispatch`` (``transports.mcp``); the hand-rolled ``router._tools_call``
 path is gone. These tests drive one request per branch of the call path through
 ``route_jsonrpc`` and assert the orchestrated response directly — a clean
 delivery, a flag warning, a defense block, a redact extraction, a required-
@@ -34,7 +34,7 @@ from trentina.reserved import REFUSAL_KEY, WARNING_KEY
 from trentina.transports.base import Early, Transport
 from trentina.transports.mcp import route_jsonrpc
 
-from .transport_doubles import RecordingCarrier as _RecordingCarrier
+from .transport_doubles import RecordingDispatch as _RecordingDispatch
 from .transport_doubles import RecordingFace as _RecordingFace
 
 PARTS = "trentina.gateway.parts"
@@ -299,18 +299,18 @@ async def test_response_guard_may_have_acted_withheld() -> None:
 @pytest.mark.asyncio
 async def test_crossing_short_circuits_on_early_parse() -> None:
     face = _RecordingFace(parse_result=Early({"refused": True}))
-    carrier = _RecordingCarrier(carry_result="unreached")
-    result = await crossing(Transport(face=face, carrier=carrier), ctx=object())
+    dispatch = _RecordingDispatch(carry_result="unreached")
+    result = await crossing(Transport(face=face, dispatch=dispatch), ctx=object())
     assert result == {"refused": True}
-    assert carrier.carried is None  # carry never ran
+    assert dispatch.carried is None  # carry never ran
     assert face.wrapped is None  # wrap never ran
 
 
 @pytest.mark.asyncio
 async def test_crossing_short_circuits_on_early_carry() -> None:
     face = _RecordingFace(parse_result="parsed")
-    carrier = _RecordingCarrier(carry_result=Early({"backend": "error"}))
-    result = await crossing(Transport(face=face, carrier=carrier), ctx=object())
+    dispatch = _RecordingDispatch(carry_result=Early({"backend": "error"}))
+    result = await crossing(Transport(face=face, dispatch=dispatch), ctx=object())
     assert result == {"backend": "error"}
     assert face.delivered is None  # deliver never ran
     assert face.wrapped is None
@@ -319,8 +319,8 @@ async def test_crossing_short_circuits_on_early_carry() -> None:
 @pytest.mark.asyncio
 async def test_crossing_runs_all_edges_in_order() -> None:
     face = _RecordingFace(parse_result="parsed")
-    carrier = _RecordingCarrier(carry_result="carried")
-    result = await crossing(Transport(face=face, carrier=carrier), ctx=object())
-    assert carrier.carried == "parsed"  # parse fed carry
+    dispatch = _RecordingDispatch(carry_result="carried")
+    result = await crossing(Transport(face=face, dispatch=dispatch), ctx=object())
+    assert dispatch.carried == "parsed"  # parse fed carry
     assert face.delivered == ("parsed", "carried")  # carry fed deliver
     assert result == {"wrapped": {"delivered": "carried"}}  # deliver fed wrap

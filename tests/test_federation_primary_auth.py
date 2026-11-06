@@ -251,7 +251,7 @@ class TestAPeersRefusalDoesNotOpenTheCircuit:
         a failure. The re-raise clause had to be added in BOTH places."""
 
         async def refuse(
-            _url: str, _headers: dict[str, str] | None, cap: ResponseCap | None = None
+            _url: str, _headers: dict[str, str] | None, cap: ResponseCap | None = None, **__: object
         ) -> object:
             if cap is not None:
                 cap.unauthorized = True

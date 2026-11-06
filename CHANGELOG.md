@@ -10,6 +10,29 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- **Carriers: a backend's wire is a plugin contract** (#740). A backend's MCP
+  sessions, its `tools/list` and its `tools/call` alike, ride a `Carrier`, the
+  frozen v1 contract in `trentina.transports.base`. The built-in `http` carrier
+  is today's streamable-HTTP client, chosen from the URL, so every existing
+  `profiles.yaml` loads and behaves as before. A backend may instead name an
+  installed `trentina.carriers.v1` plugin with `carrier: dist:name`, which is
+  required for a scheme no built-in answers. The plugin is checked without
+  being imported at load, held to a scan that allows sockets and refuses process
+  launchers, and imported at startup. The breaker, credentials, retries, the
+  byte cap's limit and all judging stay in the gateway, above the carrier. This
+  is what #724's `unix://` carrier will be built on. `carriers` is a preview
+  surface. See [docs/plugins.md](docs/plugins.md#carriers).
+
+### Changed
+
+- The crossing's middle step is `Dispatch` (was `Carrier`, and
+  `McpClientCarrier` is `McpDispatch`), so that `Carrier` names the backend's
+  wire. Both halves of a transport stay in-tree, and a `transport: dist:name`
+  is refused with a message pointing at `carrier`. The old names were never
+  a published contract.
+
 ## [6.10.0] - 2026-11-06
 
 ### Added

@@ -1103,3 +1103,9 @@ check = "copy_paste_detection"
 path = "src/trentina/gateway/proxies.py"
 justification = "normalize reads the proxies: block (a guard on its shape, the instances, the grants, the one-spelling check). The detector matched it in turn against packs.parse_pack, letters.read_back and warning.build_warning, three unrelated functions, after two restructures: what they share is the statement shape of a guard-raise-return parser, not code. Nothing to extract."
 classification = "by_design"
+
+[[exceptions]]
+check = "vestigial_code"
+path = "src/trentina/transports/base.py"
+justification = "MessageReader and MessageWriter are typing.Protocol classes (#740): their methods are structural declarations a type checker matches a carrier's streams against, never executed, so a body other than the docstring would be dead code. They are declared here so the frozen Carrier contract does not import the MCP SDK's private _stream_protocols module."
+classification = "by_design"

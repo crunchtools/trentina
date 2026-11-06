@@ -147,7 +147,7 @@ def _register_proxies(mcp_server: FastMCP, gateway_config: GatewayConfig) -> dic
     from .gateway.llm_proxy import load_llm_providers, validate_profile_llm_keys
     from .gateway.matrix_proxy import check_upstream
     from .transports.perimeter import MATRIX_UPSTREAM
-    from .transports.registry import mount_routes
+    from .transports.registry import mount_routes, resolve_carriers
 
     llm_providers = load_llm_providers(gateway_config.llm_providers)
     # A profile naming a provider that does not exist is a misconfig whether or
@@ -161,6 +161,7 @@ def _register_proxies(mcp_server: FastMCP, gateway_config: GatewayConfig) -> dic
                 "— every request will 401"
             )
     mount_routes(mcp_server, gateway_config, gateway_config.profiles, llm_providers)
+    resolve_carriers(gateway_config.profiles)
     return llm_providers
 
 

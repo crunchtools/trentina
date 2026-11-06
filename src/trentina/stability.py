@@ -74,6 +74,16 @@ def _proxy_plugins_in_use(config: GatewayConfig) -> bool:
     return bool(config.route_instances)
 
 
+def _carriers_in_use(config: GatewayConfig) -> bool:
+    """A backend naming a ``dist:`` carrier: the built-in ``http`` one is the
+    wire every backend rode before carriers had a name, so it is not preview."""
+    return any(
+        backend.carrier is not None and ":" in backend.carrier
+        for profile in config.profiles.values()
+        for backend in profile.backends.values()
+    )
+
+
 #: The declared preview surfaces, by name.
 #:
 #: Human approval (#637) is deliberately NOT here. It is the one mechanism in
@@ -114,6 +124,17 @@ PREVIEW_SURFACES: Mapping[str, PreviewSurface] = {
             "a plugin is written against"
         ),
         detect=_proxy_plugins_in_use,
+    ),
+    "carriers": PreviewSurface(
+        name="carriers",
+        issue="#740",
+        doc="docs/plugins.md",
+        summary=(
+            "a backend's carrier field, the trentina.carriers.v1 entry-point group "
+            "and the trentina.transports.base Carrier contract a carrier plugin is "
+            "written against"
+        ),
+        detect=_carriers_in_use,
     ),
 }
 

@@ -1,22 +1,21 @@
 """The transport registry — the second of Trentina's two plugin registries.
 
 Deliberately separate from the transform registry (``gateway/drivers.py``),
-with its own table and its own parity test (the #167 lesson: one table per role,
-never one table for two). A transport speaks a wire protocol as a ``Face`` + a
-``Carrier``; the one built-in is ``mcp``, the gateway's own MCP in and out.
+with its own tables and its own parity tests (the #167 lesson: one table per
+role, never one table for two). Three roles live here, one table each:
 
-A second transport may be REGISTERED in-process (``register_transport``), which
-is what makes the registry protocol-agnostic rather than a hard-coded single
-entry: the crossing resolves a registered transport by name and runs it through
-the same parse → carry → deliver → wrap order. What is still refused is an
-EXTERNAL ``dist:name`` transport PLUGIN: the public ``Face``/``Carrier``
-contract in ``base.py`` is still all-``Any`` and ``api_version`` is the only
-frozen part of it, so there is no entry-point group to discover against and
-publishing one now would announce an ABI that #535 will change. Registration is
-not dispatch: a profile still only reaches a transport the dispatcher wires, and
-that wiring is ``mcp`` alone (``transports/mcp.py``) until #535 splits the face
-from the carrier. ``TransportName`` in ``gateway/profile.py`` mirrors what is
-dispatchable (``mcp``), not what is registered.
+* A TRANSPORT speaks the agent-facing protocol as a ``Face`` + a ``Dispatch``;
+  the one built-in is ``mcp``. One may be registered in-process
+  (``register_transport``) and the crossing runs it through the same
+  parse → carry → deliver → wrap order, but both halves stay in-tree (#740):
+  a ``dist:name`` transport is refused by name. ``TransportName`` in
+  ``gateway/profile.py`` mirrors what is dispatchable (``mcp``), not what is
+  registered.
+* A CARRIER is a backend's wire (#740), the frozen v1 plugin contract in
+  ``base.py``. The built-in is ``http``; a ``dist:name`` carrier is an
+  installed ``trentina.carriers.v1`` entry point, scanned before it is
+  imported. ``carrier_for`` is the one place a backend's carrier is chosen.
+* A ROUTE is a perimeter path (#535), below.
 """
 
 from __future__ import annotations
@@ -27,14 +26,14 @@ import threading
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from .base import Audit, Carrier, Face, Route
+from .base import Audit, Carrier, Dispatch, Face, Route
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from ..gateway.destination import DestinationKind
     from ..gateway.loader import GatewayConfig
-    from ..gateway.profile import Profile
+    from ..gateway.profile import Backend, Profile
     from .base import Listener, Transport
     from .perimeter import ListenerMount, Mount
 
@@ -82,7 +81,7 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(name)
 
 
-def _supported_api(half: Face | Carrier | Route[Any, Any]) -> bool:
+def _supported_api(half: Face | Dispatch | Carrier | Route[Any, Any]) -> bool:
     """Whether ``half`` declares an ``api_version`` this build runs.
 
     ``type(version) is int`` rather than ``isinstance``: ``bool`` is an ``int``
@@ -109,32 +108,32 @@ def _insert(table: dict[str, Any], kind: str, name: str, value: Any) -> None:
 def register_transport(name: str, transport: Transport) -> None:
     """Add a transport to the registry under ``name``, or fail closed.
 
-    This is the in-process registration path (a bundled or test transport), NOT
-    the external-plugin path: an external ``dist:name`` transport is refused at
-    ``build_transport`` until #535 freezes the typed contract. Refuses, by name,
+    This is the in-process registration path (a bundled or test transport);
+    there is no external one, since a transport's halves are in-tree only
+    (#740). Refuses, by name,
 
     * a ``dist:name`` reference — that is a plugin, not an in-process register;
     * a name already taken, including a built-in — the table is never
       reassigned, the ``names.py`` rule;
-    * a half that is not a ``Face``/``Carrier``;
+    * a half that is not a ``Face``/``Dispatch``;
     * a half whose ``api_version`` this build does not run.
 
     Raises:
-        TypeError: a half is not a ``Face``/``Carrier``.
+        TypeError: a half is not a ``Face``/``Dispatch``.
         ValueError: a ``dist:`` name, a name already taken, or an unrunnable
             ``api_version``. The registry is unchanged in every case.
     """
     if ":" in name:
         raise ValueError(
-            f"transport {name!r}: a 'dist:name' transport is an external plugin, "
-            f"refused until #535 freezes the Face/Carrier contract; register an "
-            f"in-process transport under a plain name"
+            f"transport {name!r}: a 'dist:name' transport is an external plugin, and "
+            f"transports are in-tree only; register an in-process transport under a "
+            f"plain name, or give the backend a 'carrier'"
         )
     if not isinstance(transport.face, Face):
         raise TypeError(f"transport {name!r}: face is not a Face")
-    if not isinstance(transport.carrier, Carrier):
-        raise TypeError(f"transport {name!r}: carrier is not a Carrier")
-    if not _supported_api(transport.face) or not _supported_api(transport.carrier):
+    if not isinstance(transport.dispatch, Dispatch):
+        raise TypeError(f"transport {name!r}: dispatch is not a Dispatch")
+    if not _supported_api(transport.face) or not _supported_api(transport.dispatch):
         raise ValueError(
             f"transport {name!r}: declares an api_version this build does not run; "
             f"supported: {sorted(SUPPORTED_TRANSPORT_API)}"
@@ -146,11 +145,10 @@ def build_transport(name: str) -> Transport:
     """The transport a profile named, or fail closed.
 
     A registered name (``mcp``, plus anything ``register_transport`` added)
-    resolves to its transport. A ``dist:name`` reference is an EXTERNAL transport
-    plugin, refused until #535 freezes the ``Face``/``Carrier`` contract: there
-    is no entry-point group to discover against while the contract is still
-    all-``Any``. Any other unknown name is a config error naming what is
-    available.
+    resolves to its transport. A ``dist:name`` reference is an EXTERNAL
+    transport plugin, refused: a transport's face is the judging edge and stays
+    in-tree (#740). What a backend may name instead is its wire, ``carrier``.
+    Any other unknown name is a config error naming what is available.
     """
     from ..gateway.errors import ProfileConfigError
 
@@ -159,11 +157,183 @@ def build_transport(name: str) -> Transport:
         return table[name]
     if ":" in name:
         raise ProfileConfigError(
-            f"transport {name!r}: external transport plugins have no entry-point group "
-            f"yet — the Face/Carrier contract is untyped until #535; registered transports: "
-            f"{sorted(table)}"
+            f"transport {name!r}: transports are in-tree only; a backend's wire is "
+            f"its 'carrier', which may be a plugin; registered transports: {sorted(table)}"
         )
     raise ProfileConfigError(f"unknown transport {name!r}; registered transports: {sorted(table)}")
+
+
+# ---- The carriers (#740). ------------------------------------------------------
+
+#: The ``api_version`` values a carrier may declare. A v2 contract would be a new
+#: entry-point group beside ``CARRIER_GROUP``, not a second value here.
+SUPPORTED_CARRIER_API: frozenset[int] = frozenset({1})
+
+#: The carriers this build ships, the source of truth ``CarrierName`` in
+#: ``gateway/profile.py`` mirrors; ``tests/test_transport_registry.py`` holds
+#: the two in step.
+BUILTIN_CARRIERS: frozenset[str] = frozenset({"http"})
+
+#: The URL schemes a built-in carrier answers, and the two that name no wire
+#: (``internal://`` is in-process, ``decoy://`` answers nothing). No plugin
+#: carrier may be given a backend on one of them.
+SCHEME_CARRIERS: Mapping[str, str] = MappingProxyType({"http": "http", "https": "http"})
+RESERVED_SCHEMES: frozenset[str] = frozenset({*SCHEME_CARRIERS, "internal", "decoy"})
+
+#: The entry-point group a carrier plugin registers under: ``dist:name`` names one.
+CARRIER_GROUP = "trentina.carriers.v1"
+
+#: Name → carrier: the built-ins, then what ``register_carrier`` and
+#: ``resolve_carrier`` added. Never reassigned.
+_CARRIERS: dict[str, Carrier] = {}
+
+
+def _carriers() -> dict[str, Carrier]:
+    """The carrier table, with the built-ins in it."""
+    if "http" not in _CARRIERS:
+        from .http_carrier import HttpCarrier
+
+        _CARRIERS.setdefault("http", HttpCarrier())
+    return _CARRIERS
+
+
+def _carrier_api(carrier: Carrier) -> bool:
+    """``_supported_api`` against the carrier contract's versions."""
+    version = getattr(carrier, "api_version", None)
+    return type(version) is int and version in SUPPORTED_CARRIER_API
+
+
+def register_carrier(name: str, carrier: Carrier) -> None:
+    """Add a carrier under ``name``, in-process, or fail closed.
+
+    Refuses a ``dist:name`` (that is ``resolve_carrier``'s), a name already
+    taken, including a built-in, something that is not a ``Carrier``, and an
+    ``api_version`` this build does not run. The table is unchanged on every
+    refusal.
+
+    Raises:
+        TypeError: ``carrier`` is not a ``Carrier``.
+        ValueError: any other refusal.
+    """
+    if ":" in name:
+        raise ValueError(
+            f"carrier {name!r}: a 'dist:name' carrier is a plugin, resolved from "
+            f"{CARRIER_GROUP!r}; register an in-process carrier under a plain name"
+        )
+    if not isinstance(carrier, Carrier):
+        raise TypeError(f"carrier {name!r}: not a Carrier")
+    if not _carrier_api(carrier):
+        raise ValueError(
+            f"carrier {name!r}: declares an api_version this build does not run; "
+            f"supported: {sorted(SUPPORTED_CARRIER_API)}"
+        )
+    _insert(_carriers(), "carrier", name, carrier)
+
+
+def carrier_name(backend: Backend) -> str | None:
+    """The carrier a backend rides: the one it names, else its URL scheme's.
+
+    None for ``internal://`` and ``decoy://``, which ride no wire, and for a
+    scheme no built-in answers, which the profile validator has already
+    refused without an explicit ``carrier``."""
+    if backend.carrier is not None:
+        return backend.carrier
+    return SCHEME_CARRIERS.get(backend.url.partition("://")[0].lower())
+
+
+def carrier_for(backend: Backend) -> Carrier:
+    """The carrier a backend's sessions ride on, for ``tools/list`` and
+    ``tools/call`` alike. A ``dist:`` carrier is imported here the first time
+    it is needed if startup has not already (``resolve_carrier``).
+
+    Raises:
+        ProfileConfigError: the backend rides no wire, or names a carrier that
+            is not registered and is no installed plugin.
+    """
+    from ..gateway.errors import ProfileConfigError
+
+    name = carrier_name(backend)
+    if name is None:
+        raise ProfileConfigError("backend rides no carrier")
+    table = _carriers()
+    if name in table:
+        return table[name]
+    if ":" in name:
+        return resolve_carrier(name)
+    raise ProfileConfigError(f"unknown carrier {name!r}; registered carriers: {sorted(table)}")
+
+
+def check_carrier(name: str) -> None:
+    """At config load: ``name`` is a registered carrier, or a plugin that is
+    installed, exposes the entry point and passes the carrier scan. Nothing of
+    a plugin is imported, as for a route (``check_route_plugin``).
+
+    Raises:
+        ProfileConfigError: none of those.
+    """
+    from ..gateway.errors import ProfileConfigError
+    from ..plugins.registry import discover, installed_version
+    from ..testing.suite import scan_imports
+
+    table = _carriers()
+    if name in table:
+        return
+    if ":" not in name:
+        raise ProfileConfigError(f"unknown carrier {name!r}; registered carriers: {sorted(table)}")
+    dist, _, entry = name.partition(":")
+    if installed_version(dist) is None:
+        raise ProfileConfigError(f"carrier plugin {name!r}: distribution {dist!r} is not installed")
+    if violations := scan_imports(dist, carrier=True):
+        raise ProfileConfigError(
+            f"carrier plugin {name!r}: refused before loading, it reaches past the "
+            f"carrier contract: {sorted(set(violations))}"
+        )
+    if name not in discover(CARRIER_GROUP):
+        raise ProfileConfigError(f"carrier plugin {name!r}: {dist!r} exposes no carrier {entry!r}")
+
+
+def resolve_carrier(ref: str) -> Carrier:
+    """The carrier plugin ``ref`` (``dist:name``) names: checked, built, registered.
+
+    ``check_carrier`` first, so the source is scanned before any of it runs;
+    then the entry point's factory is called with no arguments, and what it
+    returns must be a ``Carrier`` this build runs.
+
+    Raises:
+        ProfileConfigError: any of the above.
+    """
+    from ..gateway.errors import ProfileConfigError
+    from ..plugins.registry import discover
+
+    check_carrier(ref)
+    table = _carriers()
+    if ref in table:
+        return table[ref]
+    try:
+        carrier = discover(CARRIER_GROUP)[ref].load()()
+    except Exception as exc:
+        raise ProfileConfigError(f"carrier plugin {ref!r} failed to load or build") from exc
+    if not isinstance(carrier, Carrier):
+        raise ProfileConfigError(
+            f"carrier plugin {ref!r} did not return a trentina.transports.base.Carrier "
+            f"(got {type(carrier).__name__})"
+        )
+    if not _carrier_api(carrier):
+        raise ProfileConfigError(
+            f"carrier plugin {ref!r}: declares an api_version this build does not run; "
+            f"supported: {sorted(SUPPORTED_CARRIER_API)}"
+        )
+    with _REGISTER_LOCK:
+        return table.setdefault(ref, carrier)
+
+
+def resolve_carriers(profiles: Mapping[str, Profile]) -> None:
+    """Import every ``dist:`` carrier a profile names, at startup, so a plugin
+    that fails to build fails the start rather than the first call."""
+    for profile in profiles.values():
+        for backend in profile.backends.values():
+            if backend.carrier is not None and ":" in backend.carrier:
+                resolve_carrier(backend.carrier)
 
 
 # ---- The perimeter routes (#535). ----------------------------------------------

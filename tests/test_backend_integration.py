@@ -290,13 +290,15 @@ class TestOutputValidationOverride:
     async def test_patches_a_validator_that_actually_exists(self, backend: Backend) -> None:
         from mcp import ClientSession
 
-        from trentina.gateway.backend import (
-            _connect_streamable_http,
-            _noop_validate,
-        )
+        from trentina.gateway.backend import _noop_validate
+        from trentina.transports.base import CarrierTarget, Reading
+        from trentina.transports.http_carrier import HttpCarrier
 
         async with (
-            _connect_streamable_http(backend.url, None) as (read, write),
+            HttpCarrier().connect(CarrierTarget(backend.url, {}), Reading(1 << 20)) as (
+                read,
+                write,
+            ),
             ClientSession(read, write) as session,
         ):
             await session.initialize()

@@ -801,7 +801,7 @@ class TestRouter:
                 self.description = ""
                 self.inputSchema: dict[str, Any] = {}
 
-        async def fake_transport(url: str, _headers: Any, *_: Any) -> _FakeToolsResult:
+        async def fake_transport(url: str, _headers: Any, *_: Any, **__: Any) -> _FakeToolsResult:
             transport_calls.append(url)
             return _FakeToolsResult()
 
