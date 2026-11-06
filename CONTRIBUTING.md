@@ -10,105 +10,77 @@ cd trentina
 pre-commit install
 ```
 
-That one command now wires three git hooks — `pre-commit`, `pre-merge-commit`
-and `pre-push`. If you cloned this repo before November 2026 and ran
-`pre-commit install` then, run it again: `pre-commit install` only wires the
-hook types the config asked for on the day you ran it, so an older checkout has
-no pre-push hook and the push tier silently does nothing. The commit tier
-checks for exactly this and fails the commit if the pre-push hook is missing.
+That wires two git hooks, `pre-commit` and `pre-push`. If you cloned before
+November 2026, run it again: `pre-commit install` only wires the hook types the
+config asked for on the day you ran it, so an older checkout has no pre-push
+hook and every verdict silently stops running. The commit hook checks for
+exactly this and fails if the pre-push hook is missing.
 
 The host needs `git`, `podman`, `pre-commit` and `gh`, and nothing else. Every
-gate runs from a container image, so there is no `uv`, `pytest`, `ruff`,
-`semgrep`, `trivy` or `rpmbuild` to install. That is constitution XII's host
-contract, and `validate-constitution.py` enforces it against every hook in
-`.pre-commit-config.yaml`.
+check runs from one image, [python-sdlc](https://github.com/crunchtools/python-sdlc),
+pinned once in `.pre-commit-config.yaml`. CI runs the same image at the same
+release, so a green push predicts a green CI.
 
-## The four tiers
+## Three commands
 
-`./scripts/gates.sh commit|push|pr|release` runs a tier by hand. `commit` and
-`push` are the git hooks, so you normally meet them by committing and pushing.
-
-| Tier | When | What runs | Roughly |
+| Command | When | What runs | Roughly |
 |---|---|---|---|
-| commit | every commit | ruff (staged, and the whole tree as CI lints it), mypy, Gourmand, Gatehouse over the staged diff | under a minute, nearly all of it Gatehouse |
-| push | every push | the full pytest suite, semgrep rule tests and scan, Gatehouse over `origin/main...HEAD` | two to four minutes |
-| pr | by hand, before you open one | the container build, the verification CI runs inside the image, trivy, the constitution validator | eight to twelve minutes warm |
-| release | by hand, before you tag | the constitution validator and `make rpm` | two to three minutes warm |
+| `sdlc commit` | every commit | ruff fixes, and that the push hook is installed | seconds, offline |
+| `sdlc push` | every push | mypy, the full suite, Gourmand, Gatehouse over `origin/main...HEAD`, semgrep, pip-audit, the constitution validator, CodeQL | a few minutes |
+| `sdlc ci` | in CI | push's checks except Gourmand and Gatehouse, plus building the image and running `tests/image/` and the L2, L3, OCR and PDF suites inside it | CI's business |
 
-"Warm" matters. The first `pr` run on a machine pulls five base images, resolves
-the locked dependency set, downloads the ONNX model and fetches Trivy's
-vulnerability database, and can take half an hour. Everything after that reuses
-the `crunchtools-hook-cache` volume and podman's image store. The image build
-alone is about four minutes; a rebuild that touched only `src/` skips the
-dependency install and saves about thirty seconds of it.
-
-## They do not take the whole machine
-
-Every gate runs capped: half the cores, an 8 GB memory ceiling, and a low CPU
-weight so your desktop wins any contention. "Half the cores" means half of what
-the gate may actually use -- a CPU affinity mask and a cgroup quota each count,
-so a run inside a container or a systemd slice asks for what it was given
-rather than what the host owns. Unbounded, the `pr` tier took a
-14-core laptop to a load average of 116 and made a video call unusable, which
-is how you end up with a gate nobody runs.
+A push never builds the image; that is minutes, and a push you wait minutes for
+is a push people stop making. You can run `sdlc ci` yourself before opening a
+pull request if you want CI's verdict early. `sdlc tiers` prints exactly what
+each command runs, and `sdlc <check>` runs one, for the inner loop:
 
 ```bash
-TRENTINA_GATES_CPUS=2 ./scripts/gates.sh push     # on a call
-TRENTINA_GATES_CPUS=14 ./scripts/gates.sh pr      # machine doing nothing else
-TRENTINA_GATES_MEMORY=4g ./scripts/gates.sh push  # the memory ceiling too
+sdlc mypy
+sdlc image          # build the image
+sdlc image-tests    # and test it from inside
 ```
 
-The cap applies to the container builds, the test runs (`pytest -n` follows the
-budget rather than `-n auto`), the image under verification, trivy, the RPM
-build, and the mypy commit hook.
+`sdlc` is `bin/sdlc` in the python-sdlc checkout pre-commit keeps under
+`~/.cache/pre-commit`; put it on your `PATH` or call it by path. What each
+command runs is configured in `pyproject.toml` under `[tool.sdlc.commit]`,
+`[tool.sdlc.push]` and `[tool.sdlc.ci]`.
 
-Two Gatehouse reviews is deliberate. The commit hook reads one staged diff, so
-nothing looked at the branch as a whole until the push tier added
-`origin/main...HEAD` — which is how findings used to arrive from CI after the
-local hook had gone green.
+Every check runs capped: half the cores the gate may actually use, an 8 GB
+memory ceiling and a low CPU weight. `SDLC_CPUS` and `SDLC_MEMORY` override.
 
 ## Exit codes
 
-- `0` — the gate passed.
-- `1` — the gate **ran and failed**. Fix the code.
-- `2` — the gate **could not run**: no podman, an unreachable registry, a
+- `0` — the check passed.
+- `1` — the check **ran and failed**. Fix the code.
+- `2` — the check **could not run**: no podman, an unreachable registry, a
   missing `~/.config/mcp-env/gatehouse.env`, an `origin/main` that does not
-  resolve.
+  resolve, a `uv.lock` out of date with `pyproject.toml`.
 
-`2` is never a warning and never a pass, and the message never tells you to
-install something on the host. A gate that cannot run is an incident, not a
-nuisance: find out why it cannot run. Working around it defeats the only thing
-it was there for.
+`2` is never a warning and never a pass. A check that cannot run is an incident,
+not a nuisance: find out why. Working around it defeats the only thing it was
+there for.
 
-## Skipping a gate
+## Skipping a check
 
-`SKIP=<hook> git commit …` is the sanctioned escape hatch and the only one. It
-is for a false positive, which Gatehouse produces occasionally and the others
-essentially never. Using it obliges you to answer the same finding on the pull
-request, because CI will raise it again and a reviewer deserves to know you
-already looked. Do not disable a hook, do not `--no-verify`, and do not
-reach for `SKIP` because a gate is slow.
+`SDLC_SKIP=gatehouse git push` skips one check, once. It is for a false
+positive, which Gatehouse produces occasionally and the others essentially
+never. Using it obliges you to answer the same finding on the pull request,
+because CI will raise it again. Do not `--no-verify`, and do not reach for
+`SDLC_SKIP` because a check is slow.
 
-## Building the image
+## CodeQL fails only on new findings
 
-```bash
-./scripts/gates.sh container-build     # then container-verify, trivy
-```
+The push fails on a CodeQL finding that is not in `.sdlc/codeql-baseline.json`.
+The baseline is the findings someone has already looked at; `sdlc
+codeql-baseline` rewrites it from the current ones, and that change is reviewed
+like any other.
 
-Local builds are supported and need no credential. What causes drift is
-*pushing* a hand-built image, which only `.github/workflows/container.yml`
-does.
+## How the image is published
 
-The published pipeline builds the image exactly once per run. A pull request
-builds it in `Container Security Scan`, which also verifies it as production
-runs it and gates on Trivy, and skips the build entirely when nothing the image
-is built from changed. A merge to `main` builds and publishes. A release builds
-nothing at all: it retags the digest `main` already verified, refusing unless
-that digest carries the release commit's `revision` label, the version the tag
-names, and a green `security.yml` run for that commit. So a red `main` is fixed
-forward or reverted — it is never released around.
-
-## Before you open a pull request
-
-Run `./scripts/gates.sh pr`. Everything it runs is also a required check, so
-anything it finds, CI finds four minutes later with a worse feedback loop.
+CI builds the image once per run, in the `sdlc ci` job, and tests it from
+inside as production runs it. A merge to `main` publishes exactly those bytes. A
+release builds nothing: it retags the digest `main` already verified, refusing
+unless that digest carries the release commit's `revision` label, the version
+the tag names, and a green `sdlc ci` for that commit. A red `main` is fixed
+forward or reverted, never released around. Building locally is fine; what
+causes drift is pushing a hand-built image, which only CI does.

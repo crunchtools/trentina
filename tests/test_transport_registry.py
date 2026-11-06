@@ -13,12 +13,29 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, cast, get_args
+from typing import TYPE_CHECKING, Any, ClassVar, cast, get_args
 
 import pytest
 
 from trentina.gateway.errors import ProfileConfigError
-from trentina.transports.base import Carrier, Early, Face, Transport
+from trentina.transports import registry
+from trentina.transports.base import (
+    Admitted,
+    Audit,
+    Bearer,
+    Carrier,
+    Context,
+    Early,
+    Face,
+    Grant,
+    Instance,
+    OperatorOrigin,
+    Refusal,
+    RefusedError,
+    Route,
+    Transport,
+    Wire,
+)
 from trentina.transports.mcp import mcp_transport
 from trentina.transports.registry import (
     BUILTIN_TRANSPORTS,
@@ -243,3 +260,91 @@ def test_the_contract_carries_an_api_version() -> None:
     assert mcp_transport.carrier.api_version == 1
     assert Face.api_version == 1
     assert Carrier.api_version == 1
+
+
+# --- Perimeter routes (#535 R4) ---------------------------------------------------
+
+
+class _Toy(Route[Admitted, Context]):
+    """A minimal route a plugin author would write."""
+
+    name = "toy"
+    methods = ("GET",)
+    auth = Bearer()
+    refusals: ClassVar[dict[str, Refusal]] = {}
+    max_request_bytes = 1024
+
+    async def admit(self, wire: Wire, grant: Grant, instance: Instance) -> Admitted:
+        return Admitted(OperatorOrigin("origin"))
+
+    async def deliver(self, admitted: Admitted, ctx: Context) -> Any:
+        return None
+
+    def render(self, refused: RefusedError) -> Any:
+        return refused.reason
+
+
+@pytest.fixture
+def _clean_routes() -> Iterator[None]:
+    before = dict(registry.ROUTES)
+    try:
+        yield
+    finally:
+        registry.ROUTES.clear()
+        registry.ROUTES.update(before)
+
+
+@pytest.mark.usefixtures("_clean_routes")
+class TestRegisterRoute:
+    def test_a_well_formed_route_registers(self) -> None:
+        route = _Toy()
+        registry.register_route("toy", route)
+        assert registry.ROUTES["toy"] is route
+
+    def test_it_is_never_seeded(self) -> None:
+        """Registering is not seeding: an in-process route is not in-tree."""
+        registry.register_route("toy", _Toy())
+        assert "toy" not in registry.BUILTIN_ROUTES
+
+    @pytest.mark.parametrize("name", sorted(registry.BUILTIN_ROUTES))
+    def test_a_built_in_name_is_refused(self, name: str) -> None:
+        route = _Toy()
+        route.name = name
+        with pytest.raises(ValueError, match="free route name"):
+            registry.register_route(name, route)
+
+    @pytest.mark.parametrize("name", ["Toy", "1toy", "to_y", "t" * 33, ""])
+    def test_a_name_that_is_not_a_route_name_is_refused(self, name: str) -> None:
+        route = _Toy()
+        route.name = name
+        with pytest.raises(ValueError, match="free route name"):
+            registry.register_route(name, route)
+
+    def test_a_name_unlike_the_routes_own_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="free route name"):
+            registry.register_route("other", _Toy())
+
+    def test_on_finding_audit_is_refused(self) -> None:
+        route = _Toy()
+        route.audit = Audit.ON_FINDING
+        with pytest.raises(ValueError, match="ON_FINDING"):
+            registry.register_route("toy", route)
+
+    def test_an_unrunnable_api_version_is_refused(self) -> None:
+        route = _Toy()
+        route.api_version = 2
+        with pytest.raises(ValueError, match="api_version"):
+            registry.register_route("toy", route)
+
+    def test_a_listener_is_refused(self) -> None:
+        not_a_route: Any = object()
+        with pytest.raises(TypeError, match="Listener is built in only"):
+            registry.register_route("toy", not_a_route)
+
+    def test_a_name_is_never_reassigned(self) -> None:
+        registry.register_route("toy", _Toy())
+        with pytest.raises(ValueError, match="already registered"):
+            registry.register_route("toy", _Toy())
+
+    def test_a_route_is_served_under_its_own_name(self) -> None:
+        assert _Toy().path == "/proxy/toy/{instance}/{path:path}"

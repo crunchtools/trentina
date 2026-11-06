@@ -20,6 +20,10 @@ name: Benchmark - decoy tools
 # calls in corpora/egress_bench.py — credential DLP and SSRF rails
 # (deterministic), and response injection through the layers (judge-dependent),
 # run inside the image so the response axis is L1/L2/L3 as production runs it.
+# `agent-egress-bench` is the third-party agent-egress-bench (#507), pinned by
+# commit, driving the shipped image configured by benchmarks/agent_egress/ and
+# nothing else: its fetch adapter through a `forward` instance, in flag and in
+# block. The bench's runner gets no secret and no Docker socket.
 # `tune` is benchmarks/prompt_pack.py for one judge
 # with a candidate pack handed in as an input (#397): the pack is data the
 # merged harness reads, so a pack can be tuned without unreviewed code ever
@@ -33,7 +37,7 @@ on:
       job:
         description: "Which spike to run"
         type: choice
-        options: [detonation, venn, decoys, briefing, packs, corpora, paging, gatekeeper, egress-bench, tune]
+        options: [detonation, venn, decoys, briefing, packs, corpora, paging, gatekeeper, egress-bench, agent-egress-bench, tune]
         default: detonation
       external:
         description: "External corpus split (test is the held-out one)"
@@ -64,6 +68,10 @@ on:
         type: choice
         options: [benign, malicious, none]
         default: benign
+      bench_ref:
+        description: "agent-egress-bench: the bench commit to run (a full SHA)"
+        type: string
+        default: "7339fef95630ce811f66aa39c7bab879d9f9e6e7"
       pack:
         description: "tune: the candidate pack, base64 of its JSON"
         type: string
@@ -560,6 +568,114 @@ jobs:
           name: ${{ steps.slug.outputs.name }}
           path: results/
           retention-days: 30
+
+  agent-egress-bench:
+    name: agent-egress-bench ${{ matrix.mode }}
+    if: github.ref == 'refs/heads/main' && inputs.job == 'agent-egress-bench'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [flag, block]
+    env:
+      MODEL: google/gemini-3.5-flash-lite
+      BENCH_REF: ${{ inputs.bench_ref }}
+      AEB_TRENTINA_MODE: ${{ matrix.mode }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Built without the key: no build step ever sees it.
+      - name: Build the image
+        run: docker build -f Containerfile -t trentina:bench .
+
+      # The bench at the pinned commit, its runner built in a Go container. The
+      # bench is third-party code: neither its build nor its run sees a secret.
+      - name: Build the bench runner
+        run: |
+          set -eu
+          case "$BENCH_REF" in *[!0-9a-f]*|"") echo "bench_ref must be a SHA" >&2; exit 64 ;; esac
+          git init -q bench && cd bench
+          git fetch -q --depth 1 https://github.com/luckyPipewrench/agent-egress-bench "$BENCH_REF"
+          git checkout -q FETCH_HEAD
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/src" -w /src/runner \
+            -e HOME=/tmp -e GOCACHE=/tmp/go-cache -e GOPATH=/tmp/go -e CGO_ENABLED=0 \
+            -e GOFLAGS=-buildvcs=false docker.io/library/golang:1.26 go build -o /src/aeb-runner .
+
+      # The gateway runs as production runs it, from this image, judging on the
+      # pinned model; the bench's fixture names resolve to its loopback fixtures.
+      # Only this step holds the provider key. The shim gives the bench's fetch
+      # adapter the per-run bearer.
+      - name: Start the gateway and the shim
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          set -eu
+          token=$(openssl rand -hex 24)
+          echo "::add-mask::$token"
+          mkdir -p results kit-run && chmod 777 results kit-run
+          cat > run-gateway.sh <<'EOF'
+          #!/bin/sh
+          exec docker run -d --name aeb-gateway --network host \
+            --add-host aeb-fixture.test:127.0.0.1 --add-host cdn.fixture.example.com:127.0.0.2 \
+            --read-only --tmpfs /tmp --cap-drop=all --security-opt no-new-privileges \
+            -v "$GITHUB_WORKSPACE/kit-run:/cfg:ro" \
+            -e TRENTINA_GATEWAY_ENABLED=1 -e TRENTINA_PROFILES_PATH=/cfg/profiles.yaml \
+            -e BENCH_TOKEN -e OPENROUTER_API_KEY -e QUARANTINE_MODEL="$MODEL" \
+            -e TRENTINA_MODEL_PROVIDER=openrouter -e QUARANTINE_DB=/tmp/trentina.db \
+            -e TRENTINA_FETCH_PRIVATE_NAMES=aeb-fixture.test,cdn.fixture.example.com \
+            trentina:bench "$@"
+          EOF
+          chmod +x run-gateway.sh
+          BENCH_TOKEN="$token" AEB_TRENTINA_WORK="$GITHUB_WORKSPACE/kit-run" \
+            AEB_TRENTINA_RUN="$GITHUB_WORKSPACE/run-gateway.sh" \
+            benchmarks/agent_egress/start-gateway.sh
+          sed "s|@BENCH_TOKEN@|$token|" benchmarks/agent_egress/shim.conf > shim.conf
+          docker run -d --name aeb-shim --network host \
+            -v "$PWD/shim.conf:/etc/nginx/nginx.conf:ro" docker.io/library/nginx:1.27-alpine
+          rm shim.conf run-gateway.sh
+          for _ in $(seq 120); do curl -sf http://127.0.0.1:8000/health >/dev/null && break; sleep 5; done
+          curl -sf http://127.0.0.1:8000/health
+
+      # The bench's runner in a container of its own: the host network to reach
+      # the shim and its own fixtures, no key, no Docker socket, read-only.
+      - name: Run the fetch adapter through forward
+        run: |
+          set -eu
+          docker run --rm --network host --read-only --tmpfs /tmp --cap-drop=all \
+            --security-opt no-new-privileges --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$GITHUB_WORKSPACE/bench:/bench:ro" \
+            -v "$GITHUB_WORKSPACE/benchmarks/agent_egress:/kit:ro" \
+            -v "$GITHUB_WORKSPACE/kit-run:/kit-run:ro" \
+            -v "$GITHUB_WORKSPACE/results:/results" -w /bench \
+            docker.io/library/golang:1.26 /bench/aeb-runner \
+              --cases /bench/cases --profile /kit/tool-profile.json --adapter proxy \
+              --proxy-addr 127.0.0.1:18899 --fixtures --timeout 120s \
+              --adapter-owner crunchtools --target-config /kit-run/profiles.yaml \
+              --method-repository https://github.com/luckyPipewrench/agent-egress-bench \
+              --method-commit "$BENCH_REF" --tool-version "$GITHUB_SHA" \
+              --output "/results/fetch-$AEB_TRENTINA_MODE.json" \
+              > "results/fetch-$AEB_TRENTINA_MODE.log" 2>&1 || rc=$?
+          grep -v '^{' "results/fetch-$AEB_TRENTINA_MODE.log" | tee -a "$GITHUB_STEP_SUMMARY"
+          # The runner exits nonzero on an incomplete measurement, which a run
+          # with unserved transports always is; that still publishes. No summary
+          # at all is an infrastructure failure, and fails the job.
+          echo "runner exit: ${rc:-0}" | tee -a "$GITHUB_STEP_SUMMARY"
+          test -s "results/fetch-$AEB_TRENTINA_MODE.json"
+
+      - name: Stop the gateway
+        if: always()
+        run: docker rm -f aeb-gateway aeb-shim >/dev/null 2>&1 || true
+
+      # Not hashFiles(): an outcome-only condition keeps a missing summary loud.
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-egress-bench-${{ matrix.mode }}
+          path: results/
+          if-no-files-found: error
+          retention-days: 90
 
   corpora:
     name: corpora ${{ matrix.model }}

@@ -1,0 +1,57 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "145"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "x-trentina-reason",
+       "not_fully_judged"
+      ]
+     ],
+     "status": 403,
+     "type": "start"
+    },
+    {
+     "body": "{\"error\": {\"type\": \"trentina_refused\", \"reason\": \"not_fully_judged\"}, \"blocked\": true, \"block_reason\": \"not_fully_judged\", \"scanner\": \"trentina\"}",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "http:github",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "api.github.com#06a47e1322440920",
+   "destination_kind": "egress",
+   "detections_digest": null,
+   "error_message": "not_fully_judged",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "blocked_defense",
+   "profile": "agent1",
+   "session": null,
+   "success": 0,
+   "tool": "POST"
+  }
+ ],
+ "open_slots": {},
+ "upstream": []
+}

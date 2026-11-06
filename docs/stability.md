@@ -34,6 +34,7 @@ Two rules keep the promise honest:
 | Surface | Issue | Shape that may change | Docs |
 |---|---|---|---|
 | `config-api` | #633 | `config_tool`'s action names, its arguments, and the keys in its result | [operator.md](operator.md) |
+| `proxy-plugins` | #535 | The route types under `proxies:` that had no block before it (`forward`, `dist:` route plugins) and the `trentina.transports.base` Route contract | [proxy-plugins.md](proxy-plugins.md) |
 | `federation` | #592 | A profile's `federation` block, the derived ingress profile, the primary JWT, and the signed verdict assertion | [federation.md](federation.md) |
 
 `config-api` is the **tool's shape**, and nothing more: the actions you may ask

@@ -10,8 +10,240 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- **The agent-egress-bench run is published** (`docs/benchmark.md`, #507):
+  98.3% containment at a 7.4% false-positive rate under `block`, 86.2% at 0.0%
+  under `flag`, scored by the third-party runner against the shipped image
+  configured by `benchmarks/agent_egress/`. Every miss and every unserved
+  transport is named, with the bench's own "not yet independent" caveat.
+
+## [6.8.0] - 2026-11-05
+
+### Added
+
+- **The perimeter is config: `proxies:` (#535).** Every route out that is not
+  a tool call is declared as a named instance of a type: `http`, `git`,
+  `llm`, `matrix`, `connect`, `forward`, or a `dist:` route plugin. Each
+  profile names its grants under its own `proxies:`. One grammar for every
+  type, so the approval page sees every destination: a new origin, a new host
+  or `*` is staged for a person, and so is `enforcement: flag` on any grant.
+  See [docs/proxy-plugins.md](docs/proxy-plugins.md).
+- **`forward`, the agent-chosen route.**
+  `/proxy/forward/<instance>/fetch?url=` carries a request to a host named
+  in both the instance and the grant, on port 80 or 443. It follows no
+  redirect, injects no credential, and judges both edges. A refusal carries
+  the egress-benchmark deny marker only when the gateway denied or blocked.
+  `TRENTINA_FETCH_PRIVATE_NAMES` lets exact names (a benchmark's fixtures)
+  resolve to a private address on any port; `fetch` honours it too. This is what #507's benchmark run needs, as
+  config alone.
+- **Route plugins (`trentina.transports.v1`).** An operator-installed route
+  type is served at `/proxy/<name>/<instance>/`. The spine owns auth, the
+  slot, the dial, judging, credential injection and the audit row; the route
+  owns `admit`, `deliver` and `render`. Its source is scanned before it is
+  imported. `trentina.testing.route_conformance` is the author's suite. A
+  route plugin is gateway code: nothing holds the process.
+- `quarantine_stats` (operator) reports `routes`: what is mounted, and each
+  installed route plugin by `dist:name` and version.
+- `forward` and route plugins are the new `proxy-plugins` preview surface.
+- `benchmarks/agent_egress/` and the `agent-egress-bench` job in
+  `benchmark-decoys.yml` run the third-party agent-egress-bench (#507) against
+  the shipped image, configured and nothing else: the fetch adapter through
+  `forward`, in `flag` and in `block`. The bench's MCP gateway adapter cannot
+  prove delivery through an aggregating gateway; the kit's README says why.
+
 ### Changed
 
+- **Every `/proxy/*` path and the CONNECT listener run on one spine**
+  (`transports/perimeter.py`). What an agent receives is byte-identical,
+  held by 108 recorded cases replayed on both config spellings. Audit rows
+  changed where the spine has one rule and the routes had several:
+  - a row names the instance (`http:github`) as soon as it is bound;
+    a request to no instance is `<route>:-` on every route (git wrote `git`);
+  - a row's tool is the HTTP method until the route names one (git wrote `-`);
+  - a `busy` refusal records the destination it refused;
+  - the slot is taken before any body byte, so an llm `busy` row no longer
+    names an endpoint or model;
+  - an llm request to an unknown provider now writes a row, and its no-key
+    refusal names its reason;
+  - a known caller's Matrix request outside `_matrix/` is now recorded.
+- A reload that adds the first instance of a `forward` or `dist:` type says
+  the route needs a restart, as it already did for git and http.
+
+### Deprecated
+
+- `egress_upstreams`, `git_remotes`, `llm_providers`, `matrix.enabled` and
+  `matrix.upstream`, and a profile's `egress_http`, `git` and
+  `client_egress` still load, each with one warning, and are removed at the
+  next major. `config_tool get` lists them under `deprecated_keys`. A file
+  may not write one kind both ways.
+
+### Security
+
+- `enforcement: flag` on an `egress_http` grant is now staged for a person as
+  a defense downgrade (`flag_grants`). Before, it applied at once.
+- A route grant naming a `token_env` its instance has no `credential:` slot
+  for, or an origin key its instance does not declare, is refused at load
+  rather than loading and doing nothing.
+
+## [6.7.0] - 2026-11-05
+
+### Added
+
+- **The unpack stage reads back text in ROT13 or any Caesar shift, Atbash
+  or leetspeak.** Every text is valid ciphertext, so a segment is read back
+  only when one cipher turns it English, scored against a 2,000-word list in
+  one lookup per word. With the model already shipping, the pipeline now
+  catches 41 of 44 attacks in ROT13 and in Atbash (was 26 and 17) and flags
+  1 of 86 benign texts in each (was 24 and 12); leetspeak's benign flags
+  fall from 20 to 6 of 86. Nothing plain in the docs, source, tests or
+  corpora is read back. Known gap 22 narrows to ciphers wrapped a few words
+  a line and text in other languages. `PERIMETER_VERSION` 25 re-judges
+  cached verdicts.
+
+### Changed
+
+- **`l2-train` gates on our own runner.** The GPU training stays on
+  RunPod; building the data, exporting and the three L2 gates run on the
+  self-hosted uncached runner when `UNCACHED_RUNNER_LABEL` is set, the gates
+  at once (15 minutes to 5).
+
+## [6.6.0] - 2026-11-05
+
+### Added
+
+- **The unpack stage decodes the rest of garak's encodings: the NATO
+  alphabet, sneaky bits, Base2048, Ecoji and Zalgo.** An attack in any of
+  them is read by L1 and L2 as plain text. NATO and sneaky bits passed both
+  layers at 0 of 44 (known gap 23, now closed); Base2048, Ecoji and Zalgo
+  were never measured, because garak needs third-party packages for them.
+  The gateway decodes all five from in-tree tables; the packages are dev-only,
+  for the benchmark. Base2048 and Ecoji are strict (a decode must re-encode
+  to the run), and none of the five touches ordinary Cyrillic, emoji or
+  accented text. `PERIMETER_VERSION` 24 re-judges cached verdicts.
+
+## [6.5.2] - 2026-11-05
+
+### Fixed
+
+- **Upper-case hex (garak's base16) decodes whole (#546).** The base32 token
+  group took a prefix such as `46726F6D2` off the front of a hex run, and the
+  odd-length rest decoded as nothing, so 6 of the 44 corpus attacks in base16
+  (and 1 in lower-case hex) reached L2 as a blob it cannot read. The base32
+  group must now end the token. `PERIMETER_VERSION` 23 re-judges cached
+  verdicts.
+
+### Changed
+
+- **`docs/benchmark.md`'s garak encodings table is measured against the model
+  the image ships** (`prompt-injection-guard-small-ct`) and the pipeline after
+  #546; the previous table was Horizon's, before the six decoders.
+
+## [6.5.1] - 2026-11-05
+
+### Fixed
+
+- **A federated tool accepts `trentina_mode={"redact": "<question>"}` (#711).**
+  The primary resolved the mode and stripped it, so the secondary saw none and
+  fell to its profile default, which a per-tool `deny: [flag]` guard refused
+  with a list that named the requested mode. The primary now sends the resolved
+  mode, with the redact question, to a `federated:` backend in the spelling any
+  client uses (no wire change). A mode refusal also names the mode it resolved.
+
+## [6.5.0] - 2026-11-04
+
+### Added
+
+- **Approve with a passkey (#639).** A person can now sign in to `/approve`
+  with a passkey: the gateway keeps only a public key, the browser binds every
+  signature to this gateway's origin, and there is nothing to brute-force. The
+  check needs no new dependency and no CBOR parser — the browser hands over the
+  key as SubjectPublicKeyInfo, the authenticator data is read by fixed offset,
+  and `cryptography` verifies (`gateway/webauthn.py`). The origin is pinned when
+  the passkey is made and compared exactly afterwards. Once a passkey is
+  enrolled the password can be removed entirely.
+- **`approval_enrol` brings the page up on request.** "Let me set my passkey in
+  Trentina" or "let me change my password in Trentina": it returns an absolute
+  `open_url` (the deployment's public address, or the one the call arrived on)
+  for the agent to open in the person's browser. With nothing set, the link
+  carries the one-time code in its fragment, which never reaches the server;
+  with something set, the person signs in and manages passkeys and the password
+  at `/approve/setup`. `action="close"` shuts an open window early.
+
+### Changed
+
+- **Signing in to the approval page starts a session; the password is no longer
+  written back into the page.** It was carried forward in a hidden field to the
+  decision POST — in the DOM, form history and any shared screen. A session is
+  in memory only, holds no token in the clear, lasts five minutes idle and
+  fifteen at most, is SameSite=Strict with a CSRF token on every form, and is
+  counted down on the page with a Sign out. Changing how approval works needs a
+  sign-in from the last five minutes, and removing a credential signs out every
+  other session.
+- **The approval routes have two rate limits.** Requests that test something (a
+  password, a passkey, an enrolment code) keep the strict 10-burst bucket; page
+  loads, challenges and sign-out get a looser one, so an ordinary visit no
+  longer spends the guesses.
+- `/approve/password` moved to `/approve/setup`; the old path redirects.
+
+## [6.4.2] - 2026-11-04
+
+### Fixed
+
+- **A release tag names the digest main published, again.** The retag used
+  `docker buildx imagetools create`, which wraps a single image manifest in a
+  new one-entry manifest list. Publish has pushed a single manifest since #692,
+  so 6.4.1's tags got a digest `:main` never had (the image inside is the
+  same). The retag is now `skopeo copy --preserve-digests`, and the job fails
+  if a released tag resolves to anything but the recorded digest.
+
+## [6.4.1] - 2026-11-04
+
+### Changed
+
+- **A release promotes the digests main's publish recorded, not whatever
+  `:main` names.** `publish` writes the two digests it pushed (from
+  `podman push --digestfile`) to a `published-digests` artifact, kept 90 days;
+  `promote` reads it from the push-to-main run of `security.yml` for the tag's
+  commit and retags exactly those. It used to resolve `:main` and trust the
+  labels on what it found, and a pull request's token with `packages: write`
+  could push `:main` with any labels it liked. The verifier lookup now also
+  takes only a push to the default branch, never a pull request's run.
+- **Main builds on gloval, on a runner that starts empty.** `sdlc ci` on a push
+  to main ran on a GitHub-hosted machine (16-19 min) so that the published image
+  never came from the self-hosted runner's shared layer cache. It now runs on
+  `crunchtools-uncached`, whose container storage is a tmpfs emptied every job,
+  which keeps that property at gloval's speed. Our pull requests run on
+  `crunchtools-cached`; Dependabot's move to GitHub-hosted, so a third-party
+  package's new release never runs in the cached store. `FAST_RUNNER_LABEL` is
+  replaced by `CACHED_RUNNER_LABEL` and `UNCACHED_RUNNER_LABEL`.
+- **The Containerfile's layers are ordered by how often their input changes.**
+  The dependency install is keyed on the exported, hash-pinned requirements
+  rather than on `pyproject.toml` and `README.md`, so a release bump or a README
+  edit no longer reinstalls ~263 packages. Trentina installs in a stage of its
+  own and is copied into the image as one small layer; the L2 gates test those
+  same bytes. The version label is the last layer, and the machine-id seed no
+  longer changes with every source edit. A new `.containerignore` keeps `.venv`
+  and `.git` out of the build context. The image's contents are unchanged.
+- **Every check runs from python-sdlc, and `scripts/gates.sh` is gone.** One
+  pin in `.pre-commit-config.yaml` fixes the image and every tool in it for the
+  laptop and for CI, which reads the same line. Three commands, configured by
+  the `pyproject.toml` block of the same name: `sdlc commit` runs the ruff
+  fixes in seconds and offline; `sdlc push` renders every verdict and never
+  builds the image; `sdlc ci` -- the `sdlc ci` job in `security.yml`, which
+  replaces `test (3.14)` and `Container Security Scan` as required checks --
+  runs the same image as the laptop and adds the image build and the tests
+  that only mean something inside it. The `/health` startup check and the
+  native-library check became pytest files in `tests/image/` instead of YAML.
+  `publish` now loads and pushes with podman, so the ID it checks is the ID the
+  build produced. Constitution v1.30.0.
+- **Trivy is removed.** All 45 alerts it raised on this repo were Python
+  packages: 38 our own dependencies, which pip-audit catches from `uv.lock`
+  before the push, and 7 pip copies vendored inside the base image, which
+  nothing here can fix and which only ever went into `.trivyignore`. Fleet
+  image scanning moves to a scheduled job (RT #1551).
+- **CodeQL gates the push** on any finding outside `.sdlc/codeql-baseline.json`,
+  the 19 already-triaged findings on `main`. It used to report and pass.
 - **The image is built once per merge, and the bytes we publish are the bytes we
   scanned** (#689). Every push to main built the production image **three
   times**: `security.yml:container-scan` (which starts it as production does,

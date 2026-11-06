@@ -1,0 +1,31 @@
+{
+ "exchanges": [
+  {
+   "client_received": "HTTP/1.1 405 Method Not Allowed\r\nX-Trentina-Reason: method\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "egress",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": null,
+   "destination_kind": null,
+   "detections_digest": null,
+   "error_message": "method",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "denied_guard",
+   "profile": "agent2",
+   "session": null,
+   "success": 0,
+   "tool": "connect"
+  }
+ ],
+ "open_slots": {},
+ "origin_received": ""
+}

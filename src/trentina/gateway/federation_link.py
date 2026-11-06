@@ -97,6 +97,7 @@ DROPPED = frozenset(
         "client_egress",
         "git",
         "egress_http",
+        "route_grants",
         "tool_discovery",
         "honeypot",
         "honeytokens",

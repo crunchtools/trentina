@@ -139,6 +139,7 @@ Then point Claude Code at it:
 | [Federation](docs/federation.md) | Share a profile with a second gateway: its tools mounted over a trusted link, scanned once |
 | [HTTP(S) Egress](docs/egress-http.md) | An agent's outbound request judged and re-originated to a named destination |
 | [Deployment Hardening](docs/deployment-hardening.md) | Container flags, secrets, egress, the startup check |
+| [Proxies](docs/proxy-plugins.md) | Every perimeter route as config under `proxies:`, the `forward` type, and route plugins |
 | [Plugins](docs/plugins.md) | Write, test, install and name your own transform plugins |
 | [Cockpit Plugin](docs/cockpit-plugin.md) | Live defense pipeline dashboard |
 | [Internal: Gateway Design](docs/internal/gateway-design.md) | Original design document, for contributors |
@@ -146,15 +147,14 @@ Then point Claude Code at it:
 ## Development
 
 ```bash
-pre-commit install          # wires the commit, merge and push gates
-./scripts/gates.sh pr       # the container build, verification and scans
+pre-commit install          # wires the commit and push checks
 ```
 
-[CONTRIBUTING.md](CONTRIBUTING.md) is the page for a person: the four tiers,
-what each costs, and what an exit code means. The host needs only `git`,
-`podman`, `pre-commit` and `gh` — every gate runs from a container image. CI
-publishes the image; building one locally is supported and needs no
-credential. The demo is recorded by [`demo.yml`](.github/workflows/demo.yml);
+[CONTRIBUTING.md](CONTRIBUTING.md) is the page for a person: the three
+commands, what each costs, and what an exit code means. The host needs only
+`git`, `podman`, `pre-commit` and `gh` — every check runs from
+[python-sdlc](https://github.com/crunchtools/python-sdlc), the same image CI
+runs. The demo is recorded by [`demo.yml`](.github/workflows/demo.yml);
 its fixtures are in [`docs/demo/`](docs/demo/).
 
 ## License

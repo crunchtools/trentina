@@ -21,51 +21,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        # ONE version: the one the image runs. Trentina ships as a container
-        # image and nothing else (no PyPI since 0.54.1), so a support matrix was
-        # describing installs nobody performs while costing four suites per PR
-        # and a `fail-fast` rule to stop one version's flake cancelling the rest.
-        #
-        # Still a matrix, with one entry, on purpose: it is what names the check
-        # `test (3.14)`, which the branch ruleset requires and `promote` reads.
-        # Removing it would rename the check to `test` and block every merge.
-        python-version: ["3.14"]
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          version: "latest"
-
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-
-      # --locked fails the run if uv.lock is stale or missing rather than
-      # silently re-resolving. Without it a committed lockfile is decoration:
-      # CI would still drift on a transitive release and the green check would
-      # describe a dependency set nobody chose. See issue #79.
-      - name: Install dependencies
-        run: uv sync --all-extras --locked
-
-      - name: Run linter
-        run: uv run ruff check src tests corpora
-
-      - name: Run type checker
-        run: uv run mypy src
-
-      # Parallel across the runner's cores (addopts: -n auto). -rfE keeps
-      # failures and errors in the summary; -v per-test lines interleave
-      # across workers and say nothing a failure summary does not.
-      - name: Run tests
-        run: uv run pytest -q -rfE
-        env:
-          GEMINI_API_KEY: "test_key_for_ci"
+  # Lint, types and the suite moved to `security.yml`'s `sdlc ci` job, which
+  # runs them from python-sdlc at the release .pre-commit-config.yaml pins --
+  # the image and commands the laptop runs. What stays here needs a secret or
+  # runs only after merge.
 
   live-l3:
     name: Live L3 Detection (OpenRouter)

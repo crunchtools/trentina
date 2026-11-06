@@ -22,7 +22,7 @@ from pydantic import ValidationError
 
 from trentina import config as config_mod
 from trentina import database as database_mod
-from trentina.gateway import client_egress
+from trentina.gateway import client_egress, loader
 from trentina.gateway import upstream as upstream_mod
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.loader import ActiveConfig, GatewayConfig, _check_egress_networks
@@ -36,6 +36,7 @@ from trentina.gateway.profile import (
 )
 from trentina.reach import egress
 from trentina.tools.reload import _hold_perimeter_fields, _unapplied
+from trentina.transports import perimeter, registry
 
 from .egress_harness import PUBLIC_ADDRESS
 
@@ -138,7 +139,7 @@ async def upstream(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Upstream]:
             return await asyncio.open_connection("127.0.0.1", server.port)
 
         monkeypatch.setattr(egress, "_lookup", lambda _host, _port: [PUBLIC_ADDRESS])
-        monkeypatch.setattr(client_egress, "open_upstream", dial)
+        monkeypatch.setattr(perimeter, "open_stream", dial)
         yield server
 
 
@@ -149,18 +150,24 @@ async def listener(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[dict[str, P
     active = SimpleNamespace(
         config=SimpleNamespace(profiles=profiles), egress_listener_configured=True
     )
-    monkeypatch.setattr(client_egress, "get_active_config", lambda: active)
-    monkeypatch.setattr(client_egress, "_listen", ("127.0.0.1", 0))
-    await client_egress.start()
+    monkeypatch.setattr(loader, "get_active_config", lambda: active)
+    registry.configure_listeners("127.0.0.1", 0)
+    await registry.start_listeners()
     try:
         yield profiles
     finally:
-        await client_egress.stop()
+        await registry.stop_listeners()
+        registry.LISTENERS.clear()
+
+
+def _tunnels() -> perimeter.ListenerMount:
+    return registry.LISTENERS["egress"]
 
 
 def _port() -> int:
-    assert client_egress._server is not None
-    return int(client_egress._server.sockets[0].getsockname()[1])
+    server = _tunnels().server
+    assert server is not None
+    return int(server.sockets[0].getsockname()[1])
 
 
 async def _request(head: str) -> tuple[bytes, asyncio.StreamReader, asyncio.StreamWriter]:
@@ -208,11 +215,14 @@ class TestTheListenerIsBoundOnlyWhenAsked:
         listen: tuple[str, int] | None,
         active: SimpleNamespace | None,
     ) -> None:
-        monkeypatch.setattr(client_egress, "_listen", listen)
-        monkeypatch.setattr(client_egress, "get_active_config", lambda: active)
-        await client_egress.start()
-        assert client_egress._server is None
-        await client_egress.stop()
+        monkeypatch.setattr(loader, "get_active_config", lambda: active)
+        registry.LISTENERS.clear()
+        if listen is not None:
+            registry.configure_listeners(*listen)
+        await registry.start_listeners()
+        assert all(entry.server is None for entry in registry.LISTENERS.values())
+        await registry.stop_listeners()
+        registry.LISTENERS.clear()
 
 
 class TestTunnel:
@@ -322,7 +332,7 @@ class TestRefusedBeforeConnecting:
             raise ConnectionRefusedError
 
         monkeypatch.setattr(egress, "_lookup", lambda _host, _port: [PUBLIC_ADDRESS])
-        monkeypatch.setattr(client_egress, "open_upstream", refuse)
+        monkeypatch.setattr(perimeter, "open_stream", refuse)
         response, _reader, writer = await _connect()
         assert response.startswith(b"HTTP/1.1 502")
         (row,) = await _settled(audit_db)
@@ -345,7 +355,7 @@ class TestRefusedBeforeConnecting:
         upstream: _Upstream,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setattr(client_egress._slots, "_limit", 1)
+        monkeypatch.setattr(_tunnels().slots, "_limit", 1)
         first, _reader, held = await _connect()
         assert first.startswith(b"HTTP/1.1 200")
         second, _reader2, writer = await _connect()
@@ -603,9 +613,8 @@ class TestAFirstBlockNeedsARestart:
             config=GatewayConfig(profiles={"agent1": plain}),
             llm_providers={},
             alert_route_registered=False,
-            matrix_route_registered=False,
             oauth_route_registered=False,
-            egress_listener_configured=listening,
+            routes_mounted=frozenset({"egress"}) if listening else frozenset(),
         )
 
     def test_a_block_added_to_a_gateway_with_no_listener_is_reported(self, tmp_path: Path) -> None:
@@ -654,7 +663,7 @@ class TestABurstIsOneLookup:
         try:
             # More tunnels than the profile has resolver slots, all waiting.
             for _ in range(200):
-                if client_egress._slots._open.get("agent1", 0) == len(burst):
+                if _tunnels().slots._open.get("agent1", 0) == len(burst):
                     break
                 await asyncio.sleep(0.01)
         finally:

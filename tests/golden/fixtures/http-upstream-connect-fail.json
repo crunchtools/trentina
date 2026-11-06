@@ -1,0 +1,89 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "143"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "x-trentina-reason",
+       "upstream_failed"
+      ]
+     ],
+     "status": 502,
+     "type": "start"
+    },
+    {
+     "body": "{\"error\": {\"type\": \"trentina_refused\", \"reason\": \"upstream_failed\"}, \"blocked\": true, \"block_reason\": \"upstream_failed\", \"scanner\": \"trentina\"}",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "http:github",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "api.github.com#e6ba2dd7fd19f164",
+   "destination_kind": "egress",
+   "detections_digest": null,
+   "error_message": "upstream_failed",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "backend_error",
+   "profile": "agent1",
+   "session": null,
+   "success": 0,
+   "tool": "GET"
+  }
+ ],
+ "open_slots": {},
+ "upstream": [
+  {
+   "body": "",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "authorization",
+     "Bearer golden-agent1-github-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "host",
+     "api.github.com"
+    ],
+    [
+     "user-agent",
+     "trentina-egress"
+    ]
+   ],
+   "method": "GET",
+   "url": "https://api.github.com/repos/acme/widgets"
+  }
+ ]
+}

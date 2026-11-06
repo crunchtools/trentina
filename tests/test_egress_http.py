@@ -26,8 +26,10 @@ from starlette.testclient import TestClient
 
 from trentina import config as config_mod
 from trentina import database as database_mod
-from trentina.gateway import egress_http
+from trentina.gateway import egress_http, loader
+from trentina.gateway.destination import DestinationKind
 from trentina.gateway.profile import AuthConfig, EgressGrant, EgressUpstream, Profile
+from trentina.transports import perimeter
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -184,6 +186,7 @@ class _Harness(SimpleNamespace):
     client: TestClient
     net: _Net
     profiles: dict[str, Profile]
+    entry: perimeter.Mount
 
 
 def _harness(
@@ -197,19 +200,19 @@ def _harness(
     net = _Net()
     # pinned_send now owns the checked_target lookup internally, so the one seam
     # is the pooled sender (#511, Phase 2).
-    monkeypatch.setattr(egress_http, "pinned_send", net.pinned_send)
+    monkeypatch.setattr(perimeter, "pinned_send", net.pinned_send)
     up = upstream if upstream is not None else _upstream()
     active = SimpleNamespace(config=SimpleNamespace(egress_upstreams={"gh": up}))
-    monkeypatch.setattr(egress_http, "get_active_config", lambda: active)
+    monkeypatch.setattr(loader, "get_active_config", lambda: active)
     profiles = {"agent1": _profile(enforcement, with_cred=with_cred, guarded=guarded)}
+    route = egress_http.HttpRoute()
+    entry = perimeter.Mount(route, DestinationKind.EGRESS, active.config, in_tree=True)
 
     async def endpoint(request: Request) -> Response:
-        return await egress_http.serve(request, profiles)
+        return await perimeter.serve(entry, request, profiles)
 
-    app = Starlette(
-        routes=[Route("/proxy/http/{upstream}/{path:path}", endpoint, methods=egress_http.METHODS)]
-    )
-    return _Harness(client=TestClient(app), net=net, profiles=profiles)
+    app = Starlette(routes=[Route(route.path, endpoint, methods=list(route.methods))])
+    return _Harness(client=TestClient(app), net=net, profiles=profiles, entry=entry)
 
 
 _AUTH = {"authorization": "Bearer agent1-tok"}
@@ -472,11 +475,11 @@ class TestUpstreamErrors:
         relay's Slots.take returns False."""
         _stub_judge(monkeypatch)
         h = _harness(monkeypatch)
-        egress_http._SLOTS._open["agent1"] = egress_http.MAX_OPERATIONS_PER_PROFILE
+        h.entry.slots._open["agent1"] = egress_http.HttpRoute.slots
         try:
             resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         finally:
-            egress_http._SLOTS._open.clear()
+            h.entry.slots._open.clear()
         assert resp.status_code == 503
         assert resp.json()["block_reason"] == "busy"
         assert not h.net.sent  # nothing left the gateway
@@ -680,7 +683,7 @@ class TestGatekeeper:
             calls.append(kwargs)
             return result()
 
-        monkeypatch.setattr(egress_http, "judge_egress", _stub)
+        monkeypatch.setattr(perimeter, "judge_egress", _stub)
         return calls
 
     def test_a_refusal_blocks_before_sending(

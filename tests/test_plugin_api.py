@@ -280,3 +280,14 @@ def test_stats_lists_installed_plugins() -> None:
     from trentina.tools.stats import _plugins
 
     assert {"ref": FIXTURE_REF, "version": "0.1.0"} in _plugins()
+
+
+def test_stats_lists_mounted_routes_and_route_plugins() -> None:
+    """The operator stats name the routes served and the installed route
+    plugins, from the registry and entry-point metadata alone."""
+    from trentina.tools.stats import _routes
+    from trentina.transports import registry
+
+    report = _routes()
+    assert report["mounted"] == sorted(registry.MOUNTED)
+    assert all(set(entry) == {"ref", "version"} for entry in report["plugins"])

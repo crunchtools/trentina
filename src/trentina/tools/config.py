@@ -103,12 +103,27 @@ def _read_at(text: str, keys: tuple[str, ...]) -> Any:
 
 
 def _read(keys: tuple[str, ...]) -> dict[str, Any]:
-    """A ``get``: the file's hash, and the masked value at ``keys``."""
-    _, _, current = _live_config()
-    return {
+    """A ``get``: the file's hash, the masked value at ``keys``, and any block
+    still written in the spelling before ``proxies:`` (#535).
+
+    The deprecation warning goes to the journal, and the thing that writes this
+    file since #633 is an agent that never reads one, so a read says it too.
+    """
+    active, _, current = _live_config()
+    answer: dict[str, Any] = {
         "hash": config_store.config_hash(current),
         "value": _read_at(config_guard.mask_inline_secrets(current), keys),
     }
+    if deprecated := active.config.deprecated_keys:
+        answer["deprecated_keys"] = {
+            "keys": list(deprecated),
+            "effect": (
+                "still loaded, and removed at the next major: write each under "
+                "proxies: (top level for the instances, each profile's proxies: "
+                "for its grants), one kind in one spelling"
+            ),
+        }
+    return answer
 
 
 def _candidate_loads(live: Path, text: str, providers: dict[str, Any]) -> GatewayConfig:
@@ -696,7 +711,9 @@ _Proposal = tuple[pending.Kind, dict[str, str]]
 
 #: The three fields of a ``defense`` block that decide what it enforces, in the
 #: order a person reads them.
-_DEFENSE_ASPECTS = ("modes", "enforcement", "llm_completion")
+#: What a defense downgrade shows, in reading order; ``flag_grants`` is the
+#: same downgrade on one egress grant (#535).
+_DEFENSE_ASPECTS = ("modes", "enforcement", "llm_completion", "flag_grants")
 
 
 def _profile_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Proposal]:
@@ -805,7 +822,7 @@ def _egress_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Prop
 
     def grants(config: GatewayConfig) -> dict[str, str]:
         return config_guard.egress_grants(
-            config.profiles, config.egress_upstreams, config.llm_providers
+            config.profiles, config.egress_upstreams, config.llm_providers, config.route_instances
         )
 
     # Two comparisons, one question. Destinations diff as strings; who may open

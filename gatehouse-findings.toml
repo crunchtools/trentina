@@ -1,0 +1,26 @@
+# Gatehouse findings already judged. An entry applies while the code it quotes
+# is still present, and is reported stale once that code is gone.
+
+[[findings]]
+agent = "constitution"
+category = "constitution"
+file = "src/trentina/tools/enrol.py"
+evidence = "\"code\": code,"
+status = "not-a-bug"
+reason = "The enrolment code is not the approval capability: it only authorises creating the FIRST approver during an operator-opened window in which every staged decision is already refused (Human Approval requirement 3). The capability that approves, the passkey or password a person then sets, is never returned by any tool. Returning the code to the agent is deliberate since #637 (approver.open_enrolment docstring; docs/approvals.md 'Keep code execution off the operator profile'); #639 moves it into a URL fragment and changes nothing about who holds it. cto ruling 2026-11-04."
+
+[[findings]]
+agent = "consistency"
+category = "quality"
+file = "src/trentina/gateway/approval_routes.py"
+evidence = "{\"ok\": False, \"message\": str(exc)}, HTTPStatus.BAD_REQUEST, headers=_HEADERS"
+status = "not-a-bug"
+reason = "Registration's specific messages are returned only after _registration_binding has authorised the registrant (fresh session with CSRF, or the live enrolment code); every unauthenticated failure still gets the shared _NOTHING_JSON answer. The ApproverError texts are constant strings that echo nothing submitted, so an authorised person learns why their own enrolment failed and a stranger learns nothing. cto ruling 2026-11-04."
+
+[[findings]]
+agent = "general"
+category = "quality"
+file = "src/trentina/transports/registry.py"
+evidence = "def _table() -> dict[str, Transport]:\n    if \"mcp\" not in _TRANSPORTS:\n        importlib.import_module(\"trentina.gateway\")\n        from .mcp import mcp_transport"
+status = "not-a-bug"
+reason = "Deliberate cycle break (#535 R4): the mcp transport and the gateway package import each other, and importing the registry before the gateway cycled on main too. Seeding on first use, after the gateway has loaded as it has on every serving path, is what lets the registry be imported alone (route plugins reach it); an explicit init step would add a second way to get an unseeded table."

@@ -1,0 +1,57 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "37"
+      ],
+      [
+       "content-type",
+       "text/plain; charset=utf-8"
+      ],
+      [
+       "x-trentina-reason",
+       "repo_not_listed"
+      ]
+     ],
+     "status": 403,
+     "type": "start"
+    },
+    {
+     "body": "refused by Trentina: repo_not_listed\n",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "git:forge",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "acme/gadgets",
+   "destination_kind": "git",
+   "detections_digest": null,
+   "error_message": "repo_not_listed",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "denied_allowlist",
+   "profile": "agent1",
+   "session": null,
+   "success": 0,
+   "tool": "push"
+  }
+ ],
+ "open_slots": {},
+ "upstream": []
+}

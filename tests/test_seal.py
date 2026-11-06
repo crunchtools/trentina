@@ -38,6 +38,7 @@ from trentina.modes import Mode, ModePolicy
 from trentina.reach.egress import ResolvedTarget
 from trentina.seal import Seal
 from trentina.tools.confine import ResolvedPath
+from trentina.transports.perimeter import PinnedUpstream
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "trentina"
 
@@ -59,6 +60,9 @@ SEALED: dict[str, tuple[str, str]] = {
     # over — built only after scan_tool_response (the gate) has run, so holding
     # one is proof the gate ran on those bytes and no others.
     "Judged": ("orchestrator.py", "judge_response"),
+    # A PinnedUpstream is proof the spine resolved the origin a route named from
+    # that route's own instance (#535): a route sends only where it was handed.
+    "PinnedUpstream": ("transports/perimeter.py", "_dial"),
 }
 
 
@@ -122,6 +126,7 @@ SEAL_TOKENS: dict[str, frozenset[str]] = {
     "_PATH_SEAL": frozenset({"tools/confine.py"}),
     "_POSTURE_SEAL": frozenset({"core/dispose.py", "core/identity.py"}),
     "_JUDGED_SEAL": frozenset({"core/stages.py", "orchestrator.py"}),
+    "_UPSTREAM_SEAL": frozenset({"transports/perimeter.py"}),
 }
 
 
@@ -156,6 +161,9 @@ def _without_seal() -> dict[str, object]:
         "ResolvedPath": lambda **k: ResolvedPath(fd=0, st=st, path=Path("/"), **k),
         "Posture": lambda **k: Posture(mode=Mode.FLAG, policy=policy, **k),
         "Judged": lambda **k: Judged(transformed=object(), decision=object(), **k),
+        "PinnedUpstream": lambda **k: PinnedUpstream(
+            op=object(), route="r", bound=object(), origin=object(), idle=1.0, **k
+        ),
     }
 
 

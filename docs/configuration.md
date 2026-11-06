@@ -29,6 +29,7 @@ sections:
 | Section | Description |
 |---------|-------------|
 | `profiles` | One entry per consumer. See [Per-Agent Profiles](profiles.md). |
+| `proxies` | Every perimeter route instance: `http`, `git`, `llm`, `matrix`, `connect`, `forward` or a `dist:` route plugin. A profile's own `proxies:` holds its grants. See [Proxies](proxy-plugins.md). The four rows below are the older spelling, which loads with a deprecation warning until the next major. |
 | `llm_providers` | The providers the [LLM proxy](llm-proxying.md) may reach. |
 | `matrix` | The [Matrix reverse proxy](network-isolation.md). |
 | `git_remotes` | The forges the [git transport](git-transport.md) may reach; a profile's `git` block names them. |
@@ -92,7 +93,7 @@ these variables control the process itself. Profile tokens
 | `TRENTINA_MAX_REGISTRATION_BYTES` | `8192` | Largest `POST /register` body accepted, rejected before it is parsed. `0` or negative disables the cap. |
 | `TRENTINA_MAX_REQUEST_BYTES` | `1048576` | Largest request body accepted on an MCP route (`/gateway/<profile>/mcp`) and the alert ingress. Over it the request gets 413 and the rest is never read, chunked or not. Floored at 1024. |
 | `TRENTINA_BACKEND_TOKEN_KEY_FILE` | unset | A file holding the key that encrypts backend OAuth grants (`auth: {type: oauth}`, see [profiles](profiles.md#backend-oauth)). At least 32 characters; `openssl rand -base64 48`. Unset: those backends report "needs auth". Rotating it drops every grant. |
-| `TRENTINA_APPROVAL_PASSWORD_HASH` | unset | A scrypt verifier for the password that approves a staged change (see [approvals](approvals.md)). The verifier, never the password: `scripts/approval_password.py` prints one. Unset, a person can set the password in a browser instead, which an operator asks for with `approval_enrol`; set here, it wins over that and cannot be changed from the page. With neither, the operator profile and federation trust stay unwritable. |
+| `TRENTINA_APPROVAL_PASSWORD_HASH` | unset | A scrypt verifier for the password that approves a staged change (see [approvals](approvals.md)). The verifier, never the password: `scripts/approval_password.py` prints one. Unset, a person sets a passkey or password in a browser instead, which an operator asks for with `approval_enrol`; set here, it wins over a browser-set password and cannot be changed from the page, though passkeys can still be added beside it. With no passkey and no password, the operator profile and federation trust stay unwritable. |
 | `TRENTINA_APPROVAL_PASSWORD_HASH_FILE` | unset | A file holding `TRENTINA_APPROVAL_PASSWORD_HASH`; wins when both are set, and the better form — put it in the read-only config mount. |
 | `TRENTINA_OAUTH_JWT_SIGNING_KEY_FILE` | unset | A file holding `TRENTINA_OAUTH_JWT_SIGNING_KEY`; wins when both are set. The preferred form: an env var stays readable in `/proc/<pid>/environ` even after startup removes it from `os.environ`. `TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET_FILE` works the same way. |
 | `TRENTINA_OAUTH_BASE_URL` | `https://mcp.crunchtools.com` | Public origin OAuth clients reach; the issuer and redirect URLs are built from it, and so are the backend OAuth pages (`/oauth/backend/*`). **Set it** for any deployment but Crunchtools'. See [Authentication](authentication.md). |

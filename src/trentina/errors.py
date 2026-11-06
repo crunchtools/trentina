@@ -153,8 +153,14 @@ class ModeNotPermittedError(TrentinaError):
     """The call asked for a mode the caller's policy does not allow."""
 
     def __init__(self, mode: str, allowed: list[str]) -> None:
+        # Name the mode that was resolved (a request, or the default for an
+        # omitted one) when it is one of ours: "permitted: block, redact" alone
+        # read as a contradiction when the call had asked for redact. A
+        # caller-chosen string that is no mode is never echoed.
+        resolved = f"resolved: {mode}; " if mode in ("block", "flag", "redact") else ""
         super().__init__(
-            f"Parameter 'trentina_mode' value not in allow list (permitted: {', '.join(allowed)})"
+            "Parameter 'trentina_mode' value not in allow list "
+            f"({resolved}permitted: {', '.join(allowed)})"
         )
         self.mode = mode
 

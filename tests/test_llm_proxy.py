@@ -10,7 +10,7 @@ import sqlite3
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import pytest
 from pydantic import SecretStr, ValidationError
@@ -21,10 +21,11 @@ from starlette.testclient import TestClient
 from trentina import config as config_mod
 from trentina import database as database_mod
 from trentina.gateway import llm_proxy
+from trentina.gateway.destination import DestinationKind
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.llm_proxy import (
     LlmProvider,
-    _proxy_llm,
+    LlmRoute,
     load_llm_providers,
     validate_profile_llm_keys,
 )
@@ -35,10 +36,24 @@ from trentina.gateway.profile import (
     Profile,
 )
 from trentina.gateway.proxy_utils import normalize_proxy_path
+from trentina.gateway.relay import Operation
+from trentina.transports import perimeter
+from trentina.transports.base import RefusedError
 
 if TYPE_CHECKING:
     from starlette.requests import Request
     from starlette.responses import Response
+
+#: The route under test, mounted on the perimeter spine as the registry mounts
+#: it; ``_serve_llm`` hands it each test's providers.
+LLM = perimeter.Mount(LlmRoute(), DestinationKind.MODEL, cast("Any", None), in_tree=True)
+
+
+async def _serve_llm(
+    request: Request, providers: dict[str, LlmProvider], profiles: dict[str, Profile]
+) -> Any:
+    LLM.providers = providers
+    return await perimeter.serve(LLM, request, profiles)
 
 
 @pytest.fixture(autouse=True)
@@ -298,7 +313,7 @@ class _FakeUpstreamResp:
         self.status_code = 200
         self.headers = {"content-type": "application/json"}
 
-    async def aiter_bytes(self) -> AsyncIterator[bytes]:
+    async def aiter_raw(self) -> AsyncIterator[bytes]:
         yield b'{"ok": true}'
 
     async def aclose(self) -> None:
@@ -351,12 +366,12 @@ class TestProxyLlm:
         self, providers: dict[str, LlmProvider], profiles: dict[str, Profile]
     ) -> TestClient:
         async def endpoint(request: Request) -> Response:
-            return await _proxy_llm(request, providers, profiles)
+            return await _serve_llm(request, providers, profiles)
 
         app = Starlette(
             routes=[
                 Route(
-                    "/proxy/llm/{provider}/{path:path}",
+                    LLM.route.path,
                     endpoint,
                     methods=["GET", "POST"],
                 )
@@ -432,7 +447,7 @@ class TestProxyLlm:
     ) -> None:
         providers, profiles = self._fixtures()
         fake = _FakeClient()
-        monkeypatch.setattr(llm_proxy, "pinned_send", fake)
+        monkeypatch.setattr(perimeter, "pinned_send", fake)
         client = self._client(providers, profiles)
 
         resp = client.post(
@@ -447,7 +462,7 @@ class TestProxyLlm:
     def test_success_selects_correct_profile_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         providers, profiles = self._fixtures()
         fake = _FakeClient()
-        monkeypatch.setattr(llm_proxy, "pinned_send", fake)
+        monkeypatch.setattr(perimeter, "pinned_send", fake)
         client = self._client(providers, profiles)
 
         client.post(
@@ -490,16 +505,14 @@ class TestProxyAdmission:
     """#297: a provider-run tool never reaches the provider, and every call is audited."""
 
     def _client(self, fake: _FakeClient, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-        monkeypatch.setattr(llm_proxy, "pinned_send", fake)
+        monkeypatch.setattr(perimeter, "pinned_send", fake)
         providers = {"anthropic": _anthropic_provider()}
         profiles = {"agent1": _profile("agent1", "agent1-tok", {"anthropic": "agent1-key"})}
 
         async def endpoint(request: Request) -> Response:
-            return await _proxy_llm(request, providers, profiles)
+            return await _serve_llm(request, providers, profiles)
 
-        app = Starlette(
-            routes=[Route("/proxy/llm/{provider}/{path:path}", endpoint, methods=["GET", "POST"])]
-        )
+        app = Starlette(routes=[Route(LLM.route.path, endpoint, methods=["GET", "POST"])])
         return TestClient(app)
 
     def _post(self, client: TestClient, body: dict[str, Any], **headers: str) -> Any:
@@ -610,20 +623,23 @@ class TestProxyAdmission:
         self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
     ) -> None:
         """A caller that drops while the request is being read/admitted finishes
-        the Operation once as CANCELLED and the disconnect propagates — no slot
-        is leaked (none was taken yet) and no spurious ok/500 row is written."""
+        the Operation once as CANCELLED and the disconnect propagates — the slot
+        it held comes back and no spurious ok/500 row is written."""
         from starlette.requests import ClientDisconnect
+
+        from trentina.transports.base import Body
 
         fake = _FakeClient()
         client = self._client(fake, monkeypatch)
 
-        async def _drops(_request: Any) -> bytes:
+        async def _drops(_body: Any) -> bytes:
             raise ClientDisconnect
 
-        monkeypatch.setattr(llm_proxy, "_read_body", _drops)
+        monkeypatch.setattr(Body, "read", _drops)
         with pytest.raises(ClientDisconnect):
             self._post(client, _PLAIN)
         assert not fake.sent  # nothing forwarded
+        assert LLM.slots._open == {}
         [row] = _rows(audit_db)
         assert row["outcome"] == "cancelled"
 
@@ -633,11 +649,11 @@ class TestProxyAdmission:
         admission, so a refused (unadmitted) request never consumes one."""
         fake = _FakeClient()
         client = self._client(fake, monkeypatch)
-        llm_proxy._SLOTS._open["agent1"] = llm_proxy.MAX_LLM_OPERATIONS_PER_PROFILE
+        LLM.slots._open["agent1"] = llm_proxy.MAX_LLM_OPERATIONS_PER_PROFILE
         try:
             resp = self._post(client, _PLAIN)
         finally:
-            llm_proxy._SLOTS._open.clear()
+            LLM.slots._open.clear()
         assert resp.status_code == 503
         assert resp.json()["block_reason"] == "busy"
         assert not fake.sent  # refused at the slot gate, before the forward
@@ -752,11 +768,9 @@ class TestProxyAdmission:
         profiles = {"agent2": _profile("agent2", "agent2-tok", {})}
 
         async def endpoint(request: Request) -> Response:
-            return await _proxy_llm(request, providers, profiles)
+            return await _serve_llm(request, providers, profiles)
 
-        app = Starlette(
-            routes=[Route("/proxy/llm/{provider}/{path:path}", endpoint, methods=["POST"])]
-        )
+        app = Starlette(routes=[Route(LLM.route.path, endpoint, methods=["POST"])])
         resp = TestClient(app).post(
             "/proxy/llm/anthropic/v1/messages", headers={"authorization": "Bearer agent2-tok"}
         )
@@ -857,18 +871,16 @@ class TestProxyRequestDLP:
         monkeypatch: pytest.MonkeyPatch,
         enforcement: Literal["block", "flag"],
     ) -> TestClient:
-        monkeypatch.setattr(llm_proxy, "pinned_send", fake)
+        monkeypatch.setattr(perimeter, "pinned_send", fake)
         providers = {"gemini": _gemini_provider()}
         profile = _profile("agent1", "agent1-tok", {"gemini": "agent1-key"})
         profile.llm_keys["gemini"].enforcement = enforcement
         profiles = {"agent1": profile}
 
         async def endpoint(request: Request) -> Response:
-            return await _proxy_llm(request, providers, profiles)
+            return await _serve_llm(request, providers, profiles)
 
-        app = Starlette(
-            routes=[Route("/proxy/llm/{provider}/{path:path}", endpoint, methods=["GET", "POST"])]
-        )
+        app = Starlette(routes=[Route(LLM.route.path, endpoint, methods=["GET", "POST"])])
         return TestClient(app)
 
     def _post(self, client: TestClient, body: dict[str, Any]) -> Any:
@@ -1093,28 +1105,34 @@ async def test_an_upstream_mid_stream_break_is_backend_error(
         def __init__(self) -> None:
             self.headers = {"content-type": "application/json"}
 
-        async def aiter_bytes(self) -> AsyncIterator[bytes]:
+        async def aiter_raw(self) -> AsyncIterator[bytes]:
             yield b"partial"
             raise httpx.RemoteProtocolError("peer closed mid-stream")
 
         async def aclose(self) -> None:
             return None
 
-    op = llm_proxy.Operation(SimpleNamespace(name="agent1"), backend="llm:anthropic")
-    streamed = llm_proxy._streaming_response(
-        op, _Broken(), "anthropic", SimpleNamespace(name="agent1")
+    op = Operation(cast("Any", SimpleNamespace(name="agent1")), backend="llm:anthropic")
+    # The spine's view of the answer: its body, a mid-stream break as a refusal.
+    ctx = cast(
+        "Any",
+        SimpleNamespace(
+            instance=SimpleNamespace(name="anthropic"),
+            chunks=lambda resp: perimeter.InTree.chunks(cast("Any", None), resp),
+        ),
     )
+    streamed = llm_proxy._streaming_response(op, ctx, _Broken())
 
-    chunks: list[bytes] = []
+    relayed: list[bytes] = []
 
     async def _drain() -> None:
         async for chunk in streamed.body_iterator:
-            chunks.append(chunk)
+            relayed.append(chunk)
 
-    with pytest.raises(httpx.RemoteProtocolError):
+    with pytest.raises(RefusedError):
         await _drain()
 
-    assert chunks == [b"partial"]  # what was relayed before the break
+    assert relayed == [b"partial"]  # what was relayed before the break
     assert (op.outcome, op.reason) == (Outcome.BACKEND_ERROR, "upstream_failed")
     assert op.received == len(b"partial")
 
@@ -1166,16 +1184,14 @@ class TestLlmCompletionBlock:
     the default exercised throughout above, streams through and records post-hoc."""
 
     def _client(self, fake: _FakeClient, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-        monkeypatch.setattr(llm_proxy, "pinned_send", fake)
+        monkeypatch.setattr(perimeter, "pinned_send", fake)
         providers = {"anthropic": _anthropic_provider()}
         profiles = {"agent1": _block_profile()}
 
         async def endpoint(request: Request) -> Response:
-            return await _proxy_llm(request, providers, profiles)
+            return await _serve_llm(request, providers, profiles)
 
-        app = Starlette(
-            routes=[Route("/proxy/llm/{provider}/{path:path}", endpoint, methods=["GET", "POST"])]
-        )
+        app = Starlette(routes=[Route(LLM.route.path, endpoint, methods=["GET", "POST"])])
         return TestClient(app)
 
     def _post(self, client: TestClient, body: dict[str, Any]) -> Any:

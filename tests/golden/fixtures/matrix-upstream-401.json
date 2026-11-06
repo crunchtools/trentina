@@ -1,0 +1,65 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-type",
+       "application/json"
+      ]
+     ],
+     "status": 401,
+     "type": "start"
+    },
+    {
+     "body": "{\"errcode\":\"M_UNKNOWN_TOKEN\"}",
+     "more": true,
+     "type": "body"
+    },
+    {
+     "body": "",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [],
+ "open_slots": {},
+ "upstream": [
+  {
+   "body": "",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "gzip, deflate"
+    ],
+    [
+     "authorization",
+     "Bearer matrix-user-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "host",
+     "matrix.example.org"
+    ],
+    [
+     "user-agent",
+     "python-httpx/0.28.1"
+    ]
+   ],
+   "method": "GET",
+   "url": "https://matrix.example.org/_matrix/client/v3/sync"
+  }
+ ]
+}

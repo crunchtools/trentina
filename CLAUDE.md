@@ -125,9 +125,9 @@ uv run trentina
   unlinks one only when something reads its key, and an abandoned flow never
   is read again.
 - `CLASSIFIER_MODEL` — the L2 model, by name under `/models` (#350). Default
-  `prompt-injection-guard-small` (Horizon-Labs, Apache-2.0), the one model the
-  image ships (#362 dropped `prompt-guard-2-86m`, which fails the obfuscation
-  gate). A model directory carries `trentina-model.json` (id, pinned
+  `prompt-injection-guard-small-ct`, Horizon-Labs' `prompt-injection-guard-small`
+  (Apache-2.0) fine-tuned on benign tool replies (#17), the one model the image
+  ships (#362 dropped `prompt-guard-2-86m`, which fails the obfuscation gate). A model directory carries `trentina-model.json` (id, pinned
   revision, threshold, which outputs are malicious, the window it is scanned
   in), written by
   `scripts/export_l2_model.py`; without one, labels come from `config.json`
@@ -151,8 +151,8 @@ uv run trentina
   gate a shipped pack must pass; `docs/l3-prompt-tuning.md` is the guide.
 - `CLASSIFIER_MODEL_PATH` — any model directory; wins over `CLASSIFIER_MODEL`.
   How to try a model the image does not ship.
-- `CLASSIFIER_THRESHOLD` — overrides the model's own threshold (0.7 for
-  Horizon, 0.5 for Prompt Guard 2; 0.5 with no manifest). A profile's
+- `CLASSIFIER_THRESHOLD` — overrides the model's own threshold (0.5 for
+  the shipped `-ct`, 0.7 for Horizon's base model; 0.5 with no manifest). A profile's
   `defense.l2_threshold` is unset by default and can only make L2 stricter.
 - `CLASSIFIER_MAX_TOKENS` — L2's CPU budget in tokens; 0 removes it, leaving
   L3's context as the cap (default: 32768)
@@ -254,6 +254,13 @@ new pattern goes into that file's attack, benign and linearity tables.
 
 - A second listener, `--egress-port` (8021): HTTP `CONNECT` only, for a
   profile's `client_egress` (#442). Not a route on the app below.
+- `GET|POST /proxy/forward/{instance}/fetch?url=` — an agent-chosen URL
+  (#535, for #507): host in the instance's and the grant's `hosts`, by name,
+  ports 80/443, no redirect, no credential, both edges judged.
+  `TRENTINA_FETCH_PRIVATE_NAMES` (exact names, warned) exempts a fixture
+  name from the address rule and the port rule. `/proxy/<name>/{instance}/...` for a `dist:` route
+  plugin. Every `/proxy/*` path and CONNECT is mounted by
+  `transports.registry.mount_routes`/`start_listeners`; nothing else serves one.
 - `GET|POST /proxy/git/{remote}/{owner}/{repo}[.git]/{info/refs,git-upload-pack,git-receive-pack}` —
   the git transport (#453), registered only when the file has `git_remotes`.
   Bearer token picks the profile, as on `/proxy/llm`. (Renamed from `/git` in
@@ -726,23 +733,22 @@ change to the test.
 
 ## Development
 
-The gates run themselves: `./scripts/gates.sh commit|push|pr|release`, every one
-from a container image (constitution XII's host contract assumes only git,
-podman, pre-commit and gh). `commit` and `push` are wired as pre-commit hooks;
-`pr` and `release` have no git hook and are run by hand. Exit 2 means a gate
-COULD NOT run and is never to be worked around.
+Every check runs from python-sdlc (constitution XII v1.30.0), pinned once in
+`.pre-commit-config.yaml`, configured in `pyproject.toml` under
+`[tool.sdlc.commit]`, `[tool.sdlc.push]` and `[tool.sdlc.ci]`. CI runs the same
+image at the same release. Exit 2 means a check COULD NOT run and is never to be
+worked around. `scripts/gates.sh` is gone.
 
-| Tier | What it runs |
+| Command | What it runs |
 |---|---|
-| commit | ruff (staged, and the whole tree as CI lints it), mypy, Gourmand, Gatehouse over the staged diff |
-| push | the full suite, semgrep, Gatehouse over `origin/main...HEAD` |
-| pr | the container build, the verification CI runs in the image, trivy, the constitution validator |
-| release | the constitution validator and `make rpm` |
+| `sdlc commit` (pre-commit hook) | ruff fixes, and that the push hook is installed |
+| `sdlc push` (pre-push hook) | mypy, the suite, Gourmand, Gatehouse over `origin/main...HEAD`, semgrep, pip-audit, the constitution validator, CodeQL against `.sdlc/codeql-baseline.json`. Never builds the image |
+| `sdlc ci` (the `sdlc ci` job in `security.yml`) | push's checks except Gourmand and Gatehouse, plus `image` (the build CI publishes) and `image-tests` (`tests/image/` and the L2, L3, OCR and PDF suites, run inside the image with no network) |
 
-The image is buildable locally and `./scripts/gates.sh pr` is how. It needs no
-build secret: the HF_TOKEN that once gated it went at 0.59.0 with Prompt Guard 2
-(#362). What causes drift is PUSHING a hand-built image, which only
-`container.yml` does.
+`sdlc <check>` runs one: `sdlc image`, `sdlc image-tests`, `sdlc mypy`.
+`SDLC_SKIP=<check>` skips one for a false positive, which must then be answered
+on the PR. `tests/image/` is ignored by the suite outside the image. What causes
+drift is PUSHING a hand-built image, which only CI does.
 
 Underneath, if you want one tool by hand:
 
@@ -798,7 +804,11 @@ replaced.
   `(image/png, 1.1 KB, not read)`; and leaves identifiers, short binary and
   anything non-canonical as it arrived. Binary an agent's tools could open
   (image, PDF, archive) is `Unpacked.unread`, which becomes the
-  `binary_unread` gap: block and redact refuse it, flag warns. Kind names
+  `binary_unread` gap: block and redact refuse it, flag warns. Last,
+  `letters.py` reads back Caesar shifts, Atbash and leetspeak (#720) when the
+  reading is English, judged by `common_words.txt` in one lookup per word
+  (`_READINGS`, not 26 passes); a plain common word in ciphertext stays as
+  it arrived. Kind names
   are a closed set: a data URI's declared type is mapped, never echoed.
   `UnpackStats` rides in L1's `PipelineStats` as `unpacked` and is
   informational, not suspicious. Binary an agent cannot open is labelled
@@ -893,11 +903,12 @@ replaced.
   module instead of up from the tunnel. Operator-named hosts only; `fetch`'s
   agent-chosen URLs stay on `egress.open_guarded`, never cached or pooled.
 - `gateway/client_egress.py` — the CONNECT listener (#442) on `--egress-port`
-  (8021), bound only when a profile has `client_egress`, started and stopped
-  by `warmup.trentina_lifespan`. The peer address picks the profile (no
+  (8021), `ConnectListener` on the spine since #535, bound only when a profile
+  has `client_egress`, started and stopped by `registry.start_listeners` from
+  `warmup.trentina_lifespan`. The peer address picks the profile (no
   credential, as #330); the name must be in `hosts`, port 443, and pass
   `egress.check_url`; the tunnel connects to a checked address
-  (`open_upstream` is the test seam). `upstream.checked_target` is one lookup
+  (`perimeter.open_stream` is the test seam). `upstream.checked_target` is one lookup
   per burst (#449): tunnels to a name share the check in flight and its answer
   for `CHECKED_TTL`; `resolver_busy` is 503 `denied_guard`, not a defense block. After `200` the first TLS record must
   be a ClientHello whose SNI is the CONNECT host, or the tunnel closes before
@@ -931,6 +942,21 @@ replaced.
   streamed body, idle timeout, no deadline, and any 3xx refused as
   `redirect`. `open_guarded` (deadline, redirects followed and checked) is
   still the call for a fetch.
+- `transports/perimeter.py` — the perimeter spine (#535, `docs/proxy-plugins.md`).
+  Every `/proxy/*` route and the CONNECT listener is a `Route` or `Listener`
+  (`transports/base.py`, the public contract) served by `serve()`/`accept()`:
+  auth, instance + grant (`bind()`), the slot BEFORE any body byte, the sealed
+  `PinnedUpstream` dial (`_UPSTREAM_SEAL`), judging both edges, credential
+  injection and echo scrub, the refusal spelling, and the one audit row. A
+  route says only `admit` (an origin KEY), `deliver` and `render`. In-tree
+  privilege (`InTree`: own judging, raw stream, ON_FINDING) is the registry
+  seed, never a declaration. `tests/test_perimeter_golden.py` replays 108
+  recorded cases on both config spellings; a new difference is a failure
+  unless named in `DELTAS`. `proxies:` (`gateway/proxies.py`) normalizes the
+  built-in types into their older fields, one home per fact; only `forward`
+  and `dist:` instances live in `route_instances`/`route_grants`. A `dist:`
+  route is scanned before import (`testing.suite.scan_route_source`) and is
+  gateway code: nothing holds the process.
 - `tools/` — Tool implementations called by server.py wrappers
 - `database.py` — SQLite blocklist for cumulative detection memory, keyed on
   (profile, source) since #263: `is_blocked(source, profile)` sees the

@@ -19,6 +19,7 @@ import ast
 import asyncio
 import contextlib
 import functools
+import json
 import logging
 import pathlib
 from collections.abc import Iterator
@@ -241,6 +242,70 @@ class TestInternalTools:
         monkeypatch.setenv("TRENTINA_APPROVAL_PASSWORD_HASH", f"scrypt$bad${CANARY}")
         assert approver.verify(CANARY) is False
 
+    def test_the_passkey_pages_never_log_what_a_browser_sent(
+        self, captured: _Capture, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """The sign-in and passkey routes are unauthenticated and public
+        (#639): every field, header and failure reason reaching a record is a
+        string a stranger chose, so none of them may."""
+        from fastmcp import FastMCP
+        from starlette.applications import Starlette
+        from starlette.testclient import TestClient
+
+        from tests.passkey_helper import Authenticator
+        from trentina import config as config_mod
+        from trentina.gateway import approval_routes, approval_session, approver
+
+        monkeypatch.setenv("QUARANTINE_DB", str(tmp_path / "trentina.db"))
+        monkeypatch.setenv("TRENTINA_RATE_LIMIT", "off")
+        config_mod._config = None
+        approver.set_password("a-real-password-here")
+        mcp = FastMCP("t")
+        approval_routes.register_approval_routes(mcp)
+        client = TestClient(
+            Starlette(routes=mcp._additional_http_routes), base_url="https://gw.example"
+        )
+        json_headers = {"Content-Type": "application/json", "Origin": "https://gw.example"}
+
+        def post(path: str, body: dict[str, Any], **headers: str) -> None:
+            client.post(path, content=json.dumps(body), headers={**json_headers, **headers})
+
+        for ceremony in ("signin", "register", CANARY):
+            post(approval_routes.BEGIN_PATH, {"ceremony": ceremony, "code": CANARY, "csrf": CANARY})
+        post(approval_routes.BEGIN_PATH, {"ceremony": "signin"}, Origin=f"https://{CANARY}.example")
+        challenge = client.post(
+            approval_routes.BEGIN_PATH, content='{"ceremony": "signin"}', headers=json_headers
+        ).json()["challenge"]
+        auth = Authenticator(origin=f"https://{CANARY}.example")
+        post(approval_routes.FINISH_PATH, auth.sign_in_json(challenge, next=CANARY, name=CANARY))
+        post(approval_routes.FINISH_PATH, {"ceremony": "signin", "challenge": CANARY, "id": CANARY})
+        post(approval_routes.FINISH_PATH, {"ceremony": "register", "code": CANARY, "name": CANARY})
+        client.post(approval_routes.PATH, data={"password": CANARY, "next": CANARY})
+        client.post(
+            approval_routes.SETUP_PATH, data={"action": CANARY, "csrf": CANARY, "id": CANARY}
+        )
+        client.post(
+            approval_routes.SETUP_PATH,
+            data={"action": "enrol_password", "code": CANARY, "new": CANARY, "again": CANARY},
+        )
+        # A registration that fails inside the ceremony, with a session behind it.
+        client.post(approval_routes.PATH, data={"password": "a-real-password-here"})
+        page = client.get(approval_routes.SETUP_PATH).text
+        csrf = page.split('name="csrf" value="')[1].split('"')[0]
+        begun = client.post(
+            approval_routes.BEGIN_PATH,
+            content=json.dumps({"ceremony": "register", "csrf": csrf}),
+            headers=json_headers,
+        ).json()
+        post(
+            approval_routes.FINISH_PATH,
+            auth.register_json(begun["challenge"], csrf=csrf, name=CANARY),
+        )
+        # Every one of those was refused: nothing a stranger sent was kept.
+        assert approver.passkeys() == []
+        approval_session.clear()
+        config_mod._config = None
+
 
 # ------------------------------------------------------------ proxied tools
 
@@ -386,12 +451,13 @@ class TestProxies:
     ) -> None:
         from trentina import orchestrator
         from trentina.gateway import matrix_proxy
+        from trentina.gateway.relay import Operation
 
         from .test_matrix_proxy import _matrix_profile
 
         resp = httpx.Response(200, content=f"{{not json {CANARY}".encode())
         profile = _matrix_profile()
-        op = matrix_proxy.Operation(profile, backend=matrix_proxy.BACKEND, tool="GET")
+        op = Operation(profile, backend=matrix_proxy.BACKEND, tool="GET")
         # The text-fallback defend() lives in the orchestrator now; patch it there
         # so the fallback path still fails and logs (its message moved with it).
         with patch.object(orchestrator, "defend", side_effect=RuntimeError(f"said {CANARY}")):
@@ -424,7 +490,7 @@ class TestProxies:
         caller chose, through a carried fetch, a carried push and five
         refusals. The repository is in the upstream URL httpx would log."""
         from trentina import database
-        from trentina.gateway import git_transport, upstream
+        from trentina.gateway import loader, upstream
         from trentina.reach import egress
 
         from . import git_harness as harness
@@ -437,7 +503,7 @@ class TestProxies:
         upstream._pool.clear()
         profiles = {"agent1": harness.profile(fetch=("acme/*",), push=("acme/*",))}
         active = SimpleNamespace(config=SimpleNamespace(git_remotes=harness.remotes()))
-        monkeypatch.setattr(git_transport, "get_active_config", lambda: active)
+        monkeypatch.setattr(loader, "get_active_config", lambda: active)
         monkeypatch.setattr(egress, "_lookup", lambda _host, _port: [PUBLIC_ADDRESS])
         forge = harness.Scripted()
         bearer = {"Authorization": f"Bearer {harness.GATEWAY_TOKEN}", "X-Canary": CANARY}
@@ -494,7 +560,8 @@ class TestProxies:
             upstream._checked.clear()
         assert statuses == [200, 200, 400, 400, 404, 400, 403, 403]
         assert len(forge.requests) == 2
-        assert any("git transport: refused" in r.getMessage() for r in captured.records)
+        # The refusal is logged by the spine, the route named and nothing the caller sent.
+        assert any("perimeter: refused route=git" in r.getMessage() for r in captured.records)
 
 
 # ------------------------------------------------------------ refusals and housekeeping (#292)

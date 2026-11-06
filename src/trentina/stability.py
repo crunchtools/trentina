@@ -68,6 +68,12 @@ def _config_api_in_use(config: GatewayConfig) -> bool:
     return any(profile.role == "operator" for profile in config.profiles.values())
 
 
+def _proxy_plugins_in_use(config: GatewayConfig) -> bool:
+    """A route type with no older block — ``forward`` or a ``dist:`` plugin —
+    is what lives in ``route_instances``; the built-in types normalize away."""
+    return bool(config.route_instances)
+
+
 #: The declared preview surfaces, by name.
 #:
 #: Human approval (#637) is deliberately NOT here. It is the one mechanism in
@@ -97,6 +103,17 @@ PREVIEW_SURFACES: Mapping[str, PreviewSurface] = {
             "ingress, the primary JWT and the signed verdict assertion"
         ),
         detect=_federation_in_use,
+    ),
+    "proxy-plugins": PreviewSurface(
+        name="proxy-plugins",
+        issue="#535",
+        doc="docs/proxy-plugins.md",
+        summary=(
+            "route types under proxies: that had no block before it — forward and "
+            "dist: route plugins — and the trentina.transports.base Route contract "
+            "a plugin is written against"
+        ),
+        detect=_proxy_plugins_in_use,
     ),
 }
 

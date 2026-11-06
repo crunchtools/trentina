@@ -1,0 +1,53 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "39"
+      ],
+      [
+       "content-type",
+       "text/plain; charset=utf-8"
+      ]
+     ],
+     "status": 502,
+     "type": "start"
+    },
+    {
+     "body": "No API key configured for this provider",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "llm:anthropic",
+   "bytes_arrived": 0,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": null,
+   "destination_kind": null,
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "denied_allowlist",
+   "profile": "agent3",
+   "session": null,
+   "success": 0,
+   "tool": "-"
+  }
+ ],
+ "open_slots": {},
+ "upstream": []
+}

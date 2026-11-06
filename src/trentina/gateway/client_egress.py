@@ -28,6 +28,12 @@ gateway holds no key, and no layer reads them. That is known gap 26 in
 ``docs/defense-pipeline.md``. The tunnel bounds where an agent's client can
 talk and records how much; it does not judge what.
 
+Since #535 this module is the listener's own half, on the perimeter spine
+(``transports/perimeter.py``): ``admit`` parses the CONNECT request, ``relay``
+opens the tunnel, checks the ClientHello and copies both ways, ``respond``
+words a refusal. The caller's address, the hosts and port, the slot, the
+checked dial, the listener's lifecycle and the row are the spine's.
+
 One ``gateway_calls`` row per tunnel, written when it closes or is refused.
 """
 
@@ -39,19 +45,25 @@ import logging
 import time
 from dataclasses import dataclass, field
 from http import HTTPStatus
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from ..errors import EgressRefusedError
-from ..logsafe import exc_kind
 from ..outcomes import Outcome
-from .destination import MAX_DESTINATION_CHARS, DestinationKind
-from .loader import get_active_config
-from .profile import CLIENT_EGRESS_PORT, is_dns_name, profile_for_address
-from .relay import Operation, Slots
-from .upstream import RESOLVER_BUSY, checked_target, forget_checked
+from ..transports.base import (
+    SPINE_REFUSALS,
+    Admitted,
+    AgentUrl,
+    Listener,
+    PeerAddress,
+    Refusal,
+    RefusedError,
+)
+from .destination import MAX_DESTINATION_CHARS
+from .profile import CLIENT_EGRESS_PORT, is_dns_name
 
 if TYPE_CHECKING:
-    from .profile import Profile
+    from collections.abc import Mapping
+
+    from .relay import Operation
 
 logger = logging.getLogger(__name__)
 
@@ -104,14 +116,12 @@ REASONS = frozenset(
 reason codes. Closed, so the audit never carries the caller's text there."""
 
 
-class TunnelRefusedError(Exception):
-    """A tunnel the gateway will not open, or will not keep open."""
+class TunnelRefusedError(RefusedError):
+    """A tunnel the gateway will not open, or will not keep open. A
+    ``RefusedError``, so the perimeter spine answers it like any other."""
 
     def __init__(self, status: HTTPStatus, reason: str, outcome: Outcome) -> None:
-        super().__init__(reason)
-        self.status = status
-        self.reason = reason
-        self.outcome = outcome
+        super().__init__(reason, status=status, outcome=outcome)
 
 
 @dataclass
@@ -125,64 +135,6 @@ class _Tunnel:
     received: int = 0
     established: bool = False
     last_activity: float = field(default_factory=time.monotonic)
-
-
-_listen: tuple[str, int] | None = None
-_server: asyncio.Server | None = None
-#: Per-profile in-flight tunnels, the ONE lifecycle's slot registry. The tunnel
-#: keeps its own, higher, cap (a fan-out holds one streaming tunnel each).
-_slots = Slots(MAX_TUNNELS_PER_PROFILE)
-_tasks: set[asyncio.Task[None]] = set()
-
-
-def configure(host: str, port: int) -> None:
-    """Record where the listener would bind. Called at startup, before serving."""
-    global _listen
-    _listen = (host, port)
-
-
-async def start() -> None:
-    """Start listening, if a profile has ``client_egress``. Idempotent.
-
-    With no such block anywhere there is no second socket. A block added by
-    a later reload does not start one: ``reload_profiles`` says a restart is
-    needed.
-    """
-    global _server
-    active = get_active_config()
-    if _listen is None or _server is not None or active is None:
-        return
-    if not active.egress_listener_configured:
-        return
-    host, port = _listen
-    _server = await asyncio.start_server(_accept, host, port, limit=_CHUNK)
-    bound = _server.sockets[0].getsockname()[1]
-    logger.warning("client egress: listening on port %d", bound)
-
-
-async def stop() -> None:
-    """Stop listening and close every tunnel."""
-    global _server, _slots
-    if _server is None:
-        return
-    _server.close()
-    for task in list(_tasks):
-        task.cancel()
-    await asyncio.gather(*_tasks, return_exceptions=True)
-    await _server.wait_closed()
-    _server = None
-    _slots = Slots(MAX_TUNNELS_PER_PROFILE)
-    forget_checked()
-
-
-# TRUST: the peer address picks the profile (#442, after #330)
-#   untrusted: every byte the caller sends
-#   judged-by: nothing; an address is resolved, not judged
-#   on-failure: fail-closed; an address in no profile's networks gets 403
-#   owner: client_egress._accept
-#   evidence: T2 the address is the accepted socket's peer, and this listener
-#     reads no forwarding header; T3 loader._check_egress_networks (one
-#     profile per address)
 
 
 def parse_connect(head: bytes) -> tuple[str, int]:
@@ -313,34 +265,6 @@ async def read_client_hello(reader: asyncio.StreamReader) -> tuple[bytes, bytes]
         raise TunnelRefusedError(HTTPStatus.FORBIDDEN, "no_hello", Outcome.DENIED_GUARD) from None
 
 
-async def open_upstream(
-    address: str, port: int
-) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    """Connect to one checked address. A seam: tests point it at a local server."""
-    return await asyncio.open_connection(address, port)
-
-
-async def _connect(
-    profile: Profile, host: str
-) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    """Resolve ``host`` through the egress guard and connect to what was checked."""
-    try:
-        target = await checked_target(profile, host)
-    except EgressRefusedError as exc:
-        if exc.reason == RESOLVER_BUSY:
-            raise TunnelRefusedError(
-                HTTPStatus.SERVICE_UNAVAILABLE, exc.reason, Outcome.DENIED_GUARD
-            ) from None
-        raise TunnelRefusedError(
-            HTTPStatus.FORBIDDEN, exc.reason, Outcome.BLOCKED_DEFENSE
-        ) from None
-    # Each checked address in turn; one that refuses or times out is passed over.
-    for address in target.addresses:
-        with contextlib.suppress(OSError, TimeoutError):
-            return await asyncio.wait_for(open_upstream(address, target.port), CONNECT_TIMEOUT)
-    raise TunnelRefusedError(HTTPStatus.BAD_GATEWAY, "connect_failed", Outcome.BACKEND_ERROR)
-
-
 async def _copy(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tunnel: _Tunnel, counter: str
 ) -> None:
@@ -384,30 +308,6 @@ async def _relay(
         await asyncio.gather(*directions, return_exceptions=True)
 
 
-async def _respond(
-    writer: asyncio.StreamWriter, status: HTTPStatus, reason: str | None = None
-) -> None:
-    """Answer the CONNECT request. ``reason`` is one of this module's closed codes."""
-    lines = [f"HTTP/1.1 {status.value} {status.phrase}"]
-    if reason is not None:
-        lines += [f"X-Trentina-Reason: {reason}", "Content-Length: 0", "Connection: close"]
-    writer.write(("\r\n".join(lines) + "\r\n\r\n").encode("ascii"))
-    with contextlib.suppress(OSError):
-        await writer.drain()
-
-
-async def _read_head(reader: asyncio.StreamReader) -> bytes:
-    try:
-        head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), HEAD_TIMEOUT)
-    except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError):
-        raise TunnelRefusedError(
-            HTTPStatus.BAD_REQUEST, "malformed", Outcome.DENIED_GUARD
-        ) from None
-    if len(head) > HEAD_LIMIT:
-        raise TunnelRefusedError(HTTPStatus.BAD_REQUEST, "malformed", Outcome.DENIED_GUARD)
-    return head
-
-
 async def _checked_hello(reader: asyncio.StreamReader, host: str) -> bytes:
     """The client's first TLS records, once they name ``host``; to forward unchanged.
 
@@ -426,102 +326,72 @@ async def _checked_hello(reader: asyncio.StreamReader, host: str) -> bytes:
     return wire
 
 
-async def _carry(
-    profile: Profile,
-    target: tuple[str, int],
-    client: tuple[asyncio.StreamReader, asyncio.StreamWriter],
-    op: Operation,
-    tunnel: _Tunnel,
-) -> None:
-    """Admit one target, then hold a tunnel to it: connect, answer, check, relay.
-
-    Raises:
-        TunnelRefusedError: the target is not this profile's to reach, the
-            profile holds its tunnels already, or a later check refused it.
-    """
-    host, port = target
-    block = profile.client_egress
-    if port != CLIENT_EGRESS_PORT:
-        raise TunnelRefusedError(HTTPStatus.FORBIDDEN, "port", Outcome.DENIED_GUARD)
-    if block is None or host not in block.hosts:
-        raise TunnelRefusedError(HTTPStatus.FORBIDDEN, "host_not_listed", Outcome.DENIED_ALLOWLIST)
-    if not op.take_slot(_slots):
-        raise TunnelRefusedError(HTTPStatus.SERVICE_UNAVAILABLE, "busy", Outcome.DENIED_GUARD)
-
-    upstream: tuple[asyncio.StreamReader, asyncio.StreamWriter] | None = None
-    try:
-        upstream = await _connect(profile, host)
-        await _respond(client[1], HTTPStatus.OK)
-        tunnel.established = True
-        wire = await _checked_hello(client[0], host)
-        tunnel.sent = len(wire)
-        upstream[1].write(wire)
-        await upstream[1].drain()
-        await _relay(client, upstream, tunnel)
-    finally:
-        # The slot comes back in ``op.finish``; only the raw upstream socket is
-        # closed here, promptly, as the carry ends.
-        if upstream is not None:
-            upstream[1].close()
+#: The tunnel's refusals: the spine's, each reason this module raises (each
+#: raise carries its own status and outcome), and the tunnel's own spelling of
+#: four of the spine's.
+REFUSALS: Mapping[str, Refusal] = {
+    **{reason: Refusal(HTTPStatus.FORBIDDEN, Outcome.DENIED_GUARD) for reason in REASONS},
+    **SPINE_REFUSALS,
+    "unauthorized": Refusal(HTTPStatus.FORBIDDEN, Outcome.DENIED_GUARD, wire="unknown_caller"),
+    "malformed_head": Refusal(HTTPStatus.BAD_REQUEST, Outcome.DENIED_GUARD, wire="malformed"),
+    "upstream_unreachable": Refusal(
+        HTTPStatus.BAD_GATEWAY, Outcome.BACKEND_ERROR, wire="connect_failed"
+    ),
+}
 
 
-async def _serve(
-    profile: Profile, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-) -> None:
-    """One connection from a known profile, from its request line to its audit row.
-
-    The ONE lifecycle (``relay.Operation``) owns the slot and the single
-    ``gateway_calls`` row. ``host`` is the caller's text, so it is stored as the
-    row's destination and goes nowhere else (#266); ``bytes_delivered`` is what
-    the agent sent upstream and ``bytes_arrived`` what came back for it.
-    """
-    op = Operation(profile, backend=BACKEND, tool=TOOL, destination_kind=DestinationKind.TUNNEL)
-    tunnel = _Tunnel()
-    try:
-        target = parse_connect(await _read_head(reader))
-        op.destination = f"{target[0]}:{CLIENT_EGRESS_PORT}"[:MAX_DESTINATION_CHARS]
-        await _carry(profile, target, (reader, writer), op, tunnel)
-        op.settle(Outcome.OK)
-    except TunnelRefusedError as refusal:
-        # Once 200 has gone out the client is speaking TLS; closing is the answer.
-        if not tunnel.established:
-            await _respond(writer, refusal.status, refusal.reason)
-        op.settle(refusal.outcome, refusal.reason)
-    except OSError as exc:
-        logger.warning("client egress: tunnel failed err=%s", exc_kind(exc))
-        op.settle(Outcome.BACKEND_ERROR, "connect_failed")
-    except asyncio.CancelledError:
-        op.settle(Outcome.CANCELLED)
-        raise
-    finally:
-        op.sent, op.received = tunnel.sent, tunnel.received
-        await op.finish()
+def _status_line(status: HTTPStatus, reason: str | None = None) -> bytes:
+    """An answer to the CONNECT request. ``reason`` is one of the closed codes."""
+    lines = [f"HTTP/1.1 {status.value} {status.phrase}"]
+    if reason is not None:
+        lines += [f"X-Trentina-Reason: {reason}", "Content-Length: 0", "Connection: close"]
+    return ("\r\n".join(lines) + "\r\n\r\n").encode("ascii")
 
 
-async def _accept(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-    """A new connection: find its profile, or refuse it without acting on a byte."""
-    task = asyncio.current_task()
-    if task is not None:
-        _tasks.add(task)
-    try:
-        active = get_active_config()
-        peer = writer.get_extra_info("peername")
-        profile = None
-        if active is not None and peer:
-            profile = profile_for_address(peer[0], active.config.profiles, "client_egress")
-        if profile is None:
-            logger.warning("client egress: refused a caller in no profile's source_networks")
-            # Read the request before answering, without acting on it: closing
-            # on unread bytes resets the connection and the caller never sees
-            # the status.
-            with contextlib.suppress(TunnelRefusedError):
-                await _read_head(reader)
-            await _respond(writer, HTTPStatus.FORBIDDEN, "unknown_caller")
-            return
-        await _serve(profile, reader, writer)
-    finally:
-        if task is not None:
-            _tasks.discard(task)
-        writer.close()
-        with contextlib.suppress(OSError, asyncio.CancelledError):
-            await writer.wait_closed()
+class ConnectListener(Listener):
+    """``CONNECT host:443`` on ``--egress-port``: a TLS tunnel to a listed host."""
+
+    name = BACKEND
+    operation = TOOL
+    auth = PeerAddress("client_egress")
+    refusals = REFUSALS
+    ports = frozenset({CLIENT_EGRESS_PORT})
+    head_limit = HEAD_LIMIT
+    head_timeout = HEAD_TIMEOUT
+    slots = MAX_TUNNELS_PER_PROFILE
+
+    def admit(self, head: bytes) -> Admitted:
+        """The host and port the CONNECT names; ``host`` is the caller's text,
+        so it is the row's destination and goes nowhere else (#266)."""
+        host, port = parse_connect(head)
+        return Admitted(
+            origin=AgentUrl(f"https://{host}:{port}"),
+            destination=f"{host}:{CLIENT_EGRESS_PORT}"[:MAX_DESTINATION_CHARS],
+        )
+
+    async def relay(self, client: Any, upstream: Any, op: Operation) -> None:
+        """Answer 200, hold the first TLS record to the CONNECT host, then copy.
+
+        Raises:
+            TunnelRefusedError: no ClientHello in time, not TLS, or another name;
+                the stream has been answered, so closing is the refusal.
+        """
+        tunnel = _Tunnel()
+        try:
+            client[1].write(_status_line(HTTPStatus.OK))
+            with contextlib.suppress(OSError):
+                await client[1].drain()
+            host = (op.destination or "").rpartition(":")[0]
+            wire = await _checked_hello(client[0], host)
+            tunnel.sent = len(wire)
+            upstream[1].write(wire)
+            await upstream[1].drain()
+            await _relay(client, upstream, tunnel)
+        finally:
+            op.sent, op.received = tunnel.sent, tunnel.received
+
+    def respond(self, refused: RefusedError) -> bytes:
+        """The refusal line; a guard refusal names the guard's own reason."""
+        shown = refused.detail if refused.reason == "denied_guard" else refused.reason
+        status = HTTPStatus(refused.status or HTTPStatus.FORBIDDEN)
+        return _status_line(status, shown or refused.reason)

@@ -191,6 +191,29 @@ def _compression_surface(profiles: dict[str, Profile]) -> set[tuple[str, bool]]:
     }
 
 
+def _unmounted_routes(mounted: frozenset[str], new_config: GatewayConfig) -> list[str]:
+    """The perimeter routes the new file uses that were not mounted at startup:
+    ``mount_routes`` runs once, so a route type the file gains is a restart."""
+    notes: list[str] = []
+    if "git" not in mounted and new_config.git_remotes:
+        notes.append(
+            "git_remotes added but /git was not registered at startup (the "
+            "file had none) — restart to serve it"
+        )
+    if "http" not in mounted and new_config.egress_upstreams:
+        notes.append(
+            "egress_upstreams added but /egress was not registered at startup "
+            "(the file had none) — restart to serve it"
+        )
+    for instance, route in sorted(new_config.route_instances.items()):
+        if route.type.rpartition(":")[2] not in mounted:
+            notes.append(
+                f"proxies.{instance} added but its route type was not mounted at "
+                "startup (the file had no instance of it) — restart to serve it"
+            )
+    return notes
+
+
 def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
     """Name every edit in the new file that a reload cannot put into force.
 
@@ -218,7 +241,7 @@ def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
             "alert_ingress added but /alert was not registered at "
             "startup (no profile had one) — restart to serve it"
         )
-    if not active.matrix_route_registered and any(
+    if "matrix" not in active.routes_mounted and any(
         p.matrix_ingress is not None for p in new_config.profiles.values()
     ):
         notes.append(
@@ -240,16 +263,7 @@ def _unapplied(active: ActiveConfig, new_config: GatewayConfig) -> list[str]:
             "client_egress added but its listener was not started (no profile "
             "had one at startup) — restart to serve it"
         )
-    if not active.git_route_registered and new_config.git_remotes:
-        notes.append(
-            "git_remotes added but /git was not registered at startup (the "
-            "file had none) — restart to serve it"
-        )
-    if not active.egress_route_registered and new_config.egress_upstreams:
-        notes.append(
-            "egress_upstreams added but /egress was not registered at startup "
-            "(the file had none) — restart to serve it"
-        )
+    notes.extend(_unmounted_routes(active.routes_mounted, new_config))
     notes.extend(_unapplied_delegated(current, new_config))
     for name, profile in sorted(new_config.profiles.items()):
         notes.extend(_unapplied_proxy_oauth_for(current.profiles.get(name), profile, name))
@@ -420,12 +434,14 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
     # and responses a gatekeeper judges (#456), and which federated peers may
     # authenticate — a key an agent adds could mint any caller (#592). llm_keys
     # is not held and git/egress_http are: a key buys model calls, one more
-    # pattern is one more place a talked-round agent can send to.
+    # pattern is one more place a talked-round agent can send to. route_grants
+    # are the same kind of grant on a forward or plugin route (#535): held whole.
     for block in (
         "matrix_bridge",
         "client_egress",
         "git",
         "egress_http",
+        "route_grants",
         "semantic_request_guards",
         "semantic_response_guards",
         "federation",
@@ -739,7 +755,7 @@ async def reload_profiles() -> dict[str, Any]:
 
     try:
         new_config = load_profiles(path)
-        # Startup runs this via register_llm_routes; a reload has to run it
+        # Startup runs this in _register_proxies; a reload has to run it
         # itself or a profile could name a provider the proxy has never heard
         # of, and the dangling reference would surface as a runtime 502
         # instead of a refused reload.

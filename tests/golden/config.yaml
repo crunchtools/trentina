@@ -1,0 +1,69 @@
+# The golden oracle's gateway (#535 R1). Written in the 6.7.0 spelling; R12 adds
+# the same gateway spelled with `proxies:` and holds both to one set of fixtures.
+llm_providers:
+  anthropic:
+    enabled: true
+    upstream: https://api.anthropic.com
+    auth_header: x-api-key
+    api_key_env: GOLDEN_ANTHROPIC_KEY
+
+matrix:
+  enabled: true
+  upstream: https://matrix.example.org
+
+git_remotes:
+  forge:
+    upstream: https://git.example.com
+    hidden_refs: [refs/pull/]
+
+egress_upstreams:
+  github:
+    upstream: https://api.github.com
+    body: json
+    headers_allow: [x-github-api-version]
+    credential:
+      header: Authorization
+      prefix: "Bearer "
+
+profiles:
+  agent1:
+    auth:
+      bearer_token_env: GOLDEN_AGENT1_TOKEN
+    llm_keys:
+      anthropic:
+        api_key_env: GOLDEN_AGENT1_ANTHROPIC_KEY
+    egress_http:
+      github:
+        token_env: GOLDEN_AGENT1_GITHUB_TOKEN
+        methods: [GET, POST]
+        paths: ["/repos/acme/*"]
+        enforcement: block
+    git:
+      forge:
+        token_env: GOLDEN_AGENT1_FORGE_TOKEN
+        fetch: [acme/*]
+        push: [acme/widgets]
+        push_refs: ["refs/heads/agent1/*"]
+        deny: ["*-private"]
+    matrix_ingress:
+      source_networks: ["10.89.2.0/24"]
+      unjudged: withhold
+
+  agent2:
+    auth:
+      bearer_token_env: GOLDEN_AGENT2_TOKEN
+    llm_keys:
+      anthropic:
+        api_key_env: GOLDEN_AGENT2_ANTHROPIC_KEY
+    egress_http:
+      github:
+        token_env: GOLDEN_AGENT2_GITHUB_TOKEN
+        methods: [GET, POST]
+        enforcement: flag
+    client_egress:
+      source_networks: ["127.0.0.2/32"]
+      hosts: [api.example.com]
+
+  agent3:
+    auth:
+      bearer_token_env: GOLDEN_AGENT3_TOKEN

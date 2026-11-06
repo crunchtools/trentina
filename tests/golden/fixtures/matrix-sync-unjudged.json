@@ -1,0 +1,85 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "611"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ]
+     ],
+     "status": 200,
+     "type": "start"
+    },
+    {
+     "body": "{\"next_batch\": \"s2\", \"rooms\": {\"join\": {\"!room:example.org\": {\"timeline\": {\"events\": [{\"type\": \"m.room.message\", \"event_id\": \"$e1\", \"sender\": \"@alice:example.org\", \"origin_server_ts\": 1, \"content\": {\"msgtype\": \"m.notice\", \"body\": \"[trentina] withheld: this event could not be fully judged\"}}]}}}}, \"_trentina_warning\": {\"risk_level\": \"low\", \"flagged_by\": null, \"l1_detections\": 0, \"l1_suspicious\": 0, \"l2_label\": \"BENIGN\", \"l2_score\": 0.01, \"l2_truncated\": false, \"l3_injection_detected\": null, \"l3_risk_level\": null, \"l3_finding_types\": [], \"l3_truncated\": false, \"l3_unavailable\": true, \"withheld_events\": 1}}",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "matrix",
+   "bytes_arrived": 253,
+   "bytes_delivered": 253,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "_matrix/client/v3/sync",
+   "destination_kind": "matrix",
+   "detections_digest": null,
+   "error_message": "events_withheld",
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "blocked_defense",
+   "profile": "agent1",
+   "session": null,
+   "success": 0,
+   "tool": "GET"
+  }
+ ],
+ "open_slots": {},
+ "upstream": [
+  {
+   "body": "",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "gzip, deflate"
+    ],
+    [
+     "authorization",
+     "Bearer matrix-user-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "host",
+     "matrix.example.org"
+    ],
+    [
+     "user-agent",
+     "python-httpx/0.28.1"
+    ]
+   ],
+   "method": "GET",
+   "url": "https://matrix.example.org/_matrix/client/v3/sync"
+  }
+ ]
+}

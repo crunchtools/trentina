@@ -211,6 +211,7 @@ def _gateway_stats() -> dict[str, Any]:
         "compression": get_compression_stats(),
         "surface": {name: surface_report(name) for name in surface_profiles()},
         "plugins": _plugins(),
+        "routes": _routes(),
         "preview_surfaces": _preview_surfaces(),
         "federation": _federation(),
         "token_note": TOKEN_NOTE,
@@ -274,3 +275,20 @@ def _plugins() -> list[dict[str, Any]]:
         {"ref": ref, "version": installed_version(ref.partition(":")[0])}
         for ref in sorted(discover(TRANSFORM_GROUP))
     ]
+
+
+def _routes() -> dict[str, Any]:
+    """The perimeter routes this gateway serves, by name, and the installed
+    route plugins (``trentina.transports.v1``) by ``dist:name`` and version —
+    entry-point metadata, so reporting one imports none. Names are the
+    registry's and the operator's, never a caller's."""
+    from ..plugins.registry import discover, installed_version
+    from ..transports.registry import MOUNTED, ROUTE_GROUP
+
+    return {
+        "mounted": sorted(MOUNTED),
+        "plugins": [
+            {"ref": ref, "version": installed_version(ref.partition(":")[0])}
+            for ref in sorted(discover(ROUTE_GROUP))
+        ],
+    }

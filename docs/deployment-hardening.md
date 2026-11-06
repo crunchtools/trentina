@@ -51,11 +51,12 @@ configuration can set `TRENTINA_APPROVAL_PASSWORD_HASH_FILE` into the
 read-only config mount; that wins over anything set in a browser, and the
 enrolment page says so rather than offering to change it.
 
-`/approve` and `/approve/password` are unauthenticated routes, by design: the
+`/approve`, `/approve/setup` and the passkey ceremony under `/approve/webauthn/`
+are unauthenticated routes, by design: the
 whole point is that the capability to approve is not something an agent holds,
 and a credential an agent could be given is the one thing it must not be. They
 are rate-limited and body-capped like the OAuth write paths, they are no oracle
-(a wrong password and an idle gateway answer identically), and with no approval
+(every failure before sign-in answers identically), and with no passkey or
 password set nothing can be approved at all. The one residual is worth stating:
 a profile that holds a code-execution backend can make an HTTP request to the
 gateway, and such a profile has already defeated every other control here, so

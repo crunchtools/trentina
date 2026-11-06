@@ -36,6 +36,7 @@ from .auth import verify_bearer, verify_oauth, verify_primary_jwt_header
 from .context import (
     current_caller,
     current_federated_verdict,
+    current_origin,
     current_session,
     session_fingerprint,
 )
@@ -48,6 +49,7 @@ from .errors import (
 )
 from .google_verifier import token_digest
 from .matrix_bridge.routes import media_refused, outbound_refused
+from .page import served_origin
 from .sessions import SessionRegistry, session_registry
 
 if TYPE_CHECKING:
@@ -718,6 +720,7 @@ async def _handle_post(
     # request carries (peer, sub); every other — including a static-bearer call
     # to a federation profile — lands None, never a value left by a reused task.
     current_caller.set(getattr(request.state, "federation_caller", None))
+    current_origin.set(served_origin(request))
     # The response path decides this one; cleared here for the same reason, so
     # a reused task cannot carry a previous call's trust decision into this
     # call's audit row (#637).

@@ -1,9 +1,9 @@
 name: Container Promote
 
-# This file no longer builds anything (#689). `security.yml:container-scan`
-# builds the image ONCE per push to main, verifies it as production runs it,
-# gates on Trivy, and publishes exactly those bytes; a second job there mirrors
-# that digest to GHCR. Before, this workflow rebuilt the image twice on every
+# This file no longer builds anything (#689). `security.yml`'s `sdlc ci` job
+# builds the image ONCE per push to main through python-sdlc, tests it from
+# inside as production runs it, and `publish` pushes exactly those bytes to both
+# registries. Before, this workflow rebuilt the image twice on every
 # merge -- once per registry -- so main built three copies, the verified one was
 # discarded and the two published ones had been scanned by nothing.
 #
@@ -82,6 +82,7 @@ jobs:
       # `security.yml`'s own run for this commit is resolved, and the job inside
       # it must have concluded `success`. It may not be absent at all.
       - name: The required checks passed on this commit
+        id: checks
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -89,7 +90,7 @@ jobs:
           BRANCH: ${{ github.event.repository.default_branch || 'main' }}
           RUN_ID: ${{ github.run_id }}
           VERIFIER_WORKFLOW: security.yml
-          VERIFIER_JOB: Container Security Scan
+          VERIFIER_JOB: sdlc ci
           PR_ONLY: |
             Protect workflows
             Gatehouse triage / Gatehouse triage
@@ -140,10 +141,13 @@ jobs:
           EOF
           # Resolved through the workflow file, so the answer comes from
           # security.yml's run and not from anything that merely posted a check
-          # with that name. The newest run for this commit, so a re-run counts.
+          # with that name. The newest run for this commit, so a re-run counts --
+          # and only a PUSH to the default branch: that run executes main's own
+          # workflow file, where a pull request's run executes the PR's.
           verifier_run=$(gh api \
             "repos/$REPO/actions/workflows/$VERIFIER_WORKFLOW/runs?head_sha=$SHA&per_page=100" \
-            -q '[.workflow_runs[] | select(.id != ('"$RUN_ID"'|tonumber))]
+            -q '[.workflow_runs[] | select(.id != ('"$RUN_ID"'|tonumber))
+                  | select(.event == "push" and .head_branch == env.BRANCH)]
                   | sort_by(.run_started_at) | last | .id // empty')
           if [ -z "$verifier_run" ]; then
             printf '%s never ran for this commit; nothing verified the image\n' \
@@ -166,15 +170,33 @@ jobs:
             echo "refusing to promote $SHA" >&2
             exit 1
           }
+          echo "verifier_run=$verifier_run" >> "$GITHUB_OUTPUT"
 
-      # The identity check, and the reason a retag is safe: the digest behind
-      # `:main` must have been built from THIS commit and must carry the version
-      # the tag names. A force-push, a reverted main or a tag on an unbuilt
-      # commit each fail here rather than publishing the wrong bytes.
+      # What that run's `publish` job pushed, by digest. Nothing else writes this
+      # artifact: it is uploaded by `publish`, in the push-to-main run resolved
+      # above, after the push succeeded.
+      - name: The digests that run published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ steps.checks.outputs.verifier_run }}
+        run: |
+          set -eu
+          gh run download "$RUN" -R "$REPO" -n published-digests -D "$RUNNER_TEMP/published" || {
+            echo "run $RUN recorded no published digests; nothing is promoted" >&2
+            exit 1
+          }
+          cat "$RUNNER_TEMP/published/published.json"
+
+      # The identity check, and the reason a retag is safe: the digest that
+      # this commit's publish recorded must have been built from THIS commit and
+      # must carry the version the tag names. A force-push, a reverted main or a
+      # tag on an unbuilt commit each fail here rather than publishing the wrong
+      # bytes.
       #
-      # Each registry is resolved and checked SEPARATELY. Quay and GHCR are
-      # built by two jobs, so their digests differ: promoting Quay's digest
-      # into GHCR would name a manifest that registry has never seen.
+      # Each registry is checked SEPARATELY. The same image pushed to Quay and
+      # GHCR can be stored under different manifest digests, so promoting
+      # Quay's digest into GHCR would name a manifest that registry never saw.
       #
       # Pulled rather than read through `imagetools inspect --format`: the
       # labels live in the image config, which the template reaches differently
@@ -202,9 +224,21 @@ jobs:
               quay) image="$QUAY_IMAGE" ;;
               ghcr) image="$GHCR_IMAGE" ;;
             esac
-            digest=$(docker buildx imagetools inspect "$image:main" \
-              --format '{{ .Manifest.Digest }}')
-            [ -n "$digest" ] || { echo "cannot resolve $image:main" >&2; exit 1; }
+            # The digest publish recorded for this commit -- not whatever :main
+            # names now, which a later merge or anything else holding
+            # packages:write can move.
+            recorded="$RUNNER_TEMP/published/published.json"
+            [ "$(jq -r .sha "$recorded")" = "$SHA" ] || {
+              echo "the recorded digests are for $(jq -r .sha "$recorded"), this tag is $SHA" >&2
+              exit 1
+            }
+            digest=$(jq -r ".$registry // empty" "$recorded")
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+              echo "no valid $registry digest recorded for $SHA" >&2
+              exit 1
+            }
+            now=$(docker buildx imagetools inspect "$image:main" --format '{{ .Manifest.Digest }}' || true)
+            [ "$now" = "$digest" ] || echo "::notice::$image:main has moved on to ${now:-unresolved}; promoting the recorded $digest"
             docker pull --quiet "$image@$digest" >/dev/null
             revision=$(docker inspect --format \
               '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image@$digest")
@@ -227,9 +261,13 @@ jobs:
             echo "minor=${version%.*}"
           } >> "$GITHUB_OUTPUT"
 
-      # Server-side: the manifest is copied by reference, so the released tags
-      # name the SAME digest `:main` and `:latest` already name. No layer is
-      # rebuilt, re-uploaded or re-signed.
+      # The released tags name the SAME digest publish recorded. Copied within
+      # one repository, so every blob is already there and nothing is
+      # re-uploaded. Not `imagetools create`: given a single image manifest
+      # (what podman pushes since #692) it writes a new one-entry manifest
+      # list, so 6.4.1 got a digest main never had. `--preserve-digests`
+      # refuses any copy that would change the manifest, and the check after
+      # it fails the release if a tag still resolves to anything else.
       - name: Retag the digests in both registries
         env:
           QUAY_DIGEST: ${{ steps.verified.outputs.quay_digest }}
@@ -238,10 +276,19 @@ jobs:
           MINOR: ${{ steps.verified.outputs.minor }}
         run: |
           set -eu
-          docker buildx imagetools create \
-            -t "$QUAY_IMAGE:$VERSION" -t "$QUAY_IMAGE:$MINOR" "$QUAY_IMAGE@$QUAY_DIGEST"
-          docker buildx imagetools create \
-            -t "$GHCR_IMAGE:$VERSION" -t "$GHCR_IMAGE:$MINOR" "$GHCR_IMAGE@$GHCR_DIGEST"
+          auth="$HOME/.docker/config.json"
+          for pair in "$QUAY_IMAGE=$QUAY_DIGEST" "$GHCR_IMAGE=$GHCR_DIGEST"; do
+            image=${pair%%=*} digest=${pair#*=}
+            for tag in "$VERSION" "$MINOR"; do
+              skopeo copy --all --preserve-digests --authfile "$auth" \
+                "docker://$image@$digest" "docker://$image:$tag"
+              got=$(skopeo inspect --raw --authfile "$auth" "docker://$image:$tag" | sha256sum | cut -d' ' -f1)
+              [ "sha256:$got" = "$digest" ] || {
+                echo "$image:$tag resolves to sha256:$got, not the recorded $digest" >&2
+                exit 1
+              }
+            done
+          done
 
       - name: What was released
         env:

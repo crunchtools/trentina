@@ -1,105 +1,18 @@
-# `pre-commit install` wires all three stages. Without this it wires only
-# pre-commit, so the push tier would never run and nobody would notice.
-default_install_hook_types: [pre-commit, pre-merge-commit, pre-push]
+# Every check runs from python-sdlc, pinned here once (constitution XII,
+# v1.30.0). This `rev:` fixes the launcher, the image and every tool in it, for
+# this laptop and for CI, which reads the same line.
+#
+# What each hook runs is configured in pyproject.toml: [tool.sdlc.commit],
+# [tool.sdlc.push], [tool.sdlc.ci]. `sdlc tiers` prints it.
+#
+# `default_install_hook_types` must name both: without pre-push, `pre-commit
+# install` wires only the commit hook and every verdict silently stops running.
+
+default_install_hook_types: [pre-commit, pre-push]
 
 repos:
-  # ruff runs from its own pre-commit environment, not a host install
-  # (constitution XII, host contract). Keep rev at the ruff version in uv.lock.
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.17.1
+  - repo: https://github.com/crunchtools/python-sdlc
+    rev: v0.5.0
     hooks:
-      - id: ruff-check
-        args: [--fix]
-        files: \.py$
-        stages: [pre-commit, pre-merge-commit]
-      - id: ruff-format
-        args: [--check]
-        files: \.py$
-        stages: [pre-commit, pre-merge-commit]
-      # CI lints `src tests corpora` whole; the hook above lints only what you
-      # staged, so an error in a file you did not touch still reaches CI. No
-      # --fix here on purpose: a whole-tree fix rewrites files outside the
-      # commit and fights pre-commit's stash of your unstaged work.
-      - id: ruff-check
-        alias: ruff-check-all
-        name: ruff check (src tests corpora, as CI runs it)
-        args: [src, tests, corpora]
-        pass_filenames: false
-        always_run: true
-        stages: [pre-commit, pre-merge-commit]
-  # mypy needs the project's locked dependencies, so it runs `uv` from the uv
-  # image instead of a host install -- and through gates.sh, so the resource
-  # budget and the TRENTINA_GATES_CPUS override are defined once. A hook entry
-  # is a static string and cannot read a budget, which is how this hook's
-  # hand-written caps drifted from the script's the moment they stopped being
-  # constants.
-  - repo: local
-    hooks:
-      - id: mypy
-        name: mypy
-        entry: ./scripts/gates.sh mypy
-        language: system
-        pass_filenames: false
-        stages: [pre-commit, pre-merge-commit]
-
-  # Gourmand runs from its container: the PyPI package of the same name
-  # shadows the real binary on PATH, so a bare `gourmand` is the wrong tool.
-  - repo: local
-    hooks:
-      - id: gourmand
-        name: Gourmand (AI slop detection)
-        entry: podman --events-backend=none run --rm --log-driver=none -v .:/src:Z -w /src quay.io/crunchtools/gourmand:latest check --full
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-commit, pre-merge-commit]
-      # Constitution XII (v1.17.0): reviews the STAGED diff from the image CI
-      # runs, with the repo mounted read-only so its Constitution agent reads
-      # ours. Blocks on critical/high. SKIP=gatehouse for a false positive —
-      # then answer the same finding on the PR.
-      - id: gatehouse
-        name: Gatehouse (AI code review, staged diff)
-        entry: bash -c 'git diff --cached | podman --events-backend=none run --rm --log-driver=none -i --env-file "$HOME/.config/mcp-env/gatehouse.env" -v .:/src:ro,Z -w /src quay.io/crunchtools/gatehouse:latest --stdin'
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-commit, pre-merge-commit]
-
-  # XII host contract: a repo script, so no gate assumes uv, pytest or semgrep
-  # on the host. Every one of them runs from a container image.
-  - repo: local
-    hooks:
-      - id: gates-hooks-installed
-        name: pre-push gates are installed
-        entry: ./scripts/gates.sh hooks-installed
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-commit, pre-merge-commit]
-
-      - id: pytest-container
-        name: pytest (full suite, containerised)
-        entry: ./scripts/gates.sh pytest
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-push]
-
-      - id: semgrep
-        name: Semgrep (rule tests + scan src)
-        entry: ./scripts/gates.sh semgrep
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-push]
-
-      # Closes the gap that let CI findings arrive after the local hook went
-      # green: the pre-commit Gatehouse sees ONE staged diff, so nothing
-      # reviewed the branch as a whole. This reviews origin/main...HEAD.
-      - id: gatehouse-range
-        name: Gatehouse (AI review, cumulative branch diff)
-        entry: ./scripts/gates.sh gatehouse-range
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-push]
+      - id: sdlc-commit
+      - id: sdlc-push

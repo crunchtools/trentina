@@ -1,0 +1,89 @@
+{
+ "detections": [],
+ "exchanges": [
+  {
+   "messages": [
+    {
+     "headers": [
+      [
+       "content-length",
+       "18"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ]
+     ],
+     "status": 200,
+     "type": "start"
+    },
+    {
+     "body": "{\"name\":\"widgets\"}",
+     "more": false,
+     "type": "body"
+    }
+   ],
+   "raised": null
+  }
+ ],
+ "gateway_calls": [
+  {
+   "backend": "http:github",
+   "bytes_arrived": 18,
+   "bytes_delivered": 0,
+   "call_ref": null,
+   "caller_peer": null,
+   "caller_sub": null,
+   "content_digest": null,
+   "destination": "api.github.com#e6ba2dd7fd19f164",
+   "destination_kind": "egress",
+   "detections_digest": null,
+   "error_message": null,
+   "federated_verdict": null,
+   "normalized": null,
+   "outcome": "ok",
+   "profile": "agent1",
+   "session": null,
+   "success": 1,
+   "tool": "GET"
+  }
+ ],
+ "open_slots": {},
+ "upstream": [
+  {
+   "body": "",
+   "headers": [
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-encoding",
+     "identity"
+    ],
+    [
+     "authorization",
+     "Bearer golden-agent1-github-token"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ],
+    [
+     "host",
+     "api.github.com"
+    ],
+    [
+     "user-agent",
+     "trentina-egress"
+    ],
+    [
+     "x-github-api-version",
+     "2022-11-28"
+    ]
+   ],
+   "method": "GET",
+   "url": "https://api.github.com/repos/acme/widgets?per_page=5"
+  }
+ ]
+}

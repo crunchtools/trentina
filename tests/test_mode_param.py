@@ -875,3 +875,36 @@ class TestPre035SpellingsAreGone:
 def test_only_partial_reads_are_redactable(gaps: Gaps, redactable: bool) -> None:
     """The allowlist may send these to redact; an absent layer it may not excuse."""
     assert gaps.redactable_only() is redactable
+
+
+async def test_a_federated_backend_is_sent_the_resolved_mode_and_question() -> None:
+    """#711: a secondary resolves its own mode, so the primary must carry it.
+
+    Omitted, the secondary falls to its profile default, which its per-tool
+    guard (`deny: [flag]`) refuses with a list that contains the mode asked for.
+    """
+    from trentina.gateway.profile import AuthConfig, Backend, FederatedConfig, Profile
+    from trentina.modes import Mode, ModePolicy
+    from trentina.transports.mcp import _dispatch
+
+    backend = Backend(url="http://sec:9000/mcp", tools_allow=["*"], federated=FederatedConfig())
+    profile = Profile(name="p", auth=AuthConfig(bearer_token_env="T"), backends={"sec": backend})
+    policy = ModePolicy.of(["block", "redact"], "block")
+    with patch("trentina.transports.mcp.call_backend_tool", new=AsyncMock()) as call:
+        await _dispatch(
+            profile, backend, "sec", "t", {"a": 1}, policy=policy, mode=Mode.REDACT, prompt="why?"
+        )
+        assert call.await_args.args[3] == {"a": 1, "trentina_mode": {"redact": "why?"}}
+        await _dispatch(
+            profile, backend, "sec", "t", {"a": 1}, policy=policy, mode=Mode.BLOCK, prompt=None
+        )
+        assert call.await_args.args[3] == {"a": 1, "trentina_mode": "block"}
+
+
+def test_a_refusal_names_the_mode_it_resolved() -> None:
+    policy = ModePolicy.of(["block", "redact"], "flag")
+    with pytest.raises(ModeNotPermittedError, match=r"resolved: flag; permitted: block, redact"):
+        policy.resolve(None)
+    with pytest.raises(ModeNotPermittedError) as exc:
+        policy.resolve("secret-text")
+    assert "secret-text" not in str(exc.value)
