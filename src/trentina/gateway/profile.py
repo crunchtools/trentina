@@ -629,8 +629,12 @@ _ENV_REF_IN_URL_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
 _CREDENTIAL_PARAM_RE = re.compile(r"(?i)(token|key|secret|passw|auth|sig|session|cred)")
 
 
-_CALLBACK_PATH_RE = re.compile(r"^[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$")
+#: No ``%``: a percent-encoded ``..`` or ``/`` would change segmentation once
+#: a proxy or the router decodes it, so an encoded path is refused outright.
+_CALLBACK_PATH_RE = re.compile(r"^[A-Za-z0-9._~!$&'()*+,;=:@/-]+$")
 #: Path prefixes the gateway already serves; a callback may not shadow one.
+#: KEEP IN SYNC with the routes the gateway mounts: a new top-level route
+#: belongs in this list too.
 #: The default callback path itself is allowed: it is the same handler.
 _MOUNTED_PREFIXES = (
     "/oauth/backend",
