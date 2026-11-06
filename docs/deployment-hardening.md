@@ -132,6 +132,12 @@ after startup (`gateway/envscrub.py`), but the kernel still serves it at
 `/proc/self/environ` for the life of the process. Mount the files `0400`,
 owned by the container user, read-only.
 
+A profile secret has a third source, read after both: the secret store,
+`/data/secrets/<VAR>` (0700 directory, 0600 files), which every load reads, so
+a value put there reaches a running gateway on the next reload (#736). It is
+under `/data`, which no file tool can read. See
+[Applying a Change](profiles.md#a-secret-the-running-gateway-was-not-started-with).
+
 Never put a credential in a backend URL in `profiles.yaml`. Use `${VAR}` and
 a header where the backend allows one.
 

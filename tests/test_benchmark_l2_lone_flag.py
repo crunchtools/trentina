@@ -43,7 +43,10 @@ def test_tally_splits_the_judges_misses_by_l2s_label() -> None:
     assert row.unmatched == 2
 
 
-def test_a_pack_result_is_read_by_the_cases_it_names() -> None:
+def test_a_pack_result_is_read_by_the_cases_it_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The internal and embedded cases hold both kinds; the external split is a
+    # download, which a seat behind the egress allowlist cannot make.
+    monkeypatch.setattr(prompt_pack.jailbreak, "load", lambda *_a, **_k: [])
     held_out = prompt_pack.split_cases("held-out", prompt_pack.TRAIN_EXTERNAL, CACHE_DIR)
     attack = next(c for c in held_out if c.expect_injection)
     benign = next(c for c in held_out if not c.expect_injection)

@@ -21,7 +21,7 @@ from pydantic import SecretStr, ValidationError
 
 from .. import logsafe
 from ..channels import Channel
-from . import key_store, token_store
+from . import key_store, secret_store, token_store
 from .approver import DEFAULT_ENROL_WINDOW_SECONDS, clamped_enrol_window
 from .drivers import build_transforms
 from .errors import ProfileConfigError
@@ -243,11 +243,11 @@ def _expand_env_refs(value: str, *, context: str) -> str:
                 "own, so it may not be referenced here; a backend's own credential "
                 "belongs in an env var nothing else names"
             )
-        resolved = read_secret_env(var_name)
+        resolved = read_profile_secret(var_name)
         if not resolved:
             raise ProfileConfigError(
                 f"{context}: env var {var_name} (or {var_name}"
-                f"{_ENV_FILE_SUFFIX}) referenced but not set or empty"
+                f"{_ENV_FILE_SUFFIX}) referenced but not set or empty{_STORE_HINT}"
             )
         return resolved
 
@@ -937,11 +937,11 @@ def _resolve_llm_key_secrets(name: str, profile: Profile) -> None:
                 f"Profile {name!r} llm_keys.{provider_name}: must provide "
                 f"either 'api_key' or 'api_key_env'"
             )
-        key_value = read_secret_env(override.api_key_env)
+        key_value = read_profile_secret(override.api_key_env)
         if not key_value:
             raise ProfileConfigError(
                 f"Profile {name!r} llm_keys.{provider_name}: env var "
-                f"{override.api_key_env} not set or empty"
+                f"{override.api_key_env} not set or empty{_STORE_HINT}"
             )
         override.api_key = SecretStr(key_value)
 
@@ -970,7 +970,7 @@ def _expand_backend_url(name: str, backend_name: str, url: str) -> str:
     # Inserted verbatim, so a value must not restructure the URL: `&`, `#`,
     # `/` or `?` in a token would move it into another component.
     for match in _ENV_REF_RE.finditer(url):
-        if not _URL_SAFE_VALUE_RE.fullmatch(read_secret_env(match.group(1))):
+        if not _URL_SAFE_VALUE_RE.fullmatch(read_profile_secret(match.group(1))):
             raise ProfileConfigError(
                 f"{context}: env var {match.group(1)} holds characters outside "
                 "[A-Za-z0-9._~%-]; percent-encode it"
@@ -1046,6 +1046,10 @@ def _expand_backend_env_refs(name: str, profile: Profile) -> None:
 
 
 _ENV_FILE_SUFFIX = "_FILE"
+
+#: Every "not set" refusal for a profile secret ends with this, because the
+#: store is the one of the three sources a running gateway can be given.
+_STORE_HINT = ", and not in the secret store (python -m trentina.gateway.secret_store put)"
 
 #: Every env var a profile resolved a secret from, across the startup load and
 #: every reload since. ``reload_profiles`` reads them again, so the startup
@@ -1124,6 +1128,21 @@ def read_secret_env(env_var: str, *, record: bool = True) -> str:
     return _held(read_env_or_file(env_var), env_var)
 
 
+def read_profile_secret(env_var: str) -> str:
+    """A profile's secret: ``read_secret_env``, then the secret store (#736).
+
+    The store is the last of the three places, keyed by the same name, so a
+    deployment that sets ``FOO`` or ``FOO_FILE`` reads exactly what it did.
+    What it adds is a source read on every load, which is how a profile naming
+    a variable the process never had, or one ``envscrub`` popped, is written
+    and applied without a restart. Held like every other secret.
+    """
+    value = read_secret_env(env_var)
+    if value:
+        return value
+    return _held(secret_store.read_secret(env_var), env_var)
+
+
 def read_env_or_file(env_var: str) -> str:
     """The value of ``FOO``, or the contents of the file ``FOO_FILE`` names,
     which wins. Not held and not counted as a secret: see ``read_secret_env``."""
@@ -1189,11 +1208,11 @@ def _require_env(name: str, env_var: str, what: str) -> SecretStr:
     Shared by every ingress that authenticates by a token-in-env: a missing
     or empty var is a fatal config error, not a silent None.
     """
-    value = read_secret_env(env_var)
+    value = read_profile_secret(env_var)
     if not value:
         raise ProfileConfigError(
             f"Profile {name!r}: {what} env var {env_var} (or "
-            f"{env_var}{_ENV_FILE_SUFFIX}) not set or empty"
+            f"{env_var}{_ENV_FILE_SUFFIX}) not set or empty{_STORE_HINT}"
         )
     return SecretStr(value)
 
@@ -1228,11 +1247,11 @@ def _resolve_alert_ingress_secrets(name: str, alert_ingress: AlertIngressConfig)
     alert_ingress.token = _require_env(name, alert_ingress.token_env, "alert_ingress")
 
     if alert_ingress.forward_secret_env:
-        fwd_secret = read_secret_env(alert_ingress.forward_secret_env)
+        fwd_secret = read_profile_secret(alert_ingress.forward_secret_env)
         if not fwd_secret:
             raise ProfileConfigError(
                 f"Profile {name!r}: alert_ingress forward_secret_env "
-                f"{alert_ingress.forward_secret_env} not set or empty"
+                f"{alert_ingress.forward_secret_env} not set or empty{_STORE_HINT}"
             )
         alert_ingress.forward_secret = SecretStr(fwd_secret)
 

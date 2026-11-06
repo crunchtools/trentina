@@ -640,6 +640,16 @@ a profile naming an unset env var failed validation and the write was refused
 outright. The token carries a `trt_` lead-in so `credential_shapes` can hold it
 out of a log record, since an opaque string has no shape to recognise.
 
+Every OTHER profile secret is named as an env var, and `gateway/secret_store.py`
+(#736) is its third source, after `VAR_FILE` and `VAR`: `<data>/secrets/<VAR>`,
+read on every load through `loader.read_profile_secret`. Same name, so the
+protected-name rule, `config_guard` and federation see one namespace and no
+schema changed. Nothing in the gateway writes it: the value is an outside
+credential, so `python -m trentina.gateway.secret_store put NAME < value` via
+`podman exec` is the way in, and a tool taking it would copy it into a
+transcript. A new profile secret site calls `read_profile_secret` (or
+`_require_env`), never `read_secret_env`.
+
 Federation's two gateway roles are **primary** (uses the tools) and
 **secondary** (offers them), renamed from downstream/upstream in 4.0.0 (#637).
 "Upstream" now means only an HTTP origin the gateway dials — egress, the LLM

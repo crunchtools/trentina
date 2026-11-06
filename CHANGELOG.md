@@ -10,6 +10,19 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- **A secret store for profile secrets** (#736): a profile naming a git token,
+  an `llm_keys` key, a `${VAR}` backend header or any other `*_env` secret can
+  now be written with `config_tool` and applied with `reload_profiles` on a
+  running gateway. Each resolves from `VAR_FILE`, then `VAR`, then
+  `/data/secrets/VAR` (0700/0600, read on every load); the values go in with
+  `python -m trentina.gateway.secret_store put NAME < value`, never through a
+  tool. No schema change, so `profiles.yaml` is unchanged and a deployment
+  using env or `_FILE` resolves exactly what it did. Until now only the bearer
+  token (#635) could be supplied without a restart. See
+  [docs/profiles.md](docs/profiles.md#a-secret-the-running-gateway-was-not-started-with).
+
 ## [6.9.0] - 2026-11-05
 
 ### Added
