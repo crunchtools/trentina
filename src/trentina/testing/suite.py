@@ -204,7 +204,7 @@ def scan_source(source: str, scan: _Scan) -> None:
             _check_module(node.module, scan)
 
 
-class _RouteScan(ast.NodeVisitor):
+class _PluginScan(ast.NodeVisitor):
     """Every import, name and attribute in a route plugin's module, held to the
     route lists — or, for a carrier, the carrier lists. Each ``visit_`` records
     what it finds and keeps walking."""
@@ -251,7 +251,7 @@ def scan_route_source(source: str, scan: _Scan) -> None:
     except SyntaxError:
         scan.violations.append("unparseable-source")
         return
-    _RouteScan(scan).visit(tree)
+    _PluginScan(scan).visit(tree)
 
 
 def scan_carrier_source(source: str, scan: _Scan) -> None:
@@ -262,7 +262,7 @@ def scan_carrier_source(source: str, scan: _Scan) -> None:
     except SyntaxError:
         scan.violations.append("unparseable-source")
         return
-    _RouteScan(scan, carrier=True).visit(tree)
+    _PluginScan(scan, carrier=True).visit(tree)
 
 
 def scan_imports(dist: str, *, route: bool = False, carrier: bool = False) -> list[str]:
