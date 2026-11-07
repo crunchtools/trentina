@@ -244,20 +244,21 @@ built-in `mcp`.
 
 A **carrier** (#740) is the wire a backend's MCP sessions ride: `tools/list` and
 `tools/call` both, so a backend is never listed over one wire and called over
-another. The built-in `http` carrier serves every `http(s)://` backend and is
-chosen from the URL; nothing names it. A plugin carrier is an installed
-distribution exposing a `trentina.carriers.v1` entry point whose value is a
-factory `() -> Carrier`, and a backend names it:
+another. Two are built in and chosen from the URL, so nothing names them:
+`http` for every `http(s)://` backend, and `unix` for a stdio server behind a
+socket the host runs ([stdio-backends.md](stdio-backends.md), #724). A plugin
+carrier is an installed distribution exposing a `trentina.carriers.v1` entry
+point whose value is a factory `() -> Carrier`, and a backend names it:
 
 ```yaml
 backends:
-  hub:
-    url: unix:///run/mcp/hub.sock
-    carrier: acme-carriers:unix
+  guest:
+    url: vsock://3:9000
+    carrier: acme-carriers:vsock
 ```
 
 A URL whose scheme no built-in answers needs a `carrier`, and a plugin may not
-take `http`, `https`, `internal` or `decoy`.
+take `http`, `https`, `unix`, `internal` or `decoy`.
 
 The contract in `trentina.transports.base` is `connect(target, reading)`: an
 async context manager yielding the SDK's session streams (`ReadStream`,

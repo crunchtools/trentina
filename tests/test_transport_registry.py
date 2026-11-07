@@ -478,18 +478,18 @@ class TestBackendCarrierField:
 
     def test_an_unanswered_scheme_needs_a_carrier(self) -> None:
         with pytest.raises(ValueError, match="needs a carrier"):
-            Backend(url="unix:///run/mcp/hub.sock")
+            Backend(url="vsock://3:9000")
 
     def test_the_http_carrier_answers_http_only(self) -> None:
         with pytest.raises(ValueError, match="answers"):
-            Backend(url="unix:///run/mcp/hub.sock", carrier="http")
+            Backend(url="vsock://3:9000", carrier="http")
 
     def test_an_internal_backend_names_no_carrier(self) -> None:
         with pytest.raises(ValueError, match="carrier does not apply"):
             Backend(url="internal://tools", carrier="acme:wire")
 
     def test_a_plugin_scheme_is_remote(self) -> None:
-        backend = Backend(url="unix:///run/mcp/hub.sock", carrier="acme:wire")
+        backend = Backend(url="vsock://3:9000", carrier="acme:wire")
         assert backend.is_remote
         assert registry.carrier_name(backend) == "acme:wire"
 

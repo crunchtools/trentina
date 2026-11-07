@@ -251,8 +251,11 @@ def _mode_policy_env() -> tuple[str, tuple[str, ...]]:
     return default, allowed
 
 
-def _read_roots_env() -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+def _read_roots_env(
+    name: str = "TRENTINA_READ_ROOTS",
+) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
     """``TRENTINA_READ_ROOTS``: the directories read_tool and dir_tool may reach (#261).
+    ``TRENTINA_SOCKET_ROOTS`` (#724) is read the same way, by ``name``.
 
     ``os.pathsep``-separated. Returned twice: resolved, so a root reached
     through a symlinked directory compares against resolved targets; and as
@@ -265,11 +268,11 @@ def _read_roots_env() -> tuple[tuple[Path, ...], tuple[Path, ...]]:
 
     roots = []
     written = []
-    for entry in os.environ.get("TRENTINA_READ_ROOTS", "").split(os.pathsep):
+    for entry in os.environ.get(name, "").split(os.pathsep):
         if not entry.strip():
             continue
         if not os.path.isabs(entry.strip()):
-            raise ConfigError(f"TRENTINA_READ_ROOTS entry {entry!r} is not an absolute path")
+            raise ConfigError(f"{name} entry {entry!r} is not an absolute path")
         roots.append(Path(entry.strip()).resolve())
         written.append(Path(os.path.normpath(entry.strip())))
     return tuple(roots), tuple(written)
@@ -300,6 +303,14 @@ class Config:
     and the matching *_API_KEY standalone, a profile's llm_keys behind the
     gateway. L1 and L2 work without one.
     """
+
+    read_roots: tuple[Path, ...]
+    read_roots_written: tuple[Path, ...]
+    #: The directories a unix:// backend's socket may be in (#724). Unset, no
+    #: unix:// backend loads: a socket path is the operator's, but where the
+    #: gateway may connect is still a list someone wrote down.
+    socket_roots: tuple[Path, ...]
+    socket_roots_written: tuple[Path, ...]
 
     @functools.cached_property
     def log_format(self) -> str:
@@ -446,9 +457,8 @@ class Config:
             str(Path(self.db_path).parent / "perimeter.db"),
         )
 
-        self.read_roots: tuple[Path, ...]
-        self.read_roots_written: tuple[Path, ...]
         self.read_roots, self.read_roots_written = _read_roots_env()
+        self.socket_roots, self.socket_roots_written = _read_roots_env("TRENTINA_SOCKET_ROOTS")
         # How long a block refusal keeps its source on the blocklist (#263).
         # Rows never expired before, which made the table a dead drop.
         self.blocklist_ttl_days: int = int_env(

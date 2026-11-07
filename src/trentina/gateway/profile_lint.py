@@ -206,6 +206,8 @@ def _endpoint(url: str) -> str:
     deploy logs. Findings group on the full URL; they print only this.
     """
     parts = urlsplit(url)
+    if parts.scheme == "unix":
+        return f"unix:{parts.path.rpartition('/')[2]}"
     host = parts.hostname or "?"
     return f"{parts.scheme}://{host}" + (f":{parts.port}" if parts.port else "")
 

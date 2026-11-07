@@ -212,21 +212,27 @@ def _verify_opened(fd: int, checked: os.stat_result) -> os.stat_result:
     return opened
 
 
-_WALK_FLAGS = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+#: Flags for opening a directory in ``walk_open``: a path handle, a directory,
+#: never through a link.
+WALK_FLAGS = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
-def _walk_open(resolved: Path, flags: int) -> int:
+def walk_open(resolved: Path, flags: int) -> int:
     """Open ``resolved`` one component at a time, following no symlink anywhere.
+
+    Shared by the two confinement paths: ``open_confined`` here, and the
+    socket roots of a ``unix://`` backend (``transports/socket_roots.py``,
+    #724). Pass ``WALK_FLAGS`` to open a directory.
 
     ``resolved`` has no symlinks (``confine`` resolved it), so a link met
     here was swapped in after the check: ``O_NOFOLLOW`` makes the final open
     fail with ELOOP, and ``O_DIRECTORY`` makes an intermediate one fail with
     ENOTDIR. Both are ``changed_during_read``.
     """
-    parent = os.open("/", _WALK_FLAGS)
+    parent = os.open("/", WALK_FLAGS)
     try:
         for part in resolved.parts[1:-1]:
-            child = os.open(part, _WALK_FLAGS, dir_fd=parent)
+            child = os.open(part, WALK_FLAGS, dir_fd=parent)
             os.close(parent)
             parent = child
         return os.open(resolved.name or "/", flags, dir_fd=parent)
@@ -292,7 +298,7 @@ def open_confined(path: str, kind: FileKind) -> ResolvedPath:
         #   on-failure: fail-closed (changed_during_read or a merged refusal)
         #   owner: confine.open_confined
         #   evidence: T1 openat O_NOFOLLOW fails ELOOP, O_DIRECTORY ENOTDIR; T3 #261 #287
-        fd = _walk_open(resolved, flags)
+        fd = walk_open(resolved, flags)
     except OSError as exc:
         # ELOOP and ENOTDIR are a symlink that was not there at check time.
         swapped = exc.errno in (errno.ELOOP, errno.ENOTDIR)

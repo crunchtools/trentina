@@ -12,6 +12,18 @@ under that name.
 
 ### Added
 
+- **Stdio backends** (#724). A stdio-only MCP server is fronted directly: the
+  host runs it under systemd socket activation (`Accept=yes`,
+  `StandardInput=socket`), and a `unix:///<socket>` backend connects to it
+  with the new built-in `unix` carrier, which speaks MCP's stdio framing over
+  the socket. The gateway starts nothing, so its hardening is unchanged, and
+  the server's command line stays in the systemd unit. Its responses are
+  judged like any backend's. The socket must sit under the new
+  `TRENTINA_SOCKET_ROOTS` (unset, no `unix://` backend loads), and is checked
+  again at every connect through a directory opened without following links.
+  A `unix://` backend refuses `headers`, `auth` and `federated`. See
+  [docs/stdio-backends.md](docs/stdio-backends.md).
+
 - **Carriers: a backend's wire is a plugin contract** (#740). A backend's MCP
   sessions, its `tools/list` and its `tools/call` alike, ride a `Carrier`, the
   frozen v1 contract in `trentina.transports.base`. The built-in `http` carrier

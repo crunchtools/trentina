@@ -79,6 +79,14 @@ uv run trentina
   `not_found_or_denied`, so a refusal is no existence oracle (#263). A
   confinement refusal is a `BlockedSourceError` with no alternatives
   (`confine.refused`), audited `blocked_defense` like egress's (#278).
+- `TRENTINA_SOCKET_ROOTS` — `os.pathsep`-separated absolute directories a
+  `unix://` backend's socket may be in (#724, `transports/socket_roots.py`,
+  `docs/stdio-backends.md`); a relative entry fails startup. Unset, no
+  `unix://` backend loads. Checked as written at load, then at every connect
+  through an `O_NOFOLLOW`-walked directory fd (`/proc/self/fd/<n>/<name>`),
+  the final component `lstat`ed as a socket. Reasons are a closed set and
+  never the path. NOT `HARD_DENIED`: `/run` is where systemd puts sockets,
+  and the roots are the operator's.
 - `TRENTINA_FETCH_ALLOW_PRIVATE` — default false. Lifts the egress guard's
   address rule so fetch can reach non-global addresses; scheme, port and
   redirect rules still hold. Warns at startup. See `reach/egress.py` (#260).
@@ -961,7 +969,11 @@ replaced.
   imported at startup. Breaker, credentials, reauth, the cap's limit and all
   judging stay above it; a carrier only reports into `Reading`. The crossing's
   middle step is `Dispatch`, and Face and Dispatch stay in-tree: a `dist:`
-  transport is refused.
+  transport is refused. `unix` (`transports/unix_carrier.py`, #724) is the
+  second built-in: MCP's stdio framing (one JSON-RPC message a line) over a
+  socket systemd socket activation answers, so a stdio-only server is fronted
+  with the gateway starting nothing. A `unix://` backend refuses `headers`,
+  `auth` and `federated` (`Backend.a_socket_carries_no_http`).
 - `transports/perimeter.py` — the perimeter spine (#535, `docs/proxy-plugins.md`).
   Every `/proxy/*` route and the CONNECT listener is a `Route` or `Listener`
   (`transports/base.py`, the public contract) served by `serve()`/`accept()`:

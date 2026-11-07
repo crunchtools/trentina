@@ -64,6 +64,9 @@ def _safe_endpoint(url: str) -> str:
     echoed back to the caller. The host:port is a non-secret network alias.
     """
     parts = urlsplit(url)
+    if parts.scheme == "unix":
+        # A socket has no host; its file name tells one backend from another.
+        return f"unix:{parts.path.rpartition('/')[2]}"
     # A decoy's URL says what it is, which its caller must not be told (#357).
     if not parts.netloc or parts.scheme == "decoy":
         return "(redacted)"
