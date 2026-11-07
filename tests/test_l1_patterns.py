@@ -263,7 +263,7 @@ def test_repeated_unclosed_markup_stays_linear(unit: str) -> None:
 
 
 # Repeated units with no terminator, each quadratic in a regex that matched
-# from every position of the run (#295): `_SOFT_BREAK` on blanks with no
+# from every position of the run (#295): `SOFT_BREAK` on blanks with no
 # newline after them, `_DATA_URI_PATTERN` on `data:text/` with no `;`.
 _UNTERMINATED = [" ", "\t", " \t", "data:text/"]
 
@@ -286,7 +286,7 @@ def test_repeated_unterminated_units_stay_linear(unit: str) -> None:
     ],
 )
 def test_a_soft_break_after_a_long_run_still_joins(text: str) -> None:
-    """The linear `_SOFT_BREAK` joins the same lines the quadratic one did."""
+    """The linear `SOFT_BREAK` joins the same lines the quadratic one did."""
     assert strip_directives(text)[1].directives_detected == 1
 
 

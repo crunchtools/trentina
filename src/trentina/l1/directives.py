@@ -26,7 +26,6 @@ mode — not this stage — decides whether flagged content reaches the agent.
 
 from __future__ import annotations
 
-import codecs
 import re
 from dataclasses import dataclass
 
@@ -249,9 +248,13 @@ _GATES: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = tuple(
 # tries them again.
 _FOLD = str.maketrans({"\u0130": "i", "\u0131": "i", "\u212a": "k", "\u017f": "s"})
 
-_PREFIX_PATTERNS = re.compile(
-    r"^\s*(?:IMPORTANT|INSTRUCTION|OVERRIDE|ADMIN)\s*:",
-    re.IGNORECASE,
+_PREFIX_WORDS = ("IMPORTANT", "INSTRUCTION", "OVERRIDE", "ADMIN")
+_PREFIX_PATTERNS = re.compile(rf"^\s*(?:{'|'.join(_PREFIX_WORDS)})\s*:", re.IGNORECASE)
+
+#: Every string ``matches_exact`` accepts holds one of these once folded: a
+#: pattern's literal, or a word the prefix rule needs.
+GATE_LITERALS = frozenset(
+    [*(lit for needs in LITERALS.values() for lit in needs), *(w.lower() for w in _PREFIX_WORDS)]
 )
 
 # `]` closing one line and a role label opening the next: `...]\n[system]:`.
@@ -265,7 +268,7 @@ _ROLE_LABEL = re.compile(r"^\s*\[?(?:system|assistant|user)\]?:", re.IGNORECASE)
 # lookbehind starts a blank run's match at its FIRST blank only: without it a
 # run with no newline after it was rescanned from every position, and 40k tabs
 # took 15 s (#295).
-_SOFT_BREAK = re.compile(
+SOFT_BREAK = re.compile(
     r"(?<![ \t])[ \t]{2,}\r?\n|\\\r?\n|<br\b[^<>]*>[ \t]*(?:\r?\n)?", re.IGNORECASE
 )
 
@@ -274,16 +277,16 @@ _SOFT_BREAK = re.compile(
 class DirectiveStats:
     """Statistics from directive detection.
 
-    The three are disjoint: ``evasions_detected`` counts the lines that
-    matched only once ``l1/evasion.py`` undid a scramble, a typo or character
-    spacing, ``ciphered_detected`` those that matched only once read in ROT13
-    or back to front (#363), and neither is in ``directives_detected``. All
-    feed risk, which sums every field.
+    The two are disjoint: ``evasions_detected`` counts the lines that matched
+    only once ``l1/evasion.py`` undid a scramble, a typo or character
+    spacing, and is not in ``directives_detected``. Both feed risk, which sums
+    every field. A line in ROT13 or written backwards reaches this stage
+    already read back by ``unpack/letters.py`` (#744), so it counts as a
+    plain directive; until then this stage read both itself (#363).
     """
 
     directives_detected: int = 0
     evasions_detected: int = 0
-    ciphered_detected: int = 0
 
 
 def matches_exact(line: str) -> bool:
@@ -324,40 +327,22 @@ def _matches_evasion(line: str) -> bool:
     return False
 
 
-_MIN_CIPHERED = 12
-"""The shortest line read in ROT13 and reversed: no exact pattern is shorter."""
-
-
-def _matches_ciphered(line: str) -> bool:
-    """Whether ``line`` is an exact directive in ROT13 or written backwards.
-
-    Held to the exact patterns, which need several words in order: ordinary
-    text does not turn into one by rotation or reversal. Two more passes of
-    the same linear patterns over the line.
-    """
-    if len(line) < _MIN_CIPHERED:
-        return False
-    return matches_exact(codecs.decode(line, "rot13")) or matches_exact(line[::-1])
-
-
 def strip_directives(text: str) -> tuple[str, DirectiveStats]:
     """Count lines containing LLM directive patterns; return text unchanged.
 
     One detection per line, however many patterns hit it — the unit of
     suspicion is the hostile line, and counting each pattern would let a
     single line inflate the risk score on its own. A soft break joins its
-    two halves into one line for the scan (see ``_SOFT_BREAK``).
+    two halves into one line for the scan (see ``SOFT_BREAK``).
     """
     stats = DirectiveStats()
 
     previous = ""
-    for line in _SOFT_BREAK.sub(" ", text).split("\n"):
+    for line in SOFT_BREAK.sub(" ", text).split("\n"):
         if matches_exact(line) or (previous.rstrip().endswith("]") and _ROLE_LABEL.search(line)):
             stats.directives_detected += 1
         elif _matches_evasion(line):
             stats.evasions_detected += 1
-        elif _matches_ciphered(line):
-            stats.ciphered_detected += 1
         previous = line
 
     return text, stats

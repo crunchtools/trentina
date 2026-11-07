@@ -47,7 +47,22 @@ CASES: dict[str, Case] = {}
 #:     instance, so it now has a row; its no-key refusal names its reason.
 #:   * the Matrix proxy refuses a path outside ``_matrix/`` after authentication
 #:     too (it answered before), so a known caller's refusal is recorded.
+#: One more holds for every case, in ``_retired``: a ``detections`` row's
+#: ``layer1_stats`` no longer carries ``directives_ciphered_detected``, which
+#: #744 retired when the unpack stage took over reading ROT13 and backwards
+#: text. It was 0 in every fixture.
 DELTAS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {}
+
+_RETIRED_COUNTERS = ("directives_ciphered_detected",)
+
+
+def _retired(record: dict[str, Any]) -> dict[str, Any]:
+    for row in record.get("detections", []):
+        stats = json.loads(row["layer1_stats"])
+        for counter in _RETIRED_COUNTERS:
+            assert stats.pop(counter) == 0, counter
+        row["layer1_stats"] = json.dumps(stats)
+    return record
 
 
 def _first_row(**changes: Any) -> Callable[[dict[str, Any]], dict[str, Any]]:
@@ -910,7 +925,7 @@ def test_golden(name: str, spelling: str, monkeypatch: pytest.MonkeyPatch) -> No
         path.write_text(g.dump(record), encoding="utf-8")
         return
     assert path.exists(), f"no fixture for {name}; record on the pre-spine commit"
-    expected = json.loads(path.read_text(encoding="utf-8"))
+    expected = _retired(json.loads(path.read_text(encoding="utf-8")))
     actual = json.loads(g.dump(record))
     if name in DELTAS:
         expected = DELTAS[name](expected)
