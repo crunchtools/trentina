@@ -277,9 +277,24 @@ jobs:
         run: |
           set -eu
           auth="$HOME/.docker/config.json"
+          # `latest` is the newest stable RELEASE (constitution 1.33.0), so the
+          # release moves it -- unless a NEWER release already holds it, which a
+          # re-run of an old tag would otherwise demote. This job checks out no
+          # git history, so the comparison is on the `version` label the
+          # published image carries rather than on ancestry. The version regex
+          # above has already refused anything but a three-number stable tag.
+          tags="$VERSION $MINOR"
+          current=$(skopeo inspect --format '{{ index .Labels "version" }}' \
+            --authfile "$auth" "docker://$QUAY_IMAGE:latest" 2>/dev/null || true)
+          if [ -n "$current" ] && [ "$current" != "$VERSION" ] &&
+             [ "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -1)" = "$current" ]; then
+            echo "::notice::latest is $current, newer than $VERSION; moving the version tags only"
+          else
+            tags="$tags latest"
+          fi
           for pair in "$QUAY_IMAGE=$QUAY_DIGEST" "$GHCR_IMAGE=$GHCR_DIGEST"; do
             image=${pair%%=*} digest=${pair#*=}
-            for tag in "$VERSION" "$MINOR"; do
+            for tag in $tags; do
               skopeo copy --all --preserve-digests --authfile "$auth" \
                 "docker://$image@$digest" "docker://$image:$tag"
               got=$(skopeo inspect --raw --authfile "$auth" "docker://$image:$tag" | sha256sum | cut -d' ' -f1)

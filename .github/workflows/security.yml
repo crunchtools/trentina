@@ -198,8 +198,13 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -eu
+          # `main` ONLY. `latest` is the newest stable RELEASE and moves in
+          # container.yml's promote (constitution 1.33.0). This job used to push
+          # both, so a merge was a fleet-wide deploy: on 2026-11-07 unreleased
+          # 6.11.0 reached production at 02:01 through podman-auto-update,
+          # climbed to the unit's 4g cap and was SIGKILLed (RT#1559).
           for image in "$QUAY" "$GHCR"; do
-            for tag in main latest; do
+            for tag in main; do
               podman tag localhost/trentina:sdlc "$image:$tag"
               podman push --format v2s2 --digestfile "$RUNNER_TEMP/digest" "$image:$tag"
             done
