@@ -899,7 +899,9 @@ replaced.
   - `directives.py` — the exact patterns, named after OpenRouter's guardrail
     (#201). Near-misses matter as much as hits: every pattern has an attack
     and a benign line in `corpora/l1_patterns.py` (`L1_PATTERN_CASES`),
-    kept out of `CORPUS` because that is the semantic L3 benchmark.
+    kept out of `CORPUS` because that is the semantic L3 benchmark. A
+    pattern also names the literals it needs (`_TABLE`); `matches_exact`
+    runs it only when one is in the string it is handed (#709).
   - `evasion.py` — undoes scrambles, one-edit typos and character spacing,
     then asks the exact patterns again. A typo alone is never a detection.
 - `quarantine/` — holds BOTH judging layers, which is why the directory name

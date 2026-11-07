@@ -10,6 +10,17 @@ under that name.
 
 ## [Unreleased]
 
+### Changed
+
+- **L1's directive patterns run only when a word they need is present**
+  (#709). Each exact pattern names the literals it cannot match without, and
+  `matches_exact` runs a pattern only when one is in the string it is handed,
+  so the as-written, collapsed, typo-corrected and ciphered forms of a line
+  are each gated on their own words. Detection is unchanged: the regex still
+  decides every match, and a test holds the gate to the ungated scan over the
+  corpora and `docs/` in every form. The directive stage is 2.3x faster and
+  L1 1.6x on `docs/` (`benchmarks/l1_throughput.py`).
+
 ## [6.11.0] - 2026-11-07
 
 ### Added
