@@ -23,7 +23,8 @@ from typing import TYPE_CHECKING, Any
 
 from mcp import ClientSession
 from mcp.shared.exceptions import MCPError
-from mcp_types import INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND
+from mcp_types import INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, Request
+from pydantic import BaseModel, ConfigDict
 
 from ..database import delete_all_tool_lists, delete_tool_list, save_tool_list
 from ..logsafe import exc_kind, redact_source, safe_url
@@ -31,6 +32,7 @@ from ..reserved import PINS_KEY
 from ..transports.base import CarrierTarget, Reading
 from ..transports.registry import carrier_for
 from . import federation_keys
+from .attestation import ATTEST_METHOD
 from .circuit import breaker
 from .context import get_current_profile
 from .errors import (
@@ -884,6 +886,74 @@ async def _do_call_tool(
         if not validate_output:
             _disable_output_validation(session)
         return await session.call_tool(tool_name, arguments=arguments)
+
+
+class _Envelope(BaseModel):
+    """An attestation as it arrived: any mapping. Checking it is
+    ``attestation.check_attestation``'s job, not the SDK's, so a malformed one
+    reaches that check and is refused as ``bad_signature`` rather than failing
+    here as though the peer had not answered."""
+
+    model_config = ConfigDict(extra="allow")
+
+
+@dataclass(frozen=True)
+class Attested:
+    """What a federated peer said when asked to attest (#640).
+
+    ``envelope`` is the peer's signed answer, unverified — checking it against
+    the operator's key is the caller's (``attestation.check_attestation``).
+    ``withheld`` is a closed reason when there is no answer to check:
+    ``not_offered`` (the peer answered ``-32601``: an older gateway, or one
+    with nothing to sign), ``unauthorized`` (it refused our credential) or
+    ``unreachable``. ``server_version`` is the peer's own ``serverInfo``
+    string, peer-chosen, None when the handshake never completed.
+    """
+
+    envelope: Any = None
+    withheld: str | None = None
+    server_version: str | None = None
+
+
+async def attest_backend(
+    backend_name: str, backend: Backend, profile: Profile, nonce: str
+) -> Attested:
+    """Ask a federated backend to attest its scanner, answering ``nonce``.
+
+    Signed in as ``profile`` exactly as a call is (``_credentials``), over the
+    backend's own carrier and response cap. It is a provisioning probe and not
+    traffic, so the circuit breaker is neither asked nor told and no cache is
+    touched: a peer that is down for a moment should not cost every profile on
+    its URL a minute of refusals because an operator was pinning it.
+    """
+    version: str | None = None
+    cap = ResponseCap(response_byte_cap())
+    request = Request[dict[str, Any], str](method=ATTEST_METHOD, params={"nonce": nonce})
+    try:
+        headers, _grant = await _credentials(backend_name, backend, profile)
+        async with (
+            asyncio.timeout(backend.list_timeout_seconds),
+            carrier_for(backend).connect(_target(backend.url, headers), cap) as (read, write),
+            ClientSession(read, write) as session,
+        ):
+            init = await session.initialize()
+            version = _field(init.server_info, "version", "version")
+            try:
+                answer = await session.send_request(request, _Envelope)
+            except MCPError as exc:
+                # Answered here, inside the session: leaving it with the error
+                # in flight closes the stream, and the SDK's "connection
+                # closed" replaces this one on the way out.
+                if exc.code != METHOD_NOT_FOUND:
+                    raise
+                return Attested(withheld="not_offered", server_version=version)
+    except Exception as exc:
+        # The profile and not the backend: `federation_trust` hands over the
+        # backend name as its caller wrote it (#262).
+        logger.warning("gateway: attest failed profile=%s err=%s", profile.name, exc_kind(exc))
+        withheld = "unauthorized" if cap.unauthorized else "unreachable"
+        return Attested(withheld=withheld, server_version=version)
+    return Attested(envelope=answer.model_extra, server_version=version)
 
 
 def _disable_output_validation(session: Any) -> None:

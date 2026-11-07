@@ -18,6 +18,7 @@ from .reload import reload_profiles
 from .search import block_search, flag_search, redact_search, web_search
 from .stats import get_trentina_stats
 from .token import profile_token
+from .trust import federation_trust
 
 __all__ = [
     "approval_enrol",
@@ -32,6 +33,7 @@ __all__ = [
     "block_search",
     "cache_flush",
     "federation_keygen",
+    "federation_trust",
     "fetch_page",
     "flag_content",
     "flag_dir",

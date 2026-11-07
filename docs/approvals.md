@@ -97,11 +97,13 @@ shows — only things you can actually check:
 
 - **Operator role** — which profile holds it now, which would hold it after.
 - **Federation trust** — which backend, the peer's key as a short fingerprint,
-  and the peer's scanner and judge beside your own, to compare. Those last two
-  are the peer's claims about itself. Pinning the key binds which scanner and
-  judge it must keep presenting; it does not bind how that peer actually
-  defends, so a weaker setting on its side is not something this page can
-  catch.
+  and the peer's scanner and judge beside your own, to compare, and how those
+  two were learned. *Verified at the link* means the peer signed them with that
+  key a moment ago (`federation_trust`); *as supplied* means your agent wrote
+  them and nothing checked them, which is what you get from a peer older than
+  6.12.0. Pinning the key binds which scanner and judge it must keep
+  presenting; it does not bind how that peer actually defends, so a weaker
+  setting on its side is not something this page can catch.
 - **Federation peers** — each gateway being let in, by name, with its key as a
   short fingerprint. A peer whose *name* you already approved but whose key
   has changed shows up here too: same name, different gateway. Beside the keys,

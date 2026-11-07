@@ -30,6 +30,7 @@ profile:
 | `reload_profiles` | Applies the whole `profiles.yaml`, gateway-wide settings included |
 | `config_tool` | Reads and edits `profiles.yaml` itself, then applies it |
 | `federation_keygen` | Mints an Ed25519 keypair for a federated edge, returning only its public half |
+| `federation_trust` | Asks a federated peer to sign its scanner and judge, verifies it against the key you supply, and stages the trust pin for a person |
 
 These are what an Operator agent's loop needs. It reads a section of
 `profiles.yaml` with `config_tool`, writes the change back with the `hash` that
@@ -101,7 +102,9 @@ Setting up a federated edge needs no shell either: `federation_keygen` mints
 the keypair and keeps the private half where no tool can read it, the public
 half goes into the peer's config with `config_tool`, and a key referred to by
 name is re-read on every reload, so a key minted after startup takes effect
-without a restart. A writable config directory is what `config_tool` needs from
+without a restart. Trusting the peer's scan is `federation_trust`,
+which reads the peer's scanner and judge off the link instead of taking them
+from the agent; a person still approves it. A writable config directory is what `config_tool` needs from
 the deployment; see [Deployment Hardening](deployment-hardening.md#a-writable-config-directory).
 
 **Service identity.** A few model calls belong to no tenant, and those run

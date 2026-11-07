@@ -53,6 +53,8 @@ Three moves, and none of them needs a shell, a file edit or a restart. An operat
 2. **Share the profile** — a `federation` block on the profile whose tools you are sharing, naming its peers and its secondary key. This one needs a person: admitting a peer hands another gateway a profile on your gateway, and since the link spends that profile's sign-ins, it hands over the accounts a person authorized there too. The approval page says which backends cross and which of them run on your sign-in. At this stage the link is authenticated but still double-scans. Prove it works here first.
 3. **Turn on trust** — on the primary, pin the secondary's key plus a *fingerprint of its scanner*. Now the primary trusts verdicts that match and scans locally anything that doesn't. The agent proposes this one; it cannot apply it. Nothing moves until a person opens the approval page and agrees, and the page shows the key's fingerprint and both gateways' scanners side by side, so you are comparing them rather than taking a name on trust.
 
+   Give the agent the secondary's public key and have it use `federation_trust` rather than writing the pin itself. The primary asks the secondary to sign its scanner and judge in answer to a fresh challenge, checks the signature against the key you gave it, and stages the pin with what the secondary actually presented. The approval page then says **verified at the link** instead of **as supplied**. See [Attesting a scanner](#attesting-a-scanner).
+
 Trust is the only setting that decides whether a layer runs at all, which is why it is the one an agent can ask for and not take. [Approvals](approvals.md) is how that works, and what happens on a gateway where nobody can approve.
 
 Pinning the scanner's fingerprint, not just the key, is what makes trust safe: a response is trusted only if the secondary scanned it with the exact model and settings you vetted. If the secondary quietly swaps in a weaker scanner, the fingerprint stops matching and the primary falls back to scanning for itself.
@@ -129,6 +131,21 @@ gateway binds for its own work, which since 6.1.0 means an approved config
 write and no model call — is always a profile somebody **wrote**, never a
 derivation, because taking the first `role: operator` match out of the registry
 would let dict order decide it.
+
+## Attesting a scanner
+
+`trentina/attest` is the one method federation adds to MCP (6.12.0, #640). A primary sends it to the secondary's ingress with a random nonce, authenticated like any call on the link; the ingress answers `{assertion: {verifier, perimeter_stamp, judge, nonce, ts}, signature}`, signed with its secondary key over the same stamp and judge it puts on every response. The primary verifies it against the key the **operator** supplied, never a key from the link, so a gateway in the middle cannot vouch for itself.
+
+| What the secondary does | What `federation_trust` does |
+|---|---|
+| Signs, and it verifies | Stages the pin with the signed stamp and judge, marked *verified at the link* |
+| Signs, and it does not verify (wrong key, wrong nonce, wrong profile, stale) | Stages nothing. That is a wrong key or something answering for the peer |
+| Answers `-32601` (older than 6.12.0, or a profile with no secondary key) | Today's path: stages the stamp and judge you pass, marked *as supplied*, with the peer's reported version |
+| Cannot be reached, or refuses the credential | The same as `-32601` |
+
+An older gateway and one declining to attest give the same answer, and that is harmless: the fallback is the as-supplied staging that existed before, never trust. Either side can upgrade first. The method is on the federation preview surface, so dropping it later restores `-32601` and nothing else.
+
+It is a method and not a tool on purpose. A response's signed verdict is emitted only where the layers ran, so a tool carrying one would sign a verdict over bytes nobody judged; and a provisioning handshake has no business going through tool names, tool pins and the tool audit. What a peer reaches is MCP plus `attest`, which returns only what every signed response already carries.
 
 ## Operating concepts
 

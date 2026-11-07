@@ -632,7 +632,18 @@ nothing can be approved and both writes stay refused.
 
 A peer's `perimeter_stamp` and `judge` are PEER-CHOSEN strings shown to the
 person deciding whether to believe that peer, so they pass
-`pending.checked_display` before staging and are escaped again at render.
+`pending.checked_display` before staging and are escaped again at render. Since
+6.12.0 (#640) `federation_trust` (`tools/trust.py`) reads them off the link:
+`trentina/attest` (`gateway/attestation.py`, answered in `transports/mcp.py`
+`_route_attest`, probed by `backend.attest_backend`) returns the ingress's
+stamp and judge signed over a caller nonce, verified against the
+OPERATOR-supplied key, never one from the link. A method, not a tool (ruling
+on #640): `_assemble` signs only where layers ran, and a handshake has no
+business in tool pins or the tool audit. `-32601` or no answer falls back to
+as-supplied staging; an answer that does not verify stages nothing. It stages
+through `config.propose_trust`, whose `_with_provenance` refuses anything but
+that one pin, and the page's `LEARNED_FACT` row (inside the digest) says
+verified or as supplied.
 `_apply` runs under `service_context()`: an approval has no bound caller, and
 without it the reload would refuse the change and restore the file — approved
 and silently not applied. It also writes the audit row, since an approval is

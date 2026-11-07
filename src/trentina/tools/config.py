@@ -344,6 +344,16 @@ def _profile_facts(
     return facts
 
 
+#: The row that says whether the scanner and judge above were checked at the
+#: link (#640). A fact like the rest, so it is inside the digest a person's
+#: approval binds to: a verified proposal cannot be swapped for a supplied one.
+LEARNED_FACT = "How the scanner and judge were learned"
+
+#: What that row says when nothing checked them: every ``config_tool`` write,
+#: and ``federation_trust`` when the peer did not attest.
+AS_SUPPLIED = "As supplied by the operator agent. Not checked against the peer."
+
+
 def _trust_facts(where: str, pin: dict[str, str]) -> dict[str, str]:
     """What a person needs to see about a trust pin.
 
@@ -358,6 +368,7 @@ def _trust_facts(where: str, pin: dict[str, str]) -> dict[str, str]:
             pin["perimeter_stamp"], what="the peer's perimeter stamp"
         ),
         "Its judge": pending.checked_display(pin["judge"], what="the peer's judge"),
+        LEARNED_FACT: AS_SUPPLIED,
         "This gateway scans under": perimeter_stamp(),
         "What this means": (
             "Responses from this backend will be served WITHOUT this gateway running "
@@ -983,12 +994,23 @@ async def _write(
     action: str,
     keys: tuple[str, ...],
     value: Any,
+    *,
+    learned: tuple[dict[str, str], str] | None = None,
 ) -> dict[str, Any]:
-    """Apply a change, or stage it for a person: blocking parts off the loop."""
+    """Apply a change, or stage it for a person: blocking parts off the loop.
+
+    ``learned`` is ``federation_trust``'s: the pin it means to stage and what
+    to say about where it came from. Such a write may only ever stage that one
+    pin, so anything else it would produce — an apply, another proposal, a pin
+    that loading did not reproduce — is refused here, where the tool cannot
+    get past it.
+    """
     current_hash = config_store.config_hash(current)
     candidate_text, reshaped, approval = await asyncio.to_thread(
         _rendered, active, live, current, action, keys, value
     )
+    if learned is not None:
+        approval = _with_provenance(approval, keys, *learned)
     if approval is not None:
         kind, facts = approval
         if not approver.configured():
@@ -1026,6 +1048,57 @@ async def _write(
             ),
         }
     return await _apply(live, current, candidate_text, current_hash, reshaped)
+
+
+def _with_provenance(
+    approval: _Proposal | None, keys: tuple[str, ...], pin: dict[str, str], learned: str
+) -> _Proposal:
+    """The trust proposal, saying how its scanner and judge were learned.
+
+    Only if it is exactly the pin the caller checked: the facts are compared
+    against what LOADING the candidate produced, so "verified" can never sit
+    above a key, stamp or judge the peer did not sign.
+    """
+    expected = _trust_facts(f"{keys[1]}.{keys[3]}", pin)
+    if (
+        approval is None
+        or approval[0] is not pending.Kind.FEDERATION_TRUST
+        or {
+            **approval[1],
+            LEARNED_FACT: AS_SUPPLIED,
+        }
+        != expected
+    ):
+        raise ConfigWriteError(
+            {"error": "that pin does not stage as the one checked, so nothing was staged"}
+        )
+    return approval[0], {**approval[1], LEARNED_FACT: learned}
+
+
+async def propose_trust(
+    profile: str, backend: str, pin: dict[str, str], expect_hash: str | None, learned: str
+) -> dict[str, Any]:
+    """Stage ``pin`` as ``profile.backend``'s ``trust_verdict``, for a person (#640).
+
+    The write ``config_tool set ...federated.trust_verdict`` makes, through the
+    same lock, hash check and staging, with one more fact on the page. Applies
+    nothing: ``_with_provenance`` refuses anything but the one proposal.
+    """
+    keys = ("profiles", profile, "backends", backend, "federated", config_guard.TRUST_FIELD)
+    try:
+        async with _WRITE_LOCK:
+            active, live, current = await asyncio.to_thread(_live_config)
+            config_guard.check_write_request(
+                "set", keys, expect_hash, config_store.config_hash(current)
+            )
+            return await _write(active, live, current, "set", keys, pin, learned=(pin, learned))
+    except ConfigWriteError as exc:
+        return exc.payload
+    except (config_patch.ConfigPatchError, pending.PendingError) as exc:
+        return {"error": str(exc)}
+    except OSError as exc:
+        logger.warning("federation_trust failed: %s", exc_kind(exc))
+        return {"error": "the configuration could not be read"}
 
 
 async def _apply(
@@ -1146,9 +1219,12 @@ async def manage_config(
         return {"error": str(exc)}
     except ConfigWriteError as exc:
         return exc.payload
-    except config_patch.ConfigPatchError as exc:
+    except (config_patch.ConfigPatchError, pending.PendingError) as exc:
         # The live file can be invalid YAML: a person edits it by hand while the
-        # gateway runs. A read has to say so rather than raise.
+        # gateway runs. A read has to say so rather than raise. And a value
+        # that cannot be shown for approval — a peer's stamp, say — is refused
+        # while there is still a caller to tell; it escaped as an exception
+        # until #640. Both messages are ours and name no value.
         return {"error": str(exc)}
     except OSError as exc:
         logger.warning("config failed: %s", exc_kind(exc))
