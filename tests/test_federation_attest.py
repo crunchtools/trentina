@@ -101,9 +101,14 @@ class Primary:
         return await attest_backend(SHARED, self.profile.backends[SHARED], self.profile, nonce)
 
 
-async def _probe(*, signing: bool) -> tuple[Any, str | None]:
-    """Stand a pair up, attest once; the answer and the secondary's public key."""
+async def _probe(*, signing: bool, admitted: bool = True) -> tuple[Any, str | None]:
+    """Stand a pair up, attest once; the answer and the secondary's public key.
+
+    ``admitted=False`` pins some other key for the peer, so the secondary
+    refuses the primary's JWT."""
     primary_private, primary_public = keypair()
+    if not admitted:
+        primary_public = keypair()[1]
     secondary_private, secondary_public = keypair()
     primary = Primary(primary_private)
     async with serving_mcp_backend() as port:
@@ -149,6 +154,12 @@ class TestOverTheLink:
             now=attested.envelope["assertion"]["ts"],
         )
         assert (assertion, reason) == (None, "bad_signature")
+
+    async def test_a_peer_refusing_our_credential_is_unauthorized(self) -> None:
+        """Not unreachable: it answered, and the operator's fix is a key."""
+        attested, _ = await _probe(signing=True, admitted=False)
+        assert attested.withheld == "unauthorized"
+        assert attested.envelope is None
 
     async def test_an_unreachable_peer_is_withheld_not_raised(self) -> None:
         primary = Primary(keypair()[0])
@@ -592,3 +603,41 @@ async def test_config_tool_refuses_a_stamp_it_cannot_show_rather_than_raising() 
         )
     assert "shown for approval" in result["error"]
     assert _staged() is None
+
+
+class TestProvenanceOnlyOnTheCheckedPin:
+    """`_with_provenance` is what keeps "verified" off anything the peer did
+    not sign: no proposal, another kind, or a pin loading did not reproduce."""
+
+    KEYS = ("profiles", "ag", "backends", "peergw", "federated", "trust_verdict")
+
+    def test_the_checked_pin_gets_the_row(self) -> None:
+        from trentina.gateway import pending
+        from trentina.tools import config as config_tool
+
+        pin = {"public_key": keypair()[1], "perimeter_stamp": PEER_STAMP, "judge": PEER_JUDGE}
+        proposal = (pending.Kind.FEDERATION_TRUST, config_tool._trust_facts("ag.peergw", pin))
+        _, facts = config_tool._with_provenance(proposal, self.KEYS, pin, "verified!")
+        assert facts[config_tool.LEARNED_FACT] == "verified!"
+
+    @pytest.mark.parametrize(
+        ("kind", "where", "spoiled"),
+        [
+            (None, "ag.peergw", {}),
+            ("FEDERATION_PEERS", "ag.peergw", {}),
+            ("FEDERATION_TRUST", "ag.peergw", {"perimeter_stamp": "something-else"}),
+            ("FEDERATION_TRUST", "ag.peergw", {"public_key": keypair()[1]}),
+            ("FEDERATION_TRUST", "ag.otherpeer", {}),
+        ],
+    )
+    def test_anything_else_is_refused(
+        self, kind: str | None, where: str, spoiled: dict[str, str]
+    ) -> None:
+        from trentina.gateway import pending
+        from trentina.tools import config as config_tool
+
+        pin = {"public_key": keypair()[1], "perimeter_stamp": PEER_STAMP, "judge": PEER_JUDGE}
+        staged = config_tool._trust_facts(where, {**pin, **spoiled})
+        proposal = None if kind is None else (pending.Kind[kind], staged)
+        with pytest.raises(config_tool.ConfigWriteError):
+            config_tool._with_provenance(proposal, self.KEYS, pin, "verified!")
