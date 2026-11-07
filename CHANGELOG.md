@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.11.0] - 2026-11-07
+
 ### Added
 
 - **Stdio backends** (#724). A stdio-only MCP server is fronted directly: the
