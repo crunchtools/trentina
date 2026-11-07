@@ -50,7 +50,11 @@ jobs:
           tags: |
             type=ref,event=pr
             type=sha,format=long
-            type=raw,value=latest,enable={{is_default_branch}}
+            # `main`, and no `latest`. The demo is cut from `demo/attack-sim` on
+            # a push to main and is never released, so it has no newest release
+            # for `latest` to name (constitution 1.33.0). The unit on gloval
+            # names `:main`, which is what it was always actually tracking.
+            type=ref,event=branch
 
       - name: Build and push
         uses: docker/build-push-action@v7
@@ -92,7 +96,7 @@ jobs:
           images: ${{ env.GHCR_IMAGE }}
           tags: |
             type=sha,format=long
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
 
       - name: Build and push
         uses: docker/build-push-action@v7
