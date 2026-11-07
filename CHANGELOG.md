@@ -22,7 +22,8 @@ under that name.
   read as injection vocabulary. Backwards text is a cipher for the English
   rule too, whole or with each word reversed in place. L1's ROT13 and
   backwards asks, and the `directives_ciphered_detected` counter, are gone:
-  a read-back attack counts as a plain directive. Every line the L1 asks
+  a read-back attack counts as a plain directive, and a stored detection
+  row's `layer1_stats` no longer carries the key. Every line the L1 asks
   caught over the corpora and `docs/` is still caught, and no line of the
   docs, source, tests or corpora is newly read back. Gap 22 narrows: an
   attack wrapped short is now read when a line holds a whole directive.
