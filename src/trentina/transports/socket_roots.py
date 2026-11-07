@@ -7,7 +7,7 @@ no ``unix://`` backend loads.
 Checked twice. At load, the path as written (normalized) must sit under a
 root, so a typo fails the file and not the first call. At connect, the
 socket's directory is opened one component at a time under ``O_NOFOLLOW``
-(``confine._walk_open``), its resolved path held to the roots again, and the
+(``confine.walk_open``), its resolved path held to the roots again, and the
 socket itself ``lstat``'d through that descriptor: a socket, not a link. The
 connect goes through ``/proc/self/fd/<dir>/<name>``, so it reaches the
 directory that was checked even if a link is swapped in above it afterwards.
@@ -109,7 +109,7 @@ def admitted(path: str) -> Iterator[str]:
             link found where the check saw none.
     """
     from ..config import get_config
-    from ..tools.confine import _WALK_FLAGS, _walk_open
+    from ..tools.confine import WALK_FLAGS, walk_open
 
     check_written(path)
     directory, name = os.path.split(path)
@@ -120,7 +120,7 @@ def admitted(path: str) -> Iterator[str]:
     if not _under(resolved, get_config().socket_roots):
         raise SocketRefusedError("outside_socket_roots")
     try:
-        fd = _walk_open(resolved, _WALK_FLAGS)
+        fd = walk_open(resolved, WALK_FLAGS)
     except FileNotFoundError:
         raise SocketRefusedError("not_found") from None
     except OSError as exc:

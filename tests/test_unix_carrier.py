@@ -228,7 +228,7 @@ class TestConfinementAtConnect:
         def swapped(*_: object) -> int:
             raise OSError(code, os.strerror(code), str(activated.parent))
 
-        monkeypatch.setattr("trentina.tools.confine._walk_open", swapped)
+        monkeypatch.setattr("trentina.tools.confine.walk_open", swapped)
         with pytest.raises(SocketRefusedError) as caught, admitted(str(activated)):
             pass
         assert caught.value.reason == "changed_during_connect"
