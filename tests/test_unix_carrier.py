@@ -9,6 +9,7 @@ Everything above the socket is the gateway's own path, unpatched below
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import socket
@@ -216,6 +217,26 @@ class TestConfinementAtConnect:
 
     def test_a_path_outside_the_roots(self, roots: Path, tmp_path: Path) -> None:
         assert self._reason(tmp_path / "x.sock") == "outside_socket_roots"
+
+    @pytest.mark.parametrize("code", [errno.ELOOP, errno.ENOTDIR])
+    def test_a_link_swapped_in_during_the_walk(
+        self, activated: Path, monkeypatch: pytest.MonkeyPatch, code: int
+    ) -> None:
+        """What the O_NOFOLLOW walk raises when a directory became a link after
+        it was resolved: refused as a change, naming no path."""
+
+        def swapped(*_: object) -> int:
+            raise OSError(code, os.strerror(code), str(activated.parent))
+
+        monkeypatch.setattr("trentina.tools.confine._walk_open", swapped)
+        with pytest.raises(SocketRefusedError) as caught, admitted(str(activated)):
+            pass
+        assert caught.value.reason == "changed_during_connect"
+        assert str(activated) not in str(caught.value)
+
+    def test_a_reason_outside_the_closed_set_is_a_bug(self) -> None:
+        with pytest.raises(ValueError, match="not a socket refusal reason"):
+            SocketRefusedError("/run/secret/path.sock")
 
     def test_an_admitted_socket_is_reached_through_its_checked_directory(
         self, activated: Path

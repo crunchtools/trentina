@@ -52,6 +52,8 @@ class SocketRefusedError(Exception):
     """A ``unix://`` backend's socket was refused, for ``reason`` alone."""
 
     def __init__(self, reason: str) -> None:
+        if reason not in REASONS:
+            raise ValueError(f"{reason!r} is not a socket refusal reason")
         super().__init__(reason)
         self.reason = reason
 
