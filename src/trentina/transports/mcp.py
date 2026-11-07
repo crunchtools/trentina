@@ -1,7 +1,8 @@
 """The MCP transport and the gateway's JSON-RPC surface.
 
 Trentina 3.0's one in-tree transport. ``route_jsonrpc`` dispatches a profile's
-JSON-RPC (``initialize`` / ``ping`` / ``tools/list`` / ``tools/call``), and a
+JSON-RPC (``initialize`` / ``ping`` / ``tools/list`` / ``tools/call``, and
+``trentina/attest`` on a federation ingress, #640), and a
 ``tools/call`` runs through ``orchestrator.crossing`` driving this module's
 ``McpServerFace`` + ``McpDispatch``:
 
@@ -46,6 +47,7 @@ from ..defense import Provenance
 from ..errors import ModeNotPermittedError, TransformNotPermittedError
 from ..gateway import (
     aggregate,
+    attestation,
     audit,
     discovery,
     gatekeeper,
@@ -1540,6 +1542,9 @@ async def route_jsonrpc(profile: Profile, request: dict[str, Any]) -> dict[str, 
     if method == "ping":
         return _ok(req_id, {})
 
+    if method == attestation.ATTEST_METHOD:
+        return _route_attest(profile, req_id, params)
+
     if method == "notifications/initialized":
         return _ok(req_id, {})
 
@@ -1553,6 +1558,34 @@ async def route_jsonrpc(profile: Profile, request: dict[str, Any]) -> dict[str, 
             return await _route_tools_call(profile, req_id, params)
 
     return _err(req_id, JSONRPC_METHOD_NOT_FOUND, f"Method not found: {method}")
+
+
+def _route_attest(profile: Profile, req_id: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """Answer ``trentina/attest`` (#640): this ingress's scanner, signed.
+
+    Signed with the key and over the same stamp and judge ``_federated_vsa``
+    puts on every response, so what a primary pins from it is what responses
+    will carry. A profile that signs nothing answers exactly as a gateway
+    without the method does: there is nothing to attest, and a primary falls
+    back to staging what its operator supplied.
+    """
+    federation = profile.federation
+    if federation is None or federation.secondary_key is None:
+        return _err(
+            req_id, JSONRPC_METHOD_NOT_FOUND, f"Method not found: {attestation.ATTEST_METHOD}"
+        )
+    nonce = params.get("nonce")
+    if not isinstance(nonce, str) or not attestation.NONCE_RE.match(nonce):
+        return _err(req_id, JSONRPC_INVALID_PARAMS, "nonce must be 32 to 128 lowercase hex")
+    assertion = attestation.build_attestation(
+        verifier=profile.name,
+        perimeter_stamp=perimeter_stamp(),
+        judge=judge_stamp(profile),
+        nonce=nonce,
+        ts=int(time.time()),
+    )
+    logger.info("gateway: attested profile=%s", profile.name)
+    return _ok(req_id, vsa.sign_assertion(assertion, federation.secondary_key.get_secret_value()))
 
 
 async def _route_tools_list(profile: Profile, req_id: Any) -> dict[str, Any]:

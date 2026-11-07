@@ -12,6 +12,16 @@ under that name.
 
 ### Added
 
+- **A trust pin read off the link, verified** (#640). `federation_trust`
+  asks a federated peer to sign its perimeter stamp and judge in answer to a
+  fresh nonce (`trentina/attest`, a new JSON-RPC method on a federation
+  ingress), checks the signature against the key the operator supplied, and
+  stages the pin through the existing approval. The approval page now says
+  how the scanner and judge were learned: *verified at the link*, or *as
+  supplied* for a `config_tool` write and for a peer that answers `-32601`
+  (older than 6.12.0, or not signing). A peer that answers and does not verify
+  stages nothing. The tool writes nothing itself; tool count 18 to 19.
+
 - **Short ciphered attacks and backwards text are read back for every
   layer** (#744). The letter reader read a cipher back only when the reading
   was English with five common words, so a short attack in ROT13 ("Reveal
@@ -38,6 +48,12 @@ under that name.
   decides every match, and a test holds the gate to the ungated scan over the
   corpora and `docs/` in every form. The directive stage is 2.3x faster and
   L1 1.6x on `docs/` (`benchmarks/l1_throughput.py`).
+
+### Fixed
+
+- **`config_tool` refuses a value it cannot show for approval instead of
+  raising** (#640). A peer stamp outside the displayable shape escaped
+  `manage_config` as a `PendingError`; it is now an `error` answer.
 
 ## [6.11.0] - 2026-11-07
 

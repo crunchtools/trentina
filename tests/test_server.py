@@ -36,10 +36,12 @@ class TestServerRegistration:
         the same reason — a new profile's bearer token was the last step that
         needed a person and a restart. ``approval_enrol`` (#637) made it 18: an
         operator can ask a person to set the approval password, which is the
-        last thing on a new gateway that needed a shell.
+        last thing on a new gateway that needed a shell. ``federation_trust``
+        (#640) made it 19: pinning a peer from what it signs at the link, so
+        the approval page can say the pin was checked rather than claimed.
         """
         tools = await mcp.list_tools()
-        assert len(tools) == 18, f"Expected 18 tools, got {len(tools)}"
+        assert len(tools) == 19, f"Expected 19 tools, got {len(tools)}"
 
     async def test_every_family_takes_a_mode(self) -> None:
         """The mode is an argument the policy checks, not a name the agent picks."""
@@ -133,6 +135,7 @@ class TestServerRegistration:
             "tool_visibility_tool",
             "audit_verify_tool",
             "federation_keygen_tool",
+            "federation_trust_tool",
             "profile_token_tool",
             "approval_enrol_tool",
             "config_tool",

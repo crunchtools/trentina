@@ -23,6 +23,7 @@ from .tools import (
     backend_auth_status,
     cache_flush,
     federation_keygen,
+    federation_trust,
     fetch_page,
     get_trentina_stats,
     judge_content,
@@ -468,6 +469,44 @@ async def federation_keygen_tool(name: str) -> dict[str, Any]:
             (e.g. "primary-to-peergw", "ingress-signing").
     """
     return await federation_keygen(name)
+
+
+@mcp.tool()
+async def federation_trust_tool(
+    profile: str,
+    backend: str,
+    public_key: str,
+    expect_hash: str,
+    perimeter_stamp: str | None = None,
+    judge: str | None = None,
+) -> dict[str, Any]:
+    """Pin a federated peer's scanner from what it presents at the link.
+
+    Operator profile only. Trusting a peer means this gateway serves its
+    responses without running its own layers over them, pinned to the peer's
+    key, its perimeter stamp and its judge. This asks the peer to sign the
+    stamp and judge in answer to a fresh challenge, checks the signature
+    against the key you supply, and stages the pin for a person to approve,
+    with the approval page saying it was verified at the link. It writes
+    nothing itself.
+
+    A peer that cannot attest (an older gateway, or one not signing) is staged
+    from the stamp and judge you pass instead, marked as not checked. A peer
+    that attests and does not verify stages nothing.
+
+    Args:
+        profile: The profile holding the federated backend.
+        backend: The backend's name in that profile.
+        public_key: The peer's Ed25519 public key (PEM), as its operator gave
+            it — the output of their federation_keygen.
+        expect_hash: The `hash` from a config_tool read or write.
+        perimeter_stamp: Only needed if the peer cannot attest.
+        judge: Only needed if the peer cannot attest.
+
+    Returns:
+        config_tool's staged answer plus `verified`, or `error`.
+    """
+    return await federation_trust(profile, backend, public_key, expect_hash, perimeter_stamp, judge)
 
 
 @mcp.tool()

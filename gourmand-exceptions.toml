@@ -1109,3 +1109,17 @@ check = "vestigial_code"
 path = "src/trentina/transports/base.py"
 justification = "MessageReader and MessageWriter are typing.Protocol classes (#740): their methods are structural declarations a type checker matches a carrier's streams against, never executed, so a body other than the docstring would be dead code. They are declared here so the frozen Carrier contract does not import the MCP SDK's private _stream_protocols module."
 classification = "by_design"
+
+[[exceptions]]
+check = "single_use_helpers"
+path = "tests/test_federation_attest.py"
+pattern = "_check"
+justification = "Not single-use: called from four test methods of TestCheckAttestation (test_verified, test_each_refusal, test_garbage_is_a_bad_signature_never_a_raise, test_a_response_verdict_is_not_an_attestation), verified by grep. The check counts callers inside class methods as one. Upstream: https://gitlab.com/mattdm/gourmand/-/issues/25"
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "single_use_helpers"
+path = "tests/test_federation_attest.py"
+pattern = "_ingress"
+justification = "Not single-use: called from two test methods of TestTheMethod, verified by grep. The check counts callers inside class methods as one. Upstream: https://gitlab.com/mattdm/gourmand/-/issues/25"
+classification = "gourmand_bug"
