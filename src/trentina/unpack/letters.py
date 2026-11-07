@@ -40,11 +40,11 @@ import string
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..l1.directives import LITERALS, SOFT_BREAK, matches_exact
+from ..l1.directives import GATE_LITERALS, LITERALS, SOFT_BREAK, matches_exact
 from ..l1.evasion import KEYWORDS
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 _LOWER = string.ascii_lowercase
 _UPPER = string.ascii_uppercase
@@ -193,6 +193,18 @@ it always asks are the two L1 asked about itself until #744."""
 
 _ALWAYS = ("ROT13", REVERSED)
 
+# Each word ``matches_exact`` needs (#709), spelled as an ASCII line would
+# carry it under each of those two: both are their own inverse, so the
+# reading spells it. A line holding none reads as no directive under that
+# cipher, reversed whole or a word at a time in place (a literal is one word,
+# or one word and a colon after a literal that is that word), so the line is
+# not read back just to be asked. A line that is not ASCII is always asked:
+# `re.IGNORECASE` folds a few other letters to ASCII ones.
+_SPELLED = {
+    name: re.compile("|".join(sorted({re.escape(CIPHERS[name](w)) for w in GATE_LITERALS})))
+    for name in _ALWAYS
+}
+
 
 def read_attack(line: str) -> str | None:
     """``line`` read back when one cipher makes an exact L1 directive of it.
@@ -208,9 +220,12 @@ def read_attack(line: str) -> str | None:
     """
     if len(line) < MIN_ATTACK:
         return None
-    counts = _tally(_WORD.findall(line.lower()), _ATTACK_READINGS)
+    lowered = line.lower()
+    counts = _tally(_WORD.findall(lowered), _ATTACK_READINGS)
     others = [n for n, c in zip(_NAMES, counts, strict=True) if c >= ATTACK_WORDS]
     for name in dict.fromkeys([*_ALWAYS, *others]):
+        if name in _SPELLED and line.isascii() and not _SPELLED[name].search(lowered):
+            continue
         whole = CIPHERS[name](line)
         if matches_exact(whole):
             if matches_exact(line):
@@ -287,20 +302,45 @@ def read_leet(segment: str) -> str | None:
     return _LEET_TOKEN.sub(token, segment)
 
 
+def _lines(text: str) -> Iterator[tuple[int, int, str]]:
+    """Each line of ``text`` as L1 reads it, with where it starts and ends:
+    split at a newline that is not part of a soft break, and joined across
+    the soft breaks inside it."""
+    soft = {m.end() - 1 for m in SOFT_BREAK.finditer(text) if m.group().endswith("\n")}
+    start = position = 0
+    while True:
+        end = text.find("\n", position)
+        if end in soft:
+            position = end + 1
+            continue
+        end = len(text) if end == -1 else end
+        line = text[start:end]
+        # `<br>` breaks a line without a newline; anything else needs one.
+        yield start, end, SOFT_BREAK.sub(" ", line) if position > start or "<" in line else line
+        if end == len(text):
+            return
+        start = position = end + 1
+
+
 def read_through(text: str) -> tuple[str, int]:
     """``text`` with every ciphered or leet segment read back, and how many were.
 
     Lines first, by :func:`read_attack`, each joined across a soft break the
     way L1 joins it, so a directive wrapped by a Markdown hard break is read
-    as the one line L1 will see. Only a payload with such a line is rejoined;
-    every other comes back as it would without this pass. Then segments, by
+    as the one line L1 will see. Only a line read back changes; the rest of
+    the text, soft breaks included, stays byte for byte. Then segments, by
     :func:`read_back` and :func:`read_leet`.
     """
-    lines = SOFT_BREAK.sub(" ", text).split("\n")
-    attacks = {i: read for i, line in enumerate(lines) if (read := read_attack(line))}
-    if attacks:
-        text = "\n".join(attacks.get(i, line) for i, line in enumerate(lines))
-    count = len(attacks)
+    parts: list[str] = []
+    last = count = 0
+    for start, end, line in _lines(text):
+        read = read_attack(line)
+        if read is not None:
+            parts += [text[last:start], read]
+            last = end
+            count += 1
+    if count:
+        text = "".join([*parts, text[last:]])
 
     def one(match: re.Match[str]) -> str:
         nonlocal count

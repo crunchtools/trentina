@@ -248,9 +248,13 @@ _GATES: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = tuple(
 # tries them again.
 _FOLD = str.maketrans({"\u0130": "i", "\u0131": "i", "\u212a": "k", "\u017f": "s"})
 
-_PREFIX_PATTERNS = re.compile(
-    r"^\s*(?:IMPORTANT|INSTRUCTION|OVERRIDE|ADMIN)\s*:",
-    re.IGNORECASE,
+_PREFIX_WORDS = ("IMPORTANT", "INSTRUCTION", "OVERRIDE", "ADMIN")
+_PREFIX_PATTERNS = re.compile(rf"^\s*(?:{'|'.join(_PREFIX_WORDS)})\s*:", re.IGNORECASE)
+
+#: Every string ``matches_exact`` accepts holds one of these once folded: a
+#: pattern's literal, or a word the prefix rule needs.
+GATE_LITERALS = frozenset(
+    [*(lit for needs in LITERALS.values() for lit in needs), *(w.lower() for w in _PREFIX_WORDS)]
 )
 
 # `]` closing one line and a role label opening the next: `...]\n[system]:`.
