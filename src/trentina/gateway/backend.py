@@ -948,7 +948,9 @@ async def attest_backend(
                     raise
                 return Attested(withheld="not_offered", server_version=version)
     except Exception as exc:
-        logger.warning("gateway: attest failed backend=%s err=%s", backend_name, exc_kind(exc))
+        # The profile and not the backend: `federation_trust` hands over the
+        # backend name as its caller wrote it (#262).
+        logger.warning("gateway: attest failed profile=%s err=%s", profile.name, exc_kind(exc))
         withheld = "unauthorized" if cap.unauthorized else "unreachable"
         return Attested(withheld=withheld, server_version=version)
     return Attested(envelope=answer.model_extra, server_version=version)
