@@ -277,23 +277,41 @@ jobs:
         run: |
           set -eu
           auth="$HOME/.docker/config.json"
-          # `latest` is the newest stable RELEASE (constitution 1.33.0), so the
-          # release moves it -- unless a NEWER release already holds it, which a
-          # re-run of an old tag would otherwise demote. This job checks out no
-          # git history, so the comparison is on the `version` label the
-          # published image carries rather than on ancestry. The version regex
-          # above has already refused anything but a three-number stable tag.
-          tags="$VERSION $MINOR"
-          current=$(skopeo inspect --format '{{ index .Labels "version" }}' \
-            --authfile "$auth" "docker://$QUAY_IMAGE:latest" 2>/dev/null || true)
-          if [ -n "$current" ] && [ "$current" != "$VERSION" ] &&
-             [ "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -1)" = "$current" ]; then
-            echo "::notice::latest is $current, newer than $VERSION; moving the version tags only"
-          else
-            tags="$tags latest"
-          fi
           for pair in "$QUAY_IMAGE=$QUAY_DIGEST" "$GHCR_IMAGE=$GHCR_DIGEST"; do
             image=${pair%%=*} digest=${pair#*=}
+            # `latest` is the newest stable RELEASE (constitution 1.33.0), so the
+            # release moves it -- unless a NEWER release already holds it, which
+            # a re-run of an old tag would otherwise demote. This job checks out
+            # no git history, so the comparison is on the `version` label the
+            # published image carries rather than on ancestry. The regex above
+            # has already refused anything but a three-number stable tag.
+            #
+            # Asked of THIS registry, inside the loop. The two can disagree --
+            # one may hold an older release, or no `latest` at all -- and a
+            # decision read from Quay and applied to GHCR leaves them
+            # inconsistent in exactly the case the guard exists to catch.
+            tags="$VERSION $MINOR"
+            if current=$(skopeo inspect --format '{{ index .Labels "version" }}' \
+                 --authfile "$auth" "docker://$image:latest" 2>"$RUNNER_TEMP/inspect.err"); then
+              :
+            elif grep -qiE 'manifest unknown|not found|no such' "$RUNNER_TEMP/inspect.err"; then
+              # No `latest` yet, so this release is the one that creates it.
+              current=
+            else
+              # Anything else is a failure to READ, not an absent tag. Failing
+              # closed matters: an empty `current` means "move it", so a
+              # swallowed network error would let a re-run of an old tag demote
+              # the registry -- the thing the guard is here to prevent.
+              cat "$RUNNER_TEMP/inspect.err" >&2
+              echo "cannot read $image:latest; nothing is retagged" >&2
+              exit 1
+            fi
+            if [ -n "$current" ] && [ "$current" != "$VERSION" ] &&
+               [ "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -1)" = "$current" ]; then
+              echo "::notice::$image:latest is $current, newer than $VERSION; moving the version tags only"
+            else
+              tags="$tags latest"
+            fi
             for tag in $tags; do
               skopeo copy --all --preserve-digests --authfile "$auth" \
                 "docker://$image@$digest" "docker://$image:$tag"
