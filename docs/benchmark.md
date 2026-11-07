@@ -2319,7 +2319,10 @@ escapes. The escape counter needs an instruction word in the decoded line,
 and the ciphered one a full directive match.
 
 L1 costs about 1.65 s per megabyte with the new stages. The ciphered check
-adds roughly 45% to the directives stage.
+adds roughly 45% to the directives stage. (#744 moved it into the unpack
+stage's letter reader, after #709's literal gate made the patterns cheap:
+on the 701 KiB `docs/` the unpack stage and L1 together went from 1,483 ms
+to about 1,140 ms, and every line the L1 check caught is still caught.)
 
 ## Redact's extraction input (#360)
 

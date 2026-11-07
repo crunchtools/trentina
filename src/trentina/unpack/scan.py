@@ -317,7 +317,7 @@ def unpack(text: str) -> Unpacked:
     #     token that does not decode strictly is read as it arrived
     #   owner: unpack.scan.unpack
     #   evidence: T1 strict decode + re-encode (b64/b32/a85/b85/uu), Braille/Morse
-    #     by alphabet, letter ciphers when the reading is English; T4 linearity
+    #     by alphabet, ciphers read as English or an L1 directive; T4 linearity
     state = _Pass()
     unpacked = _ascii85_pass(_unpack(text, 0, state), state)
     # Last, so a cipher inside base64 is read through too (#720, gap 22).

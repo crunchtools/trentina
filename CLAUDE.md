@@ -823,10 +823,13 @@ replaced.
   anything non-canonical as it arrived. Binary an agent's tools could open
   (image, PDF, archive) is `Unpacked.unread`, which becomes the
   `binary_unread` gap: block and redact refuse it, flag warns. Last,
-  `letters.py` reads back Caesar shifts, Atbash and leetspeak (#720) when the
-  reading is English, judged by `common_words.txt` in one lookup per word
-  (`_READINGS`, not 26 passes); a plain common word in ciphertext stays as
-  it arrived. Kind names
+  `letters.py` reads back Caesar shifts, Atbash, backwards text and
+  leetspeak (#720, #744) when the reading is English, judged by
+  `common_words.txt` in one lookup per word (`_READINGS`, not 27 passes); a
+  plain common word in ciphertext stays as it arrived. `read_attack` reads
+  back a line of any length whose reading is an exact L1 directive and that
+  is not one as it arrived: the ROT13 and backwards asks L1 made itself
+  until #744, here so L2 and L3 read the attack too. Kind names
   are a closed set: a data URI's declared type is mapped, never echoed.
   `UnpackStats` rides in L1's `PipelineStats` as `unpacked` and is
   informational, not suspicious. Binary an agent cannot open is labelled

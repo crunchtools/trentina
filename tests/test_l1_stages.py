@@ -9,7 +9,6 @@ near-misses are the half that matters more (#204) and are written out.
 
 from __future__ import annotations
 
-import codecs
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -36,7 +35,6 @@ _NEW = (
     "encoded_escaped_payloads",
     "exfiltration_exfiltration_links",
     "exfiltration_mismatched_links",
-    "directives_ciphered_detected",
     "forgery_gateway_verdicts",
     "forgery_gateway_lines",
     "forgery_tool_calls",
@@ -63,14 +61,6 @@ def _homoglyphs(s: str) -> str:
     return s.translate(_LOOKALIKES)
 
 
-def _rot13(s: str) -> str:
-    return codecs.encode(s, "rot13")
-
-
-def _reversed(s: str) -> str:
-    return s[::-1]
-
-
 def _backslash(s: str) -> str:
     return "".join(f"\\x{ord(c):02x}" if c.isalpha() else c for c in s)
 
@@ -88,8 +78,6 @@ _TRANSFORMS: list[tuple[Callable[[str], str], str, float]] = [
     (_soft_hyphens, "unicode_soft_hyphen_words", 0.9),
     (_fullwidth, "unicode_fullwidth_runs", 0.85),
     (_homoglyphs, "unicode_mixed_script_words", 0.9),
-    (_rot13, "directives_ciphered_detected", 0.7),
-    (_reversed, "directives_ciphered_detected", 0.7),
     (_backslash, "encoded_escaped_payloads", 0.4),
     (_charrefs, "encoded_escaped_payloads", 0.4),
     (_percent, "encoded_escaped_payloads", 0.4),
@@ -103,18 +91,6 @@ def test_a_transformed_attack_is_counted(
 ) -> None:
     counted = sum(1 for a in _ATTACKS if _count(transform(a), counter))
     assert counted >= share * len(_ATTACKS), f"{counter}: {counted}/{len(_ATTACKS)}"
-
-
-@pytest.mark.parametrize("transform", [_rot13, _reversed], ids=["rot13", "reversed"])
-def test_a_ciphered_near_miss_is_not_counted(transform: Callable[[str], str]) -> None:
-    """Ciphered text counts for the directive it decodes to, not for being ciphered.
-
-    The escaped-payload counter is looser on purpose: it reads the decoded line
-    with ``encoded.py``'s instruction pattern, as the base64 counter does, and
-    nobody spells a whole sentence in escapes by accident.
-    """
-    for line in _NEAR_MISSES:
-        assert _count(transform(line), "directives_ciphered_detected") == 0, line
 
 
 def test_no_new_counter_fires_on_the_existing_corpus() -> None:

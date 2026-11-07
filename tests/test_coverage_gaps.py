@@ -129,12 +129,13 @@ def test_the_letter_ciphers_of_gap_22_are_read_back(name: str) -> None:
 
 
 def test_a_letter_cipher_wrapped_short_is_not_read_back() -> None:
-    """Known gap 22, what is left of it (#720): a segment is judged by its own
-    words and needs five common ones, so an attack in Atbash or a Caesar shift
-    wrapped four words a line is read by no layer as plain text. L1's directive
-    patterns still match through ROT13, so the case held here is Atbash."""
+    """Known gap 22, what is left of it (#720, #744): a segment is judged by its
+    own words and needs five common ones, and a shorter line is read back only
+    when it holds a whole L1 directive. An attack in Atbash or a Caesar shift
+    wrapped two words a line has neither, and is read by no layer as plain
+    text."""
     words = _ATTACK.split()
-    wrapped = "\n".join(" ".join(words[i : i + 4]) for i in range(0, len(words), 4))
+    wrapped = "\n".join(" ".join(words[i : i + 2]) for i in range(0, len(words), 2))
     encoded = ENCODINGS["Atbash"](wrapped)
     assert unpack(encoded).text == encoded
     assert run_l1(encoded).stats.findings() == []

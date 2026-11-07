@@ -1,4 +1,5 @@
-"""Letter ciphers: Caesar shifts and Atbash, read back when the reading is English (#720).
+"""Letter ciphers: Caesar shifts, Atbash and backwards text, read back when the
+reading is English (#720) or an exact L1 directive (#744).
 
 Every text is valid ROT13 and valid Atbash, so neither can be decoded the way
 base64 is, by a strict decode that re-encodes to the token. What tells
@@ -16,6 +17,16 @@ Leetspeak (``4`` for a, ``3`` for e, ...) is read the same way, a token at a
 time: a token of letters and those digits becomes its reading when that is a
 common word, in a segment where at least :data:`MIN_WORDS` tokens do.
 
+Backwards text is one more cipher: its words are looked up spelled back to
+front in the same pass, and its reading is the segment reversed.
+
+A short line is not judged as English: five common words is the floor that
+keeps chance readings out. It is read back instead when one cipher makes an
+exact L1 directive of it and the line as it arrived is not one
+(:func:`read_attack`). That is the test L1 made itself, on ROT13 and
+backwards text, until #744 moved it here so that L2 and L3 read the attack
+too; it decodes nothing L1 would not already have counted.
+
 Known gap 22 was this: the shipped L2 model lost most attacks written in
 ROT13 or Atbash and flagged ciphered or leet benign text, and no layer read
 through them.
@@ -28,6 +39,9 @@ import re
 import string
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from ..l1.directives import LITERALS, SOFT_BREAK, matches_exact
+from ..l1.evasion import KEYWORDS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -44,13 +58,17 @@ _TABLES = {
     )
 }
 
+REVERSED = "reversed"
+
 CIPHERS: dict[str, Callable[[str], str]] = {
-    name: operator.methodcaller("translate", table) for name, table in _TABLES.items()
+    **{name: operator.methodcaller("translate", table) for name, table in _TABLES.items()},
+    REVERSED: operator.itemgetter(slice(None, None, -1)),
 }
 """Atbash and every Caesar shift, each a table from the cipher back to the
-text: Atbash is its own inverse, and ROT<n> undoes a shift of 26 - n. garak
-uses ROT13 only; the other shifts cost nothing to read and are the obvious
-next step for someone ROT13 no longer gets past."""
+text, then backwards text. Atbash is its own inverse, and ROT<n> undoes a
+shift of 26 - n. garak uses ROT13 only; the other shifts cost nothing to read
+and are the obvious next step for someone ROT13 no longer gets past.
+Backwards is last, so a tie keeps a letter cipher."""
 
 MIN_WORDS = 5
 """Common words a reading must hold, whatever its share: fewer is chance
@@ -74,6 +92,18 @@ line. None of the sets Trentina measures on is among them."""
 _NAMES = tuple(CIPHERS)
 
 
+def _spellings(word: str) -> dict[str, int]:
+    """``word``'s spelling under each cipher, to the bit for that cipher."""
+    found: dict[str, int] = {}
+    for bit, name in enumerate(_NAMES):
+        if name == REVERSED:
+            spelling = word[::-1]
+        else:
+            spelling = word.translate({plain: cipher for cipher, plain in _TABLES[name].items()})
+        found[spelling] = found.get(spelling, 0) | 1 << bit
+    return found
+
+
 _READINGS: dict[str, int] = {}
 """Every spelling of a common word under some cipher, to the ciphers (a bit
 per index of :data:`CIPHERS`) under which it reads as that word. About
@@ -82,11 +112,20 @@ segment is split into words once and each word is looked up once, so every
 reading is scored in one pass: trying the 26 ciphers one after another ran
 non-English text at 0.5 MB/s (CTO ruling on #720; Aho-Corasick answers
 substring search, not this word lookup)."""
-for _bit, _back in enumerate(_TABLES.values()):
-    _forward = {plain: cipher for cipher, plain in _back.items()}
-    for _common in COMMON_WORDS:
-        _spelling = _common.translate(_forward)
-        _READINGS[_spelling] = _READINGS.get(_spelling, 0) | 1 << _bit
+ATTACK_VOCABULARY = KEYWORDS | {
+    word for needs in LITERALS.values() for word in needs if word.isalpha() and len(word) > 3
+}
+"""The words injection phrases are built from: the keywords ``l1/evasion.py``
+corrects toward, and every whole word an exact directive needs."""
+
+_ATTACK_READINGS: dict[str, int] = {}
+"""The same as ``_READINGS`` for :data:`ATTACK_VOCABULARY`, which the common
+words mostly are not. It says which ciphers are worth asking
+:func:`read_attack` about beyond the two it always asks."""
+for _table, _words in ((_READINGS, COMMON_WORDS), (_ATTACK_READINGS, ATTACK_VOCABULARY)):
+    for _word in _words:
+        for _spelling, _bits in _spellings(_word).items():
+            _table[_spelling] = _table.get(_spelling, 0) | _bits
 
 
 _LEET = str.maketrans("431057", "aeiost")
@@ -120,13 +159,7 @@ def read_back(segment: str) -> str | None:
     share = sum(w in COMMON_WORDS for w in words) / len(words)
     if share >= ENGLISH:
         return None  # already reads as English
-    counts = [0] * len(_NAMES)
-    for lowered in words:
-        ciphers = _READINGS.get(lowered, 0)
-        while ciphers:
-            low = ciphers & -ciphers
-            counts[low.bit_length() - 1] += 1
-            ciphers ^= low
+    counts = _tally(words, _READINGS)
     floor = max(ENGLISH, share + MARGIN)
     best: tuple[float, int] | None = None
     for index, common in enumerate(counts):  # in CIPHERS order: a tie keeps the first
@@ -135,16 +168,107 @@ def read_back(segment: str) -> str | None:
             best = (reading, index)
     if best is None:
         return None
-    decipher = CIPHERS[_NAMES[best[1]]]
+    return _read_words(segment, _NAMES[best[1]])
 
-    def word(match: re.Match[str]) -> str:
-        arrived = match.group()
-        plain = decipher(arrived)
-        if arrived.lower() not in COMMON_WORDS or plain.lower() in COMMON_WORDS:
-            return plain
+
+def _tally(words: list[str], table: dict[str, int]) -> list[int]:
+    """For each cipher, how many of ``words`` ``table`` reads under it."""
+    counts = [0] * len(_NAMES)
+    for lowered in words:
+        ciphers = table.get(lowered, 0)
+        while ciphers:
+            low = ciphers & -ciphers
+            counts[low.bit_length() - 1] += 1
+            ciphers ^= low
+    return counts
+
+
+MIN_ATTACK = 12
+"""The shortest line :func:`read_attack` reads: no exact directive is shorter."""
+
+ATTACK_WORDS = 2
+"""Words that must read as :data:`ATTACK_VOCABULARY` under a cipher other than ROT13
+or backwards before :func:`read_attack` asks the patterns about it. The two
+it always asks are the two L1 asked about itself until #744."""
+
+_ALWAYS = ("ROT13", REVERSED)
+
+
+def read_attack(line: str) -> str | None:
+    """``line`` read back when one cipher makes an exact L1 directive of it.
+
+    Only when the line as it arrived is not one already: a line quoting an
+    attack in plain words is L1's to count as it stands, and reading the rest
+    of it back would garble what is around the quote. The reading takes the
+    line's segments (cut at double quotes, as :func:`read_back` cuts them)
+    whose reading is more English than they are, so a JSON key around a
+    ciphered value stays as it arrived; when that loses the match, the line
+    word by word, then the whole line. Backwards text is tried reversed
+    whole, then a word at a time in place.
+    """
+    if len(line) < MIN_ATTACK:
+        return None
+    counts = _tally(_WORD.findall(line.lower()), _ATTACK_READINGS)
+    others = [n for n, c in zip(_NAMES, counts, strict=True) if c >= ATTACK_WORDS]
+    for name in dict.fromkeys([*_ALWAYS, *others]):
+        whole = CIPHERS[name](line)
+        if matches_exact(whole):
+            if matches_exact(line):
+                return None
+            for read in (_read_segments(line, name), _read_words(line, name)):
+                if matches_exact(read):
+                    return read
+            return whole
+        # Each word backwards where it stands: the line reversed, then its
+        # words put back in order, which is cheap enough to ask of every line.
+        if name == REVERSED and matches_exact("".join(_BLANKS.split(whole)[::-1])):
+            read = _read_segments(line, name, in_place=True)
+            if matches_exact(read) and not matches_exact(line):
+                return read
+    return None
+
+
+_BLANKS = re.compile(r"(\s+)")
+
+
+def _read_segments(line: str, name: str, *, in_place: bool = False) -> str:
+    """``line`` with each segment read back that reads as more English for it."""
+
+    def one(match: re.Match[str]) -> str:
+        segment = match.group()
+        read = _read_words(segment, name, in_place=in_place)
+        return read if _english(read) > _english(segment) else segment
+
+    return _SEGMENT.sub(one, line)
+
+
+def _english(text: str) -> float:
+    """The share of ``text``'s words that are common English words."""
+    words = _WORD.findall(text)
+    return sum(w.lower() in COMMON_WORDS for w in words) / len(words) if words else 0.0
+
+
+def _read_words(segment: str, name: str, *, in_place: bool = False) -> str:
+    """``segment`` read back under cipher ``name``, a word at a time.
+
+    A common word whose reading is not common is a plain word and stays as it
+    arrived. Backwards text is reversed whole, so its words come back in
+    order; ``in_place`` reverses each word where it stands instead, for text
+    written with every word backwards and the words in order.
+    """
+    if name != REVERSED:
+        decipher = CIPHERS[name]
+        return _WORD.sub(lambda m: _kept(m.group(), decipher(m.group())), segment)
+    if in_place:
+        return _WORD.sub(lambda m: _kept(m.group(), m.group()[::-1]), segment)
+    return _WORD.sub(lambda m: _kept(m.group()[::-1], m.group()), segment[::-1])
+
+
+def _kept(arrived: str, plain: str) -> str:
+    """``plain``, unless ``arrived`` is a common word and ``plain`` is not."""
+    if arrived.lower() in COMMON_WORDS and plain.lower() not in COMMON_WORDS:
         return arrived
-
-    return _WORD.sub(word, segment)
+    return plain
 
 
 def read_leet(segment: str) -> str | None:
@@ -164,8 +288,19 @@ def read_leet(segment: str) -> str | None:
 
 
 def read_through(text: str) -> tuple[str, int]:
-    """``text`` with every ciphered or leet segment read back, and how many were."""
-    count = 0
+    """``text`` with every ciphered or leet segment read back, and how many were.
+
+    Lines first, by :func:`read_attack`, each joined across a soft break the
+    way L1 joins it, so a directive wrapped by a Markdown hard break is read
+    as the one line L1 will see. Only a payload with such a line is rejoined;
+    every other comes back as it would without this pass. Then segments, by
+    :func:`read_back` and :func:`read_leet`.
+    """
+    lines = SOFT_BREAK.sub(" ", text).split("\n")
+    attacks = {i: read for i, line in enumerate(lines) if (read := read_attack(line))}
+    if attacks:
+        text = "\n".join(attacks.get(i, line) for i, line in enumerate(lines))
+    count = len(attacks)
 
     def one(match: re.Match[str]) -> str:
         nonlocal count

@@ -1,11 +1,13 @@
 """How fast L1 reads text nobody attacked, with and without the literal gate.
 
 The directive stage was three quarters of L1's time: every exact pattern ran
-on every line, up to five times a line (as it arrived, collapsed, corrected,
-ROT13, reversed), and a line that matches nothing is the slow case because
-nothing short-circuits. ``directives.matches_exact`` now runs a pattern only
-when a literal it needs is in the string (#709). This reports the stage and
-the whole of L1, gated and ungated, on the same haystack.
+on every line, up to five times a line, and a line that matches nothing is
+the slow case because nothing short-circuits. ``directives.matches_exact``
+now runs a pattern only when a literal it needs is in the string (#709). The
+ROT13 and backwards asks have since moved to the unpack stage's letter
+reader (#744), which asks the same patterns, so the gate is switched there
+too. This reports the stage, the unpack stage and the whole of L1, gated and
+ungated, on the same haystack.
 
     uv run python benchmarks/l1_throughput.py            # docs/
     uv run python benchmarks/l1_throughput.py docs src   # any files or directories
@@ -27,6 +29,8 @@ if str(_REPO_ROOT) not in sys.path:
 
 from trentina.l1 import directives
 from trentina.l1.pipeline import run_l1
+from trentina.unpack import letters
+from trentina.unpack.scan import unpack
 
 _TEXT = {".md", ".py", ".txt", ".yaml", ".yml", ".toml", ".json", ".html", ".log"}
 
@@ -60,21 +64,22 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{megabytes * 1000:.0f} KB, {text.count(chr(10)) + 1} lines, best of {args.rounds}")
 
     gated = directives.matches_exact
-    timings: dict[str, tuple[float, float]] = {}
+    timings: dict[str, tuple[float, float, float]] = {}
     for label, match in (("ungated", directives._matches_every_pattern), ("gated", gated)):
-        directives.matches_exact = match
+        directives.matches_exact = letters.matches_exact = match
         try:
             stage = _best(lambda: directives.strip_directives(text), args.rounds)
+            unpacked = _best(lambda: unpack(text), args.rounds)
             whole = _best(lambda: run_l1(text), args.rounds)
         finally:
-            directives.matches_exact = gated
-        timings[label] = (stage, whole)
+            directives.matches_exact = letters.matches_exact = gated
+        timings[label] = (stage, unpacked, whole)
         print(
-            f"{label:8} directives {stage * 1000:7.0f} ms {megabytes / stage:6.1f} MB/s"
-            f"   run_l1 {whole * 1000:7.0f} ms {megabytes / whole:6.1f} MB/s"
+            f"{label:8} directives {stage * 1000:6.0f} ms {megabytes / stage:5.1f} MB/s"
+            f"   unpack {unpacked * 1000:6.0f} ms   run_l1 {whole * 1000:6.0f} ms"
         )
-    (s0, w0), (s1, w1) = timings["ungated"], timings["gated"]
-    print(f"speed-up  directives {s0 / s1:.2f}x   run_l1 {w0 / w1:.2f}x")
+    (s0, u0, w0), (s1, u1, w1) = timings["ungated"], timings["gated"]
+    print(f"speed-up  directives {s0 / s1:.2f}x   unpack {u0 / u1:.2f}x   run_l1 {w0 / w1:.2f}x")
     return 0
 
 

@@ -52,7 +52,6 @@ FINDING_NAMES: dict[str, str] = {
     "delimiters_custom_patterns": "profile-defined delimiter patterns",
     "directives_directives_detected": "lines matching a known injection directive",
     "directives_evasions_detected": "lines matching one once scrambled, misspelled or spaced out",
-    "directives_ciphered_detected": "lines matching one once read in ROT13 or backwards",
     "forgery_gateway_verdicts": "lines impersonating this gateway's verdict on the content",
     "forgery_gateway_lines": "lines written to look like this gateway's own notices",
     "forgery_tool_calls": "tool calls written into the content",

@@ -108,7 +108,6 @@ The stages added for #363 (0.58.0) count forms that are findings in themselves, 
 | `unicode_fullwidth_runs` | two or more consecutive words in fullwidth Latin letters | yes |
 | `unicode_mixed_script_words` | a Latin word carrying Cyrillic or Greek lookalike letters | yes |
 | `encoded_escaped_payloads` | a line whose percent, backslash or character-reference escapes decode to an instruction word | yes |
-| `directives_ciphered_detected` | a line that matches a directive once read in ROT13 or backwards | yes |
 | `exfiltration_exfiltration_links` | a link whose query is built to be filled in: a carrier parameter name, or a placeholder for the value | yes |
 | `exfiltration_mismatched_links` | a link showing one site's URL and going to another | no: mail trackers do it on every message |
 
@@ -252,7 +251,7 @@ gaps below.
 | URL-safe, unpadded or otherwise non-canonical base64 | as it arrived | the raw blob | judged, but L2 may react to the blob |
 | Text in base32, Ascii85, base85, UU (uuencode), Braille or Morse | as it arrived | the decoded text, in place (#546); base32, UU, Braille and Morse at any length, Ascii85 and base85 between 16 and 20000 characters | judged; the attack inside is read like the plain text ([benchmark](benchmark.md#garaks-encodings-423)) |
 | Text in the NATO alphabet, sneaky bits, Base2048, Ecoji or Zalgo | as it arrived | the decoded text, in place (6.6.0); NATO from eight code words, sneaky bits from twelve bits, Base2048 from twelve characters, Ecoji from eight emoji, Zalgo from two characters under three or more marks each | judged; NATO reads as one unbroken lower-case run (garak drops the spaces), and sneaky bits' cheapest reading recovers Latin text but can misread long code points (CJK) ([benchmark](benchmark.md#garaks-encodings-423)) |
-| Text in ROT13 or any Caesar shift, Atbash, or leetspeak | as it arrived | read back in place when the reading is English (6.7.0, #720): a segment (a line, cut again at double quotes) whose words are under 30% common English and whose reading under one cipher is at least 30% and 20 points more, with five common words; inside it a common word whose reading is not one stays as it arrived. Leetspeak a token at a time, in a segment where five tokens read as common words. L1 also matches its directive patterns through ROT13 | judged; ROT13 and Atbash attacks are caught 41 of 44 and flag 1 of 86 benign texts, leetspeak 42 of 44 and 6 of 86 ([benchmark](benchmark.md#garaks-encodings-423)); text in another language under a cipher, and a cipher wrapped four words a line, are not read back (gap 22) |
+| Text in ROT13 or any Caesar shift, Atbash, backwards, or leetspeak | as it arrived | read back in place when the reading is English (6.7.0, #720; backwards #744): a segment (a line, cut again at double quotes) whose words are under 30% common English and whose reading under one cipher is at least 30% and 20 points more, with five common words; inside it a common word whose reading is not one stays as it arrived. Leetspeak a token at a time, in a segment where five tokens read as common words. A shorter line is read back when its reading is an exact L1 directive and the line as it arrived is not one (#744): ROT13 and backwards (whole, or each word in place) always, another cipher once two of its words read as injection vocabulary | judged; ROT13 and Atbash attacks are caught 41 of 44 and flag 1 of 86 benign texts, leetspeak 42 of 44 and 6 of 86 ([benchmark](benchmark.md#garaks-encodings-423)); text in another language under a cipher, and a cipher wrapped four words a line, are not read back (gap 22) |
 | Writing about attacks: security documentation, a detector's source, a security gateway's issue list or issue reply | as it arrived | as it arrived | judged, but L2 may flag it whatever it says (gap 31) |
 | Text in quoted-printable or MIME encoding | as it arrived | as it arrived, soft line breaks included | judged; L2 reads through it (42 of 44 attacks against 41 plain, 6 of 86 benign texts flagged) |
 | Text hidden in Unicode variant selectors | as it arrived | as it arrived; L1 counts the run | judged; L1's count alone refuses it, whatever it says |
@@ -334,14 +333,16 @@ one does; the rest name the benchmark that measured them.
    pixels, spacers), by the size a PNG or GIF header states. A letter or a
    QR code needs more pixels than that. A header can lie about its size; an
    agent's image tools then read pixels no layer did.
-6. **L1 reads two ciphers and three escape forms, and no others** (#363).
-   ROT13 and reversed lines are matched against the directive patterns;
-   percent, backslash and character-reference escapes are decoded and
-   read for instruction words. The unpack stage ahead of L1 decodes base32,
+6. **L1 reads three escape forms, and no others** (#363). Percent,
+   backslash and character-reference escapes are decoded and read for
+   instruction words. The unpack stage ahead of L1 decodes base32,
    Ascii85, base85, UU, Braille and Morse (#546) and the NATO alphabet,
    sneaky bits, Base2048, Ecoji and Zalgo (6.6.0), and reads back every
-   Caesar shift, Atbash and leetspeak when the reading is English (6.7.0),
-   so L1 reads their plain text. The lookalike counter knows Cyrillic and
+   Caesar shift, Atbash, backwards text and leetspeak when the reading is
+   English (6.7.0, #744), or a line of any length when the reading is an
+   exact directive (#744), so L1 reads their plain text. L1 matched ROT13
+   and reversed lines against its patterns itself until #744 moved that to
+   the unpack stage, where L2 and L3 read the result too. The lookalike counter knows Cyrillic and
    Greek only. What is not read back is gap 22.
    Tested.
 7. **L1's own refusal is coarse on invisible characters.** Four of them
@@ -460,8 +461,9 @@ one does; the rest name the benchmark that measured them.
     back** (#423, narrowed in 6.7.0 by #720). Every text is valid
     ciphertext, so unpack reads a segment back only when one cipher turns it
     English, judged on its own words with five common ones at the least. An
-    attack in Atbash or a Caesar shift wrapped four words a line, or with a
-    double quote between every few words, is read by no layer as plain text;
+    attack in Atbash or a Caesar shift wrapped so that no line holds a whole
+    directive (two words a line), or with a double quote between every few
+    words, is read by no layer as plain text;
     nor is an attack in another language, whose reading is not English
     either (the 2 of 44 the pipeline still loses). Inside a segment read
     back, a rare word whose reading is not a common word is read back

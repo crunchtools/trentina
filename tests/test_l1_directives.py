@@ -22,9 +22,9 @@ from corpora.l1_patterns import L1_PATTERN_CASES
 from corpora.owasp import OWASP_TEST_ATTACKS
 from trentina.l1.directives import (
     _FOLD,
-    _SOFT_BREAK,
     LITERALS,
     PATTERNS,
+    SOFT_BREAK,
     _matches_every_pattern,
     matches_exact,
     strip_directives,
@@ -194,7 +194,7 @@ class TestLiteralGate:
         texts = [c.payload for c in L1_PATTERN_CASES] + list(OWASP_TEST_ATTACKS)
         texts += [p if isinstance(p, str) else json.dumps(p) for p in (c.payload for c in CORPUS)]
         texts += [p.read_text() for p in sorted(root.glob("docs/**/*.md"))]
-        lines = {line for text in texts for line in _SOFT_BREAK.sub(" ", text).split("\n")}
+        lines = {line for text in texts for line in SOFT_BREAK.sub(" ", text).split("\n")}
         forms: set[str] = set()
         for line in lines:
             forms |= {line, codecs.decode(line, "rot13"), line[::-1]}
