@@ -158,7 +158,7 @@ def _profile(
                     name="a",
                     auth=AuthConfig(bearer_token_env="TEST_TOKEN"),
                     defense=DefenseConfig(enforcement="block"),
-                    backends={"hub": Backend(url="unix:///run/hub.sock", carrier="acme:unix")},
+                    backends={"hub": Backend(url="vsock://3:9000", carrier="acme:vsock")},
                 )
             ),
             ["carriers"],

@@ -12,7 +12,7 @@ role, never one table for two). Three roles live here, one table each:
   ``gateway/profile.py`` mirrors what is dispatchable (``mcp``), not what is
   registered.
 * A CARRIER is a backend's wire (#740), the frozen v1 plugin contract in
-  ``base.py``. The built-in is ``http``; a ``dist:name`` carrier is an
+  ``base.py``. The built-ins are ``http`` and ``unix`` (#724); a ``dist:name`` carrier is an
   installed ``trentina.carriers.v1`` entry point, scanned before it is
   imported. ``carrier_for`` is the one place a backend's carrier is chosen.
 * A ROUTE is a perimeter path (#535), below.
@@ -172,12 +172,14 @@ SUPPORTED_CARRIER_API: frozenset[int] = frozenset({1})
 #: The carriers this build ships, the source of truth ``CarrierName`` in
 #: ``gateway/profile.py`` mirrors; ``tests/test_transport_registry.py`` holds
 #: the two in step.
-BUILTIN_CARRIERS: frozenset[str] = frozenset({"http"})
+BUILTIN_CARRIERS: frozenset[str] = frozenset({"http", "unix"})
 
 #: The URL schemes a built-in carrier answers, and the two that name no wire
 #: (``internal://`` is in-process, ``decoy://`` answers nothing). No plugin
 #: carrier may be given a backend on one of them.
-SCHEME_CARRIERS: Mapping[str, str] = MappingProxyType({"http": "http", "https": "http"})
+SCHEME_CARRIERS: Mapping[str, str] = MappingProxyType(
+    {"http": "http", "https": "http", "unix": "unix"}
+)
 RESERVED_SCHEMES: frozenset[str] = frozenset({*SCHEME_CARRIERS, "internal", "decoy"})
 
 #: The entry-point group a carrier plugin registers under: ``dist:name`` names one.
@@ -192,8 +194,10 @@ def _carriers() -> dict[str, Carrier]:
     """The carrier table, with the built-ins in it."""
     if "http" not in _CARRIERS:
         from .http_carrier import HttpCarrier
+        from .unix_carrier import UnixCarrier
 
         _CARRIERS.setdefault("http", HttpCarrier())
+        _CARRIERS.setdefault("unix", UnixCarrier())
     return _CARRIERS
 
 

@@ -85,6 +85,8 @@ INTERNAL_SCHEME = "internal://"
 #: A backend nothing answers (#357): its tools are declared in the profile,
 #: a call to one returns a canned result, and the call is an alarm.
 DECOY_SCHEME = "decoy://"
+#: A stdio MCP server behind a socket the host's init system runs (#724).
+UNIX_SCHEME = "unix://"
 #: What an MCP tool may be called.
 DECOY_TOOL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
 #: Where a decoy's canned result carries one of the profile's honeytokens.
@@ -126,6 +128,10 @@ INGRESS_SUFFIX = "-federation"
 DECOY_DESCRIPTION_MAX_CHARS = 1024
 DECOY_RESULT_MAX_CHARS = 4096
 #: Backend settings that describe a server a decoy does not have.
+#: What only an HTTP wire carries: a header, an OAuth grant, a peer's JWT.
+#: A ``unix://`` backend takes none of them (#724).
+_HTTP_ONLY_FIELDS = ("headers", "auth", "federated")
+
 _REMOTE_ONLY_FIELDS = (
     "headers",
     "auth",
@@ -241,7 +247,7 @@ TransportName = Literal["mcp"]
 # ``transports.registry.BUILTIN_CARRIERS``, held in step by the same test file.
 # A ``dist:name`` ``PluginRef`` is a ``trentina.carriers.v1`` plugin, checked at
 # load without being imported.
-CarrierName = Literal["http"]
+CarrierName = Literal["http", "unix"]
 
 #: A URL scheme, as ``Backend.url`` must start with one.
 _URL_SCHEME_RE = re.compile(r"^([a-z][a-z0-9+.-]*)://.")
@@ -1179,7 +1185,8 @@ class Backend(BaseModel):
         default=None,
         description=(
             "The wire this backend's MCP sessions ride (#740). Omitted, it follows "
-            "the URL: 'http' for http(s)://. A 'dist:name' names an installed "
+            "the URL: 'http' for http(s)://, 'unix' for unix:///<socket> (a stdio "
+            "server behind systemd socket activation, #724). A 'dist:name' names an installed "
             "trentina.carriers.v1 plugin, and a URL whose scheme no built-in "
             "answers requires one."
         ),
@@ -1233,7 +1240,8 @@ class Backend(BaseModel):
         gt=0,
         le=MAX_LIST_TIMEOUT_SECONDS,
         description=(
-            "Timeout for tools/list metadata fetch (streamable-HTTP handshake needs headroom)"
+            "Timeout for tools/list metadata fetch (the session handshake needs headroom: "
+            "streamable HTTP, or a stdio server starting up behind a socket)"
         ),
     )
     literal_request_guards: dict[str, dict[str, ParameterConstraint]] = Field(
@@ -1371,6 +1379,23 @@ class Backend(BaseModel):
                     f"destination_params.{tool}: {param!r} is a gateway argument, not the backend's"
                 )
         return v
+
+    @model_validator(mode="after")
+    def a_socket_carries_no_http(self) -> Backend:
+        """A ``unix://`` backend is a stdio server on a socket (#724): a URL of
+        one shape, and none of what only HTTP carries. ``headers`` would be
+        dropped where an operator expects a credential to be sent; OAuth and
+        federation reach a peer over https. Refused here, not at the first
+        call."""
+        from ..transports.socket_roots import socket_path
+
+        if not self.url.startswith(UNIX_SCHEME):
+            return self
+        socket_path(self.url)
+        given = [field for field in _HTTP_ONLY_FIELDS if getattr(self, field)]
+        if given:
+            raise ValueError(f"{', '.join(given)} does not apply to a unix:// backend")
+        return self
 
     @model_validator(mode="after")
     def destination_params_not_internal(self) -> Backend:
@@ -1531,8 +1556,9 @@ class Backend(BaseModel):
 
     @property
     def is_remote(self) -> bool:
-        """True when this backend is an MCP server reached over HTTP: the only
-        kind with a connection, a tool list of its own and a cache of it."""
+        """True when this backend is an MCP server reached over a carrier (HTTP,
+        a socket, a plugin's wire): the only kind with a connection, a tool
+        list of its own and a cache of it."""
         return not (self.is_internal or self.is_decoy)
 
     @property

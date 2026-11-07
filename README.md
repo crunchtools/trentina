@@ -134,6 +134,7 @@ Then point Claude Code at it:
 | [Matrix Reverse Proxy](docs/network-isolation.md) | Matrix for agents on an isolated network |
 | [Client Egress](docs/client-egress.md) | A CONNECT tunnel to listed hosts for the agent's own client |
 | [Git Transport](docs/git-transport.md) | Clone, fetch and push to listed repositories and branches |
+| [Stdio Backends](docs/stdio-backends.md) | Front a stdio-only MCP server the host runs behind a socket |
 | [Stability tiers](docs/stability.md) | Which features may change shape in a minor release, and how you are told |
 | [Approvals](docs/approvals.md) | The six grants an operator proposes and a person agrees to |
 | [Federation](docs/federation.md) | Share a profile with a second gateway: its tools mounted over a trusted link, scanned once |

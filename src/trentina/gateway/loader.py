@@ -359,15 +359,24 @@ def _check_transports_and_carriers(name: str, profile: Profile) -> None:
     added) resolves; a 'dist:name' transport is refused by name, since
     transports are in-tree only (``transports.registry.build_transport``). A
     named carrier must be registered, or an installed plugin that passes the
-    carrier scan, checked without importing it (``check_carrier``, #740). Lazy
-    import avoids the transports→gateway import cycle at module load."""
-    from ..transports.registry import build_transport, check_carrier
+    carrier scan, checked without importing it (``check_carrier``, #740). A
+    ``unix://`` socket must sit under ``TRENTINA_SOCKET_ROOTS`` as written
+    (#724); the socket itself is checked again at connect. Lazy import avoids
+    the transports→gateway import cycle at module load."""
+    from ..transports.registry import build_transport, carrier_name, check_carrier
+    from ..transports.socket_roots import SocketRefusedError, check_written, socket_path
 
     for backend_name, backend in profile.backends.items():
         try:
             build_transport(backend.transport)
             if backend.carrier is not None:
                 check_carrier(backend.carrier)
+            if carrier_name(backend) == "unix":
+                check_written(socket_path(backend.url))
+        except SocketRefusedError as exc:
+            raise ProfileConfigError(
+                f"Profile {name!r} backend {backend_name!r}: socket refused: {exc.reason}"
+            ) from exc
         except ProfileConfigError as exc:
             raise ProfileConfigError(f"Profile {name!r} backend {backend_name!r}: {exc}") from exc
 
