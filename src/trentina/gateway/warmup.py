@@ -152,16 +152,18 @@ async def _revalidate_tool_lists(profiles: list[Profile]) -> None:
 
     A client that listed tools while this ran was served the persisted list;
     its aggregate is dropped when the backend's list turned out to differ, and
-    ``_warm`` rebuilds it next.
+    ``_warm`` rebuilds it next. One refetch per cache partition, as the poll
+    keys them: per URL alone, a header-credentialed backend was refetched as
+    the first profile only and every other profile kept its pre-restart list.
     """
     backends: dict[str, tuple[str, Backend, Profile]] = {}
     for profile in profiles:
         for name, backend in profile.backends.items():
             if backend.is_remote:
-                backends.setdefault(backend.url, (name, backend, profile))
+                backends.setdefault(_poll_key(backend, profile), (name, backend, profile))
     stale = await _revalidate(backends)
-    for url in stale:
-        invalidate_profile_cache_for_backend(url)
+    for key in stale:
+        invalidate_profile_cache_for_backend(backends[key][1].url)
     logger.warning(
         "warm-up: revalidated the tool lists of %d backends, %d changed since they were cached",
         len(backends),
