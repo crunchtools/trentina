@@ -1,9 +1,10 @@
-"""Primary federation poll (#592, F3).
+"""Tool-list poll (#592 F3, #752).
 
-A federated secondary's newly approved or changed tool should appear primary
-without a hand-run reconnect. ``warmup._poll_once`` re-probes the federated
-backends whose interval has elapsed and rebuilds the profiles that share a
-changed one, under background L3 priority. These drive ``_poll_once`` directly
+A federated secondary's newly approved or changed tool, and a tool a redeploy
+added to any remote backend, should appear without a hand-run reconnect.
+``warmup._poll_once`` re-lists the backends whose interval has elapsed,
+rebuilds the profiles that read a changed list and pushes them
+``tools/list_changed``, under background L3 priority. These drive ``_poll_once`` directly
 (no real timer) and pin the config validators.
 """
 
@@ -11,13 +12,13 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
 
 from trentina.gateway import warmup
-from trentina.gateway.profile import AuthConfig, Backend, FederatedConfig, Profile
+from trentina.gateway.profile import AuthConfig, Backend, BackendAuth, FederatedConfig, Profile
 from trentina.quarantine.limiter import Priority, l3_priority
 
 
@@ -68,11 +69,14 @@ class TestPollOnce:
             patch.object(warmup, "get_active_config", return_value=_active(a, b, c)),
             patch.object(warmup, "revalidate_backend_tools", revalidate),
             patch.object(warmup, "rebuild_profiles", spy_rebuild),
+            patch.object(warmup.session_registry, "broadcast_tools_changed", AsyncMock()) as bc,
         ):
             sleep_for = await warmup._poll_once(100.0)
 
         # Exactly the two profiles sharing the changed URL are rebuilt; "c" is not.
         assert rebuilt == [["a", "b"]]
+        # And their open sessions are told, or a client keeps its old list (#752).
+        assert sorted(c.args[0] for c in bc.await_args_list) == ["a", "b"]
         # The owning profile is passed so a federated backend can mint its primary JWT.
         assert got_profiles and got_profiles[0].name == "a"
         assert warmup._next_due[UP] == 130.0  # re-seeded now + poll_seconds
@@ -95,22 +99,63 @@ class TestPollOnce:
         rebuild.assert_not_called()
         assert sleep_for == pytest.approx(400.0)
 
-    async def test_non_federated_backend_is_not_polled(self) -> None:
+    async def test_plain_backend_is_polled_on_its_own_interval(self) -> None:
         a = _profile("a", {"plain": Backend(url="http://plain:8000/mcp")})
-
-        async def revalidate(_name: str, _backend: Backend, _profile: Any = None) -> bool:
-            raise AssertionError("a non-federated backend must not be polled")
 
         with (
             patch.object(warmup, "get_active_config", return_value=_active(a)),
-            patch.object(warmup, "revalidate_backend_tools", revalidate),
-            patch.object(warmup, "rebuild_profiles") as rebuild,
+            patch.object(warmup, "revalidate_backend_tools") as revalidate,
         ):
             sleep_for = await warmup._poll_once(100.0)
 
-        rebuild.assert_not_called()
+        revalidate.assert_not_called()  # first sight: seeded, the warm-up just ran
+        assert warmup._next_due == {"http://plain:8000/mcp": 400.0}
+        assert sleep_for == pytest.approx(300.0)
+
+    @pytest.mark.parametrize(
+        "backend",
+        [
+            Backend(url="http://plain:8000/mcp", poll_seconds=0),
+            Backend(url="http://plain:8000/mcp", auth=BackendAuth(type="oauth")),
+            Backend(url="internal://trentina"),
+        ],
+        ids=["opted-out", "auth", "internal"],
+    )
+    async def test_unpollable_backend_is_not_polled(self, backend: Backend) -> None:
+        a = _profile("a", {"x": backend})
+        with patch.object(warmup, "get_active_config", return_value=_active(a)):
+            sleep_for = await warmup._poll_once(100.0)
         assert sleep_for == warmup.IDLE_TICK
         assert warmup._next_due == {}
+
+    async def test_header_backend_is_polled_once_per_partition(self) -> None:
+        url = "http://hdr:8000/mcp"
+        a = _profile("a", {"h": Backend(url=url, headers={"Authorization": "Bearer a"})})
+        b = _profile("b", {"h": Backend(url=url, headers={"Authorization": "Bearer b"})})
+        warmup._next_due.update({f"{url}#a": 0.0, f"{url}#b": 0.0})
+        seen: list[str] = []
+
+        async def revalidate(_name: str, _backend: Backend, profile: Any = None) -> bool:
+            seen.append(profile.name)
+            return profile.name == "b"  # only b's partition changed
+
+        rebuilt: list[list[str]] = []
+
+        async def spy_rebuild(profiles: list[Profile]) -> int:
+            rebuilt.append([p.name for p in profiles])
+            return len(profiles)
+
+        with (
+            patch.object(warmup, "get_active_config", return_value=_active(a, b)),
+            patch.object(warmup, "revalidate_backend_tools", revalidate),
+            patch.object(warmup, "rebuild_profiles", spy_rebuild),
+            patch.object(warmup.session_registry, "broadcast_tools_changed", AsyncMock()),
+        ):
+            await warmup._poll_once(100.0)
+
+        # Each profile's own list is re-fetched, and only the changed one rebuilt.
+        assert sorted(seen) == ["a", "b"]
+        assert rebuilt == [["b"]]
 
     async def test_unchanged_or_errored_backend_skips_rebuild(self) -> None:
         a = _profile("a", {"up": _fed(UP, 30)})
@@ -193,9 +238,20 @@ class TestPollSecondsConfig:
         with pytest.raises(ValidationError, match=r"0 .off. or at least 30"):
             FederatedConfig(poll_seconds=3)
 
-    def test_poll_with_auth_is_rejected(self) -> None:
-        from trentina.gateway.profile import BackendAuth
+    def test_plain_backend_default_is_300(self) -> None:
+        assert Backend(url=UP).poll_seconds == 300
 
+    def test_plain_backend_below_30_fails_load(self) -> None:
+        with pytest.raises(ValidationError, match=r"0 .off. or at least 30"):
+            Backend(url=UP, poll_seconds=3)
+
+    def test_plain_poll_on_auth_or_federated_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="does not apply"):
+            Backend(url=UP, poll_seconds=60, auth=BackendAuth(type="oauth"))
+        with pytest.raises(ValidationError, match="does not apply"):
+            Backend(url=UP, poll_seconds=60, federated=FederatedConfig())
+
+    def test_poll_with_auth_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="cannot also use auth"):
             Backend(
                 url=UP,
