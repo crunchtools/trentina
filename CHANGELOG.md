@@ -10,8 +10,6 @@ under that name.
 
 ## [Unreleased]
 
-## [6.13.1] - 2026-11-08
-
 ### Fixed
 
 - **A release whose tag outruns its own verifier now waits for it instead of
@@ -26,6 +24,10 @@ under that name.
   promoted are an artifact of that run's `publish` job. Every other answer is
   still immediate: a terminal conclusion that is not `success`, or the budget
   running out, refuses on the spot.
+
+## [6.13.1] - 2026-11-08
+
+### Fixed
 
 - **The startup tool-list refetch reaches every profile's partition.** A
   backend carrying header credentials was refetched at warm-up as the first
