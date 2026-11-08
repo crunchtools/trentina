@@ -65,13 +65,15 @@ jobs:
       # and a tag pushed minutes after the merge would promote past all of them.
       #
       # Still running is also not the same as failed, so this WAITS instead of
-      # refusing. `release.yml` tags the merge commit within seconds of the
-      # merge, so this run routinely starts while main's own `sdlc ci` is still
-      # building the image it is here to promote. Refusing there is how v6.13.0
-      # came to be tagged, released, and absent from both registries until a
-      # person re-ran this job -- Nagios reported it as "Registry drift:
-      # trentina:6.13.0[quay+ghcr] missing". A release nobody can pull is the
-      # state failing closed is meant to prevent, not to produce.
+      # refusing. A release tag is cut through the GitHub API within
+      # seconds of the merge -- there is no release.yml in this repo --
+      # so this run routinely starts while main's own `sdlc ci` is still
+      # building the image it is here to promote. Refusing there is how
+      # v6.13.0 came to be tagged, released, and absent from both
+      # registries until a person re-ran this job -- Nagios reported it
+      # as "Registry drift: trentina:6.13.0[quay+ghcr] missing". A
+      # release nobody can pull is the state failing closed is meant to
+      # prevent, not to produce.
       #
       # The wait is bounded and every other answer stays immediate: a terminal
       # conclusion that is not `success` has nothing to wait for and refuses on
