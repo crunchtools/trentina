@@ -42,7 +42,10 @@ def main() -> None:
     from . import telemetry
     from .config import get_config
 
-    telemetry.install(get_config().log_format)
+    config = get_config()
+    telemetry.install(
+        config.log_format, config.otlp_endpoint, config.otlp_headers, version=__version__
+    )
     parser = argparse.ArgumentParser(
         prog="trentina",
         description="MCP gateway: injection defense, token savings, policy and auth for AI agents",

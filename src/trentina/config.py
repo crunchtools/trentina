@@ -323,6 +323,29 @@ class Config:
             return "text"
         return fmt
 
+    @functools.cached_property
+    def otlp_endpoint(self) -> str | None:
+        """``TRENTINA_OTLP_ENDPOINT``: the base URL of an OTLP/HTTP collector
+        (spans go to ``<endpoint>/v1/traces``, #556). Unset, nothing is
+        exported. Not http(s), it warns and nothing is exported."""
+        endpoint = (os.environ.get("TRENTINA_OTLP_ENDPOINT") or "").strip()
+        if endpoint and not endpoint.startswith(("http://", "https://")):
+            logger.warning("TRENTINA_OTLP_ENDPOINT is not an http(s) URL; not exporting")
+            return None
+        return endpoint or None
+
+    @functools.cached_property
+    def otlp_headers(self) -> dict[str, str]:
+        """``TRENTINA_OTLP_HEADERS``: ``key=value,...`` sent with every export,
+        e.g. the collector's ``Authorization``. Each value is held by logsafe,
+        so no log record carries it."""
+        from . import logsafe, telemetry
+
+        headers = telemetry.parse_headers(os.environ.get("TRENTINA_OTLP_HEADERS"))
+        for value in headers.values():
+            logsafe.hold(value, "TRENTINA_OTLP_HEADERS")
+        return headers
+
     def __init__(self) -> None:
         self.provider: str = os.environ.get(
             "TRENTINA_MODEL_PROVIDER",

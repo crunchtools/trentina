@@ -32,8 +32,11 @@ import queue
 import re
 import sys
 import threading
+import time
+import urllib.request
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -196,9 +199,18 @@ def reset_sinks() -> None:
     """Drop every sink (startup re-wiring, and test isolation), stopping any
     writer's drain thread first so a re-install does not leak one."""
     for sink in _SINKS:
-        if isinstance(sink, JsonLineWriter):
+        if isinstance(sink, (JsonLineWriter, OtlpHttpExporter)):
             sink.stop()
     _SINKS.clear()
+
+
+def counters() -> dict[str, int] | None:
+    """The OTLP exporter's ``sent``/``dropped``/``failed`` counts for the
+    health probe, or None when no exporter is installed."""
+    for sink in _SINKS:
+        if isinstance(sink, OtlpHttpExporter):
+            return {"sent": sink.sent, "dropped": sink.dropped, "failed": sink.failed}
+    return None
 
 
 def emit(record: CallRecord) -> None:
@@ -264,10 +276,189 @@ class JsonLineWriter:
             self._queue.task_done()
 
 
-def install(log_format: str) -> None:
-    """Register the sinks a ``TRENTINA_LOG_FORMAT`` asks for. ``json`` adds the
-    non-blocking one-line-per-call stderr stream; ``text`` adds none. Replaces
-    any prior set."""
+OTLP_BATCH_MAX = 512
+"""Spans sent in one OTLP request."""
+
+OTLP_FLUSH_SECONDS = 5.0
+"""How long a span waits for its batch to fill before it is sent anyway."""
+
+OTLP_TIMEOUT_SECONDS = 5.0
+"""How long one OTLP request may take. The drain thread waits it out; a call
+never does."""
+
+_SPAN_KIND_SERVER = 2
+_STATUS_OK, _STATUS_ERROR = 1, 2
+_OK_OUTCOME = "ok"
+
+# CallRecord field -> span attribute. Semantic-convention names where one
+# exists (OpenTelemetry GenAI and session), ``trentina.*`` for the rest.
+_ATTRIBUTES = {
+    "profile": "trentina.profile",
+    "backend": "trentina.backend",
+    "tool": "gen_ai.tool.name",
+    "outcome": "trentina.outcome",
+    "success": "trentina.success",
+    "duration_ms": "trentina.duration_ms",
+    "bytes_arrived": "trentina.bytes_arrived",
+    "bytes_delivered": "trentina.bytes_delivered",
+    "destination_kind": "trentina.destination_kind",
+    "session": "trentina.mcp_session",
+    "call_ref": "trentina.call_ref",
+    "detections_digest": "trentina.detections_digest",
+    "layer": "trentina.layer",
+    "risk": "trentina.risk",
+    "l3_verdict": "trentina.l3_verdict",
+    "agent_session": "session.id",
+}
+
+
+def _any_value(value: object) -> dict[str, object]:
+    """An OTLP/JSON ``AnyValue``; 64-bit integers are strings in OTLP/JSON."""
+    if isinstance(value, bool):
+        return {"boolValue": value}
+    if isinstance(value, int):
+        return {"intValue": str(value)}
+    return {"stringValue": str(value)}
+
+
+def _span(record: CallRecord) -> dict[str, object]:
+    end_ns = int(record.timestamp * 1e9)
+    span: dict[str, object] = {
+        "traceId": record.trace_id,
+        "spanId": record.span_id,
+        "name": f"{record.backend} {record.tool}",
+        "kind": _SPAN_KIND_SERVER,
+        "startTimeUnixNano": str(end_ns - record.duration_ms * 1_000_000),
+        "endTimeUnixNano": str(end_ns),
+        "attributes": [
+            {"key": key, "value": _any_value(value)}
+            for field, key in _ATTRIBUTES.items()
+            if (value := getattr(record, field)) is not None
+        ],
+        "status": {"code": _STATUS_OK if record.outcome == _OK_OUTCOME else _STATUS_ERROR},
+    }
+    if record.parent_span_id:
+        span["parentSpanId"] = record.parent_span_id
+    return span
+
+
+def otlp_payload(records: list[CallRecord], version: str) -> dict[str, object]:
+    """An OTLP/JSON ``ExportTraceServiceRequest`` carrying one span per record."""
+    resource = [
+        {"key": "service.name", "value": {"stringValue": "trentina"}},
+        {"key": "service.version", "value": {"stringValue": version}},
+    ]
+    return {
+        "resourceSpans": [
+            {
+                "resource": {"attributes": resource},
+                "scopeSpans": [
+                    {
+                        "scope": {"name": "trentina.telemetry", "version": version},
+                        "spans": [_span(r) for r in records],
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def parse_headers(raw: str | None) -> dict[str, str]:
+    """``TRENTINA_OTLP_HEADERS`` in the ``OTEL_EXPORTER_OTLP_HEADERS`` form:
+    comma-separated ``key=value`` pairs, values percent-decoded. A pair with no
+    ``=`` or an empty key is skipped."""
+    headers: dict[str, str] = {}
+    for pair in (raw or "").split(","):
+        key, sep, value = pair.partition("=")
+        if sep and key.strip():
+            headers[key.strip()] = unquote(value.strip())
+    return headers
+
+
+class OtlpHttpExporter:
+    """Every call as an OTLP span, POSTed as OTLP/JSON to ``<endpoint>/v1/traces``.
+
+    Calling the exporter is a sink and never blocks: a full queue drops the
+    record and counts it on ``dropped``. A daemon thread batches up to
+    ``OTLP_BATCH_MAX`` spans, or whatever ``OTLP_FLUSH_SECONDS`` gathered, and
+    sends them with stdlib urllib, no proxy, one attempt. A batch the collector
+    refused or never answered is counted on ``failed``, not retried: a dead
+    collector costs records, never latency.
+    """
+
+    def __init__(
+        self,
+        endpoint: str,
+        headers: dict[str, str] | None = None,
+        *,
+        version: str = "",
+        maxsize: int = TELEMETRY_QUEUE_MAX,
+        flush_seconds: float = OTLP_FLUSH_SECONDS,
+    ) -> None:
+        if not endpoint.startswith(("http://", "https://")):
+            raise ValueError("an OTLP endpoint is an http(s) URL")
+        self._url = endpoint.rstrip("/") + "/v1/traces"
+        self._headers = {"Content-Type": "application/json", **(headers or {})}
+        self._version = version
+        self._flush = flush_seconds
+        self._queue: queue.Queue[object] = queue.Queue(maxsize=maxsize)
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.sent = self.dropped = self.failed = 0
+        self._thread = threading.Thread(target=self._drain, name="trentina-otlp", daemon=True)
+        self._thread.start()
+
+    def __call__(self, record: CallRecord) -> None:
+        try:
+            self._queue.put_nowait(record)
+        except queue.Full:
+            self.dropped += 1
+
+    def stop(self) -> None:
+        """Send what is queued, then end the drain thread."""
+        self._queue.put(_STOP)
+        self._thread.join(timeout=OTLP_TIMEOUT_SECONDS + 2)
+
+    def _drain(self) -> None:
+        stopping = False
+        while not stopping:
+            batch: list[CallRecord] = []
+            deadline = time.monotonic() + self._flush
+            while len(batch) < OTLP_BATCH_MAX:
+                try:
+                    item = self._queue.get(timeout=max(0.0, deadline - time.monotonic()))
+                except queue.Empty:
+                    break
+                self._queue.task_done()
+                if item is _STOP:
+                    stopping = True
+                    break
+                batch.append(item)  # type: ignore[arg-type]
+            if batch:
+                self._send(batch)
+
+    def _send(self, batch: list[CallRecord]) -> None:
+        body = json.dumps(otlp_payload(batch, self._version), separators=(",", ":")).encode()
+        # The scheme is checked in __init__, so no file: or custom-scheme open.
+        request = urllib.request.Request(self._url, data=body, headers=self._headers)  # noqa: S310
+        try:
+            with self._opener.open(request, timeout=OTLP_TIMEOUT_SECONDS) as response:
+                response.read()
+            self.sent += len(batch)
+        except Exception:  # any failure is a lost batch, counted, never raised
+            self.failed += len(batch)
+
+
+def install(
+    log_format: str,
+    otlp_endpoint: str | None = None,
+    otlp_headers: dict[str, str] | None = None,
+    version: str = "",
+) -> None:
+    """Register the sinks the configuration asks for: ``json`` adds the
+    non-blocking one-line-per-call stderr stream, an OTLP endpoint adds the
+    exporter, and neither adds nothing. Replaces any prior set."""
     reset_sinks()
     if log_format == "json":
         register_sink(JsonLineWriter())
+    if otlp_endpoint:
+        register_sink(OtlpHttpExporter(otlp_endpoint, otlp_headers, version=version))

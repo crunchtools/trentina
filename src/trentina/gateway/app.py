@@ -451,6 +451,10 @@ def _health_payload(registry: dict[str, Profile]) -> Response:
     }
     # Summed, so the unauthenticated probe names no profile; which one is
     # in quarantine_stats' gateway_audit (backend matrix_bridge, #317).
+    # Exporter counts (#556), so a dead collector shows up somewhere.
+    exported = telemetry.counters()
+    if exported is not None:
+        body["telemetry"] = exported
     refused = outbound_refused()
     if refused is not None:
         body["matrix_bridge"] = {"outbound_refused": refused, "media_refused": media_refused()}

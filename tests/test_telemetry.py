@@ -7,8 +7,11 @@ import io
 import json
 import re
 import sqlite3
+import threading
+import time
 from collections.abc import Iterator
 from dataclasses import asdict
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -179,7 +182,7 @@ def test_main_installs_telemetry_from_the_configured_format(
     from trentina import config as config_mod
 
     seen: list[str] = []
-    monkeypatch.setattr(telemetry, "install", seen.append)
+    monkeypatch.setattr(telemetry, "install", lambda fmt, *_a, **_k: seen.append(fmt))
 
     def _exit(_self: argparse.ArgumentParser, *_a: object, **_k: object) -> None:
         raise SystemExit(0)
@@ -291,3 +294,218 @@ def test_from_row_nests_under_the_current_trace() -> None:
     assert re.fullmatch(r"[0-9a-f]{16}", record.span_id or "")
     orphan = telemetry.from_row(_ROW)
     assert orphan.trace_id != _TRACE and orphan.parent_span_id is None
+
+
+class _Collector:
+    """A stdlib OTLP/HTTP collector on a free local port that keeps what it gets."""
+
+    def __init__(self, status: int = 200) -> None:
+        import http.server
+
+        received: list[tuple[str, dict[str, str], dict[str, Any]]] = []
+        self.received = received
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                received.append((self.path, dict(self.headers), json.loads(body)))
+                self.send_response(status)
+                self.end_headers()
+
+            def log_message(self, *_a: object) -> None:
+                pass
+
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def _spans(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        span
+        for resource in payload["resourceSpans"]
+        for scope in resource["scopeSpans"]
+        for span in scope["spans"]
+    ]
+
+
+def _attributes(span: dict[str, Any]) -> dict[str, Any]:
+    return {a["key"]: next(iter(a["value"].values())) for a in span["attributes"]}
+
+
+def test_otlp_exporter_delivers_every_field_to_a_collector() -> None:
+    collector = _Collector()
+    trace = telemetry.trace_from_headers(f"00-{_TRACE}-{_PARENT}-01", "run-1")
+    record = telemetry.from_row(
+        _ROW, telemetry.Detections(layer="L2", risk="high", l3_verdict="flagged"), trace
+    )
+    exporter = telemetry.OtlpHttpExporter(
+        collector.url + "/", {"Authorization": "Basic dTpw"}, version="9.9.9", flush_seconds=0.05
+    )
+    try:
+        exporter(record)
+        exporter.stop()
+    finally:
+        collector.close()
+    [(path, headers, payload)] = collector.received
+    assert path == "/v1/traces"
+    assert headers["Authorization"] == "Basic dTpw"
+    assert headers["Content-Type"] == "application/json"
+    [span] = _spans(payload)
+    assert (span["traceId"], span["parentSpanId"]) == (_TRACE, _PARENT)
+    assert span["spanId"] == record.span_id
+    assert span["name"] == "github create_issue"
+    assert int(span["endTimeUnixNano"]) - int(span["startTimeUnixNano"]) == 12_000_000
+    assert span["status"] == {"code": 2}
+    attributes = _attributes(span)
+    assert attributes == {
+        "trentina.profile": "kagetora",
+        "trentina.backend": "github",
+        "gen_ai.tool.name": "create_issue",
+        "trentina.outcome": "denied_guard",
+        "trentina.success": False,
+        "trentina.duration_ms": "12",
+        "trentina.bytes_arrived": "100",
+        "trentina.bytes_delivered": "0",
+        "trentina.destination_kind": "tool",
+        "trentina.mcp_session": "sess123",
+        "trentina.call_ref": "ref456",
+        "trentina.detections_digest": "sha256:abcd",
+        "trentina.layer": "L2",
+        "trentina.risk": "high",
+        "trentina.l3_verdict": "flagged",
+        "session.id": telemetry.fingerprint("run-1"),
+    }
+    resource = _attributes(payload["resourceSpans"][0]["resource"])
+    assert resource == {"service.name": "trentina", "service.version": "9.9.9"}
+    assert exporter.sent == 1
+    assert (exporter.dropped, exporter.failed) == (0, 0)
+    assert _CANARY not in json.dumps(payload), "no caller-chosen string is exported (#262)"
+
+
+def test_otlp_exporter_batches_and_marks_ok_calls() -> None:
+    collector = _Collector()
+    exporter = telemetry.OtlpHttpExporter(collector.url, flush_seconds=0.2)
+    ok = telemetry.from_row({**_ROW, "outcome": "ok", "success": 1})
+    try:
+        for _ in range(3):
+            exporter(ok)
+        exporter.stop()
+    finally:
+        collector.close()
+    spans = [span for _, _, payload in collector.received for span in _spans(payload)]
+    assert len(spans) == 3
+    assert len(collector.received) == 1, "records queued together go in one request"
+    assert all(span["status"] == {"code": 1} and "parentSpanId" not in span for span in spans)
+
+
+def test_otlp_exporter_counts_a_refused_batch() -> None:
+    collector = _Collector(status=401)
+    exporter = telemetry.OtlpHttpExporter(collector.url, flush_seconds=0.05)
+    try:
+        exporter(telemetry.from_row(_ROW))
+        exporter.stop()
+    finally:
+        collector.close()
+    assert (exporter.sent, exporter.failed) == (0, 1)
+
+
+def test_a_dead_collector_costs_records_not_latency() -> None:
+    """Nothing listens on the port: the call path never waits on it, and what
+    could not be sent or queued is counted."""
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        dead = f"http://127.0.0.1:{probe.getsockname()[1]}"
+    exporter = telemetry.OtlpHttpExporter(dead, maxsize=10, flush_seconds=0.05)
+    record = telemetry.from_row(_ROW)
+    started = time.perf_counter()
+    for _ in range(1000):
+        exporter(record)
+    elapsed = time.perf_counter() - started
+    exporter.stop()
+    assert elapsed < 0.5, f"1000 emits took {elapsed:.3f}s against a dead collector"
+    assert exporter.dropped > 0
+    assert exporter.sent == 0
+    assert exporter.dropped + exporter.failed == 1000
+
+
+def test_otlp_exporter_refuses_a_non_http_endpoint() -> None:
+    with pytest.raises(ValueError, match="http"):
+        telemetry.OtlpHttpExporter("file:///etc/passwd")
+
+
+def test_install_registers_the_exporter_only_with_an_endpoint() -> None:
+    telemetry.install("text", None)
+    assert telemetry._SINKS == []
+    assert telemetry.counters() is None
+    telemetry.install("json", "http://127.0.0.1:9", {"a": "b"}, version="1")
+    kinds = {type(sink) for sink in telemetry._SINKS}
+    assert kinds == {telemetry.JsonLineWriter, telemetry.OtlpHttpExporter}
+    assert telemetry.counters() == {"sent": 0, "dropped": 0, "failed": 0}
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, {}),
+        ("", {}),
+        ("Authorization=Basic%20dTpw", {"Authorization": "Basic dTpw"}),
+        (" a = 1 ,b=x=y,novalue,=orphan", {"a": "1", "b": "x=y"}),
+    ],
+)
+def test_parse_headers(raw: str | None, expected: dict[str, str]) -> None:
+    assert telemetry.parse_headers(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, None),
+        ("", None),
+        ("http://otlp:4318", "http://otlp:4318"),
+        (" https://c.example ", "https://c.example"),
+        ("otlp:4318", None),
+        ("file:///etc/passwd", None),
+    ],
+)
+def test_config_otlp_endpoint(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, expected: str | None
+) -> None:
+    from trentina import config as config_mod
+
+    config_mod._config = None
+    if value is None:
+        monkeypatch.delenv("TRENTINA_OTLP_ENDPOINT", raising=False)
+    else:
+        monkeypatch.setenv("TRENTINA_OTLP_ENDPOINT", value)
+    try:
+        assert config_mod.get_config().otlp_endpoint == expected
+    finally:
+        config_mod._config = None
+
+
+def test_config_otlp_headers_are_held_from_the_log(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    from trentina import config as config_mod
+    from trentina import logsafe
+
+    secret = "Basic czNjcjN0LW90bHAtdG9rZW4="
+    config_mod._config = None
+    monkeypatch.setenv("TRENTINA_OTLP_HEADERS", f"Authorization={secret}")
+    logsafe.guard()
+    try:
+        assert config_mod.get_config().otlp_headers == {"Authorization": secret}
+        with caplog.at_level(logging.WARNING):
+            logging.getLogger("trentina.test").warning("leak %s", secret)
+        assert secret not in caplog.text
+    finally:
+        config_mod._config = None
