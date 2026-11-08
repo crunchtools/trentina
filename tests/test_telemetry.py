@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import asdict
@@ -192,3 +193,101 @@ def test_main_installs_telemetry_from_the_configured_format(
         assert seen == ["json"]
     finally:
         config_mod._config = None
+
+
+def test_summarize_detections_keeps_closed_sets_only() -> None:
+    rows = [
+        (None, "medium", "clean"),
+        ("L2", "high", None),
+        ("L3", "low", "flagged"),
+        (f"L9{_CANARY}", f"x{_CANARY}", f"y{_CANARY}"),
+    ]
+    summary = telemetry.summarize_detections(rows)
+    assert summary == telemetry.Detections(layer="L2", risk="high", l3_verdict="flagged")
+    assert telemetry.summarize_detections([]) == telemetry.Detections()
+
+
+def test_record_gateway_call_carries_the_detection_summary() -> None:
+    conn = _fresh_db()
+    seen: list[telemetry.CallRecord] = []
+    telemetry.register_sink(seen.append)
+    with (
+        patch.object(database, "_db", conn),
+        patch.object(database, "get_db", return_value=conn),
+    ):
+        database.record_detection(
+            source_type="tool",
+            source="s",
+            domain=None,
+            layer1_stats={},
+            risk_level="critical",
+            verdicts={"flagged_by": "L1", "l3_verdict": "flagged"},
+            call_ref="ref789",
+        )
+        database.record_gateway_call(
+            profile="kagetora",
+            backend="github",
+            tool="get_issue",
+            outcome="blocked_defense",
+            duration_ms=3,
+            call_ref="ref789",
+        )
+    assert (seen[0].layer, seen[0].risk, seen[0].l3_verdict) == ("L1", "critical", "flagged")
+
+
+def test_record_gateway_call_skips_the_record_without_sinks() -> None:
+    with patch.object(telemetry, "from_row") as built:
+        conn = _fresh_db()
+        with (
+            patch.object(database, "_db", conn),
+            patch.object(database, "get_db", return_value=conn),
+        ):
+            database.record_gateway_call(
+                profile="p", backend="b", tool="t", outcome="ok", duration_ms=1
+            )
+    built.assert_not_called()
+
+
+_TRACE = "4bf92f3577b34da6a3ce929d0e0e4736"
+_PARENT = "00f067aa0ba902b7"
+
+
+@pytest.mark.parametrize(
+    ("header", "kept"),
+    [
+        (f"00-{_TRACE}-{_PARENT}-01", True),
+        (f" 00-{_TRACE}-{_PARENT}-00 ", True),
+        (f"01-{_TRACE}-{_PARENT}-01", False),
+        (f"00-{_TRACE.upper()}-{_PARENT}-01", False),
+        (f"00-{'0' * 32}-{_PARENT}-01", False),
+        (f"00-{_TRACE}-{'0' * 16}-01", False),
+        (f"00-{_TRACE}-{_PARENT}-01-{_CANARY}", False),
+        (_CANARY, False),
+        (None, False),
+    ],
+)
+def test_trace_from_headers_keeps_only_a_valid_traceparent(header: str | None, kept: bool) -> None:
+    trace = telemetry.trace_from_headers(header, None)
+    assert re.fullmatch(r"[0-9a-f]{32}", trace.trace_id)
+    if kept:
+        assert (trace.trace_id, trace.parent_span_id) == (_TRACE, _PARENT)
+    else:
+        assert trace.trace_id != _TRACE
+        assert trace.parent_span_id is None
+
+
+def test_trace_from_headers_fingerprints_the_session() -> None:
+    trace = telemetry.trace_from_headers(None, f"run-{_CANARY}")
+    assert trace.agent_session == telemetry.fingerprint(f"run-{_CANARY}")
+    assert _CANARY not in json.dumps(asdict(trace))
+    assert telemetry.trace_from_headers(None, "x" * 257).agent_session is None
+
+
+def test_from_row_nests_under_the_current_trace() -> None:
+    trace = telemetry.trace_from_headers(f"00-{_TRACE}-{_PARENT}-01", "run-1")
+    record = telemetry.from_row(_ROW, trace=trace)
+    assert (record.trace_id, record.parent_span_id) == (_TRACE, _PARENT)
+    assert record.agent_session == telemetry.fingerprint("run-1")
+    assert re.fullmatch(r"[0-9a-f]{16}", record.span_id or "")
+    orphan = telemetry.from_row(_ROW)
+    assert orphan.trace_id != _TRACE and orphan.parent_span_id is None

@@ -12,7 +12,7 @@ import logging
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -872,7 +872,21 @@ def record_gateway_call(
                 _set_busy_timeout(db, BUSY_TIMEOUT_MS)
     # The row is committed; emit its safe metadata to any telemetry sink. emit
     # swallows a sink's failure, so this never fails the call (#556).
-    telemetry.emit(telemetry.from_row(row))
+    if telemetry.has_sinks():
+        with suppress(sqlite3.Error):
+            detections = _call_detections(db, call_ref)
+            telemetry.emit(telemetry.from_row(row, detections, telemetry.current_trace.get()))
+
+
+def _call_detections(db: sqlite3.Connection, call_ref: str | None) -> telemetry.Detections:
+    """The detection summary of one call, for its telemetry record."""
+    if not call_ref:
+        return telemetry.Detections()
+    rows = db.execute(
+        "SELECT flagged_by, risk_level, l3_verdict FROM detections WHERE call_ref = ? ORDER BY id",
+        (call_ref,),
+    ).fetchall()
+    return telemetry.summarize_detections([tuple(r) for r in rows])
 
 
 def _remaining_ms(deadline: float) -> int:

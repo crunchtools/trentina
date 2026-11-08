@@ -26,7 +26,7 @@ from starlette.middleware import Middleware
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from .. import perimeter_db
+from .. import perimeter_db, telemetry
 from ..httpbody import STATUS_TOO_LARGE, RequestBodyCap, TooLargeError
 from ..logsafe import exc_kind, exc_where, redact_source, safe_address
 from ..quarantine.classifier import classifier_status
@@ -725,6 +725,8 @@ async def _handle_post(
     # a reused task cannot carry a previous call's trust decision into this
     # call's audit row (#637).
     current_federated_verdict.set(None)
+    # The agent's trace, so this call's telemetry nests under its run (#556).
+    telemetry.current_trace.set(telemetry.trace_from_request(request.headers))
     try:
         response = await route_jsonrpc(profile, body)
     except ProfileNotFoundError:

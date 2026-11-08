@@ -5,10 +5,17 @@ carries NO caller-chosen string (the #262 rule): not the destination, not an
 error message, not an argument value — only fields the gateway itself sets
 (the profile and backend from its own config, the resolved tool, the outcome
 taxonomy, byte counts, the session and call fingerprints, the detections
-digest). It is emitted from ``database.record_gateway_call`` once per call and
-fanned out to the registered sinks: the one-line-per-call JSON stream today
-(``TRENTINA_LOG_FORMAT=json``), an OTLP exporter later. Emission never raises
-into the call path — a sink that fails is swallowed.
+digest, the detection layer and risk from closed sets, and the trace IDs). It
+is emitted from ``database.record_gateway_call`` once per call and fanned out
+to the registered sinks: the one-line-per-call JSON stream
+(``TRENTINA_LOG_FORMAT=json``) and the OTLP exporter
+(``TRENTINA_OTLP_ENDPOINT``). Emission never raises into the call path — a
+sink that fails is swallowed.
+
+The trace a call belongs to is ``current_trace``, set by the gateway from the
+agent's W3C ``traceparent`` and ``x-session-id`` headers. Both are caller
+text, so only a strictly valid ``traceparent`` is kept and the session id is
+kept as a fingerprint, never raw.
 
 This module is intentionally zero-dependency (stdlib only, like ``logsafe``),
 so ``database`` can import it without a cycle.
@@ -17,15 +24,19 @@ so ``database`` can import it without a cycle.
 from __future__ import annotations
 
 import contextlib
+import contextvars
+import hashlib
 import json
+import os
 import queue
+import re
 import sys
 import threading
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from typing import TextIO
 
 
@@ -51,10 +62,99 @@ class CallRecord:
     session: str | None
     call_ref: str | None
     detections_digest: str | None
+    layer: str | None = None
+    risk: str | None = None
+    l3_verdict: str | None = None
+    trace_id: str | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
+    agent_session: str | None = None
 
 
-def from_row(row: dict[str, Any]) -> CallRecord:
-    """Build a record from a ``gateway_calls`` row, taking only its safe fields."""
+_LAYERS = frozenset({"L1", "L2", "L3"})
+_RISKS = ("low", "medium", "high", "critical")
+_L3_VERDICTS = frozenset({"flagged", "clean", "unavailable"})
+
+
+@dataclass(frozen=True, slots=True)
+class Detections:
+    """What a call's detection rows say, reduced to closed sets: the layer
+    credited first, the highest risk, and the L3 verdict ("flagged" wins)."""
+
+    layer: str | None = None
+    risk: str | None = None
+    l3_verdict: str | None = None
+
+
+def summarize_detections(rows: list[tuple[Any, Any, Any]]) -> Detections:
+    """Reduce ``(flagged_by, risk_level, l3_verdict)`` rows, in id order. A
+    value outside its closed set is dropped rather than exported."""
+    layer = next((r[0] for r in rows if r[0] in _LAYERS), None)
+    risks = [_RISKS.index(r[1]) for r in rows if r[1] in _RISKS]
+    verdicts = {r[2] for r in rows if r[2] in _L3_VERDICTS}
+    verdict = next((v for v in ("flagged", "clean", "unavailable") if v in verdicts), None)
+    return Detections(layer=layer, risk=_RISKS[max(risks)] if risks else None, l3_verdict=verdict)
+
+
+@dataclass(frozen=True, slots=True)
+class TraceContext:
+    """The trace a call belongs to: a W3C trace id, the agent's span to nest
+    under (if it sent one), and the fingerprint of its ``x-session-id``."""
+
+    trace_id: str
+    parent_span_id: str | None = None
+    agent_session: str | None = None
+
+
+current_trace: contextvars.ContextVar[TraceContext | None] = contextvars.ContextVar(
+    "current_trace", default=None
+)
+
+_TRACEPARENT = re.compile(r"00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}")
+_SESSION_MAX = 256
+
+
+def new_id(nbytes: int) -> str:
+    """A random lowercase-hex id of ``nbytes`` bytes (16 for a trace, 8 for a span)."""
+    return os.urandom(nbytes).hex()
+
+
+def fingerprint(value: str) -> str:
+    """The exportable stand-in for a caller-chosen id (#262)."""
+    return hashlib.sha256(value.encode()).hexdigest()[:16]
+
+
+def trace_from_headers(traceparent: str | None, session_id: str | None) -> TraceContext:
+    """The trace for one inbound request. A ``traceparent`` that is not exactly
+    version 00 with non-zero ids is ignored and a fresh trace started; an
+    ``x-session-id`` is kept only as its fingerprint, and only if it is short."""
+    trace_id, parent = new_id(16), None
+    match = _TRACEPARENT.fullmatch(traceparent.strip()) if traceparent else None
+    if match and match[1] != "0" * 32 and match[2] != "0" * 16:
+        trace_id, parent = match[1], match[2]
+    session = fingerprint(session_id) if session_id and len(session_id) <= _SESSION_MAX else None
+    return TraceContext(trace_id=trace_id, parent_span_id=parent, agent_session=session)
+
+
+TRACEPARENT_HEADER = "traceparent"
+SESSION_HEADER = "x-session-id"
+
+
+def trace_from_request(headers: Mapping[str, str]) -> TraceContext:
+    """``trace_from_headers`` over a request's headers."""
+    return trace_from_headers(headers.get(TRACEPARENT_HEADER), headers.get(SESSION_HEADER))
+
+
+def from_row(
+    row: dict[str, Any],
+    detections: Detections | None = None,
+    trace: TraceContext | None = None,
+) -> CallRecord:
+    """Build a record from a ``gateway_calls`` row, taking only its safe
+    fields, plus the call's detection summary and the trace it ran in. A call
+    outside any trace (a bridge, a startup refresh) gets a trace of its own."""
+    detections = detections or Detections()
+    trace = trace or TraceContext(trace_id=new_id(16))
     return CallRecord(
         timestamp=row["timestamp"],
         profile=row["profile"],
@@ -69,6 +169,13 @@ def from_row(row: dict[str, Any]) -> CallRecord:
         session=row["session"],
         call_ref=row["call_ref"],
         detections_digest=row["detections_digest"],
+        layer=detections.layer,
+        risk=detections.risk,
+        l3_verdict=detections.l3_verdict,
+        trace_id=trace.trace_id,
+        span_id=new_id(8),
+        parent_span_id=trace.parent_span_id,
+        agent_session=trace.agent_session,
     )
 
 
@@ -78,6 +185,11 @@ _SINKS: list[Callable[[CallRecord], None]] = []
 def register_sink(sink: Callable[[CallRecord], None]) -> None:
     """Add a sink that every later ``emit`` fans out to."""
     _SINKS.append(sink)
+
+
+def has_sinks() -> bool:
+    """Whether any sink is registered, so a caller can skip building a record."""
+    return bool(_SINKS)
 
 
 def reset_sinks() -> None:

@@ -183,6 +183,48 @@ class TestGatewayApp:
         assert body["result"]["content"][0]["text"] == "channels: [#general]"
 
 
+_TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+
+def test_tools_call_record_nests_under_the_agent_trace(client: TestClient) -> None:
+    """#556: a tools/call carrying the agent's traceparent is recorded in that
+    trace, as a child of the agent's span."""
+    from trentina import telemetry
+
+    seen: list[telemetry.CallRecord] = []
+    telemetry.reset_sinks()
+    telemetry.register_sink(seen.append)
+
+    async def fake_call(*_args: object, **_kw: object) -> BackendCall:
+        return BackendCall(
+            content=[{"type": "text", "text": "ok"}], is_error=False, structured_content=None
+        )
+
+    try:
+        with patch("trentina.transports.mcp.call_backend_tool", side_effect=fake_call):
+            resp = client.post(
+                "/alice/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 11,
+                    "method": "tools/call",
+                    "params": {"name": f"mcp-slack{NAMESPACE_SEP}slack_list_channels"},
+                },
+                headers={
+                    "Authorization": "Bearer alice-token",
+                    "traceparent": _TRACEPARENT,
+                    "x-session-id": "run-42",
+                },
+            )
+    finally:
+        telemetry.reset_sinks()
+    assert resp.status_code == 200
+    [record] = [r for r in seen if r.tool == "slack_list_channels"]
+    assert record.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736"
+    assert record.parent_span_id == "00f067aa0ba902b7"
+    assert record.agent_session == telemetry.fingerprint("run-42")
+
+
 class TestHealthEndpoint:
     """Liveness probe.
 

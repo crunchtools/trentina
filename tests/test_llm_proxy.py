@@ -571,6 +571,27 @@ class TestProxyAdmission:
         assert row["error_message"] is None
         assert (row["destination"], row["destination_kind"]) == ("claude-sonnet-4-5", "model")
 
+    def test_the_completion_record_nests_under_the_agent_trace(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        """#556: a model call carrying the agent's traceparent is recorded in the
+        same trace as its tool calls."""
+        from trentina import telemetry
+
+        seen: list[telemetry.CallRecord] = []
+        telemetry.reset_sinks()
+        telemetry.register_sink(seen.append)
+        try:
+            client = self._client(_FakeClient(), monkeypatch)
+            trace = "4bf92f3577b34da6a3ce929d0e0e4736"
+            resp = self._post(client, _PLAIN, traceparent=f"00-{trace}-00f067aa0ba902b7-01")
+        finally:
+            telemetry.reset_sinks()
+        assert resp.status_code == 200
+        [record] = seen
+        assert (record.trace_id, record.parent_span_id) == (trace, "00f067aa0ba902b7")
+        assert record.destination_kind == "model"
+
     def test_the_completion_row_carries_the_relayed_bytes(
         self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
     ) -> None:
