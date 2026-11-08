@@ -14,6 +14,19 @@ under that name.
 
 ### Fixed
 
+- **A release whose tag outruns its own verifier now waits for it instead of
+  going unshipped.** `release.yml` tags the merge commit within seconds, so
+  Container Promote routinely starts while main's `sdlc ci` is still building
+  the image the tag is for. The guard read that as "nothing verified the image"
+  and refused, which is the right answer to a failed check and the wrong one to
+  a pending one: v6.13.0 was tagged, released, and on neither registry until a
+  person re-ran the job, with Nagios the only thing that noticed. The required
+  checks and `security.yml`'s own run are now polled for up to 30 minutes, and
+  the whole run has to finish rather than just `sdlc ci` -- the digests being
+  promoted are an artifact of that run's `publish` job. Every other answer is
+  still immediate: a terminal conclusion that is not `success`, or the budget
+  running out, refuses on the spot.
+
 - **The startup tool-list refetch reaches every profile's partition.** A
   backend carrying header credentials was refetched at warm-up as the first
   profile holding it only, so every other profile kept the list it had

@@ -64,6 +64,19 @@ jobs:
       # running, cancelled or never started has no failure conclusion either,
       # and a tag pushed minutes after the merge would promote past all of them.
       #
+      # Still running is also not the same as failed, so this WAITS instead of
+      # refusing. `release.yml` tags the merge commit within seconds of the
+      # merge, so this run routinely starts while main's own `sdlc ci` is still
+      # building the image it is here to promote. Refusing there is how v6.13.0
+      # came to be tagged, released, and absent from both registries until a
+      # person re-ran this job -- Nagios reported it as "Registry drift:
+      # trentina:6.13.0[quay+ghcr] missing". A release nobody can pull is the
+      # state failing closed is meant to prevent, not to produce.
+      #
+      # The wait is bounded and every other answer stays immediate: a terminal
+      # conclusion that is not `success` has nothing to wait for and refuses on
+      # the spot, and so does running out of WAIT_SECONDS.
+      #
       # The contexts the branch ruleset requires are READ from the ruleset: a
       # copy here goes stale the first time a required check is added, silently
       # and in the direction of promoting more. Each must have concluded
@@ -74,7 +87,8 @@ jobs:
       # a pull request and so never attach to the squash-merge commit. That list
       # is written out, not inferred from "nothing reported": "no run found"
       # otherwise means both "enforced on the PR" and "never ran", which are
-      # opposite answers.
+      # opposite answers. Any other absence is waited on and then refused, since
+      # a check GitHub has not created yet also reports nothing.
       #
       # The job that BUILT and verified the image is then checked separately,
       # and by WORKFLOW FILE rather than by context name: a name is a string,
@@ -91,6 +105,11 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           VERIFIER_WORKFLOW: security.yml
           VERIFIER_JOB: sdlc ci
+          # security.yml finishes in six to eight minutes. The budget is sized
+          # for a queued runner rather than for a long build, and it ends in a
+          # refusal, so being generous costs a slow failure and nothing else.
+          WAIT_SECONDS: "1800"
+          POLL_SECONDS: "20"
           PR_ONLY: |
             Protect workflows
             Gatehouse triage / Gatehouse triage
@@ -108,68 +127,98 @@ jobs:
             exit 1
           }
           runs="$RUNNER_TEMP/outcomes.tsv"
-          # This run's own jobs are attached to the same commit and are of
-          # course not finished, so they are left out by run id.
-          gh api "repos/$REPO/commits/$SHA/check-runs" --paginate \
-            -q '.check_runs[] | select(.details_url | contains("/runs/'"$RUN_ID"'/") | not)
-                  | [.name, (.conclusion // "pending"), .started_at] | @tsv' \
-            > "$runs"
-          # A required context may be a commit status rather than a check run.
-          gh api "repos/$REPO/commits/$SHA/status" --paginate \
-            -q '.statuses[] | [.context, .state, .updated_at] | @tsv' \
-            >> "$runs"
-          outcome() {
-            # The newest report of that name, so a rerun that fixed a flake
-            # counts and the failure it replaced does not.
-            awk -F'\t' -v n="$1" '$1 == n' "$runs" \
-              | sort -t"$(printf '\t')" -k3 | tail -1 | cut -f2
-          }
-          bad=0
-          while IFS= read -r context; do
-            [ -n "$context" ] || continue
-            got=$(outcome "$context")
-            if [ "$got" = success ]; then
-              printf '  %s: success\n' "$context"
-            elif [ -z "$got" ] && printf '%s\n' "$PR_ONLY" | grep -qxF "$context"; then
-              printf '  %s: pull-request only, enforced where it ran\n' "$context"
+          deadline=$(( $(date +%s) + WAIT_SECONDS ))
+          add_wait() { waiting="${waiting:+$waiting, }$1"; }
+          while :; do
+            bad=0
+            waiting=
+            # This run's own jobs are attached to the same commit and are of
+            # course not finished, so they are left out by run id.
+            gh api "repos/$REPO/commits/$SHA/check-runs" --paginate \
+              -q '.check_runs[] | select(.details_url | contains("/runs/'"$RUN_ID"'/") | not)
+                    | [.name, (.conclusion // "pending"), .started_at] | @tsv' \
+              > "$runs"
+            # A required context may be a commit status rather than a check run.
+            gh api "repos/$REPO/commits/$SHA/status" --paginate \
+              -q '.statuses[] | [.context, .state, .updated_at] | @tsv' \
+              >> "$runs"
+            while IFS= read -r context; do
+              [ -n "$context" ] || continue
+              # The newest report of that name, so a rerun that fixed a flake
+              # counts and the failure it replaced does not.
+              got=$(awk -F'\t' -v n="$context" '$1 == n' "$runs" \
+                | sort -t"$(printf '\t')" -k3 | tail -1 | cut -f2)
+              case "${got:-absent}" in
+                success)
+                  printf '  %s: success\n' "$context"
+                  ;;
+                pending)
+                  add_wait "$context"
+                  ;;
+                absent)
+                  if printf '%s\n' "$PR_ONLY" | grep -qxF "$context"; then
+                    printf '  %s: pull-request only, enforced where it ran\n' "$context"
+                  else
+                    add_wait "$context (no run yet)"
+                  fi
+                  ;;
+                *)
+                  printf '  %s: %s\n' "$context" "$got" >&2
+                  bad=1
+                  ;;
+              esac
+            done < <(printf '%s\n' "$required")
+            # Resolved through the workflow file, so the answer comes from
+            # security.yml's run and not from anything that merely posted a
+            # check with that name. The newest run for this commit, so a re-run
+            # counts -- and only a PUSH to the default branch: that run executes
+            # main's own workflow file, where a pull request's run executes the
+            # PR's.
+            found=$(gh api \
+              "repos/$REPO/actions/workflows/$VERIFIER_WORKFLOW/runs?head_sha=$SHA&per_page=100" \
+              -q '[.workflow_runs[] | select(.id != ('"$RUN_ID"'|tonumber))
+                    | select(.event == "push" and .head_branch == env.BRANCH)]
+                    | sort_by(.run_started_at) | last | [.id, .status] | @tsv')
+            if [ -z "$found" ]; then
+              # The tag and the merge arrive together, so the run may not have
+              # been created yet. Still absent at the deadline is the refusal.
+              add_wait "$VERIFIER_WORKFLOW (no run yet)"
             else
-              printf '  %s: %s\n' "$context" "${got:-no run on this commit}" >&2
-              bad=1
+              verifier_run=$(printf '%s' "$found" | cut -f1)
+              verifier_status=$(printf '%s' "$found" | cut -f2)
+              verdict=$(gh api "repos/$REPO/actions/runs/$verifier_run/jobs" --paginate \
+                -q '.jobs[] | select(.name == env.VERIFIER_JOB) | .conclusion // "pending"' \
+                | tail -1)
+              if [ "$verdict" = success ] && [ "$verifier_status" = completed ]; then
+                printf '  %s in %s (run %s): success\n' \
+                  "$VERIFIER_JOB" "$VERIFIER_WORKFLOW" "$verifier_run"
+              elif [ "$verdict" = success ] || [ "$verdict" = pending ] || [ -z "$verdict" ]; then
+                # The WHOLE run has to finish, not just `sdlc ci`. The digests
+                # the next step reads are an artifact uploaded by that run's
+                # `publish` job, which starts only once `sdlc ci` has passed, so
+                # treating `sdlc ci` alone as the signal moves this race one job
+                # along instead of closing it.
+                add_wait "$VERIFIER_JOB in $VERIFIER_WORKFLOW (${verdict:-no job yet}, run $verifier_status)"
+              else
+                printf '%s in %s (run %s) is %s; nothing verified the image\n' \
+                  "$VERIFIER_JOB" "$VERIFIER_WORKFLOW" "$verifier_run" "$verdict" >&2
+                bad=1
+              fi
             fi
-          done <<EOF
-          $required
-          EOF
-          # Resolved through the workflow file, so the answer comes from
-          # security.yml's run and not from anything that merely posted a check
-          # with that name. The newest run for this commit, so a re-run counts --
-          # and only a PUSH to the default branch: that run executes main's own
-          # workflow file, where a pull request's run executes the PR's.
-          verifier_run=$(gh api \
-            "repos/$REPO/actions/workflows/$VERIFIER_WORKFLOW/runs?head_sha=$SHA&per_page=100" \
-            -q '[.workflow_runs[] | select(.id != ('"$RUN_ID"'|tonumber))
-                  | select(.event == "push" and .head_branch == env.BRANCH)]
-                  | sort_by(.run_started_at) | last | .id // empty')
-          if [ -z "$verifier_run" ]; then
-            printf '%s never ran for this commit; nothing verified the image\n' \
-              "$VERIFIER_WORKFLOW" >&2
-            bad=1
-          else
-            verdict=$(gh api "repos/$REPO/actions/runs/$verifier_run/jobs" --paginate \
-              -q '.jobs[] | select(.name == env.VERIFIER_JOB) | .conclusion // "pending"' \
-              | tail -1)
-            if [ "$verdict" = success ]; then
-              printf '  %s in %s (run %s): success\n' \
-                "$VERIFIER_JOB" "$VERIFIER_WORKFLOW" "$verifier_run"
-            else
-              printf '%s in %s (run %s) is %s; nothing verified the image\n' \
-                "$VERIFIER_JOB" "$VERIFIER_WORKFLOW" "$verifier_run" "${verdict:-absent}" >&2
-              bad=1
+            if [ "$bad" -ne 0 ]; then
+              echo "refusing to promote $SHA" >&2
+              exit 1
             fi
-          fi
-          [ "$bad" -eq 0 ] || {
-            echo "refusing to promote $SHA" >&2
-            exit 1
-          }
+            [ -n "$waiting" ] || break
+            left=$(( deadline - $(date +%s) ))
+            if [ "$left" -le 0 ]; then
+              echo "waited ${WAIT_SECONDS}s for: $waiting" >&2
+              echo "refusing to promote $SHA" >&2
+              exit 1
+            fi
+            echo "waiting for: $waiting (${left}s of the budget left)"
+            sleep "$POLL_SECONDS"
+          done
           echo "verifier_run=$verifier_run" >> "$GITHUB_OUTPUT"
 
       # What that run's `publish` job pushed, by digest. Nothing else writes this
