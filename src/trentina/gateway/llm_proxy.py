@@ -43,6 +43,7 @@ from pydantic import (
 )
 from starlette.responses import Response
 
+from .. import telemetry
 from ..logsafe import redact_source
 from ..orchestrator import judge_llm_completion, judge_outbound
 from ..outcomes import Outcome
@@ -68,6 +69,7 @@ from .llm_policy import (
     Reason,
     admit,
     forward_headers,
+    with_session,
 )
 from .llm_policy import Admitted as Shaped
 from .loader import read_secret_env
@@ -377,6 +379,17 @@ class LlmAdmitted(Admitted):
     path: str = ""
 
 
+def _session_for_provider(trace: telemetry.TraceContext | None) -> str | None:
+    """What OpenRouter groups this run's generations by: the agent's session
+    fingerprint, else its trace id when the agent sent one; None for a call
+    that started no trace of its own (a fresh, unshared trace groups nothing)."""
+    if trace is None:
+        return None
+    if trace.agent_session:
+        return trace.agent_session
+    return trace.trace_id if trace.parent_span_id else None
+
+
 class LlmRoute(Route[LlmAdmitted, InTree]):
     """``/proxy/llm/<provider>/<path>``: a model call, admitted by its API shape."""
 
@@ -443,6 +456,8 @@ class LlmRoute(Route[LlmAdmitted, InTree]):
             raise MarkedRefusalError(
                 refusal.reason.value, status=refusal.status, detail=refusal.detail
             ) from refusal
+        # Set before judging, so the field is judged with the rest of the body.
+        shaped = with_session(api, shaped, _session_for_provider(telemetry.current_trace.get()))
         op.tool = shaped.endpoint
         op.destination = shaped.model[:MAX_DESTINATION_CHARS] if shaped.model else None
         logger.info(

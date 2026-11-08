@@ -39,7 +39,7 @@ from starlette.datastructures import Headers
 from starlette.requests import ClientDisconnect
 from starlette.responses import Response
 
-from .. import logsafe
+from .. import logsafe, telemetry
 from ..config import get_config
 from ..errors import EgressRefusedError as GuardRefusedError
 from ..gateway.auth import resolve_profile_by_token
@@ -962,6 +962,8 @@ async def serve(mount: Mount, request: Request, profiles: dict[str, Profile]) ->
     if profile is None:
         logger.warning("perimeter: refused a caller of route=%s matching no profile", route.name)
         return route.render(_spell(mount, RefusedError("unauthorized")))
+    # The agent's trace, so a model or egress call nests under its run (#556).
+    telemetry.current_trace.set(telemetry.trace_from_request(request.headers))
     op = Operation(
         profile,
         backend=f"{route.name}:{NO_OPERATION}",

@@ -323,6 +323,50 @@ class Config:
             return "text"
         return fmt
 
+    @functools.cached_property
+    def otlp_endpoint(self) -> str | None:
+        """``TRENTINA_OTLP_ENDPOINT``: the base URL of an OTLP/HTTP collector
+        (spans go to ``<endpoint>/v1/traces``, #556). Unset, nothing is
+        exported. Not http(s), or carrying headers over plain http off the
+        host without ``TRENTINA_OTLP_INSECURE``, it warns and nothing is
+        exported."""
+        from . import telemetry
+
+        endpoint = (os.environ.get("TRENTINA_OTLP_ENDPOINT") or "").strip()
+        if endpoint and not endpoint.startswith(("http://", "https://")):
+            logger.warning("TRENTINA_OTLP_ENDPOINT is not an http(s) URL; not exporting")
+            return None
+        if (
+            endpoint
+            and telemetry.plaintext_credentials(endpoint, self.otlp_headers)
+            and not self.otlp_insecure
+        ):
+            logger.warning(
+                "TRENTINA_OTLP_HEADERS would cross the network in plain http; not exporting "
+                "(use https, or set TRENTINA_OTLP_INSECURE=true for a private network)"
+            )
+            return None
+        return endpoint or None
+
+    @functools.cached_property
+    def otlp_insecure(self) -> bool:
+        """``TRENTINA_OTLP_INSECURE`` (``true`` or ``1``): allow
+        ``TRENTINA_OTLP_HEADERS`` over plain http to a host other than
+        loopback. Off by default."""
+        return (os.environ.get("TRENTINA_OTLP_INSECURE") or "").strip().lower() in ("1", "true")
+
+    @functools.cached_property
+    def otlp_headers(self) -> dict[str, str]:
+        """``TRENTINA_OTLP_HEADERS``: ``key=value,...`` sent with every export,
+        e.g. the collector's ``Authorization``. Each value is held by logsafe,
+        so no log record carries it."""
+        from . import logsafe, telemetry
+
+        headers = telemetry.parse_headers(os.environ.get("TRENTINA_OTLP_HEADERS"))
+        for value in headers.values():
+            logsafe.hold(value, "TRENTINA_OTLP_HEADERS")
+        return headers
+
     def __init__(self) -> None:
         self.provider: str = os.environ.get(
             "TRENTINA_MODEL_PROVIDER",

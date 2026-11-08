@@ -10,6 +10,30 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- **Every call can go to the monitoring you already run, as a trace (#556).**
+  Set `TRENTINA_OTLP_ENDPOINT` and each gateway call is sent as an
+  OpenTelemetry span: OTLP/HTTP with JSON encoding, so it works with any
+  collector, Grafana Alloy, Datadog, or a Telegraf HTTP listener. No new
+  dependency. A dead collector costs records, never latency on a call, and
+  `/health` counts what was sent, dropped and failed, and why the last batch
+  was lost. Credentials never cross the network in plain http unless
+  `TRENTINA_OTLP_INSECURE=true` says the network in between is private.
+  `TRENTINA_OTLP_HEADERS` carries the collector's credentials, which are
+  never logged.
+- **One agent run is one trace.** An agent's W3C `traceparent` and
+  `x-session-id` headers put its tool calls, model calls and egress requests
+  in one trace, under its own span. The header is kept only if strictly
+  valid, and the session id only as a fingerprint.
+- **OpenRouter generations join the agent's session.** On an OpenRouter chat
+  completion the gateway sets `session_id` to that fingerprint, so
+  OpenRouter's own traces line up with the gateway's. Agents still cannot set
+  it themselves.
+- **The per-call record says which layer flagged it.** Records (JSON lines
+  and spans) now carry the detection layer, the highest risk, and the L3
+  verdict, all from closed sets.
+
 ## [6.13.2] - 2026-11-08
 
 ### Fixed
