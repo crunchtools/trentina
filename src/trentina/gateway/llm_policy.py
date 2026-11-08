@@ -38,6 +38,7 @@ dereference a URL in a prompt. The completion is judged after it streams
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from collections.abc import Callable
@@ -117,6 +118,27 @@ class Admitted:
     query: str
     body: bytes | None
     model: str | None
+
+
+#: The body field OpenRouter groups a run's generations by (Broadcast's
+#: ``session.id``). Never admitted from the agent, which cannot name it: only
+#: the gateway sets it, from the trace the agent's headers started (#556).
+OPENROUTER_SESSION_FIELD = "session_id"
+
+
+def with_session(api: LlmApi, admitted: Admitted, session: str | None) -> Admitted:
+    """``admitted`` with OpenRouter's ``session_id`` set to ``session`` on a
+    chat completion; unchanged for any other provider or endpoint, or with no
+    session. ``session`` is gateway-made (a fingerprint or trace id), never
+    caller text."""
+    if not session or api is not LlmApi.OPENROUTER or admitted.body is None:
+        return admitted
+    if admitted.endpoint != "chat/completions":
+        return admitted
+    parsed = json.loads(admitted.body)
+    parsed[OPENROUTER_SESSION_FIELD] = session
+    body = json.dumps(parsed, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+    return dataclasses.replace(admitted, body=body)
 
 
 # --- models -----------------------------------------------------------------

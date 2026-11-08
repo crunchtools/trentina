@@ -13,6 +13,7 @@ from trentina.gateway.llm_policy import (
     Reason,
     admit,
     forward_headers,
+    with_session,
 )
 
 A, OA, R, G = LlmApi.ANTHROPIC, LlmApi.OPENAI, LlmApi.OPENROUTER, LlmApi.GEMINI
@@ -482,3 +483,30 @@ class TestCurrentOpenAiChatParams:
 )
 def test_an_unhashable_type_is_refused_not_a_crash(api: LlmApi, path: str, body: Any) -> None:
     assert _reason(api, path, body) is Reason.MALFORMED
+
+
+class TestOpenRouterSession:
+    """#556: the gateway, never the agent, sets OpenRouter's session_id."""
+
+    def test_an_agent_cannot_set_session_id(self) -> None:
+        assert _reason(R, "v1/chat/completions", {**_ROUTER, "session_id": "mine"}) is not None
+
+    def test_the_gateway_sets_it_on_an_openrouter_chat(self) -> None:
+        admitted = with_session(R, _admit(R, "v1/chat/completions", _ROUTER), "abc123")
+        assert json.loads(admitted.body) == {**_ROUTER, "session_id": "abc123"}
+
+    @pytest.mark.parametrize(
+        ("api", "path", "body", "session"),
+        [
+            (R, "v1/chat/completions", _ROUTER, None),
+            (OA, "v1/chat/completions", _GPT, "abc123"),
+            (A, "v1/messages", _CLAUDE, "abc123"),
+            (R, "v1/models", None, "abc123"),
+        ],
+    )
+    def test_anything_else_is_unchanged(
+        self, api: LlmApi, path: str, body: dict[str, Any] | None, session: str | None
+    ) -> None:
+        method = "GET" if body is None else "POST"
+        admitted = _admit(api, path, body, method=method)
+        assert with_session(api, admitted, session) is admitted

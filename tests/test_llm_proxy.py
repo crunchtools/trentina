@@ -592,6 +592,40 @@ class TestProxyAdmission:
         assert (record.trace_id, record.parent_span_id) == (trace, "00f067aa0ba902b7")
         assert record.destination_kind == "model"
 
+    def test_an_openrouter_chat_carries_the_agent_session(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        """#556: OpenRouter's own traces join the agent's session, as the
+        gateway's fingerprint of it, never the raw header."""
+        from trentina import telemetry
+
+        fake = _FakeClient()
+        monkeypatch.setattr(perimeter, "pinned_send", fake)
+        provider = LlmProvider(
+            enabled=True,
+            upstream="https://openrouter.ai/api",
+            auth_header="Authorization",
+            auth_prefix="Bearer ",
+            api_key_env="GLOBAL_OPENROUTER_KEY",
+        )
+        provider.api_key = SecretStr("global-key")
+        providers = {"openrouter": provider}
+        profiles = {"agent1": _profile("agent1", "agent1-tok", {"openrouter": "agent1-key"})}
+
+        async def endpoint(request: Request) -> Response:
+            return await _serve_llm(request, providers, profiles)
+
+        app = Starlette(routes=[Route(LLM.route.path, endpoint, methods=["GET", "POST"])])
+        body = {"model": "openai/gpt-4.1", "messages": [{"role": "user", "content": "hi"}]}
+        resp = TestClient(app).post(
+            "/proxy/llm/openrouter/v1/chat/completions",
+            headers={"authorization": "Bearer agent1-tok", "x-session-id": "run-42"},
+            content=json.dumps(body).encode(),
+        )
+        assert resp.status_code == 200
+        sent = json.loads(fake.captured_body or b"")
+        assert sent == {**body, "session_id": telemetry.fingerprint("run-42")}
+
     def test_the_completion_row_carries_the_relayed_bytes(
         self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
     ) -> None:
