@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.13.2] - 2026-11-08
+
 ### Fixed
 
 - **A release whose tag outruns its own verifier now waits for it instead of
