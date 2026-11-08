@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.12.0] - 2026-11-08
+
 ### Added
 
 - **A trust pin read off the link, verified** (#640). `federation_trust`
