@@ -10,6 +10,13 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The startup tool-list refetch reaches every profile's partition.** A
+  backend carrying header credentials was refetched at warm-up as the first
+  profile holding it only, so every other profile kept the list it had
+  before the restart until the 5-minute poll caught up (follow-up to #752).
+
 ## [6.13.0] - 2026-11-08
 
 ### Added

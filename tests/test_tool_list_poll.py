@@ -258,3 +258,26 @@ class TestPollSecondsConfig:
                 federated=FederatedConfig(poll_seconds=30),
                 auth=BackendAuth(type="oauth", issuer="https://idp.example"),
             )
+
+
+@pytest.mark.asyncio
+class TestWarmUpRevalidate:
+    async def test_header_backend_is_revalidated_once_per_partition(self) -> None:
+        url = "http://hdr:8000/mcp"
+        a = _profile("a", {"h": Backend(url=url, headers={"Authorization": "Bearer a"})})
+        b = _profile("b", {"h": Backend(url=url, headers={"Authorization": "Bearer b"})})
+        seen: list[str] = []
+
+        async def revalidate(_name: str, _backend: Backend, profile: Any = None) -> bool:
+            seen.append(profile.name)
+            return profile.name == "b"
+
+        with (
+            patch.object(warmup, "revalidate_backend_tools", revalidate),
+            patch.object(warmup, "invalidate_profile_cache_for_backend") as invalidate,
+        ):
+            await warmup._revalidate_tool_lists([a, b])
+
+        # Each profile's partition is refetched, not only the first profile's.
+        assert sorted(seen) == ["a", "b"]
+        invalidate.assert_called_once_with(url)
