@@ -12,7 +12,7 @@ import logging
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -873,19 +873,24 @@ def record_gateway_call(
     # The row is committed; emit its safe metadata to any telemetry sink. emit
     # swallows a sink's failure, so this never fails the call (#556).
     if telemetry.has_sinks():
-        with suppress(sqlite3.Error):
-            detections = _call_detections(db, call_ref)
-            telemetry.emit(telemetry.from_row(row, detections, telemetry.current_trace.get()))
+        detections = _call_detections(db, call_ref)
+        telemetry.emit(telemetry.from_row(row, detections, telemetry.current_trace.get()))
 
 
 def _call_detections(db: sqlite3.Connection, call_ref: str | None) -> telemetry.Detections:
-    """The detection summary of one call, for its telemetry record."""
+    """The detection summary of one call, for its telemetry record. A read
+    that fails gives an empty summary: the record still goes out without it."""
     if not call_ref:
         return telemetry.Detections()
-    rows = db.execute(
-        "SELECT flagged_by, risk_level, l3_verdict FROM detections WHERE call_ref = ? ORDER BY id",
-        (call_ref,),
-    ).fetchall()
+    try:
+        rows = db.execute(
+            "SELECT flagged_by, risk_level, l3_verdict FROM detections WHERE call_ref = ? "
+            "ORDER BY id",
+            (call_ref,),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        logger.warning("telemetry: detection summary unavailable: %s", exc_kind(exc))
+        return telemetry.Detections()
     return telemetry.summarize_detections([tuple(r) for r in rows])
 
 

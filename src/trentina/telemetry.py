@@ -17,8 +17,8 @@ agent's W3C ``traceparent`` and ``x-session-id`` headers. Both are caller
 text, so only a strictly valid ``traceparent`` is kept and the session id is
 kept as a fingerprint, never raw.
 
-This module is intentionally zero-dependency (stdlib only, like ``logsafe``),
-so ``database`` can import it without a cycle.
+This module imports nothing from Trentina (stdlib and httpx only, like
+``logsafe``), so ``database`` can import it without a cycle.
 """
 
 from __future__ import annotations
@@ -33,10 +33,11 @@ import re
 import sys
 import threading
 import time
-import urllib.request
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
+
+import httpx
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -204,12 +205,18 @@ def reset_sinks() -> None:
     _SINKS.clear()
 
 
-def counters() -> dict[str, int] | None:
-    """The OTLP exporter's ``sent``/``dropped``/``failed`` counts for the
-    health probe, or None when no exporter is installed."""
+def counters() -> dict[str, int | str | None] | None:
+    """The OTLP exporter's ``sent``/``dropped``/``failed`` counts and
+    ``last_failure`` kind for the health probe, or None when no exporter is
+    installed."""
     for sink in _SINKS:
         if isinstance(sink, OtlpHttpExporter):
-            return {"sent": sink.sent, "dropped": sink.dropped, "failed": sink.failed}
+            return {
+                "sent": sink.sent,
+                "dropped": sink.dropped,
+                "failed": sink.failed,
+                "last_failure": sink.last_failure,
+            }
     return None
 
 
@@ -286,6 +293,8 @@ OTLP_TIMEOUT_SECONDS = 5.0
 """How long one OTLP request may take. The drain thread waits it out; a call
 never does."""
 
+NS_PER_MS = 1_000_000
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _SPAN_KIND_SERVER = 2
 _STATUS_OK, _STATUS_ERROR = 1, 2
 _OK_OUTCOME = "ok"
@@ -328,7 +337,7 @@ def _span(record: CallRecord) -> dict[str, object]:
         "spanId": record.span_id,
         "name": f"{record.backend} {record.tool}",
         "kind": _SPAN_KIND_SERVER,
-        "startTimeUnixNano": str(end_ns - record.duration_ms * 1_000_000),
+        "startTimeUnixNano": str(end_ns - record.duration_ms * NS_PER_MS),
         "endTimeUnixNano": str(end_ns),
         "attributes": [
             {"key": key, "value": _any_value(value)}
@@ -375,15 +384,34 @@ def parse_headers(raw: str | None) -> dict[str, str]:
     return headers
 
 
+def plaintext_credentials(endpoint: str, headers: dict[str, str] | None) -> bool:
+    """Whether exporting to ``endpoint`` would send ``headers`` (a collector's
+    credentials) unencrypted to another host: http, not loopback, any header."""
+    parts = urlsplit(endpoint)
+    return bool(headers) and parts.scheme == "http" and parts.hostname not in _LOOPBACK_HOSTS
+
+
+def _failure_kind(exc: Exception) -> str:
+    """A closed-set name for why an export failed, safe for the health probe."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"http_{exc.response.status_code}"
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.TransportError):
+        return "unreachable"
+    return "error"
+
+
 class OtlpHttpExporter:
     """Every call as an OTLP span, POSTed as OTLP/JSON to ``<endpoint>/v1/traces``.
 
     Calling the exporter is a sink and never blocks: a full queue drops the
     record and counts it on ``dropped``. A daemon thread batches up to
     ``OTLP_BATCH_MAX`` spans, or whatever ``OTLP_FLUSH_SECONDS`` gathered, and
-    sends them with stdlib urllib, no proxy, one attempt. A batch the collector
-    refused or never answered is counted on ``failed``, not retried: a dead
-    collector costs records, never latency.
+    sends them with httpx, no proxy, one attempt. A batch the collector refused
+    or never answered is counted on ``failed`` and its cause kept on
+    ``last_failure``, not retried: a dead collector costs records, never
+    latency.
     """
 
     def __init__(
@@ -394,16 +422,39 @@ class OtlpHttpExporter:
         version: str = "",
         maxsize: int = TELEMETRY_QUEUE_MAX,
         flush_seconds: float = OTLP_FLUSH_SECONDS,
+        insecure: bool = False,
     ) -> None:
+        """Start the exporter and its drain thread.
+
+        Args:
+            endpoint: The collector's base URL, http(s); spans go to
+                ``<endpoint>/v1/traces``.
+            headers: Sent with every export, e.g. the collector's
+                ``Authorization``.
+            version: Trentina's version, the spans' ``service.version``.
+            maxsize: Records queued before new ones are dropped.
+            flush_seconds: How long a span waits for its batch to fill.
+            insecure: Allow ``headers`` over plain http to a host other than
+                loopback (a private container network, say).
+
+        Raises:
+            ValueError: ``endpoint`` is not http(s), or it would carry
+                ``headers`` unencrypted off the host without ``insecure``.
+        """
         if not endpoint.startswith(("http://", "https://")):
             raise ValueError("an OTLP endpoint is an http(s) URL")
+        if plaintext_credentials(endpoint, headers) and not insecure:
+            raise ValueError("OTLP headers would cross the network in plain http")
         self._url = endpoint.rstrip("/") + "/v1/traces"
-        self._headers = {"Content-Type": "application/json", **(headers or {})}
         self._version = version
         self._flush = flush_seconds
-        self._queue: queue.Queue[object] = queue.Queue(maxsize=maxsize)
-        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self._queue: queue.Queue[CallRecord | object] = queue.Queue(maxsize=maxsize)
+        # No proxy from the environment: the collector is the operator's choice.
+        self._client = httpx.Client(
+            headers=headers or {}, timeout=OTLP_TIMEOUT_SECONDS, trust_env=False
+        )
         self.sent = self.dropped = self.failed = 0
+        self.last_failure: str | None = None
         self._thread = threading.Thread(target=self._drain, name="trentina-otlp", daemon=True)
         self._thread.start()
 
@@ -417,6 +468,7 @@ class OtlpHttpExporter:
         """Send what is queued, then end the drain thread."""
         self._queue.put(_STOP)
         self._thread.join(timeout=OTLP_TIMEOUT_SECONDS + 2)
+        self._client.close()
 
     def _drain(self) -> None:
         stopping = False
@@ -429,23 +481,22 @@ class OtlpHttpExporter:
                 except queue.Empty:
                     break
                 self._queue.task_done()
-                if item is _STOP:
+                if isinstance(item, CallRecord):
+                    batch.append(item)
+                elif item is _STOP:
                     stopping = True
                     break
-                batch.append(item)  # type: ignore[arg-type]
             if batch:
                 self._send(batch)
 
     def _send(self, batch: list[CallRecord]) -> None:
-        body = json.dumps(otlp_payload(batch, self._version), separators=(",", ":")).encode()
-        # The scheme is checked in __init__, so no file: or custom-scheme open.
-        request = urllib.request.Request(self._url, data=body, headers=self._headers)  # noqa: S310
         try:
-            with self._opener.open(request, timeout=OTLP_TIMEOUT_SECONDS) as response:
-                response.read()
+            response = self._client.post(self._url, json=otlp_payload(batch, self._version))
+            response.raise_for_status()
             self.sent += len(batch)
-        except Exception:  # any failure is a lost batch, counted, never raised
+        except Exception as exc:  # a lost batch is counted and named, never raised
             self.failed += len(batch)
+            self.last_failure = _failure_kind(exc)
 
 
 def install(
@@ -453,6 +504,7 @@ def install(
     otlp_endpoint: str | None = None,
     otlp_headers: dict[str, str] | None = None,
     version: str = "",
+    otlp_insecure: bool = False,
 ) -> None:
     """Register the sinks the configuration asks for: ``json`` adds the
     non-blocking one-line-per-call stderr stream, an OTLP endpoint adds the
@@ -461,4 +513,6 @@ def install(
     if log_format == "json":
         register_sink(JsonLineWriter())
     if otlp_endpoint:
-        register_sink(OtlpHttpExporter(otlp_endpoint, otlp_headers, version=version))
+        register_sink(
+            OtlpHttpExporter(otlp_endpoint, otlp_headers, version=version, insecure=otlp_insecure)
+        )

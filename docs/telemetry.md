@@ -37,14 +37,14 @@ TRENTINA_OTLP_ENDPOINT=http://otlp:4318
 TRENTINA_OTLP_HEADERS=Authorization=Basic%20dHJlbnRpbmE6c2VjcmV0
 ```
 
-Spans are sent as OTLP/HTTP with JSON encoding to `<endpoint>/v1/traces`: any OpenTelemetry Collector, Grafana Alloy, Datadog Agent, or a Telegraf `http_listener_v2`. The exporter is stdlib-only and goes through no proxy.
+Spans are sent as OTLP/HTTP with JSON encoding to `<endpoint>/v1/traces`: any OpenTelemetry Collector, Grafana Alloy, Datadog Agent, or a Telegraf `http_listener_v2`. The exporter adds no dependency and goes through no proxy.
 
 - **It never slows a call.** A call only enqueues its record. A full queue (10,000 records) drops the record and counts it.
 - **It batches.** A background thread sends up to 512 spans at a time, or whatever arrived in the last 5 seconds.
 - **It never retries.** Each batch gets one attempt with a 5-second timeout. A batch the collector refused or never answered is counted as failed and dropped. A dead collector costs records, not latency.
-- **Its counts are on `/health`.** `telemetry: {sent, dropped, failed}` appears there whenever the exporter is on.
+- **Its counts are on `/health`.** `telemetry: {sent, dropped, failed, last_failure}` appears there whenever the exporter is on. `last_failure` is the cause of the most recent lost batch: `http_<status>`, `timeout`, `unreachable` or `error`.
 
-`TRENTINA_OTLP_HEADERS` takes the `OTEL_EXPORTER_OTLP_HEADERS` form: comma-separated `key=value` pairs, with values percent-decoded. Every value is held by the log guard, so no log line carries it.
+`TRENTINA_OTLP_HEADERS` takes the `OTEL_EXPORTER_OTLP_HEADERS` form: comma-separated `key=value` pairs, with values percent-decoded. Every value is held by the log guard, so no log line carries it. Credentials do not cross the network in plain http. With headers set and an `http://` endpoint that is not loopback, Trentina warns and exports nothing, unless `TRENTINA_OTLP_INSECURE=true` says the network in between is private (a container bridge, say). Use https anywhere else.
 
 ## JSON Lines
 

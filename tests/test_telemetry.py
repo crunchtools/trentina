@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import http.server
 import io
 import json
 import re
+import socket
 import sqlite3
 import threading
 import time
@@ -300,8 +302,6 @@ class _Collector:
     """A stdlib OTLP/HTTP collector on a free local port that keeps what it gets."""
 
     def __init__(self, status: int = 200) -> None:
-        import http.server
-
         received: list[tuple[str, dict[str, str], dict[str, Any]]] = []
         self.received = received
 
@@ -345,7 +345,7 @@ def test_otlp_exporter_delivers_every_field_to_a_collector() -> None:
     )
     exporter = telemetry.OtlpHttpExporter(
         collector.url + "/", {"Authorization": "Basic dTpw"}, version="9.9.9", flush_seconds=0.05
-    )
+    )  # loopback: credentials over http stay on the host
     try:
         exporter(record)
         exporter.stop()
@@ -412,13 +412,12 @@ def test_otlp_exporter_counts_a_refused_batch() -> None:
     finally:
         collector.close()
     assert (exporter.sent, exporter.failed) == (0, 1)
+    assert exporter.last_failure == "http_401"
 
 
 def test_a_dead_collector_costs_records_not_latency() -> None:
     """Nothing listens on the port: the call path never waits on it, and what
     could not be sent or queued is counted."""
-    import socket
-
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         dead = f"http://127.0.0.1:{probe.getsockname()[1]}"
@@ -433,6 +432,7 @@ def test_a_dead_collector_costs_records_not_latency() -> None:
     assert exporter.dropped > 0
     assert exporter.sent == 0
     assert exporter.dropped + exporter.failed == 1000
+    assert exporter.last_failure == "unreachable"
 
 
 def test_otlp_exporter_refuses_a_non_http_endpoint() -> None:
@@ -447,7 +447,7 @@ def test_install_registers_the_exporter_only_with_an_endpoint() -> None:
     telemetry.install("json", "http://127.0.0.1:9", {"a": "b"}, version="1")
     kinds = {type(sink) for sink in telemetry._SINKS}
     assert kinds == {telemetry.JsonLineWriter, telemetry.OtlpHttpExporter}
-    assert telemetry.counters() == {"sent": 0, "dropped": 0, "failed": 0}
+    assert telemetry.counters() == {"sent": 0, "dropped": 0, "failed": 0, "last_failure": None}
 
 
 @pytest.mark.parametrize(
@@ -490,22 +490,59 @@ def test_config_otlp_endpoint(
         config_mod._config = None
 
 
-def test_config_otlp_headers_are_held_from_the_log(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    import logging
-
+def test_config_otlp_headers_are_held_from_the_log(monkeypatch: pytest.MonkeyPatch) -> None:
     from trentina import config as config_mod
     from trentina import logsafe
 
-    secret = "Basic czNjcjN0LW90bHAtdG9rZW4="
+    held = "Basic czNjcjN0LW90bHAtdG9rZW4="
     config_mod._config = None
-    monkeypatch.setenv("TRENTINA_OTLP_HEADERS", f"Authorization={secret}")
-    logsafe.guard()
+    monkeypatch.setenv("TRENTINA_OTLP_HEADERS", f"Authorization={held}")
     try:
-        assert config_mod.get_config().otlp_headers == {"Authorization": secret}
-        with caplog.at_level(logging.WARNING):
-            logging.getLogger("trentina.test").warning("leak %s", secret)
-        assert secret not in caplog.text
+        assert config_mod.get_config().otlp_headers == {"Authorization": held}
+        assert held not in logsafe.scrub(f"collector said {held}")
+    finally:
+        config_mod._config = None
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "headers", "plaintext"),
+    [
+        ("http://otlp:4318", {"Authorization": "x"}, True),
+        ("http://otlp:4318", {}, False),
+        ("https://otlp:4318", {"Authorization": "x"}, False),
+        ("http://127.0.0.1:4318", {"Authorization": "x"}, False),
+        ("http://localhost:4318", {"Authorization": "x"}, False),
+        ("http://[::1]:4318", {"Authorization": "x"}, False),
+    ],
+)
+def test_plaintext_credentials(endpoint: str, headers: dict[str, str], plaintext: bool) -> None:
+    assert telemetry.plaintext_credentials(endpoint, headers) is plaintext
+
+
+def test_otlp_exporter_refuses_plaintext_credentials_unless_insecure() -> None:
+    with pytest.raises(ValueError, match="plain http"):
+        telemetry.OtlpHttpExporter("http://otlp:4318", {"Authorization": "x"})
+    exporter = telemetry.OtlpHttpExporter("http://otlp:4318", {"Authorization": "x"}, insecure=True)
+    exporter.stop()
+
+
+@pytest.mark.parametrize(
+    ("insecure", "expected"),
+    [(None, None), ("false", None), ("true", "http://otlp:4318"), ("1", "http://otlp:4318")],
+)
+def test_config_withholds_plaintext_credentials(
+    monkeypatch: pytest.MonkeyPatch, insecure: str | None, expected: str | None
+) -> None:
+    from trentina import config as config_mod
+
+    config_mod._config = None
+    monkeypatch.setenv("TRENTINA_OTLP_ENDPOINT", "http://otlp:4318")
+    monkeypatch.setenv("TRENTINA_OTLP_HEADERS", "Authorization=Basic%20abc")
+    if insecure is None:
+        monkeypatch.delenv("TRENTINA_OTLP_INSECURE", raising=False)
+    else:
+        monkeypatch.setenv("TRENTINA_OTLP_INSECURE", insecure)
+    try:
+        assert config_mod.get_config().otlp_endpoint == expected
     finally:
         config_mod._config = None

@@ -44,7 +44,11 @@ def main() -> None:
 
     config = get_config()
     telemetry.install(
-        config.log_format, config.otlp_endpoint, config.otlp_headers, version=__version__
+        config.log_format,
+        config.otlp_endpoint,
+        config.otlp_headers,
+        version=__version__,
+        otlp_insecure=config.otlp_insecure,
     )
     parser = argparse.ArgumentParser(
         prog="trentina",

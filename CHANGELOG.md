@@ -17,7 +17,9 @@ under that name.
   OpenTelemetry span: OTLP/HTTP with JSON encoding, so it works with any
   collector, Grafana Alloy, Datadog, or a Telegraf HTTP listener. No new
   dependency. A dead collector costs records, never latency on a call, and
-  `/health` counts what was sent, dropped and failed.
+  `/health` counts what was sent, dropped and failed, and why the last batch
+  was lost. Credentials never cross the network in plain http unless
+  `TRENTINA_OTLP_INSECURE=true` says the network in between is private.
   `TRENTINA_OTLP_HEADERS` carries the collector's credentials, which are
   never logged.
 - **One agent run is one trace.** An agent's W3C `traceparent` and
