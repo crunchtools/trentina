@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.13.0] - 2026-11-08
+
 ### Added
 
 - **A redeployed backend's new tools reach open sessions on their own**
