@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.14.0] - 2026-11-08
+
 ### Added
 
 - **Every call can go to the monitoring you already run, as a trace (#556).**
