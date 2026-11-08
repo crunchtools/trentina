@@ -858,6 +858,13 @@ DEFAULT_POLL_SECONDS = 300
 MIN_POLL_SECONDS = 30
 
 
+def _poll_floor(v: int) -> int:
+    """0 disables; otherwise at least 30s — a typo like 3 would hammer the peer."""
+    if v != 0 and v < MIN_POLL_SECONDS:
+        raise ValueError(f"poll_seconds must be 0 (off) or at least {MIN_POLL_SECONDS}, not {v}")
+    return v
+
+
 class FederatedConfig(BaseModel):
     """Marks a backend as a federated secondary Trentina — a peer gateway whose
     own perimeter already judged its responses, not a leaf MCP server (#592).
@@ -950,12 +957,7 @@ class FederatedConfig(BaseModel):
     @field_validator("poll_seconds")
     @classmethod
     def poll_seconds_off_or_at_least_30(cls, v: int) -> int:
-        """0 disables; otherwise at least 30s — a typo like 3 would hammer the peer."""
-        if v != 0 and v < MIN_POLL_SECONDS:
-            raise ValueError(
-                f"poll_seconds must be 0 (off) or at least {MIN_POLL_SECONDS}, not {v}"
-            )
-        return v
+        return _poll_floor(v)
 
 
 class FederationPeer(BaseModel):
@@ -1235,6 +1237,17 @@ class Backend(BaseModel):
         le=MAX_BACKEND_TIMEOUT_SECONDS,
         description="Per-call backend timeout",
     )
+    poll_seconds: int = Field(
+        default=DEFAULT_POLL_SECONDS,
+        description=(
+            "How often (seconds) the gateway re-lists this backend's tools in the "
+            "background, so a tool a redeploy added appears in open sessions "
+            "(pushed as tools/list_changed) without a manual reconnect_backend "
+            "(#752). 0 disables it; the floor is 30. Not for an `auth` backend, "
+            "which is not background-revalidated, nor a federated one, which "
+            "polls on federated.poll_seconds."
+        ),
+    )
     list_timeout_seconds: float = Field(
         default=30.0,
         gt=0,
@@ -1457,6 +1470,16 @@ class Backend(BaseModel):
                 "a federated backend with an primary key must point at a gateway MCP "
                 "endpoint (.../<profile>/mcp), from which the token audience is taken"
             )
+        if (
+            "poll_seconds" in self.model_fields_set
+            and self.poll_seconds > 0
+            and (self.auth is not None or self.federated is not None)
+        ):
+            raise ValueError(
+                "poll_seconds does not apply to an auth backend (never "
+                "background-revalidated) or a federated one (set "
+                "federated.poll_seconds instead)"
+            )
         if self.federated is not None and self.federated.poll_seconds > 0 and self.auth is not None:
             raise ValueError(
                 "a federated backend with poll_seconds cannot also use auth: "
@@ -1464,6 +1487,11 @@ class Backend(BaseModel):
                 "never run — use the federated primary key, not an auth grant"
             )
         return self
+
+    @field_validator("poll_seconds")
+    @classmethod
+    def poll_seconds_off_or_at_least_30(cls, v: int) -> int:
+        return _poll_floor(v)
 
     @field_validator("url")
     @classmethod

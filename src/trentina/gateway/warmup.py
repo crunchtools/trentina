@@ -34,8 +34,9 @@ from .aggregate import (
     invalidate_profile_cache_for_backend,
     rebuild_profiles,
 )
-from .backend import revalidate_backend_tools
+from .backend import cache_owner, revalidate_backend_tools
 from .loader import get_active_config
+from .sessions import session_registry
 from .tool_pins import backend_id
 from .verdict_cache import perimeter_counts
 
@@ -52,10 +53,10 @@ WARMUP_THROTTLE_BUDGET = 300.0
 
 _task: asyncio.Task[None] | None = None
 
-# The primary's federation poll (#592, F3): one shared task, started beside
-# _task, that re-probes federated backends on their own cadence so an approved
-# or changed secondary tool appears without a manual reconnect. It idle-ticks
-# when nothing sets poll_seconds.
+# The tool-list poll: one shared task, started beside _task, that re-lists
+# every remote backend on its own cadence so a tool a redeploy added, or an
+# approved or changed secondary tool (#592, F3), appears in open sessions
+# without a manual reconnect (#752). It idle-ticks when nothing is polled.
 IDLE_TICK = 60.0
 _poll_task: asyncio.Task[None] | None = None
 _next_due: dict[str, float] = {}
@@ -132,8 +133,8 @@ async def warm_all() -> None:
 
 
 async def _revalidate(backends: dict[str, tuple[str, Backend, Profile]]) -> list[str]:
-    """Refetch each backend's tool list, once per URL, all at once; return the
-    URLs whose list changed. A backend that cannot be reached keeps its cached
+    """Refetch each backend's tool list, once per key, all at once; return the
+    keys whose list changed. A backend that cannot be reached keeps its cached
     list (``revalidate_backend_tools`` returns False there). The owning profile
     is passed so a federated backend can mint its primary JWT — without it the
     probe goes out unauthenticated and the secondary rejects it."""
@@ -168,51 +169,99 @@ async def _revalidate_tool_lists(profiles: list[Profile]) -> None:
     )
 
 
+def _poll_interval(backend: Backend) -> int:
+    """Seconds between background re-lists of ``backend``; 0 when it is not polled.
+
+    An ``auth`` backend is never polled: there is no grant to fetch it with
+    outside a call, and ``revalidate_backend_tools`` would skip it anyway.
+    """
+    if not backend.is_remote or backend.auth is not None:
+        return 0
+    if backend.federated is not None:
+        return backend.federated.poll_seconds
+    return backend.poll_seconds
+
+
+def _poll_key(backend: Backend, profile: Profile) -> str:
+    """One poll slot per cache partition, as ``backend._inflight_key`` keys a fetch.
+
+    Keyed by URL alone, a backend carrying header credentials was re-listed as
+    whichever profile came first, and every other profile's partition kept the
+    list from before the redeploy.
+    """
+    owner = cache_owner(backend, profile)
+    return f"{backend.url}#{owner}" if owner else backend.url
+
+
 async def _poll_once(now: float) -> float:
-    """One federation-poll tick. Re-probe the federated backends whose interval
-    has elapsed, rebuild the profiles that share a changed one, and return the
-    seconds to sleep before the next tick.
+    """One tool-list poll tick. Re-list the backends whose interval has
+    elapsed, rebuild the profiles that read a changed list, tell their open
+    sessions with ``tools/list_changed``, and return the seconds to sleep
+    before the next tick.
 
     ``get_active_config`` is read every call: a reload swaps the Profile
     objects, so a captured list would go stale. ``_next_due`` is seeded at
-    ``now + poll_seconds`` for a URL first seen here — the warm-up just
-    revalidated it — and pruned when a URL stops being polled.
+    ``now + interval`` for a slot first seen here — the warm-up just
+    revalidated it — and pruned when a slot stops being polled.
     """
     active = get_active_config()
     if active is None:
         return IDLE_TICK
-    profiles = list(active.config.profiles.values())
-    polled: dict[str, tuple[str, Backend, Profile]] = {}
-    interval: dict[str, int] = {}
-    for profile in profiles:
-        for name, backend in profile.backends.items():
-            fed = backend.federated
-            if backend.is_remote and fed is not None and fed.poll_seconds > 0:
-                polled.setdefault(backend.url, (name, backend, profile))
-                interval[backend.url] = fed.poll_seconds
-    for url in [u for u in _next_due if u not in polled]:
-        del _next_due[url]
-    for url, secs in interval.items():
-        _next_due.setdefault(url, now + secs)
-    due = {url: nb for url, nb in polled.items() if _next_due[url] <= now}
+    polled, interval, readers = _poll_slots(list(active.config.profiles.values()))
+    for key in [k for k in _next_due if k not in polled]:
+        del _next_due[key]
+    for key, secs in interval.items():
+        _next_due.setdefault(key, now + secs)
+    due = {key: nb for key, nb in polled.items() if _next_due[key] <= now}
     if due:
         stale = await _revalidate(due)
-        for url in due:
-            _next_due[url] = now + interval[url]
+        for key in due:
+            _next_due[key] = now + interval[key]
         if stale:
-            stale_urls = set(stale)
-            sharing = [p for p in profiles if any(b.url in stale_urls for b in p.backends.values())]
-            rebuilt = await rebuild_profiles(sharing)
-            logger.warning(
-                "federation poll: %d backend(s) changed, rebuilt %d profile(s)",
-                len(stale),
-                rebuilt,
-            )
+            await _rebuild_and_notify(stale, readers)
     return max(1.0, min(_next_due.values()) - now) if _next_due else IDLE_TICK
 
 
+def _poll_slots(
+    profiles: list[Profile],
+) -> tuple[dict[str, tuple[str, Backend, Profile]], dict[str, int], dict[str, list[Profile]]]:
+    """Each poll slot's backend to re-list (with the profile to fetch it as),
+    its interval — the shortest any reader asked for — and every profile that
+    reads it."""
+    polled: dict[str, tuple[str, Backend, Profile]] = {}
+    interval: dict[str, int] = {}
+    readers: dict[str, list[Profile]] = {}
+    for profile in profiles:
+        for name, backend in profile.backends.items():
+            secs = _poll_interval(backend)
+            if secs <= 0:
+                continue
+            key = _poll_key(backend, profile)
+            polled.setdefault(key, (name, backend, profile))
+            interval[key] = min(secs, interval.get(key, secs))
+            readers.setdefault(key, []).append(profile)
+    return polled, interval, readers
+
+
+async def _rebuild_and_notify(stale: list[str], readers: dict[str, list[Profile]]) -> None:
+    """Rebuild the profiles that read a changed list, then push their open
+    sessions ``tools/list_changed``: a client caches its list until told, so a
+    rebuilt aggregate alone reached only the next client to connect (#752)."""
+    sharing = list({p.name: p for key in stale for p in readers[key]}.values())
+    rebuilt = await rebuild_profiles(sharing)
+    notified = 0
+    for profile in sharing:
+        notified += await session_registry.broadcast_tools_changed(profile.name)
+    logger.warning(
+        "tool-list poll: %d backend(s) changed, rebuilt %d profile(s), notified %d session(s)",
+        len(stale),
+        rebuilt,
+        notified,
+    )
+
+
 async def _poll_tool_lists() -> None:
-    """The federation poll loop (#592, F3). One shared task; background L3
+    """The tool-list poll loop (#592 F3, #752). One shared task; background L3
     priority like the warm-up, so a rebuild it triggers never competes with a
     user call. A single bad tick is logged by kind and the loop carries on.
     """
@@ -224,7 +273,7 @@ async def _poll_tool_lists() -> None:
                 sleep_for = await _poll_once(time.monotonic())
             except Exception as exc:
                 logger.warning(
-                    "federation poll: tick failed: %s at %s", exc_kind(exc), exc_where(exc)
+                    "tool-list poll: tick failed: %s at %s", exc_kind(exc), exc_where(exc)
                 )
                 sleep_for = IDLE_TICK
             await asyncio.sleep(sleep_for)
@@ -290,7 +339,7 @@ async def trentina_lifespan() -> AsyncIterator[dict[str, Any]]:
     if get_active_config() is not None and _task is None:
         _pins_task = asyncio.create_task(_refresh_pins_forever(), name="trentina-pins")
         _task = asyncio.create_task(warm_all(), name="trentina-warmup")
-        _poll_task = asyncio.create_task(_poll_tool_lists(), name="trentina-fed-poll")
+        _poll_task = asyncio.create_task(_poll_tool_lists(), name="trentina-tool-poll")
         started_here = True
     # Warm the pinned-connection TLS context on a worker thread, so the system
     # CA bundle is loaded here at startup and never on the event loop during the

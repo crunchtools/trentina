@@ -10,6 +10,20 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- **A redeployed backend's new tools reach open sessions on their own**
+  (#752). The federation poll is now the tool-list poll: every remote backend
+  without `auth` is re-listed in the background every `poll_seconds` (a new
+  backend field, default 300, 0 off, floor 30; a federated backend keeps
+  `federated.poll_seconds`). When a list changed, the profiles that read it
+  are rebuilt and their open sessions are sent `tools/list_changed`, which the
+  federation poll never did, so a client re-listed only when something else
+  told it to. A backend carrying header credentials is re-listed once per
+  profile partition rather than as whichever profile came first. New tools
+  still pass through the perimeter and tool pinning on the rebuild, exactly as
+  after a `reconnect_backend`, which a deploy no longer needs to run.
+
 ## [6.12.0] - 2026-11-08
 
 ### Added
