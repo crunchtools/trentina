@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.13.1] - 2026-11-08
+
 ### Fixed
 
 - **The startup tool-list refetch reaches every profile's partition.** A
