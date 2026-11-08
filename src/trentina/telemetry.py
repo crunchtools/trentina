@@ -450,6 +450,7 @@ class OtlpHttpExporter:
         self._flush = flush_seconds
         self._queue: queue.Queue[CallRecord | object] = queue.Queue(maxsize=maxsize)
         # No proxy from the environment: the collector is the operator's choice.
+        # nosemgrep: trentina-httpx-client-outside-egress -- operator env URL
         self._client = httpx.Client(
             headers=headers or {}, timeout=OTLP_TIMEOUT_SECONDS, trust_env=False
         )

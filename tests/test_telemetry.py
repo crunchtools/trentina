@@ -14,8 +14,9 @@ import time
 from collections.abc import Iterator
 from dataclasses import asdict
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from trentina import database, telemetry
@@ -546,3 +547,30 @@ def test_config_withholds_plaintext_credentials(
         assert config_mod.get_config().otlp_endpoint == expected
     finally:
         config_mod._config = None
+
+
+@pytest.mark.parametrize(
+    ("exc", "kind"),
+    [
+        (
+            httpx.HTTPStatusError("x", request=MagicMock(), response=MagicMock(status_code=503)),
+            "http_503",
+        ),
+        (httpx.ReadTimeout("x"), "timeout"),
+        (httpx.ConnectError("x"), "unreachable"),
+        (RuntimeError("x"), "error"),
+    ],
+)
+def test_failure_kind_is_a_closed_set(exc: Exception, kind: str) -> None:
+    assert telemetry._failure_kind(exc) == kind
+
+
+def test_a_failed_detection_read_gives_an_empty_summary(caplog: pytest.LogCaptureFixture) -> None:
+    """A database whose detections cannot be read (here: no such table) gives
+    an empty summary and a warning, so the record still goes out without it."""
+    empty = sqlite3.connect(":memory:")
+    try:
+        assert database._call_detections(empty, "ref1") == telemetry.Detections()
+    finally:
+        empty.close()
+    assert "detection summary unavailable" in caplog.text
