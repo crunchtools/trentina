@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.15.0] - 2026-11-09
+
 ### Added
 
 - **A ready-made Grafana dashboard for Trentina's traces** (`contrib/grafana/`,
