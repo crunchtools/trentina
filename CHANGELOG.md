@@ -10,6 +10,22 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every secret the gateway reads now has a file form (#767).**
+  `TRENTINA_OTLP_HEADERS` was the one that did not: it now takes
+  `TRENTINA_OTLP_HEADERS_FILE`, which wins, and an unreadable file fails
+  startup. The approval password hash
+  (`TRENTINA_APPROVAL_PASSWORD_HASH[_FILE]`) is read at startup instead of at
+  the first approval, so a broken file fails there and an inline value is
+  named in the posture warning like every other secret.
+
+### Added
+
+- **`/health` counts secrets still supplied inline** (`inline_secrets`), as
+  `FOO` rather than `FOO_FILE`. A count, never names: the probe is
+  unauthenticated. Zero means every secret the gateway read came from a file.
+
 ## [6.15.0] - 2026-11-09
 
 ### Added
