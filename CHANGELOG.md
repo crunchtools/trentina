@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.16.0] - 2026-11-09
+
 ### Fixed
 
 - **Every secret the gateway reads now has a file form (#767).**
