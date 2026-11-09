@@ -1,0 +1,619 @@
+{
+  "uid": "tig-trentina",
+  "title": "Trentina",
+  "tags": [
+    "tig",
+    "trentina"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "1m",
+  "editable": false,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "description": "Trentina gateway traffic from its OTLP export (docs/grafana-dashboard.md). Source: crunchtools/trentina contrib/grafana.",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Gateway calls",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${datasource}"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"trentina_calls\" and r._field == \"duration_ms\")\n  |> group()\n  |> count()\n"
+        }
+      ],
+      "description": "Every call Trentina handled in the time range: MCP tool calls, model calls through the LLM proxy, fetches and egress tunnels. One call is one span from Trentina's OTLP export."
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Refused or failed",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${datasource}"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"trentina_calls\" and r._field == \"duration_ms\")\n  |> filter(fn: (r) => r.outcome != \"ok\")\n  |> group()\n  |> count()\n"
+        }
+      ],
+      "description": "Calls whose outcome was anything but ok: defense blocks, allowlist and guard denials, decoy trips, tool and backend errors. Not a failure count: most of these are policy doing its job. See 'Calls by outcome' for the split."
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Flagged by the defense",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${datasource}"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"trentina_calls\" and r._field == \"duration_ms\")\n  |> filter(fn: (r) => exists r.layer)\n  |> group()\n  |> count()\n"
+        }
+      ],
+      "description": "Calls where L1 (patterns), L2 (local classifier) or L3 (LLM judge) raised a detection, blocked or not. In flag mode a flagged call is still delivered, with a warning attached, so this is usually larger than blocked_defense."
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "p95 duration",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${datasource}"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"trentina_calls\" and r._field == \"duration_ms\")\n  |> group()\n  |> quantile(q: 0.95)\n"
+        }
+      ],
+      "description": "95% of calls finished faster than this, end to end through the gateway, including the backend's own time and the defense scan."
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Calls by outcome",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${datasource}"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"trentina_calls\" and r._field == \"duration_ms\")\n  |> group(columns: [\"outcome\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: count, createEmpty: false)\n  |> keep(columns: [\"_time\", \"_value\", \"outcome\"])\n"
+        }
+      ],
+      "description": "Calls per interval, one line per outcome. ok: answered normally. tool_error: the backend reported an error. blocked_defense: the defense refused the content. denied_*: a policy you configured refused it. decoy_tripped: an agent touched a decoy (worth a look). backend_error: upstream failed. gateway_error: a Trentina bug, the only one that should page."
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Calls by profile",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${datasource}"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"trentina_calls\" and r._field == \"duration_ms\")\n  |> group(columns: [\"profile\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: count, createEmpty: false)\n  |> keep(columns: [\"_time\", \"_value\", \"profile\"])\n"
+        }
+      ],
+      "description": "Calls per interval for each agent seat (profile). A seat that suddenly multiplies its rate is the first thing to look at in a runaway agent."
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Detections by layer",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${datasource}"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"trentina_calls\" and r._field == \"duration_ms\")\n  |> filter(fn: (r) => exists r.layer)\n  |> group(columns: [\"layer\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: count, createEmpty: false)\n  |> keep(columns: [\"_time\", \"_value\", \"layer\"])\n"
+        }
+      ],
+      "description": "Calls credited to each defense layer: L1 pattern rules, L2 the local classifier model, L3 the LLM judge. A burst of L2 with no matching L3 flags usually means L2 false positives, not an attack."
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Top flagged tools",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${datasource}"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"trentina_calls\" and r._field == \"duration_ms\")\n  |> filter(fn: (r) => exists r.layer)\n  |> group(columns: [\"backend\", \"tool\", \"layer\"])\n  |> count()\n  |> group()\n  |> sort(columns: [\"_value\"], desc: true)\n  |> limit(n: 20)\n  |> rename(columns: {_value: \"calls\"})\n  |> keep(columns: [\"backend\", \"tool\", \"layer\", \"calls\"])\n"
+        }
+      ],
+      "description": "Which backend and tool drew the most detections, and from which layer. The same read-only tool flagged over and over by L2 alone is a false-positive candidate; a write tool flagged by L3 deserves a look at the audit log by call_ref."
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Duration p50 / p95 by kind",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${datasource}"
+          },
+          "query": "p50 = from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"trentina_calls\" and r._field == \"duration_ms\")\n  |> map(fn: (r) => ({r with destination_kind: if exists r.destination_kind then r.destination_kind else \"tool\"}))\n  |> group(columns: [\"destination_kind\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: median, createEmpty: false)\n  |> map(fn: (r) => ({r with series: r.destination_kind + \" p50\"}))\n\np95 = from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"trentina_calls\" and r._field == \"duration_ms\")\n  |> map(fn: (r) => ({r with destination_kind: if exists r.destination_kind then r.destination_kind else \"tool\"}))\n  |> group(columns: [\"destination_kind\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: (column, tables=<-) => tables |> quantile(q: 0.95, column: column), createEmpty: false)\n  |> map(fn: (r) => ({r with series: r.destination_kind + \" p95\"}))\n\nunion(tables: [p50, p95])\n  |> group(columns: [\"series\"])\n  |> keep(columns: [\"_time\", \"_value\", \"series\"])\n"
+        }
+      ],
+      "description": "Median and 95th-percentile duration, split by what the call reached: tool (MCP backend), fetch, model, tunnel and so on. p95 climbing while p50 holds is usually one slow backend."
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Egress tunnels by profile",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${datasource}"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"trentina_calls\" and r._field == \"duration_ms\")\n  |> filter(fn: (r) => r.destination_kind == \"tunnel\")\n  |> group(columns: [\"profile\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: count, createEmpty: false)\n  |> keep(columns: [\"_time\", \"_value\", \"profile\"])\n"
+        }
+      ],
+      "description": "CONNECT tunnels each agent opened through Trentina's client egress, i.e. direct network connections. Spikes are agents fetching outside their tools."
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Model calls refused or failed by profile",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${datasource}"
+          },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"trentina_calls\" and r._field == \"duration_ms\")\n  |> filter(fn: (r) => r.destination_kind == \"model\" and r.outcome != \"ok\")\n  |> group(columns: [\"outcome\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: count, createEmpty: false)\n  |> keep(columns: [\"_time\", \"_value\", \"outcome\"])\n"
+        }
+      ],
+      "description": "Calls through the LLM proxy that did not come back ok, by outcome. A provider spend cap or outage shows here as backend_error; a refused request body as denied_guard."
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "influxdb",
+        "hide": 0,
+        "current": {},
+        "refresh": 1
+      },
+      {
+        "name": "bucket",
+        "label": "Bucket",
+        "type": "textbox",
+        "query": "telegraf",
+        "hide": 0,
+        "current": {
+          "text": "telegraf",
+          "value": "telegraf"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "telegraf",
+            "value": "telegraf"
+          }
+        ]
+      }
+    ]
+  }
+}
