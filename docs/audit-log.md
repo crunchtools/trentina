@@ -349,3 +349,4 @@ That `ok` is false for good. There is no acknowledgement path, because the recor
 - [Blocklist](blocklist.md) — detection events that trigger blocklist entries
 - [Per-Agent Profiles](profiles.md) — per-profile audit scoping
 - [Telemetry Export](telemetry.md) — the same calls as OpenTelemetry traces or JSON lines
+- [Grafana Dashboard](grafana-dashboard.md) — those traces on a dashboard, and how to read it

@@ -37,7 +37,7 @@ TRENTINA_OTLP_ENDPOINT=http://otlp:4318
 TRENTINA_OTLP_HEADERS=Authorization=Basic%20dHJlbnRpbmE6c2VjcmV0
 ```
 
-Spans are sent as OTLP/HTTP with JSON encoding to `<endpoint>/v1/traces`: any OpenTelemetry Collector, Grafana Alloy, Datadog Agent, or a Telegraf `http_listener_v2`. The exporter adds no dependency and goes through no proxy.
+For a ready-made receiver and Grafana dashboard, see [Grafana Dashboard](grafana-dashboard.md). Spans are sent as OTLP/HTTP with JSON encoding to `<endpoint>/v1/traces`: any OpenTelemetry Collector, Grafana Alloy, Datadog Agent, or a Telegraf `http_listener_v2`. The exporter adds no dependency and goes through no proxy.
 
 - **It never slows a call.** A call only enqueues its record. A full queue (10,000 records) drops the record and counts it.
 - **It batches.** A background thread sends up to 512 spans at a time, or whatever arrived in the last 5 seconds.
@@ -52,6 +52,7 @@ Spans are sent as OTLP/HTTP with JSON encoding to `<endpoint>/v1/traces`: any Op
 
 ## See Also
 
+- [Grafana Dashboard](grafana-dashboard.md): a ready-made dashboard for these spans, and how to read it
 - [Audit Log](audit-log.md): the full record, caller-chosen fields included
 - [Configuration](configuration.md): every environment variable
 - [LLM Key Proxying](llm-proxying.md): the model calls traced here

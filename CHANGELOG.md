@@ -10,6 +10,16 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- **A ready-made Grafana dashboard for Trentina's traces** (`contrib/grafana/`,
+  RT #1544). `trentina-dashboard.json` shows calls, refusals, detections by
+  layer, the most-flagged tools, latency and egress, with a tooltip on every
+  panel; its data source and bucket are picked on import.
+  `telegraf-receiver.conf` is the OTLP-to-InfluxDB receiver it reads from.
+  `docs/grafana-dashboard.md` sets it up in three steps and explains every
+  panel and outcome.
+
 ## [6.14.0] - 2026-11-08
 
 ### Added
