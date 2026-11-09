@@ -245,6 +245,16 @@ class TestHealthEndpoint:
         # Read from the refresher's cache, never from SQLite (#662): None until
         # warm-up has produced a value, and no lifespan runs here.
         assert body["pending_pins"] is None
+        # A count of secrets supplied inline (#767), never their names.
+        assert isinstance(body["inline_secrets"], int)
+
+    def test_health_counts_inline_secrets_without_naming_them(self, client: TestClient) -> None:
+        from trentina import posture
+
+        with patch.object(posture, "_inline", {"OPENAI_API_KEY", "BRIDGE_TOKEN"}):
+            body = client.get("/health").json()
+        assert body["inline_secrets"] == 2
+        assert "OPENAI_API_KEY" not in str(body)
 
     def test_health_reports_the_cached_pin_count(self, client: TestClient) -> None:
         from trentina import perimeter_db

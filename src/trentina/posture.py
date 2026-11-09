@@ -44,7 +44,12 @@ FILE_FORM_SECRETS = (
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
     "OPENROUTER_API_KEY",
+    "TRENTINA_OTLP_HEADERS",
 )
+
+# Every secret a check found supplied inline, across both passes. The health
+# probe reports how many (#767); it is unauthenticated, so never which.
+_inline: set[str] = set()
 
 _ST_RDONLY = 1  # os.ST_RDONLY; spelled out because it is absent off Linux
 
@@ -129,8 +134,15 @@ def _check_env_secrets(proc: Path, names: Iterable[str], posture: ContainmentRep
         posture.gaps.append("unverifiable")
         return
     posture.env_secrets = sorted(name for name in set(names) if name in initial)
+    _inline.update(posture.env_secrets)
     if posture.env_secrets:
         posture.gaps.append("secret_in_environment")
+
+
+def inline_secret_count() -> int:
+    """How many secrets the checks so far found in the initial environment,
+    rather than in a ``_FILE``. A count, for the unauthenticated health probe."""
+    return len(_inline)
 
 
 def check_startup_posture(proc: Path = Path("/proc/self")) -> ContainmentReport:

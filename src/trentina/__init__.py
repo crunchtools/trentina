@@ -351,10 +351,14 @@ def _ready_to_serve(llm_providers: Mapping[str, Any]) -> None:
     has run by now. See ``gateway/envscrub.py`` for what goes, what stays,
     and why ``/proc/self/environ`` still holds them all.
     """
+    from .gateway.approver import pinned_by_deployment
     from .gateway.envscrub import scrub_startup_secrets
     from .gateway.loader import secret_env_names
     from .posture import FILE_FORM_SECRETS, check_l2_gate, check_secret_sources
 
+    # Read at request time otherwise, so a broken _FILE would only show on the
+    # first approval and an inline value never reached the check below (#767).
+    pinned_by_deployment()
     # Before the scrub, which reads nothing back, and after every secret has
     # been read, so the names are complete.
     check_secret_sources(secret_env_names() - set(FILE_FORM_SECRETS))

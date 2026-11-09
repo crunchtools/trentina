@@ -215,5 +215,51 @@ def test_ready_to_serve_checks_configured_secret_names(monkeypatch: pytest.Monke
     monkeypatch.setattr(pkg, "_warm_classifier", lambda: None)
     monkeypatch.setattr(envscrub, "scrub_startup_secrets", lambda _names: [])
     pkg._ready_to_serve({})
-    # The fixed names were checked at startup; this adds the rest.
-    assert seen == [{"BACKEND_TOKEN"}]
+    # The fixed names were checked at startup; this adds the rest, including
+    # the approval hash, now read before the check rather than per request.
+    assert seen == [{"BACKEND_TOKEN", "TRENTINA_APPROVAL_PASSWORD_HASH"}]
+
+
+def test_ready_to_serve_fails_on_an_unreadable_approval_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#767: a broken _FILE is a startup failure, not a surprise at the first approval."""
+    import trentina as pkg
+    from trentina.gateway.errors import ProfileConfigError
+
+    monkeypatch.setenv("TRENTINA_APPROVAL_PASSWORD_HASH_FILE", str(tmp_path / "missing"))
+    monkeypatch.setattr(pkg, "_warm_classifier", lambda: None)
+    with pytest.raises(ProfileConfigError, match="TRENTINA_APPROVAL_PASSWORD_HASH_FILE"):
+        pkg._ready_to_serve({})
+
+
+def test_otlp_headers_take_a_file_form_that_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#767: the collector credential has a _FILE form like every other secret."""
+    from trentina.config import Config
+    from trentina.gateway.errors import ProfileConfigError
+
+    secret = tmp_path / "otlp-headers"
+    secret.write_text("Authorization=Basic%20ZnJvbS1maWxl\n")
+    monkeypatch.setenv("TRENTINA_OTLP_HEADERS", "Authorization=Basic%20ZnJvbS1lbnY=")
+    monkeypatch.setenv("TRENTINA_OTLP_HEADERS_FILE", str(secret))
+    assert Config().otlp_headers == {"Authorization": "Basic ZnJvbS1maWxl"}
+    assert "TRENTINA_OTLP_HEADERS" in posture.FILE_FORM_SECRETS
+    monkeypatch.setenv("TRENTINA_OTLP_HEADERS_FILE", str(tmp_path / "missing"))
+    with pytest.raises(ProfileConfigError, match="TRENTINA_OTLP_HEADERS_FILE"):
+        _ = Config().otlp_headers
+
+
+@pytest.mark.usefixtures("contained_fs")
+def test_inline_secret_count_accumulates_names_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#767: both passes feed the count the health probe reports; a secret
+    found twice counts once."""
+    monkeypatch.setattr(posture, "_inline", set())
+    proc = _proc(tmp_path, HARDENED_STATUS, b"OPENAI_API_KEY=x\0BRIDGE_TOKEN=y\0")
+    posture.check_startup_posture(proc)
+    assert posture.inline_secret_count() == 1
+    posture.check_secret_sources({"BRIDGE_TOKEN", "OPENAI_API_KEY", "UNSET"}, proc)
+    assert posture.inline_secret_count() == 2

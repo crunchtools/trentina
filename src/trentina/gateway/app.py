@@ -26,7 +26,7 @@ from starlette.middleware import Middleware
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from .. import perimeter_db, telemetry
+from .. import perimeter_db, posture, telemetry
 from ..httpbody import STATUS_TOO_LARGE, RequestBodyCap, TooLargeError
 from ..logsafe import exc_kind, exc_where, redact_source, safe_address
 from ..quarantine.classifier import classifier_status
@@ -448,6 +448,9 @@ def _health_payload(registry: dict[str, Profile]) -> Response:
         # From the warm-up refresher's cache (#662), never SQLite: None until
         # it first succeeds and whenever its last attempt failed.
         "pending_pins": perimeter_db.pending_pins_cached,
+        # How many secrets arrived inline rather than as _FILE (#767). A
+        # count: the probe is unauthenticated, so it names none of them.
+        "inline_secrets": posture.inline_secret_count(),
     }
     # Summed, so the unauthenticated probe names no profile; which one is
     # in quarantine_stats' gateway_audit (backend matrix_bridge, #317).

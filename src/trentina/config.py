@@ -358,11 +358,15 @@ class Config:
     @functools.cached_property
     def otlp_headers(self) -> dict[str, str]:
         """``TRENTINA_OTLP_HEADERS``: ``key=value,...`` sent with every export,
-        e.g. the collector's ``Authorization``. Each value is held by logsafe,
-        so no log record carries it."""
+        e.g. the collector's ``Authorization``. ``TRENTINA_OTLP_HEADERS_FILE``
+        names a file holding the same text, and wins (#767); a file that
+        cannot be read fails startup. The whole setting and each value are
+        held by logsafe, so no log record carries them."""
         from . import logsafe, telemetry
+        from .gateway.loader import read_secret_env
 
-        headers = telemetry.parse_headers(os.environ.get("TRENTINA_OTLP_HEADERS"))
+        raw = read_secret_env("TRENTINA_OTLP_HEADERS", record=False)
+        headers = telemetry.parse_headers(raw)
         for value in headers.values():
             logsafe.hold(value, "TRENTINA_OTLP_HEADERS")
         return headers

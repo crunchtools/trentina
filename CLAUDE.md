@@ -274,8 +274,10 @@ new pattern goes into that file's attack, benign and linearity tables.
   Bearer token picks the profile, as on `/proxy/llm`. (Renamed from `/git` in
   2.0.0 with `/proxy/http` and `/proxy/llm`, #511; the old paths now 404.)
 - `GET /health` — unauthenticated liveness probe returning `{status,
-  classifier, profiles, pending_pins}`, plus `matrix_bridge` counts where a
-  profile is bridged. A timeout here means the asyncio event loop is blocked,
+  classifier, profiles, pending_pins, inline_secrets}`, plus `matrix_bridge`
+  counts where a profile is bridged and `telemetry` when OTLP export is on.
+  `inline_secrets` is how many secrets the posture checks found supplied as
+  `FOO` rather than `FOO_FILE` (#767): a count, never names. A timeout here means the asyncio event loop is blocked,
   not merely that a backend is slow. Everything here is SUMMED, so the
   unauthenticated probe names no profile; `pending_pins` counts only the
   backends still configured, since a pin belonging to a URL nothing is

@@ -126,8 +126,12 @@ Use the `_FILE` form for every secret: `TRENTINA_OAUTH_JWT_SIGNING_KEY_FILE`,
 `TRENTINA_BACKEND_TOKEN_KEY_FILE`, `TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET_FILE`,
 `GEMINI_API_KEY_FILE`,
 `OPENAI_API_KEY_FILE`, `ANTHROPIC_API_KEY_FILE`, `OPENROUTER_API_KEY_FILE`,
+`TRENTINA_OTLP_HEADERS_FILE`, `TRENTINA_APPROVAL_PASSWORD_HASH_FILE`,
 every `${VAR}` a profile references, and the bridge's. `_FILE` wins when both
-are set. A value that arrives in the environment is popped from `os.environ`
+are set, and a `_FILE` that cannot be read fails startup. Every one of them is
+read before the posture check, so a secret still supplied inline is named in
+the startup warning; `/health` reports how many as `inline_secrets` (a count,
+never names), which reaching 0 is the sign a deployment is converted. A value that arrives in the environment is popped from `os.environ`
 after startup (`gateway/envscrub.py`), but the kernel still serves it at
 `/proc/self/environ` for the life of the process. Mount the files `0400`,
 owned by the container user, read-only.

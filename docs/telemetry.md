@@ -44,7 +44,7 @@ For a ready-made receiver and Grafana dashboard, see [Grafana Dashboard](grafana
 - **It never retries.** Each batch gets one attempt with a 5-second timeout. A batch the collector refused or never answered is counted as failed and dropped. A dead collector costs records, not latency.
 - **Its counts are on `/health`.** `telemetry: {sent, dropped, failed, last_failure}` appears there whenever the exporter is on. `last_failure` is the cause of the most recent lost batch: `http_<status>`, `timeout`, `unreachable` or `error`.
 
-`TRENTINA_OTLP_HEADERS` takes the `OTEL_EXPORTER_OTLP_HEADERS` form: comma-separated `key=value` pairs, with values percent-decoded. Every value is held by the log guard, so no log line carries it. Credentials do not cross the network in plain http. With headers set and an `http://` endpoint that is not loopback, Trentina warns and exports nothing, unless `TRENTINA_OTLP_INSECURE=true` says the network in between is private (a container bridge, say). Use https anywhere else.
+`TRENTINA_OTLP_HEADERS` (or `TRENTINA_OTLP_HEADERS_FILE`, a file holding the same text, which wins and is the better form) takes the `OTEL_EXPORTER_OTLP_HEADERS` form: comma-separated `key=value` pairs, with values percent-decoded. Every value is held by the log guard, so no log line carries it. Credentials do not cross the network in plain http. With headers set and an `http://` endpoint that is not loopback, Trentina warns and exports nothing, unless `TRENTINA_OTLP_INSECURE=true` says the network in between is private (a container bridge, say). Use https anywhere else.
 
 ## JSON Lines
 
