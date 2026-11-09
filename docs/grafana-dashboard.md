@@ -2,10 +2,10 @@
 
 *Part of Trentina's **Determinism** promise; see [Why Trentina](../README.md#why-trentina).*
 
-Trentina can send every call it handles to your monitoring as an OpenTelemetry trace ([Telemetry Export](telemetry.md)). This page sets up a ready-made Grafana dashboard on top of that, and explains how to read it. Everything it needs is in [`contrib/grafana/`](../contrib/grafana/):
+Trentina can send every call it handles to your monitoring as an OpenTelemetry trace ([Telemetry Export](telemetry.md)). This page sets up a ready-made Grafana dashboard on top of that, and explains how to read it. Everything it needs is in `contrib/grafana/`:
 
-- `trentina-dashboard.json`: the dashboard, 11 panels, each with a tooltip (the ⓘ next to its title).
-- `telegraf-receiver.conf`: a Telegraf config that receives Trentina's spans and writes them to InfluxDB 2.x.
+- [`trentina-dashboard.json`](../contrib/grafana/trentina-dashboard.json): the dashboard, 11 panels, each with a tooltip (the ⓘ next to its title).
+- [`telegraf-receiver.conf`](../contrib/grafana/telegraf-receiver.conf): a Telegraf config that receives Trentina's spans and writes them to InfluxDB 2.x.
 
 ## Setup
 
