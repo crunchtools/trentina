@@ -38,18 +38,58 @@ is not inspected, not allowlisted and not audited. Migrate consumers to
 ### Sessions and restarts
 
 `initialize` issues an `Mcp-Session-Id`. Sessions live in memory, so every
-gateway restart ends all of them. A client that sends a session id the gateway
-no longer holds gets a `404` whose body is a JSON-RPC error: code `-32001`, and
-a message saying why (TTL expiry, eviction, teardown, or "never issued by this
-gateway process") and telling it to re-initialize. An `initialize` that still
-carries the stale header is accepted and gets a new session. A client that
-recovers on its own therefore never needs a human after a deploy.
+gateway restart ends all of them — and the gateway then **adopts** the ids its
+clients are still using (#775). An authenticated request carrying an id this
+process never issued gets that id minted against the profile it authenticated
+as, on the GET and the POST alike, and the client carries on working. The
+journal says `adopted` rather than `created` when that happens.
 
-Claude Code re-initializes on a `404` to a POST, so a stale session is
-invisible to it. If a client reports "timed out" right after a restart, the
-session isn't the cause. Look at how long the first `tools/list` took: a cold
-perimeter store makes that call judge every tool description (see the startup
-`caches loaded` line).
+Adoption is safe because a session id is a correlation handle, not a
+credential: the profile's bearer token is checked independently on every GET,
+POST and DELETE, so adoption grants nothing an `initialize` already grants. An
+id is refused — and still gets the `404` — when it is not the 32-hex shape
+`uuid4().hex` issues, when it is already live under another profile (`403`), or
+when this process holds a tombstone for it. Tombstones are the important case:
+TTL expiry, eviction under the per-profile cap and a client `DELETE` ended on
+purpose, so they stay ended, whichever profile they belonged to. An adopted
+session is admitted on exactly the same terms as a created one, cap and
+eviction included.
+
+What adoption does **not** carry over:
+
+- **Loaded tools.** `load_tools` state is in-memory, so an adopted session
+  starts with nothing loaded while its client may still hold the previous
+  process's `tools/list`. Adoption therefore queues one
+  `notifications/tools/list_changed`, delivered on the first SSE stream the
+  session opens, so the client re-requests the list. A client that only ever
+  POSTs never receives it; its next `load_tools` reconciles anyway.
+- **Flag marks.** `session_marks` is in-memory too. After a restart an unmarked
+  session reads clean whether it re-initializes or is adopted, so adoption
+  launders nothing.
+- **TTL expiry inside one process.** A seat idle past
+  `gateway.session_ttl_seconds` has its session expired and tombstoned, so its
+  reconnect is refused rather than adopted and it stays down until its next
+  POST re-initializes. Same symptom, far smaller window; the `Agent gateway
+  <seat>` monitoring check is what will tell us whether it matters.
+
+The `404` body is a JSON-RPC error — code `-32001`, with a message saying why
+(TTL expiry, eviction, teardown, or "never issued by this gateway process") and
+telling the client to re-initialize. An `initialize` that still carries a stale
+header is accepted and gets a new session; that branch runs before adoption, so
+a client recovering on its own is never handed back its dead id.
+
+Before adoption, a restart was invisible only to clients that re-initialize on
+a POST `404`, which Claude Code does. It deliberately does not on a `404` to
+the standalone SSE GET, so from 2.0.0 — which started answering notifications
+with the spec's `202` and so gave every long-lived seat a GET stream — a
+restart left those seats retrying a dead stream: no server-pushed
+`list_changed` or `reload_profiles` reached them, their monitoring went
+CRITICAL, and their next tool call failed before the POST `404` recovered it.
+
+If a client reports "timed out" right after a restart, the session isn't the
+cause. Look at how long the first `tools/list` took: a cold perimeter store
+makes that call judge every tool description (see the startup `caches loaded`
+line).
 
 ### Backend Routing
 

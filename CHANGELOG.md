@@ -10,6 +10,32 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Agents keep working through a gateway restart (#775).** An authenticated
+  request bearing a session id this process never issued now gets that id
+  minted against the profile it authenticated as, on the GET and the POST
+  alike, instead of a `404`. Sessions live in memory, so a restart ended all of
+  them and recovery was left to the client — and Claude Code re-initializes on
+  a `404` to a POST but deliberately not on one to the standalone SSE GET. From
+  2.0.0, which gave every long-lived seat such a stream, a restart therefore
+  left each seat retrying a dead stream: nothing the gateway pushed
+  (`list_changed`, `reload_profiles`) reached it, its monitoring check went
+  CRITICAL, and its next tool call failed before the POST `404` recovered it.
+  On 2026-11-09 that hit four seats twice in one day.
+
+  Adoption grants nothing an `initialize` already grants: the bearer token is
+  checked independently on every request, so the session id is a correlation
+  handle, not a credential. An id is still refused, and still gets the `404`,
+  unless it is the 32-hex shape `uuid4().hex` issues and this process holds no
+  tombstone for it — TTL expiry, eviction and a client `DELETE` ended on
+  purpose and stay ended, whoever owned them. The per-profile cap and its
+  eviction apply to an adopted session exactly as to a created one, `DELETE` is
+  unchanged, and an adopted session is sent one `tools/list_changed` because
+  the tools its client had loaded did not survive the restart. The journal logs
+  `adopted`, distinct from `created`. See `docs/gateway.md`, "Sessions and
+  restarts", for what adoption does not carry over.
+
 ## [6.16.0] - 2026-11-09
 
 ### Fixed

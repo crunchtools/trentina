@@ -166,7 +166,12 @@ class TestSessionCensus:
             headers={"Authorization": "Bearer alice-bearer", MCP_SESSION_ID_HEADER: "0" * 32},
         )
 
-        assert resp.status_code == 404
+        # Adopted since #775 — a well-formed id this process never issued is
+        # minted against the authenticated profile rather than refused. Kept
+        # as the hygiene check on the new `adopted` log line, which carries a
+        # profile name and a session count and must carry only alice's.
+        assert resp.status_code == 200
+        assert "adopted session=00000000 profile=alice" in caplog.text
         assert "bob-the-other-agent" not in caplog.text
 
 
