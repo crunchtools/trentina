@@ -10,6 +10,24 @@ under that name.
 
 ## [Unreleased]
 
+## [6.19.0] - 2026-11-10
+
+### Added
+
+- **Plain-http OAuth brokering for a named local backend resource (#778, RT #1606).**
+  The gateway's OAuth broker (`backend_auth`) now completes against a backend
+  MCP server reached over plain `http` — the resource ping and its
+  protected-resource metadata only — when that backend's host is named in
+  `TRENTINA_FETCH_PRIVATE_NAMES`. This lets a local container on the host bridge
+  (e.g. `http://mcp-gw-personal:8000/mcp`) be brokered without an https front;
+  previously `backend_auth start` returned `not_https`. The authorization server
+  (issuer metadata, token, revocation, registration) stays https-only
+  unconditionally, so a backend may never redirect consent to a cleartext
+  endpoint. The same allowlist already governs the egress guard's private-address
+  and non-standard-port rules, so enabling a name is one operator-visible,
+  startup-warned opt-in. Reversible: unset the variable and the backend returns to
+  `not_https`.
+
 ## [6.18.0] - 2026-11-10
 
 ### Added
