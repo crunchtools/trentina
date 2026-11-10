@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from unittest.mock import AsyncMock
 
@@ -322,3 +323,149 @@ class TestDisconnectDiagnostics:
         registry.create_session("alice")
         registry.create_session("bob")
         assert registry.census() == {"alice": 2, "bob": 1}
+
+
+class TestAdoption:
+    """#775: a restart used to strand every client that does not re-initialize."""
+
+    FOREIGN = "a" * 32
+
+    def test_adopts_an_id_this_process_never_issued(self, registry: SessionRegistry) -> None:
+        session = registry.adopt(self.FOREIGN, "alice")
+        assert session is not None
+        assert session.session_id == self.FOREIGN
+        assert session.profile_name == "alice"
+        assert registry.get_session(self.FOREIGN) is session
+        assert registry.active("alice") == 1
+
+    def test_adoption_is_logged_as_adopted_not_created(
+        self, registry: SessionRegistry, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Restart recovery has to be visible in the journal, and distinguishable."""
+        caplog.set_level(logging.INFO, logger="trentina.gateway.sessions")
+        registry.adopt(self.FOREIGN, "alice")
+        assert "adopted session=aaaaaaaa profile=alice" in caplog.text
+        assert "created session=" not in caplog.text
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            "nonexistent",
+            "a" * 31,
+            "a" * 33,
+            "A" * 32,
+            "deadbeef" * 4 + "0",
+            "../../etc/passwd" + "a" * 16,
+            "a" * 31 + "-",
+        ],
+        ids=[
+            "empty",
+            "not-hex",
+            "too-short",
+            "too-long",
+            "upper-hex",
+            "33-hex",
+            "path-traversal",
+            "trailing-dash",
+        ],
+    )
+    def test_refuses_anything_that_is_not_the_uuid4_hex_shape(
+        self, registry: SessionRegistry, bad: str
+    ) -> None:
+        """An adopted id comes from the caller, so it must not reach the
+        registry, the journal or the audit session column unless it is the
+        shape we issue."""
+        assert registry.adopt(bad, "alice") is None
+        assert registry.active("alice") == 0
+        assert bad not in registry._sessions
+
+    def test_refuses_a_ttl_expired_id(self) -> None:
+        registry = SessionRegistry(session_ttl=0.001, max_sessions_per_profile=3)
+        sid = registry.create_session("alice")
+        time.sleep(0.01)
+        assert registry.get_session(sid) is None
+        assert registry.adopt(sid, "alice") is None
+
+    def test_refuses_an_evicted_id(self) -> None:
+        registry = SessionRegistry(session_ttl=300.0, max_sessions_per_profile=1)
+        first = registry.create_session("alice")
+        registry.create_session("alice")  # evicts `first`
+        assert registry.adopt(first, "alice") is None
+
+    def test_refuses_a_client_deleted_id(self, registry: SessionRegistry) -> None:
+        sid = registry.create_session("alice")
+        registry.delete_session(sid)
+        assert registry.adopt(sid, "alice") is None
+
+    def test_refuses_another_profiles_tombstone(self, registry: SessionRegistry) -> None:
+        """Deliberately NOT scoped the way explain_missing is: resurrecting a
+        session another profile ended would make the cap a suggestion."""
+        foreign = registry.create_session("bob")
+        registry.delete_session(foreign)
+        assert registry.adopt(foreign, "alice") is None
+
+    def test_refuses_an_id_that_is_already_live(self, registry: SessionRegistry) -> None:
+        """Unreachable from the handlers, which check get_session first — and
+        refusing means no later miscall can rebind a live session elsewhere."""
+        sid = registry.create_session("bob")
+        assert registry.adopt(sid, "alice") is None
+        session = registry.get_session(sid)
+        assert session is not None
+        assert session.profile_name == "bob"
+
+    def test_the_per_profile_cap_is_enforced_on_adoption(self, registry: SessionRegistry) -> None:
+        held = [registry.create_session("alice") for _ in range(3)]
+        assert registry.active("alice") == 3
+
+        assert registry.adopt(self.FOREIGN, "alice") is not None
+        assert registry.active("alice") == 3
+        assert registry.get_session(held[0]) is None  # the least recently used
+        assert REASON_EVICTED in registry.explain_missing(held[0], "alice")
+
+    def test_adoption_does_not_resurrect_an_id_it_just_evicted(
+        self, registry: SessionRegistry
+    ) -> None:
+        held = [registry.create_session("alice") for _ in range(3)]
+        registry.adopt(self.FOREIGN, "alice")
+        assert registry.adopt(held[0], "alice") is None
+
+    async def test_an_adopted_session_gets_one_list_changed_on_its_first_stream(
+        self, registry: SessionRegistry
+    ) -> None:
+        """The client may hold a tools/list from the previous process, including
+        names load_tools added — and discovery._loaded did not survive it."""
+        registry.adopt(self.FOREIGN, "alice")
+        first = registry.subscribe(self.FOREIGN)
+        assert first.get_nowait()["method"] == "notifications/tools/list_changed"
+
+        registry.unsubscribe(self.FOREIGN, first)
+        again = registry.subscribe(self.FOREIGN)
+        assert again.empty()
+
+    async def test_a_created_session_gets_no_list_changed(self, registry: SessionRegistry) -> None:
+        sid = registry.create_session("alice")
+        assert registry.subscribe(sid).empty()
+
+    def test_a_pending_list_changed_does_not_outlive_its_session(
+        self, registry: SessionRegistry
+    ) -> None:
+        registry.adopt(self.FOREIGN, "alice")
+        assert self.FOREIGN in registry._pending_tools_changed
+        registry.delete_session(self.FOREIGN)
+        assert self.FOREIGN not in registry._pending_tools_changed
+
+    def test_reset_clears_pending_list_changed(self, registry: SessionRegistry) -> None:
+        registry.adopt(self.FOREIGN, "alice")
+        registry.reset()
+        assert registry._pending_tools_changed == set()
+
+    def test_an_adopted_session_is_a_full_member_of_its_profile(
+        self, registry: SessionRegistry
+    ) -> None:
+        """It must be broadcast to, expired and tombstoned like any other."""
+        registry.adopt(self.FOREIGN, "alice")
+        assert [s.session_id for s in registry.get_sessions_for_profile("alice")] == [self.FOREIGN]
+        assert registry.census() == {"alice": 1}
+        assert registry.delete_session(self.FOREIGN) is True
+        assert REASON_CLIENT_DELETE in registry.explain_missing(self.FOREIGN, "alice")

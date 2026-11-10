@@ -535,6 +535,12 @@ async def _handle_get(
 
     session = sessions.get_session(session_id)
     if session is None:
+        # The path #775 is about. This client deliberately does not
+        # re-initialize on a 404 here (see JSONRPC_SESSION_NOT_FOUND), so a
+        # gateway restart left it retrying forever with no tools. Its token was
+        # checked above; adopt the id it is already using.
+        session = sessions.adopt(session_id, profile_name)
+    if session is None:
         logger.warning(
             "gateway: SSE stream rejected — session=%s profile=%s not found: %s [%s]",
             redact_source(session_id),
@@ -639,6 +645,61 @@ async def _handle_delete(
     return Response(status_code=204)
 
 
+def _resolve_session(
+    request: Request,
+    sessions: SessionRegistry,
+    profile_name: str,
+    body: dict[str, Any],
+) -> tuple[str, Response | None]:
+    """Settle which session this POST belongs to, or refuse it.
+
+    Returns the session id to carry (empty for a stateless call or a client
+    that is re-initializing) and a response when the request must be refused.
+    Runs only after :func:`_authorize` has passed.
+    """
+    session_id = request.headers.get(MCP_SESSION_ID_HEADER, "")
+    if not session_id:
+        return "", None
+
+    session = sessions.get_session(session_id)
+    if session is None and body.get("method") == "initialize":
+        # A client re-initializing is doing exactly what the 404 asked of it; a
+        # stale header left on that request is not a reason to refuse the
+        # recovery (#104). It gets a fresh session from the caller. This branch
+        # comes before adoption on purpose: a client that recovers on its own
+        # must not be handed back the id that just died.
+        logger.warning(
+            "gateway: re-initialize over stale session=%s profile=%s: %s [%s]",
+            redact_source(session_id),
+            profile_name,
+            sessions.explain_missing(session_id, profile_name),
+            _client_desc(request),
+        )
+        return "", None
+
+    if session is None:
+        # Same as the GET (#775): the caller's token was checked above, so an
+        # id this process never issued is adopted rather than refused.
+        session = sessions.adopt(session_id, profile_name)
+
+    if session is None:
+        logger.warning(
+            "gateway: DISCONNECT — session=%s profile=%s rejected on method=%s: %s [%s] active=%d",
+            redact_source(session_id),
+            profile_name,
+            redact_source(body.get("method", "")),
+            sessions.explain_missing(session_id, profile_name),
+            _client_desc(request),
+            sessions.active(profile_name),
+        )
+        return session_id, _session_gone(sessions, session_id, profile_name, body.get("id"))
+
+    if session.profile_name != profile_name:
+        return session_id, _plain(403, "Session does not belong to this profile")
+
+    return session_id, None
+
+
 async def _handle_post(
     request: Request,
     registry: dict[str, Profile],
@@ -690,35 +751,9 @@ async def _handle_post(
     if not isinstance(body, dict):
         return _plain(400, "Bad Request: JSON-RPC body must be an object")
 
-    session_id = request.headers.get(MCP_SESSION_ID_HEADER, "")
-    if session_id:
-        session = sessions.get_session(session_id)
-        if session is None and body.get("method") == "initialize":
-            # A client re-initializing is doing exactly what the 404 asked
-            # of it; a stale header left on that request is not a reason to
-            # refuse the recovery (#104). It gets a fresh session below.
-            logger.warning(
-                "gateway: re-initialize over stale session=%s profile=%s: %s [%s]",
-                redact_source(session_id),
-                profile_name,
-                sessions.explain_missing(session_id, profile_name),
-                _client_desc(request),
-            )
-            session_id = ""
-        elif session is None:
-            logger.warning(
-                "gateway: DISCONNECT — session=%s profile=%s rejected on "
-                "method=%s: %s [%s] active=%d",
-                redact_source(session_id),
-                profile_name,
-                redact_source(body.get("method", "")),
-                sessions.explain_missing(session_id, profile_name),
-                _client_desc(request),
-                sessions.active(profile_name),
-            )
-            return _session_gone(sessions, session_id, profile_name, body.get("id"))
-        elif session is not None and session.profile_name != profile_name:
-            return _plain(403, "Session does not belong to this profile")
+    session_id, refusal = _resolve_session(request, sessions, profile_name, body)
+    if refusal is not None:
+        return refusal
 
     # Each request is its own task, so the binding ends with it. The id is a
     # bearer of the session: only its fingerprint reaches the audit.

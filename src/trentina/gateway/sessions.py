@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -46,6 +47,16 @@ TOMBSTONE_MAXSIZE = 512
 Without this a stale-session 404 is indistinguishable from a bad token or a
 gateway restart, which is exactly the ambiguity that makes disconnects hard
 to diagnose."""
+
+SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+"""Exactly what ``uuid4().hex`` issues, and the only shape :meth:`adopt` takes.
+An adopted id comes from the caller, so without this a caller could plant
+arbitrary text in the registry, the journal and the audit ``session`` column."""
+
+
+def _tools_changed() -> dict[str, Any]:
+    """One ``notifications/tools/list_changed`` frame, fresh per delivery."""
+    return {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}
 
 
 @dataclass
@@ -82,6 +93,7 @@ class SessionRegistry:
     _subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = field(default_factory=dict)
     _tombstones: dict[str, Tombstone] = field(default_factory=dict)
     _remove_hooks: list[Callable[[str], None]] = field(default_factory=list)
+    _pending_tools_changed: set[str] = field(default_factory=set)
 
     def set_notification_callback(self, callback: Any) -> None:
         """Register a callback for pushing notifications to transport sessions.
@@ -99,9 +111,23 @@ class SessionRegistry:
         Returns a fresh bounded queue that :meth:`broadcast_tools_changed`
         pushes onto.  The GET SSE handler drains it and must call
         :meth:`unsubscribe` when the stream closes.
+
+        Drains the pending ``list_changed`` :meth:`adopt` left for this session,
+        so an adopted client re-requests its tool list as soon as its stream is
+        up.  At most once, on the first stream to subscribe: the adopting
+        request has no subscriber of its own to deliver to.
         """
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_MAXSIZE)
         self._subscribers.setdefault(session_id, set()).add(queue)
+        if session_id in self._pending_tools_changed:
+            self._pending_tools_changed.discard(session_id)
+            try:
+                queue.put_nowait(_tools_changed())
+            except asyncio.QueueFull:  # pragma: no cover - a fresh queue is empty
+                logger.warning(
+                    "sessions: subscriber queue full, dropped adoption list_changed for session=%s",
+                    session_id[:8],
+                )
         return queue
 
     def unsubscribe(self, session_id: str, queue: asyncio.Queue[dict[str, Any]]) -> None:
@@ -124,7 +150,107 @@ class SessionRegistry:
         if the limit would be exceeded.
         """
         self._expire_stale()
+        self._enforce_cap(profile_name)
+        session_id = uuid.uuid4().hex
+        self._insert(session_id, profile_name)
+        logger.info(
+            "sessions: created session=%s profile=%s (active=%d/%d, ttl=%.0fs)",
+            session_id[:8],
+            profile_name,
+            self.active(profile_name),
+            self.max_sessions_per_profile,
+            self.session_ttl,
+        )
+        return session_id
 
+    def adopt(self, session_id: str, profile_name: str) -> Session | None:
+        """Mint a session id this process never issued, against ``profile_name``.
+
+        Sessions live in memory, so a gateway restart ends all of them, and
+        recovery was left to the client.  Claude Code re-initializes on a 404 to
+        a POST and deliberately does not on a 404 to the standalone SSE GET
+        (``app.JSONRPC_SESSION_NOT_FOUND``), so since 2.0.0 gave every
+        long-lived seat a GET stream, a restart left those seats retrying a 404
+        forever: a dead stream, a CRITICAL monitoring check and a failed call
+        (#775).  Adopting the id they already hold ends that.
+
+        Returns the adopted :class:`Session`, or ``None`` when the id is
+        refused.  Call it only where :meth:`get_session` returned ``None``, and
+        only after the route has authorized the request: the caller's bearer
+        token gates every GET, POST and DELETE independently, so a session id is
+        a correlation handle, not a credential, and adoption widens no access.
+        An ``initialize`` is served by :meth:`create_session` as before — a
+        client that recovers on its own must not have its dead id revived.
+
+        Refused when:
+
+        * the id is not the ``uuid4().hex`` shape (:data:`SESSION_ID_RE`);
+        * it has a tombstone, whoever owns it.  TTL expiry, eviction and a
+          client ``DELETE`` ended on purpose in this process and must stay
+          ended, or the TTL and the per-profile cap stop meaning anything.
+          Deliberately not scoped the way :meth:`explain_missing` is: resurrect
+          another profile's ended id and the cap becomes a suggestion.  The one
+          bit that leaks ("someone once held this id") costs a 128-bit guess
+          from a caller who is already authenticated;
+        * the id is live already.  Unreachable from the handlers, which check
+          :meth:`get_session` first, and refusing means no later miscall can
+          rebind a live session to another profile.
+
+        Otherwise the same admission as :meth:`create_session`, so the two
+        cannot drift: expire, then :meth:`_enforce_cap`.
+
+        What adoption changes: the audit ``session`` column holds the
+        fingerprint of a caller-chosen id rather than a server-minted one.
+        :data:`SESSION_ID_RE` bounds its shape, and aiming it at another
+        session's fingerprint is 2^64 work by someone already authenticated to
+        their own profile.  Accepted.
+
+        What it does not carry over: the tools the previous process had loaded
+        for this session (``discovery._loaded`` is in-memory), which is why a
+        ``list_changed`` is queued for :meth:`subscribe` to drain; and the
+        session's flag marks (``session_marks`` is in-memory too, and after a
+        restart an unmarked session reads clean whether it re-initializes or is
+        adopted, so adoption launders nothing).
+        """
+        if SESSION_ID_RE.match(session_id) is None:
+            return None
+        if session_id in self._tombstones:
+            return None
+        self._expire_stale()
+        if session_id in self._sessions:
+            return None
+        self._enforce_cap(profile_name)
+        session = self._insert(session_id, profile_name)
+        self._pending_tools_changed.add(session_id)
+        logger.info(
+            "sessions: adopted session=%s profile=%s — predates this gateway "
+            "process; client kept its id instead of losing its tools "
+            "(active=%d/%d, ttl=%.0fs)",
+            session_id[:8],
+            profile_name,
+            self.active(profile_name),
+            self.max_sessions_per_profile,
+            self.session_ttl,
+        )
+        return session
+
+    def _insert(self, session_id: str, profile_name: str) -> Session:
+        """Register one session id under a profile, with no admission checks."""
+        now = time.monotonic()
+        session = Session(
+            session_id=session_id,
+            profile_name=profile_name,
+            created_at=now,
+            last_access=now,
+        )
+        self._sessions[session_id] = session
+        self._profile_index.setdefault(profile_name, set()).add(session_id)
+        return session
+
+    def _enforce_cap(self, profile_name: str) -> None:
+        """Evict this profile's least recently used sessions down to the cap,
+        leaving room for one more.  Shared by :meth:`create_session` and
+        :meth:`adopt` so an adopted session is admitted on the same terms."""
         profile_sessions = self._profile_index.get(profile_name, set())
         while len(profile_sessions) >= self.max_sessions_per_profile:
             oldest_id: str | None = None
@@ -148,27 +274,6 @@ class SessionRegistry:
                 self.max_sessions_per_profile,
                 evicted_idle,
             )
-
-        now = time.monotonic()
-        session_id = uuid.uuid4().hex
-        session = Session(
-            session_id=session_id,
-            profile_name=profile_name,
-            created_at=now,
-            last_access=now,
-        )
-        self._sessions[session_id] = session
-        self._profile_index.setdefault(profile_name, set()).add(session_id)
-
-        logger.info(
-            "sessions: created session=%s profile=%s (active=%d/%d, ttl=%.0fs)",
-            session_id[:8],
-            profile_name,
-            self.active(profile_name),
-            self.max_sessions_per_profile,
-            self.session_ttl,
-        )
-        return session_id
 
     def census(self) -> dict[str, int]:
         """Live session count per profile, for tracking accumulation over time.
@@ -300,10 +405,7 @@ class SessionRegistry:
 
     async def _push_tools_changed(self, session_id: str) -> bool:
         """Deliver one list_changed to a session's streams; whether any took it."""
-        notification: dict[str, Any] = {
-            "jsonrpc": "2.0",
-            "method": "notifications/tools/list_changed",
-        }
+        notification = _tools_changed()
         delivered = False
         if self._notification_callback is not None:
             try:
@@ -341,10 +443,12 @@ class SessionRegistry:
         self._profile_index.clear()
         self._subscribers.clear()
         self._tombstones.clear()
+        self._pending_tools_changed.clear()
 
     def _remove(self, session_id: str, reason: str) -> bool:
         session = self._sessions.pop(session_id, None)
         self._subscribers.pop(session_id, None)
+        self._pending_tools_changed.discard(session_id)
         if session is None:
             return False
         for hook in self._remove_hooks:
