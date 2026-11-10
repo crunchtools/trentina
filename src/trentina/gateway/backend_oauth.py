@@ -597,6 +597,13 @@ async def start(profile: Profile, name: str, *, authorized_by: Literal["self", "
         params["scope"] = " ".join(disc.scopes)
         if "offline_access" in disc.scopes:
             params["prompt"] = "consent"
+    # Static, allowlisted extras (e.g. Google's access_type=offline, without
+    # which no refresh token is issued). BackendAuth.authorization_params
+    # restricts the keys to ones the gateway does not set above, so this can
+    # shape provider behaviour but never override response_type, client_id,
+    # redirect_uri, state, PKCE, resource or scope.
+    if backend.auth and backend.auth.authorization_params:
+        params.update(backend.auth.authorization_params)
     joiner = "&" if "?" in disc.authorization_endpoint else "?"
     flow = BackendFlow(
         profile=profile.grant_owner,

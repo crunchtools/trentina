@@ -644,3 +644,49 @@ class TestTheReservedPrefixesCoverEveryRoute:
             "these gateway route paths are not under _RESERVED_CALLBACK_PREFIXES, "
             f"so a backend auth.callback_url could shadow them: {uncovered}"
         )
+
+
+class TestAuthorizationParams:
+    """Static, allowlisted extras on the authorization request (#1606, G0).
+
+    Without ``access_type=offline`` Google issues no refresh token, so the
+    broker would re-consent every hour. These confirm the configured params
+    reach the authorize URL, and that nothing is added when none is set.
+    """
+
+    async def test_configured_params_reach_the_authorize_url(
+        self, server: FakeServer, monkeypatch: Any
+    ) -> None:
+        from tests.backend_oauth_harness import profile_with_era
+        from trentina.gateway import loader
+
+        p = profile_with_era(
+            "josui", authorization_params={"access_type": "offline", "prompt": "consent"}
+        )
+        monkeypatch.setattr(
+            loader,
+            "get_active_config",
+            lambda: SimpleNamespace(config=SimpleNamespace(profiles={"josui": p})),
+        )
+        link = await start(p, "era", authorized_by="self")
+        query = parse_qs(urlsplit(await authorize_url(link)).query)
+        assert query["access_type"] == ["offline"]
+        assert query["prompt"] == ["consent"]
+        # The gateway's own parameters are untouched.
+        assert query["response_type"] == ["code"]
+        assert query["code_challenge_method"] == ["S256"]
+
+    async def test_no_params_when_unconfigured(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        link = await start(profiles["josui"], "era", authorized_by="self")
+        query = parse_qs(urlsplit(await authorize_url(link)).query)
+        assert "access_type" not in query
+        # The fake AS advertises only "read", so no offline_access-derived prompt either.
+        assert "prompt" not in query
+
+    def test_the_schema_rejects_a_non_allowlisted_key(self) -> None:
+        from trentina.gateway.profile import BackendAuth
+
+        with pytest.raises(ValueError, match="not allowed"):
+            BackendAuth(type="oauth", authorization_params={"redirect_uri": "https://evil"})

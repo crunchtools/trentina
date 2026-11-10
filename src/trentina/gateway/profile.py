@@ -672,6 +672,14 @@ _MOUNTED_PREFIXES = (
 )
 
 
+#: The only query parameters ``auth.authorization_params`` may set on the
+#: authorization request. Deliberately excludes every parameter the gateway
+#: sets itself, so configuration can shape a provider's behaviour but never
+#: override a security-bearing one. ``access_type=offline`` is what makes
+#: Google issue a refresh token; ``prompt`` controls whether it re-consents.
+_AUTHORIZATION_PARAM_KEYS = frozenset({"access_type", "prompt"})
+
+
 class BackendAuth(BaseModel):
     """How the gateway authenticates to one backend on one profile's behalf (#479).
 
@@ -714,6 +722,18 @@ class BackendAuth(BaseModel):
     scopes: list[str] | None = Field(
         default=None,
         description="Scopes to request, overriding the backend's advertised ones",
+    )
+    authorization_params: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Extra static query parameters added to the authorization-request "
+            "URL, for provider behaviour the gateway cannot infer from "
+            "metadata. Only the keys in _AUTHORIZATION_PARAM_KEYS are allowed, "
+            "and none of them is a parameter the gateway sets itself, so this "
+            "can never override response_type, client_id, redirect_uri, state, "
+            "PKCE, resource or scope. The load-bearing case is Google's "
+            "access_type=offline, without which no refresh token is issued."
+        ),
     )
     issuer: str | None = Field(
         default=None,
@@ -776,6 +796,26 @@ class BackendAuth(BaseModel):
         """An issuer is an https URL, compared byte-for-byte (RFC 8414 3.3)."""
         if v is not None and not v.startswith("https://"):
             raise ValueError("auth.issuer must be an https:// URL")
+        return v
+
+    @field_validator("authorization_params")
+    @classmethod
+    def authorization_params_allowed(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        """Only allowlisted keys, each a short plain token safe in a query string."""
+        if v is None:
+            return v
+        for key, value in v.items():
+            if key not in _AUTHORIZATION_PARAM_KEYS:
+                allowed = ", ".join(sorted(_AUTHORIZATION_PARAM_KEYS))
+                raise ValueError(
+                    f"auth.authorization_params key {key!r} is not allowed; permitted: {allowed}"
+                )
+            if (
+                not isinstance(value, str)
+                or not 0 < len(value) <= 128
+                or any(c in value for c in " \t\r\n&?#/")
+            ):
+                raise ValueError(f"auth.authorization_params[{key!r}] must be a short plain token")
         return v
 
     @field_validator("client_secret_env")
