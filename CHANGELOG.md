@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.17.0] - 2026-11-10
+
 ### Fixed
 
 - **Agents keep working through a gateway restart (#775).** An authenticated
