@@ -47,6 +47,7 @@ from urllib.parse import quote, urlencode, urlsplit
 import httpx
 from pydantic import BaseModel, SecretStr, ValidationError
 
+from ..config import get_config
 from ..database import record_gateway_call
 from ..errors import EgressRefusedError
 from ..logsafe import exc_kind, redact_source
@@ -105,7 +106,10 @@ _AUTH_METHODS: tuple[AuthMethod, ...] = (
     "client_secret_post",
     "none",
 )
-#: Only https leaves the gateway. Tests serve plain http on loopback.
+#: Only https leaves the gateway, with one exception: a backend RESOURCE whose
+#: host is named in TRENTINA_FETCH_PRIVATE_NAMES may be reached over plain http
+#: (the resource ping and its protected-resource metadata). Authorization-server
+#: URLs -- issuer metadata, token, revocation, registration -- stay https-only.
 _REQUIRE_HTTPS = True
 _WWW_FIELD = r'{}=(?:"([^"]+)"|([^\s,]+))'
 
@@ -169,10 +173,14 @@ async def _request(
     form: dict[str, str] | None = None,
     json_body: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
+    plain_host_ok: bool = False,
 ) -> _Reply:
     """One request to a backend or its authorization server, through the egress guard."""
     parsed = urlsplit(url)
-    if _REQUIRE_HTTPS and parsed.scheme != "https":
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" and not (
+        plain_host_ok and host in get_config().fetch_private_names
+    ):
         raise BackendAuthError("not_https")
     if (parsed.hostname or "").lower() == (urlsplit(public_base_url()).hostname or "").lower():
         raise BackendAuthError("self_host")
@@ -245,11 +253,11 @@ class Discovered:
 
 
 async def _first_document(
-    profile: Profile, urls: list[str], unavailable: str
+    profile: Profile, urls: list[str], unavailable: str, *, plain_host_ok: bool = False
 ) -> tuple[_Reply, dict[str, Any]] | None:
     """The first URL that serves a JSON object; a 429 or 5xx stops the search."""
     for url in urls:
-        reply = await _request(profile, "GET", url)
+        reply = await _request(profile, "GET", url, plain_host_ok=plain_host_ok)
         if reply.status == 200:
             document = reply.json()
             if document is not None:
@@ -270,6 +278,7 @@ async def _resource_metadata(profile: Profile, backend: Backend) -> tuple[Any, s
         profile,
         "POST",
         backend.url,
+        plain_host_ok=True,
         json_body={"jsonrpc": "2.0", "id": 0, "method": "ping"},
         headers={
             "Accept": "application/json, text/event-stream",
@@ -283,6 +292,7 @@ async def _resource_metadata(profile: Profile, backend: Backend) -> tuple[Any, s
             _www_field(challenge, "resource_metadata"), backend.url
         ),
         "resource_metadata_unavailable",
+        plain_host_ok=True,
     )
     prm = _parse(ProtectedResourceMetadata, found[0]) if found else None
     if found is None or prm is None:

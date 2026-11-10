@@ -690,3 +690,73 @@ class TestAuthorizationParams:
 
         with pytest.raises(ValueError, match="not allowed"):
             BackendAuth(type="oauth", authorization_params={"redirect_uri": "https://evil"})
+
+
+class TestPlainHttpBackendResource:
+    """A LOCAL backend resource reached over plain http is allowed ONLY when its
+    host is named in TRENTINA_FETCH_PRIVATE_NAMES, and never for the authorization
+    server (issuer, token, revocation, registration). RT#1606."""
+
+    HTTP_URL = "http://mcp.era.example:8000/mcp"
+
+    def _wire(
+        self,
+        server: FakeServer,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        allowlisted: bool,
+    ) -> Profile:
+        from tests.egress_harness import route
+        from trentina.config import get_config
+        from trentina.gateway import loader
+
+        server.resource = self.HTTP_URL
+        # The backend name resolves to a private address, as a container does.
+        route(monkeypatch, server.handle, {"mcp.era.example": ["10.89.0.82"]})
+        names = frozenset({"mcp.era.example"}) if allowlisted else frozenset()
+        monkeypatch.setattr(get_config(), "fetch_private_names", names)
+        p = profile_with_era("josui", url=self.HTTP_URL)
+        monkeypatch.setattr(
+            loader,
+            "get_active_config",
+            lambda: SimpleNamespace(config=SimpleNamespace(profiles={"josui": p})),
+        )
+        return p
+
+    async def test_allowlisted_name_reaches_authorize(
+        self, server: FakeServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        p = self._wire(server, monkeypatch, allowlisted=True)
+        link = await start(p, "era", authorized_by="self")
+        assert link.startswith(f"https://gw.example{START_PATH}?flow=")
+        # The authorize step was reached: the http resource ping was permitted.
+        assert (await authorize_url(link)).startswith("https://auth.era.example/authorize")
+
+    async def test_unlisted_name_is_refused(
+        self, server: FakeServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        p = self._wire(server, monkeypatch, allowlisted=False)
+        with pytest.raises(BackendAuthError, match="not_https"):
+            await start(p, "era", authorized_by="self")
+
+    async def test_http_token_endpoint_is_refused_even_when_allowlisted(
+        self, server: FakeServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        p = self._wire(server, monkeypatch, allowlisted=True)
+        meta = server.metadata()
+        meta["token_endpoint"] = "http://auth.era.example/token"
+        server.overrides[("auth.era.example", "/.well-known/oauth-authorization-server")] = (
+            httpx.Response(200, json=meta)
+        )
+        with pytest.raises(BackendAuthError, match="not_https"):
+            await start(p, "era", authorized_by="self")
+
+    async def test_http_issuer_is_refused_even_when_allowlisted(
+        self, server: FakeServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        p = self._wire(server, monkeypatch, allowlisted=True)
+        # The resource advertises an http authorization server; its metadata
+        # fetch must still be refused (plain_host_ok is false for the AS).
+        server.issuer = "http://auth.era.example"
+        with pytest.raises(BackendAuthError, match="not_https"):
+            await start(p, "era", authorized_by="self")
