@@ -106,10 +106,12 @@ _AUTH_METHODS: tuple[AuthMethod, ...] = (
     "client_secret_post",
     "none",
 )
-#: Only https leaves the gateway, with one exception: a backend RESOURCE whose
-#: host is named in TRENTINA_FETCH_PRIVATE_NAMES may be reached over plain http
-#: (the resource ping and its protected-resource metadata). Authorization-server
-#: URLs -- issuer metadata, token, revocation, registration -- stay https-only.
+#: Only https leaves the gateway, with one exception: the ONE backend resource
+#: being brokered may be reached over plain http (its ping and protected-resource
+#: metadata) when its own host is named in TRENTINA_FETCH_PRIVATE_NAMES. The
+#: exception is scoped to that single host, never to the allowlist at large, and
+#: never to an authorization-server URL (issuer metadata, token, revocation,
+#: registration), which stay https-only always.
 _REQUIRE_HTTPS = True
 _WWW_FIELD = r'{}=(?:"([^"]+)"|([^\s,]+))'
 
@@ -173,13 +175,13 @@ async def _request(
     form: dict[str, str] | None = None,
     json_body: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
-    plain_host_ok: bool = False,
+    plain_host: str | None = None,
 ) -> _Reply:
     """One request to a backend or its authorization server, through the egress guard."""
     parsed = urlsplit(url)
     host = (parsed.hostname or "").lower()
     if parsed.scheme != "https" and not (
-        plain_host_ok and host in get_config().fetch_private_names
+        plain_host is not None and host == plain_host and host in get_config().fetch_private_names
     ):
         raise BackendAuthError("not_https")
     if (parsed.hostname or "").lower() == (urlsplit(public_base_url()).hostname or "").lower():
@@ -253,11 +255,11 @@ class Discovered:
 
 
 async def _first_document(
-    profile: Profile, urls: list[str], unavailable: str, *, plain_host_ok: bool = False
+    profile: Profile, urls: list[str], unavailable: str, *, plain_host: str | None = None
 ) -> tuple[_Reply, dict[str, Any]] | None:
     """The first URL that serves a JSON object; a 429 or 5xx stops the search."""
     for url in urls:
-        reply = await _request(profile, "GET", url, plain_host_ok=plain_host_ok)
+        reply = await _request(profile, "GET", url, plain_host=plain_host)
         if reply.status == 200:
             document = reply.json()
             if document is not None:
@@ -274,11 +276,12 @@ async def _resource_metadata(profile: Profile, backend: Backend) -> tuple[Any, s
     from mcp.shared.auth_utils import check_resource_allowed, resource_url_from_server_url
     from mcp_types import LATEST_PROTOCOL_VERSION
 
+    backend_host = (urlsplit(backend.url).hostname or "").lower()
     probe = await _request(
         profile,
         "POST",
         backend.url,
-        plain_host_ok=True,
+        plain_host=backend_host,
         json_body={"jsonrpc": "2.0", "id": 0, "method": "ping"},
         headers={
             "Accept": "application/json, text/event-stream",
@@ -292,7 +295,7 @@ async def _resource_metadata(profile: Profile, backend: Backend) -> tuple[Any, s
             _www_field(challenge, "resource_metadata"), backend.url
         ),
         "resource_metadata_unavailable",
-        plain_host_ok=True,
+        plain_host=backend_host,
     )
     prm = _parse(ProtectedResourceMetadata, found[0]) if found else None
     if found is None or prm is None:

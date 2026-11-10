@@ -760,3 +760,25 @@ class TestPlainHttpBackendResource:
         server.issuer = "http://auth.era.example"
         with pytest.raises(BackendAuthError, match="not_https"):
             await start(p, "era", authorized_by="self")
+
+    async def test_plain_http_is_scoped_to_the_backend_host(
+        self, server: FakeServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Two local hosts are allowlisted, but a plain-http request is permitted
+        # only to the ONE backend being brokered: a plain-http hop to a different
+        # allowlisted host is still refused. The scheme/host check precedes any
+        # address resolution, so this needs no routing.
+        from trentina.config import get_config
+
+        monkeypatch.setattr(
+            get_config(),
+            "fetch_private_names",
+            frozenset({"mcp.era.example", "other.era.example"}),
+        )
+        with pytest.raises(BackendAuthError, match="not_https"):
+            await backend_oauth._request(
+                profile_with_era("josui"),
+                "GET",
+                "http://other.era.example/x",
+                plain_host="mcp.era.example",
+            )
