@@ -10,6 +10,20 @@ under that name.
 
 ## [Unreleased]
 
+## [6.18.0] - 2026-11-10
+
+### Added
+
+- **`BackendAuth.authorization_params` for static authorize-request parameters (#778, RT #1606).** A backend's `auth` block may now carry an allowlisted dict of
+  extra query parameters (`access_type`, `prompt`) merged into the
+  authorization-request URL. The allowlist deliberately excludes every parameter
+  the gateway sets itself, so configuration can shape a provider's behaviour but
+  never override `response_type`, `client_id`, `redirect_uri`, `state`, PKCE,
+  `resource` or `scope`. The load-bearing case is Google's `access_type=offline`,
+  without which Google issues no refresh token and the broker would re-consent
+  every hour — which is what let the self-authing MCP servers move onto the
+  broker.
+
 ## [6.17.0] - 2026-11-10
 
 ### Fixed
