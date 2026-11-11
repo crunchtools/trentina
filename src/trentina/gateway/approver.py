@@ -200,15 +200,12 @@ def set_password(password: str) -> None:
 
 
 #: How long an operator-opened enrolment window stands, as
-#: ``gateway.approval_enrol_window_seconds`` in ``profiles.yaml``. A setting
-#: rather than a constant because how long is enough belongs to the
-#: deployment: an agent relaying the URL into a chat read on a phone needs a
-#: round trip, an operator at the same keyboard as the browser needs seconds.
-#: Fifteen minutes by default (RT#1609): long enough that an agent relaying the
-#: link into a chat read on a phone finishes the handoff without re-opening,
-#: since the window is the one interval in which this gateway's approver can be
-#: claimed. Bounded both ways — a minute is not actionable, and an hour is where
-#: "short" stops being true.
+#: ``gateway.approval_enrol_window_seconds`` in ``profiles.yaml`` — a setting,
+#: not a constant, because how long is enough belongs to the deployment. Fifteen
+#: minutes by default (RT#1609): long enough that an agent relaying the link into
+#: a chat read on a phone finishes the hand-off without re-opening, since the
+#: window is the one interval in which this gateway's approver can be claimed.
+#: Bounded both ways — a minute is not actionable, an hour is where "short" ends.
 DEFAULT_ENROL_WINDOW_SECONDS = 900.0
 MIN_ENROL_WINDOW_SECONDS = 60.0
 MAX_ENROL_WINDOW_SECONDS = 3600.0
