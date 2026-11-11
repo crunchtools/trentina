@@ -2,9 +2,6 @@
 const $=i=>document.getElementById(i);
 const b64=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
 const unb64=s=>Uint8Array.from(atob(s.replace(/-/g,"+").replace(/_/g,"/")+"=".repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
-const m=/[#&]code=([A-Za-z0-9_-]{1,64})/.exec(location.hash);
-if(m)for(const e of document.querySelectorAll("input[name=code]"))e.value=m[1];
-if(location.hash)history.replaceState(null,"",location.pathname+location.search);
 const t=$("ttl");
 if(t){let s=+t.dataset.seconds;const tick=()=>{if(s<=0){location.reload();return;}t.textContent=Math.floor(s/60)+":"+String(s%60).padStart(2,"0");s--;};tick();setInterval(tick,1000);}
 const box=$("pk");if(!box)return;

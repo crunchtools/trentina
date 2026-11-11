@@ -42,6 +42,7 @@ import hashlib
 import html
 import json
 import logging
+import re
 import secrets
 import time
 from http import HTTPStatus
@@ -105,15 +106,15 @@ _NEXT = (PATH, SETUP_PATH)
 _DONE = {
     "passkey_added": "Passkey added. You can use it to approve from now on.",
     "passkey_removed": "Passkey removed. Anyone signed in with it has been signed out.",
-    "password_set": "Password set.",
+    "password_set": "Password set. This gateway can be approved now.",
     "password_removed": "Password removed. Approving now takes a passkey.",
 }
 
-# approval_page.js, the ceremony: base64url helpers, the code from the link's fragment (which
-# never reaches the server, and is cleared from the address bar), the session
-# countdown, and navigator.credentials. Every value it needs arrives through
-# escaped data- attributes; nothing in it is built per request, so its hash is
-# fixed and the policy allows exactly it.
+# approval_page.js, the ceremony: base64url helpers, the session countdown, and
+# navigator.credentials. The enrolment code is rendered into the form server-side
+# (from the link's ?code= query), so the script no longer reads it from the URL.
+# Every value it needs arrives through escaped data- attributes; nothing in it is
+# built per request, so its hash is fixed and the policy allows exactly it.
 _SCRIPT = (Path(__file__).parent / "approval_page.js").read_text(encoding="utf-8")
 
 _SCRIPT_HASH = base64.b64encode(hashlib.sha256(_SCRIPT.encode("utf-8")).digest()).decode()
@@ -138,6 +139,20 @@ _NOTHING = (
 #: Spread into `_page` at every site that refuses an unauthenticated visitor,
 #: so they are one answer rather than several that could drift apart.
 _NOTHING_PAGE = ("Nothing to approve", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
+
+#: A person is mid-enrolment — the window is open, which the GET page already
+#: shows — but the code was missing or wrong. Naming the cause here leaks nothing
+#: a visitor cannot already see and tells them exactly what to redo; a closed
+#: window still gets the uniform ``_NOTHING_PAGE`` so a prober learns nothing.
+_BAD_CODE_PAGE = (
+    "Not set",
+    (
+        "<p>That enrolment code was missing, wrong, or its window has moved on. Open "
+        "the fresh link your agent gave you — the whole link, including the code — and "
+        "set it once more.</p>"
+    ),
+    HTTPStatus.NOT_FOUND,
+)
 
 #: The JSON routes' one answer to the same visitor.
 _NOTHING_JSON = {"ok": False, "message": "That did not work. Try again."}
@@ -448,12 +463,15 @@ _NEW_FIELDS = (
 )
 
 
-def _register_box(*, csrf: str = "", with_code: bool = False, label: str) -> str:
+def _register_box(
+    *, csrf: str = "", with_code: bool = False, label: str, code_value: str = ""
+) -> str:
     """The passkey ceremony's markup: a name beside the button that starts it."""
     code = (
         '<label for="pk-code">Enrolment code'
         '<span class="hint">Filled in for you when you came from your agent\'s link</span>'
-        '<input id="pk-code" name="code" autocomplete="off" spellcheck="false"></label>'
+        f'<input id="pk-code" name="code" value="{html.escape(code_value)}" '
+        'autocomplete="off" spellcheck="false"></label>'
         if with_code
         else ""
     )
@@ -470,17 +488,29 @@ def _register_box(*, csrf: str = "", with_code: bool = False, label: str) -> str
     )
 
 
-def _enrol_body() -> str:
+def _code_param(request: Request) -> str:
+    """The enrolment code from the link's query, cut to the code's own shape.
+
+    It is rendered straight into the form, so anything outside the token
+    alphabet is dropped rather than trusted. An absent or malformed code just
+    leaves the field blank for the person to paste into.
+    """
+    code = request.query_params.get("code", "")
+    return code if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", code) else ""
+
+
+def _enrol_body(code: str = "") -> str:
     return (
         "<h1>Set up approval</h1>"
         "<p class='lead'>An agent on this gateway asked for a way for you to approve its "
         "changes. Create a passkey: your device keeps the secret, and this gateway "
         "keeps only a public key.</p>"
-        f"{_register_box(with_code=True, label='Create passkey')}"
+        f"{_register_box(with_code=True, label='Create passkey', code_value=code)}"
         "<details><summary>Set a password instead</summary>"
         f'<form method="post" action="{SETUP_PATH}">'
         '<input type="hidden" name="action" value="enrol_password">'
-        '<label>Enrolment code<input name="code" autocomplete="off" spellcheck="false"></label>'
+        f'<label>Enrolment code<input name="code" value="{html.escape(code)}" '
+        'autocomplete="off" spellcheck="false"></label>'
         f'{_NEW_FIELDS}<div class="actions"><button>Set password</button></div></form>'
         "</details>"
         "<p class='note'>This page works only while the window your agent opened is "
@@ -580,7 +610,7 @@ async def _setup(request: Request) -> Response:
     """Enrol, sign in to manage, or manage — whichever this gateway is ready for."""
     title = "Set up approval"
     if approver.enrolling():
-        return _page(request, title, _enrol_body())
+        return _page(request, title, _enrol_body(_code_param(request)))
     if not approver.configured():
         return _page(request, title, _unconfigured_body())
     session = approval_session.current(request)
@@ -616,7 +646,10 @@ async def _enrol_password(request: Request, form: Any) -> Response:
     async with _PASSWORD_WORK:
         if not approver.enrolling(str(form.get("code") or "")):
             logger.info("approval: an enrolment was not authorised")
-            return _page(request, *_NOTHING_PAGE)
+            # A clear reason while a window is open (the GET already reveals it);
+            # the uniform refusal otherwise, so a prober cannot read the state.
+            page_spec = _BAD_CODE_PAGE if approver.enrolling() else _NOTHING_PAGE
+            return _page(request, *page_spec)
         try:
             await asyncio.to_thread(approver.set_password, new)
         except ValueError as exc:
