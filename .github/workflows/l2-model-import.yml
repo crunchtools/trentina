@@ -1,0 +1,32 @@
+name: L2 - import model to Quay
+
+# One-shot (RT#1550): GHCR is retired, so the shipped L2 model moves to Quay
+# byte for byte. --preserve-digests keeps the digest the Containerfile pins
+# (sha256:02c8a8ff...), and the read-back proves it. Removed once the
+# Containerfile pins the Quay copy.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SRC: ghcr.io/crunchtools/trentina-l2-model@sha256:02c8a8ff165f1c133535f00523de68169c1c12c58632d415e2cd0e4c579ee4c6
+      DST: quay.io/crunchtools/trentina-l2-model
+      WANT: sha256:02c8a8ff165f1c133535f00523de68169c1c12c58632d415e2cd0e4c579ee4c6
+    steps:
+      - name: Copy by digest and verify
+        env:
+          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$QUAY_PASSWORD" | skopeo login -u "$QUAY_USERNAME" --password-stdin quay.io
+          skopeo copy --all --preserve-digests "docker://$SRC" "docker://$DST:blend-1-02c8a8ff"
+          got=$(skopeo inspect --raw "docker://$DST@$WANT" | sha256sum | cut -d' ' -f1)
+          [ "sha256:$got" = "$WANT" ] || { echo "digest mismatch: $got" >&2; exit 1; }
+          echo "::notice::$DST@$WANT present"
