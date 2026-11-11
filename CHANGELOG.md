@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.20.0] - 2026-11-11
+
 ### Changed
 - Quay.io is the only registry (RT#1550). `sdlc ci`'s publish pushes the
   verified image to `quay.io/crunchtools/trentina:main` only, `published.json`
