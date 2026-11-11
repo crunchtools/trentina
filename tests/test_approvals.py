@@ -853,10 +853,14 @@ class TestTheEnrolPageScript:
     """
 
     def test_both_enrol_forms_expose_a_code_field_for_the_script(self, pages: TestClient) -> None:
-        """The passkey box and the "set a password" form each carry a code
-        field; the script fills every ``input[name=code]`` from the fragment."""
+        """The passkey box and the "set a password" form each carry their own
+        code field — the script fills every ``input[name=code]`` from the
+        fragment, so dropping either would strand that path. Match each field by
+        its own markup, not a page-wide count that two in one form would pass."""
         approver.open_enrolment()
-        assert pages.get(SETUP).text.count('name="code"') >= 2
+        body = pages.get(SETUP).text
+        assert '<input id="pk-code" name="code"' in body  # the passkey box
+        assert '<label>Enrolment code<input name="code"' in body  # the password form
 
     def test_the_script_reads_the_fragment_refills_on_change_and_clears_it(self) -> None:
         script = approval_routes._SCRIPT
