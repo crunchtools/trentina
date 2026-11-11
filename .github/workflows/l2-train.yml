@@ -8,7 +8,7 @@ name: L2 - fine-tune
 #
 # The model is an artifact of this run, not a release. With publish, the full
 # fine-tune, once it has passed every gate below, is also pushed as an image
-# (ghcr.io/crunchtools/trentina-l2-model); shipping it is a Containerfile
+# (quay.io/crunchtools/trentina-l2-model); shipping it is a Containerfile
 # change that pins its digest, made after a screen on production shapes.
 #
 # Training runs on one RunPod Secure Cloud RTX 4090 (scripts/runpod_train.py),
@@ -39,7 +39,7 @@ on:
         type: string
         default: "2"
       publish:
-        description: "Push the full fine-tune, if it passes every gate, as ghcr.io/crunchtools/trentina-l2-model"
+        description: "Push the full fine-tune, if it passes every gate, as quay.io/crunchtools/trentina-l2-model"
         type: boolean
         default: false
 
@@ -163,10 +163,9 @@ jobs:
     if: inputs.publish
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      packages: write
+    permissions: {}
     env:
-      IMAGE: ghcr.io/${{ github.repository_owner }}/trentina-l2-model
+      IMAGE: quay.io/crunchtools/trentina-l2-model
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -185,12 +184,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to Quay.io
         uses: docker/login-action@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ github.token }}
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
 
       - name: Build and push
         id: push
