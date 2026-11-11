@@ -4,7 +4,7 @@
 > **Ratified:** 2026-09-22
 > **Amended:** 2026-11-07
 > **Status:** Active
-> **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.31.0
+> **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.39.4
 > **Profile:** Security Gateway
 
 This file holds what is specific to Trentina. The fleet rules and the
@@ -423,7 +423,7 @@ justification in `gourmand-exceptions.toml`.
 |---------|------|
 | GitHub repo | `crunchtools/trentina` (was `crunchtools/mcp-trentina`) |
 | Python module and commands | `trentina`, `trentina-bridge` |
-| Container image | `quay.io/crunchtools/trentina`, `ghcr.io/crunchtools/trentina` |
+| Container image | `quay.io/crunchtools/trentina` |
 | Service and address | `trentina.crunchtools.com` |
 | PyPI | not published; `mcp-trentina-crunchtools` stops at 0.54.1 |
 | HTTP port | 8019 |

@@ -136,7 +136,7 @@ A prompt-injection classifier running on ONNX Runtime (CPU, no GPU required), sl
 
 | Model (`CLASSIFIER_MODEL`) | Threshold | Notes |
 |---|---|---|
-| `prompt-injection-guard-small-ct` (default) | 0.5 | Horizon-Labs' `prompt-injection-guard-small` (Apache-2.0, mmBERT-small), fine-tuned by `l2-train` on benign tool replies and attacks in the same envelopes (#17). Published as `ghcr.io/crunchtools/trentina-l2-model`, pinned by digest; NOTICE and `training.json` (every source, revision and hash) ship beside it. |
+| `prompt-injection-guard-small-ct` (default) | 0.5 | Horizon-Labs' `prompt-injection-guard-small` (Apache-2.0, mmBERT-small), fine-tuned by `l2-train` on benign tool replies and attacks in the same envelopes (#17). Published as `quay.io/crunchtools/trentina-l2-model`, pinned by digest; NOTICE and `training.json` (every source, revision and hash) ship beside it. |
 
 The image ships that one model. Horizon, the base, shipped until 2.0.0: it refused about 150 ordinary tool replies a day (feeds, monitoring pages, issue lists) that its training had never shown it, and the fine-tune was fixed at model selection ([benchmark](benchmark.md#envelopes-not-prose-17)). Meta's `prompt-guard-2-86m` shipped beside it from 0.55.0 to 0.58.0 and was dropped (#362): it fails five of the six transforms of the obfuscation gate, so one zero-width character blinded it. `CLASSIFIER_MODEL_PATH` still reaches an export of it, or of any model, for research.
 

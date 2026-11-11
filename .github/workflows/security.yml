@@ -31,10 +31,9 @@ permissions:
 
 # The published image. Here as well as in container.yml because this workflow
 # publishes it now; container.yml keeps its own copy for `promote`, which reads
-# the same two repositories back.
+# the same repository back. Quay.io is the only registry (RT#1550).
 env:
   QUAY_IMAGE: quay.io/crunchtools/trentina
-  GHCR_IMAGE: ghcr.io/crunchtools/trentina
 
 jobs:
   dependency-audit:
@@ -42,7 +41,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-    uses: crunchtools/constitution/.github/workflows/dependency-audit.yml@v1.31.0
+    uses: crunchtools/constitution/.github/workflows/dependency-audit.yml@v1.39.4
     with:
       python-version: "3.14"
 
@@ -143,7 +142,6 @@ jobs:
     if: github.event_name == 'push'
     permissions:
       contents: read
-      packages: write
 
     steps:
       - name: Download the verified image
@@ -180,21 +178,17 @@ jobs:
       # podman, not docker, end to end: `sdlc ci` built the image with podman,
       # and the identity check above compares podman's ID for it. Passwords go
       # in on stdin so they never reach a process list.
-      - name: Log in to both registries
+      - name: Log in to Quay.io
         env:
           QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
           QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
-          GHCR_TOKEN: ${{ github.token }}
-          OWNER: ${{ github.repository_owner }}
         run: |
           set -eu
           printf '%s' "$QUAY_PASSWORD" | podman login -u "$QUAY_USERNAME" --password-stdin quay.io
-          printf '%s' "$GHCR_TOKEN" | podman login -u "$OWNER" --password-stdin ghcr.io
 
-      - name: Publish to both registries
+      - name: Publish to Quay.io
         env:
           QUAY: ${{ env.QUAY_IMAGE }}
-          GHCR: ${{ env.GHCR_IMAGE }}
           SHA: ${{ github.sha }}
         run: |
           set -eu
@@ -203,19 +197,15 @@ jobs:
           # both, so a merge was a fleet-wide deploy: on 2026-11-07 unreleased
           # 6.11.0 reached production at 02:01 through podman-auto-update,
           # climbed to the unit's 4g cap and was SIGKILLed (RT#1559).
-          for image in "$QUAY" "$GHCR"; do
-            for tag in main; do
-              podman tag localhost/trentina:sdlc "$image:$tag"
-              podman push --format v2s2 --digestfile "$RUNNER_TEMP/digest" "$image:$tag"
-            done
-            # The digest the registry stored for what THIS job pushed, recorded
-            # below for `promote`. Read from the push itself, not from asking the
-            # registry what :main is, which any later push can change.
-            case "$image" in "$QUAY") quay=$(cat "$RUNNER_TEMP/digest") ;; *) ghcr=$(cat "$RUNNER_TEMP/digest") ;; esac
-          done
-          printf '{"sha":"%s","quay":"%s","ghcr":"%s"}\n' "$SHA" "$quay" "$ghcr" > published.json
+          podman tag localhost/trentina:sdlc "$QUAY:main"
+          podman push --format v2s2 --digestfile "$RUNNER_TEMP/digest" "$QUAY:main"
+          # The digest the registry stored for what THIS job pushed, recorded
+          # below for `promote`. Read from the push itself, not from asking the
+          # registry what :main is, which any later push can change.
+          quay=$(cat "$RUNNER_TEMP/digest")
+          printf '{"sha":"%s","quay":"%s"}\n' "$SHA" "$quay" > published.json
           cat published.json
-          echo "::notice::published $quay (quay) and $ghcr (ghcr) for $SHA"
+          echo "::notice::published $quay (quay) for $SHA"
 
       # `promote` releases exactly these digests. It used to resolve `:main` and
       # trust the labels on whatever it found -- labels the writer chooses, on a

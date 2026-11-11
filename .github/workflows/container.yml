@@ -28,7 +28,6 @@ concurrency:
 
 env:
   QUAY_IMAGE: quay.io/crunchtools/trentina
-  GHCR_IMAGE: ghcr.io/crunchtools/trentina
 
 jobs:
   # A release is a retag, not a build. The digest main pushed is the one the
@@ -43,7 +42,6 @@ jobs:
       checks: read
       statuses: read
       actions: read    # resolve security.yml's own run for this commit
-      packages: write
 
     steps:
       - name: Log in to Quay.io
@@ -52,13 +50,6 @@ jobs:
           registry: quay.io
           username: ${{ secrets.QUAY_USERNAME }}
           password: ${{ secrets.QUAY_PASSWORD }}
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ github.token }}
 
       # Fail closed, and not as "no check reported a failure": a check still
       # running, cancelled or never started has no failure conclusion either,
@@ -71,7 +62,7 @@ jobs:
       # building the image it is here to promote. Refusing there is how
       # v6.13.0 came to be tagged, released, and absent from both
       # registries until a person re-ran this job -- Nagios reported it
-      # as "Registry drift: trentina:6.13.0[quay+ghcr] missing". A
+      # as "Registry drift: trentina:6.13.0 missing". A
       # release nobody can pull is the state failing closed is meant to
       # prevent, not to produce.
       #
@@ -245,10 +236,6 @@ jobs:
       # tag on an unbuilt commit each fail here rather than publishing the wrong
       # bytes.
       #
-      # Each registry is checked SEPARATELY. The same image pushed to Quay and
-      # GHCR can be stored under different manifest digests, so promoting
-      # Quay's digest into GHCR would name a manifest that registry never saw.
-      #
       # Pulled rather than read through `imagetools inspect --format`: the
       # labels live in the image config, which the template reaches differently
       # across buildx versions and not at all for a multi-platform index. A
@@ -270,11 +257,8 @@ jobs:
             echo "tag '$REF_NAME' is not vX.Y.Z with exactly three numbers" >&2
             exit 1
           }
-          for registry in quay ghcr; do
-            case "$registry" in
-              quay) image="$QUAY_IMAGE" ;;
-              ghcr) image="$GHCR_IMAGE" ;;
-            esac
+          for registry in quay; do
+            image="$QUAY_IMAGE"
             # The digest publish recorded for this commit -- not whatever :main
             # names now, which a later merge or anything else holding
             # packages:write can move.
@@ -319,16 +303,15 @@ jobs:
       # list, so 6.4.1 got a digest main never had. `--preserve-digests`
       # refuses any copy that would change the manifest, and the check after
       # it fails the release if a tag still resolves to anything else.
-      - name: Retag the digests in both registries
+      - name: Retag the digest
         env:
           QUAY_DIGEST: ${{ steps.verified.outputs.quay_digest }}
-          GHCR_DIGEST: ${{ steps.verified.outputs.ghcr_digest }}
           VERSION: ${{ steps.verified.outputs.version }}
           MINOR: ${{ steps.verified.outputs.minor }}
         run: |
           set -eu
           auth="$HOME/.docker/config.json"
-          for pair in "$QUAY_IMAGE=$QUAY_DIGEST" "$GHCR_IMAGE=$GHCR_DIGEST"; do
+          for pair in "$QUAY_IMAGE=$QUAY_DIGEST"; do
             image=${pair%%=*} digest=${pair#*=}
             # `latest` is the newest stable RELEASE (constitution 1.33.0), so the
             # release moves it -- unless a NEWER release already holds it, which
@@ -336,11 +319,6 @@ jobs:
             # no git history, so the comparison is on the `version` label the
             # published image carries rather than on ancestry. The regex above
             # has already refused anything but a three-number stable tag.
-            #
-            # Asked of THIS registry, inside the loop. The two can disagree --
-            # one may hold an older release, or no `latest` at all -- and a
-            # decision read from Quay and applied to GHCR leaves them
-            # inconsistent in exactly the case the guard exists to catch.
             tags="$VERSION $MINOR"
             if current=$(skopeo inspect --format '{{ index .Labels "version" }}' \
                  --authfile "$auth" "docker://$image:latest" 2>"$RUNNER_TEMP/inspect.err"); then
@@ -378,7 +356,6 @@ jobs:
         env:
           VERSION: ${{ steps.verified.outputs.version }}
           QUAY_DIGEST: ${{ steps.verified.outputs.quay_digest }}
-          GHCR_DIGEST: ${{ steps.verified.outputs.ghcr_digest }}
         run: |
           {
             echo "### Promoted, not rebuilt"
@@ -386,5 +363,4 @@ jobs:
             echo "| Tag | Digest |"
             echo "|---|---|"
             echo "| \`$QUAY_IMAGE:$VERSION\` | \`$QUAY_DIGEST\` |"
-            echo "| \`$GHCR_IMAGE:$VERSION\` | \`$GHCR_DIGEST\` |"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -32,4 +32,4 @@ permissions:
 jobs:
   constitution:
     name: Constitution
-    uses: crunchtools/constitution/.github/workflows/validate.yml@v1.31.0
+    uses: crunchtools/constitution/.github/workflows/validate.yml@v1.39.4
