@@ -845,6 +845,28 @@ class TestTheEnrolmentCode:
         assert approver.enrolling(code) is False
 
 
+class TestTheEnrolPageScript:
+    """The enrolment code lives in the link's #fragment, and the page's inline
+    script is what reads it — a Python suite cannot run that script, but it can
+    hold the served page to the shape the script needs and hold the script to
+    the moves this fix (RT#1609) turns on, so a regression fails CI, not a phone.
+    """
+
+    def test_both_enrol_forms_expose_a_code_field_for_the_script(self, pages: TestClient) -> None:
+        """The passkey box and the "set a password" form each carry a code
+        field; the script fills every ``input[name=code]`` from the fragment."""
+        approver.open_enrolment()
+        assert pages.get(SETUP).text.count('name="code"') >= 2
+
+    def test_the_script_reads_the_fragment_refills_on_change_and_clears_it(self) -> None:
+        script = approval_routes._SCRIPT
+        assert "location.hash" in script  # reads the code from the fragment
+        assert 'querySelectorAll("input[name=code]")' in script  # fills the fields
+        assert "hashchange" in script  # a re-tapped link refills a reused tab
+        assert "sessionStorage" in script  # a reload keeps it
+        assert "replaceState" in script  # and it is stripped from the address bar
+
+
 class TestTheEnrolTool:
     """The tool boundary, not just the module behind it. The code it returns
     has to be the one the page accepts, or the flow is unusable while every

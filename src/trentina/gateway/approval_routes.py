@@ -111,9 +111,10 @@ _DONE = {
 
 # approval_page.js, the ceremony: base64url helpers, the one-time code read from
 # the link's #fragment (never sent to the server) and refilled on every fragment
-# change, the session countdown, and navigator.credentials. Every value it needs
-# arrives through escaped data- attributes; nothing in it is built per request,
-# so its hash is fixed and the policy allows exactly it.
+# change, the session countdown, and navigator.credentials. The script is the
+# same bytes on every request — its inputs are the fragment and escaped data-
+# attributes on the page, never anything spliced into the script itself — so its
+# hash is fixed and the policy allows exactly it.
 _SCRIPT = (Path(__file__).parent / "approval_page.js").read_text(encoding="utf-8")
 
 _SCRIPT_HASH = base64.b64encode(hashlib.sha256(_SCRIPT.encode("utf-8")).digest()).decode()
