@@ -45,7 +45,7 @@
 # commit b7fd870) and published as a scratch image holding the ONNX export,
 # its manifest, NOTICE and training.json. Pinned by digest: a new model is a
 # new run and a change to this line.
-FROM ghcr.io/crunchtools/trentina-l2-model@sha256:02c8a8ff165f1c133535f00523de68169c1c12c58632d415e2cd0e4c579ee4c6 AS l2-model
+FROM quay.io/crunchtools/trentina-l2-model@sha256:02c8a8ff165f1c133535f00523de68169c1c12c58632d415e2cd0e4c579ee4c6 AS l2-model
 
 # ============================================================
 # Stage 1: ONNX model conversion (Hummingbird builder — discarded)
