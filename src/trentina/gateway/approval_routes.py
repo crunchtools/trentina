@@ -648,7 +648,7 @@ async def _enrol_password(request: Request, form: Any) -> Response:
     new = str(form.get("new") or "")
     valid = approver.enrolling(code)
 
-    def again(message: str, status: int, *, keep_code: bool) -> Response:
+    def again(message: str, status: HTTPStatus, *, keep_code: bool) -> Response:
         shown = approver.display_code(approver.normalise_code(code)) if keep_code else ""
         return _page(
             request,
@@ -657,11 +657,14 @@ async def _enrol_password(request: Request, form: Any) -> Response:
             status,
         )
 
-    stop: tuple[str, int] | None = None
+    stop: tuple[str, HTTPStatus] | None = None
     if new != str(form.get("again") or ""):
-        stop = ("Those two passwords did not match. Nothing was changed.", 400)
+        stop = ("Those two passwords did not match. Nothing was changed.", HTTPStatus.BAD_REQUEST)
     elif _PASSWORD_WORK.locked():
-        stop = ("Another password attempt is finishing. Try again in a moment.", 503)
+        stop = (
+            "Another password attempt is finishing. Try again in a moment.",
+            HTTPStatus.SERVICE_UNAVAILABLE,
+        )
     if stop is not None:
         return again(stop[0], stop[1], keep_code=valid)
     async with _PASSWORD_WORK:
@@ -681,11 +684,13 @@ async def _enrol_password(request: Request, form: Any) -> Response:
         try:
             await asyncio.to_thread(approver.set_password, new)
         except ValueError as exc:
-            return again(str(exc), 400, keep_code=True)
+            return again(str(exc), HTTPStatus.BAD_REQUEST, keep_code=True)
         except OSError as exc:
             logger.warning("approval: the password could not be stored err=%s", exc_kind(exc))
             return again(
-                "It could not be stored, so nothing changed. Try again.", 500, keep_code=True
+                "It could not be stored, so nothing changed. Try again.",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                keep_code=True,
             )
         approver.close_enrolment()
     _audit_change("approval password enrolled")

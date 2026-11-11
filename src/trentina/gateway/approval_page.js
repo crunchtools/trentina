@@ -11,14 +11,19 @@ const unb64=s=>Uint8Array.from(atob(s.replace(/-/g,"+").replace(/_/g,"/")+"=".re
 // On a page with no code field, forget the code so it cannot leak into a later
 // formless view.
 const CODE=/[#&]code=([A-Za-z0-9-]{1,64})/;
-let saved="";try{saved=sessionStorage.getItem("tz-enrol-code")||"";}catch(e){saved="";}
+const KEY="tz-enrol-code";
+// sessionStorage can throw (private mode, blocked storage); each helper says so
+// by its return rather than swallowing it, and the caller carries on regardless.
+const recall=()=>{try{return sessionStorage.getItem(KEY)||"";}catch(e){return "";}};
+const remember=v=>{try{sessionStorage.setItem(KEY,v);}catch(e){return false;}return true;};
+const forget=()=>{try{sessionStorage.removeItem(KEY);}catch(e){return false;}return true;};
 const inputs=document.querySelectorAll("input[name=code]");
 if(inputs.length){
 const m=CODE.exec(location.hash);
-const code=m?m[1]:saved;
-if(m){try{sessionStorage.setItem("tz-enrol-code",m[1]);}catch(e){/* storage may be unavailable */}}
+const code=m?m[1]:recall();
+if(m)remember(m[1]);
 if(code)for(const e of inputs)e.value=code;
-}else{try{sessionStorage.removeItem("tz-enrol-code");}catch(e){/* storage may be unavailable */}}
+}else{forget();}
 if(location.hash)history.replaceState(null,"",location.pathname+location.search);
 addEventListener("hashchange",()=>{if(CODE.test(location.hash))location.reload();});
 addEventListener("pageshow",e=>{if(e.persisted)location.reload();});
