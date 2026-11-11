@@ -9,8 +9,14 @@ const unb64=s=>Uint8Array.from(atob(s.replace(/-/g,"+").replace(/_/g,"/")+"=".re
 // this tab so a reload keeps it, and strip it from the address bar once read.
 const readCode=()=>{
 const m=/[#&]code=([A-Za-z0-9_-]{1,64})/.exec(location.hash);
-if(m){try{sessionStorage.setItem("tz-enrol-code",m[1]);}catch(e){}return m[1];}
-try{return sessionStorage.getItem("tz-enrol-code")||"";}catch(e){return "";}
+try{
+if(m){sessionStorage.setItem("tz-enrol-code",m[1]);return m[1];}
+return sessionStorage.getItem("tz-enrol-code")||"";
+}catch(e){
+// sessionStorage can be unavailable (private mode, blocked storage); fall
+// back to the code the fragment carried this time, or none.
+return m?m[1]:"";
+}
 };
 const takeCode=()=>{
 const c=readCode();
