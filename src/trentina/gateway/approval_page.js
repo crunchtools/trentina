@@ -3,30 +3,27 @@ const $=i=>document.getElementById(i);
 const b64=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
 const unb64=s=>Uint8Array.from(atob(s.replace(/-/g,"+").replace(/_/g,"/")+"=".repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
 // The one-time code rides in the link's #fragment, so it never reaches the
-// server or a request log. Read it on load AND on every later fragment change,
-// so a freshly opened link refills the form even when a phone reuses a tab that
-// is already open here (a fragment-only change does not reload). Remember it for
-// this tab so a reload keeps it, and strip it from the address bar once read.
-const readCode=()=>{
-const m=/[#&]code=([A-Za-z0-9_-]{1,64})/.exec(location.hash);
-try{
-if(m){sessionStorage.setItem("tz-enrol-code",m[1]);return m[1];}
-return sessionStorage.getItem("tz-enrol-code")||"";
-}catch(e){
-// sessionStorage can be unavailable (private mode, blocked storage); fall
-// back to the code the fragment carried this time, or none.
-return m?m[1]:"";
-}
-};
-const takeCode=()=>{
-const c=readCode();
-if(c)for(const e of document.querySelectorAll("input[name=code]"))e.value=c;
+// server or a request log. On load, fill the form's code fields from the
+// fragment (or this tab's remembered copy), store it, and strip it from the
+// address bar. A reused tab that only changes its #fragment does not reload, so
+// a freshly tapped link would sit unread — reload on hashchange, and on a
+// back/forward (bfcache) restore, so the server-rendered load path always runs.
+// On a page with no code field, forget the code so it cannot leak into a later
+// formless view.
+const CODE=/[#&]code=([A-Za-z0-9-]{1,64})/;
+let saved="";try{saved=sessionStorage.getItem("tz-enrol-code")||"";}catch(e){saved="";}
+const inputs=document.querySelectorAll("input[name=code]");
+if(inputs.length){
+const m=CODE.exec(location.hash);
+const code=m?m[1]:saved;
+if(m){try{sessionStorage.setItem("tz-enrol-code",m[1]);}catch(e){/* storage may be unavailable */}}
+if(code)for(const e of inputs)e.value=code;
+}else{try{sessionStorage.removeItem("tz-enrol-code");}catch(e){/* storage may be unavailable */}}
 if(location.hash)history.replaceState(null,"",location.pathname+location.search);
-};
-takeCode();
-addEventListener("hashchange",takeCode);
+addEventListener("hashchange",()=>{if(CODE.test(location.hash))location.reload();});
+addEventListener("pageshow",e=>{if(e.persisted)location.reload();});
 const t=$("ttl");
-if(t){let s=+t.dataset.seconds;const tick=()=>{if(s<=0){location.reload();return;}t.textContent=Math.floor(s/60)+":"+String(s%60).padStart(2,"0");s--;};tick();setInterval(tick,1000);}
+if(t){const deadline=Date.now()+(+t.dataset.seconds)*1000;const tick=()=>{const s=Math.round((deadline-Date.now())/1000);if(s<=0){location.reload();return;}t.textContent=Math.floor(s/60)+":"+String(s%60).padStart(2,"0");};tick();setInterval(tick,1000);}
 const box=$("pk");if(!box)return;
 const go=$("pk-go"),say=msg=>{$("pk-status").textContent=msg;};
 if(!window.PublicKeyCredential||!window.isSecureContext){go.disabled=true;say("This browser cannot use a passkey here. Passkeys need https, or a gateway reached as localhost.");return;}

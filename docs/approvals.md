@@ -45,7 +45,10 @@ Once per gateway, before anything else:
 
 > Let me set my passkey in Trentina.
 
-Your agent opens a page in your browser with a one-time code already filled in.
+Your agent opens a page in your browser for this gateway, with a one-time code
+already filled in; it also shows the code as `xxxx-xxxx-xxxx` so you can type it
+if the page did not fill it, and the page names the gateway it is for, so a link
+meant for one gateway is not used against another.
 Choose **Create a passkey**, unlock it with your fingerprint, face or PIN, and
 you are done: the gateway keeps only a public key, so there is no secret on it
 to steal. A password is there too, under "Set a password instead", for a
@@ -66,9 +69,10 @@ There you add or remove passkeys, change the password, or drop it entirely once
 a passkey is enrolled. The last way to approve can never be removed. Removing a
 passkey or changing the password signs out everyone else.
 
-The enrolment window is short (five minutes by default), closes as soon as
-something is set, and your agent can close it early. Passkeys need https, or a
-gateway reached as `localhost`.
+The enrolment window is short (fifteen minutes by default) and closes as soon as
+something is set; your agent can close it early, and re-opening it keeps the same
+code, so a link already in your chat stays valid and the page counts down how
+long is left. Passkeys need https, or a gateway reached as `localhost`.
 
 After that, just say what you want:
 
@@ -154,11 +158,14 @@ one.
 
 ## If the page seems unhelpful
 
-Before you sign in, every failure looks the same: a wrong password, a passkey
-this gateway does not know, an expired attempt. That is deliberate — a stranger
-who finds the page learns nothing from it, including whether anything is
-pending. Once you are signed in it tells you plainly, including "Nothing is
-waiting"; if you expected something, ask your agent, since a proposal expires.
+Before an approver is set, the enrolment page tells you what to do: that the code
+is missing or wrong while a window is open, or that the window has closed and your
+agent should reopen it — only things the page already shows. Once an approver IS
+set, every sign-in failure looks the same — a wrong password, a passkey this
+gateway does not know, an expired attempt — so a stranger who finds the page
+learns nothing, including whether anything is pending. Once you are signed in it
+tells you plainly, including "Nothing is waiting"; if you expected something, ask
+your agent, since a proposal expires.
 
 If the passkey button is greyed out, the browser has no passkeys here: use
 https, or reach a local gateway as `localhost` rather than `127.0.0.1`.

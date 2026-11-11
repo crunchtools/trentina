@@ -104,8 +104,14 @@ _NEXT = (PATH, SETUP_PATH)
 #: closed set of names in the query string, never echoed.
 _DONE = {
     "passkey_added": "Passkey added. You can use it to approve from now on.",
+    "passkey_enrolled": (
+        "Passkey created. This gateway can be approved now. Tell your agent it is done."
+    ),
     "passkey_removed": "Passkey removed. Anyone signed in with it has been signed out.",
     "password_set": "Password set. This gateway can be approved now.",
+    "password_enrolled": (
+        "Password set. This gateway can be approved now. Tell your agent it is done."
+    ),
     "password_removed": "Password removed. Approving now takes a passkey.",
 }
 
@@ -140,16 +146,15 @@ _NOTHING = (
 #: so they are one answer rather than several that could drift apart.
 _NOTHING_PAGE = ("Nothing to approve", f"<p>{_NOTHING}</p>", HTTPStatus.NOT_FOUND)
 
-#: A person is mid-enrolment — the window is open, which the GET page already
-#: shows — but the code was missing or wrong. Naming the cause here leaks nothing
-#: a visitor cannot already see and tells them exactly what to redo; a closed
-#: window still gets the uniform ``_NOTHING_PAGE`` so a prober learns nothing.
-_BAD_CODE_PAGE = (
-    "Not set",
+#: A POST arrived with no window open and no approver set — the window ran out
+#: before it saved, or the link was for a different gateway. The GET page already
+#: shows "no window open", so saying so here leaks nothing, and it turns on no
+#: code ever having been valid, so an expired code and a wrong guess answer alike.
+_WINDOW_CLOSED_PAGE = (
+    "Setup window closed",
     (
-        "<p>That enrolment code was missing, wrong, or its window has moved on. Open "
-        "the fresh link your agent gave you — the whole link, including the code — and "
-        "set it once more.</p>"
+        "<p>The setup window closed before this was saved. Nothing changed. Ask your "
+        "agent to reopen it; the same link will work.</p>"
     ),
     HTTPStatus.NOT_FOUND,
 )
@@ -463,12 +468,16 @@ _NEW_FIELDS = (
 )
 
 
-def _register_box(*, csrf: str = "", with_code: bool = False, label: str) -> str:
+def _register_box(
+    *, csrf: str = "", with_code: bool = False, label: str, code_value: str = ""
+) -> str:
     """The passkey ceremony's markup: a name beside the button that starts it."""
     code = (
         '<label for="pk-code">Enrolment code'
-        '<span class="hint">Filled in for you when you came from your agent\'s link</span>'
-        '<input id="pk-code" name="code" autocomplete="off" spellcheck="false"></label>'
+        '<span class="hint">Filled in from your agent\'s link. Empty? Type the code it '
+        "showed you.</span>"
+        f'<input id="pk-code" name="code" value="{html.escape(code_value)}" '
+        'autocomplete="off" spellcheck="false" placeholder="xxxx-xxxx-xxxx"></label>'
         if with_code
         else ""
     )
@@ -485,31 +494,40 @@ def _register_box(*, csrf: str = "", with_code: bool = False, label: str) -> str
     )
 
 
-def _enrol_body() -> str:
+def _enrol_body(host: str, seconds_left: int, *, error: str = "", code: str = "") -> str:
+    err = f"<p class='done' role='alert'>{html.escape(error)}</p>" if error else ""
+    ttl = (
+        '<p class="note">This link works for <span id="ttl" '
+        f'data-seconds="{seconds_left}">{seconds_left // 60}:{seconds_left % 60:02d}</span> '
+        "more.</p>"
+    )
     return (
         "<h1>Set up approval</h1>"
-        "<p class='lead'>An agent on this gateway asked for a way for you to approve its "
-        "changes. Create a passkey: your device keeps the secret, and this gateway "
-        "keeps only a public key.</p>"
-        f"{_register_box(with_code=True, label='Create passkey')}"
+        f"<p class='lead'>Create the passkey that approves changes on {html.escape(host)}. "
+        "Your device keeps the secret; this gateway keeps only a public key.</p>"
+        f"{err}"
+        f"{_register_box(with_code=True, label='Create passkey', code_value=code)}"
         "<details><summary>Set a password instead</summary>"
         f'<form method="post" action="{SETUP_PATH}">'
         '<input type="hidden" name="action" value="enrol_password">'
-        '<label>Enrolment code<input name="code" autocomplete="off" spellcheck="false"></label>'
+        '<label>Enrolment code'
+        f'<input name="code" value="{html.escape(code)}" autocomplete="off" '
+        'spellcheck="false" placeholder="xxxx-xxxx-xxxx"></label>'
         f'{_NEW_FIELDS}<div class="actions"><button>Set password</button></div></form>'
         "</details>"
-        "<p class='note'>This page works only while the window your agent opened is "
-        "still open. Nothing can be approved on this gateway until it is done.</p>"
+        f"{ttl}"
     )
 
 
-def _unconfigured_body() -> str:
+def _unconfigured_body(host: str) -> str:
     return (
         "<h1>Set up approval</h1>"
-        "<p>No one can approve changes on this gateway yet. Ask its agent:</p>"
+        f"<p>Nobody can approve changes on {html.escape(host)} yet, and no setup window "
+        "is open. Ask its agent:</p>"
         "<p class='lead'><em>“Let me set my passkey in Trentina.”</em></p>"
-        "<p class='note'>It opens a short window and gives you a link back here with the "
-        "code filled in.</p>"
+        "<p class='note'>Already have a link? The window ran out, or it was opened on a "
+        f"different gateway. Ask the agent to open it for {html.escape(host)}, then tap "
+        "the same link.</p>"
     )
 
 
@@ -594,10 +612,11 @@ def _manage_body(session: approval_session.Session, done: str | None) -> str:
 async def _setup(request: Request) -> Response:
     """Enrol, sign in to manage, or manage — whichever this gateway is ready for."""
     title = "Set up approval"
+    host = page.served_as(request) or "this gateway"
     if approver.enrolling():
-        return _page(request, title, _enrol_body())
+        return _page(request, title, _enrol_body(host, approver.enrol_seconds_left()))
     if not approver.configured():
-        return _page(request, title, _unconfigured_body())
+        return _page(request, title, _unconfigured_body(host))
     session = approval_session.current(request)
     if session is None or not approval_session.fresh(session):
         return _page(
@@ -620,36 +639,57 @@ async def _enrol_password(request: Request, form: Any) -> Response:
 
     One critical section held across the authorisation AND the write, so two
     requests that both saw an open window cannot both set a password with the
-    later silently replacing the first. A wrong code and a closed window answer
-    the same.
+    later silently replacing the first. Every refusal re-renders the live form
+    with an inline reason rather than a dead-end page, and depends only on the
+    public window/approver state, so a prober still reads nothing from it.
     """
+    host = page.served_as(request) or "this gateway"
+    code = str(form.get("code") or "")
     new = str(form.get("new") or "")
+    valid = approver.enrolling(code)
+
+    def again(message: str, status: int, *, keep_code: bool) -> Response:
+        shown = approver.display_code(approver.normalise_code(code)) if keep_code else ""
+        return _page(
+            request,
+            "Set up approval",
+            _enrol_body(host, approver.enrol_seconds_left(), error=message, code=shown),
+            status,
+        )
+
+    stop: tuple[str, int] | None = None
     if new != str(form.get("again") or ""):
-        return _page(request, "Not set", "<p>Those did not match. Nothing was changed.</p>", 400)
-    if _PASSWORD_WORK.locked():
-        return _page(request, *_BUSY_PAGE)
+        stop = ("Those two passwords did not match. Nothing was changed.", 400)
+    elif _PASSWORD_WORK.locked():
+        stop = ("Another password attempt is finishing. Try again in a moment.", 503)
+    if stop is not None:
+        return again(stop[0], stop[1], keep_code=valid)
     async with _PASSWORD_WORK:
-        if not approver.enrolling(str(form.get("code") or "")):
+        if not approver.enrolling(code):
             logger.info("approval: an enrolment was not authorised")
-            # A clear reason while a window is open (the GET already reveals it);
-            # the uniform refusal otherwise, so a prober cannot read the state.
-            page_spec = _BAD_CODE_PAGE if approver.enrolling() else _NOTHING_PAGE
-            return _page(request, *page_spec)
+            if approver.enrolling():
+                return again(
+                    "That code is missing or wrong. Tap the link your agent sent, or "
+                    "type the code it showed you.",
+                    HTTPStatus.NOT_FOUND,
+                    keep_code=False,
+                )
+            # No window open: the GET already shows that, so the window-closed
+            # note leaks nothing; a configured gateway stays uniform.
+            closed = _WINDOW_CLOSED_PAGE if not approver.configured() else _NOTHING_PAGE
+            return _page(request, *closed)
         try:
             await asyncio.to_thread(approver.set_password, new)
         except ValueError as exc:
-            return _page(request, "Not set", f"<p>{html.escape(str(exc))}</p>", 400)
+            return again(str(exc), 400, keep_code=True)
         except OSError as exc:
             logger.warning("approval: the password could not be stored err=%s", exc_kind(exc))
-            return _page(
-                request,
-                "Not set",
-                "<p>It could not be stored. Nothing changed.</p>",
-                HTTPStatus.INTERNAL_SERVER_ERROR,
+            return again(
+                "It could not be stored, so nothing changed. Try again.", 500, keep_code=True
             )
         approver.close_enrolment()
     _audit_change("approval password enrolled")
-    return _signed_in(request, "password", f"{SETUP_PATH}?done=password_set", as_json=False)
+    return _signed_in(request, "password", f"{SETUP_PATH}?done=password_enrolled", as_json=False)
 
 
 class _BusyError(Exception):
@@ -764,8 +804,31 @@ def _registration_binding(request: Request, body: dict[str, Any]) -> _Registrant
         return _Registrant(approval_session.binding_for_session(token), enrolling=False)
     code = body.get("code")
     if isinstance(code, str) and code and approver.enrolling(code):
-        return _Registrant(approval_session.binding_for_code(code), enrolling=True)
+        bound = approval_session.binding_for_code(approver.normalise_code(code))
+        return _Registrant(bound, enrolling=True)
     return None
+
+
+def _registration_refusal() -> JSONResponse:
+    """The passkey ceremony's answer when nothing authorises a registration.
+
+    Worded like the password path and turning only on the public window/approver
+    state — never on whether a code was once valid — so it says what to do next
+    without telling a prober anything the GET page does not already show.
+    """
+    if approver.enrolling():
+        message = (
+            "That code is missing or wrong. Tap the link your agent sent, or type the "
+            "code it showed you."
+        )
+    elif not approver.configured():
+        message = (
+            "The setup window closed before this was saved. Ask your agent to reopen it; "
+            "the same link will work."
+        )
+    else:
+        return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
+    return JSONResponse({"ok": False, "message": message}, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
 
 
 async def _begin(request: Request) -> Response:
@@ -784,7 +847,7 @@ async def _begin(request: Request) -> Response:
     elif ceremony == webauthn.REGISTER:
         registrant = _registration_binding(request, body)
         if registrant is None:
-            return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
+            return _registration_refusal()
         challenge = approval_session.issue_challenge(webauthn.REGISTER, registrant.binding)
         options["userId"] = webauthn.b64url(secrets.token_bytes(16))
         options["userName"] = f"Trentina approver ({served})"
@@ -830,7 +893,7 @@ def _registration_challenge(body: dict[str, Any], binding: str) -> bytes:
 async def _finish_register(request: Request, body: dict[str, Any]) -> Response:
     registrant = _registration_binding(request, body)
     if registrant is None:
-        return JSONResponse(_NOTHING_JSON, HTTPStatus.BAD_REQUEST, headers=_HEADERS)
+        return _registration_refusal()
     try:
         challenge = _registration_challenge(body, registrant.binding)
         alg = body.get("publicKeyAlgorithm")
@@ -864,12 +927,11 @@ async def _finish_register(request: Request, body: dict[str, Any]) -> Response:
             headers=_HEADERS,
         )
     _audit_change(f"passkey enrolled {approver.credential_digest(cred_id)} alg={credential.alg}")
-    target = f"{SETUP_PATH}?done=passkey_added"
     if registrant.enrolling:
         # The first approver: shut the window and sign them straight in.
         approver.close_enrolment()
-        return _signed_in(request, "passkey", target, as_json=True)
-    return JSONResponse({"ok": True, "next": target}, headers=_HEADERS)
+        return _signed_in(request, "passkey", f"{SETUP_PATH}?done=passkey_enrolled", as_json=True)
+    return JSONResponse({"ok": True, "next": f"{SETUP_PATH}?done=passkey_added"}, headers=_HEADERS)
 
 
 async def _finish(request: Request) -> Response:

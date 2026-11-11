@@ -11,6 +11,10 @@ under that name.
 ## [Unreleased]
 
 ### Changed
+- **Approval enrolment: the default window is now 15 minutes (RT#1609).** Long
+  enough that an agent relaying the link into a chat read on a phone finishes the
+  hand-off without re-opening; `gateway.approval_enrol_window_seconds` still
+  overrides it, bounded 1–60 minutes.
 - Quay.io is the only registry (RT#1550). `sdlc ci`'s publish pushes the
   verified image to `quay.io/crunchtools/trentina:main` only, `published.json`
   records the Quay digest, and a release retags that one digest. The demo
@@ -22,19 +26,27 @@ under that name.
 
 ### Fixed
 
-- **Approval enrolment no longer strands a person on a stale tab, and says
-  plainly when a password is set or refused (RT #1609).** The one-time enrolment
-  code still rides in the link's `#fragment` — never sent to the server, so never
-  in a request or proxy log — but the setup page now reads it on load *and* on
-  every later fragment change, and remembers it for the tab. A fragment-only link
-  does not reload an already-open tab, so on a phone a freshly opened link kept
-  showing the previous page's empty code field and every submission was refused;
-  the new `hashchange` refill makes a re-tapped link populate the form even in a
-  reused tab, and a reload no longer loses the code. Setting a password now lands
-  on an explicit "Password set. This gateway can be approved now.", and a missing,
-  wrong or expired code while a window is open now says so — the window is already
-  visible on the GET page — instead of the generic "Nothing to approve"; with no
-  window open the refusal stays uniform so a prober still learns nothing.
+- **Approval enrolment now just works on a phone, and never dead-ends (RT #1609).**
+  Several faults compounded into an approver that could not be set from a phone:
+  - **Re-opening the window no longer rotates the code.** It kept minting a new
+    one-time code, so an agent re-calling `approval_enrol` silently invalidated
+    the link already in the chat. The code now stands across re-opens (until the
+    window is closed, an approver is set, or an hour passes) so every link in the
+    chat stays valid; `approval_enrol` gains `status` (check without re-opening)
+    and `reopened`, and its result and the page both name the gateway, so a link
+    for one gateway is not submitted against another.
+  - **The code is also human-typeable** (`xxxx-xxxx-xxxx`, no look-alike
+    characters) for when a link does not auto-fill the field, and still rides in
+    the `#fragment` so it never reaches a server or proxy log.
+  - **The setup page is robust to a reused tab.** A fragment-only link does not
+    reload an already-open tab, so a freshly tapped link used to sit on the
+    previous page's empty field; it now reloads on a fragment change and on a
+    bfcache restore, remembers the code for the tab, and shows a live countdown.
+  - **No more dead-end "Nothing to approve".** Every enrolment refusal
+    re-renders the live form with an inline reason — wrong code, window closed —
+    and setting a passkey or password lands on an explicit "… This gateway can be
+    approved now." The refusals turn only on the public window/approver state, so
+    a prober still learns nothing it could not read from the GET page.
 
 ## [6.19.0] - 2026-11-10
 
