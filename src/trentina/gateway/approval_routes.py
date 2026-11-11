@@ -42,7 +42,6 @@ import hashlib
 import html
 import json
 import logging
-import re
 import secrets
 import time
 from http import HTTPStatus
@@ -110,11 +109,11 @@ _DONE = {
     "password_removed": "Password removed. Approving now takes a passkey.",
 }
 
-# approval_page.js, the ceremony: base64url helpers, the session countdown, and
-# navigator.credentials. The enrolment code is rendered into the form server-side
-# (from the link's ?code= query), so the script no longer reads it from the URL.
-# Every value it needs arrives through escaped data- attributes; nothing in it is
-# built per request, so its hash is fixed and the policy allows exactly it.
+# approval_page.js, the ceremony: base64url helpers, the one-time code read from
+# the link's #fragment (never sent to the server) and refilled on every fragment
+# change, the session countdown, and navigator.credentials. Every value it needs
+# arrives through escaped data- attributes; nothing in it is built per request,
+# so its hash is fixed and the policy allows exactly it.
 _SCRIPT = (Path(__file__).parent / "approval_page.js").read_text(encoding="utf-8")
 
 _SCRIPT_HASH = base64.b64encode(hashlib.sha256(_SCRIPT.encode("utf-8")).digest()).decode()
@@ -463,15 +462,12 @@ _NEW_FIELDS = (
 )
 
 
-def _register_box(
-    *, csrf: str = "", with_code: bool = False, label: str, code_value: str = ""
-) -> str:
+def _register_box(*, csrf: str = "", with_code: bool = False, label: str) -> str:
     """The passkey ceremony's markup: a name beside the button that starts it."""
     code = (
         '<label for="pk-code">Enrolment code'
         '<span class="hint">Filled in for you when you came from your agent\'s link</span>'
-        f'<input id="pk-code" name="code" value="{html.escape(code_value)}" '
-        'autocomplete="off" spellcheck="false"></label>'
+        '<input id="pk-code" name="code" autocomplete="off" spellcheck="false"></label>'
         if with_code
         else ""
     )
@@ -488,29 +484,17 @@ def _register_box(
     )
 
 
-def _code_param(request: Request) -> str:
-    """The enrolment code from the link's query, cut to the code's own shape.
-
-    It is rendered straight into the form, so anything outside the token
-    alphabet is dropped rather than trusted. An absent or malformed code just
-    leaves the field blank for the person to paste into.
-    """
-    code = request.query_params.get("code", "")
-    return code if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", code) else ""
-
-
-def _enrol_body(code: str = "") -> str:
+def _enrol_body() -> str:
     return (
         "<h1>Set up approval</h1>"
         "<p class='lead'>An agent on this gateway asked for a way for you to approve its "
         "changes. Create a passkey: your device keeps the secret, and this gateway "
         "keeps only a public key.</p>"
-        f"{_register_box(with_code=True, label='Create passkey', code_value=code)}"
+        f"{_register_box(with_code=True, label='Create passkey')}"
         "<details><summary>Set a password instead</summary>"
         f'<form method="post" action="{SETUP_PATH}">'
         '<input type="hidden" name="action" value="enrol_password">'
-        f'<label>Enrolment code<input name="code" value="{html.escape(code)}" '
-        'autocomplete="off" spellcheck="false"></label>'
+        '<label>Enrolment code<input name="code" autocomplete="off" spellcheck="false"></label>'
         f'{_NEW_FIELDS}<div class="actions"><button>Set password</button></div></form>'
         "</details>"
         "<p class='note'>This page works only while the window your agent opened is "
@@ -610,7 +594,7 @@ async def _setup(request: Request) -> Response:
     """Enrol, sign in to manage, or manage — whichever this gateway is ready for."""
     title = "Set up approval"
     if approver.enrolling():
-        return _page(request, title, _enrol_body(_code_param(request)))
+        return _page(request, title, _enrol_body())
     if not approver.configured():
         return _page(request, title, _unconfigured_body())
     session = approval_session.current(request)

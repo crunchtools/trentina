@@ -12,13 +12,13 @@ It is what a person reaches for by saying "let me set my passkey in Trentina"
 or "let me change my password in Trentina":
 
 - **Nothing set yet.** ``open`` starts a short window and hands back a link
-  carrying a one-time code as a query parameter. A query, not a fragment, so a
-  freshly opened link always reloads and the server renders the code into the
-  form: a fragment-only change does not reload an already-open tab, which
-  stranded people on a stale, empty form. The code reaches the server now, where
-  a fragment did not; it is single-use, lives only as long as the window, and
-  ``Referrer-Policy: no-referrer`` keeps it from leaking onward. The window
-  closes when a passkey or password is set, when it runs out, or on ``close``.
+  carrying a one-time code in its #fragment, so the code never reaches the
+  server and never lands in a request or proxy log. The page reads it on load
+  AND on every later fragment change, so a freshly opened link refills the form
+  even when a phone reuses a tab already open here — a fragment-only change does
+  not reload, which used to strand people on a stale, empty form. The code is
+  stripped from the address bar once read. The window closes when a passkey or
+  password is set, when it runs out, or on ``close``.
 - **Already set.** ``open`` hands back the same page with no code: the person
   signs in with what they have and adds a passkey, changes the password or
   removes either there. Nothing here can replace a working approver.
@@ -56,7 +56,7 @@ def _link(code: str | None = None) -> dict[str, str]:
         if parts.scheme in ("http", "https") and parts.hostname
         else current_origin.get()
     )
-    path = pending.ENROL_PATH + (f"?code={code}" if code else "")
+    path = pending.ENROL_PATH + (f"#code={code}" if code else "")
     answer = {"url": path}
     if base:
         answer["open_url"] = base + path

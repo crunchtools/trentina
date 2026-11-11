@@ -2,6 +2,23 @@
 const $=i=>document.getElementById(i);
 const b64=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
 const unb64=s=>Uint8Array.from(atob(s.replace(/-/g,"+").replace(/_/g,"/")+"=".repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
+// The one-time code rides in the link's #fragment, so it never reaches the
+// server or a request log. Read it on load AND on every later fragment change,
+// so a freshly opened link refills the form even when a phone reuses a tab that
+// is already open here (a fragment-only change does not reload). Remember it for
+// this tab so a reload keeps it, and strip it from the address bar once read.
+const readCode=()=>{
+const m=/[#&]code=([A-Za-z0-9_-]{1,64})/.exec(location.hash);
+if(m){try{sessionStorage.setItem("tz-enrol-code",m[1]);}catch(e){}return m[1];}
+try{return sessionStorage.getItem("tz-enrol-code")||"";}catch(e){return "";}
+};
+const takeCode=()=>{
+const c=readCode();
+if(c)for(const e of document.querySelectorAll("input[name=code]"))e.value=c;
+if(location.hash)history.replaceState(null,"",location.pathname+location.search);
+};
+takeCode();
+addEventListener("hashchange",takeCode);
 const t=$("ttl");
 if(t){let s=+t.dataset.seconds;const tick=()=>{if(s<=0){location.reload();return;}t.textContent=Math.floor(s/60)+":"+String(s%60).padStart(2,"0");s--;};tick();setInterval(tick,1000);}
 const box=$("pk");if(!box)return;

@@ -815,25 +815,15 @@ class TestTheEnrolmentCode:
         assert _enrol(pages, "not-the-code").status_code == 404
         assert approver.configured() is False
 
-    def test_the_open_window_page_renders_the_code_into_the_form(self, pages: TestClient) -> None:
-        """RT#1609: the code rides in the ?code= query and the server writes it
-        into the form, so a reloaded or re-opened link is never a blank field on
-        a stale tab. It lands in both the passkey box and the password form."""
-        _, code = approver.open_enrolment()
-        body = pages.get(f"{SETUP}?code={code}").text
-        assert body.count(f'value="{code}"') >= 2
-
-    def test_a_bare_load_leaves_the_code_field_empty(self, pages: TestClient) -> None:
+    def test_a_wrong_code_during_an_open_window_names_the_cause(self, pages: TestClient) -> None:
+        """RT#1609: while a window is open — which the GET page already shows —
+        a missing or wrong code says so and points at the fresh link, instead of
+        the generic "Nothing to approve" that read as a dead end."""
         approver.open_enrolment()
-        assert 'name="code" value=""' in pages.get(SETUP).text
-
-    def test_a_malformed_query_code_is_dropped_not_reflected(self, pages: TestClient) -> None:
-        """Outside the token alphabet it is dropped, so nothing a visitor put in
-        the query is written back into the page."""
-        approver.open_enrolment()
-        body = pages.get(f"{SETUP}?code=%22%3E%3Cscript%3E").text
-        assert "<script>" not in body
-        assert 'name="code" value=""' in body
+        answer = _enrol(pages, "not-the-code")
+        assert answer.status_code == 404
+        assert "fresh link" in answer.text
+        assert "Nothing to approve" not in answer.text
 
     def test_the_code_changes_every_time_the_window_opens(self, unset: Any) -> None:
         del unset
@@ -866,7 +856,7 @@ class TestTheEnrolTool:
 
         result = await approval_enrol()
         assert result["opened"] is True
-        assert result["url"] == f"{approval_routes.SETUP_PATH}?code={result['code']}"
+        assert result["url"] == f"{approval_routes.SETUP_PATH}#code={result['code']}"
         assert result["open_for_seconds"] == approver.DEFAULT_ENROL_WINDOW_SECONDS
         # No address known, so no absolute link: never a guessed one.
         assert "open_url" not in result
@@ -881,7 +871,7 @@ class TestTheEnrolTool:
             result = await approval_enrol()
         finally:
             current_origin.reset(reset)
-        assert result["open_url"] == f"https://gw.example{SETUP}?code={result['code']}"
+        assert result["open_url"] == f"https://gw.example{SETUP}#code={result['code']}"
 
     async def test_a_configured_public_address_wins(
         self, unset: Any, monkeypatch: pytest.MonkeyPatch
@@ -896,7 +886,7 @@ class TestTheEnrolTool:
             result = await approval_enrol()
         finally:
             current_origin.reset(reset)
-        assert result["open_url"].startswith("https://public.example/approve/setup?code=")
+        assert result["open_url"].startswith("https://public.example/approve/setup#code=")
 
     async def test_its_code_is_the_one_the_page_accepts(self, pages: TestClient) -> None:
         """End to end, the way Scott's acceptance test runs it: the operator

@@ -14,19 +14,17 @@ under that name.
 
 - **Approval enrolment no longer strands a person on a stale tab, and says
   plainly when a password is set or refused (RT #1609).** The one-time enrolment
-  code now rides in the link as a `?code=` query parameter, and the gateway
-  renders it into the setup form server-side, rather than a `#fragment` that only
-  the page's JavaScript read. A fragment-only link does not reload an already-open
-  tab, so on a phone a freshly opened link kept showing the previous page's empty
-  code field and every submission was refused; a query forces a real navigation
-  and an authoritative render. The code now reaches the server, where the fragment
-  did not: it stays single-use and window-lived, and the pages' existing
-  `Referrer-Policy: no-referrer` keeps it from leaking onward. Setting a password
-  now lands on an explicit "Password set. This gateway can be approved now.", and
-  a missing, wrong or expired code while a window is open now says so — the window
-  is already visible on the GET page — instead of the generic "Nothing to
-  approve"; with no window open the refusal stays uniform so a prober still learns
-  nothing.
+  code still rides in the link's `#fragment` — never sent to the server, so never
+  in a request or proxy log — but the setup page now reads it on load *and* on
+  every later fragment change, and remembers it for the tab. A fragment-only link
+  does not reload an already-open tab, so on a phone a freshly opened link kept
+  showing the previous page's empty code field and every submission was refused;
+  the new `hashchange` refill makes a re-tapped link populate the form even in a
+  reused tab, and a reload no longer loses the code. Setting a password now lands
+  on an explicit "Password set. This gateway can be approved now.", and a missing,
+  wrong or expired code while a window is open now says so — the window is already
+  visible on the GET page — instead of the generic "Nothing to approve"; with no
+  window open the refusal stays uniform so a prober still learns nothing.
 
 ## [6.19.0] - 2026-11-10
 
