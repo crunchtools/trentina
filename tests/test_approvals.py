@@ -20,8 +20,6 @@ import hashlib
 import os
 import pathlib
 import re
-import shutil
-import subprocess
 import time
 from typing import Any, ClassVar
 
@@ -881,20 +879,19 @@ class TestTheEnrolPageScript:
         assert 'id="ttl"' in body
         assert "This link works for" in body
 
-    def test_the_script_fills_stores_strips_and_reloads(self) -> None:
-        """Run the actual script under node against a stubbed DOM: it fills the
-        code fields from the #fragment, remembers the code for the tab, strips it
-        from the address bar, reloads when a re-tapped link changes only the
-        fragment (and not otherwise), and reloads on a bfcache restore."""
-        node = shutil.which("node")
-        if node is None:
-            pytest.skip("node is not installed")
-        probe = pathlib.Path(__file__).parent / "approval_page_probe.js"
-        script = pathlib.Path(approval_routes.__file__).parent / "approval_page.js"
-        result = subprocess.run(
-            [node, str(probe), str(script)], capture_output=True, text=True, timeout=30, check=False
-        )
-        assert result.returncode == 0, result.stderr or result.stdout
+    def test_the_served_script_reads_the_fragment_reloads_and_strips(self) -> None:
+        """A Python suite cannot run the inline script, so hold it to the moves
+        this fix (RT#1609) turns on: read the code from the #fragment, fill every
+        code field, reload on a fragment change and on a bfcache restore so a
+        reused tab is never stranded, remember it across a reload, and strip it
+        from the address bar. A regression in any of these fails here, not a phone."""
+        script = approval_routes._SCRIPT
+        assert "location.hash" in script  # reads the code from the fragment
+        assert 'querySelectorAll("input[name=code]")' in script  # fills the fields
+        assert "hashchange" in script and "location.reload()" in script  # re-tap reloads
+        assert "pageshow" in script  # a bfcache restore reloads
+        assert "sessionStorage" in script  # kept across a reload
+        assert "replaceState" in script  # stripped from the address bar
 
 
 class TestTheToolNamesItsTarget:
