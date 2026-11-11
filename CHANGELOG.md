@@ -10,6 +10,16 @@ under that name.
 
 ## [Unreleased]
 
+### Changed
+- Quay.io is the only registry (RT#1550). `sdlc ci`'s publish pushes the
+  verified image to `quay.io/crunchtools/trentina:main` only, `published.json`
+  records the Quay digest, and a release retags that one digest. The demo
+  image drops its GHCR job.
+- The L2 model is pinned from `quay.io/crunchtools/trentina-l2-model` at the
+  same digest (`sha256:02c8a8ff…`), copied from GHCR with its digest intact.
+  The one-shot import workflow is removed.
+- Inherits constitution v1.39.4.
+
 ## [6.19.0] - 2026-11-10
 
 ### Added

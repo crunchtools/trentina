@@ -1395,7 +1395,8 @@ same shape on real replies, not the same hash.
 
 It was the same hash, near enough: GHA run 40261349054 scored every real
 reply within 0.001 of the pod model, and run 40311268794, the one
-published (`ghcr.io/crunchtools/trentina-l2-model@sha256:02c8a8ff…`),
+published (`quay.io/crunchtools/trentina-l2-model@sha256:02c8a8ff…`,
+first pushed to GHCR and copied to Quay with its digest intact),
 passed the same gates with the same counts. Shipped 2026-10-26 without a
 fresh sweep first: the newest one was the screened one, and the next is
 the first production run. Under it known gaps 19 and 28 close (none of
