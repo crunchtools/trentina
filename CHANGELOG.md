@@ -10,6 +10,17 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+- **The approval pages are tested in a real browser (RT#1609).** `tests/browser/`
+  drives headless Chrome against the approval routes on a real server: setting
+  a password (success page, wrong code, mismatched passwords, a window that
+  closed mid-page, a re-tapped link in an open tab), creating a passkey through
+  Chrome's virtual authenticator, and the `Origin: null` regression itself. CI
+  runs it on every pull request as its own job. Reverting 6.21.1's header fix
+  fails five of its nine tests. One correction to 6.21.1's note: only the
+  password form was refused. The passkey ceremony's `fetch` calls carried the
+  real Origin even under `no-referrer`.
+
 ## [6.21.1] - 2026-11-12
 
 ### Fixed

@@ -26,6 +26,36 @@ jobs:
   # the image and commands the laptop runs. What stays here needs a secret or
   # runs only after merge.
 
+  # The approval pages in real Chrome (RT#1609). A browser chooses some request
+  # headers itself -- Origin above all -- so a TestClient or curl replay cannot
+  # show what a person's submission does; this can. Needs no secret, so it runs
+  # on every pull request. The runner image ships Chrome; naming it with
+  # --browser-path makes a missing browser fail the job rather than skip it.
+  browser:
+    name: Approval pages in a real browser
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Set up Python 3.14
+        run: uv python install 3.14
+
+      - name: Install dependencies
+        run: uv sync --all-extras --locked
+
+      - name: Drive the approval pages in Chrome
+        run: >-
+          uv run --with playwright==1.65.1
+          pytest -o addopts="" -p no:cacheprovider tests/browser -v
+          --browser-path /usr/bin/google-chrome
+
   live-l3:
     name: Live L3 Detection (OpenRouter)
     # Push to main only, as boundary-review-eval below: the test runs the

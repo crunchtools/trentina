@@ -299,8 +299,9 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 # tests/image/ runs INSIDE the built image (python-sdlc `pytest-in-image`), so
-# the suite outside it leaves that directory alone.
-addopts = "-n auto --ignore=tests/image"
+# the suite outside it leaves that directory alone. tests/browser/ drives real
+# Chrome, which that image does not have; CI's `browser` job runs it.
+addopts = "-n auto --ignore=tests/image --ignore=tests/browser"
 testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
