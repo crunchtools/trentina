@@ -10,6 +10,20 @@ under that name.
 
 ## [Unreleased]
 
+## [6.21.1] - 2026-11-12
+
+### Fixed
+- **Setting an approver from a real browser works (RT#1609).** The approval
+  pages sent `Referrer-Policy: no-referrer`, under which a browser sends
+  `Origin: null` on every POST, its own origin included, so the same-origin
+  check refused every password and passkey a person submitted and showed the
+  generic "Nothing to approve". The pages now send `same-origin`, which keeps
+  the real Origin for this gateway and sends nothing to anyone else (the
+  `#code=` fragment is never in a Referer). A setup submission that still fails
+  that check now says "nothing was saved" instead. Verified end to end in
+  headless Chrome: the link fills the code, the password is set, and the page
+  says so.
+
 ## [6.21.0] - 2026-11-12
 
 ### Changed
