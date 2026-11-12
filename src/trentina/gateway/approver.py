@@ -316,7 +316,7 @@ def open_enrolment() -> tuple[int, str]:
     # chat; that silent rotation was the stale-link failure (RT#1609). Mint afresh
     # only when there is no code, or a kept one has so little of its hard cap left
     # that a full window would outlive it — an honest fresh window beats a
-    # near-dead code advertised as whole.
+    # nearly-expired code advertised as whole.
     cap_left = None if _code_minted is None else MAX_ENROL_WINDOW_SECONDS - (now - _code_minted)
     if _window_code is None or cap_left is None or cap_left < MIN_ENROL_WINDOW_SECONDS:
         _window_code = _mint_code()
@@ -350,7 +350,7 @@ def enrolling(code: str | None = None) -> bool:
     if now - _window_opened > _window_seconds:
         return False
     # A reopen keeps the code but must never carry it past its hard cap: the code
-    # is dead MAX_ENROL_WINDOW_SECONDS after it was minted, however many reopens
+    # expires MAX_ENROL_WINDOW_SECONDS after it was minted, however many reopens
     # stood under that ceiling (RT#1609 security review).
     if _code_minted is not None and now - _code_minted > MAX_ENROL_WINDOW_SECONDS:
         return False
