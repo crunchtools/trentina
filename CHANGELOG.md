@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.22.0] - 2026-11-12
+
 ### Added
 - **The approval pages are tested in a real browser (RT#1609).** `tests/browser/`
   drives headless Chrome against the approval routes on a real server: setting
