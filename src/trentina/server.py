@@ -606,23 +606,28 @@ async def approval_enrol_tool(action: str = "open") -> dict[str, Any]:
     detect-only, a new way out of the network — and a person agrees by signing
     in with a passkey or the approval password.
 
-    `open` (the default) returns `open_url`: open it in the person's browser,
-    or give it to them. If nothing is set yet, it starts a short window and the
-    link carries a one-time code; the person creates a passkey there. If
-    something is set already, the person signs in and manages passkeys and the
-    password there. `close` shuts an open window early.
+    `open` (the default) returns `gateway` (which gateway this is for),
+    `open_url`, and a `message` to relay to the person UNCHANGED: open it in
+    their browser, or give it to them. If nothing is set yet, it opens a window
+    and the link carries a one-time code (also printed as `code`, `xxxx-xxxx-xxxx`,
+    for them to type); re-opening keeps the same code, so a link already in the
+    chat stays valid. If something is set already, the person signs in and
+    manages passkeys and the password there. `close` shuts an open window early.
+    `status` reports, without touching the window, whether an approver is set and
+    how long any open window has left — use it to check, never `open`.
 
     You can ask for this; you cannot answer it. A passkey needs the person's
     device and a password is a form submission none of your tools makes — that
     asymmetry is why asking is yours to do.
 
     Args:
-        action: "open" or "close".
+        action: "open", "close" or "status".
 
     Returns:
-        `open_url` (absolute, when the gateway knows its address) and `url`,
-        with `opened`, `code` and `open_for_seconds` for a new window, or
-        `already_set`; `closed` for close; `error` otherwise.
+        `open`: `gateway`, `local_only`, `reopened`, `open_url`/`url`, `opened`,
+        `code`, `open_for_seconds`, and `message`; or `already_set` with its own
+        `message`. `close`: `gateway`, `closed`, `was_open`. `status`: `gateway`,
+        `approver_set`, `window_open`, `seconds_left`. `error` otherwise.
     """
     return await approval_enrol(action)
 

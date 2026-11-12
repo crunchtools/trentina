@@ -10,6 +10,48 @@ under that name.
 
 ## [Unreleased]
 
+### Changed
+- **Approval enrolment: the default window is now 15 minutes (RT#1609).** Long
+  enough that an agent relaying the link into a chat read on a phone finishes the
+  hand-off without re-opening; `gateway.approval_enrol_window_seconds` still
+  overrides it, bounded 1–60 minutes.
+
+### Fixed
+
+- **Approval enrolment now just works on a phone, and never dead-ends (RT #1609).**
+  Several faults compounded into an approver that could not be set from a phone:
+  - **Re-opening the window no longer rotates the code.** It kept minting a new
+    one-time code, so an agent re-calling `approval_enrol` silently invalidated
+    the link already in the chat. The code now stands across re-opens (until the
+    window is closed, an approver is set, or an hour passes) so every link in the
+    chat stays valid; `approval_enrol` gains `status` (check without re-opening)
+    and `reopened`, and its result and the page both name the gateway, so a link
+    for one gateway is not submitted against another.
+  - **The code is also human-typeable** (`xxxx-xxxx-xxxx`, no look-alike
+    characters) for when a link does not auto-fill the field, and still rides in
+    the `#fragment` so it never reaches a server or proxy log.
+  - **The setup page is robust to a reused tab.** A fragment-only link does not
+    reload an already-open tab, so a freshly tapped link used to sit on the
+    previous page's empty field; it now reloads on a fragment change and on a
+    bfcache restore, remembers the code for the tab, and shows a live countdown.
+  - **No more dead-end "Nothing to approve".** Every enrolment refusal
+    re-renders the live form with an inline reason — wrong code, window closed —
+    and setting a passkey or password lands on an explicit "… This gateway can be
+    approved now." The refusals turn only on the public window/approver state, so
+    a prober still learns nothing it could not read from the GET page.
+
+### Security
+
+- **A re-opened enrolment code can no longer outlive its one-hour hard cap (RT#1609).**
+  `approver.enrolling()` and the countdown now enforce `MAX_ENROL_WINDOW_SECONDS`
+  from when the code was minted, so re-opening a window cannot stretch a code past
+  an hour, and a re-open hands back only the time the code actually has left
+  (minting a fresh one when a full window would outlive it). The gateway
+  constitution now states the enrolment bootstrap explicitly (v2.19.0): the
+  one-time code is proof of operator referral, not the approval capability — which
+  is never returned to anything, and which the agent cannot submit because every
+  state-changing approval route is POST-only.
+
 ## [6.20.0] - 2026-11-11
 
 ### Changed

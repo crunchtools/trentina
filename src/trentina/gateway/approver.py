@@ -200,14 +200,13 @@ def set_password(password: str) -> None:
 
 
 #: How long an operator-opened enrolment window stands, as
-#: ``gateway.approval_enrol_window_seconds`` in ``profiles.yaml``. A setting
-#: rather than a constant because how long is enough belongs to the
-#: deployment: an agent relaying the URL into a chat read on a phone needs a
-#: round trip, an operator at the same keyboard as the browser needs seconds.
-#: Five minutes by default, since the window is the one interval in which this
-#: gateway's approver can be claimed. Bounded both ways — a minute is not
-#: actionable, and an hour is where "short" stops being true.
-DEFAULT_ENROL_WINDOW_SECONDS = 300.0
+#: ``gateway.approval_enrol_window_seconds`` in ``profiles.yaml`` — a setting,
+#: not a constant, because how long is enough belongs to the deployment. Fifteen
+#: minutes by default (RT#1609): long enough that an agent relaying the link into
+#: a chat read on a phone finishes the hand-off without re-opening, since the
+#: window is the one interval in which this gateway's approver can be claimed.
+#: Bounded both ways — a minute is not actionable, an hour is where "short" ends.
+DEFAULT_ENROL_WINDOW_SECONDS = 900.0
 MIN_ENROL_WINDOW_SECONDS = 60.0
 MAX_ENROL_WINDOW_SECONDS = 3600.0
 
@@ -239,13 +238,51 @@ def enrol_window_seconds() -> float:
     return clamped_enrol_window(active.config.approval_enrol_window_seconds)
 
 
-#: Short enough to read out or retype, long enough that it is not guessed
-#: inside the window at the approval route's rate limit.
-_CODE_BYTES = 8
+#: Lowercase letters and digits with the confusable set removed (0 1 i l o), so
+#: a person can read the code off the chat and type it into the browser without
+#: a lookalike. 31 symbols, 12 of them: ~59 bits, far past guessing inside a
+#: window at the approval route's rate limit.
+_CODE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+_CODE_LEN = 12
 
 _window_opened: float | None = None
+#: The code as stored and compared: lowercase, no hyphens.
 _window_code: str | None = None
+#: When ``_window_code`` was minted. A code stands across re-opens until this is
+#: ``MAX_ENROL_WINDOW_SECONDS`` old, so re-opening never invalidates a link a
+#: person already holds (RT#1609).
+_code_minted: float | None = None
 _window_seconds: float = DEFAULT_ENROL_WINDOW_SECONDS
+
+
+def _mint_code() -> str:
+    return "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LEN))
+
+
+def normalise_code(code: str) -> str:
+    """The code as stored, from whatever a person typed or a link carried:
+    lowercase, with the display hyphens and any stray whitespace removed."""
+    return "".join(code.split()).replace("-", "").lower()
+
+
+def display_code(code: str) -> str:
+    """The code grouped for reading and typing: ``xxxx-xxxx-xxxx``."""
+    return "-".join(code[i : i + 4] for i in range(0, len(code), 4))
+
+
+def enrol_seconds_left() -> int:
+    """Whole seconds a person still has on the open window, or 0 when none is.
+
+    Never more than the code's own hard cap has left: a reopened window cannot
+    promise time past MAX_ENROL_WINDOW_SECONDS from when its code was minted.
+    """
+    if _window_opened is None:
+        return 0
+    now = time.monotonic()
+    left = _window_seconds - (now - _window_opened)
+    if _code_minted is not None:
+        left = min(left, MAX_ENROL_WINDOW_SECONDS - (now - _code_minted))
+    return max(0, int(left))
 
 
 def open_enrolment() -> tuple[int, str]:
@@ -271,13 +308,28 @@ def open_enrolment() -> tuple[int, str]:
     code-execution backend defeats this, as it defeats every other control on
     the gateway — see docs/deployment-hardening.md.
     """
-    global _window_opened, _window_code, _window_seconds
-    _window_opened = time.monotonic()
-    _window_seconds = enrol_window_seconds()
-    _window_code = secrets.token_urlsafe(_CODE_BYTES)
-    hold(_window_code, "ENROLMENT_CODE")
+    global _window_opened, _window_code, _window_seconds, _code_minted
+    now = time.monotonic()
+    want = enrol_window_seconds()
+    # Keep the code a person may already hold, so re-opening — an agent calling
+    # again, or a window that ran out — never invalidates the link already in the
+    # chat; that silent rotation was the stale-link failure (RT#1609). Mint afresh
+    # only when there is no code, or a kept one has so little of its hard cap left
+    # that a full window would outlive it — an honest fresh window beats a
+    # nearly-expired code advertised as whole.
+    cap_left = None if _code_minted is None else MAX_ENROL_WINDOW_SECONDS - (now - _code_minted)
+    if _window_code is None or cap_left is None or cap_left < MIN_ENROL_WINDOW_SECONDS:
+        _window_code = _mint_code()
+        _code_minted = now
+        cap_left = MAX_ENROL_WINDOW_SECONDS
+        hold(_window_code, "ENROLMENT_CODE")
+        hold(display_code(_window_code), "ENROLMENT_CODE")
+    # Never advertise past the code's hard cap: a reopened window gets at most the
+    # time its code has left, so the duration handed out is one a person can trust.
+    _window_seconds = min(want, cap_left)
+    _window_opened = now
     logger.info("approval: enrolment opened for %.0fs", _window_seconds)
-    return int(_window_seconds), _window_code
+    return int(_window_seconds), display_code(_window_code)
 
 
 def enrolling(code: str | None = None) -> bool:
@@ -294,19 +346,26 @@ def enrolling(code: str | None = None) -> bool:
     """
     if configured() or _window_opened is None or _window_code is None:
         return False
-    if time.monotonic() - _window_opened > _window_seconds:
+    now = time.monotonic()
+    if now - _window_opened > _window_seconds:
+        return False
+    # A reopen keeps the code but must never carry it past its hard cap: the code
+    # expires MAX_ENROL_WINDOW_SECONDS after it was minted, however many reopens
+    # stood under that ceiling (RT#1609 security review).
+    if _code_minted is not None and now - _code_minted > MAX_ENROL_WINDOW_SECONDS:
         return False
     if code is None:
         return True
-    return hmac.compare_digest(code.encode("utf-8"), _window_code.encode("utf-8"))
+    return hmac.compare_digest(normalise_code(code).encode("utf-8"), _window_code.encode("utf-8"))
 
 
 def close_enrolment() -> None:
     """Shut the window: once an approver is set, on the operator's ``close``,
     and by tests."""
-    global _window_opened, _window_code, _window_seconds
+    global _window_opened, _window_code, _window_seconds, _code_minted
     _window_opened = None
     _window_code = None
+    _code_minted = None
     _window_seconds = DEFAULT_ENROL_WINDOW_SECONDS
 
 

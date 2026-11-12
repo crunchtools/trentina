@@ -20,6 +20,8 @@ import hashlib
 import os
 import pathlib
 import re
+import shutil
+import subprocess
 import time
 from typing import Any, ClassVar
 
@@ -730,7 +732,7 @@ class TestHowLongTheWindowStands:
 
     @pytest.mark.parametrize(
         ("setting", "loaded"),
-        [("", 300.0), ("  approval_enrol_window_seconds: 900", 900.0)]
+        [("", 900.0), ("  approval_enrol_window_seconds: 600", 600.0)]
         + [(f"  approval_enrol_window_seconds: {v}", c) for v, c in ((5, 60.0), (99999, 3600.0))],
     )
     def test_it_comes_off_the_yaml(
@@ -815,16 +817,92 @@ class TestTheEnrolmentCode:
         assert _enrol(pages, "not-the-code").status_code == 404
         assert approver.configured() is False
 
-    def test_the_code_changes_every_time_the_window_opens(self, unset: Any) -> None:
+    def test_a_wrong_code_during_an_open_window_names_the_cause(self, pages: TestClient) -> None:
+        """RT#1609: while a window is open — which the GET page already shows —
+        a missing or wrong code says so and points at the fresh link, instead of
+        the generic "Nothing to approve" that read as a dead end."""
+        approver.open_enrolment()
+        answer = _enrol(pages, "not-the-code")
+        assert answer.status_code == 404
+        assert "missing or wrong" in answer.text
+        assert "Nothing to approve" not in answer.text
+
+    def test_the_code_is_kept_across_reopens_then_fresh_after_close_or_cap(
+        self, unset: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RT#1609: re-opening must not rotate the code — that silently killed a
+        link already in the chat. A fresh code comes only after close or the cap."""
         del unset
         _, first = approver.open_enrolment()
-        _, second = approver.open_enrolment()
-        assert first != second
+        _, again = approver.open_enrolment()
+        assert again == first
+        approver.close_enrolment()
+        _, after_close = approver.open_enrolment()
+        assert after_close != first
+        capped = time.monotonic() + approver.MAX_ENROL_WINDOW_SECONDS + 1
+        monkeypatch.setattr(approver.time, "monotonic", lambda: capped)
+        _, after_cap = approver.open_enrolment()
+        assert after_cap != after_close
 
-    def test_the_old_code_stops_working(self, pages: TestClient) -> None:
+    def test_a_reopen_keeps_the_same_code_working(self, pages: TestClient) -> None:
         _, first = approver.open_enrolment()
         approver.open_enrolment()
-        assert approver.enrolling(first) is False
+        assert approver.enrolling(first) is True
+
+    def test_a_window_that_runs_out_under_the_cap_reopens_to_the_same_code(
+        self, unset: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RT#1609: the window can lapse while the code is still under its hard
+        cap. Re-opening then must hand back the SAME code — the link already in
+        the chat has to keep working — and that code must be accepted again."""
+        del unset
+        _, first = approver.open_enrolment()
+        lapsed = time.monotonic() + approver._window_seconds + 1
+        assert lapsed < time.monotonic() + approver.MAX_ENROL_WINDOW_SECONDS
+        monkeypatch.setattr(approver.time, "monotonic", lambda: lapsed)
+        assert approver.enrolling() is False  # it ran out
+        _, reopened = approver.open_enrolment()
+        assert reopened == first
+        assert approver.enrolling(first) is True
+
+    def test_a_reopen_near_the_cap_advertises_only_the_time_left(
+        self, unset: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RT#1609 security review: a kept code cannot be re-advertised for a
+        full window when little of its hard cap remains — open_enrolment hands
+        back only the time the code actually has, and the countdown agrees, so a
+        reopen can never stretch a code past MAX_ENROL_WINDOW_SECONDS from mint."""
+        del unset
+        _, first = approver.open_enrolment()
+        near = (
+            time.monotonic()
+            + approver.MAX_ENROL_WINDOW_SECONDS
+            - 2 * approver.MIN_ENROL_WINDOW_SECONDS
+        )
+        monkeypatch.setattr(approver.time, "monotonic", lambda: near)
+        seconds, again = approver.open_enrolment()
+        assert again == first  # the link already in the chat still works
+        assert seconds <= 2 * approver.MIN_ENROL_WINDOW_SECONDS  # never past the cap
+        assert approver.enrol_seconds_left() <= seconds
+
+    def test_a_reopen_under_the_floor_mints_a_fresh_full_window(
+        self, unset: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When a kept code has less than the floor of its cap left, a full fresh
+        window would outlive it — so open_enrolment mints a new code rather than
+        advertise a near-dead one as whole."""
+        del unset
+        _, first = approver.open_enrolment()
+        near = (
+            time.monotonic()
+            + approver.MAX_ENROL_WINDOW_SECONDS
+            - approver.MIN_ENROL_WINDOW_SECONDS
+            + 1
+        )
+        monkeypatch.setattr(approver.time, "monotonic", lambda: near)
+        seconds, fresh = approver.open_enrolment()
+        assert fresh != first
+        assert seconds >= approver.MIN_ENROL_WINDOW_SECONDS
 
     def test_the_code_does_not_survive_the_window(
         self, pages: TestClient, monkeypatch: pytest.MonkeyPatch
@@ -833,6 +911,124 @@ class TestTheEnrolmentCode:
         later = time.monotonic() + approver._window_seconds + 1
         monkeypatch.setattr(approver.time, "monotonic", lambda: later)
         assert approver.enrolling(code) is False
+
+    def test_no_state_changing_approval_route_answers_get(self, pages: TestClient) -> None:
+        """Constitution property 1 / RT#1609: the agent holds the enrolment code
+        but cannot act on it, because setting an approver — and every other state
+        change behind these routes — is POST-only. The pure-POST routes answer a
+        GET with 405; the two paths that also render (approve, setup) dispatch a
+        GET to the read-only handler, so the writing handler is never reached
+        without a POST. That inability to submit is what makes the agent-visible
+        code safe."""
+        for path in (
+            approval_routes.SIGN_OUT_PATH,
+            approval_routes.BEGIN_PATH,
+            approval_routes.FINISH_PATH,
+        ):
+            assert pages.get(path).status_code == 405, path
+        # approve and setup render on GET and change state only on POST.
+        assert pages.get(approval_routes.PATH).status_code != 405
+        assert pages.get(approval_routes.SETUP_PATH).status_code != 405
+
+
+class TestTheEnrolPageScript:
+    """The enrolment code lives in the link's #fragment, and the page's inline
+    script is what reads it — a Python suite cannot run that script, but it can
+    hold the served page to the shape the script needs and hold the script to
+    the moves this fix (RT#1609) turns on, so a regression fails CI, not a phone.
+    """
+
+    def test_both_enrol_forms_expose_a_code_field_for_the_script(self, pages: TestClient) -> None:
+        """The passkey box and the "set a password" form each carry their own
+        code field — the script fills every ``input[name=code]`` from the
+        fragment, so dropping either would strand that path. Match each field by
+        its own markup, not a page-wide count that two in one form would pass."""
+        approver.open_enrolment()
+        body = pages.get(SETUP).text
+        assert '<input id="pk-code" name="code"' in body  # the passkey box
+        assert '<label>Enrolment code<input name="code"' in body  # the password form
+
+    def test_the_open_window_page_shows_a_countdown(self, pages: TestClient) -> None:
+        approver.open_enrolment()
+        body = pages.get(SETUP).text
+        assert 'id="ttl"' in body
+        assert "This link works for" in body
+
+    def test_the_script_fills_stores_strips_and_reloads(self) -> None:
+        """Run the served script in a node vm sandbox (RT#1609): it fills the
+        code fields from the #fragment, remembers the code for the tab, strips it
+        from the address bar, reloads when a re-tapped link changes only the
+        fragment (and not otherwise), and reloads on a bfcache restore. Skipped
+        only where node is unavailable; CI has it."""
+        node = shutil.which("node")
+        if node is None:
+            pytest.skip("node is not installed")
+        probe = pathlib.Path(__file__).parent / "approval_page_probe.js"
+        script = pathlib.Path(approval_routes.__file__).parent / "approval_page.js"
+        result = subprocess.run(
+            [node, str(probe), str(script)], capture_output=True, text=True, timeout=30, check=False
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+
+
+class TestTheToolNamesItsTarget:
+    """RT#1609: the breetai-vs-gloval mix-up — a link opened on one gateway and
+    submitted on another — is caught by naming the gateway on the result, a relay
+    `message`, and a `status` that checks without reopening."""
+
+    async def test_open_names_the_gateway_and_carries_a_relay_message(self, unset: Any) -> None:
+        del unset
+        from trentina.gateway.context import current_origin
+        from trentina.tools.enrol import approval_enrol
+
+        reset = current_origin.set("https://gw.example")
+        try:
+            result = await approval_enrol()
+        finally:
+            current_origin.reset(reset)
+        assert result["gateway"] == "gw.example"
+        assert result["local_only"] is False
+        assert result["code"] in result["message"]
+        assert "gw.example" in result["message"]
+
+    async def test_a_loopback_gateway_is_flagged_local_only(self, unset: Any) -> None:
+        del unset
+        from trentina.gateway.context import current_origin
+        from trentina.tools.enrol import approval_enrol
+
+        reset = current_origin.set("http://127.0.0.1:8019")
+        try:
+            result = await approval_enrol()
+        finally:
+            current_origin.reset(reset)
+        assert result["gateway"] == "127.0.0.1"
+        assert result["local_only"] is True
+        assert "will not open from a phone" in result["message"]
+
+    async def test_status_reports_without_opening_a_window(self, unset: Any) -> None:
+        del unset
+        from trentina.tools.enrol import approval_enrol
+
+        before = await approval_enrol("status")
+        assert before["approver_set"] is False
+        assert before["window_open"] is False
+        assert before["seconds_left"] == 0
+        assert approver.enrolling() is False  # status did not open one
+
+        await approval_enrol()
+        after = await approval_enrol("status")
+        assert after["window_open"] is True
+        assert after["seconds_left"] > 0
+
+    async def test_reopen_is_flagged_and_keeps_the_code(self, unset: Any) -> None:
+        del unset
+        from trentina.tools.enrol import approval_enrol
+
+        first = await approval_enrol()
+        again = await approval_enrol()
+        assert first["reopened"] is False
+        assert again["reopened"] is True
+        assert again["code"] == first["code"]
 
 
 class TestTheEnrolTool:
@@ -917,7 +1113,8 @@ class TestTheEnrolTool:
 
         code = (await approval_enrol())["code"]
         closed = await approval_enrol("close")
-        assert closed == {"closed": True, "was_open": True}
+        assert closed["closed"] is True
+        assert closed["was_open"] is True
         assert approver.enrolling(code) is False
 
     async def test_an_unknown_action_is_refused(self, unset: Any) -> None:

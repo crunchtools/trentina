@@ -1123,3 +1123,22 @@ path = "tests/test_federation_attest.py"
 pattern = "_ingress"
 justification = "Not single-use: called from two test methods of TestTheMethod, verified by grep. The check counts callers inside class methods as one. Upstream: https://gitlab.com/mattdm/gourmand/-/issues/25"
 classification = "gourmand_bug"
+
+# Approval enrolment page: client-side storage degrades, it does not fail (RT#1609).
+
+[[exceptions]]
+check = "silent_fallbacks"
+path = "src/trentina/gateway/approval_page.js"
+justification = "sessionStorage access throws in private mode or with site-data blocked, and the enrolment code it holds is only a per-tab convenience for surviving a reload — the page reads the code from the #fragment regardless. There is no logger on the page to surface the exception to, so each helper (recall/remember/forget) degrades to carrying on without storage, which is the intended behaviour, not a hidden failure."
+classification = "by_design"
+
+# Behavioural test of the enrolment page script: runs the repo's own
+# approval_page.js in a node vm sandbox (RT#1609), the only way a Python suite
+# can execute browser JS. vm.runInNewContext here is the test harness, and its
+# input is a tracked repo file, not untrusted data.
+
+[[exceptions]]
+check = "security_practices"
+path = "tests/approval_page_probe.js"
+justification = "Runs the repo's own src/trentina/gateway/approval_page.js in a node vm sandbox to behaviourally test it; the only input is that tracked file, read from a path given on the command line, never untrusted data. This is a test harness, not a runtime code path."
+classification = "by_design"

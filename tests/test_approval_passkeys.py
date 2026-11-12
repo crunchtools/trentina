@@ -102,15 +102,31 @@ class TestEnrollingTheFirstPasskey:
     ) -> None:
         answer = _enrol_passkey(client, Authenticator())
         assert answer.status_code == 200
-        assert answer.json() == {"ok": True, "next": f"{SETUP}?done=passkey_added"}
+        assert answer.json() == {"ok": True, "next": f"{SETUP}?done=passkey_enrolled"}
         assert approval_session.SECURE_COOKIE in answer.headers["set-cookie"]
         assert approver.configured() is True
         assert approver.enrolling() is False
-        assert "Passkey added" in client.get(answer.json()["next"]).text
+        assert "Passkey created" in client.get(answer.json()["next"]).text
         cred_id = approver.passkeys()[0]["id"]
         # A digest, never the id itself: the id is a string a browser chose.
         assert gateway == [f"passkey enrolled {approver.credential_digest(cred_id)} alg=-7"]
         assert cred_id not in gateway[0]
+
+    def test_begin_with_a_wrong_code_says_what_is_wrong(self, client: TestClient) -> None:
+        """RT#1609: while a window is open — which the GET page already shows —
+        the passkey ceremony names the bad code instead of a blank refusal, and
+        still issues no challenge."""
+        approver.open_enrolment()
+        answer = _post(client, BEGIN, {"ceremony": "register", "code": "not-the-code"})
+        assert answer.status_code == 400
+        assert "missing or wrong" in answer.json()["message"]
+        assert "challenge" not in answer.json()
+
+    def test_begin_with_no_window_says_the_window_closed(self, client: TestClient) -> None:
+        answer = _post(client, BEGIN, {"ceremony": "register", "code": "anything"})
+        assert answer.status_code == 400
+        assert "window closed" in answer.json()["message"].lower()
+        assert "challenge" not in answer.json()
 
     def test_without_the_code_no_challenge_is_even_issued(self, client: TestClient) -> None:
         approver.open_enrolment()
@@ -124,6 +140,8 @@ class TestEnrollingTheFirstPasskey:
         window being reopened with another."""
         _, code = approver.open_enrolment()
         challenge = _post(client, BEGIN, {"ceremony": "register", "code": code}).json()["challenge"]
+        # A re-open keeps the code now, so close first to force a fresh one.
+        approver.close_enrolment()
         _, fresh = approver.open_enrolment()
         answer = _post(client, FINISH, Authenticator().register_json(challenge, code=fresh))
         assert answer.status_code == 400
