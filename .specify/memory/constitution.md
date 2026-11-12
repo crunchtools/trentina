@@ -1,8 +1,8 @@
 # trentina Constitution
 
-> **Version:** 2.18.0
+> **Version:** 2.19.0
 > **Ratified:** 2026-09-22
-> **Amended:** 2026-11-07
+> **Amended:** 2026-11-11
 > **Status:** Active
 > **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.39.4
 > **Profile:** Security Gateway
@@ -319,6 +319,21 @@ Three properties make that real, and each is a requirement:
    stays refused. The absence of a way to approve is never an approval anyone
    can give.
 
+The **enrolment bootstrap** is not an exception to property 1. The one-time code
+`approval_enrol` hands the operator agent is not the approval capability: the
+capability is the passkey or password a person sets, which is never returned to
+anything and which the gateway only ever stores as a verifier. The code gates
+one thing — who may set the *first* approver on a gateway that has none — and
+`approver.enrolling()` refuses the moment one is configured, so it can neither
+replace nor stand in for a working approver. The agent must see the code to hand
+a person the setup link and cannot act on it: every state-changing approval
+route is POST-only and no Trentina tool makes a POST, so the agent can ask for
+the prompt and never answer it. A code is valid only while no approver is
+configured, and never past `MAX_ENROL_WINDOW_SECONDS` from when it was minted,
+however often its window is reopened. The one residual — an operator profile that
+also carries code execution — is the general compromised-operator gap, mitigated
+unconditionally by `TRENTINA_APPROVAL_PASSWORD_HASH_FILE` (docs/approvals.md).
+
 What does NOT come here is anything high-volume. A gateway holds hundreds of
 tool pins and a restart can re-hold every remote tool at once; routing those
 through a person would push operators toward turning pinning off, which costs
@@ -474,4 +489,5 @@ justification in `gourmand-exceptions.toml`.
 | 2.15.0 | 2026-11-04 | Python Version Coverage: ONE supported version, the one the image ships, named identically by `requires-python`, the CI matrix, mypy, ruff and the local test image. The matrix existed to keep a promise an image-only product does not make — nothing has been on PyPI since 0.54.1 — and it was not free: four suites per pull request, a `fail-fast` rule so one version's flake did not cancel the rest, and three version settings that could only be reasoned about together, with mypy pinned below the advertised floor because numpy's stubs would not parse under it and ruff pinned at the floor to enforce what mypy then could not. The retired rule's hazard does not return: a version admitted and untested (issue #100's uninstallable 3.10 floor) is impossible when one version is admitted and tested, and the local gate now runs production's version instead of one nothing ships. Adoption of a new release is gated on the dependency floor, not the release date: 3.15 is out and Hummingbird publishes it, but `onnxruntime` has no cp315 wheel and Layer 2 has no runtime without one. One name may lag and only one: ruff's `target-version` governs the syntax the formatter EMITS, so it is the only setting here that can write code another gate has to read, and at `py314` the formatter rewrites every multi-exception handler into PEP 758's unparenthesized form, which Gourmand parses without error and silently loses usages through — 39 files and four live enum members called dead on this tree. It may sit at the newest version every gate parses, with the blocker, its cost and the upstream ticket recorded in the config. Nothing else is exempt: a lagging floor, matrix, mypy or test image means production runs a version nothing checked. `PERIMETER_VERSION` does not move: no verdict changes |
 | 2.16.0 | 2026-11-04 | Under constitution v1.30.0: every check runs from python-sdlc, pinned once in `.pre-commit-config.yaml` and configured by `[tool.sdlc.commit]`, `[tool.sdlc.push]` and `[tool.sdlc.ci]` in `pyproject.toml`. Commit runs the ruff fixes; push renders every verdict and builds no container; CI runs the same image as the laptop and adds the image build and the tests that run inside it (`tests/image/`). `scripts/gates.sh` is deleted, and with it Trivy: all 45 alerts it ever raised were Python packages, which pip-audit catches before the push, or pip copies vendored inside the base image, which nothing here can fix. CodeQL gates the push on findings outside `.sdlc/codeql-baseline.json` |
 | 2.17.0 | 2026-11-06 | Input limits scoped to what they always governed (#740). "URL schemes are http/https only" was written about URLs an agent supplies, and stays exact for them: a fetch, the forward route and egress admit http(s) alone. A backend location is the operator's, and was never held to it — `internal://` and `decoy://` backends predate this — so it is now stated: http(s), those two, or a scheme a carrier plugin answers, for the stdio-only MCP servers #724 fronts. Three conditions keep the chokepoint what it was. A plugin carrier may not take http, https, internal or decoy, so no plugin can stand in for an existing backend's wire. It is checked at load without being imported, by a scan that allows sockets and refuses every process launcher, because the gateway spawns nothing it carries to (#724's ruling: the host starts the server). And it carries messages only: breaker, credentials, retries, the response cap and all three layers stay in the gateway above it, so a carrier has no judging to bypass. `PERIMETER_VERSION` does not move: no verdict changes |
+| 2.19.0 | 2026-11-11 | Human Approval property 1 states the enrolment bootstrap explicitly (RT#1609). The one-time code `approval_enrol` hands the operator agent is not the approval capability and never was: the capability is the passkey or password a person sets, returned to nothing and stored only as a verifier. The code gates who may set the FIRST approver on a gateway with none; `enrolling()` refuses once one is configured, so it cannot replace or act as a working approver. The agent must see it to relay the setup link and cannot use it, because every state-changing approval route is POST-only and no Trentina tool makes a POST. Stated here because the property's "not a token in a tool result" wording, read alone, re-fired a CRITICAL on every enrol PR though the carve-out lived only in CLAUDE.md and the code. This PR also caps a kept code at `MAX_ENROL_WINDOW_SECONDS` from mint inside `enrolling()`, so a reopen cannot stretch its life. `PERIMETER_VERSION` does not move: no verdict changes |
 | 2.18.0 | 2026-11-07 | Stdio backends (#724): `unix://` joins the backend locations by name. 2.17.0 admitted a scheme only through an operator-installed plugin, and the built-in `unix` carrier is not one, so it is stated rather than read into that clause. The gateway still starts nothing: the stdio server is the host's, run by systemd socket activation, and the gateway connects to its socket. The socket must sit under the operator's `TRENTINA_SOCKET_ROOTS` (unset, none loads), checked as written at load and again at every connect through a directory opened without following links. A `unix://` backend carries no `headers`, `auth` or `federated`, since nothing on that wire is HTTP. `PERIMETER_VERSION` does not move: no verdict changes |

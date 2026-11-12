@@ -849,6 +849,61 @@ class TestTheEnrolmentCode:
         approver.open_enrolment()
         assert approver.enrolling(first) is True
 
+    def test_a_window_that_runs_out_under_the_cap_reopens_to_the_same_code(
+        self, unset: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RT#1609: the window can lapse while the code is still under its hard
+        cap. Re-opening then must hand back the SAME code — the link already in
+        the chat has to keep working — and that code must be accepted again."""
+        del unset
+        _, first = approver.open_enrolment()
+        lapsed = time.monotonic() + approver._window_seconds + 1
+        assert lapsed < time.monotonic() + approver.MAX_ENROL_WINDOW_SECONDS
+        monkeypatch.setattr(approver.time, "monotonic", lambda: lapsed)
+        assert approver.enrolling() is False  # it ran out
+        _, reopened = approver.open_enrolment()
+        assert reopened == first
+        assert approver.enrolling(first) is True
+
+    def test_a_reopen_near_the_cap_advertises_only_the_time_left(
+        self, unset: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RT#1609 security review: a kept code cannot be re-advertised for a
+        full window when little of its hard cap remains — open_enrolment hands
+        back only the time the code actually has, and the countdown agrees, so a
+        reopen can never stretch a code past MAX_ENROL_WINDOW_SECONDS from mint."""
+        del unset
+        _, first = approver.open_enrolment()
+        near = (
+            time.monotonic()
+            + approver.MAX_ENROL_WINDOW_SECONDS
+            - 2 * approver.MIN_ENROL_WINDOW_SECONDS
+        )
+        monkeypatch.setattr(approver.time, "monotonic", lambda: near)
+        seconds, again = approver.open_enrolment()
+        assert again == first  # the link already in the chat still works
+        assert seconds <= 2 * approver.MIN_ENROL_WINDOW_SECONDS  # never past the cap
+        assert approver.enrol_seconds_left() <= seconds
+
+    def test_a_reopen_under_the_floor_mints_a_fresh_full_window(
+        self, unset: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When a kept code has less than the floor of its cap left, a full fresh
+        window would outlive it — so open_enrolment mints a new code rather than
+        advertise a near-dead one as whole."""
+        del unset
+        _, first = approver.open_enrolment()
+        near = (
+            time.monotonic()
+            + approver.MAX_ENROL_WINDOW_SECONDS
+            - approver.MIN_ENROL_WINDOW_SECONDS
+            + 1
+        )
+        monkeypatch.setattr(approver.time, "monotonic", lambda: near)
+        seconds, fresh = approver.open_enrolment()
+        assert fresh != first
+        assert seconds >= approver.MIN_ENROL_WINDOW_SECONDS
+
     def test_the_code_does_not_survive_the_window(
         self, pages: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -856,6 +911,24 @@ class TestTheEnrolmentCode:
         later = time.monotonic() + approver._window_seconds + 1
         monkeypatch.setattr(approver.time, "monotonic", lambda: later)
         assert approver.enrolling(code) is False
+
+    def test_no_state_changing_approval_route_answers_get(self, pages: TestClient) -> None:
+        """Constitution property 1 / RT#1609: the agent holds the enrolment code
+        but cannot act on it, because setting an approver — and every other state
+        change behind these routes — is POST-only. The pure-POST routes answer a
+        GET with 405; the two paths that also render (approve, setup) dispatch a
+        GET to the read-only handler, so the writing handler is never reached
+        without a POST. That inability to submit is what makes the agent-visible
+        code safe."""
+        for path in (
+            approval_routes.SIGN_OUT_PATH,
+            approval_routes.BEGIN_PATH,
+            approval_routes.FINISH_PATH,
+        ):
+            assert pages.get(path).status_code == 405, path
+        # approve and setup render on GET and change state only on POST.
+        assert pages.get(approval_routes.PATH).status_code != 405
+        assert pages.get(approval_routes.SETUP_PATH).status_code != 405
 
 
 class TestTheEnrolPageScript:

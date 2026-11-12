@@ -271,10 +271,18 @@ def display_code(code: str) -> str:
 
 
 def enrol_seconds_left() -> int:
-    """Whole seconds a person still has on the open window, or 0 when none is."""
+    """Whole seconds a person still has on the open window, or 0 when none is.
+
+    Never more than the code's own hard cap has left: a reopened window cannot
+    promise time past MAX_ENROL_WINDOW_SECONDS from when its code was minted.
+    """
     if _window_opened is None:
         return 0
-    return max(0, int(_window_seconds - (time.monotonic() - _window_opened)))
+    now = time.monotonic()
+    left = _window_seconds - (now - _window_opened)
+    if _code_minted is not None:
+        left = min(left, MAX_ENROL_WINDOW_SECONDS - (now - _code_minted))
+    return max(0, int(left))
 
 
 def open_enrolment() -> tuple[int, str]:
@@ -302,17 +310,23 @@ def open_enrolment() -> tuple[int, str]:
     """
     global _window_opened, _window_code, _window_seconds, _code_minted
     now = time.monotonic()
-    _window_seconds = enrol_window_seconds()
-    # Keep the code a person may already hold. Re-opening — an agent calling
-    # again, or a window that ran out — must not invalidate the link already in
-    # the chat; that silent rotation was the stale-link failure (RT#1609). Mint
-    # afresh only when there is no code, or one has stood for its hard cap.
-    capped = _code_minted is not None and now - _code_minted > MAX_ENROL_WINDOW_SECONDS
-    if _window_code is None or _code_minted is None or capped:
+    want = enrol_window_seconds()
+    # Keep the code a person may already hold, so re-opening — an agent calling
+    # again, or a window that ran out — never invalidates the link already in the
+    # chat; that silent rotation was the stale-link failure (RT#1609). Mint afresh
+    # only when there is no code, or a kept one has so little of its hard cap left
+    # that a full window would outlive it — an honest fresh window beats a
+    # near-dead code advertised as whole.
+    cap_left = None if _code_minted is None else MAX_ENROL_WINDOW_SECONDS - (now - _code_minted)
+    if _window_code is None or cap_left is None or cap_left < MIN_ENROL_WINDOW_SECONDS:
         _window_code = _mint_code()
         _code_minted = now
+        cap_left = MAX_ENROL_WINDOW_SECONDS
         hold(_window_code, "ENROLMENT_CODE")
         hold(display_code(_window_code), "ENROLMENT_CODE")
+    # Never advertise past the code's hard cap: a reopened window gets at most the
+    # time its code has left, so the duration handed out is one a person can trust.
+    _window_seconds = min(want, cap_left)
     _window_opened = now
     logger.info("approval: enrolment opened for %.0fs", _window_seconds)
     return int(_window_seconds), display_code(_window_code)
@@ -332,7 +346,13 @@ def enrolling(code: str | None = None) -> bool:
     """
     if configured() or _window_opened is None or _window_code is None:
         return False
-    if time.monotonic() - _window_opened > _window_seconds:
+    now = time.monotonic()
+    if now - _window_opened > _window_seconds:
+        return False
+    # A reopen keeps the code but must never carry it past its hard cap: the code
+    # is dead MAX_ENROL_WINDOW_SECONDS after it was minted, however many reopens
+    # stood under that ceiling (RT#1609 security review).
+    if _code_minted is not None and now - _code_minted > MAX_ENROL_WINDOW_SECONDS:
         return False
     if code is None:
         return True

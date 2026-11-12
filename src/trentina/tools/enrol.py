@@ -110,7 +110,7 @@ async def approval_enrol(action: str = "open") -> dict[str, Any]:
     if action == "close":
         open_now = approver.enrolling()
         approver.close_enrolment()
-        return {"gateway": named, "closed": True, "was_open": open_now}
+        return {"gateway": named, "local_only": local, "closed": True, "was_open": open_now}
 
     if approver.configured():
         link = _link()
