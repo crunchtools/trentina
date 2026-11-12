@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.21.0] - 2026-11-12
+
 ### Changed
 - **Approval enrolment: the default window is now 15 minutes (RT#1609).** Long
   enough that an agent relaying the link into a chat read on a phone finishes the
