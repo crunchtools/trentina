@@ -447,6 +447,14 @@ class TestThePage:
         assert "unsafe-inline' ; " not in policy and "script-src 'unsafe" not in policy
         assert "connect-src 'self'" in policy
 
+    def test_the_page_lets_a_browser_send_its_own_origin(self, page: TestClient) -> None:
+        """RT#1609: under `no-referrer` a browser sends `Origin: null` on every
+        POST, its own origin included, so the same-origin check refused every
+        password and passkey a person submitted. `same-origin` keeps the real
+        Origin for this gateway and sends nothing to anyone else."""
+        for path in (PATH, SETUP):
+            assert page.get(path).headers["referrer-policy"] == "same-origin", path
+
     def test_the_script_on_the_page_is_the_one_the_policy_allows(self, page: TestClient) -> None:
         body = page.get(PATH).text
         script = body.split("<script>")[1].split("</script>")[0]
@@ -815,6 +823,22 @@ class TestTheEnrolmentCode:
     def test_a_wrong_code_is_not_enough(self, pages: TestClient) -> None:
         approver.open_enrolment()
         assert _enrol(pages, "not-the-code").status_code == 404
+        assert approver.configured() is False
+
+    def test_an_unverifiable_submission_says_it_was_not_saved(self, pages: TestClient) -> None:
+        """RT#1609: a POST whose Origin is not this page's — `null` is what a
+        browser sends from an opaque origin — is refused with a page that says
+        nothing was saved, never the generic "Nothing to approve" that left a
+        person who had just typed a password believing it might have worked."""
+        _, code = approver.open_enrolment()
+        answer = pages.post(
+            SETUP,
+            data={"action": "enrol_password", "code": code, "new": PASSWORD, "again": PASSWORD},
+            headers={"origin": "null"},
+        )
+        assert answer.status_code == 403
+        assert "nothing was saved" in answer.text
+        assert "Nothing to approve" not in answer.text
         assert approver.configured() is False
 
     def test_a_wrong_code_during_an_open_window_names_the_cause(self, pages: TestClient) -> None:

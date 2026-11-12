@@ -132,6 +132,13 @@ _HEADERS = {
         "form-action 'self'", f"script-src 'sha256-{_SCRIPT_HASH}'", "connect-src 'self'"
     ),
     "X-Frame-Options": "DENY",
+    # These pages POST to themselves, and the POSTs are checked by Origin. Under
+    # `no-referrer` a browser sends `Origin: null` on EVERY non-GET request, its
+    # own origin included (Fetch, "serializing a request origin"), so every form
+    # and passkey call was refused as foreign (RT#1609). `same-origin` sends the
+    # real Origin to this gateway and nothing at all to anyone else; the #code
+    # fragment is never part of a Referer under any policy.
+    "Referrer-Policy": "same-origin",
 }
 
 #: One wording for every unauthenticated failure. A visitor who guesses learns
@@ -165,6 +172,16 @@ _NOTHING_JSON = {"ok": False, "message": "That did not work. Try again."}
 #: Someone else's password operation is in flight. Said rather than queued: a
 #: KDF is expensive by design, so a queue of them starves the gateway instead
 #: of being fair to anyone.
+_UNVERIFIED_PAGE = (
+    "Not saved",
+    (
+        "<p>This form could not be verified as coming from this page, so nothing "
+        "was saved. Open the setup link again in a normal browser tab and submit "
+        "it from there.</p>"
+    ),
+    HTTPStatus.FORBIDDEN,
+)
+
 _BUSY_PAGE = (
     "Busy",
     "<p>Another password attempt is in flight. Try again in a moment.</p>",
@@ -764,7 +781,9 @@ async def _change(request: Request, form: Any, action: str) -> Response:
 
 async def _setup_post(request: Request) -> Response:
     if not _same_origin(request, required=False):
-        return _page(request, *_NOTHING_PAGE)
+        # Says "not saved", never the generic "nothing to approve": a person
+        # who just typed a password must learn it did not land (RT#1609).
+        return _page(request, *_UNVERIFIED_PAGE)
     form = await request.form()
     action = str(form.get("action") or "")
     if action == "enrol_password":
