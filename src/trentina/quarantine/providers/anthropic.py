@@ -31,9 +31,11 @@ class AnthropicProvider(Provider):
         self,
         api_key: str,
         model: str = DEFAULT_MODEL,
+        base_url: str = ANTHROPIC_API_BASE,
     ) -> None:
         self._api_key = api_key
         self._model = model
+        self._base_url = base_url.rstrip("/")
 
     async def generate(
         self,
@@ -43,7 +45,7 @@ class AnthropicProvider(Provider):
         temperature: float = 0.1,
         max_output_tokens: int = 4096,
     ) -> ProviderResult:
-        url = f"{ANTHROPIC_API_BASE}/messages"
+        url = f"{self._base_url}/messages"
 
         user_msg = user_content
         if response_schema is not None:

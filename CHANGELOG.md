@@ -10,6 +10,20 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+- **The `anthropic` and `openai` judges can post somewhere other than the
+  vendor.** `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` name the host the L3
+  provider (and description compression, which uses the same driver) calls: a
+  model gateway or a self-hosted model that speaks the Messages or Chat
+  Completions API. Each is read as that vendor's own clients read it (the host
+  for Anthropic, with `/v1` for OpenAI). Unset, nothing changes. A value that
+  is not `https://` (`http://` is taken for a loopback host only), or that
+  carries a query, fragment or credentials, fails startup: the provider key is
+  sent to it. Until now a deployment whose only Anthropic-compatible key was a
+  gateway's could proxy model calls through `proxies:` but had no L3, because
+  the judge posted that key to `api.anthropic.com` whatever the proxy's
+  `upstream` said.
+
 ## [6.22.0] - 2026-11-12
 
 ### Added

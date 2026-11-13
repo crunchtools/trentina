@@ -99,7 +99,7 @@ def get_provider(
             )
 
         case "openai":
-            from .openai import OpenAIProvider
+            from .openai import OPENAI_API_BASE, OpenAIProvider
 
             key_value = api_key.get_secret_value() if api_key else config.openai_api_key
             if not key_value:
@@ -107,7 +107,11 @@ def get_provider(
             default_model = (
                 resolved_model if resolved_model != _DEFAULT_GEMINI_MODEL else "gpt-4o-mini"
             )
-            provider = OpenAIProvider(api_key=key_value, model=default_model)
+            provider = OpenAIProvider(
+                api_key=key_value,
+                model=default_model,
+                base_url=config.openai_base_url or OPENAI_API_BASE,
+            )
 
         case "openrouter":
             provider = _openrouter(
@@ -117,7 +121,7 @@ def get_provider(
             )
 
         case "anthropic":
-            from .anthropic import AnthropicProvider
+            from .anthropic import ANTHROPIC_API_BASE, AnthropicProvider
 
             key_value = api_key.get_secret_value() if api_key else config.anthropic_api_key
             if not key_value:
@@ -127,7 +131,17 @@ def get_provider(
                 if resolved_model != _DEFAULT_GEMINI_MODEL
                 else "claude-haiku-4-5-20251001"
             )
-            provider = AnthropicProvider(api_key=key_value, model=default_model)
+            # ANTHROPIC_BASE_URL is the host, as Anthropic's own clients read
+            # it: the driver's base carries the API version segment.
+            provider = AnthropicProvider(
+                api_key=key_value,
+                model=default_model,
+                base_url=(
+                    f"{config.anthropic_base_url}/v1"
+                    if config.anthropic_base_url
+                    else ANTHROPIC_API_BASE
+                ),
+            )
 
         case "ollama":
             from .ollama import OllamaProvider
