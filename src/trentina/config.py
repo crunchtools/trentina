@@ -296,6 +296,41 @@ def _reasoning_effort() -> str | None:
     return effort
 
 
+def _judge_base_url(name: str) -> str | None:
+    """``ANTHROPIC_BASE_URL`` / ``OPENAI_BASE_URL``: where that judge driver posts.
+
+    Unset or empty, None: the driver keeps the vendor's own API. Set, it is an
+    ``https://`` URL with a host and no query, fragment or userinfo, returned
+    without a trailing slash; plain ``http://`` is taken for a loopback host
+    only. The judge's key goes to this address on every call, so a value that
+    is anything else fails startup instead of being guessed at.
+    """
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return None
+    from urllib.parse import urlsplit
+
+    from .errors import ConfigError
+
+    try:
+        parts = urlsplit(raw)
+        host = parts.hostname
+        _ = parts.port
+    except ValueError as exc:
+        raise ConfigError(f"{name} is not a URL: {exc}") from exc
+    if not host or parts.query or parts.fragment or parts.username or parts.password:
+        raise ConfigError(
+            f"{name} must be a base URL with a host and no query, fragment or credentials"
+        )
+    loopback = host in ("localhost", "127.0.0.1", "::1")
+    if parts.scheme != "https" and not (parts.scheme == "http" and loopback):
+        raise ConfigError(
+            f"{name} must be https:// (http:// only for a loopback host): "
+            "the provider key is sent to it"
+        )
+    return raw.rstrip("/")
+
+
 class Config:
     """Trentina configuration from environment variables.
 
@@ -311,6 +346,9 @@ class Config:
     #: gateway may connect is still a list someone wrote down.
     socket_roots: tuple[Path, ...]
     socket_roots_written: tuple[Path, ...]
+    #: ``ANTHROPIC_BASE_URL`` / ``OPENAI_BASE_URL``; None is the vendor's API.
+    anthropic_base_url: str | None
+    openai_base_url: str | None
 
     @functools.cached_property
     def log_format(self) -> str:
@@ -386,6 +424,12 @@ class Config:
         self.openai_api_key: str = read_secret_env("OPENAI_API_KEY", record=False)
         self.anthropic_api_key: str = read_secret_env("ANTHROPIC_API_KEY", record=False)
         self.openrouter_api_key = SecretStr(read_secret_env("OPENROUTER_API_KEY", record=False))
+        # Where the anthropic and openai judges post, when it is not the
+        # vendor: a gateway or self-hosted model speaking the same API.
+        self.anthropic_base_url, self.openai_base_url = (
+            _judge_base_url("ANTHROPIC_BASE_URL"),
+            _judge_base_url("OPENAI_BASE_URL"),
+        )
         self.ollama_base_url: str = os.environ.get(
             "OLLAMA_BASE_URL",
             DEFAULT_OLLAMA_BASE_URL,
