@@ -13,6 +13,9 @@ under that name.
 ### Added
 - **An operator can clear a session's marks and a profile's cool-down without restarting the gateway (a1724, #900).** Under 6.32.0 a false positive on the operator's own session held its memory writes until the window passed or the gateway restarted, since marks live in memory only. `session_marks_clear_tool` takes `profile` (its window and the marks of its sessions), `session` (a fingerprint or the 8+ hex characters the log prints: its marks, and the window if it owns it) or `all`, which is refused with the others; a call naming none changes nothing. Operator only, like `tool_pins`, and over federation only where the operator profile's internal backend allows it. Every clear logs a WARNING naming the caller and the windows and labels removed. A refusing mark afterwards opens a new window as usual.
 
+### Fixed
+- **A lone surrogate no longer leaves content unjudged.** A `str` can hold half of a surrogate pair (JSON's `"\ud83d"` decodes to one, and so does text cut in the middle of an escaped emoji). The fast tokenizer takes UTF-8, which cannot encode it, and answered the whole string with a `TypeError`, so Layer 2 never scanned the text and `defend()` raised instead of returning a verdict. On the LLM proxy one such character in a conversation's history did this to every later request, since each carries the history. Layer 2's tokenizer calls now replace each lone surrogate with U+FFFD, one for one, so counts, `head` and `token_starts` still describe the caller's text. Layer 1's size count raised `UnicodeEncodeError` on the same text; it now encodes with `surrogatepass`, as the other size counts do.
+
 ## [6.32.0] - 2026-11-26
 
 ### Security

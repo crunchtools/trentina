@@ -32,6 +32,7 @@ from trentina.quarantine.classifier import (
     count_tokens,
     estimate_tokens,
     head,
+    token_starts,
 )
 
 _C = "trentina.quarantine.classifier"
@@ -443,6 +444,76 @@ class TestAdmissionHelpers:
         """Bytes, not characters: two CJK characters are six bytes."""
         assert estimate_tokens("你好") == 6
         assert estimate_tokens("ab") == 2
+
+
+@contextmanager
+def utf8_only_tokenizer() -> Iterator[None]:
+    """``word_tokenizer`` that refuses what a fast tokenizer refuses.
+
+    The Rust tokenizers take their input as UTF-8. A ``str`` holding a lone
+    surrogate has no UTF-8 form, and they answer it with this ``TypeError``.
+    """
+    with word_tokenizer():
+        from trentina.quarantine import classifier
+
+        inner = classifier._tokenizer.side_effect
+
+        def tokenize(text: str, **kwargs: Any) -> dict[str, Any]:
+            try:
+                text.encode("utf-8")
+            except UnicodeEncodeError:
+                raise TypeError(
+                    "TextEncodeInput must be Union[TextInputSequence, "
+                    "Tuple[InputSequence, InputSequence]]"
+                ) from None
+            return inner(text, **kwargs)
+
+        classifier._tokenizer.side_effect = tokenize
+        yield
+
+
+class TestLoneSurrogates:
+    """A lone surrogate is counted and cut like any other text.
+
+    Found 2026-11-14 on an LLM-proxy request: a conversation whose history
+    held ``"\\ud83d"`` (half an emoji, as JSON decodes it) failed admission's
+    count with a ``TypeError`` on every later turn, and each request went out
+    unjudged.
+    """
+
+    LONE = "cut \ud83d here"
+
+    def test_the_tokenizer_double_refuses_it(self) -> None:
+        """The double behaves like the real thing, or the rest proves nothing."""
+        from trentina.quarantine import classifier
+
+        with utf8_only_tokenizer(), pytest.raises(TypeError):
+            classifier._tokenizer(self.LONE)
+
+    def test_it_is_counted(self) -> None:
+        with utf8_only_tokenizer():
+            assert count_tokens(self.LONE) == 3
+
+    def test_head_cuts_the_callers_text(self) -> None:
+        """Offsets are into the original: the replacement is one for one."""
+        with utf8_only_tokenizer():
+            assert head(self.LONE, 2) == "cut \ud83d"
+            assert head(self.LONE, 5) == self.LONE
+
+    def test_token_starts_are_the_callers_offsets(self) -> None:
+        with utf8_only_tokenizer():
+            assert token_starts(self.LONE) == [0, 4, 6]
+
+    def test_well_formed_text_is_passed_through_untouched(self) -> None:
+        from trentina.quarantine.classifier import _well_formed
+
+        text = "plain, 你好, and a whole emoji \U0001f600"
+        assert _well_formed(text) is text
+
+    def test_only_the_surrogate_is_replaced(self) -> None:
+        from trentina.quarantine.classifier import _well_formed
+
+        assert _well_formed("a\ud83db\udc00c") == "a\ufffdb\ufffdc"
 
 
 class TestSingleWindowEdge:
