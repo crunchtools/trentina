@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.23.0] - 2026-11-16
+
 ### Added
 - **The `anthropic` and `openai` judges can post somewhere other than the
   vendor.** Contributed by Brian Stinson (@bstinsonmhk) in #799.
