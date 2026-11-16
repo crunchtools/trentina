@@ -507,7 +507,7 @@ class TestJudgeBaseUrl:
         monkeypatch.delenv("TRENTINA_ANTHROPIC_BASE_URL", raising=False)
         with caplog.at_level("INFO", logger="trentina.config"):
             Config()
-        assert "https://models.example.test," in caplog.text
+        assert "posts to https://models.example.test\n" in caplog.text + "\n"
         assert "tok-123" not in caplog.text
         assert "TRENTINA_ANTHROPIC_BASE_URL" not in caplog.text
 
