@@ -470,6 +470,23 @@ class TestJudgeBaseUrl:
         assert url == "https://models.example.test/v1/messages"
 
     @pytest.mark.asyncio
+    async def test_a_profile_key_follows_the_base_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from trentina import config as config_mod
+
+        monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", "gemini")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://models.example.test")
+        config_mod._config = None
+        provider = get_provider("anthropic", api_key=SecretStr("sk-ant-profile"))
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = _anthropic_response("{}")
+            await provider.generate("sys", "user")
+        assert mock_post.call_args.args[0] == "https://models.example.test/v1/messages"
+        assert mock_post.call_args.kwargs["headers"]["x-api-key"] == "sk-ant-profile"
+
+    @pytest.mark.asyncio
     async def test_openai_posts_to_the_vendor_when_unset(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
