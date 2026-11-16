@@ -540,6 +540,19 @@ class TestJudgeBaseUrl:
         with pytest.raises(ConfigError, match=name):
             Config()
 
+    @pytest.mark.parametrize(
+        "value", ["https://models.example.test/v1", "https://models.example.test/v1/"]
+    )
+    def test_anthropic_base_url_with_the_version_refuses_startup(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        from trentina.config import Config
+        from trentina.errors import ConfigError
+
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", value)
+        with pytest.raises(ConfigError, match="host alone"):
+            Config()
+
     def test_loopback_http_and_empty_are_taken(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from trentina.config import Config
 

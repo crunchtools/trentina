@@ -329,6 +329,23 @@ def _judge_base_url(name: str) -> str | None:
     return raw.rstrip("/")
 
 
+def _anthropic_base_url() -> str | None:
+    """``ANTHROPIC_BASE_URL``, which is the host alone.
+
+    The anthropic driver appends ``/v1`` itself, so a value already ending in
+    it would post to ``/v1/v1/messages`` on every call: it fails startup.
+    """
+    url = _judge_base_url("ANTHROPIC_BASE_URL")
+    if url and urlsplit(url).path.endswith("/v1"):
+        from .errors import ConfigError
+
+        raise ConfigError(
+            "ANTHROPIC_BASE_URL is the host alone, as Anthropic's clients read it: "
+            "drop the trailing /v1"
+        )
+    return url
+
+
 class Config:
     """Trentina configuration from environment variables.
 
@@ -425,7 +442,7 @@ class Config:
         # Where the anthropic and openai judges post, when it is not the
         # vendor: a gateway or self-hosted model speaking the same API.
         self.anthropic_base_url, self.openai_base_url = (
-            _judge_base_url("ANTHROPIC_BASE_URL"),
+            _anthropic_base_url(),
             _judge_base_url("OPENAI_BASE_URL"),
         )
         self.ollama_base_url: str = os.environ.get(
