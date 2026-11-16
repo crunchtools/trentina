@@ -8,7 +8,7 @@ import logging
 import os
 from fnmatch import fnmatch
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from pydantic import SecretStr
 
@@ -308,8 +308,6 @@ def _judge_base_url(name: str) -> str | None:
     raw = (os.environ.get(name) or "").strip()
     if not raw:
         return None
-    from urllib.parse import urlsplit
-
     from .errors import ConfigError
 
     try:
