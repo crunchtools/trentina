@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.23.1] - 2026-11-16
+
 ### Fixed
 - **A new backend grant on an MCP-SDK server pinned to a bare-host issuer
   works again.** The SDK's `AnyHttpUrl` serves `https://accounts.google.com`
