@@ -341,7 +341,11 @@ async def discover(profile: Profile, backend: Backend) -> Discovered:
     """Find and check the authorization server for one backend.
 
     Issuers are compared as the strings the documents carry, byte for byte
-    (RFC 8414 3.3), never as parsed URLs that a library might normalize.
+    (RFC 8414 3.3), never as parsed URLs that a library might normalize. One
+    exception, against a pin only: resource metadata may name the pinned
+    issuer with one trailing ``/`` added, because the MCP SDK's ``AnyHttpUrl``
+    adds it to a bare host. The pin is then what is used, so the authorization
+    server's own document must still carry it byte for byte.
     """
     from mcp.client.auth.utils import get_client_metadata_scopes
     from mcp.shared.auth_utils import resource_url_from_server_url
@@ -351,7 +355,9 @@ async def discover(profile: Profile, backend: Backend) -> Discovered:
         raise BackendAuthError("not_oauth")
     prm, issuer, asked = await _resource_metadata(profile, backend)
     if auth.issuer is not None and issuer != auth.issuer:
-        raise BackendAuthError("issuer_not_pinned")
+        if auth.issuer.endswith("/") or issuer != f"{auth.issuer}/":
+            raise BackendAuthError("issuer_not_pinned")
+        issuer = auth.issuer
     asm = await _server_metadata(profile, backend, issuer)
     scope = (
         " ".join(auth.scopes)
