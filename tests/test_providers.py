@@ -503,11 +503,12 @@ class TestJudgeBaseUrl:
     ) -> None:
         from trentina.config import Config
 
-        monkeypatch.setenv("TRENTINA_OPENAI_BASE_URL", "https://models.example.test/v1")
+        monkeypatch.setenv("TRENTINA_OPENAI_BASE_URL", "https://models.example.test/tok-123/v1")
         monkeypatch.delenv("TRENTINA_ANTHROPIC_BASE_URL", raising=False)
         with caplog.at_level("INFO", logger="trentina.config"):
             Config()
-        assert "https://models.example.test/v1" in caplog.text
+        assert "https://models.example.test," in caplog.text
+        assert "tok-123" not in caplog.text
         assert "TRENTINA_ANTHROPIC_BASE_URL" not in caplog.text
 
     @pytest.mark.asyncio

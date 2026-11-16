@@ -331,7 +331,10 @@ def _judge_base_url(name: str) -> str | None:
             f"{name} must be https:// (http:// only for a loopback host): "
             "the provider key is sent to it"
         )
-    logger.info("%s: the judge posts to %s, not the vendor's API", name, raw.rstrip("/"))
+    # The host alone: a gateway can carry a token in the path.
+    logger.info(
+        "%s: the judge posts to %s://%s, not the vendor's API", name, parts.scheme, parts.netloc
+    )
     return raw.rstrip("/")
 
 
