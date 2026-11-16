@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -487,16 +488,29 @@ class TestJudgeBaseUrl:
         assert mock_post.call_args.kwargs["headers"]["x-api-key"] == "sk-ant-profile"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("provider", "response", "vendor"),
+        [
+            ("anthropic", _anthropic_response, "https://api.anthropic.com/v1/messages"),
+            ("openai", _openai_response, "https://api.openai.com/v1/chat/completions"),
+        ],
+    )
     async def test_the_vendors_own_names_are_not_read(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: str,
+        response: Callable[[str], httpx.Response],
+        vendor: str,
     ) -> None:
-        monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", "anthropic")
+        monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", provider)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.delenv("TRENTINA_ANTHROPIC_BASE_URL", raising=False)
+        monkeypatch.delenv("TRENTINA_OPENAI_BASE_URL", raising=False)
         monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://inherited.example.test")
         monkeypatch.setenv("OPENAI_BASE_URL", "https://inherited.example.test/v1")
-        url = await self._posted_url(_anthropic_response("{}"))
-        assert url == "https://api.anthropic.com/v1/messages"
+        url = await self._posted_url(response("{}"))
+        assert url == vendor
 
     def test_a_set_base_url_is_logged(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -507,7 +521,7 @@ class TestJudgeBaseUrl:
         monkeypatch.delenv("TRENTINA_ANTHROPIC_BASE_URL", raising=False)
         with caplog.at_level("INFO", logger="trentina.config"):
             Config()
-        assert "posts to https://models.example.test\n" in caplog.text + "\n"
+        assert "posts to https://models.example.test\n" in caplog.text
         assert "tok-123" not in caplog.text
         assert "TRENTINA_ANTHROPIC_BASE_URL" not in caplog.text
 
@@ -582,6 +596,16 @@ class TestJudgeBaseUrl:
         monkeypatch.setenv("TRENTINA_ANTHROPIC_BASE_URL", value)
         with pytest.raises(ConfigError, match="host alone"):
             Config()
+
+    def test_an_ipv6_host_is_logged_in_brackets(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from trentina.config import Config
+
+        monkeypatch.setenv("TRENTINA_ANTHROPIC_BASE_URL", "http://[::1]:8080")
+        with caplog.at_level("INFO", logger="trentina.config"):
+            Config()
+        assert "posts to http://[::1]:8080" in caplog.text
 
     def test_loopback_http_and_empty_are_taken(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from trentina.config import Config

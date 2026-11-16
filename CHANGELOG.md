@@ -12,22 +12,27 @@ under that name.
 
 ### Added
 - **The `anthropic` and `openai` judges can post somewhere other than the
-  vendor.** `TRENTINA_ANTHROPIC_BASE_URL` and `TRENTINA_OPENAI_BASE_URL` name the host the L3
-  provider (and description compression, which uses the same driver) calls: a
-  model gateway or a self-hosted model that speaks the Messages or Chat
-  Completions API. They are prefixed so the bare `ANTHROPIC_BASE_URL` and
-  `OPENAI_BASE_URL` that agents and SDK setups export are never read: an
-  inherited one would send judged content and the judge's key to that host.
-  Startup logs the host whenever it is not the vendor's. Each is read as that
-  vendor's own clients read it (the host
-  for Anthropic, with `/v1` for OpenAI). Unset, nothing changes. A value that
-  is not `https://` (`http://` is taken for a loopback host only), or that
-  carries a query, fragment or credentials, fails startup: the provider key is
-  sent to it, and an Anthropic value ending in `/v1` is refused, since the
-  driver appends it. Until now a deployment whose only Anthropic-compatible key was a
-  gateway's could proxy model calls through `proxies:` but had no L3, because
-  the judge posted that key to `api.anthropic.com` whatever the proxy's
-  `upstream` said.
+  vendor.** Contributed by Brian Stinson (@bstinsonmhk) in #799.
+  `TRENTINA_ANTHROPIC_BASE_URL` and `TRENTINA_OPENAI_BASE_URL` name the host
+  the L3 provider (and description compression, which uses the same driver)
+  calls: a model gateway or a self-hosted model that speaks the Messages or
+  Chat Completions API. Each is read as that vendor's own clients read it: the
+  host for Anthropic, with `/v1` for OpenAI. Unset, nothing changes. They are
+  prefixed so the bare `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` that agents
+  and SDK setups export are never read: an inherited one would send judged
+  content and the judge's key to that host. Either is process-wide, so every
+  profile's `llm_keys` for that provider goes there too. A value that is not
+  `https://` (`http://` is taken for a loopback host only), that carries a
+  query, fragment or credentials, or (for Anthropic) that ends in `/v1`, fails
+  startup, and startup logs the host whenever one is set. Until now a
+  deployment whose only Anthropic-compatible key was a gateway's could proxy
+  model calls through `proxies:` but had no L3, because the judge posted that
+  key to `api.anthropic.com` whatever the proxy's `upstream` said.
+
+### Security
+- **dnspython 2.9.2, opentelemetry-api 1.45.2 and soupsieve 4.1.1 (#803)**
+  clear CVE-2026-128089, CVE-2026-126360 and CVE-2026-126190 to -126193. Each
+  floor is held in `constraint-dependencies` so a relock cannot fall below it.
 
 ## [6.22.0] - 2026-11-12
 
