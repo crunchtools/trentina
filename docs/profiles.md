@@ -728,6 +728,9 @@ backends:
 - `issuer` pins the authorization server. Unset, the first one the backend's
   metadata names is used, and a later change is refused until the grant is
   revoked: a backend cannot quietly send its users to a new login server.
+  Set, the backend's metadata may name it with one trailing `/` added, as the
+  MCP SDK does for a bare host (`https://accounts.google.com/`); the pin is
+  then used and must match the authorization server's own `issuer` exactly.
 - `callback_url` is the exact `redirect_uri` advertised for this backend, for
   an authorization server with a **fixed redirect-URI allowlist and no dynamic
   registration** — the only case where nothing the gateway derives is

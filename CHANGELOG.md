@@ -10,6 +10,18 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+- **A new backend grant on an MCP-SDK server pinned to a bare-host issuer
+  works again.** The SDK's `AnyHttpUrl` serves `https://accounts.google.com`
+  as `https://accounts.google.com/` in protected-resource metadata, while
+  Google's own document says `https://accounts.google.com`. Compared byte for
+  byte, one check or the other failed whichever way `auth.issuer` was set, so
+  `backend_auth start` for gw-personal returned `issuer_not_pinned`. Against a
+  pin only, one added trailing `/` is now taken as the pin. The pin is what is
+  used from then on, so the authorization server's document must still carry
+  it byte for byte (RFC 8414 3.3). Unpinned, nothing changes. Existing grants
+  were never affected.
+
 ## [6.23.0] - 2026-11-16
 
 ### Added

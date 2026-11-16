@@ -231,6 +231,34 @@ class TestDiscoveryRefuses:
         with pytest.raises(BackendAuthError, match="issuer_not_pinned"):
             await start(pinned, "era", authorized_by="self")
 
+    async def test_a_pin_absorbs_the_sdks_trailing_slash_only(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        # The MCP SDK serves a bare-host issuer as "https://host/"; the
+        # authorization server's own document says "https://host".
+        prm = ("mcp.era.example", "/.well-known/oauth-protected-resource/mcp")
+        slashed = server.resource_doc().json() | {"authorization_servers": [ISSUER + "/"]}
+        server.overrides[prm] = httpx.Response(200, json=slashed)
+        server.iss_supported = True
+        profiles["josui"] = profile_with_era("josui", issuer=ISSUER)
+        link = await start(profiles["josui"], "era", authorized_by="self")
+        state, code = server.authorize(await authorize_url(link))
+        await complete(state, code, ISSUER, None)
+
+        # Unpinned, the slash is still a mismatch against the AS document.
+        with pytest.raises(BackendAuthError, match="issuer_mismatch"):
+            await start(profile_with_era("josui"), "era", authorized_by="self")
+        # Anything more than one slash is not the pin.
+        doubled = slashed | {"authorization_servers": [ISSUER + "//"]}
+        server.overrides[prm] = httpx.Response(200, json=doubled)
+        with pytest.raises(BackendAuthError, match="issuer_not_pinned"):
+            await start(profiles["josui"], "era", authorized_by="self")
+        # A pinned issuer the AS document does not carry byte for byte is refused.
+        server.overrides[prm] = httpx.Response(200, json=slashed)
+        server.issuer = ISSUER + "/"
+        with pytest.raises(BackendAuthError, match="issuer_mismatch"):
+            await start(profiles["josui"], "era", authorized_by="self")
+
     async def test_an_issuer_change_is_not_followed(
         self, server: FakeServer, profiles: dict[str, Profile]
     ) -> None:
