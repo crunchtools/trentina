@@ -426,7 +426,7 @@ class TestGetProviderFactory:
 
 
 class TestJudgeBaseUrl:
-    """ANTHROPIC_BASE_URL / OPENAI_BASE_URL: where those two judges post."""
+    """TRENTINA_ANTHROPIC_BASE_URL / TRENTINA_OPENAI_BASE_URL: where those two judges post."""
 
     def setup_method(self) -> None:
         reset_provider()
@@ -455,7 +455,7 @@ class TestJudgeBaseUrl:
     ) -> None:
         monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", "anthropic")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        monkeypatch.delenv("TRENTINA_ANTHROPIC_BASE_URL", raising=False)
         url = await self._posted_url(_anthropic_response("{}"))
         assert url == "https://api.anthropic.com/v1/messages"
 
@@ -465,7 +465,7 @@ class TestJudgeBaseUrl:
     ) -> None:
         monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", "anthropic")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "gateway-key")
-        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://models.example.test/")
+        monkeypatch.setenv("TRENTINA_ANTHROPIC_BASE_URL", "https://models.example.test/")
         url = await self._posted_url(_anthropic_response("{}"))
         assert url == "https://models.example.test/v1/messages"
 
@@ -477,7 +477,7 @@ class TestJudgeBaseUrl:
 
         monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", "gemini")
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://models.example.test")
+        monkeypatch.setenv("TRENTINA_ANTHROPIC_BASE_URL", "https://models.example.test")
         config_mod._config = None
         provider = get_provider("anthropic", api_key=SecretStr("sk-ant-profile"))
         with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
@@ -487,12 +487,36 @@ class TestJudgeBaseUrl:
         assert mock_post.call_args.kwargs["headers"]["x-api-key"] == "sk-ant-profile"
 
     @pytest.mark.asyncio
+    async def test_the_vendors_own_names_are_not_read(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", "anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("TRENTINA_ANTHROPIC_BASE_URL", raising=False)
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://inherited.example.test")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://inherited.example.test/v1")
+        url = await self._posted_url(_anthropic_response("{}"))
+        assert url == "https://api.anthropic.com/v1/messages"
+
+    def test_a_set_base_url_is_logged(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from trentina.config import Config
+
+        monkeypatch.setenv("TRENTINA_OPENAI_BASE_URL", "https://models.example.test/v1")
+        monkeypatch.delenv("TRENTINA_ANTHROPIC_BASE_URL", raising=False)
+        with caplog.at_level("INFO", logger="trentina.config"):
+            Config()
+        assert "https://models.example.test/v1" in caplog.text
+        assert "TRENTINA_ANTHROPIC_BASE_URL" not in caplog.text
+
+    @pytest.mark.asyncio
     async def test_openai_posts_to_the_vendor_when_unset(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", "openai")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("TRENTINA_OPENAI_BASE_URL", raising=False)
         url = await self._posted_url(_openai_response("{}"))
         assert url == "https://api.openai.com/v1/chat/completions"
 
@@ -502,7 +526,7 @@ class TestJudgeBaseUrl:
     ) -> None:
         monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", "openai")
         monkeypatch.setenv("OPENAI_API_KEY", "gateway-key")
-        monkeypatch.setenv("OPENAI_BASE_URL", "https://models.example.test/v1")
+        monkeypatch.setenv("TRENTINA_OPENAI_BASE_URL", "https://models.example.test/v1")
         url = await self._posted_url(_openai_response("{}"))
         assert url == "https://models.example.test/v1/chat/completions"
 
@@ -512,11 +536,11 @@ class TestJudgeBaseUrl:
     ) -> None:
         monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", "openrouter")
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-        monkeypatch.setenv("OPENAI_BASE_URL", "https://models.example.test/v1")
+        monkeypatch.setenv("TRENTINA_OPENAI_BASE_URL", "https://models.example.test/v1")
         url = await self._posted_url(_openai_response("{}"))
         assert url == "https://openrouter.ai/api/v1/chat/completions"
 
-    @pytest.mark.parametrize("name", ["ANTHROPIC_BASE_URL", "OPENAI_BASE_URL"])
+    @pytest.mark.parametrize("name", ["TRENTINA_ANTHROPIC_BASE_URL", "TRENTINA_OPENAI_BASE_URL"])
     @pytest.mark.parametrize(
         "value",
         [
@@ -541,7 +565,12 @@ class TestJudgeBaseUrl:
             Config()
 
     @pytest.mark.parametrize(
-        "value", ["https://models.example.test/v1", "https://models.example.test/v1/"]
+        "value",
+        [
+            "https://models.example.test/v1",
+            "https://models.example.test/v1/",
+            "https://models.example.test/V1",
+        ],
     )
     def test_anthropic_base_url_with_the_version_refuses_startup(
         self, monkeypatch: pytest.MonkeyPatch, value: str
@@ -549,20 +578,20 @@ class TestJudgeBaseUrl:
         from trentina.config import Config
         from trentina.errors import ConfigError
 
-        monkeypatch.setenv("ANTHROPIC_BASE_URL", value)
+        monkeypatch.setenv("TRENTINA_ANTHROPIC_BASE_URL", value)
         with pytest.raises(ConfigError, match="host alone"):
             Config()
 
     def test_loopback_http_and_empty_are_taken(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from trentina.config import Config
 
-        monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:8080/")
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:8000/v1")
+        monkeypatch.setenv("TRENTINA_ANTHROPIC_BASE_URL", "http://127.0.0.1:8080/")
+        monkeypatch.setenv("TRENTINA_OPENAI_BASE_URL", "http://localhost:8000/v1")
         config = Config()
         assert config.anthropic_base_url == "http://127.0.0.1:8080"
         assert config.openai_base_url == "http://localhost:8000/v1"
-        monkeypatch.setenv("ANTHROPIC_BASE_URL", "")
-        monkeypatch.delenv("OPENAI_BASE_URL")
+        monkeypatch.setenv("TRENTINA_ANTHROPIC_BASE_URL", "")
+        monkeypatch.delenv("TRENTINA_OPENAI_BASE_URL")
         config = Config()
         assert config.anthropic_base_url is None
         assert config.openai_base_url is None

@@ -131,7 +131,7 @@ def get_provider(
                 if resolved_model != _DEFAULT_GEMINI_MODEL
                 else "claude-haiku-4-5-20251001"
             )
-            # ANTHROPIC_BASE_URL is the host, as Anthropic's own clients read
+            # TRENTINA_ANTHROPIC_BASE_URL is the host, as Anthropic's own clients read
             # it: the driver's base carries the API version segment.
             provider = AnthropicProvider(
                 api_key=key_value,

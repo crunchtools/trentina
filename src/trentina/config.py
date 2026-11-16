@@ -297,7 +297,12 @@ def _reasoning_effort() -> str | None:
 
 
 def _judge_base_url(name: str) -> str | None:
-    """``ANTHROPIC_BASE_URL`` / ``OPENAI_BASE_URL``: where that judge driver posts.
+    """``TRENTINA_ANTHROPIC_BASE_URL`` / ``TRENTINA_OPENAI_BASE_URL``: the judge's host.
+
+    Prefixed, unlike the vendors' own ``ANTHROPIC_BASE_URL`` and
+    ``OPENAI_BASE_URL``, which agents and SDK setups export for themselves: an
+    inherited one would carry judged content and the judge's key off-vendor.
+    The old names are not read.
 
     Unset or empty, None: the driver keeps the vendor's own API. Set, it is an
     ``https://`` URL with a host and no query, fragment or userinfo, returned
@@ -326,21 +331,23 @@ def _judge_base_url(name: str) -> str | None:
             f"{name} must be https:// (http:// only for a loopback host): "
             "the provider key is sent to it"
         )
+    logger.info("%s: the judge posts to %s, not the vendor's API", name, raw.rstrip("/"))
     return raw.rstrip("/")
 
 
 def _anthropic_base_url() -> str | None:
-    """``ANTHROPIC_BASE_URL``, which is the host alone.
+    """``TRENTINA_ANTHROPIC_BASE_URL``, which is the host alone.
 
     The anthropic driver appends ``/v1`` itself, so a value already ending in
-    it would post to ``/v1/v1/messages`` on every call: it fails startup.
+    it (in any case) would post to ``/v1/v1/messages`` on every call: it fails
+    startup.
     """
-    url = _judge_base_url("ANTHROPIC_BASE_URL")
-    if url and urlsplit(url).path.endswith("/v1"):
+    url = _judge_base_url("TRENTINA_ANTHROPIC_BASE_URL")
+    if url and urlsplit(url).path.lower().endswith("/v1"):
         from .errors import ConfigError
 
         raise ConfigError(
-            "ANTHROPIC_BASE_URL is the host alone, as Anthropic's clients read it: "
+            "TRENTINA_ANTHROPIC_BASE_URL is the host alone, as Anthropic's clients read it: "
             "drop the trailing /v1"
         )
     return url
@@ -361,7 +368,7 @@ class Config:
     #: gateway may connect is still a list someone wrote down.
     socket_roots: tuple[Path, ...]
     socket_roots_written: tuple[Path, ...]
-    #: ``ANTHROPIC_BASE_URL`` / ``OPENAI_BASE_URL``; None is the vendor's API.
+    #: ``TRENTINA_ANTHROPIC_BASE_URL`` / ``TRENTINA_OPENAI_BASE_URL``; None is the vendor's API.
     anthropic_base_url: str | None
     openai_base_url: str | None
 
@@ -443,7 +450,7 @@ class Config:
         # vendor: a gateway or self-hosted model speaking the same API.
         self.anthropic_base_url, self.openai_base_url = (
             _anthropic_base_url(),
-            _judge_base_url("OPENAI_BASE_URL"),
+            _judge_base_url("TRENTINA_OPENAI_BASE_URL"),
         )
         self.ollama_base_url: str = os.environ.get(
             "OLLAMA_BASE_URL",

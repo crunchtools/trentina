@@ -18,8 +18,11 @@ proxy, and the `_FILE` forms of every secret.
 L3 needs one provider. Set `TRENTINA_MODEL_PROVIDER` and that provider's key:
 `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`
 (Ollama needs none). Each key also takes a `_FILE` form, which keeps it out of
-`/proc/<pid>/environ`. `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` point those
-two providers at another host that speaks the same API (below). Behind the
+`/proc/<pid>/environ`. `TRENTINA_ANTHROPIC_BASE_URL` and `TRENTINA_OPENAI_BASE_URL` point those
+two providers at another host that speaks the same API (below). They carry the
+`TRENTINA_` prefix on purpose: the bare `ANTHROPIC_BASE_URL` and
+`OPENAI_BASE_URL` that agents and SDKs export are not read, so an inherited one
+cannot send judged content and the key elsewhere. Behind the
 gateway, each profile's `llm_keys` is used instead; see
 [Operator Profile](operator.md).
 
@@ -67,8 +70,8 @@ these variables control the process itself. Profile tokens
 | `TRENTINA_LEGACY_MCP` | unset (disabled) | Restores the pre-gateway unguarded `/mcp` endpoint. **Bypasses auth, allowlists and audit** — migration aid only. See [MCP Gateway](gateway.md). |
 | `TRENTINA_MODEL_PROVIDER` | `gemini` | Global LLM provider for L3 and tool-description compression, overridable per-profile. See [Per-Agent Profiles](profiles.md). |
 | `TRENTINA_PROVIDER_FALLBACK` | unset (none) | Comma-separated provider names to fall back to if `TRENTINA_MODEL_PROVIDER` is unavailable. |
-| `ANTHROPIC_BASE_URL` | unset (`https://api.anthropic.com`) | Where the `anthropic` L3 provider posts, for a gateway or self-hosted model that speaks the Messages API. The host, as Anthropic's clients read it: `/v1/messages` is appended, and a value ending in `/v1` fails startup. Must be `https://` (`http://` for a loopback host only), with no query, fragment or credentials; anything else fails startup. The provider key (`ANTHROPIC_API_KEY` or a profile's `llm_keys.anthropic`) is sent there in `x-api-key`. It is process-wide: every profile's `llm_keys.anthropic` is sent to this host too, with no per-profile opt-out. It moves the judge only: the [LLM proxy](llm-proxying.md) forwards to its instance's own `upstream`. |
-| `OPENAI_BASE_URL` | unset (`https://api.openai.com/v1`) | Where the `openai` L3 provider posts, for an OpenAI-compatible host. Includes the version segment, as OpenAI's clients read it: `/chat/completions` is appended. Same rules as `ANTHROPIC_BASE_URL`; the key is sent as `Authorization: Bearer`. It is process-wide: every profile's `llm_keys.openai` is sent to this host too, with no per-profile opt-out. `openrouter` is unaffected. |
+| `TRENTINA_ANTHROPIC_BASE_URL` | unset (`https://api.anthropic.com`) | Where the `anthropic` L3 provider posts, for a gateway or self-hosted model that speaks the Messages API. The host, as Anthropic's clients read it: `/v1/messages` is appended, and a value ending in `/v1` (any case) fails startup. When set, startup logs the host the judge posts to. Must be `https://` (`http://` for a loopback host only), with no query, fragment or credentials; anything else fails startup. The provider key (`ANTHROPIC_API_KEY` or a profile's `llm_keys.anthropic`) is sent there in `x-api-key`. It is process-wide: every profile's `llm_keys.anthropic` is sent to this host too, with no per-profile opt-out. It moves the judge only: the [LLM proxy](llm-proxying.md) forwards to its instance's own `upstream`. |
+| `TRENTINA_OPENAI_BASE_URL` | unset (`https://api.openai.com/v1`) | Where the `openai` L3 provider posts, for an OpenAI-compatible host. Includes the version segment, as OpenAI's clients read it: `/chat/completions` is appended. Same rules as `TRENTINA_ANTHROPIC_BASE_URL`; the key is sent as `Authorization: Bearer`. It is process-wide: every profile's `llm_keys.openai` is sent to this host too, with no per-profile opt-out. `openrouter` is unaffected. |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Base URL for the Ollama provider. |
 | `OLLAMA_MODEL` | `qwen2.5:0.5b` | Model used when the Ollama provider is selected. See [LLM Key Proxying](llm-proxying.md). |
 | `QUARANTINE_MODEL` | `gemini-3.5-flash-lite` | Model used for quarantine agent (L3) extraction/detection calls. See [Supported judges](#supported-judges). |
