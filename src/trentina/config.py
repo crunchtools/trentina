@@ -332,8 +332,9 @@ def _judge_base_url(name: str) -> str | None:
             "the provider key is sent to it"
         )
     # The host alone: a gateway can carry a token in the path.
+    shown = f"[{host}]" if ":" in host else host
     port = f":{parts.port}" if parts.port is not None else ""
-    logger.info("%s: the judge posts to %s://%s%s", name, parts.scheme, host, port)
+    logger.info("%s: the judge posts to %s://%s%s", name, parts.scheme, shown, port)
     return raw.rstrip("/")
 
 
