@@ -16,9 +16,9 @@ under that name.
   on its own: eight L3 calls for one answer. Verdicts are now keyed by a hash
   of exactly what L3 reads (content and briefing) plus the layer and the model
   config, kept 10 minutes in a bounded cache, and concurrent identical
-  requests share the one call in flight. The key holds no profile: identical
-  bytes share a verdict and nothing else, so no profile can read another's
-  content through it. An unavailable judge is never cached (a173).
+  requests share the one call in flight. The key holds the grant owner, so no
+  verdict is shared between tenants. An unavailable or failed judge is never
+  cached (a173).
 - **The `/proxy/llm` request judge has its own deadline,
   `TRENTINA_LLM_JUDGE_DEADLINE` (default 20 s),** in place of the 60 s it
   shared with the completion scan, which held every agent's turn for a minute

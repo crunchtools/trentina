@@ -116,7 +116,7 @@ class TestOneJudgementPerBurst:
         other.llm_keys["openrouter"] = LlmKeyOverride(api_key_env="B_OPENROUTER_KEY")
         other.llm_keys["openrouter"].api_key = SecretStr("b-or-key")
         other.defense.provider = "openrouter"
-        await _judge_as(_profile("a"), "diff")
+        await _judge_as(_profile("b"), "diff")
         await _judge_as(other, "diff")
         assert judge.calls == 2
 
@@ -172,16 +172,22 @@ class TestOneJudgementPerBurst:
         await _judge_as(agent, "diff")
         assert judge.calls == 2
 
-    async def test_profiles_share_a_verdict_on_identical_bytes_only(
+    async def test_no_verdict_is_shared_between_tenants(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The key holds no profile: identical bytes share a verdict, and that
-        # is all they share. What one caller gets is its own copy.
         judge = _Judge(delay=0)
         monkeypatch.setattr(defense, "quarantine_detect", judge)
-        first = await _judge_as(_profile("alpha"), "diff")
-        first["summary"] = "alpha's annotation"
-        second = await _judge_as(_profile("beta"), "diff")
+        await _judge_as(_profile("alpha"), "diff")
+        await _judge_as(_profile("beta"), "diff")
+        assert judge.calls == 2
+
+    async def test_each_caller_gets_its_own_copy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        judge = _Judge(delay=0)
+        monkeypatch.setattr(defense, "quarantine_detect", judge)
+        agent = _profile("alpha")
+        first = await _judge_as(agent, "diff")
+        first["summary"] = "an annotation"
+        second = await _judge_as(agent, "diff")
         assert judge.calls == 1
         assert "summary" not in second
 

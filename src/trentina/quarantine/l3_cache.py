@@ -12,13 +12,13 @@ the same verdict. ``_single_flight`` makes concurrent callers share the one call
 in flight rather than race into eight; a finished verdict is kept for
 ``TTL_SECONDS`` in a cache of at most ``MAX_ENTRIES``.
 
-Isolation. The key holds no profile, on purpose, and it is safe for one
-reason: a hit needs the caller to already HOLD the identical bytes. No profile
-can read another profile's content through this cache, only reuse a verdict on
-bytes it sent itself. What a hit can tell it is that someone had those exact
-bytes judged in the last ten minutes (a hit answers sooner), which needs the
-whole document guessed byte for byte. The call is billed to the key of
-whichever profile started the flight.
+Isolation. The key holds the profile's grant owner, as the perimeter's
+verdict cache has since 6.1.0: no verdict is shared between tenants. A burst
+is one agent's fan-out, so it is one owner and loses nothing by this. Shared
+across owners, a hit would tell one profile that another had sent those exact
+bytes in the last ten minutes, by answering sooner. Within an owner, a hit
+needs the caller to already hold the identical bytes, so it reads nothing it
+did not send.
 
 Only a complete verdict is kept. An ``l3_unavailable`` result reaches the
 callers already waiting on that flight and nobody else: the next caller asks
@@ -83,11 +83,12 @@ def judgement_key(content: str, briefing: str) -> str | None:
     # ``verdict_cache._cache_key`` has it: provider, model and prompt pack
     # (``judge_stamp``), the profile's own pack path, which the fallbacks read
     # too, the reasoning effort, and the fallback chain, since a verdict a
-    # fallback reached is not the one a caller without it would get. The API
-    # key never enters the hash: which profile pays is not what is judged.
+    # fallback reached is not the one a caller without it would get. The
+    # owner keeps tenants apart; the API key itself never enters the hash.
     config = get_config()
     model_config = [
         _LAYER,
+        profile.grant_owner,
         provider,
         judge_stamp(profile),
         profile.defense.l3_prompt_pack or "",
