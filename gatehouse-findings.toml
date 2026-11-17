@@ -24,3 +24,11 @@ file = "src/trentina/transports/registry.py"
 evidence = "def _table() -> dict[str, Transport]:\n    if \"mcp\" not in _TRANSPORTS:\n        importlib.import_module(\"trentina.gateway\")\n        from .mcp import mcp_transport"
 status = "not-a-bug"
 reason = "Deliberate cycle break (#535 R4): the mcp transport and the gateway package import each other, and importing the registry before the gateway cycled on main too. Seeding on first use, after the gateway has loaded as it has on every serving path, is what lets the registry be imported alone (route plugins reach it); an explicit init step would add a second way to get an unseeded table."
+
+[[findings]]
+agent = "constitution"
+category = "constitution"
+file = "src/trentina/quarantine/l3_cache.py"
+evidence = "if hit is not None and time.monotonic() - hit[0] < TTL_SECONDS:\n    _verdicts.move_to_end(key)\n    l3_counts[\"shared\"] += 1\n    return copy.deepcopy(hit[1])"
+status = "not-a-bug"
+reason = "No layer is switched off: L1 and L2 run on every request, and L3's verdict is reused only for byte-identical content AND briefing under an identical judge (provider, model, prompt pack, effort, fallback chain), so it is the judgement L3 made of those exact bytes, read once, which is the Layer Contract's own 'each layer reads once'. The perimeter verdict cache (gateway/verdict_cache.py, #120) has served whole L1/L2/L3 verdicts for identical descriptions and responses on the same basis without a federation declaration. An unavailable or failed L3 is never kept. The constitution should say verdict caches out loud; raised with Scott. Ruling for a173 (Josui Prime brief, 2026-11-17)."

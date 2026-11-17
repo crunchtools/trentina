@@ -10,6 +10,25 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+- **A burst of identical requests costs one L3 judgement.** Gatehouse's eight
+  parallel agents send the same diff through `/proxy/llm`, and each was judged
+  on its own: eight L3 calls for one answer. Verdicts are now keyed by a hash
+  of exactly what L3 reads (content and briefing) plus the layer and the model
+  config, kept 10 minutes in a bounded cache, and concurrent identical
+  requests share the one call in flight. The key holds the grant owner, so no
+  verdict is shared between tenants. An unavailable or failed judge is never
+  cached (a173).
+- **The `/proxy/llm` request judge has its own deadline,
+  `TRENTINA_LLM_JUDGE_DEADLINE` (default 20 s),** in place of the 60 s it
+  shared with the completion scan, which held every agent's turn for a minute
+  when L3 was slow. A request past it is unjudged: `flag` forwards with a
+  warning, `block` refuses (a173).
+- **An L2 scan whose caller timed out stops and frees its permit.** The scan
+  ran to the end on its thread, holding one of `TRENTINA_L2_CONCURRENCY`
+  permits for a result nobody would read, so the next burst queued behind it.
+  It now stops before its next window, and the permit goes on then (a173).
+
 ## [6.23.2] - 2026-11-17
 
 ### Fixed
