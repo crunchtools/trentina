@@ -978,6 +978,27 @@ class TestProxyRequestDLP:
             "credential_in_request",
         )
 
+    def test_a_request_judge_timeout_under_flag_forwards_unjudged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A judge past ``TRENTINA_LLM_JUDGE_DEADLINE`` is a gap, not a dropped
+        request: flag forwards it with the unjudged warning (a173)."""
+        from trentina import defense as defense_mod
+
+        monkeypatch.setenv("TRENTINA_LLM_JUDGE_DEADLINE", "1")
+
+        async def hanging_defend(*_a: Any, **_k: Any) -> Any:
+            await asyncio.sleep(30)
+            raise AssertionError("the request deadline should have cancelled this")
+
+        monkeypatch.setattr(defense_mod, "defend", hanging_defend)
+        fake = _FakeClient()
+        client = self._client(fake, monkeypatch, "flag")
+        resp = self._post(client, _CLEAN_BODY)
+        assert resp.status_code == 200
+        assert fake.sent
+        assert resp.headers["x-trentina-warning"] == "unjudged"
+
     def test_credential_in_body_flag_forwards_with_warning(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
