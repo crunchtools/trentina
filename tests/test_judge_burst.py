@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from pydantic import SecretStr
 
+from trentina import config as config_mod
 from trentina import defense
 from trentina.gateway import llm_proxy
 from trentina.gateway.context import profile_context
@@ -105,6 +106,37 @@ class TestOneJudgementPerBurst:
         await _judge_as(_profile("a"), "diff")
         await _judge_as(_profile("a", model=model), second, briefing)
         assert judge.calls == 2
+
+    async def test_a_different_provider_is_judged_again(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        judge = _Judge(delay=0)
+        monkeypatch.setattr(defense, "quarantine_detect", judge)
+        other = _profile("b")
+        other.llm_keys["openrouter"] = LlmKeyOverride(api_key_env="B_OPENROUTER_KEY")
+        other.llm_keys["openrouter"].api_key = SecretStr("b-or-key")
+        other.defense.provider = "openrouter"
+        await _judge_as(_profile("a"), "diff")
+        await _judge_as(other, "diff")
+        assert judge.calls == 2
+
+    @pytest.mark.parametrize(
+        ("field", "value"), [("provider_fallback", ["openrouter"]), ("reasoning_effort", "high")]
+    )
+    async def test_a_different_judge_config_is_judged_again(
+        self, monkeypatch: pytest.MonkeyPatch, field: str, value: object
+    ) -> None:
+        judge = _Judge(delay=0)
+        monkeypatch.setattr(defense, "quarantine_detect", judge)
+        agent = _profile("a")
+        await _judge_as(agent, "diff")
+        monkeypatch.setattr(config_mod.get_config(), field, value)
+        await _judge_as(agent, "diff")
+        assert judge.calls == 2
+
+    def test_bytes_cannot_move_across_the_briefing_boundary(self) -> None:
+        with profile_context(_profile("a")):
+            assert l3_cache.judgement_key("\0b", "a") != l3_cache.judgement_key("b", "a\0")
 
     async def test_an_unavailable_judge_is_not_cached(
         self, monkeypatch: pytest.MonkeyPatch

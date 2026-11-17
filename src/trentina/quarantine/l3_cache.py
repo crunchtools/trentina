@@ -71,18 +71,36 @@ def judgement_key(content: str, briefing: str) -> str | None:
     None when the bound profile has no judge to resolve: that call is left to
     fail in ``quarantine_detect`` the way it always did, uncached.
     """
+    # Lazy: the gateway package imports this one on its way in.
+    from ..gateway.service import judge_stamp
+
+    profile = bound_profile()
     try:
-        provider, _key, model = resolve_profile_llm(bound_profile())
+        provider, _key, _model = resolve_profile_llm(profile)
     except QuarantineAgentError:
         return None
-    # The fallback chain is part of the model config: a verdict a fallback
-    # reached is not the one a caller with no fallback would get. The key
-    # itself never enters the hash; which profile pays is not what is judged.
-    config = [_LAYER, provider, model or "", list(get_config().provider_fallback)]
-    digest = hashlib.sha256(json.dumps(config).encode())
-    for part in (briefing, content):
-        digest.update(b"\0")
-        digest.update(part.encode("utf-8", errors="surrogatepass"))
+    # The model config is everything that can change what the judge says, as
+    # ``verdict_cache._cache_key`` has it: provider, model and prompt pack
+    # (``judge_stamp``), the profile's own pack path, which the fallbacks read
+    # too, the reasoning effort, and the fallback chain, since a verdict a
+    # fallback reached is not the one a caller without it would get. The API
+    # key never enters the hash: which profile pays is not what is judged.
+    config = get_config()
+    model_config = [
+        _LAYER,
+        provider,
+        judge_stamp(profile),
+        profile.defense.l3_prompt_pack or "",
+        config.reasoning_effort or "",
+        list(config.provider_fallback),
+    ]
+    digest = hashlib.sha256()
+    # Each part length-prefixed, so no two (briefing, content) pairs can
+    # spell the same input by moving bytes across the boundary.
+    for part in (json.dumps(model_config), briefing, content):
+        encoded = part.encode("utf-8", errors="surrogatepass")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
     return digest.hexdigest()
 
 
