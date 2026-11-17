@@ -527,7 +527,7 @@ def _enrol_body(host: str, seconds_left: int, *, error: str = "", code: str = ""
         "<details><summary>Set a password instead</summary>"
         f'<form method="post" action="{SETUP_PATH}">'
         '<input type="hidden" name="action" value="enrol_password">'
-        '<label>Enrolment code'
+        "<label>Enrolment code"
         f'<input name="code" value="{html.escape(code)}" autocomplete="off" '
         'spellcheck="false" placeholder="xxxx-xxxx-xxxx"></label>'
         f'{_NEW_FIELDS}<div class="actions"><button>Set password</button></div></form>'

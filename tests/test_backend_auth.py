@@ -290,6 +290,20 @@ class TestTheTool:
         assert "error" in refused
         assert refused["available"] == ["era"]
 
+    async def test_a_miss_does_not_claim_the_profile_lacks_it(
+        self, profiles: dict[str, Profile]
+    ) -> None:
+        """RT #1647: another server's copy of the profile may hold the backend."""
+        with profile_context(profiles["josui"]):
+            for refused in (
+                await backend_auth_start("gws-redhat"),
+                await backend_auth_status("gws-redhat"),
+                await backend_auth_revoke("gws-redhat"),
+            ):
+                assert "not in this profile" not in refused["error"]
+                assert "this server" in refused["error"]
+                assert "backend_auth tool of each" in refused["error"]
+
     async def test_self_authorize_gates_an_agent(self, fake: _Backend) -> None:
         locked = profile_with_era("takeda", self_authorize=False)
         with profile_context(locked):

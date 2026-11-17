@@ -157,7 +157,6 @@ async def approval_enrol(action: str = "open") -> dict[str, Any]:
             f"This sets the approver for {named} only — a link to one gateway will not "
             "set up another. Relay `message` to the person unchanged. To check whether "
             "it worked, call this tool with action='status'; do not call 'open' again "
-            "to check, which the person does not need and only restarts the clock. "
-            + _OPEN_IT
+            "to check, which the person does not need and only restarts the clock. " + _OPEN_IT
         ),
     }

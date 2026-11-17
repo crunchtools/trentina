@@ -37,6 +37,18 @@ STARTS_PER_HOUR = 10
 _starts: dict[str, deque[float]] = {}
 
 
+#: What a miss says. A seat that reaches two Trentina servers (tools tagged
+#: ``gloval_`` and ``web_``, say) holds one profile name on each, with different
+#: backends. "Not in this profile" read as a fact about the seat, so an agent
+#: told Scott he had no work credential when the other server held it (RT #1647).
+#: The text is the same whether or not the name exists anywhere else.
+_MISS = (
+    "backend {backend!r} is not on this server's copy of the profile. If your seat "
+    "reaches more than one Trentina server, each lists only its own backends: ask "
+    "the backend_auth tool of each (the server tag prefixes it, e.g. web_backend_auth)"
+)
+
+
 def _refusal(backend: str, exc: Exception) -> dict[str, Any]:
     """A refusal naming only the caller's own backends, so a miss maps nothing."""
     try:
@@ -45,7 +57,7 @@ def _refusal(backend: str, exc: Exception) -> dict[str, Any]:
         own = {}
     return {
         "backend": backend,
-        "error": str(exc),
+        "error": _MISS.format(backend=backend) if backend and backend not in own else str(exc),
         "available": sorted(name for name, cfg in own.items() if cfg.auth is not None),
     }
 
