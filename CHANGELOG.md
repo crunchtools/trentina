@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.24.0] - 2026-11-17
+
 ### Changed
 - **The constitution states when a verdict may be served from cache** (v2.20.0,
   #816): the key binds the content hash, the grant owner and everything that
