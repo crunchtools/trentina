@@ -10,6 +10,13 @@ under that name.
 
 ## [Unreleased]
 
+### Changed
+- **The constitution states when a verdict may be served from cache** (v2.20.0,
+  #816): the key binds the content hash, the grant owner and everything that
+  can change the layer's verdict; only completed verdicts are kept; entries
+  expire and drop when a key input changes; a miss or a cache failure judges,
+  never passes. `tests/test_verdict_cache_rule.py` checks both caches against it.
+
 ### Fixed
 - **A burst of identical requests costs one L3 judgement.** Gatehouse's eight
   parallel agents send the same diff through `/proxy/llm`, and each was judged
