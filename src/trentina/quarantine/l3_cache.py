@@ -92,8 +92,9 @@ def judgement_key(content: str, briefing: str) -> str | None:
         provider,
         judge_stamp(profile),
         profile.defense.l3_prompt_pack or "",
-        config.reasoning_effort or "",
         list(config.provider_fallback),
+        # Only when set, as in ``verdict_cache._cache_key``: unset sends none.
+        *([f"effort={config.reasoning_effort}"] if config.reasoning_effort else []),
     ]
     digest = hashlib.sha256()
     # Each part length-prefixed, so no two (briefing, content) pairs can

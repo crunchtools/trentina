@@ -559,7 +559,7 @@ class TestVerdictKey:
         assert (
             key
             == hashlib.sha256(
-                f"tool:external:owner=p:0.5:{provider}/{model}:effort=minimal:some text".encode()
+                f"tool:external:owner=p:0.5:{provider}/{model}:some text".encode()
             ).hexdigest()
         )
 
@@ -581,7 +581,7 @@ class TestVerdictKey:
         assert (
             unset
             == hashlib.sha256(
-                f"tool:external:owner=p:model:{provider}/{model}:effort=minimal:x".encode()
+                f"tool:external:owner=p:model:{provider}/{model}:x".encode()
             ).hexdigest()
         )
         assert unset != explicit

@@ -280,30 +280,18 @@ def _read_roots_env(
 
 REASONING_EFFORTS = ("minimal", "low", "medium", "high")
 """How long a reasoning judge may think (OpenRouter's ``reasoning.effort``).
-Left to the model, Gemini 3.8 Flash takes 6 to 17 seconds a call against a
-median of six at ``minimal`` (docs/benchmark.md), and a flash-lite judge bills
-its thinking as output tokens."""
-
-DEFAULT_REASONING_EFFORT = "minimal"
-"""The effort when ``QUARANTINE_REASONING_EFFORT`` is unset (a173). Detection
-is a classification, not a puzzle; the model's own default thought at length
-and billed it, which was most of an L3 key's spend."""
-
-MODEL_DEFAULT_EFFORT = "default"
-"""The value that sends no effort at all, leaving the model's own default."""
+Unset, the model's own default applies: Gemini 3.8 Flash then takes 6 to 17
+seconds a call, against a median of six at ``minimal`` (docs/benchmark.md)."""
 
 
 def _reasoning_effort() -> str | None:
-    """``QUARANTINE_REASONING_EFFORT``: ``minimal`` when unset or empty, None for ``default``."""
-    effort = os.environ.get("QUARANTINE_REASONING_EFFORT") or DEFAULT_REASONING_EFFORT
-    if effort == MODEL_DEFAULT_EFFORT:
-        return None
-    if effort not in REASONING_EFFORTS:
+    """``QUARANTINE_REASONING_EFFORT``, or None when it is unset or empty."""
+    effort = os.environ.get("QUARANTINE_REASONING_EFFORT") or None
+    if effort not in (None, *REASONING_EFFORTS):
         from .errors import ConfigError
 
         raise ConfigError(
-            "QUARANTINE_REASONING_EFFORT must be one of "
-            f"{', '.join((*REASONING_EFFORTS, MODEL_DEFAULT_EFFORT))}"
+            f"QUARANTINE_REASONING_EFFORT must be one of {', '.join(REASONING_EFFORTS)}"
         )
     return effort
 

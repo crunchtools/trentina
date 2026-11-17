@@ -632,33 +632,5 @@ class TestReasoningEffort:
             Config()
         monkeypatch.setenv("QUARANTINE_REASONING_EFFORT", "minimal")
         assert Config().reasoning_effort == "minimal"
-        monkeypatch.setenv("QUARANTINE_REASONING_EFFORT", "default")
+        monkeypatch.setenv("QUARANTINE_REASONING_EFFORT", "")
         assert Config().reasoning_effort is None
-
-    @pytest.mark.parametrize("raw", [None, ""])
-    def test_an_unset_effort_is_minimal(
-        self, monkeypatch: pytest.MonkeyPatch, raw: str | None
-    ) -> None:
-        from trentina.config import Config
-
-        if raw is None:
-            monkeypatch.delenv("QUARANTINE_REASONING_EFFORT", raising=False)
-        else:
-            monkeypatch.setenv("QUARANTINE_REASONING_EFFORT", raw)
-        assert Config().reasoning_effort == "minimal"
-
-    async def test_the_openrouter_judge_request_carries_the_default_effort(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from trentina import config as config_mod
-        from trentina.quarantine.providers import get_provider, reset_provider
-
-        monkeypatch.delenv("QUARANTINE_REASONING_EFFORT", raising=False)
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setattr(config_mod, "_config", None)
-        reset_provider()
-        provider = get_provider("openrouter")
-        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
-            mock_post.return_value = _openai_response("ok")
-            await provider.generate("sys", "user")
-        assert mock_post.call_args.kwargs["json"]["reasoning"] == {"effort": "minimal"}
