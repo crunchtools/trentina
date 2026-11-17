@@ -99,13 +99,11 @@ jobs:
       # The release is read from .pre-commit-config.yaml, so it is pinned in
       # one place for the laptop and CI both.
       - name: sdlc ci
+        env:
+          SDLC_IMAGE: ${{ vars.SDLC_IMAGE }}
         run: |
           set -eu
-          rev=$(awk '/repo: https:\/\/github.com\/crunchtools\/python-sdlc/ {f=1; next}
-                     f && /rev:/ {print $2; exit}' .pre-commit-config.yaml)
-          [ -n "$rev" ] || { echo "no python-sdlc rev in .pre-commit-config.yaml" >&2; exit 2; }
-          git clone -q --depth 1 --branch "$rev" https://github.com/crunchtools/python-sdlc "$RUNNER_TEMP/sdlc"
-          $RUNNER_TEMP/sdlc/bin/sdlc ci
+          .sdlc/bin/sdlc ci
 
       # Hand the verified image to `publish`, the only job that holds a
       # credential. This job HOLDS NOTHING THAT CAN PUBLISH: it runs pull-request
