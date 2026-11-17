@@ -41,7 +41,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-    uses: crunchtools/constitution/.github/workflows/dependency-audit.yml@v1.41.0
+    uses: crunchtools/constitution/.github/workflows/dependency-audit.yml@v1.46.0
     with:
       python-version: "3.14"
 
@@ -96,16 +96,13 @@ jobs:
         with:
           persist-credentials: false
 
-      # The release is read from .pre-commit-config.yaml, so it is pinned in
-      # one place for the laptop and CI both.
+      # .sdlc/bin/sdlc asks the image for its own launcher, so the launcher, the
+      # image and every tool float together. SDLC_IMAGE comes only from the
+      # repository variable (latest when unset; main, X.Y.Z or @sha256:<digest>).
       - name: sdlc ci
-        run: |
-          set -eu
-          rev=$(awk '/repo: https:\/\/github.com\/crunchtools\/python-sdlc/ {f=1; next}
-                     f && /rev:/ {print $2; exit}' .pre-commit-config.yaml)
-          [ -n "$rev" ] || { echo "no python-sdlc rev in .pre-commit-config.yaml" >&2; exit 2; }
-          git clone -q --depth 1 --branch "$rev" https://github.com/crunchtools/python-sdlc "$RUNNER_TEMP/sdlc"
-          $RUNNER_TEMP/sdlc/bin/sdlc ci
+        env:
+          SDLC_IMAGE: ${{ vars.SDLC_IMAGE }}
+        run: .sdlc/bin/sdlc ci
 
       # Hand the verified image to `publish`, the only job that holds a
       # credential. This job HOLDS NOTHING THAT CAN PUBLISH: it runs pull-request
