@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.23.2] - 2026-11-17
+
 ### Fixed
 - **`backend_auth` no longer tells an agent a backend is "not in this
   profile" when another server holds it.** A seat that reaches two Trentina
