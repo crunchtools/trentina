@@ -29,6 +29,7 @@ from typing import Any
 
 from ..config import DEFAULT_CLASSIFIER_THRESHOLD, get_config, int_env
 from ..errors import UnscannableContentError
+from ..logsafe import exc_kind, exc_where
 from .benign_gate import benign_state
 from .obfuscation import gate_state
 
@@ -664,8 +665,15 @@ async def classify_async(
 def _scan_done(gate: FairGate, scan: asyncio.Future[ClassifierResult | None]) -> None:
     """Hand the permit on, and consume the result of a scan nobody awaits."""
     gate.release()
-    if not scan.cancelled() and isinstance(scan.exception(), ScanCancelledError):
+    if scan.cancelled() or (exc := scan.exception()) is None:
+        return
+    if isinstance(exc, ScanCancelledError):
         logger.debug("Layer 2 scan stopped: its caller was cancelled")
+    else:
+        # Retrieved here so a scan whose caller left still reports; a caller
+        # still waiting gets the same exception through its shield. The kind
+        # only: an exception from inference can carry the content (#262).
+        logger.debug("Layer 2 scan failed: %s at %s", exc_kind(exc), exc_where(exc))
 
 
 class FairGate:

@@ -138,6 +138,30 @@ class TestOneJudgementPerBurst:
         with profile_context(_profile("a")):
             assert l3_cache.judgement_key("\0b", "a") != l3_cache.judgement_key("b", "a\0")
 
+    async def test_a_judge_that_raises_fails_every_waiter_and_is_not_kept(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = 0
+
+        async def broken(*_a: object, **_kw: object) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.02)
+            raise RuntimeError("provider exploded")
+
+        monkeypatch.setattr(defense, "quarantine_detect", broken)
+        agent = _profile("gatehouse")
+        outcomes = await asyncio.gather(
+            *(_judge_as(agent, "diff") for _ in range(3)), return_exceptions=True
+        )
+        assert calls == 1
+        assert all(isinstance(o, RuntimeError) for o in outcomes)
+        assert not l3_cache._inflight
+        assert not l3_cache._verdicts
+        with pytest.raises(RuntimeError):
+            await _judge_as(agent, "diff")
+        assert calls == 2
+
     async def test_an_unavailable_judge_is_not_cached(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

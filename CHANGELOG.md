@@ -28,6 +28,12 @@ under that name.
   ran to the end on its thread, holding one of `TRENTINA_L2_CONCURRENCY`
   permits for a result nobody would read, so the next burst queued behind it.
   It now stops before its next window, and the permit goes on then (a173).
+- **The L3 judge reasons at `minimal` effort unless told otherwise.**
+  `QUARANTINE_REASONING_EFFORT` unset used to leave a reasoning judge at its
+  own default, which thought for seconds and billed it as output tokens on
+  every call. Unset is now `minimal`; `default` sends no effort and restores
+  the model's own. The effort is part of the verdict key, so the first boot
+  after upgrading re-judges cached tool descriptions once (a173).
 
 ## [6.23.2] - 2026-11-17
 
