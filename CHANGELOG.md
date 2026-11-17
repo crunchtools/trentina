@@ -10,6 +10,15 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+- **`backend_auth` no longer tells an agent a backend is "not in this
+  profile" when another server holds it.** A seat that reaches two Trentina
+  servers sees one profile name on each with different backends, so a miss on
+  one (`gloval_backend_auth` asked for `gws-redhat`) read as the seat having no
+  work credential at all. A miss now says the backend is not on this server's
+  copy of the profile and to ask each server's `backend_auth`. The text is the
+  same whether or not the name exists elsewhere (RT #1647).
+
 ## [6.23.1] - 2026-11-16
 
 ### Fixed
