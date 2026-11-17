@@ -44,6 +44,7 @@ from pydantic import (
 from starlette.responses import Response
 
 from .. import telemetry
+from ..config import int_env
 from ..logsafe import redact_source
 from ..orchestrator import judge_llm_completion, judge_outbound
 from ..outcomes import Outcome
@@ -296,9 +297,28 @@ def _deny_marker(
 #: is the same key and can be dropped before ours is set (never two).
 WARNING_HEADER = "x-trentina-warning"
 
-#: Wall-clock an outbound request scan may take before it is treated as
-#: unjudged. A hung L3 must not stall the proxy for its own HTTP timeout.
+#: Wall-clock a completion scan may take before it is treated as unjudged.
+#: A hung L3 must not stall the proxy for its own HTTP timeout.
 _JUDGE_DEADLINE = 60.0
+
+#: The request scan's deadline when ``TRENTINA_LLM_JUDGE_DEADLINE`` is unset.
+DEFAULT_LLM_JUDGE_DEADLINE = 20
+
+
+def llm_judge_deadline() -> float:
+    """Seconds an outbound ``llm_request`` scan may take: ``TRENTINA_LLM_JUDGE_DEADLINE``.
+
+    Its own setting, apart from the completion's 60 s, because the request
+    scan sits in front of every model call and an agent's whole turn waits on
+    it: a burst of parallel agents queued behind L2 and L3 used to hold each
+    call for the full minute before the provider saw it. The trade-off falls
+    on block-mode profiles. A scan past this deadline is UNJUDGED, which flag
+    forwards with a warning and block refuses, so a short deadline costs a
+    block profile refused calls whenever L3 is slow, and a long one costs it
+    stalls. Read per call, so a changed value needs no restart.
+    """
+    return float(int_env("TRENTINA_LLM_JUDGE_DEADLINE", DEFAULT_LLM_JUDGE_DEADLINE, minimum=1))
+
 
 JSON = "application/json"
 
@@ -528,7 +548,7 @@ async def _judge_request(ctx: InTree, document: str, mode: Mode) -> str | None:
         backend=f"llm:{name}",
         profile=op.profile,
         mode=mode,
-        deadline=_JUDGE_DEADLINE,
+        deadline=llm_judge_deadline(),
     )
     reason = _REASON_OF[verdict.reason or REASON_UNJUDGED].value
     if verdict.refused:

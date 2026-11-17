@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import functools
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -434,8 +436,16 @@ def _classify_segment(input_ids: list[int], attention_mask: list[int]) -> tuple[
     return label, malicious_score
 
 
+class ScanCancelledError(Exception):
+    """The caller that wanted this scan is gone; it stopped between windows."""
+
+
 def classify(
-    text: str, *, fail_on_truncate: bool = False, source: str = "content"
+    text: str,
+    *,
+    fail_on_truncate: bool = False,
+    source: str = "content",
+    cancel: threading.Event | None = None,
 ) -> ClassifierResult | None:
     """Run Layer 2 classifier on text.
 
@@ -459,6 +469,10 @@ def classify(
     will reject a truncated scan anyway gains nothing from the ~74 passes
     it would take to produce one, and letting them run hands an attacker a
     cheap way to burn two minutes of CPU per request.
+
+    ``cancel`` set stops the scan before its next window with
+    :class:`ScanCancelledError`: a thread cannot be killed, but it can stop
+    asking for more inference once nobody will read the answer.
     """
     if not is_classifier_available():
         return None
@@ -500,6 +514,8 @@ def classify(
 
     # max(..., 1): empty text still gets its one pass, as it did before.
     for start_idx in range(0, max(len(all_ids), 1), stride):
+        if cancel is not None and cancel.is_set():
+            raise ScanCancelledError(source)
         segment_ids = all_ids[start_idx : start_idx + content_length]
         input_ids, attention_mask = _pad_segment(segment_ids, max_length)
         seg_label, seg_score = _classify_segment(input_ids, attention_mask)
@@ -626,14 +642,30 @@ async def classify_async(
     """
     gate = _l2_gate()
     await gate.acquire(_caller())
-    # The permit follows the THREAD, not this coroutine: a cancelled caller
-    # leaves the scan running, and releasing on cancel would let the next
-    # scan start beside it and break the bound.
+    # The permit follows the THREAD, not this coroutine: releasing on cancel
+    # would let the next scan start beside one still running and break the
+    # bound. So a cancelled caller (a request past its deadline) STOPS its
+    # scan instead: the thread quits before its next window and the permit
+    # goes to the next burst then, not after the rest of a scan nobody reads.
+    cancel = threading.Event()
     scan = asyncio.ensure_future(
-        asyncio.to_thread(classify, text, fail_on_truncate=fail_on_truncate, source=source)
+        asyncio.to_thread(
+            classify, text, fail_on_truncate=fail_on_truncate, source=source, cancel=cancel
+        )
     )
-    scan.add_done_callback(lambda _done: gate.release())
-    return await asyncio.shield(scan)
+    scan.add_done_callback(functools.partial(_scan_done, gate))
+    try:
+        return await asyncio.shield(scan)
+    except asyncio.CancelledError:
+        cancel.set()
+        raise
+
+
+def _scan_done(gate: FairGate, scan: asyncio.Future[ClassifierResult | None]) -> None:
+    """Hand the permit on, and consume the result of a scan nobody awaits."""
+    gate.release()
+    if not scan.cancelled() and isinstance(scan.exception(), ScanCancelledError):
+        logger.debug("Layer 2 scan stopped: its caller was cancelled")
 
 
 class FairGate:

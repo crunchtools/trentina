@@ -69,6 +69,7 @@ from .quarantine.classifier import (
     estimate_tokens,
     head,
 )
+from .quarantine.l3_cache import detect_once
 from .quarantine.prompts import L2_BLINDSPOT_CAVEAT, RISK_LEVELS
 from .unpack.child import run_unpacking
 from .unpack.scan import MAX_MEDIA_TOKEN, unpack
@@ -408,7 +409,11 @@ async def _stage_two(content: str, defense: DefenseConfig | None, briefing: str)
     if not _l3_provider_configured(defense):
         _log_no_judge(defense)
         return {"l3_unavailable": True, "injection_detected": False}
-    return await quarantine_detect(content, layer1_context=briefing)
+    # Identical judgements share one call (``quarantine/l3_cache.py``): the
+    # recording below stays per caller, only the verdict is reused.
+    return await detect_once(
+        content, briefing, lambda: quarantine_detect(content, layer1_context=briefing)
+    )
 
 
 async def defend(
