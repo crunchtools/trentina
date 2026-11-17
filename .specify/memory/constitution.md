@@ -1,8 +1,8 @@
 # trentina Constitution
 
-> **Version:** 2.19.0
+> **Version:** 2.20.0
 > **Ratified:** 2026-09-22
-> **Amended:** 2026-11-11
+> **Amended:** 2026-11-17
 > **Status:** Active
 > **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.41.0
 > **Profile:** Security Gateway
@@ -105,6 +105,23 @@ stamp and its judge, and it is fail-closed: an absent, forged, stale or
 mismatched verdict falls through to the full local pipeline. The carve-out
 lives in the response edge, never in a layer, so the four rules above still
 hold for every other ingress. See `docs/federation.md` and known gap 33.
+
+A **verdict cache** is not a skipped layer: it serves a verdict a layer
+already reached on the same input, the layer's own read reused (#816). A
+layer's verdict may be served from cache only if all four hold:
+
+1. The key binds the exact content hash, the tenant (the grant owner), and
+   everything that can change that layer's verdict: model, prompt pack,
+   reasoning effort when set, and the layer's version.
+2. Only completed verdicts are cached. Errors, timeouts, refusals and
+   unjudged results never are.
+3. Entries have a bounded TTL, and are dropped when any key input changes.
+4. A cache miss or a cache failure falls back to judging, never to a pass.
+
+A cache that fails any of the four is a layer skipped, and is reviewed as
+one. Two caches are held to this: the perimeter verdict cache
+(`gateway/verdict_cache.py`) and the L3 detection cache
+(`quarantine/l3_cache.py`); `tests/test_verdict_cache_rule.py` checks both.
 
 - **L1 (deterministic):** `l1/` counts obfuscation, hidden markup, encoded
   blobs, exfiltration URLs, delimiters and directives, by type; its counts
@@ -491,3 +508,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.17.0 | 2026-11-06 | Input limits scoped to what they always governed (#740). "URL schemes are http/https only" was written about URLs an agent supplies, and stays exact for them: a fetch, the forward route and egress admit http(s) alone. A backend location is the operator's, and was never held to it — `internal://` and `decoy://` backends predate this — so it is now stated: http(s), those two, or a scheme a carrier plugin answers, for the stdio-only MCP servers #724 fronts. Three conditions keep the chokepoint what it was. A plugin carrier may not take http, https, internal or decoy, so no plugin can stand in for an existing backend's wire. It is checked at load without being imported, by a scan that allows sockets and refuses every process launcher, because the gateway spawns nothing it carries to (#724's ruling: the host starts the server). And it carries messages only: breaker, credentials, retries, the response cap and all three layers stay in the gateway above it, so a carrier has no judging to bypass. `PERIMETER_VERSION` does not move: no verdict changes |
 | 2.18.0 | 2026-11-07 | Stdio backends (#724): `unix://` joins the backend locations by name. 2.17.0 admitted a scheme only through an operator-installed plugin, and the built-in `unix` carrier is not one, so it is stated rather than read into that clause. The gateway still starts nothing: the stdio server is the host's, run by systemd socket activation, and the gateway connects to its socket. The socket must sit under the operator's `TRENTINA_SOCKET_ROOTS` (unset, none loads), checked as written at load and again at every connect through a directory opened without following links. A `unix://` backend carries no `headers`, `auth` or `federated`, since nothing on that wire is HTTP. `PERIMETER_VERSION` does not move: no verdict changes |
 | 2.19.0 | 2026-11-11 | Human Approval property 1 states the enrolment bootstrap explicitly (RT#1609). The one-time code `approval_enrol` hands the operator agent is not the approval capability and never was: the capability is the passkey or password a person sets, returned to nothing and stored only as a verifier. The code gates who may set the FIRST approver on a gateway with none; `enrolling()` refuses once one is configured, so it cannot replace or act as a working approver. The agent must see it to relay the setup link and cannot use it, because every state-changing approval route is POST-only and no Trentina tool makes a POST. Stated here because the property's "not a token in a tool result" wording, read alone, re-fired a CRITICAL on every enrol PR though the carve-out lived only in CLAUDE.md and the code. This PR also caps a kept code at `MAX_ENROL_WINDOW_SECONDS` from mint inside `enrolling()`, so a reopen cannot stretch its life. `PERIMETER_VERSION` does not move: no verdict changes |
+| 2.20.0 | 2026-11-17 | Verdict caches (#816), CTO ruling: a cache serving a layer's verdict is that layer's read reused, not an off switch, and is allowed only on four conditions — the key binds the exact content hash, the grant owner and everything that can change that layer's verdict (model, prompt pack, effort when set, the layer's version); only completed verdicts are cached, never errors, timeouts, refusals or unjudged results; entries have a bounded TTL and are dropped when a key input changes; and a miss or a cache failure falls back to judging, never to a pass. Gatehouse had flagged each new cache as a CRITICAL "layer skipped" because the Layer Contract named federation as the only boundary where a payload is delivered without the layers running here. `tests/test_verdict_cache_rule.py` holds both caches to it; the perimeter verdict cache has no TTL and is held open as a strict xfail until it gets one. `PERIMETER_VERSION` does not move: no verdict changes |
