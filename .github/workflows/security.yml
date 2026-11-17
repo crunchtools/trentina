@@ -96,14 +96,13 @@ jobs:
         with:
           persist-credentials: false
 
-      # The release is read from .pre-commit-config.yaml, so it is pinned in
-      # one place for the laptop and CI both.
+      # .sdlc/bin/sdlc asks the image for its own launcher, so the launcher, the
+      # image and every tool float together. SDLC_IMAGE comes only from the
+      # repository variable (latest when unset; main, X.Y.Z or @sha256:<digest>).
       - name: sdlc ci
         env:
           SDLC_IMAGE: ${{ vars.SDLC_IMAGE }}
-        run: |
-          set -eu
-          .sdlc/bin/sdlc ci
+        run: .sdlc/bin/sdlc ci
 
       # Hand the verified image to `publish`, the only job that holds a
       # credential. This job HOLDS NOTHING THAT CAN PUBLISH: it runs pull-request
