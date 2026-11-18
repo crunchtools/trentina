@@ -31,6 +31,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import resource
 import sys
 import time
@@ -47,6 +48,13 @@ MEMORY_BYTES = 6 * 1024 * 1024 * 1024
 than they touch. Resident use measured about 0.8 GB."""
 
 THREADS = 2
+"""Threads for EVERY native pool, not only onnxruntime's. OpenMP and OpenBLAS
+size their own pools from the machine's core count and reserve address space
+per thread, so on a 24-core CI runner the worker hit ``RLIMIT_AS`` with
+std::bad_alloc before it read one image, while on 16 cores it fit."""
+
+NATIVE_POOLS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
+"""Read once, when numpy and onnxruntime load, so set before those imports."""
 MAX_PIXELS = 40_000_000
 """Pixels an image may declare. Larger is refused before it is decoded."""
 
@@ -209,9 +217,13 @@ def _read(engine: Any, packed: bytes) -> dict[str, list[str]] | None:
 def main() -> int:
     resource.setrlimit(resource.RLIMIT_CPU, (CPU_SECONDS, CPU_SECONDS))
     resource.setrlimit(resource.RLIMIT_AS, (MEMORY_BYTES, MEMORY_BYTES))
+    os.environ.update(dict.fromkeys(NATIVE_POOLS, str(THREADS)))
     warnings.simplefilter("error")  # a decompression-bomb warning refuses the image
     request = json.load(sys.stdin)
+    import cv2
     from rapidocr import RapidOCR
+
+    cv2.setNumThreads(THREADS)
 
     engine = RapidOCR(
         params={
