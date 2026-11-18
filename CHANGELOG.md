@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.24.2] - 2026-11-18
+
 ### Fixed
 - **The LLM proxy's request judge stops timing out on bursts (a341).** Gatehouse
   sends up to 24 review calls at once, each the same diff behind its own
