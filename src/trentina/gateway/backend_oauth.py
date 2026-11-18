@@ -428,6 +428,10 @@ async def _client_for(
         and existing.issuer == disc.issuer
         and existing.token_endpoint == disc.token_endpoint
         and existing.revocation_endpoint == disc.revocation_endpoint
+        # A client registered for fewer scopes than the backend now asks for is
+        # refused at authorize ("Client was not registered with scope"), so
+        # register anew. An unrecorded scope set (pre-#831) is reused.
+        and (existing.scopes is None or set(disc.scopes) <= set(existing.scopes))
     ):
         return existing
     if disc.registration_endpoint is None:
@@ -471,6 +475,7 @@ async def _client_for(
         issuer=disc.issuer,
         token_endpoint=disc.token_endpoint,
         revocation_endpoint=disc.revocation_endpoint,
+        scopes=disc.scopes,
     )
     await store.put_client(profile.grant_owner, name, backend, client)
     return client
