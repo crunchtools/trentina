@@ -64,3 +64,11 @@ file = "src/trentina/gateway/request_units.py"
 evidence = "```python\nverdicts = await asyncio.gather(\n    *(\n        _judge_once(\n            _key(unit, profile, mode, source_type),\n            functools.partial(run, unit),\n            deadline=deadline,\n            refused=mode is Mode.BLOCK,\n        )\n        for unit in units\n    )\n)\n```"
 status = "not-a-bug"
 reason = "The work under the fan-out is already bounded where it costs: L2 by the gateway-wide FairGate (TRENTINA_L2_CONCURRENCY), L3 by the per-key AdaptiveLimiter and l3_cache single-flight, L1 by the default thread pool; a waiting unit is a coroutine frame. Total L2 work drops, it does not multiply: each message is read once per owner and kept, where the whole-request path re-read the same head every turn and every burst member."
+
+[[findings]]
+agent = "bugs"
+category = "bug"
+file = "src/trentina/gateway/request_units.py"
+evidence = "```python\nwhole = \"\\n\".join(units)\ntokens, cap = await admission(whole)\nreturn [whole] if tokens > cap else units\n```"
+status = "not-a-bug"
+reason = "The body forwarded upstream is itself re-serialized by llm_policy.admit (the provider parses what was judged), and body_text re-dumps it with the same json.dumps defaults the units use, so there is no original whitespace left to count: the joined units carry the forwarded body's fields with one newline between units instead of a comma."

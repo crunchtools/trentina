@@ -659,8 +659,9 @@ one does; the rest name the benchmark that measured them.
     Tested (`tests/test_federation_trust.py`, `tests/test_coverage_gaps.py`).
 
 34. **An LLM request is judged a message at a time** (a341). `/proxy/llm`
-    cuts an outbound request into its frame and each element of `messages`,
-    `contents` or a Responses `input` list (`gateway/request_units.py`), and
+    cuts an outbound request into its frame and each object in a `messages`,
+    `contents` or `input` list (an embeddings `input`, a list of strings, stays
+    in the frame) (`gateway/request_units.py`), and
     each is read whole by L1, L2 and L3 without the others beside it, as the
     parts of a paged response are (gap 27). An instruction split across two
     messages, each meaning nothing alone, is judged as two documents would
