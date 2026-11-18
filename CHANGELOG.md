@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.24.3] - 2026-11-18
+
 ### Fixed
 - **Legacy backend OAuth clients are judged by their grant's scopes (#834).** A
   registration stored before #831 records no scopes and was reused whatever the
