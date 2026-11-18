@@ -8,6 +8,7 @@ pinned and refused on a redirect, exactly as in production.
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib
 import logging
 import pathlib
@@ -102,17 +103,27 @@ class TestTheFlow:
         self, server: FakeServer, profiles: dict[str, Profile]
     ) -> None:
         # A client registered for "read" is refused when asked for more
-        # ("Client was not registered with scope", #831): register anew.
+        # ("Client was not registered with scope", #831): register anew. The
+        # replacement is stored only once its flow completes (#834).
         await start(profiles["josui"], "era", authorized_by="self")
         profiles["josui"] = profile_with_era("josui", scopes=["read", "write"])
         link = await start(profiles["josui"], "era", authorized_by="self")
         assert [c["scope"] for c in server.clients.values()] == ["read", "read write"]
-        query = parse_qs(urlsplit(await authorize_url(link)).query)
+        authorize = await authorize_url(link)
+        query = parse_qs(urlsplit(authorize).query)
         assert query["client_id"] == ["client-2"]
         era = profiles["josui"].backends["era"]
+        before = await token_store().get_client("josui", "era", era)
+        assert before is not None
+        assert (before.client_id, before.scopes) == ("client-1", ("read",))
+        state, code = server.authorize(authorize)
+        await complete(state, code, None, None)
         stored = await token_store().get_client("josui", "era", era)
         assert stored is not None
-        assert stored.scopes == ("read", "write")
+        assert (stored.client_id, stored.scopes) == ("client-2", ("read", "write"))
+        grant = await token_store().get_grant("josui", "era", era)
+        assert grant is not None
+        assert grant.client_id == "client-2"
 
     async def test_narrower_scopes_keep_the_client(
         self, server: FakeServer, profiles: dict[str, Profile]
@@ -162,6 +173,120 @@ class TestTheFlow:
         first = parse_qs(urlsplit(links[0]).query)["flow"][0]
         assert await token_store().peek_flow(backend_tokens.flow_key(first)) is None
         assert await authorize_url(links[3])
+
+    async def _legacy_with_grant(self, server: FakeServer, scopes: list[str]) -> Profile:
+        """A completed grant on a client whose registration recorded no scopes (pre-#831)."""
+        profiles_ = profile_with_era("josui", scopes=scopes)
+        await login(server, profiles_)
+        era = profiles_.backends["era"]
+        stored = await token_store().get_client("josui", "era", era)
+        assert stored is not None
+        await token_store().put_client(
+            "josui", "era", era, stored.model_copy(update={"scopes": None})
+        )
+        return profiles_
+
+    async def _regrant(self, era: Any, grant: Any, **update: Any) -> None:
+        store = token_store()
+        async with store.locked("josui", "era"):
+            await store.put_grant(
+                "josui",
+                "era",
+                era,
+                grant.model_copy(update=update),
+                expected_generation=grant.generation,
+            )
+
+    async def test_a_legacy_client_whose_grant_is_too_narrow_registers_anew(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        # The grant's scopes stand in for the unrecorded client's (#834).
+        await self._legacy_with_grant(server, ["read"])
+        profiles["josui"] = profile_with_era("josui", scopes=["read", "write"])
+        link = await start(profiles["josui"], "era", authorized_by="self")
+        assert len(server.clients) == 2
+        query = parse_qs(urlsplit(await authorize_url(link)).query)
+        assert query["client_id"] == ["client-2"]
+
+    @pytest.mark.parametrize(
+        ("granted", "asked"), [(["read", "write"], ["read"]), (["read"], ["read"])]
+    )
+    async def test_a_legacy_client_whose_grant_covers_the_request_is_reused(
+        self, server: FakeServer, profiles: dict[str, Profile], granted: list[str], asked: list[str]
+    ) -> None:
+        await self._legacy_with_grant(server, granted)
+        era = profiles["josui"].backends["era"]
+        profiles["josui"] = profile_with_era("josui", scopes=asked)
+        grant = await token_store().get_grant("josui", "era", era)
+        assert grant is not None
+        # The fake token endpoint reports "read"; pin the scopes under test.
+        await self._regrant(era, grant, scopes=tuple(granted))
+        link = await start(profiles["josui"], "era", authorized_by="self")
+        assert len(server.clients) == 1
+        query = parse_qs(urlsplit(await authorize_url(link)).query)
+        assert query["client_id"] == ["client-1"]
+
+    async def test_a_legacy_client_with_a_grant_on_another_client_is_reused(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        await self._legacy_with_grant(server, ["read"])
+        era = profiles["josui"].backends["era"]
+        grant = await token_store().get_grant("josui", "era", era)
+        assert grant is not None
+        await self._regrant(era, grant, client_id="someone-else")
+        profiles["josui"] = profile_with_era("josui", scopes=["read", "write"])
+        await start(profiles["josui"], "era", authorized_by="self")
+        assert len(server.clients) == 1
+
+
+class TestReauthorizingWithAWiderClient:
+    """The replacement client is stored with its grant, not before (#834)."""
+
+    async def test_an_abandoned_reauth_leaves_the_old_client_and_grant(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        await login(server, profiles["josui"])
+        era = profiles["josui"].backends["era"]
+        old = await token_store().get_grant("josui", "era", era)
+        assert old is not None
+        profiles["josui"] = profile_with_era("josui", scopes=["read", "write"])
+        await start(profiles["josui"], "era", authorized_by="self")
+        assert len(server.clients) == 2  # registered, never completed
+
+        client = await token_store().get_client("josui", "era", era)
+        assert client is not None
+        assert client.client_id == "client-1"
+        grant = await token_store().get_grant("josui", "era", era)
+        assert grant == old
+
+        refreshed = await fresh_grant(profiles["josui"], "era", stale_generation=old.generation)
+        assert refreshed is not None
+        assert refreshed.client_id == "client-1"
+        assert refreshed.generation == old.generation + 1
+        request = server.requests[-1]
+        assert request.url.path == "/token"
+        basic = base64.b64decode(request.headers["authorization"][6:]).decode()
+        assert basic.startswith("client-1:")
+
+    async def test_completing_it_stores_the_client_and_grant_together(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        await login(server, profiles["josui"])
+        profiles["josui"] = profile_with_era("josui", scopes=["read", "write"])
+        await login(server, profiles["josui"])
+        era = profiles["josui"].backends["era"]
+        client = await token_store().get_client("josui", "era", era)
+        assert client is not None
+        assert (client.client_id, client.scopes) == ("client-2", ("read", "write"))
+        grant = await token_store().get_grant("josui", "era", era)
+        assert grant is not None
+        assert grant.client_id == "client-2"
+
+        refreshed = await fresh_grant(profiles["josui"], "era", stale_generation=grant.generation)
+        assert refreshed is not None
+        assert refreshed.client_id == "client-2"
+        basic = base64.b64decode(server.requests[-1].headers["authorization"][6:]).decode()
+        assert basic.startswith("client-2:")
 
 
 class TestState:

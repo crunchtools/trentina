@@ -10,6 +10,20 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+- **Legacy backend OAuth clients are judged by their grant's scopes (#834).** A
+  registration stored before #831 records no scopes and was reused whatever the
+  profile asked for, so the next scope growth hit #831 again. When the slot's
+  grant was issued to that client, its scopes now stand in, and a client that
+  does not cover the request is registered anew (at most once: the new one
+  records its scopes).
+- **An abandoned re-auth no longer strands the old grant (#834).** `start` used
+  to replace the slot's client when it registered a new one, before the human
+  finished. The replacement now travels in the sealed flow and is stored with
+  the grant it yields; until then the old client and grant keep refreshing.
+  A rollback drops flows in progress (at most the flow TTL), as an older gateway
+  cannot read the new flow record.
+
 ## [6.24.2] - 2026-11-18
 
 ### Fixed

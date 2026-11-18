@@ -413,27 +413,47 @@ def _configured_client(backend: Backend, disc: Discovered) -> BackendClient | No
     )
 
 
+async def _registered_scopes(
+    store: BackendTokenStore, profile: Profile, name: str, backend: Backend, client: BackendClient
+) -> tuple[str, ...] | None:
+    """The scopes ``client`` is known to hold, or None when nothing says.
+
+    A registration from before #831 records none, so the scopes of the slot's
+    grant stand in when that grant was issued to the same client (#834).
+    """
+    if client.scopes is not None:
+        return client.scopes
+    grant = await store.get_grant(profile.grant_owner, name, backend)
+    return grant.scopes if grant is not None and grant.client_id == client.client_id else None
+
+
 async def _client_for(
     store: BackendTokenStore, profile: Profile, name: str, backend: Backend, disc: Discovered
-) -> BackendClient:
-    """The provisioned client, the slot's registered one, or a new registration."""
+) -> tuple[BackendClient, bool]:
+    """The provisioned client, the slot's registered one, or a new registration.
+
+    The flag is True for a registration that replaces the slot's client: it is
+    not stored here but with the grant it yields, so an abandoned re-auth leaves
+    the old client, and the grant issued to it, working.
+    """
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata
 
     configured = _configured_client(backend, disc)
     if configured is not None:
-        return configured
+        return configured, False
     existing = await store.get_client(profile.grant_owner, name, backend)
     if (
         existing is not None
         and existing.issuer == disc.issuer
         and existing.token_endpoint == disc.token_endpoint
         and existing.revocation_endpoint == disc.revocation_endpoint
-        # A client registered for fewer scopes than the backend now asks for is
-        # refused at authorize ("Client was not registered with scope"), so
-        # register anew. An unrecorded scope set (pre-#831) is reused.
-        and (existing.scopes is None or set(disc.scopes) <= set(existing.scopes))
     ):
-        return existing
+        # A client registered for fewer scopes than the backend now asks for is
+        # refused at authorize ("Client was not registered with scope", #831),
+        # so register anew. Scopes nothing records are unknown: reuse.
+        held = await _registered_scopes(store, profile, name, backend, existing)
+        if held is None or set(disc.scopes) <= set(held):
+            return existing, False
     if disc.registration_endpoint is None:
         raise BackendAuthError("needs_client_id")
     # Pick the first method the server advertises that the gateway supports,
@@ -477,8 +497,10 @@ async def _client_for(
         revocation_endpoint=disc.revocation_endpoint,
         scopes=disc.scopes,
     )
+    if existing is not None:
+        return client, True
     await store.put_client(profile.grant_owner, name, backend, client)
-    return client
+    return client, False
 
 
 def _client_auth(client: BackendClient, form: dict[str, str]) -> dict[str, str]:
@@ -568,7 +590,7 @@ def _require_store() -> BackendTokenStore:
 
 async def _prepare(
     profile: Profile, name: str, authorized_by: Literal["self", "operator"]
-) -> tuple[BackendTokenStore, Backend, Discovered, BackendClient]:
+) -> tuple[BackendTokenStore, Backend, Discovered, tuple[BackendClient, bool]]:
     """Everything ``start`` checks before it records anything."""
     backend = profile.backends.get(name)
     if backend is None or backend.auth is None:
@@ -600,7 +622,7 @@ async def start(profile: Profile, name: str, *, authorized_by: Literal["self", "
 
     started = time.monotonic()
     try:
-        store, backend, disc, client = await _prepare(profile, name, authorized_by)
+        store, backend, disc, (client, replaces) = await _prepare(profile, name, authorized_by)
     except BackendAuthError as exc:
         _audit(profile.name, name, "oauth_start", started, exc.code)
         raise
@@ -646,6 +668,7 @@ async def start(profile: Profile, name: str, *, authorized_by: Literal["self", "
         scopes=disc.scopes,
         page_key=flow_key(page),
         expires_at=_now() + FLOW_TTL,
+        pending_client=client if replaces else None,
     )
     keys = (flow_key(state), flow.page_key)
     for key in keys:
@@ -731,7 +754,8 @@ async def _exchange(
     # a mix-up between two authorization servers this gateway talks to.
     if (iss is None and flow.iss_required) or (iss is not None and iss != flow.issuer):
         raise BackendAuthError("iss_mismatch")
-    client = await _client_of(store, profile, flow.backend, backend, flow.client_id)
+    pending = flow.pending_client
+    client = pending or await _client_of(store, profile, flow.backend, backend, flow.client_id)
     if client is None:
         raise BackendAuthError("client_gone")
     client = client.model_copy(update={"auth_method": flow.auth_method})
@@ -755,6 +779,12 @@ async def _exchange(
         scopes=flow.scopes,
     )
     async with store.locked(flow.profile, flow.backend):
+        # Only now, with its grant in hand, does the new registration replace
+        # the slot's client. Client first: should the grant write then fail,
+        # the next start finds a client that records its scopes and reuses it,
+        # where grant-first would leave the old, unrecorded client to loop on #831.
+        if pending is not None:
+            await store.put_client(flow.profile, flow.backend, backend, pending)
         current = await store.get_grant(flow.profile, flow.backend, backend)
         await store.put_grant(
             flow.profile,

@@ -15,11 +15,13 @@ from trentina.gateway import backend_tokens
 from trentina.gateway.backend_tokens import (
     KEY_ENV,
     BackendClient,
+    BackendFlow,
     BackendGrant,
     BackendTokenStore,
     GrantConflictError,
     _SealedGrant,
     configure_backend_tokens,
+    flow_key,
     open_backend_token_store,
 )
 from trentina.gateway.errors import ProfileConfigError
@@ -102,6 +104,51 @@ class TestRoundTrip:
         client = await store.get_client("josui", "era", ERA)
         assert client is not None
         assert client.client_id == "c1"
+
+    async def test_a_flow_carries_its_pending_client_and_secret(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The replacement client rides in the sealed flow until its grant lands (#834).
+        store = _open(tmp_path, monkeypatch)
+        secret = "zqx7canary-pending-secret-0123456789"
+        pending = BackendClient(
+            client_id="c2",
+            client_secret=SecretStr(secret),
+            auth_method="client_secret_post",
+            issuer="https://auth.era.app",
+            token_endpoint="https://auth.era.app/token",
+            revocation_endpoint="https://auth.era.app/revoke",
+            scopes=("read", "write"),
+        )
+        flow = BackendFlow(
+            profile="josui",
+            backend="era",
+            origin="https://context.era.app",
+            issuer=pending.issuer,
+            iss_required=False,
+            token_endpoint=pending.token_endpoint,
+            revocation_endpoint=pending.revocation_endpoint,
+            authorize_url="https://auth.era.app/authorize?client_id=c2",
+            client_id="c2",
+            auth_method="client_secret_post",
+            verifier=SecretStr("v" * 43),
+            redirect_uri="https://gw.example/oauth/callback",
+            resource=None,
+            scopes=("read", "write"),
+            page_key=flow_key("page"),
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
+            pending_client=pending,
+        )
+        await store.put_flow(flow_key("state"), flow)
+        for path in (p for p in tmp_path.rglob("*") if p.is_file()):
+            assert secret not in path.read_text(errors="replace")
+        got = await store.take_flow(flow_key("state"))
+        assert got is not None
+        assert got.pending_client is not None
+        assert got.pending_client.client_secret is not None
+        assert got.pending_client.client_secret.get_secret_value() == secret
+        assert got.pending_client == pending
+        assert await store.take_flow(flow_key("state")) is None
 
 
 class TestIsolation:
