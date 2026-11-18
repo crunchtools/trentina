@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 from ..logsafe import exc_kind, exc_where
 from ..modes import Mode
 from ..orchestrator import OutboundVerdict, judge_outbound
+from .outbound import detect_credentials
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -102,15 +103,21 @@ def request_units(head: str, body: str | None) -> list[str]:
 def _key(unit: str, profile: Profile, mode: Mode, source_type: str) -> str:
     """Everything that can change a unit's verdict, hashed; never a secret."""
     # Lazy: the gateway service imports this module's caller on its way in.
+    from ..config import get_config
     from ..perimeter_db import perimeter_stamp
     from .service import judge_stamp
 
+    settings = get_config()
     config = [
         profile.grant_owner,
         profile.name,
         mode.value,
         source_type,
         judge_stamp(profile),
+        # As in ``l3_cache.judgement_key``: a fallback reaches another judge,
+        # and the effort only when set, as the call sends none unset.
+        list(settings.provider_fallback),
+        *([f"effort={settings.reasoning_effort}"] if settings.reasoning_effort else []),
         perimeter_stamp(),
         profile.defense.model_dump_json(),
     ]
@@ -136,11 +143,22 @@ async def judge_units(
     """Judge each unit once and merge the verdicts into the request's.
 
     The arguments are ``judge_outbound``'s, with ``units`` for its document.
-    Each unit's judgement runs under ``deadline`` from when it started, so a
-    caller that joins a flight in progress waits no longer than its own.
+    Counting the request against the cap and judging its units share one
+    ``deadline``; a caller that joins a flight in progress waits no longer
+    than what is left of its own. A count past the deadline is unjudged, as
+    ``judge_outbound`` answers a scan past it.
     """
+    loop = asyncio.get_running_loop()
+    started = loop.time()
     if len(units) > 1:
-        units = await _one_cap(units)
+        try:
+            async with asyncio.timeout(deadline):
+                units = await _one_cap(units)
+        except TimeoutError as exc:
+            _log_scan_failed(backend, source_type, exc)
+            kinds = list(dict.fromkeys(k for unit in units for k in detect_credentials(unit)))
+            return OutboundVerdict(refused=mode is Mode.BLOCK, kinds=kinds)
+        deadline = max(deadline - (loop.time() - started), 0.001)
     run = functools.partial(
         judge_outbound,
         source=source,
@@ -157,6 +175,8 @@ async def judge_units(
                 functools.partial(run, unit),
                 deadline=deadline,
                 refused=mode is Mode.BLOCK,
+                backend=backend,
+                source_type=source_type,
             )
             for unit in units
         )
@@ -185,13 +205,16 @@ async def _judge_once(
     *,
     deadline: float,
     refused: bool,
+    backend: str,
+    source_type: str,
 ) -> OutboundVerdict:
     """The unit's kept verdict, a flight in progress, or a new judgement.
 
     A caller that joins a flight started earlier waits no longer than its own
     ``deadline``; past it the unit is unjudged for that caller (``refused``
     under block, as ``judge_outbound`` answers a timeout), and the flight goes
-    on for the others.
+    on for the others. Logged as ``judge_outbound`` logs a scan past its
+    deadline, so one syslog count covers both.
     """
     hit = _verdicts.get(key)
     if hit is not None and time.monotonic() - hit[0] < TTL_SECONDS:
@@ -209,8 +232,23 @@ async def _judge_once(
     try:
         async with asyncio.timeout(deadline):
             return await asyncio.shield(task)
-    except TimeoutError:
+    except TimeoutError as exc:
+        _log_scan_failed(backend, source_type, exc, level=logging.WARNING)
         return OutboundVerdict(refused=refused)
+
+
+def _log_scan_failed(
+    backend: str, source_type: str, exc: BaseException, *, level: int = logging.ERROR
+) -> None:
+    """``judge_outbound``'s line for a scan with no verdict, word for word."""
+    logger.log(  # backend is server-configured (#262-safe)
+        level,
+        "outbound: request scan failed backend=%s source_type=%s: %s at %s",
+        backend,
+        source_type,
+        exc_kind(exc),
+        exc_where(exc),
+    )
 
 
 async def _judge(

@@ -668,8 +668,25 @@ one does; the rest name the benchmark that measured them.
     be. Only a request under the admission cap is cut; one over it is
     judged whole, refused under `block` and read to its head under `flag`.
     Judged whole, a Gatehouse burst timed most of its requests out unread.
-    Tested
-    (`tests/test_request_units.py`, `tests/test_coverage_gaps.py`).
+    What the cut costs, each by design:
+
+    - **L1 counts per unit.** Its risk is a count per document (1 to 3
+      findings medium, 4 to 10 high), so four markers spread across two
+      messages are two mediums, which flag nothing, where the whole request
+      was a high, which flags.
+    - **The frame is judged with no message beside it.** Anthropic's
+      `system` and every tool definition stay in the frame; OpenAI's system
+      prompt is a `messages` item and is its own unit, read without the user
+      turn it frames.
+    - **A kept verdict is served for 10 minutes after its last use**, a
+      sliding window, and a hit writes no detection row: a flagged message
+      repeated across a conversation records one detection, though every
+      request still carries the flag on its own audit row (`flag_reason`).
+    - **`block` admits what it used to refuse.** A burst that timed out, and
+      so was refused as unjudged, is now admitted whenever each of its
+      messages is judged clean on its own.
+
+    Tested (`tests/test_request_units.py`, `tests/test_coverage_gaps.py`).
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 
