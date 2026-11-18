@@ -160,6 +160,9 @@ class BackendFlow(BaseModel):
     #: Where the confirmation page finds this flow; dropped with it.
     page_key: str
     expires_at: datetime
+    #: A registration that replaces the slot's client, stored only with the
+    #: grant it yields: an abandoned re-auth leaves the old client and grant.
+    pending_client: BackendClient | None = None
 
 
 class _Sealed(BaseModel):
@@ -214,6 +217,9 @@ class _SealedFlow(_Sealed):
     resource: str | None
     scopes: list[str]
     page_key: str
+    pending_client: bool = False
+    pending_secret: str | None = Field(default=None, repr=False)
+    pending_scopes: list[str] | None = None
 
 
 _S = TypeVar("_S", bound=_Sealed)
@@ -402,6 +408,7 @@ class BackendTokenStore:
 
     async def put_flow(self, key: str, flow: BackendFlow) -> None:
         """Record a flow under ``key`` (a ``flow_key``) until it expires or is taken."""
+        pending = flow.pending_client
         await self._seal(
             _FLOWS,
             key,
@@ -424,6 +431,11 @@ class BackendTokenStore:
                 resource=flow.resource,
                 scopes=list(flow.scopes),
                 page_key=flow.page_key,
+                pending_client=pending is not None,
+                pending_secret=_reveal(pending.client_secret) if pending else None,
+                pending_scopes=(
+                    list(pending.scopes) if pending and pending.scopes is not None else None
+                ),
             ),
             ttl=max(1.0, (flow.expires_at - _now()).total_seconds()),
         )
@@ -450,6 +462,17 @@ class BackendTokenStore:
             scopes=tuple(sealed.scopes),
             page_key=sealed.page_key,
             expires_at=sealed.stored_until,
+            pending_client=BackendClient(
+                client_id=sealed.client_id,
+                client_secret=_hide(sealed.pending_secret),
+                auth_method=sealed.auth_method,
+                issuer=sealed.issuer,
+                token_endpoint=sealed.token_endpoint,
+                revocation_endpoint=sealed.revocation_endpoint,
+                scopes=None if sealed.pending_scopes is None else tuple(sealed.pending_scopes),
+            )
+            if sealed.pending_client
+            else None,
         )
 
     async def take_flow(self, key: str) -> BackendFlow | None:
