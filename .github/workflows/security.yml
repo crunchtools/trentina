@@ -58,6 +58,7 @@ jobs:
   # changing both.
   sdlc:
     name: sdlc ci
+    timeout-minutes: 30
     # Two runners on gloval, named for their storage (crunchtools/gha-runner):
     #
     #   crunchtools-cached    our own pull requests. Its layer cache persists,
