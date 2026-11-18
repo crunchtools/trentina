@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.24.1] - 2026-11-18
+
 ### Fixed
 - Gourmand exceptions that named their finding by message text now name it by
   item, or by line where the finding has no item, and seven findings that a
