@@ -254,6 +254,13 @@ class TestTheRequest:
         assert source.index("RLIMIT_CPU") < source.index("json.load(sys.stdin)")
         assert source.index("RLIMIT_AS") < source.index("json.load(sys.stdin)")
 
+    def test_the_worker_caps_every_native_pool_before_it_loads_one(self) -> None:
+        source = inspect.getsource(ocr_worker.main)
+        assert set(ocr_worker.NATIVE_POOLS) >= {"OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS"}
+        assert source.index("NATIVE_POOLS") < source.index("import cv2")
+        assert source.index("NATIVE_POOLS") < source.index("from rapidocr import")
+        assert "cv2.setNumThreads(THREADS)" in source
+
 
 @pytest.fixture(scope="module")
 def read() -> dict[str, ImageText | None]:

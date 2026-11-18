@@ -11,6 +11,11 @@ under that name.
 ## [Unreleased]
 
 ### Fixed
+- **The OCR worker reads images on machines with many cores.** It capped
+  onnxruntime's threads but not OpenMP's, OpenBLAS's or OpenCV's, which size
+  themselves from the core count; on a 24-core runner their per-thread
+  reservations pushed it past its 6 GB address-space limit (std::bad_alloc),
+  so every image came back unread. All of them now use `THREADS`.
 - **Perimeter verdicts expire** (#817), as the constitution's verdict-cache
   rule (v2.20.0, condition 3) requires. A tool description's or tool
   response's cached verdict is served for `TRENTINA_VERDICT_TTL_HOURS`
