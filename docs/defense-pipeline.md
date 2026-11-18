@@ -658,6 +658,17 @@ one does; the rest name the benchmark that measured them.
 
     Tested (`tests/test_federation_trust.py`, `tests/test_coverage_gaps.py`).
 
+34. **An LLM request is judged a message at a time** (a341). `/proxy/llm`
+    cuts an outbound request into its frame and each element of `messages`,
+    `contents` or a Responses `input` list (`gateway/request_units.py`), and
+    each is read whole by L1, L2 and L3 without the others beside it, as the
+    parts of a paged response are (gap 27). An instruction split across two
+    messages, each meaning nothing alone, is judged as two documents would
+    be. The whole-request judgement this replaced was no better in practice:
+    a conversation over the admission cap had only its head read, and a
+    Gatehouse burst timed most of its requests out unread. Tested
+    (`tests/test_request_units.py`, `tests/test_coverage_gaps.py`).
+
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 
 Benchmarked against 105 test cases across 10 attack categories when Prompt

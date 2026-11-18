@@ -55,7 +55,8 @@ logger = logging.getLogger(__name__)
 
 #: Body fields that hold the conversation, one unit per element: ``messages``
 #: (Anthropic, OpenAI, OpenRouter), ``contents`` (Gemini), ``input`` (OpenAI
-#: Responses and embeddings, when it is a list).
+#: Responses). Only a list of objects is cut: an embeddings ``input`` is a list
+#: of strings, one batch, and stays in the frame (gap 34).
 CONVERSATION_FIELDS = ("messages", "contents", "input")
 
 #: How long a kept verdict is reused after its last use. Covers a burst and a
@@ -97,7 +98,7 @@ def request_units(head: str, body: str | None) -> list[str]:
     frame = dict(parsed)
     for name in CONVERSATION_FIELDS:
         value = frame.get(name)
-        if isinstance(value, list):
+        if isinstance(value, list) and all(isinstance(item, dict) for item in value):
             messages.extend(json.dumps(item, ensure_ascii=False) for item in value)
             frame[name] = []
     return [f"{head}\n{json.dumps(frame, ensure_ascii=False)}", *messages]

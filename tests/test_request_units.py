@@ -99,6 +99,11 @@ class TestRequestUnits:
         body = json.dumps({"contents": [{"parts": [{"text": "a"}]}, {"parts": [{"text": "b"}]}]})
         assert len(ru.request_units("POST /v1", body)) == 3
 
+    def test_an_embeddings_batch_stays_in_the_frame(self) -> None:
+        body = json.dumps({"model": "e", "input": ["a", "b", "c"]})
+        [frame] = ru.request_units("POST /v1/embeddings", body)
+        assert json.loads(frame.split("\n", 1)[1])["input"] == ["a", "b", "c"]
+
     def test_a_body_that_is_not_a_json_object_is_one_unit(self) -> None:
         assert ru.request_units("POST /v1", "not json") == ["POST /v1\nnot json"]
         assert ru.request_units("POST /v1", "[1, 2]") == ["POST /v1\n[1, 2]"]
@@ -175,6 +180,28 @@ class TestTheKey:
         await _judge(agent, _body("reviewer"))
         assert sum(MARK in d for d in defend.documents) == 2
 
+    async def test_another_owner_with_the_same_profile_name_is_judged_again(
+        self, defend: _Defend
+    ) -> None:
+        own = _profile("shared")
+        derived = _profile("shared")
+        derived.federation_of = "someone-else"
+        assert own.grant_owner != derived.grant_owner
+        await _judge(own, _body("reviewer"))
+        await _judge(derived, _body("reviewer"))
+        assert sum(MARK in d for d in defend.documents) == 2
+
+    async def test_another_judge_is_judged_again(
+        self, defend: _Defend, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from trentina.gateway import service
+
+        agent = _profile("dolza-max")
+        await _judge(agent, _body("reviewer"))
+        monkeypatch.setattr(service, "judge_stamp", lambda _p: "another/judge/pack")
+        await _judge(agent, _body("reviewer"))
+        assert sum(MARK in d for d in defend.documents) == 2
+
     async def test_other_defense_settings_are_judged_again(self, defend: _Defend) -> None:
         agent = _profile("dolza-max")
         await _judge(agent, _body("reviewer"))
@@ -196,6 +223,16 @@ class TestKeeping:
         assert sum(MARK in d for d in defend.documents) == 1
         now[0] += ru.TTL_SECONDS + 1
         await _judge(agent, _body("reviewer"))
+        assert sum(MARK in d for d in defend.documents) == 2
+
+    async def test_an_unavailable_judge_is_asked_again(
+        self, defend: _Defend, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        agent = _profile("dolza-max")
+        monkeypatch.setattr(modes_mod, "gaps_of", lambda _v: Gaps(l3_unavailable=True))
+        assert (await _judge(agent, _body("reviewer"))).unjudged
+        monkeypatch.setattr(modes_mod, "gaps_of", lambda _v: Gaps())
+        assert not (await _judge(agent, _body("reviewer"))).unjudged
         assert sum(MARK in d for d in defend.documents) == 2
 
     async def test_a_refused_verdict_is_not_kept(self, defend: _Defend) -> None:
