@@ -11,6 +11,11 @@ under that name.
 ## [Unreleased]
 
 ### Fixed
+- Gourmand exceptions that named their finding by message text now name it by
+  item, or by line where the finding has no item, and seven findings that a
+  file-wide suppression used to hide each get their own narrow entry with a
+  reason. Gourmand is about to honour `pattern` by item (crunchtools/gourmand#43),
+  which would otherwise have turned 32 findings red.
 - **The OCR worker reads images on machines with many cores.** It capped
   onnxruntime's threads but not OpenMP's, OpenBLAS's or OpenCV's, which size
   themselves from the core count; on a 24-core runner their per-thread
