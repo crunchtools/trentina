@@ -84,6 +84,15 @@ part 1 and ask for part 2 before the rest is gone."""
 DEFAULT_BLOCKLIST_TTL_DAYS = 30
 """Days a block refusal keeps its source on the calling profile's blocklist."""
 
+DEFAULT_VERDICT_TTL_HOURS = 24
+"""Hours a perimeter verdict is served from cache, counted from when it was
+judged (#817). Long enough that a restart re-judges nothing it judged today,
+short enough that no verdict outlives a day."""
+
+MAX_VERDICT_TTL_HOURS = 720
+"""The longest a setting may ask for: thirty days, the blocklist's default. A
+verdict the operator meant to keep "for good" is still re-judged monthly."""
+
 DEFAULT_CLASSIFIER_THREADS = 4
 """ONNX intra-op threads. Its own default is one per core with a spin-wait,
 which lets a single inference saturate the host.
@@ -625,6 +634,17 @@ class Config:
     def max_parts(self) -> int:
         """``TRENTINA_MAX_PARTS``: the most parts one response is cut into."""
         return self._parts[1]
+
+    @functools.cached_property
+    def verdict_ttl_hours(self) -> int:
+        """``TRENTINA_VERDICT_TTL_HOURS``: how long a perimeter verdict is served (#817).
+
+        Clamped at both ends rather than allowed to mean "never": the
+        constitution allows a cached verdict only with a bounded TTL."""
+        return min(
+            MAX_VERDICT_TTL_HOURS,
+            int_env("TRENTINA_VERDICT_TTL_HOURS", DEFAULT_VERDICT_TTL_HOURS, minimum=1),
+        )
 
     @property
     def part_ttl_seconds(self) -> int:

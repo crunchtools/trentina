@@ -24,6 +24,7 @@ import asyncio
 import functools
 import hashlib
 import logging
+import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
@@ -41,10 +42,16 @@ logger = logging.getLogger(__name__)
 _CACHE_MAX = 4096
 
 # A COMPLETE verdict is a pure function of (detector set, defence config,
-# content), and all three are pinned — the first by the row's version
-# stamp, the other two by the cache key. So it does not go stale and does
-# not expire. It used to, on a 900-second TTL, which meant fifteen quiet
-# minutes re-armed a full rescan of every tool description.
+# content), all pinned by the row's stamp and the key. It still expires
+# (#817, constitution 2.20.0 condition 3): a judge's answer can drift under
+# a model name the key cannot see past. ``TRENTINA_VERDICT_TTL_HOURS``, a day
+# by default, counts from the judgement, not the last hit, so a hot entry
+# expires too. The old 900-second TTL re-armed a full rescan of every tool
+# description after fifteen quiet minutes; a day re-judges nothing a restart
+# judged today.
+
+#: An entry: the epoch second its layers ran, and the verdict they reached.
+_Entry = tuple[float, dict[str, Any] | None]
 
 #: Tool-description verdicts. Its own LRU, generously bounded: the LIVE set is
 #: every backend's tool list per owner, but the keys are content hashes, so a
@@ -52,7 +59,7 @@ _CACHE_MAX = 4096
 #: descriptions ever SEEN is unbounded. "Bounded by the configuration" is true
 #: of an instant and false of a process lifetime.
 _DESCRIPTION_MAX = 16384
-_descriptions: OrderedDict[str, dict[str, Any] | None] = OrderedDict()
+_descriptions: OrderedDict[str, _Entry] = OrderedDict()
 
 #: Tool-response verdicts, on a tighter LRU: unbounded and mostly seen once.
 #:
@@ -61,7 +68,7 @@ _descriptions: OrderedDict[str, dict[str, Any] | None] = OrderedDict()
 #: descriptions, which the next rebuild re-judged on the victim's key — and
 #: keying per owner cannot help, because eviction pressure is shared however the
 #: keys are spelled. Two bounded caches, neither able to evict the other.
-_responses: OrderedDict[str, dict[str, Any] | None] = OrderedDict()
+_responses: OrderedDict[str, _Entry] = OrderedDict()
 
 # Set when the store refuses a write. A read-only or full disk fails the
 # same way for every subsequent verdict, and retrying 200 more times per
@@ -88,7 +95,7 @@ def load_verdict_cache() -> int:
     global _persist_broken
     _persist_broken = False
 
-    loaded = get_all_verdicts(perimeter_stamp())
+    loaded = get_all_verdicts(perimeter_stamp(), _ttl_seconds())
     # Only descriptions are ever persisted, so this fills that store alone, and
     # it is trimmed to the same bound a running gateway holds: dropping the
     # oldest of a store larger than the cap costs a re-judge of what is dropped,
@@ -98,6 +105,11 @@ def load_verdict_cache() -> int:
         _descriptions.popitem(last=False)
     logger.info("perimeter: loaded %d cached verdict(s)", len(_descriptions))
     return len(_descriptions)
+
+
+def _ttl_seconds() -> float:
+    """How long a verdict may be served, from ``TRENTINA_VERDICT_TTL_HOURS``."""
+    return get_config().verdict_ttl_hours * 3600.0
 
 
 def reset_verdict_cache() -> None:
@@ -155,16 +167,22 @@ def _cache_get(key: str, *, description: bool = False) -> tuple[bool, dict[str, 
     down, or a tool response, in the tighter LRU. It was spelled ``persist``,
     which described what happened to the value rather than what it was — and
     once the flag started choosing a store too, a reader had to know that
-    "persist" meant "description" to route a call correctly."""
-    if description:
-        hit = key in _descriptions
-        if hit:
-            _descriptions.move_to_end(key)
-        return hit, _descriptions.get(key)
-    hit = key in _responses
-    if hit:
-        _responses.move_to_end(key)
-    return hit, _responses.get(key)
+    "persist" meant "description" to route a call correctly.
+
+    An entry past its TTL is dropped here and reported as a miss, so the caller
+    judges it again (#817). Expiry is checked on the read rather than left to a
+    sweep: nothing serves a verdict without passing through this line. An entry
+    dated in the future — the clock went back — is dropped too, since its age
+    cannot be told."""
+    store = _descriptions if description else _responses
+    entry = store.get(key)
+    if entry is None:
+        return False, None
+    if not 0 <= time.time() - entry[0] < _ttl_seconds():
+        del store[key]
+        return False, None
+    store.move_to_end(key)
+    return True, entry[1]
 
 
 def _cache_put(key: str, value: dict[str, Any] | None, *, description: bool = False) -> None:
@@ -184,7 +202,7 @@ def _cache_put(key: str, value: dict[str, Any] | None, *, description: bool = Fa
     # A verdict reached while L3 was unavailable, or while L2 truncated its
     # input, is NOT the verdict the perimeter would reach today. Keeping it
     # would let an outage's "clean" outlive the outage. This is the one
-    # thing the old TTL was really buying, and refusing the verdict outright
+    # thing the 900-second TTL was really buying, and refusing the verdict outright
     # buys it without the recurring rescan.
     if value is not None and (
         value.get("l3_unavailable")
@@ -195,13 +213,14 @@ def _cache_put(key: str, value: dict[str, Any] | None, *, description: bool = Fa
     ):
         return
 
+    judged_at = time.time()
     if description:
-        _descriptions[key] = value
+        _descriptions[key] = (judged_at, value)
         _descriptions.move_to_end(key)
         while len(_descriptions) > _DESCRIPTION_MAX:
             _descriptions.popitem(last=False)
     else:
-        _responses[key] = value
+        _responses[key] = (judged_at, value)
         _responses.move_to_end(key)
         while len(_responses) > _CACHE_MAX:
             _responses.popitem(last=False)
@@ -211,7 +230,7 @@ def _cache_put(key: str, value: dict[str, Any] | None, *, description: bool = Fa
     try:
         from ..perimeter_db import perimeter_stamp, save_verdict
 
-        save_verdict(key, value, perimeter_stamp())
+        save_verdict(key, value, perimeter_stamp(), judged_at)
     except Exception:
         # A store that cannot be written is a slow next boot, not a wrong
         # answer, and must never cost the request in front of us. Stop

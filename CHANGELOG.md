@@ -10,6 +10,15 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+- **Perimeter verdicts expire** (#817), as the constitution's verdict-cache
+  rule (v2.20.0, condition 3) requires. A tool description's or tool
+  response's cached verdict is served for `TRENTINA_VERDICT_TTL_HOURS`
+  (default 24, clamped to 1–720) from when it was judged, then judged again.
+  Expiry is checked on every read, not left to a sweep; a hit does not extend
+  it; stored verdicts keep their judge time across a restart, and expired rows
+  are deleted when the store loads.
+
 ## [6.24.0] - 2026-11-17
 
 ### Changed
