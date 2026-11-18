@@ -123,11 +123,6 @@ def _key(unit: str, profile: Profile, mode: Mode, source_type: str) -> str:
     return digest.hexdigest()
 
 
-def _keepable(verdict: OutboundVerdict) -> bool:
-    """True for a complete verdict that delivered: nothing missing, nothing refused."""
-    return not (verdict.unjudged or verdict.refused or _TRANSIENT_GAPS.intersection(verdict.gaps))
-
-
 async def judge_units(
     units: list[str],
     *,
@@ -223,7 +218,8 @@ async def _judge(
 ) -> OutboundVerdict:
     """Run the judgement, and keep it if the next would say the same."""
     verdict = await judge()
-    if _keepable(verdict):
+    # Only a complete verdict that delivered: nothing missing, nothing refused.
+    if not (verdict.unjudged or verdict.refused or _TRANSIENT_GAPS.intersection(verdict.gaps)):
         _verdicts[key] = (time.monotonic(), verdict)
         _verdicts.move_to_end(key)
         while len(_verdicts) > MAX_ENTRIES:
