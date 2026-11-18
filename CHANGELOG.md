@@ -10,6 +10,18 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+- **The LLM proxy's request judge stops timing out on bursts (a341).** Gatehouse
+  sends up to 24 review calls at once, each the same diff behind its own
+  reviewer prompt, and every call was judged as one document, so L2 read the
+  identical diff once per call, two scans at a time. On gloval a burst of 18
+  finished four scans inside the 20 s request deadline and sent 14 out
+  unjudged: 373 in two hours on `dolza-max`. The request is now judged as units,
+  the frame and each conversation message, and each unit once: identical units
+  in flight share one judgement and a complete, unrefused verdict is kept for 10
+  minutes after its last use, per profile owner (`gateway/request_units.py`). A
+  conversation agent gains the same way, judging only each turn's new messages.
+
 ## [6.24.1] - 2026-11-18
 
 ### Fixed

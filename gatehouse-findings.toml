@@ -32,3 +32,19 @@ file = "src/trentina/quarantine/l3_cache.py"
 evidence = "if hit is not None and time.monotonic() - hit[0] < TTL_SECONDS:\n    _verdicts.move_to_end(key)\n    l3_counts[\"shared\"] += 1\n    return copy.deepcopy(hit[1])"
 status = "not-a-bug"
 reason = "No layer is switched off: L1 and L2 run on every request, and L3's verdict is reused only for byte-identical content AND briefing under an identical judge (provider, model, prompt pack, effort, fallback chain), so it is the judgement L3 made of those exact bytes, read once, which is the Layer Contract's own 'each layer reads once'. The perimeter verdict cache (gateway/verdict_cache.py, #120) has served whole L1/L2/L3 verdicts for identical descriptions and responses on the same basis without a federation declaration. An unavailable or failed L3 is never kept. The constitution should say verdict caches out loud; raised with Scott. Ruling for a173 (Josui Prime brief, 2026-11-17)."
+
+[[findings]]
+agent = "bugs"
+category = "bug"
+file = "src/trentina/gateway/request_units.py"
+evidence = "```python\nmessages.extend(json.dumps(item, ensure_ascii=False) for item in value)\nframe[name] = []\nreturn [f\"{head}\\n{json.dumps(frame, ensure_ascii=False)}\", *messages]\n```"
+status = "not-a-bug"
+reason = "Deliberate (a341). Judging the whole request was not a context-aware check in practice: any conversation over the 32K-token admission cap had only its head read, and in a Gatehouse burst 14 of 18 requests were read by nothing at all before the 20 s deadline. Per-message units are how a paged response is already judged (gateway/paging.py, each part whole under the cap), and the split-instruction tradeoff is stated in docs/llm-proxying.md."
+
+[[findings]]
+agent = "security"
+category = "security"
+file = "src/trentina/gateway/request_units.py"
+evidence = "for name in CONVERSATION_FIELDS:\n    value = frame.get(name)\n    if isinstance(value, list):\n        messages.extend(json.dumps(item, ensure_ascii=False) for item in value)\n        frame[name] = []\nreturn [f\"{head}\\n{json.dumps(frame, ensure_ascii=False)}\", *messages]"
+status = "not-a-bug"
+reason = "Deliberate (a341). The whole-request judgement this replaces read only the first 32K tokens of a longer conversation and, under burst load, timed out unjudged for most requests (373 in two hours on dolza-max). Each message is now read whole by L1/L2/L3, the same per-part judging paging already applies to responses; an instruction split across two messages is the stated tradeoff in docs/llm-proxying.md."

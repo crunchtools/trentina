@@ -77,9 +77,15 @@ Every call from an authenticated profile, admitted or refused, writes a
 `gateway_calls` row ([audit log](audit-log.md#llm-proxy-calls)).
 
 **The request content is judged on the way out (#511), not only its shape.**
-After admission, the body, query and forwarded headers cross `defend()` as one
-document (`source_type=llm_request`), and a deterministic credential detector
-(`trentina.credential_shapes`) reads the same document for key material the
+After admission, the body, query and forwarded headers cross `defend()`
+(`source_type=llm_request`) as units: the frame (method, path, headers and the
+body with its conversation emptied) and each element of `messages`, `contents`
+or `input` (a341, `gateway/request_units.py`). Each unit is judged once: identical
+units in flight share one judgement, and a complete verdict that was not refused
+is kept for 10 minutes after its last use, per profile owner, so a burst of calls carrying
+one diff reads it once and a conversation's next turn reads only its new
+messages. A deterministic credential detector
+(`trentina.credential_shapes`) reads the same units for key material the
 prompt-injection layers do not look for — an AWS key, a provider token, a PEM
 block, a secret in a query string. The mode is the profile's per-provider
 `llm_keys.<provider>.enforcement`: `block` refuses a credential shape, a flag
@@ -100,11 +106,13 @@ Three consequences worth stating plainly:
   if even the redacted prompt should not leave, the profile's `defense` must name
   no L3 provider (every verdict then reports `l3_unavailable`, which `block`
   refuses on and `flag` forwards with a warning).
-- **`block` has a token ceiling.** A request larger than
+- **`block` has a token ceiling, per unit.** A unit larger than
   `Config.admission_tokens` (`min(QUARANTINE_CONTEXT_TOKENS, CLASSIFIER_MAX_TOKENS)`,
   at most 32768) is `oversize` → `not_fully_judged` and refused under `block`.
-  Fail-closed is deliberate, but a long agentic conversation will hit it; raise
-  the cap or run that provider in `flag` if that is not wanted.
+  Fail-closed is deliberate, but one very large message (a whole file read) will
+  hit it; raise the cap or run that provider in `flag` if that is not wanted.
+- **Each message is judged on its own.** L3 reads a message without the others
+  beside it, so an instruction split across two messages is read as two halves.
 - **The warning header carries flags and findings, not gaps.** Its value is a
   credential marker, an L-layer risk level, or `unjudged`; the specific gap
   names (`oversize`, `l3_unavailable`, …) are in a `block` refusal body only.

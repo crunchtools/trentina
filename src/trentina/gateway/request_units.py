@@ -15,16 +15,20 @@ units in flight share one judgement, and a finished one is kept for
 ``TTL_SECONDS``, refreshed on use. The request's verdict is the units' verdicts
 merged: refused, flagged or unjudged if any unit is.
 
-What is kept. A verdict is kept only when it is the same answer the next
-judgement would give: a credential, a flag, a truncation or an oversize all
-are. One with ``l2_unavailable`` or ``l3_unavailable`` (a timeout, a failed
-judge) is not, so the next request asks again. A flagged request still reaches
-the caller's audit row through ``flag_reason``; only the detection row is
-written once per kept verdict rather than once per request.
+What is kept. Only a complete verdict that was not refused: a clean unit, or
+one flag delivered with a warning. Anything unjudged (a timeout, a failed
+judge, a truncation) or refused is judged again next time. A flagged request
+still reaches the caller's audit row through ``flag_reason``; only the
+detection row is written once per kept verdict rather than once per request.
+
+Each unit is judged whole under the admission cap, as each part of a paged
+response is (``gateway/paging.py``): the cap bounds what one judgement reads,
+and a unit over it is ``oversize`` like any payload.
 
 Isolation. The key holds the profile's grant owner and name, the mode, the
 profile's defense settings and the judge identity, as ``quarantine/l3_cache``
-does: no verdict crosses tenants, and a changed threshold or judge is a miss.
+does, plus ``perimeter_stamp`` for L2's model and L1/L2's version: no verdict
+crosses tenants, and a changed threshold, model or judge is a miss.
 """
 
 from __future__ import annotations
@@ -39,12 +43,12 @@ from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
 from ..logsafe import exc_kind, exc_where
+from ..modes import Mode
 from ..orchestrator import OutboundVerdict, judge_outbound
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
-    from ..modes import Mode
     from .profile import Profile
 
 logger = logging.getLogger(__name__)
@@ -102,6 +106,7 @@ def request_units(head: str, body: str | None) -> list[str]:
 def _key(unit: str, profile: Profile, mode: Mode, source_type: str) -> str:
     """Everything that can change a unit's verdict, hashed; never a secret."""
     # Lazy: the gateway service imports this module's caller on its way in.
+    from ..perimeter_db import perimeter_stamp
     from .service import judge_stamp
 
     config = [
@@ -110,6 +115,7 @@ def _key(unit: str, profile: Profile, mode: Mode, source_type: str) -> str:
         mode.value,
         source_type,
         judge_stamp(profile),
+        perimeter_stamp(),
         profile.defense.model_dump_json(),
     ]
     digest = hashlib.sha256()
@@ -122,8 +128,8 @@ def _key(unit: str, profile: Profile, mode: Mode, source_type: str) -> str:
 
 
 def _keepable(verdict: OutboundVerdict) -> bool:
-    """True when the next judgement of the same unit would say the same."""
-    return not _TRANSIENT_GAPS.intersection(verdict.gaps)
+    """True for a complete verdict that delivered: nothing missing, nothing refused."""
+    return not (verdict.unjudged or verdict.refused or _TRANSIENT_GAPS.intersection(verdict.gaps))
 
 
 async def judge_units(
@@ -153,7 +159,12 @@ async def judge_units(
     )
     verdicts = await asyncio.gather(
         *(
-            _judge_once(_key(unit, profile, mode, source_type), functools.partial(run, unit))
+            _judge_once(
+                _key(unit, profile, mode, source_type),
+                functools.partial(run, unit),
+                deadline=deadline,
+                refused=mode is Mode.BLOCK,
+            )
             for unit in units
         )
     )
@@ -161,9 +172,19 @@ async def judge_units(
 
 
 async def _judge_once(
-    key: str, judge: Callable[[], Coroutine[Any, Any, OutboundVerdict]]
+    key: str,
+    judge: Callable[[], Coroutine[Any, Any, OutboundVerdict]],
+    *,
+    deadline: float,
+    refused: bool,
 ) -> OutboundVerdict:
-    """The unit's kept verdict, a flight in progress, or a new judgement."""
+    """The unit's kept verdict, a flight in progress, or a new judgement.
+
+    A caller that joins a flight started earlier waits no longer than its own
+    ``deadline``; past it the unit is unjudged for that caller (``refused``
+    under block, as ``judge_outbound`` answers a timeout), and the flight goes
+    on for the others.
+    """
     hit = _verdicts.get(key)
     if hit is not None and time.monotonic() - hit[0] < TTL_SECONDS:
         _verdicts[key] = (time.monotonic(), hit[1])
@@ -177,8 +198,12 @@ async def _judge_once(
         task.add_done_callback(functools.partial(_settle, key))
     else:
         unit_counts["shared"] += 1
-    # A caller cancelled from above leaves the judgement to the others.
-    return await asyncio.shield(task)
+    # A caller cancelled from above, or out of time, leaves the judgement to the others.
+    try:
+        async with asyncio.timeout(deadline):
+            return await asyncio.shield(task)
+    except TimeoutError:
+        return OutboundVerdict(refused=refused)
 
 
 async def _judge(
