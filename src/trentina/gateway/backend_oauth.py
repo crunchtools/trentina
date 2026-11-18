@@ -779,6 +779,12 @@ async def _exchange(
         scopes=flow.scopes,
     )
     async with store.locked(flow.profile, flow.backend):
+        # Only now, with its grant in hand, does the new registration replace
+        # the slot's client. Client first: should the grant write then fail,
+        # the next start finds a client that records its scopes and reuses it,
+        # where grant-first would leave the old, unrecorded client to loop on #831.
+        if pending is not None:
+            await store.put_client(flow.profile, flow.backend, backend, pending)
         current = await store.get_grant(flow.profile, flow.backend, backend)
         await store.put_grant(
             flow.profile,
@@ -787,10 +793,6 @@ async def _exchange(
             grant,
             expected_generation=current.generation if current else 0,
         )
-        # Only now does the new registration replace the slot's client: the
-        # grant it yielded is stored, so nothing is left issued to the old one.
-        if pending is not None:
-            await store.put_client(flow.profile, flow.backend, backend, pending)
 
 
 async def complete(state: str, code: str | None, iss: str | None, error: str | None) -> None:
