@@ -1052,8 +1052,8 @@ class TestProxyRequestDLP:
         client = self._client(fake, monkeypatch, "flag")  # forwards, but still judged
         self._post(client, _CREDENTIAL_BODY)
         assert seen, "defend was not called"
-        assert _AWS_KEY not in seen[0]
-        assert "[REDACTED]" in seen[0]
+        assert not any(_AWS_KEY in unit for unit in seen)
+        assert any("[REDACTED]" in unit for unit in seen)
         # The ORIGINAL body (with the key) is what forwards upstream.
         assert _AWS_KEY in (fake.captured_body or b"").decode()
 
@@ -1075,7 +1075,8 @@ class TestProxyRequestDLP:
         client = self._client(fake, monkeypatch, "block")
         resp = self._post(client, _CREDENTIAL_BODY)
         assert resp.status_code == 403
-        assert calls == [1]  # defend ran even though the credential alone would block
+        # defend ran on the frame and the message even though the credential alone would block
+        assert calls == [1, 1]
 
     def test_flagged_body_blocks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_defend(monkeypatch, flagged=True, risk="high")

@@ -46,7 +46,7 @@ from starlette.responses import Response
 from .. import telemetry
 from ..config import int_env
 from ..logsafe import redact_source
-from ..orchestrator import judge_llm_completion, judge_outbound
+from ..orchestrator import judge_llm_completion
 from ..outcomes import Outcome
 from ..transports.base import (
     SPINE_REFUSALS,
@@ -87,6 +87,7 @@ from .proxy_utils import (
     normalize_proxy_path,
 )
 from .relay import Relayed, upstream_outcome
+from .request_units import judge_units, request_units
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
@@ -330,22 +331,23 @@ _REASON_OF = {
 }
 
 
-def _request_document(method: str, path: str, admitted: Shaped, fwd_headers: dict[str, str]) -> str:
-    """The outbound request as one document for the layers and the detector (#511).
+def _request_units(
+    method: str, path: str, admitted: Shaped, fwd_headers: dict[str, str]
+) -> list[str]:
+    """The outbound request as the units the layers and the detector read (#511, a341).
 
     Method and path, the query, the headers that will actually be forwarded
     (the caller's gateway token is dropped by ``forward_headers`` and the
-    provider key is not injected until after judging), and the body. This is
-    the request the agent is trying to send — what L1/L2/L3 read and what the
-    credential detector scans.
+    provider key is not injected until after judging), and the body, cut by
+    ``request_units`` into the frame and each conversation message. This is
+    the request the agent is trying to send, every field of it in one unit.
     """
     parts = [f"{method} {path}"]
     if admitted.query:
         parts.append(f"?{admitted.query}")  # the `?` the [?&]-anchored patterns need
     parts.extend(f"{name}: {value}" for name, value in fwd_headers.items())
-    if admitted.body is not None:
-        parts.append(body_text(admitted.body))
-    return "\n".join(parts)
+    body = body_text(admitted.body) if admitted.body is not None else None
+    return request_units("\n".join(parts), body)
 
 
 #: llm's refusals: the spine's, the admission policy's (each raise carries its
@@ -489,7 +491,7 @@ class LlmRoute(Route[LlmAdmitted, InTree]):
         fwd = forward_headers(api, wire.headers.items())
         mode = effective_mode(op.profile, ctx.grant.enforcement)
         warning = await _judge_request(
-            ctx, _request_document(wire.method, admitted.path, shaped, fwd), mode
+            ctx, _request_units(wire.method, admitted.path, shaped, fwd), mode
         )
         if shaped.body is not None:
             fwd["content-type"] = JSON
@@ -530,19 +532,20 @@ class LlmRoute(Route[LlmAdmitted, InTree]):
         )
 
 
-async def _judge_request(ctx: InTree, document: str, mode: Mode) -> str | None:
+async def _judge_request(ctx: InTree, units: list[str], mode: Mode) -> str | None:
     """Judge an outbound request; refuse under block, return flag's warning.
 
-    The shared ``judge_outbound`` always runs L1/L2/L3 over a credential-redacted
-    copy and scans for credential shapes (the layer contract: the detector adds
-    a signal, it is not a per-layer off switch). Under ``block`` a credential, a
-    flag or a blocking gap refuses before anything is sent. Under ``flag`` the
+    ``judge_units`` runs the shared ``judge_outbound`` once per unit: L1/L2/L3
+    over a credential-redacted copy, and a scan for credential shapes (the layer
+    contract: the detector adds a signal, it is not a per-layer off switch).
+    Under ``block`` a credential, a flag or a blocking gap refuses before
+    anything is sent. Under ``flag`` the
     request forwards, the verdict rides back on ``X-Trentina-Warning``, and the
     finding goes on the forwarded call's audit row.
     """
     op, name = ctx.op, ctx.instance.name
-    verdict = await judge_outbound(
-        document,
+    verdict = await judge_units(
+        units,
         source=f"llm:{op.profile.name}:{name}",
         source_type="llm_request",
         backend=f"llm:{name}",
