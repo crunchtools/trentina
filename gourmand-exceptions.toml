@@ -1142,3 +1142,10 @@ check = "security_practices"
 path = "tests/approval_page_probe.js"
 justification = "Runs the repo's own src/trentina/gateway/approval_page.js in a node vm sandbox to behaviourally test it; the only input is that tracked file, read from a path given on the command line, never untrusted data. This is a test harness, not a runtime code path."
 classification = "by_design"
+
+[[exceptions]]
+check = "single_use_helpers"
+path = "tests/test_perimeter_persistence.py"
+pattern = "_stored"
+justification = "Called from 16 tests; the check counts only the module-level caller and misses the ones inside test classes. It strips the judge time get_all_verdicts returns since #817 so the assertions compare verdicts alone."
+classification = "gourmand_bug"

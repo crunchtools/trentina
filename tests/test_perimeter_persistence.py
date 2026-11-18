@@ -4,8 +4,9 @@ Four properties, in descending order of how much it would hurt to lose them:
 
 * A DEGRADED scan is never kept. A clean reached while L3 was down, or
   while L2 truncated its input, would otherwise survive the restart that
-  fixed the outage and shadow it indefinitely. This is the property the old
-  900-second TTL was really buying, and the only reason a TTL was defensible.
+  fixed the outage and shadow it until the row expired. This is the property
+  the old 900-second TTL was really buying; the TTL since #817 is a day, and
+  bounds everything else.
 * A verdict from an OLDER perimeter is never trusted. Retuning a detector
   changes what a scan concludes, so rows carrying a different
   ``perimeter_stamp()`` (version, L2 model, threshold) are swept rather
@@ -21,6 +22,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -44,37 +46,42 @@ from trentina.perimeter_db import (
 FLAG = {"risk_level": "high", "flagged_by": "layer2", "l2_score": 0.97}
 
 
+def _stored(stamp: str) -> dict[str, Any]:
+    """The verdicts the store holds for ``stamp`` and a day's TTL, undated."""
+    return {key: value for key, (_, value) in get_all_verdicts(stamp, 86400.0).items()}
+
+
 class TestStoreRoundTrip:
     def test_clean_verdict_round_trips(self) -> None:
         save_verdict("k-clean", None, perimeter_stamp())
-        assert get_all_verdicts(perimeter_stamp()) == {"k-clean": None}
+        assert _stored(perimeter_stamp()) == {"k-clean": None}
 
     def test_flagged_verdict_round_trips(self) -> None:
         save_verdict("k-flag", FLAG, perimeter_stamp())
-        assert get_all_verdicts(perimeter_stamp())["k-flag"] == FLAG
+        assert _stored(perimeter_stamp())["k-flag"] == FLAG
 
     def test_rewriting_a_key_replaces_it(self) -> None:
         save_verdict("k", None, perimeter_stamp())
         save_verdict("k", FLAG, perimeter_stamp())
-        assert get_all_verdicts(perimeter_stamp()) == {"k": FLAG}
+        assert _stored(perimeter_stamp()) == {"k": FLAG}
 
     def test_delete_all_empties_the_store(self) -> None:
         save_verdict("k", FLAG, perimeter_stamp())
         assert delete_all_verdicts() == 1
-        assert get_all_verdicts(perimeter_stamp()) == {}
+        assert _stored(perimeter_stamp()) == {}
 
 
 class TestPerimeterVersion:
     def test_rows_from_another_version_are_not_returned(self) -> None:
         save_verdict("old", None, "0")
         save_verdict("new", None, perimeter_stamp())
-        assert set(get_all_verdicts(perimeter_stamp())) == {"new"}
+        assert set(_stored(perimeter_stamp())) == {"new"}
 
     def test_rows_from_another_version_are_swept(self) -> None:
         """Not merely ignored — deleted, so a stale verdict cannot come back
         if the version is ever reverted."""
         save_verdict("old", None, "0")
-        get_all_verdicts(perimeter_stamp())
+        _stored(perimeter_stamp())
         remaining = get_perimeter_db().execute("SELECT COUNT(*) FROM verdict_cache").fetchone()[0]
         assert remaining == 0
 
@@ -86,7 +93,7 @@ class TestPerimeterVersion:
         )
         db.commit()
         save_verdict("good", FLAG, perimeter_stamp())
-        assert set(get_all_verdicts(perimeter_stamp())) == {"good"}
+        assert set(_stored(perimeter_stamp())) == {"good"}
 
 
 class TestDegradedScansAreNeverKept:
@@ -103,13 +110,13 @@ class TestDegradedScansAreNeverKept:
         """Otherwise an outage's 'clean' survives the restart that fixed
         the outage — indefinitely, since nothing expires any more."""
         _cache_put("k", {"l3_unavailable": True}, description=True)
-        assert get_all_verdicts(perimeter_stamp()) == {}
+        assert _stored(perimeter_stamp()) == {}
 
     def test_truncated_l2_verdict_is_not_cached(self) -> None:
         _cache_put("k", {"l2_truncated": True}, description=True)
         hit, _ = _cache_get("k", description=True)
         assert not hit
-        assert get_all_verdicts(perimeter_stamp()) == {}
+        assert _stored(perimeter_stamp()) == {}
 
     def test_an_ordinary_flag_is_kept(self) -> None:
         _cache_put("k", FLAG, description=True)
@@ -125,7 +132,7 @@ class TestDegradedScansAreNeverKept:
 class TestCachePut:
     def test_persist_writes_to_the_store(self) -> None:
         _cache_put("k", FLAG, description=True)
-        assert get_all_verdicts(perimeter_stamp())["k"] == FLAG
+        assert _stored(perimeter_stamp())["k"] == FLAG
 
     def test_responses_are_not_persisted(self) -> None:
         """The default. Tool responses are unbounded and mostly seen once;
@@ -136,7 +143,7 @@ class TestCachePut:
         assert _cache_get("k", description=True) == (False, None)
         hit, value = _cache_get("k")
         assert hit and value == FLAG
-        assert get_all_verdicts(perimeter_stamp()) == {}
+        assert _stored(perimeter_stamp()) == {}
 
     def test_a_failed_write_does_not_raise(self) -> None:
         """A store that cannot be written is a slow next boot, never a
@@ -167,7 +174,7 @@ class TestCachePut:
             _cache_put("a", FLAG, description=True)
         load_verdict_cache()
         _cache_put("b", FLAG, description=True)
-        assert "b" in get_all_verdicts(perimeter_stamp())
+        assert "b" in _stored(perimeter_stamp())
 
 
 class TestStartupLoad:
@@ -197,7 +204,7 @@ class TestStartupLoad:
         memory must not silently erase it from disk."""
         save_verdict("k", FLAG, perimeter_stamp())
         reset_verdict_cache()
-        assert get_all_verdicts(perimeter_stamp())["k"] == FLAG
+        assert _stored(perimeter_stamp())["k"] == FLAG
 
 
 class TestStoreSeparation:
@@ -287,5 +294,5 @@ class TestStampCarriesTheL2Model:
         old = self._stamp(ModelInfo(id="old", revision="", threshold=0.5, malicious=(1,)))
         save_verdict("k", FLAG, old)
         new = self._stamp(ModelInfo(id="new", revision="", threshold=0.7, malicious=(1,)))
-        assert get_all_verdicts(new) == {}
-        assert get_all_verdicts(old) == {}, "swept, not merely hidden"
+        assert _stored(new) == {}
+        assert _stored(old) == {}, "swept, not merely hidden"

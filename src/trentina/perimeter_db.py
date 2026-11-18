@@ -613,11 +613,19 @@ def count_pending_pins(backend_ids: Collection[str]) -> int:
     return sum(int(count) for backend_id, count in rows if backend_id in live)
 
 
-def get_all_verdicts(perimeter_version: str) -> dict[str, dict[str, Any] | None]:
-    """Load the verdicts this perimeter version reached.
+def get_all_verdicts(
+    perimeter_version: str, ttl_seconds: float
+) -> dict[str, tuple[float, dict[str, Any] | None]]:
+    """Load the verdicts this perimeter version reached in the last ``ttl_seconds``.
+
+    Each comes back with the epoch second it was judged, so the in-memory cache
+    expires it on the same clock rather than restarting its TTL at every boot.
 
     Rows from any other version are deleted rather than returned: a verdict
-    is only meaningful for the detector set that produced it.
+    is only meaningful for the detector set that produced it. Rows older than
+    the TTL, or dated in the future, are deleted too (#817): the constitution
+    allows a cached verdict only for a bounded time, and a row whose date cannot
+    be trusted is a row we re-judge.
 
     On the singleton, not ``_read_db()``, because it WRITES: a sweep and, for an
     unreadable row, a delete. It runs once at startup on the event loop. A
@@ -632,17 +640,32 @@ def get_all_verdicts(perimeter_version: str) -> dict[str, dict[str, Any] | None]
     if swept > 0:
         logger.info("perimeter: swept %d verdict(s) from an older perimeter version", swept)
     rows = db.execute(
-        "SELECT cache_key, warning_json FROM verdict_cache WHERE perimeter_version = ?",
+        "SELECT cache_key, warning_json, cached_at FROM verdict_cache WHERE perimeter_version = ?",
         (perimeter_version,),
     ).fetchall()
-    out: dict[str, dict[str, Any] | None] = {}
+    now = time.time()
+    out: dict[str, tuple[float, dict[str, Any] | None]] = {}
     unreadable: list[str] = []
-    for key, blob in rows:
+    expired: list[str] = []
+    for key, blob, cached_at in rows:
         try:
-            out[key] = json.loads(blob) if blob is not None else None
-        except json.JSONDecodeError:
+            written = datetime.fromisoformat(cached_at).timestamp()
+            value = json.loads(blob) if blob is not None else None
+        except (TypeError, ValueError):
             unreadable.append(key)
+            continue
+        if not 0 <= now - written < ttl_seconds:
+            expired.append(key)
+            continue
+        out[key] = (written, value)
 
+    if expired:
+        db.executemany(
+            "DELETE FROM verdict_cache WHERE cache_key = ?",
+            [(key,) for key in expired],
+        )
+        db.commit()
+        logger.info("perimeter: swept %d expired verdict(s)", len(expired))
     if unreadable:
         # A row we cannot read is a row we rescan, and leaving it in place
         # means rescanning it on every boot forever. Delete it and say so.
@@ -659,8 +682,13 @@ def save_verdict(
     cache_key: str,
     warning: dict[str, Any] | None,
     perimeter_version: str,
+    judged_at: float | None = None,
 ) -> None:
-    """Persist one verdict. ``warning`` is None for a clean result."""
+    """Persist one verdict. ``warning`` is None for a clean result.
+
+    ``judged_at`` (epoch seconds, now when omitted) is the row's ``cached_at``:
+    the TTL counts from it, so it is when the layers ran, not when the row was
+    written."""
     db = get_perimeter_db()
     db.execute(
         "INSERT OR REPLACE INTO verdict_cache "
@@ -669,7 +697,9 @@ def save_verdict(
             cache_key,
             None if warning is None else json.dumps(warning),
             perimeter_version,
-            datetime.now(UTC).isoformat(),
+            datetime.fromtimestamp(
+                time.time() if judged_at is None else judged_at, UTC
+            ).isoformat(),
         ),
     )
     db.commit()
