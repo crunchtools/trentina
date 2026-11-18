@@ -2,7 +2,7 @@
 [[exceptions]]
 check = "lint_suppression"
 path = "tests/test_models.py"
-pattern = "type: ignore"
+item = "test_rejects_extra_fields"
 justification = "type: ignore[call-arg] required to test Pydantic extra='forbid' validation with intentionally invalid kwargs"
 classification = "by_design"
 
@@ -23,35 +23,56 @@ classification = "by_design"
 [[exceptions]]
 check = "lint_suppression"
 path = "src/trentina/dbus_interface.py"
-pattern = "type: ignore[name-defined]"
-justification = "dbus-fast uses string annotations (\"s\", \"u\") as D-Bus type signatures, not Python types — mypy cannot resolve them"
+item = "GetStats"
+justification = "D-Bus member: the spec requires its PascalCase name (noqa: N802), and dbus-fast reads its string annotations (\"s\", \"u\") as D-Bus wire signatures that mypy and ruff cannot resolve (type: ignore[name-defined], noqa: F821)"
 classification = "by_design"
 
 [[exceptions]]
 check = "lint_suppression"
 path = "src/trentina/dbus_interface.py"
-pattern = "noqa: N802"
-justification = "D-Bus specification requires PascalCase method and signal names (e.g. GetStats, RequestProcessed)"
+item = "GetRecentEvents"
+justification = "D-Bus member: the spec requires its PascalCase name (noqa: N802), and dbus-fast reads its string annotations (\"s\", \"u\") as D-Bus wire signatures that mypy and ruff cannot resolve (type: ignore[name-defined], noqa: F821)"
 classification = "by_design"
 
 [[exceptions]]
 check = "lint_suppression"
 path = "src/trentina/dbus_interface.py"
-pattern = "noqa: F821"
-justification = "dbus-fast D-Bus type signature strings (\"s\", \"u\") are forward references resolved at D-Bus registration, not Python names"
+item = "GetLayerStatus"
+justification = "D-Bus member: the spec requires its PascalCase name (noqa: N802), and dbus-fast reads its string annotations (\"s\", \"u\") as D-Bus wire signatures that mypy and ruff cannot resolve (type: ignore[name-defined], noqa: F821)"
 classification = "by_design"
 
 [[exceptions]]
 check = "lint_suppression"
 path = "src/trentina/dbus_interface.py"
-pattern = "noqa: F401"
+item = "GetTrustConfig"
+justification = "D-Bus member: the spec requires its PascalCase name (noqa: N802), and dbus-fast reads its string annotations (\"s\", \"u\") as D-Bus wire signatures that mypy and ruff cannot resolve (type: ignore[name-defined], noqa: F821)"
+classification = "by_design"
+
+[[exceptions]]
+check = "lint_suppression"
+path = "src/trentina/dbus_interface.py"
+item = "RequestProcessed"
+justification = "D-Bus member: the spec requires its PascalCase name (noqa: N802), and dbus-fast reads its string annotations (\"s\", \"u\") as D-Bus wire signatures that mypy and ruff cannot resolve (type: ignore[name-defined], noqa: F821)"
+classification = "by_design"
+
+[[exceptions]]
+check = "lint_suppression"
+path = "src/trentina/dbus_interface.py"
+item = "DetectionOccurred"
+justification = "D-Bus member: the spec requires its PascalCase name (noqa: N802), and dbus-fast reads its string annotations (\"s\", \"u\") as D-Bus wire signatures that mypy and ruff cannot resolve (type: ignore[name-defined], noqa: F821)"
+classification = "by_design"
+
+[[exceptions]]
+check = "lint_suppression"
+path = "src/trentina/dbus_interface.py"
+item = "_has_dbus_fast"
 justification = "_has_dbus_fast() imports dbus_fast solely to check availability — the import is intentionally unused"
 classification = "by_design"
 
 [[exceptions]]
 check = "lint_suppression"
 path = "src/trentina/gateway/app.py"
-pattern = "type: ignore"
+item = "register_with_fastmcp"
 justification = "FastMCP's custom_route decorator has no type stubs; the [misc] ignore is the standard pattern for typed code calling into untyped framework APIs"
 classification = "by_design"
 
@@ -695,7 +716,7 @@ classification = "gourmand_bug"
 [[exceptions]]
 check = "redundant_error_handling"
 path = "src/trentina/defense.py"
-pattern = "defend"
+line = 570
 justification = "Recording a detection is bookkeeping: a failed SQLite write or D-Bus emit must not destroy a verdict that already exists, so the failure is logged (kind and frames, never the message -- #262) and the verdict is returned. Re-raising would turn an audit gap into a lost flag."
 classification = "by_design"
 
@@ -737,7 +758,7 @@ classification = "by_design"
 [[exceptions]]
 check = "redundant_error_handling"
 path = "src/trentina/gateway/relay.py"
-pattern = "finish"
+item = "_record"
 justification = "The one gateway_calls row must never fail the perimeter request it records, and a write can raise more than sqlite3.Error (thread-affinity ProgrammingError, OSError on a full disk). Logging the profile and the exception class is the handling; a silently lost audit row was itself a finding on #281. This is the shared Operation.finish that replaced the identical per-route _Operation.finish handlers in egress_http and git_transport (#511 convergence), already accepted here for router._audit and llm_proxy._audit."
 classification = "by_design"
 
@@ -751,7 +772,7 @@ classification = "gourmand_bug"
 [[exceptions]]
 check = "lint_suppression"
 path = "src/trentina/logsafe.py"
-pattern = "noqa: B010"
+item = "guard"
 justification = "logging merges `extra` into a record after the record factory returns and offers no hook after that, so Logger.makeRecord is wrapped; plain assignment to a method fails mypy and setattr with a literal trips B010"
 classification = "by_design"
 
@@ -1148,4 +1169,57 @@ check = "single_use_helpers"
 path = "tests/test_perimeter_persistence.py"
 pattern = "_stored"
 justification = "Called from 16 tests; the check counts only the module-level caller and misses the ones inside test classes. It strips the judge time get_all_verdicts returns since #817 so the assertions compare verdicts alone."
+classification = "gourmand_bug"
+
+# Findings an entry above used to hide only because Gourmand ignored `pattern`
+# and suppressed the whole file (crunchtools/gourmand#43). Each is named by
+# item, or by line where the finding carries no item.
+
+[[exceptions]]
+check = "redundant_error_handling"
+path = "src/trentina/gateway/llm_proxy.py"
+item = "_streaming_response"
+justification = "The bare `except (CancelledError, GeneratorExit): raise` lets cancellation pass through untouched ahead of the `except Exception` that records a broken upstream body; without it a client disconnect would be logged as a backend fault"
+classification = "by_design"
+
+[[exceptions]]
+check = "redundant_error_handling"
+path = "src/trentina/gateway/matrix_proxy.py"
+line = 348
+justification = "MatrixProxy.deliver re-raises RefusedError untouched ahead of the `except Exception` that records proxy_error: a refusal already carries its own audit row and must not be rewritten as a proxy failure"
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/transports/mcp.py"
+item = "_federated_trust"
+justification = "_federated_trust verifies a peer's signed verdict and _federated_vsa signs this ingress's own; they share the guard-on-federation-config, digest, assertion shape, but one checks a signature against a pinned key and the other builds and signs one, and merging them would put verification and signing behind one switch"
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/unpack/scan.py"
+item = "_entry"
+justification = "_entry decides what the layers read for one archive member (encrypted, office part, empty, text, extractable binary); the matched functions in gateway/app.py, matrix_bridge/core.py and tool_pins.py share only an early-return guard chain, with different inputs and results"
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/app.py"
+item = "gateway_app"
+justification = "The other side of the SelectProcessor.select entry: an accumulate-into-locals-then-construct shape shared with an unrelated transform, not shared logic"
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/discovery.py"
+item = "_index"
+justification = "_index caches a per-profile tool index; unpack/alphabets.decode_base2048 decodes Base2048 text. The match is a lookup-then-loop-then-build shape with nothing in common"
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/discovery.py"
+item = "find"
+justification = "find answers find_tools (validate query, category and limit, search, shape hits); tools/config._shared_profile_facts describes a profile's backends for a consent page. The match is a validate-then-build-a-dict shape, not shared logic"
 classification = "gourmand_bug"
