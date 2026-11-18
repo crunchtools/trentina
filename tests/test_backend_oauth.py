@@ -98,6 +98,46 @@ class TestTheFlow:
         await start(profiles["josui"], "era", authorized_by="self")
         assert len(server.clients) == 1
 
+    async def test_wider_scopes_register_a_new_client(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        # A client registered for "read" is refused when asked for more
+        # ("Client was not registered with scope", #831): register anew.
+        await start(profiles["josui"], "era", authorized_by="self")
+        profiles["josui"] = profile_with_era("josui", scopes=["read", "write"])
+        link = await start(profiles["josui"], "era", authorized_by="self")
+        assert [c["scope"] for c in server.clients.values()] == ["read", "read write"]
+        query = parse_qs(urlsplit(await authorize_url(link)).query)
+        assert query["client_id"] == ["client-2"]
+        era = profiles["josui"].backends["era"]
+        stored = await token_store().get_client("josui", "era", era)
+        assert stored is not None
+        assert stored.scopes == ("read", "write")
+
+    async def test_narrower_scopes_keep_the_client(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        profiles["josui"] = profile_with_era("josui", scopes=["read", "write"])
+        await start(profiles["josui"], "era", authorized_by="self")
+        profiles["josui"] = profile_with_era("josui", scopes=["write"])
+        await start(profiles["josui"], "era", authorized_by="self")
+        assert len(server.clients) == 1
+
+    async def test_a_client_with_no_recorded_scopes_is_reused(
+        self, server: FakeServer, profiles: dict[str, Profile]
+    ) -> None:
+        # Registrations stored before #831 carry no scopes: unknown, so they
+        # are reused rather than every grant re-registering on deploy.
+        await start(profiles["josui"], "era", authorized_by="self")
+        era = profiles["josui"].backends["era"]
+        stored = await token_store().get_client("josui", "era", era)
+        assert stored is not None
+        legacy = stored.model_copy(update={"scopes": None})
+        await token_store().put_client("josui", "era", era, legacy)
+        profiles["josui"] = profile_with_era("josui", scopes=["read", "write"])
+        await start(profiles["josui"], "era", authorized_by="self")
+        assert len(server.clients) == 1
+
     async def test_a_grant_lands_only_in_the_startingprofile_with_era(
         self, server: FakeServer, profiles: dict[str, Profile]
     ) -> None:

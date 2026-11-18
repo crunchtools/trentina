@@ -128,6 +128,9 @@ class BackendClient(BaseModel):
     issuer: str
     token_endpoint: str
     revocation_endpoint: str | None = None
+    #: The scopes it was registered for. None when it was provisioned or was
+    #: registered before #831: unknown, so it is reused as before.
+    scopes: tuple[str, ...] | None = None
 
 
 class BackendFlow(BaseModel):
@@ -192,6 +195,7 @@ class _SealedClient(_Sealed):
     issuer: str
     token_endpoint: str
     revocation_endpoint: str | None = None
+    scopes: list[str] | None = None
 
 
 class _SealedFlow(_Sealed):
@@ -365,6 +369,7 @@ class BackendTokenStore:
             issuer=sealed.issuer,
             token_endpoint=sealed.token_endpoint,
             revocation_endpoint=sealed.revocation_endpoint,
+            scopes=None if sealed.scopes is None else tuple(sealed.scopes),
         )
 
     async def put_client(
@@ -385,6 +390,7 @@ class BackendTokenStore:
                 issuer=client.issuer,
                 token_endpoint=client.token_endpoint,
                 revocation_endpoint=client.revocation_endpoint,
+                scopes=None if client.scopes is None else list(client.scopes),
             ),
         )
 

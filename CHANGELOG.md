@@ -11,6 +11,13 @@ under that name.
 ## [Unreleased]
 
 ### Fixed
+- **A backend whose scopes grow gets a new OAuth client (#831).** A stored
+  dynamic registration was reused whenever issuer and endpoints matched, so
+  adding a scope to a profile was refused at authorize ("Client was not
+  registered with scope"). A registration now records the scopes it asked for,
+  and one that does not cover the scopes asked for now is replaced. Clients
+  stored before this carry no scope record and are reused, so a deploy does not
+  re-register every grant.
 - **The LLM proxy's request judge stops timing out on bursts (a341).** Gatehouse
   sends up to 24 review calls at once, each the same diff behind its own
   reviewer prompt, and every call was judged as one document, so L2 read the
