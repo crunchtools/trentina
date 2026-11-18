@@ -665,9 +665,10 @@ one does; the rest name the benchmark that measured them.
     each is read whole by L1, L2 and L3 without the others beside it, as the
     parts of a paged response are (gap 27). An instruction split across two
     messages, each meaning nothing alone, is judged as two documents would
-    be. The whole-request judgement this replaced was no better in practice:
-    a conversation over the admission cap had only its head read, and a
-    Gatehouse burst timed most of its requests out unread. Tested
+    be. Only a request under the admission cap is cut; one over it is
+    judged whole, refused under `block` and read to its head under `flag`.
+    Judged whole, a Gatehouse burst timed most of its requests out unread.
+    Tested
     (`tests/test_request_units.py`, `tests/test_coverage_gaps.py`).
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)

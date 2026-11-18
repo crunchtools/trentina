@@ -4,9 +4,7 @@ Gatehouse sends up to two dozen review calls at once, each the same diff behind
 its own reviewer prompt. Judged as one document, every call was a different
 document: L2 read the identical diff once per call, two scans at a time behind
 ``TRENTINA_L2_CONCURRENCY`` on cores those two already filled. A burst of 18
-finished four scans in 20 s and timed the other 14 out unjudged (a341). A
-conversation agent pays the same way across turns: every turn re-reads the
-messages the last turn already judged.
+finished four scans in 20 s and timed the other 14 out unjudged (a341).
 
 So the request is cut into units (``request_units``): the frame (method, path,
 headers and the body with its conversation emptied) and each conversation
@@ -21,10 +19,9 @@ judge, a truncation) or refused is judged again next time. A flagged request
 still reaches the caller's audit row through ``flag_reason``; only the
 detection row is written once per kept verdict rather than once per request.
 
-The admission cap. Under ``block`` a request over it is judged whole and
-refused as ``oversize``, as before: the cap is one cap on a request. Under
-``flag`` each unit is read whole under the cap, as each part of a paged
-response is, where the whole request had only its head read.
+The admission cap is one cap on the whole request. A request over it is
+judged whole, as before: ``block`` refuses it as ``oversize`` and ``flag``
+reads its head. Only a request under the cap is cut.
 
 Isolation. The key holds the profile's grant owner and name, the mode, the
 profile's defense settings and the judge identity, as ``quarantine/l3_cache``
@@ -74,9 +71,6 @@ _RISK_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 
 _verdicts: OrderedDict[str, tuple[float, OutboundVerdict]] = OrderedDict()
 _inflight: dict[str, asyncio.Task[OutboundVerdict]] = {}
-
-#: Units judged vs. served from the cache or a shared flight, since start.
-unit_counts: dict[str, int] = {"judged": 0, "shared": 0}
 
 
 def request_units(head: str, body: str | None) -> list[str]:
@@ -150,8 +144,8 @@ async def judge_units(
     Each unit's judgement runs under ``deadline`` from when it started, so a
     caller that joins a flight in progress waits no longer than its own.
     """
-    if mode is Mode.BLOCK and len(units) > 1:
-        units = await _one_cap_under_block(units)
+    if len(units) > 1:
+        units = await _one_cap(units)
     run = functools.partial(
         judge_outbound,
         source=source,
@@ -175,14 +169,13 @@ async def judge_units(
     return merge(verdicts)
 
 
-async def _one_cap_under_block(units: list[str]) -> list[str]:
+async def _one_cap(units: list[str]) -> list[str]:
     """``units``, or the whole request as one unit when it is over the cap.
 
-    The admission cap is one cap on what a request carries; only a response
-    is delivered in parts. Under ``block`` a request over it is judged whole,
-    so ``defend`` refuses it as ``oversize`` before any inference, as it did
-    before the request was cut. ``flag`` reads each unit whole instead of the
-    request's head.
+    The admission cap is one cap on what a request carries, counted before
+    any inference; only a response is delivered in parts. A request over it
+    is judged whole, as before the request was cut: ``block`` refuses it as
+    ``oversize`` and ``flag`` reads its head.
     """
     from ..defense import admission  # heavy; deferred like judge_outbound's
 
@@ -209,7 +202,6 @@ async def _judge_once(
     if hit is not None and time.monotonic() - hit[0] < TTL_SECONDS:
         _verdicts[key] = (time.monotonic(), hit[1])
         _verdicts.move_to_end(key)
-        unit_counts["shared"] += 1
         return hit[1]
     task = _inflight.get(key)
     if task is None:
@@ -219,7 +211,6 @@ async def _judge_once(
         # The flight runs under this caller's own deadline already. A caller
         # cancelled from above leaves the judgement to the others.
         return await asyncio.shield(task)
-    unit_counts["shared"] += 1
     try:
         async with asyncio.timeout(deadline):
             return await asyncio.shield(task)
@@ -231,7 +222,6 @@ async def _judge(
     key: str, judge: Callable[[], Coroutine[Any, Any, OutboundVerdict]]
 ) -> OutboundVerdict:
     """Run the judgement, and keep it if the next would say the same."""
-    unit_counts["judged"] += 1
     verdict = await judge()
     if _keepable(verdict):
         _verdicts[key] = (time.monotonic(), verdict)
@@ -274,4 +264,3 @@ def reset_request_units() -> None:
     """Forget every verdict and flight (for testing)."""
     _verdicts.clear()
     _inflight.clear()
-    unit_counts.update(judged=0, shared=0)

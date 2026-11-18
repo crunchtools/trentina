@@ -20,7 +20,8 @@ under that name.
   the frame and each conversation message, and each unit once: identical units
   in flight share one judgement and a complete, unrefused verdict is kept for 10
   minutes after its last use, per profile owner (`gateway/request_units.py`). A
-  conversation agent gains the same way, judging only each turn's new messages.
+  conversation agent under the admission cap gains the same way, judging only
+  each turn's new messages; a request over the cap is still judged whole.
 
 ## [6.24.1] - 2026-11-18
 

@@ -84,7 +84,7 @@ or `input` (a341, `gateway/request_units.py`). Each unit is judged once: identic
 units in flight share one judgement, and a complete verdict that was not refused
 is kept for 10 minutes after its last use, per profile owner, so a burst of calls carrying
 one diff reads it once and a conversation's next turn reads only its new
-messages. A deterministic credential detector
+messages, while the request is under the admission cap. A deterministic credential detector
 (`trentina.credential_shapes`) reads the same units for key material the
 prompt-injection layers do not look for — an AWS key, a provider token, a PEM
 block, a secret in a query string. The mode is the profile's per-provider
@@ -111,7 +111,8 @@ Three consequences worth stating plainly:
   at most 32768) is judged whole, `oversize` → `not_fully_judged`, and refused
   under `block`. Fail-closed is deliberate, but a long agentic conversation will
   hit it; raise the cap or run that provider in `flag` if that is not wanted.
-  `flag` cuts such a request into units and reads each whole.
+  Only a request under the cap is cut into units; `flag` reads the head of one
+  over it.
 - **Each message is judged on its own.** L3 reads a message without the others
   beside it, so an instruction split across two messages is read as two halves.
 - **The warning header carries flags and findings, not gaps.** Its value is a
