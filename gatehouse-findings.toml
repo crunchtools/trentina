@@ -45,14 +45,6 @@ reason = "Deliberate (a341). Judging the whole request was not a context-aware c
 agent = "security"
 category = "security"
 file = "src/trentina/gateway/request_units.py"
-evidence = "for name in CONVERSATION_FIELDS:\n    value = frame.get(name)\n    if isinstance(value, list):\n        messages.extend(json.dumps(item, ensure_ascii=False) for item in value)\n        frame[name] = []\nreturn [f\"{head}\\n{json.dumps(frame, ensure_ascii=False)}\", *messages]"
-status = "not-a-bug"
-reason = "Deliberate (a341). The whole-request judgement this replaces read only the first 32K tokens of a longer conversation and, under burst load, timed out unjudged for most requests (373 in two hours on dolza-max). Each message is now read whole by L1/L2/L3, the same per-part judging paging already applies to responses; an instruction split across two messages is the stated tradeoff in docs/llm-proxying.md."
-
-[[findings]]
-agent = "security"
-category = "security"
-file = "src/trentina/gateway/request_units.py"
 evidence = "for name in CONVERSATION_FIELDS:\n    value = frame.get(name)\n    if isinstance(value, list) and all(isinstance(item, dict) for item in value):\n        messages.extend(json.dumps(item, ensure_ascii=False) for item in value)\n        frame[name] = []\nreturn [f\"{head}\\n{json.dumps(frame, ensure_ascii=False)}\", *messages]"
 status = "not-a-bug"
 reason = "Known gap 34 in docs/defense-pipeline.md, held open by tests/test_coverage_gaps.py, as the constitution requires of a declared gap. The whole-request judgement it replaces read only the head of a conversation over the cap and, under burst load, timed most requests out unread (a341: 373 in two hours); per-message judging matches paged responses (gap 27). Under block a request over the cap is still judged whole and refused."

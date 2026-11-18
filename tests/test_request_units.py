@@ -99,6 +99,11 @@ class TestRequestUnits:
         body = json.dumps({"contents": [{"parts": [{"text": "a"}]}, {"parts": [{"text": "b"}]}]})
         assert len(ru.request_units("POST /v1", body)) == 3
 
+    def test_a_mixed_list_stays_whole_in_the_frame(self) -> None:
+        mixed = [{"role": "user", "content": "a"}, "b"]
+        [frame] = ru.request_units("POST /v1", json.dumps({"messages": mixed}))
+        assert json.loads(frame.split("\n", 1)[1])["messages"] == mixed
+
     def test_an_embeddings_batch_stays_in_the_frame(self) -> None:
         body = json.dumps({"model": "e", "input": ["a", "b", "c"]})
         [frame] = ru.request_units("POST /v1/embeddings", body)
