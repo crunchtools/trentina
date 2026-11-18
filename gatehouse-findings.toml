@@ -48,3 +48,19 @@ file = "src/trentina/gateway/request_units.py"
 evidence = "for name in CONVERSATION_FIELDS:\n    value = frame.get(name)\n    if isinstance(value, list):\n        messages.extend(json.dumps(item, ensure_ascii=False) for item in value)\n        frame[name] = []\nreturn [f\"{head}\\n{json.dumps(frame, ensure_ascii=False)}\", *messages]"
 status = "not-a-bug"
 reason = "Deliberate (a341). The whole-request judgement this replaces read only the first 32K tokens of a longer conversation and, under burst load, timed out unjudged for most requests (373 in two hours on dolza-max). Each message is now read whole by L1/L2/L3, the same per-part judging paging already applies to responses; an instruction split across two messages is the stated tradeoff in docs/llm-proxying.md."
+
+[[findings]]
+agent = "security"
+category = "security"
+file = "src/trentina/gateway/request_units.py"
+evidence = "for name in CONVERSATION_FIELDS:\n    value = frame.get(name)\n    if isinstance(value, list) and all(isinstance(item, dict) for item in value):\n        messages.extend(json.dumps(item, ensure_ascii=False) for item in value)\n        frame[name] = []\nreturn [f\"{head}\\n{json.dumps(frame, ensure_ascii=False)}\", *messages]"
+status = "not-a-bug"
+reason = "Known gap 34 in docs/defense-pipeline.md, held open by tests/test_coverage_gaps.py, as the constitution requires of a declared gap. The whole-request judgement it replaces read only the head of a conversation over the cap and, under burst load, timed most requests out unread (a341: 373 in two hours); per-message judging matches paged responses (gap 27). Under block a request over the cap is still judged whole and refused."
+
+[[findings]]
+agent = "performance"
+category = "performance"
+file = "src/trentina/gateway/request_units.py"
+evidence = "```python\nverdicts = await asyncio.gather(\n    *(\n        _judge_once(\n            _key(unit, profile, mode, source_type),\n            functools.partial(run, unit),\n            deadline=deadline,\n            refused=mode is Mode.BLOCK,\n        )\n        for unit in units\n    )\n)\n```"
+status = "not-a-bug"
+reason = "The work under the fan-out is already bounded where it costs: L2 by the gateway-wide FairGate (TRENTINA_L2_CONCURRENCY), L3 by the per-key AdaptiveLimiter and l3_cache single-flight, L1 by the default thread pool; a waiting unit is a coroutine frame. Total L2 work drops, it does not multiply: each message is read once per owner and kept, where the whole-request path re-read the same head every turn and every burst member."

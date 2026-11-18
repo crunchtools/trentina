@@ -21,9 +21,10 @@ judge, a truncation) or refused is judged again next time. A flagged request
 still reaches the caller's audit row through ``flag_reason``; only the
 detection row is written once per kept verdict rather than once per request.
 
-Each unit is judged whole under the admission cap, as each part of a paged
-response is (``gateway/paging.py``): the cap bounds what one judgement reads,
-and a unit over it is ``oversize`` like any payload.
+The admission cap. Under ``block`` a request over it is judged whole and
+refused as ``oversize``, as before: the cap is one cap on a request. Under
+``flag`` each unit is read whole under the cap, as each part of a paged
+response is, where the whole request had only its head read.
 
 Isolation. The key holds the profile's grant owner and name, the mode, the
 profile's defense settings and the judge identity, as ``quarantine/l3_cache``
@@ -149,6 +150,8 @@ async def judge_units(
     Each unit's judgement runs under ``deadline`` from when it started, so a
     caller that joins a flight in progress waits no longer than its own.
     """
+    if mode is Mode.BLOCK and len(units) > 1:
+        units = await _one_cap_under_block(units)
     run = functools.partial(
         judge_outbound,
         source=source,
@@ -170,6 +173,22 @@ async def judge_units(
         )
     )
     return merge(verdicts)
+
+
+async def _one_cap_under_block(units: list[str]) -> list[str]:
+    """``units``, or the whole request as one unit when it is over the cap.
+
+    The admission cap is one cap on what a request carries; only a response
+    is delivered in parts. Under ``block`` a request over it is judged whole,
+    so ``defend`` refuses it as ``oversize`` before any inference, as it did
+    before the request was cut. ``flag`` reads each unit whole instead of the
+    request's head.
+    """
+    from ..defense import admission  # heavy; deferred like judge_outbound's
+
+    whole = "\n".join(units)
+    tokens, cap = await admission(whole)
+    return [whole] if tokens > cap else units
 
 
 async def _judge_once(
@@ -197,9 +216,10 @@ async def _judge_once(
         task = asyncio.ensure_future(_judge(key, judge))
         _inflight[key] = task
         task.add_done_callback(functools.partial(_settle, key))
-    else:
-        unit_counts["shared"] += 1
-    # A caller cancelled from above, or out of time, leaves the judgement to the others.
+        # The flight runs under this caller's own deadline already. A caller
+        # cancelled from above leaves the judgement to the others.
+        return await asyncio.shield(task)
+    unit_counts["shared"] += 1
     try:
         async with asyncio.timeout(deadline):
             return await asyncio.shield(task)

@@ -106,11 +106,12 @@ Three consequences worth stating plainly:
   if even the redacted prompt should not leave, the profile's `defense` must name
   no L3 provider (every verdict then reports `l3_unavailable`, which `block`
   refuses on and `flag` forwards with a warning).
-- **`block` has a token ceiling, per unit.** A unit larger than
+- **`block` has a token ceiling.** A request larger than
   `Config.admission_tokens` (`min(QUARANTINE_CONTEXT_TOKENS, CLASSIFIER_MAX_TOKENS)`,
-  at most 32768) is `oversize` → `not_fully_judged` and refused under `block`.
-  Fail-closed is deliberate, but one very large message (a whole file read) will
+  at most 32768) is judged whole, `oversize` → `not_fully_judged`, and refused
+  under `block`. Fail-closed is deliberate, but a long agentic conversation will
   hit it; raise the cap or run that provider in `flag` if that is not wanted.
+  `flag` cuts such a request into units and reads each whole.
 - **Each message is judged on its own.** L3 reads a message without the others
   beside it, so an instruction split across two messages is read as two halves.
 - **The warning header carries flags and findings, not gaps.** Its value is a

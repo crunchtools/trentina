@@ -244,6 +244,30 @@ class TestKeeping:
         assert sum("ignore previous" in d for d in defend.documents) == 2
 
 
+class TestTheCapUnderBlock:
+    async def test_a_request_over_the_cap_is_judged_whole_under_block(
+        self, defend: _Defend, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def over(_text: str) -> tuple[int, int]:
+            return 40_000, 32_768
+
+        monkeypatch.setattr(defense_mod, "admission", over)
+        await _judge(_profile("dolza-max"), _body("reviewer"), mode=Mode.BLOCK)
+        [whole] = defend.documents
+        assert "reviewer" in whole
+        assert MARK in whole
+
+    async def test_flag_cuts_a_request_over_the_cap(
+        self, defend: _Defend, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def over(_text: str) -> tuple[int, int]:
+            return 40_000, 32_768
+
+        monkeypatch.setattr(defense_mod, "admission", over)
+        await _judge(_profile("dolza-max"), _body("reviewer"), mode=Mode.FLAG)
+        assert len(defend.documents) == 3
+
+
 class TestSharedFlights:
     async def test_a_late_joiner_waits_no_longer_than_its_own_deadline(
         self, defend: _Defend
