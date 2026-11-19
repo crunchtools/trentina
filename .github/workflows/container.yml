@@ -49,10 +49,8 @@ jobs:
       image: quay.io/crunchtools/trentina
       build-args: VERSION=${{ needs.version.outputs.version }}
       boot: mcp
-      # stdio, no gateway: Trentina's own tools. Dummy key, no request reaches
-      # it. /data is a volume in production.
-      boot-env: |
-        GEMINI_API_KEY=gate
+      # stdio, no gateway: Trentina's own tools, which list without any key.
+      # /data is a volume in production.
       boot-run-args: --tmpfs /data:mode=1777
       # Hosts refuse an unsigned quay.io/crunchtools image
       # (crunchtools/rhel10-bootc-server#47). Promote signs the gated digest
