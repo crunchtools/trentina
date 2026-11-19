@@ -57,8 +57,12 @@ jobs:
       # before any tag moves, with the key from this repo's cosign-signing
       # environment (main and v* only); without it promote refuses.
       sign: true
+      # crunchtools/data-collector builds FROM this image; constitution's
+      # validate-cascade requires the edge.
+      downstream: data-collector
     secrets:
       QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
       QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
+      CRUNCHTOOLS_CI_APP_KEY: ${{ secrets.CRUNCHTOOLS_CI_APP_KEY }}
       COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
       COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}

@@ -15,12 +15,12 @@ under that name.
 - **Images build and release through constitution's `container-release.yml`, like every other crunchtools image.** `container.yml` and `demo-container.yml` now call it at constitution v1.53.0 with `sign: true`: a pull request builds and boot-gates its head digest, the merge promotes that digest to `:main`, a `v*` tag promotes it to the version tags and `:latest`, and promote cosign-signs the digest before any tag moves. `quay.io/crunchtools/trentina-demo` gets the same path, still `:main` only. Supersedes #840; closes #842.
 - `l2-train.yml` publishes `trentina-l2-model` only from a dispatch on main, cosign-signs the pushed digest with the fleet key from the `cosign-signing` environment, and keeps registry auth in `RUNNER_TEMP`; a `feature/l2-*` dispatch still trains and gates but pushes nothing (constitution VII, #842).
 - Inherits crunchtools/constitution v1.53.0; every constitution workflow pin moves with it.
+- The `parent-image-updated` dispatch to crunchtools/data-collector moves into container-release's `downstream` input and fires when promote moves `:main` or `:latest`.
 - Gatehouse triage now receives `review_result`, so a PR whose review job died before posting is held instead of passing.
 
 ### Removed
 
 - `security.yml`'s `publish` job, its image hand-off from `sdlc ci`, the `published-digests` artifact and the bespoke promote in `container.yml`; `sdlc ci` still builds the image for its in-image tests and publishes nothing.
-- The `parent-image-updated` dispatch to crunchtools/data-collector on every merge. data-collector builds `FROM trentina:6.24.1`, a release tag Dependabot moves, so a rebuild on a `:main` push changed nothing.
 
 ## [6.25.0] - 2026-11-19
 
