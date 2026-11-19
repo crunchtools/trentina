@@ -12,11 +12,12 @@ from .base import Provider, ProviderResult
 if TYPE_CHECKING:
     from pydantic import SecretStr
 
-    from ...gateway.profile import Profile
+    from ...gateway.profile import Profile, VertexTarget
 
 logger = logging.getLogger(__name__)
 
-_provider_cache: dict[tuple[str, str, str], Provider] = {}
+#: (provider, key, model, project, region); the last two are empty except for vertex.
+_provider_cache: dict[tuple[str, str, str, str, str], Provider] = {}
 
 __all__ = ["Provider", "ProviderResult", "get_fallback_providers", "get_provider"]
 
@@ -43,6 +44,30 @@ def _openrouter(key_value: str, model: str, reasoning_effort: str | None) -> Pro
     )
 
 
+def _vertex(api_key: SecretStr | None, target: VertexTarget | None, model: str) -> Provider:
+    """The Vertex driver. No global env key: the credential is llm_keys.vertex."""
+    if api_key is None or not api_key.get_secret_value():
+        raise QuarantineAgentError("vertex needs llm_keys.vertex")
+    if target is None:
+        raise QuarantineAgentError("vertex needs defense.vertex (project, region)")
+    from .vertex import VertexProvider
+
+    return VertexProvider(
+        credentials=api_key.get_secret_value(),
+        model=model,
+        project=target.project,
+        region=target.region,
+    )
+
+
+def _cache_key(
+    provider: str, key: str, model: str, vertex: VertexTarget | None
+) -> tuple[str, str, str, str, str]:
+    """The cache key; project and region are empty for all but vertex."""
+    target = vertex if provider == "vertex" else None
+    return (provider, key, model, target.project if target else "", target.region if target else "")
+
+
 def _key_ordinal(key_value: str) -> str:
     """The limiter's name for a key: the one an instance on it already has.
 
@@ -52,18 +77,56 @@ def _key_ordinal(key_value: str) -> str:
     """
     if key_value == "global":
         return key_value
-    for (_name, cached_key, _model), provider in _provider_cache.items():
+    for (_name, cached_key, *_rest), provider in _provider_cache.items():
         if cached_key == key_value:
             return provider.key_ordinal
-    return f"key{len({k for _n, k, _m in _provider_cache if k != 'global'}) + 1}"
+    return f"key{len({entry[1] for entry in _provider_cache if entry[1] != 'global'}) + 1}"
+
+
+def _anthropic(api_key: SecretStr | None, model: str) -> Provider:
+    """The Anthropic driver, on the profile's key or the global one."""
+    from .anthropic import ANTHROPIC_API_BASE, AnthropicProvider
+
+    config = get_config()
+    key_value = api_key.get_secret_value() if api_key else config.anthropic_api_key
+    if not key_value:
+        raise QuarantineAgentError("ANTHROPIC_API_KEY not configured")
+    default_model = model if model != _DEFAULT_GEMINI_MODEL else "claude-haiku-4-5-20251001"
+    # TRENTINA_ANTHROPIC_BASE_URL is the host, as Anthropic's own clients read
+    # it: the driver's base carries the API version segment.
+    return AnthropicProvider(
+        api_key=key_value,
+        model=default_model,
+        base_url=(
+            f"{config.anthropic_base_url}/v1" if config.anthropic_base_url else ANTHROPIC_API_BASE
+        ),
+    )
+
+
+def _register(
+    provider: Provider, cache_key: tuple[str, str, str, str, str], own_key: bool
+) -> Provider:
+    """Stamp the judge and limiter key, cache the instance, and return it."""
+    resolved_provider, _key, resolved_model = cache_key[:3]
+    provider.judge = (resolved_provider, provider.model)
+    provider.key_ordinal = _key_ordinal(cache_key[1])
+    _provider_cache[cache_key] = provider
+    logger.info(
+        "provider: initialized %s (model=%s, key=%s)",
+        resolved_provider,
+        resolved_model,
+        "override" if own_key else "global",
+    )
+    return provider
 
 
 def get_provider(
     provider_name: str | None = None,
     api_key: SecretStr | None = None,
     model: str | None = None,
+    vertex: VertexTarget | None = None,
 ) -> Provider:
-    """Return a provider instance, cached per (provider, api_key, model) tuple.
+    """Return a provider instance, cached per (provider, api_key, model, project, region).
 
     The cache key uses the full secret value rather than a prefix so two
     profiles whose keys share a prefix cannot collide onto one instance.
@@ -75,13 +138,15 @@ def get_provider(
             to the global config key for the provider.
         model: Model override for this provider. When None, falls back
             to QUARANTINE_MODEL from config.
+        vertex: Project and region for the ``vertex`` provider (the profile's
+            ``defense.vertex``); ignored by every other provider.
     """
     config = get_config()
     resolved_provider = provider_name or config.provider
     resolved_model = model or config.model
 
     key_value = api_key.get_secret_value() if api_key else "global"
-    cache_key = (resolved_provider, key_value, resolved_model)
+    cache_key = _cache_key(resolved_provider, key_value, resolved_model, vertex)
 
     if cache_key in _provider_cache:
         return _provider_cache[cache_key]
@@ -121,27 +186,7 @@ def get_provider(
             )
 
         case "anthropic":
-            from .anthropic import ANTHROPIC_API_BASE, AnthropicProvider
-
-            key_value = api_key.get_secret_value() if api_key else config.anthropic_api_key
-            if not key_value:
-                raise QuarantineAgentError("ANTHROPIC_API_KEY not configured")
-            default_model = (
-                resolved_model
-                if resolved_model != _DEFAULT_GEMINI_MODEL
-                else "claude-haiku-4-5-20251001"
-            )
-            # TRENTINA_ANTHROPIC_BASE_URL is the host, as Anthropic's own clients read
-            # it: the driver's base carries the API version segment.
-            provider = AnthropicProvider(
-                api_key=key_value,
-                model=default_model,
-                base_url=(
-                    f"{config.anthropic_base_url}/v1"
-                    if config.anthropic_base_url
-                    else ANTHROPIC_API_BASE
-                ),
-            )
+            provider = _anthropic(api_key, resolved_model)
 
         case "ollama":
             from .ollama import OllamaProvider
@@ -154,22 +199,16 @@ def get_provider(
                 base_url=config.ollama_base_url,
             )
 
+        case "vertex":
+            provider = _vertex(api_key, vertex, resolved_model)
+
         case _:
             raise QuarantineAgentError(
                 f"Unknown provider {resolved_provider!r}. "
-                "Supported: gemini, openai, anthropic, ollama, openrouter"
+                "Supported: gemini, openai, anthropic, ollama, openrouter, vertex"
             )
 
-    provider.judge = (resolved_provider, provider.model)
-    provider.key_ordinal = _key_ordinal(cache_key[1])
-    _provider_cache[cache_key] = provider
-    logger.info(
-        "provider: initialized %s (model=%s, key=%s)",
-        resolved_provider,
-        resolved_model,
-        "override" if api_key else "global",
-    )
-    return provider
+    return _register(provider, cache_key, api_key is not None)
 
 
 def get_fallback_providers(profile: Profile) -> list[tuple[str, SecretStr | None]]:

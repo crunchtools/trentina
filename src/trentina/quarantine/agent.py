@@ -362,6 +362,7 @@ async def _call_gemini(
             provider_name=provider_name,
             api_key=_api_key_override,
             model=model,
+            vertex=getattr(getattr(profile, "defense", None), "vertex", None),
         )
     else:
         profile = bound_profile()
@@ -376,6 +377,7 @@ async def _call_gemini(
             provider_name=resolved_provider,
             api_key=api_key,
             model=model,
+            vertex=profile.defense.vertex,
         )
 
     if turn is not None:

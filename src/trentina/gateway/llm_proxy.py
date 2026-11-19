@@ -182,6 +182,10 @@ class LlmProvider(BaseModel):
         return self
 
 
+#: A provider that exists for L3 only, never as a ``/proxy/llm`` route.
+L3_ONLY_PROVIDER = "vertex"
+
+
 def load_llm_providers(
     llm_section: dict[str, Any],
 ) -> dict[str, LlmProvider]:
@@ -200,6 +204,11 @@ def load_llm_providers(
         if not isinstance(body, dict):
             raise ProfileConfigError(
                 f"llm_providers.{name}: must be a mapping",
+            )
+        if name == L3_ONLY_PROVIDER:
+            raise ProfileConfigError(
+                f"llm_providers.{name}: {name} is L3-only (OAuth) and cannot be a "
+                "reverse-proxy provider; its credential would be sent as a static header"
             )
         try:
             provider = LlmProvider(**body)
@@ -245,6 +254,12 @@ def validate_profile_llm_keys(
     """
     for name, profile in profiles.items():
         for provider_name in profile.llm_keys:
+            # vertex is an L3-only provider: its llm_keys entry is a Google ADC
+            # file that the Q-Agent exchanges for OAuth tokens. The reverse proxy
+            # injects one static header and cannot do that, so there is no
+            # llm_providers route for it and none is required.
+            if provider_name == L3_ONLY_PROVIDER:
+                continue
             if provider_name not in providers:
                 raise ProfileConfigError(
                     f"Profile {name!r} llm_keys references provider "

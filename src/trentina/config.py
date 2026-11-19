@@ -108,7 +108,7 @@ contend for the same quota and make scans slower — measured on host01
 """
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "qwen2.5:0.5b"
-SUPPORTED_PROVIDERS = ("gemini", "openai", "anthropic", "ollama", "openrouter")
+SUPPORTED_PROVIDERS = ("gemini", "openai", "anthropic", "ollama", "openrouter", "vertex")
 
 
 def classifier_settings() -> tuple[float | None, str, str]:

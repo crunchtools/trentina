@@ -30,6 +30,48 @@ GEMINI_TIMEOUT = 60.0
 GEMINI_API_KEY_HEADER = "x-goog-api-key"
 
 
+def generate_content_body(
+    system_prompt: str,
+    user_content: str,
+    response_schema: dict[str, Any] | None,
+    temperature: float,
+    max_output_tokens: int,
+) -> dict[str, Any]:
+    """A generateContent request body. Vertex AI takes the same shape."""
+    gen_config: dict[str, Any] = {
+        "temperature": temperature,
+        "maxOutputTokens": max_output_tokens,
+    }
+    if response_schema is not None:
+        gen_config["responseMimeType"] = "application/json"
+        gen_config["responseSchema"] = response_schema
+    return {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"role": "user", "parts": [{"text": user_content}]}],
+        "generationConfig": gen_config,
+    }
+
+
+def generate_content_result(resp_json: dict[str, Any]) -> ProviderResult:
+    """The ProviderResult in a generateContent response, Gemini API or Vertex AI."""
+    if not dig(resp_json, "candidates", 0):
+        raise QuarantineAgentError("No candidates in Gemini response")
+
+    if not dig(resp_json, "candidates", 0, "content", "parts", 0):
+        raise QuarantineAgentError("No parts in Gemini response")
+
+    text = dig(resp_json, "candidates", 0, "content", "parts", 0, "text")
+    if not isinstance(text, str):
+        raise MalformedResponseError("no text")
+
+    return ProviderResult(
+        text=text,
+        input_tokens=count(dig(resp_json, "usageMetadata", "promptTokenCount")),
+        output_tokens=count(dig(resp_json, "usageMetadata", "candidatesTokenCount")),
+        truncated=dig(resp_json, "candidates", 0, "finishReason") == "MAX_TOKENS",
+    )
+
+
 class GeminiProvider(Provider):
     """Gemini REST API provider using raw httpx."""
 
@@ -46,20 +88,9 @@ class GeminiProvider(Provider):
         max_output_tokens: int = 4096,
     ) -> ProviderResult:
         url = f"{GEMINI_API_BASE}/{self._model}:generateContent"
-
-        gen_config: dict[str, Any] = {
-            "temperature": temperature,
-            "maxOutputTokens": max_output_tokens,
-        }
-        if response_schema is not None:
-            gen_config["responseMimeType"] = "application/json"
-            gen_config["responseSchema"] = response_schema
-
-        request_body: dict[str, Any] = {
-            "system_instruction": {"parts": [{"text": system_prompt}]},
-            "contents": [{"role": "user", "parts": [{"text": user_content}]}],
-            "generationConfig": gen_config,
-        }
+        request_body = generate_content_body(
+            system_prompt, user_content, response_schema, temperature, max_output_tokens
+        )
 
         enforce_no_tools(request_body)
 
@@ -79,22 +110,7 @@ class GeminiProvider(Provider):
                 resp.raise_for_status()
                 resp_json = envelope(resp)
 
-            if not dig(resp_json, "candidates", 0):
-                raise QuarantineAgentError("No candidates in Gemini response")
-
-            if not dig(resp_json, "candidates", 0, "content", "parts", 0):
-                raise QuarantineAgentError("No parts in Gemini response")
-
-            text = dig(resp_json, "candidates", 0, "content", "parts", 0, "text")
-            if not isinstance(text, str):
-                raise MalformedResponseError("no text")
-
-            return ProviderResult(
-                text=text,
-                input_tokens=count(dig(resp_json, "usageMetadata", "promptTokenCount")),
-                output_tokens=count(dig(resp_json, "usageMetadata", "candidatesTokenCount")),
-                truncated=dig(resp_json, "candidates", 0, "finishReason") == "MAX_TOKENS",
-            )
+            return generate_content_result(resp_json)
 
         except httpx.HTTPStatusError as exc:
             raise status_error(exc) from exc

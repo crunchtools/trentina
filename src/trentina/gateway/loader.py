@@ -959,6 +959,23 @@ def _resolve_llm_key_secrets(name: str, profile: Profile) -> None:
                 f"{override.api_key_env} not set or empty{_STORE_HINT}"
             )
         override.api_key = SecretStr(key_value)
+    _check_vertex_credentials(name, profile)
+
+
+def _check_vertex_credentials(name: str, profile: Profile) -> None:
+    """Parse ``llm_keys.vertex`` as a Google ADC file now, not at the first judge
+    call: a credential that cannot be used is a load error like a missing key."""
+    override = profile.llm_keys.get("vertex")
+    if override is None:
+        return
+    from ..errors import QuarantineAgentError
+    from ..quarantine.providers.vertex_auth import parse_credentials
+
+    try:
+        parse_credentials(override.api_key.get_secret_value())
+    except QuarantineAgentError as exc:
+        # parse_credentials names the field at fault and never a value.
+        raise ProfileConfigError(f"Profile {name!r} llm_keys.vertex: {exc}") from None
 
 
 def _expand_backend_url(name: str, backend_name: str, url: str) -> str:

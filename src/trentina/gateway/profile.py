@@ -1725,6 +1725,40 @@ class AlertIngressConfig(BaseModel):
         return v
 
 
+#: A Vertex project and region land in the request URL, so each is an allowlist.
+VERTEX_PROJECT_RE = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+VERTEX_REGION_RE = re.compile(r"^(global|[a-z]+-[a-z]+[0-9]+)$")
+
+
+class VertexTarget(BaseModel):
+    """Where a ``vertex`` judge runs: a Google Cloud project and region.
+
+    The credential is not here: it is the profile's ``llm_keys.vertex`` (the
+    JSON text of a Google ADC file). These two values are interpolated into the
+    request URL and the host name, so they are checked against Google's own
+    shapes at load rather than trusted.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    project: str = Field(description="Google Cloud project id the Vertex AI calls bill to")
+    region: str = Field(description="Vertex AI location, e.g. us-central1, or `global`")
+
+    @field_validator("project")
+    @classmethod
+    def _project_shape(cls, v: str) -> str:
+        if not VERTEX_PROJECT_RE.fullmatch(v):
+            raise ValueError("defense.vertex.project is not a valid Google Cloud project id")
+        return v
+
+    @field_validator("region")
+    @classmethod
+    def _region_shape(cls, v: str) -> str:
+        if not VERTEX_REGION_RE.fullmatch(v):
+            raise ValueError("defense.vertex.region is not `global` or a region like us-central1")
+        return v
+
+
 class DefenseConfig(BaseModel):
     """Per-profile defense policy, read by the shared pipeline.
 
@@ -1871,6 +1905,14 @@ class DefenseConfig(BaseModel):
         default=None,
         description=("LLM model override for this profile (falls back to QUARANTINE_MODEL)"),
     )
+    vertex: VertexTarget | None = Field(
+        default=None,
+        description=(
+            "Google Cloud project and region for the `vertex` provider. Required "
+            "when `provider` is vertex; may also be set to serve vertex as a "
+            "TRENTINA_PROVIDER_FALLBACK. The credential is `llm_keys.vertex`"
+        ),
+    )
 
     @field_validator("provider")
     @classmethod
@@ -1879,6 +1921,13 @@ class DefenseConfig(BaseModel):
         if v is not None and v not in SUPPORTED_PROVIDERS:
             raise ValueError(f"Unknown provider {v!r}. Supported: {', '.join(SUPPORTED_PROVIDERS)}")
         return v
+
+    @model_validator(mode="after")
+    def _vertex_needs_target(self) -> DefenseConfig:
+        """A vertex judge with no project and region could not make a call."""
+        if self.provider == "vertex" and self.vertex is None:
+            raise ValueError("defense.provider vertex requires defense.vertex (project, region)")
+        return self
 
 
 class MatrixDecryptConfig(BaseModel):
