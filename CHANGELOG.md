@@ -13,6 +13,7 @@ under that name.
 ### Changed
 
 - **Images build and release through constitution's `container-release.yml`, like every other crunchtools image.** `container.yml` and `demo-container.yml` now call it at the fleet pin (v1.51.0) with `sign: true`: a pull request builds and boot-gates its head digest, the merge promotes that digest to `:main`, a `v*` tag promotes it to the version tags and `:latest`, and promote cosign-signs the digest before any tag moves. `quay.io/crunchtools/trentina-demo` gets the same path, still `:main` only. Supersedes #840; closes #842.
+- `l2-train.yml` publishes `trentina-l2-model` only from a dispatch on main; a `feature/l2-*` dispatch still trains and gates but pushes nothing (constitution VII).
 - Gatehouse triage now receives `review_result`, so a PR whose review job died before posting is held instead of passing.
 
 ### Removed
