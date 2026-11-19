@@ -6,8 +6,8 @@ name: L2 - fine-tune
 # one: scripts/l2_train_data.py builds the missing half from pinned public
 # sets, wrapping attacks in the same envelopes so the label follows the text.
 #
-# The model is an artifact of this run, not a release. With publish, the full
-# fine-tune, once it has passed every gate below, is also pushed as an image
+# The model is an artifact of this run, not a release. With publish, on main, the full
+# fine-tune, once it has passed every gate below, is also pushed and signed as an image
 # (quay.io/crunchtools/trentina-l2-model); shipping it is a Containerfile
 # change that pins its digest, made after a screen on production shapes.
 #
@@ -157,16 +157,28 @@ jobs:
           retention-days: 7
 
   # Its own job, so the only one holding packages: write runs no repo code and
-  # touches nothing the pod sent except the export the gates passed.
+  # touches nothing the pod sent except the export the gates passed. It is
+  # also the only one holding the signing key: the `cosign-signing`
+  # environment releases it to main only, as for container-release.yml.
   publish:
     needs: train
-    if: inputs.publish
+    # Default branch only (constitution VII): a dispatch on feature/l2-* trains
+    # and gates, but never publishes.
+    if: inputs.publish && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: cosign-signing
     permissions: {}
     env:
       IMAGE: quay.io/crunchtools/trentina-l2-model
     steps:
+      # Registry auth lives in RUNNER_TEMP and is removed at the end, so no
+      # credential outlives the job in the runner's home (#842).
+      - name: Keep registry auth inside this job
+        run: |
+          echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/auth.json" >> "$GITHUB_ENV"
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
+
       - uses: actions/download-artifact@v8
         with:
           name: l2-model
@@ -198,13 +210,52 @@ jobs:
           context: export
           file: export/Containerfile
           push: true
-          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          tags: quay.io/crunchtools/trentina-l2-model:${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=Apache-2.0
 
+      # The same cosign, checked by the same sha256, as container-release.yml.
+      - name: Install cosign v2.6.5
+        run: |
+          set -eu
+          curl -fsSLo "$RUNNER_TEMP/cosign" https://github.com/sigstore/cosign/releases/download/v2.6.5/cosign-linux-amd64
+          echo "c3b4f5410e608af03a5eb0aaac84a4313d8da131248e08ff1759ac70c79d1644  $RUNNER_TEMP/cosign" | sha256sum -c
+          install -D -m 0755 "$RUNNER_TEMP/cosign" "$RUNNER_TEMP/bin/cosign"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # Hosts refuse an unsigned quay.io/crunchtools image
+      # (crunchtools/rhel10-bootc-server#47), and trentina's build pulls this
+      # one. The key and password reach cosign only through env. The public
+      # half is constitution's keys/crunchtools-bootc.pub, inlined because this
+      # job checks out nothing; the key is refused unless it matches.
+      - name: Sign the pushed digest
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          PUB: |
+            -----BEGIN PUBLIC KEY-----
+            MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5TlIf0f5VMBaCLJGtmh9fL3C/xYM
+            nHVNg0KnBqqs/x+WThX8zEKaGmiZ2SM5336mPfJKZl68/lXBnoWlU0E9Tg==
+            -----END PUBLIC KEY-----
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::the digest to sign is not a sha256 digest" >&2; exit 1; }
+          [ -n "$COSIGN_PRIVATE_KEY" ] || { echo "::error::no COSIGN_PRIVATE_KEY from the cosign-signing environment" >&2; exit 1; }
+          printf '%s\n' "${PUB%$'\n'}" > "$RUNNER_TEMP/crunchtools-bootc.pub"
+          cosign public-key --key env://COSIGN_PRIVATE_KEY > "$RUNNER_TEMP/secret.pub"
+          cmp -s "$RUNNER_TEMP/secret.pub" "$RUNNER_TEMP/crunchtools-bootc.pub" || { echo "::error::COSIGN_PRIVATE_KEY is not the private half of keys/crunchtools-bootc.pub" >&2; exit 1; }
+          cosign sign --yes --tlog-upload=false --key env://COSIGN_PRIVATE_KEY "$IMAGE@$DIGEST"
+          cosign verify --insecure-ignore-tlog --key "$RUNNER_TEMP/crunchtools-bootc.pub" "$IMAGE@$DIGEST" >/dev/null
+          echo "::notice::signed $IMAGE@$DIGEST"
+
       - name: Record the digest
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
-        run: echo "Published \`$IMAGE@$DIGEST\`" | tee -a "$GITHUB_STEP_SUMMARY"
+        run: echo "Published and signed \`$IMAGE@$DIGEST\`" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Drop registry auth
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/auth.json" "$RUNNER_TEMP/docker"

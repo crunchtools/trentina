@@ -370,7 +370,7 @@ paths = ["src"]
 [tool.sdlc.ci]
 checks = ["image", "image-tests"]
 
-# The image CI publishes. Labels carry what `promote` reads off it.
+# The image the in-image tests run against; container.yml builds the published one.
 [tool.sdlc.ci.image]
 kind = "image-build"
 build_args = { VERSION = "@project.version" }

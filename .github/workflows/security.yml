@@ -14,11 +14,7 @@ on:
 # grinding to completion -- three image builds and a four-way test matrix each.
 #
 # Only PR runs share a group. Everything else keys on `run_id`, which is unique,
-# so no non-PR run ever contends and none can be dropped. `cancel-in-progress:
-# false` would NOT have been enough: a group holds at most one PENDING run, so a
-# third arrival cancels the second. Three quick pushes to main would have dropped
-# the middle one's publish -- a half-finished manifest and a downstream never told
-# to rebuild, which is the thing this is supposed to prevent.
+# so no non-PR run ever contends and none can be dropped.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -29,19 +25,13 @@ permissions:
   pull-requests: write
   security-events: write
 
-# The published image. Here as well as in container.yml because this workflow
-# publishes it now; container.yml keeps its own copy for `promote`, which reads
-# the same repository back. Quay.io is the only registry (RT#1550).
-env:
-  QUAY_IMAGE: quay.io/crunchtools/trentina
-
 jobs:
   dependency-audit:
     name: Dependency CVE Scan
     permissions:
       contents: read
       issues: write
-    uses: crunchtools/constitution/.github/workflows/dependency-audit.yml@v1.46.0
+    uses: crunchtools/constitution/.github/workflows/dependency-audit.yml@v1.53.0
     with:
       python-version: "3.14"
 
@@ -52,10 +42,9 @@ jobs:
   # repo's own: build the image and test it from inside (pyproject.toml,
   # [tool.sdlc.ci]).
   #
-  # It is also the ONE image build per run (#674, #689), and the image it builds
-  # is the one `publish` pushes. The job name is a required check and is what
-  # container.yml's `promote` looks up (VERIFIER_JOB), so renaming it means
-  # changing both.
+  # The image it builds is for those tests only and is never published:
+  # container.yml builds, gates, signs and promotes the released image through
+  # constitution's container-release.yml. The job name is a required check.
   sdlc:
     name: sdlc ci
     timeout-minutes: 30
@@ -65,10 +54,8 @@ jobs:
     #                         which is what makes it fast, and every job it runs
     #                         can write to that cache -- so nothing it builds is
     #                         ever published.
-    #   crunchtools-uncached  pushes to main and scheduled runs: the build
-    #                         `publish` pushes. Its container storage is a tmpfs,
-    #                         empty at the start of every job, so the published
-    #                         bytes come from storage nothing else has written to.
+    #   crunchtools-uncached  pushes to main and scheduled runs. Its container
+    #                         storage is a tmpfs, empty at the start of every job.
     #
     # Everything else stays on GitHub's machines: a FORK pull request never
     # lands on our hardware, and neither does a Dependabot one, whose job runs
@@ -87,10 +74,6 @@ jobs:
           || 'ubuntu-latest' }}
     permissions:
       contents: read
-    # The image ID -- the config digest, which pins every layer -- of the build
-    # `publish` must load. Empty on anything but a push.
-    outputs:
-      image_id: ${{ steps.handoff.outputs.image_id }}
 
     steps:
       - uses: actions/checkout@v7
@@ -104,143 +87,6 @@ jobs:
         env:
           SDLC_IMAGE: ${{ vars.SDLC_IMAGE }}
         run: .sdlc/bin/sdlc ci
-
-      # Hand the verified image to `publish`, the only job that holds a
-      # credential. This job HOLDS NOTHING THAT CAN PUBLISH: it runs pull-request
-      # code on our own runner, and `permissions` and `secrets` are job-level
-      # while an `if:` is only step-level.
-      - name: Save the verified image for the publish job
-        id: handoff
-        if: github.event_name == 'push'
-        run: |
-          set -eu
-          podman save --format docker-archive localhost/trentina:sdlc -o image.tar
-          id=$(podman image inspect --format '{{.Id}}' localhost/trentina:sdlc)
-          [ -n "$id" ] || { echo "could not read the built image id" >&2; exit 1; }
-          echo "image_id=$id" >> "$GITHUB_OUTPUT"
-          echo "::notice::handing off $id"
-
-      - name: Upload the verified image
-        if: github.event_name == 'push'
-        uses: actions/upload-artifact@v7
-        with:
-          name: verified-image
-          path: image.tar
-          retention-days: 1
-          # The layers inside are already compressed.
-          compression-level: 1
-
-  # The ONLY job that can publish. Separate from the verifier so that the
-  # verifier -- which runs PR-authored code, on our own runner -- holds no
-  # registry secret, no App key and no `packages: write`.
-  publish:
-    name: Publish the verified image
-    runs-on: ubuntu-latest
-    needs: sdlc
-    if: github.event_name == 'push'
-    permissions:
-      contents: read
-
-    steps:
-      - name: Download the verified image
-        uses: actions/download-artifact@v8
-        with:
-          name: verified-image
-
-      # The invariant that matters: the bytes this job publishes are the bytes
-      # the sdlc job verified. The image ID is the config digest, which pins
-      # every layer's diff ID, so an equal ID across the hand-off means equal
-      # content. `promote` separately proves "this commit, this version" from
-      # the labels on each registry.
-      #
-      # NOT a cross-registry digest comparison. A registry digest is over the
-      # manifest, which is strictly stronger than content equality and can
-      # differ for encoding reasons that say nothing about the image -- so it is
-      # reported below and never gates.
-      - name: Load it, and prove it is what was verified
-        env:
-          EXPECTED: ${{ needs.sdlc.outputs.image_id }}
-        run: |
-          set -eu
-          [ -n "$EXPECTED" ] || { echo "sdlc ci handed over no image id" >&2; exit 1; }
-          podman load -i image.tar
-          got=$(podman image inspect --format '{{ .Id }}' localhost/trentina:sdlc)
-          [ "$got" = "$EXPECTED" ] || {
-            echo "the image that arrived is not the image that was verified:" >&2
-            echo "  verified: $EXPECTED" >&2
-            echo "  arrived:  $got" >&2
-            exit 1
-          }
-          echo "::notice::loaded the verified image $got"
-
-      # podman, not docker, end to end: `sdlc ci` built the image with podman,
-      # and the identity check above compares podman's ID for it. Passwords go
-      # in on stdin so they never reach a process list.
-      - name: Log in to Quay.io
-        env:
-          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
-          QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
-        run: |
-          set -eu
-          printf '%s' "$QUAY_PASSWORD" | podman login -u "$QUAY_USERNAME" --password-stdin quay.io
-
-      - name: Publish to Quay.io
-        env:
-          QUAY: ${{ env.QUAY_IMAGE }}
-          SHA: ${{ github.sha }}
-        run: |
-          set -eu
-          # `main` ONLY. `latest` is the newest stable RELEASE and moves in
-          # container.yml's promote (constitution 1.33.0). This job used to push
-          # both, so a merge was a fleet-wide deploy: on 2026-11-07 unreleased
-          # 6.11.0 reached production at 02:01 through podman-auto-update,
-          # climbed to the unit's 4g cap and was SIGKILLed (RT#1559).
-          podman tag localhost/trentina:sdlc "$QUAY:main"
-          podman push --format v2s2 --digestfile "$RUNNER_TEMP/digest" "$QUAY:main"
-          # The digest the registry stored for what THIS job pushed, recorded
-          # below for `promote`. Read from the push itself, not from asking the
-          # registry what :main is, which any later push can change.
-          quay=$(cat "$RUNNER_TEMP/digest")
-          printf '{"sha":"%s","quay":"%s"}\n' "$SHA" "$quay" > published.json
-          cat published.json
-          echo "::notice::published $quay (quay) for $SHA"
-
-      # `promote` releases exactly these digests. It used to resolve `:main` and
-      # trust the labels on whatever it found -- labels the writer chooses, on a
-      # tag that a pull request's GITHUB_TOKEN with packages:write can also push.
-      # This artifact comes from the push-to-main run of security.yml, which runs
-      # main's own workflow file, and from this job alone.
-      - name: Record the published digests for promote
-        uses: actions/upload-artifact@v7
-        with:
-          name: published-digests
-          path: published.json
-          retention-days: 90
-
-      # The crunchtools-ci App's token, not a personal one: it has its own rate
-      # limit, so a throttled account can't stop this step. Minted HERE rather
-      # than in the sdlc job, so its key is never present in a job that runs
-      # pull-request code.
-      - name: Mint CI token
-        id: ci-token
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ vars.CRUNCHTOOLS_CI_CLIENT_ID }}
-          private-key: ${{ secrets.CRUNCHTOOLS_CI_APP_KEY }}
-          owner: crunchtools
-
-      # crunchtools/data-collector is built FROM this image. Tell it to rebuild,
-      # as every parent image in the fleet tells its children
-      # (crunchtools/constitution, validate-cascade.py).
-      - name: Trigger downstream rebuilds
-        env:
-          GH_TOKEN: ${{ steps.ci-token.outputs.token }}
-        run: |
-          for repo in data-collector; do
-            gh api repos/crunchtools/$repo/dispatches \
-              -f event_type=parent-image-updated \
-              || echo "::warning::$repo was not told to rebuild; start its build by hand"
-          done
 
   codeql:
     name: CodeQL Analysis

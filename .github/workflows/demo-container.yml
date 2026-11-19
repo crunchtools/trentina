@@ -1,68 +1,57 @@
-name: Demo Container Build & Push
-
-# The attack-sim demo served at crunchtools.com/wic-catalogue/ (#273). It used
-# to be built on the host, so a prune lost it for good. Built here, on its own
+# The attack-sim demo served at crunchtools.com/wic-catalogue/ (#273), released
+# through constitution's container-release.yml like every other image. Its own
 # path filter: nothing outside demo/attack-sim/ goes into it.
+#
+# No v* tags: the demo is never released, so it has no `latest` (constitution
+# 1.33.0). Gloval runs `:main`, which a merge touching the demo promotes.
+
+name: Demo container
 
 on:
+  pull_request:
+    paths:
+      - "demo/attack-sim/**"
+      - ".github/workflows/demo-container.yml"
   push:
     branches: [main]
     paths:
       - "demo/attack-sim/**"
       - ".github/workflows/demo-container.yml"
-  pull_request:
-    branches: [main]
-    paths:
-      - "demo/attack-sim/**"
-      - ".github/workflows/demo-container.yml"
+  schedule:
+    - cron: "47 4 * * 1"   # weekly: base-image errata, gated like any build
   workflow_dispatch:
 
-env:
-  QUAY_IMAGE: quay.io/crunchtools/trentina-demo
+permissions: {}
 
 jobs:
-  build-and-push-quay:
-    runs-on: ubuntu-latest
+  container:
+    uses: crunchtools/constitution/.github/workflows/container-release.yml@v1.53.0
     permissions:
       contents: read
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to Quay.io
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v4
-        with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_USERNAME }}
-          password: ${{ secrets.QUAY_PASSWORD }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.QUAY_IMAGE }}
-          tags: |
-            type=ref,event=pr
-            type=sha,format=long
-            # `main`, and no `latest`. The demo is cut from `demo/attack-sim` on
-            # a push to main and is never released, so it has no newest release
-            # for `latest` to name (constitution 1.33.0). The unit on gloval
-            # names `:main`, which is what it was always actually tracking.
-            type=ref,event=branch
-
-      - name: Build and push
-        uses: docker/build-push-action@v7
-        with:
-          context: demo/attack-sim
-          file: demo/attack-sim/Containerfile
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=trentina-demo
-          cache-to: type=gha,mode=max,scope=trentina-demo
-
+      issues: write   # the alert job files a failed schedule as an issue
+      pull-requests: read
+    with:
+      image: quay.io/crunchtools/trentina-demo
+      context: demo/attack-sim
+      containerfile: demo/attack-sim/Containerfile
+      boot: command
+      # No HEALTHCHECK in the image: it must answer / and /info.
+      boot-command: |
+        name=demo-gate-$$
+        podman run -d --rm --name "$name" -p 127.0.0.1:8097:8097 "$IMAGE" >/dev/null
+        trap 'podman logs "$name" 2>&1 | tail -20; podman rm -f "$name" >/dev/null' EXIT
+        for _ in $(seq 60); do
+          if curl -fs -o /dev/null http://127.0.0.1:8097/ && curl -fs -o /dev/null http://127.0.0.1:8097/info; then
+            echo "trentina-demo answers / and /info"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "trentina-demo never answered on 8097" >&2
+        exit 1
+      sign: true
+    secrets:
+      QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+      QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
+      COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+      COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
