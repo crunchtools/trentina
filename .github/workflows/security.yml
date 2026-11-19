@@ -156,6 +156,14 @@ jobs:
       contents: read
 
     steps:
+      # Registry logins go to a file under the job's temp directory (a308), never
+      # to a default path: podman, skopeo and cosign all read them from here, and
+      # the last step removes both.
+      - name: Keep registry auth inside this job
+        run: |
+          echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/auth.json" >> "$GITHUB_ENV"
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
+
       - name: Download the verified image
         uses: actions/download-artifact@v8
         with:
@@ -309,6 +317,10 @@ jobs:
               -f event_type=parent-image-updated \
               || echo "::warning::$repo was not told to rebuild; start its build by hand"
           done
+
+      - name: Drop registry auth
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/auth.json" "$RUNNER_TEMP/docker"
 
   codeql:
     name: CodeQL Analysis
