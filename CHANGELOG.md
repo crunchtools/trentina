@@ -10,6 +10,10 @@ under that name.
 
 ## [Unreleased]
 
+### Changed
+
+- Gatehouse triage now receives `review_result`, so a PR whose review job died before posting is held instead of passing.
+
 ## [6.25.0] - 2026-11-19
 
 ### Added
