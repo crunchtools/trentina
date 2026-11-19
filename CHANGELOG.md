@@ -22,6 +22,10 @@ under that name.
   index, then tags. Verify with `cosign verify --insecure-ignore-tlog --key
   crunchtools-bootc.pub quay.io/crunchtools/trentina@<digest>`.
 
+### Changed
+
+- Gatehouse triage now receives `review_result`, so a PR whose review job died before posting is held instead of passing.
+
 ## [6.25.0] - 2026-11-19
 
 ### Added
