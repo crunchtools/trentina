@@ -21,6 +21,14 @@ under that name.
   no `llm_providers` entry, and naming it there is refused. It has no
   environment key, so it is not available standalone.
 
+### Fixed
+- **Vertex judge misconfigurations fail at load, not on every call (a512).** A
+  profile that inherits `TRENTINA_MODEL_PROVIDER=vertex` with no
+  `defense.vertex` is now refused at load, and `vertex` in
+  `TRENTINA_PROVIDER_FALLBACK` is skipped with a warning for a profile that has
+  `llm_keys.vertex` but no `defense.vertex`, instead of ending the fallback
+  chain on a non-retryable error.
+
 ## [6.24.3] - 2026-11-18
 
 ### Fixed
