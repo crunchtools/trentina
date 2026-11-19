@@ -41,6 +41,7 @@ point: the escape hatch has to cost something, or it becomes the fix.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
@@ -139,11 +140,18 @@ def _collect() -> list[Snippet]:
 SNIPPETS = _collect()
 
 
+_DUMMY_ADC = json.dumps(
+    {"type": "authorized_user", "client_id": "c", "client_secret": "s", "refresh_token": "r"}
+)
+
+
 def _with_env(snippet: Snippet, monkeypatch: pytest.MonkeyPatch) -> None:
     """Satisfy every env var the snippet names. Schema is what is under test."""
     for field_form, brace_form in _ENV_REF.findall(snippet.body):
         name = field_form or brace_form
-        monkeypatch.setenv(name, f"dummy-{name.lower()}")
+        # llm_keys.vertex is parsed as a Google ADC file when profiles load.
+        value = _DUMMY_ADC if name.endswith("_ADC") else f"dummy-{name.lower()}"
+        monkeypatch.setenv(name, value)
 
 
 class TestEverySnippetWeShipLoads:

@@ -461,7 +461,7 @@ def _provider_for(profile: Profile) -> Provider:
     profile's own, so there is no fallback to anyone else's.
     """
     name, api_key, model = resolve_profile_llm(profile)
-    return get_provider(name, api_key=api_key, model=model)
+    return get_provider(name, api_key=api_key, model=model, vertex=profile.defense.vertex)
 
 
 async def _call_compress_model(

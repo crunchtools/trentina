@@ -13,7 +13,7 @@ You don't give a human-supervised IDE agent the same permissions as an autonomou
 Profiles are defined in YAML, typically at `/etc/trentina/profiles.yaml` or wherever `TRENTINA_PROFILES_PATH` points:
 
 ```yaml
-llm_providers:              # every name under llm_keys must be one of these
+llm_providers:              # every name under llm_keys must be one of these (except vertex)
   gemini:
     enabled: true
     upstream: https://generativelanguage.googleapis.com
@@ -380,7 +380,31 @@ Each profile configures its defense **policy** — never the layers' existence. 
 | `l2_threshold` | float | unset | L2 score at/above which content is flagged, in addition to the model's own MALICIOUS label. Unset, the L2 model's own threshold decides (0.7 for the default model, 0.5 for Prompt Guard 2; `CLASSIFIER_THRESHOLD` overrides it gateway-wide). Below that threshold it flags content the classifier itself labels BENIGN, so set it knowingly; at or above it, it changes nothing. The thresholds are measured, not midpoints; see `docs/benchmark.md`. |
 | `l3_prompt_pack` | path | unset | An L3 prompt pack for this profile's judge (#354). It applies to the exact (provider, model) it names and no other; checked when the profile loads. `generic` turns shipped packs off. See [L3 prompt tuning](l3-prompt-tuning.md). |
 | `audit` | bool | `true` | Write detection rows to SQLite |
-| `provider` | string | `null` | LLM provider override (`gemini`, `openai`, `anthropic`, `ollama`, `openrouter`) |
+| `provider` | string | `null` | LLM provider override (`gemini`, `openai`, `anthropic`, `ollama`, `openrouter`, `vertex`) |
+| `vertex` | map | unset | `project` and `region` for the `vertex` provider; required when `provider: vertex`. See [Gemini on Vertex AI](#gemini-on-vertex-ai-vertex) |
+
+### Gemini on Vertex AI (`vertex`)
+
+A profile's judge can run Gemini on Vertex AI, authenticated with Google OAuth rather than an API key:
+
+```yaml
+profiles:
+  reviewer:
+    auth:
+      bearer_token_env: TRENTINA_PROFILE_REVIEWER_TOKEN
+    defense:
+      provider: vertex
+      model: gemini-3.5-flash-lite
+      vertex:
+        project: my-gcp-project
+        region: global            # or a region such as us-central1
+    llm_keys:
+      vertex:
+        # the deployment sets VERTEX_ADC_FILE=/run/secrets/vertex-adc.json
+        api_key_env: VERTEX_ADC
+```
+
+The secret is the JSON of a Google Application Default Credentials file, either `authorized_user` or `service_account`. It is parsed when profiles load, so a malformed file fails startup. Trentina exchanges it for an access token, caches it and refreshes it before expiry. `vertex` is L3 only: it is not an `llm_providers` entry (the reverse proxy injects a static header and cannot do OAuth), `llm_keys.vertex` needs no such entry, and naming `vertex` under `llm_providers` fails startup. It has no environment key, so it is not available standalone; it can also serve as a `TRENTINA_PROVIDER_FALLBACK` entry for any profile that sets `defense.vertex` and `llm_keys.vertex`. No shipped prompt pack names `vertex`, so it runs on the generic prompts unless `l3_prompt_pack` names a pack for that exact (`vertex`, model).
 
 An autonomous agent runs `enforcement: block`; a human-supervised agent runs `flag`. The mode decides what a flag costs and `l2_threshold` decides how readily L2 flags, so make an agent stricter through its mode. Below the model's own threshold, `l2_threshold` flags content the classifier labels BENIGN, and under `block` each of those is a refused call (#204). `TRENTINA_ENFORCEMENT_OVERRIDE=flag` is the global kill switch for the night a block threshold misfires.
 

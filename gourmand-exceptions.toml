@@ -1223,3 +1223,17 @@ path = "src/trentina/gateway/discovery.py"
 item = "find"
 justification = "find answers find_tools (validate query, category and limit, search, shape hits); tools/config._shared_profile_facts describes a profile's backends for a consent page. The match is a validate-then-build-a-dict shape, not shared logic"
 classification = "gourmand_bug"
+
+[[exceptions]]
+check = "single_use_helpers"
+path = "tests/test_provider_vertex.py"
+pattern = "_provider"
+justification = "Not single-use: builds the VertexProvider under test at 10 call sites in the file, verified by grep; each await _provider().generate(...) inside a pytest.raises block appears not to be counted."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "conditional_wrapper"
+path = "tests/test_provider_vertex.py"
+pattern = "handle"
+justification = "httpx.MockTransport handler: one callable routes every request, so the token-endpoint vs generateContent branch is the router itself and has no call site to move to."
+classification = "by_design"

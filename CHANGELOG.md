@@ -10,6 +10,15 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+- **`vertex` L3 provider: Gemini on Vertex AI with Google OAuth.** A profile
+  sets `defense.provider: vertex`, `defense.model` and `defense.vertex`
+  (`project`, `region`, both checked at load), and holds a Google ADC file
+  (`authorized_user` or `service_account`) as `llm_keys.vertex`, delivered like
+  any other key (`api_key_env`, or `<ENV>_FILE`). `vertex` is L3 only: it needs
+  no `llm_providers` entry, and naming it there is refused. It has no
+  environment key, so it is not available standalone.
+
 ## [6.24.3] - 2026-11-18
 
 ### Fixed

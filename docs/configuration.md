@@ -143,7 +143,7 @@ shipped pack says where it stands in its `status` key.
 | `anthropic/claude-haiku-4.5` | unmeasured | | |
 
 Any other model, on any provider, runs on the generic prompts and is
-unmeasured. A judge that is not supported still works. Startup, and a
+unmeasured. That includes `vertex` ([profile setup](profiles.md#gemini-on-vertex-ai-vertex)), which no shipped pack names. A judge that is not supported still works. Startup, and a
 profile reload, log one line for each such judge a profile names:
 
 ```

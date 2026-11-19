@@ -154,7 +154,7 @@ Each model directory carries a `trentina-model.json`: its id, pinned revision, t
 
 ### Layer 3 — Quarantined LLM (Q-Agent)
 
-A quarantined LLM — `gemini-3.5-flash-lite` by default, any configured provider otherwise — that receives the **original, unmodified content** and judges it while ignoring injected instructions. It waits for L1 and L2 and is briefed with both: L1's counts by type, L2's label and score, and — unconditionally — the caveat that L2 misses attacks that need reasoning, such as social engineering and exfiltration intent, so a low score is never evidence of safety. The Q-Agent is deliberately constrained:
+A quarantined LLM — `gemini-3.5-flash-lite` by default, any configured provider otherwise (including Gemini on Vertex AI with OAuth, `defense.provider: vertex`; see [Profiles](profiles.md#gemini-on-vertex-ai-vertex)) — that receives the **original, unmodified content** and judges it while ignoring injected instructions. It waits for L1 and L2 and is briefed with both: L1's counts by type, L2's label and score, and — unconditionally — the caveat that L2 misses attacks that need reasoning, such as social engineering and exfiltration intent, so a low score is never evidence of safety. The Q-Agent is deliberately constrained:
 
 - **No tools** — can't execute actions even if manipulated
 - **No memory** — can't be poisoned across sessions
