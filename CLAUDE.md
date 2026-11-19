@@ -774,7 +774,7 @@ worked around. `scripts/gates.sh` is gone.
 |---|---|
 | `sdlc commit` (pre-commit hook) | ruff fixes, and that the push hook is installed |
 | `sdlc push` (pre-push hook) | mypy, the suite, Gourmand, Gatehouse over `origin/main...HEAD`, semgrep, pip-audit, the constitution validator, CodeQL against `.sdlc/codeql-baseline.json`. Never builds the image |
-| `sdlc ci` (the `sdlc ci` job in `security.yml`) | push's checks except Gourmand and Gatehouse, plus `image` (the build CI publishes) and `image-tests` (`tests/image/` and the L2, L3, OCR and PDF suites, run inside the image with no network) |
+| `sdlc ci` (the `sdlc ci` job in `security.yml`) | push's checks except Gourmand and Gatehouse, plus `image` (built only to test; `container.yml` publishes through container-release) and `image-tests` (`tests/image/` and the L2, L3, OCR and PDF suites, run inside the image with no network) |
 
 `sdlc <check>` runs one: `sdlc image`, `sdlc image-tests`, `sdlc mypy`.
 `SDLC_SKIP=<check>` skips one for a false positive, which must then be answered
