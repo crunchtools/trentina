@@ -23,12 +23,25 @@ env:
 jobs:
   build-and-push-quay:
     runs-on: ubuntu-latest
+    # The fleet signing contract (constitution container-release.yml, sign:
+    # true), on everything but a pull request, which pushes nothing. An empty
+    # name is no environment. Fails closed: no key, or the wrong one, and no
+    # tag moves.
+    environment: ${{ github.event_name != 'pull_request' && 'cosign-signing' || '' }}
     permissions:
       contents: read
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        if: github.event_name != 'pull_request'
+        with:
+          repository: crunchtools/constitution
+          ref: v1.51.1
+          path: .constitution
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -55,14 +68,71 @@ jobs:
             # names `:main`, which is what it was always actually tracking.
             type=ref,event=branch
 
+      # Pushed by digest, with no tag, so nothing names the image until it is
+      # signed below. The digest is the top-level one buildx pushed -- the index
+      # when it attaches provenance -- never a per-arch manifest.
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: demo/attack-sim
           file: demo/attack-sim/Containerfile
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ github.event_name != 'pull_request' && env.QUAY_IMAGE || steps.meta.outputs.tags }}
+          outputs: ${{ github.event_name != 'pull_request' && 'type=image,push-by-digest=true,name-canonical=true,push=true' || '' }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=trentina-demo
           cache-to: type=gha,mode=max,scope=trentina-demo
 
+      # cosign v2: v3 stores signatures as OCI referrers, which c/image (and so
+      # podman auto-update) cannot read; c/image does not check Rekor, so
+      # nothing is uploaded there.
+      - name: Install cosign v2.6.5
+        if: github.event_name != 'pull_request'
+        run: |
+          set -eu
+          curl -fsSLo "$RUNNER_TEMP/cosign" https://github.com/sigstore/cosign/releases/download/v2.6.5/cosign-linux-amd64
+          echo "c3b4f5410e608af03a5eb0aaac84a4313d8da131248e08ff1759ac70c79d1644  $RUNNER_TEMP/cosign" | sha256sum -c
+          install -D -m 0755 "$RUNNER_TEMP/cosign" "$RUNNER_TEMP/bin/cosign"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Sign the digest before any tag moves
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          IMAGE: ${{ env.QUAY_IMAGE }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          PUB: .constitution/keys/crunchtools-bootc.pub
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::the digest to sign is not a sha256 digest" >&2; exit 1; }
+          [ -n "$COSIGN_PRIVATE_KEY" ] || { echo "::error::no COSIGN_PRIVATE_KEY in the cosign-signing environment; no tag was moved" >&2; exit 1; }
+          cosign public-key --key env://COSIGN_PRIVATE_KEY > "$RUNNER_TEMP/secret.pub"
+          cmp -s "$RUNNER_TEMP/secret.pub" "$PUB" || { echo "::error::COSIGN_PRIVATE_KEY is not the private half of keys/crunchtools-bootc.pub" >&2; exit 1; }
+          # cosign reads the docker/login-action credentials in ~/.docker.
+          cosign sign --yes --tlog-upload=false --key env://COSIGN_PRIVATE_KEY "$IMAGE@$DIGEST"
+          cosign verify --insecure-ignore-tlog --key "$PUB" "$IMAGE@$DIGEST" >/dev/null
+          echo "::notice::signed $IMAGE@$DIGEST"
+
+      # The signed digest, copied to each tag. `--preserve-digests` refuses any
+      # copy that would change the manifest, and the check after it fails the
+      # job if a tag resolves to anything else.
+      - name: Tag the signed digest
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE: ${{ env.QUAY_IMAGE }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -eu
+          auth="$HOME/.docker/config.json"
+          for ref in $TAGS; do
+            skopeo copy --all --preserve-digests --authfile "$auth" \
+              "docker://$IMAGE@$DIGEST" "docker://$ref"
+            got=$(skopeo inspect --raw --authfile "$auth" "docker://$ref" | sha256sum | cut -d' ' -f1)
+            [ "sha256:$got" = "$DIGEST" ] || {
+              echo "$ref resolves to sha256:$got, not the signed $DIGEST" >&2
+              exit 1
+            }
+          done
+          echo "::notice::tagged $IMAGE@$DIGEST as $(echo $TAGS)"

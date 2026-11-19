@@ -10,6 +10,18 @@ under that name.
 
 ## [Unreleased]
 
+### Security
+- **The trentina and trentina-demo images are cosign-signed (a598).** Every
+  job that publishes either image runs in the `cosign-signing` environment and
+  signs the digest with the fleet key before any tag moves, the contract the
+  constitution's `container-release.yml` (`sign: true`) holds the rest of the
+  fleet to: cosign v2.6.5, sha256-checked, and a key whose public half is not
+  `keys/crunchtools-bootc.pub` refuses the run. main's publish now pushes to
+  `sha-<commit>`, signs, then copies to `main`; a release verifies (or signs)
+  the promoted digest before its tags move; the demo pushes by digest, signs the
+  index, then tags. Verify with `cosign verify --insecure-ignore-tlog --key
+  crunchtools-bootc.pub quay.io/crunchtools/trentina@<digest>`.
+
 ## [6.25.0] - 2026-11-19
 
 ### Added

@@ -138,10 +138,22 @@ jobs:
     runs-on: ubuntu-latest
     needs: sdlc
     if: github.event_name == 'push'
+    # The fleet signing contract (constitution container-release.yml, sign:
+    # true): only a job in this environment holds the cosign key, and it signs
+    # the digest before `main` moves. Fails closed -- no key, or the wrong one,
+    # and nothing is published.
+    environment: cosign-signing
     permissions:
       contents: read
 
     steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: crunchtools/constitution
+          ref: v1.51.1
+          path: .constitution
+          persist-credentials: false
+
       - name: Download the verified image
         uses: actions/download-artifact@v8
         with:
@@ -185,6 +197,7 @@ jobs:
           printf '%s' "$QUAY_PASSWORD" | podman login -u "$QUAY_USERNAME" --password-stdin quay.io
 
       - name: Publish to Quay.io
+        id: push
         env:
           QUAY: ${{ env.QUAY_IMAGE }}
           SHA: ${{ github.sha }}
@@ -195,15 +208,67 @@ jobs:
           # both, so a merge was a fleet-wide deploy: on 2026-11-07 unreleased
           # 6.11.0 reached production at 02:01 through podman-auto-update,
           # climbed to the unit's 4g cap and was SIGKILLed (RT#1559).
-          podman tag localhost/trentina:sdlc "$QUAY:main"
-          podman push --format v2s2 --digestfile "$RUNNER_TEMP/digest" "$QUAY:main"
+          #
+          # Pushed to `sha-<commit>` first, as the fleet's candidates are: nothing
+          # runs that tag, so `main` moves only after the digest is signed below.
+          podman push --format v2s2 --digestfile "$RUNNER_TEMP/digest" \
+            localhost/trentina:sdlc "docker://$QUAY:sha-$SHA"
           # The digest the registry stored for what THIS job pushed, recorded
           # below for `promote`. Read from the push itself, not from asking the
           # registry what :main is, which any later push can change.
           quay=$(cat "$RUNNER_TEMP/digest")
           printf '{"sha":"%s","quay":"%s"}\n' "$SHA" "$quay" > published.json
           cat published.json
-          echo "::notice::published $quay (quay) for $SHA"
+          echo "digest=$quay" >> "$GITHUB_OUTPUT"
+          echo "::notice::pushed $quay (quay) for $SHA"
+
+      # cosign v2: v3 stores signatures as OCI referrers, which c/image (and so
+      # podman auto-update) cannot read; c/image does not check Rekor, so
+      # nothing is uploaded there.
+      - name: Install cosign v2.6.5
+        run: |
+          set -eu
+          curl -fsSLo "$RUNNER_TEMP/cosign" https://github.com/sigstore/cosign/releases/download/v2.6.5/cosign-linux-amd64
+          echo "c3b4f5410e608af03a5eb0aaac84a4313d8da131248e08ff1759ac70c79d1644  $RUNNER_TEMP/cosign" | sha256sum -c
+          install -D -m 0755 "$RUNNER_TEMP/cosign" "$RUNNER_TEMP/bin/cosign"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Sign the digest before main moves
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
+          IMAGE: ${{ env.QUAY_IMAGE }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          PUB: .constitution/keys/crunchtools-bootc.pub
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::the digest to sign is not a sha256 digest" >&2; exit 1; }
+          [ -n "$COSIGN_PRIVATE_KEY" ] || { echo "::error::no COSIGN_PRIVATE_KEY in the cosign-signing environment; main was not moved" >&2; exit 1; }
+          cosign public-key --key env://COSIGN_PRIVATE_KEY > "$RUNNER_TEMP/secret.pub"
+          cmp -s "$RUNNER_TEMP/secret.pub" "$PUB" || { echo "::error::COSIGN_PRIVATE_KEY is not the private half of keys/crunchtools-bootc.pub" >&2; exit 1; }
+          printf '%s' "$QUAY_PASSWORD" | cosign login quay.io -u "$QUAY_USERNAME" --password-stdin
+          cosign sign --yes --tlog-upload=false --key env://COSIGN_PRIVATE_KEY "$IMAGE@$DIGEST"
+          cosign verify --insecure-ignore-tlog --key "$PUB" "$IMAGE@$DIGEST" >/dev/null
+          echo "::notice::signed $IMAGE@$DIGEST"
+
+      # The signed digest, copied: `--preserve-digests` refuses any copy that
+      # would change the manifest, and the check after it fails the job if
+      # `main` resolves to anything else.
+      - name: Move main to the signed digest
+        env:
+          QUAY: ${{ env.QUAY_IMAGE }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -eu
+          skopeo copy --all --preserve-digests "docker://$QUAY@$DIGEST" "docker://$QUAY:main"
+          got=$(skopeo inspect --raw "docker://$QUAY:main" | sha256sum | cut -d' ' -f1)
+          [ "sha256:$got" = "$DIGEST" ] || {
+            echo "$QUAY:main resolves to sha256:$got, not the signed $DIGEST" >&2
+            exit 1
+          }
+          echo "::notice::published $DIGEST (quay) as main"
 
       # `promote` releases exactly these digests. It used to resolve `:main` and
       # trust the labels on whatever it found -- labels the writer chooses, on a

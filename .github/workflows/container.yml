@@ -37,6 +37,9 @@ jobs:
     name: Promote the verified digest
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    # The fleet signing contract (constitution container-release.yml, sign:
+    # true). Fails closed: no key, or the wrong one, and no tag moves.
+    environment: cosign-signing
     permissions:
       contents: read
       checks: read
@@ -44,6 +47,13 @@ jobs:
       actions: read    # resolve security.yml's own run for this commit
 
     steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: crunchtools/constitution
+          ref: v1.51.1
+          path: .constitution
+          persist-credentials: false
+
       - name: Log in to Quay.io
         uses: docker/login-action@v4
         with:
@@ -296,6 +306,40 @@ jobs:
             echo "minor=${version%.*}"
           } >> "$GITHUB_OUTPUT"
 
+      # Signed before any release tag moves. main's publish already signed this
+      # digest, so normally this only verifies; a digest it did not sign is
+      # signed here. The key is checked either way, so a missing or wrong key
+      # refuses the release rather than skipping the check.
+      - name: Install cosign v2.6.5
+        run: |
+          set -eu
+          curl -fsSLo "$RUNNER_TEMP/cosign" https://github.com/sigstore/cosign/releases/download/v2.6.5/cosign-linux-amd64
+          echo "c3b4f5410e608af03a5eb0aaac84a4313d8da131248e08ff1759ac70c79d1644  $RUNNER_TEMP/cosign" | sha256sum -c
+          install -D -m 0755 "$RUNNER_TEMP/cosign" "$RUNNER_TEMP/bin/cosign"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Sign the digest being promoted
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          IMAGE: ${{ env.QUAY_IMAGE }}
+          DIGEST: ${{ steps.verified.outputs.quay_digest }}
+          PUB: .constitution/keys/crunchtools-bootc.pub
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::the digest to sign is not a sha256 digest" >&2; exit 1; }
+          [ -n "$COSIGN_PRIVATE_KEY" ] || { echo "::error::no COSIGN_PRIVATE_KEY in the cosign-signing environment; nothing was promoted" >&2; exit 1; }
+          cosign public-key --key env://COSIGN_PRIVATE_KEY > "$RUNNER_TEMP/secret.pub"
+          cmp -s "$RUNNER_TEMP/secret.pub" "$PUB" || { echo "::error::COSIGN_PRIVATE_KEY is not the private half of keys/crunchtools-bootc.pub" >&2; exit 1; }
+          # cosign reads the docker/login-action credentials in ~/.docker.
+          if cosign verify --insecure-ignore-tlog --key "$PUB" "$IMAGE@$DIGEST" >/dev/null 2>&1; then
+            echo "::notice::$IMAGE@$DIGEST is already signed (main's publish signed it)"
+          else
+            cosign sign --yes --tlog-upload=false --key env://COSIGN_PRIVATE_KEY "$IMAGE@$DIGEST"
+          fi
+          cosign verify --insecure-ignore-tlog --key "$PUB" "$IMAGE@$DIGEST" >/dev/null
+          echo "::notice::signed $IMAGE@$DIGEST"
+
       # The released tags name the SAME digest publish recorded. Copied within
       # one repository, so every blob is already there and nothing is
       # re-uploaded. Not `imagetools create`: given a single image manifest
@@ -363,4 +407,6 @@ jobs:
             echo "| Tag | Digest |"
             echo "|---|---|"
             echo "| \`$QUAY_IMAGE:$VERSION\` | \`$QUAY_DIGEST\` |"
+            echo
+            echo "Signed: \`cosign verify --insecure-ignore-tlog --key crunchtools-bootc.pub $QUAY_IMAGE@$QUAY_DIGEST\`"
           } >> "$GITHUB_STEP_SUMMARY"
