@@ -210,7 +210,7 @@ jobs:
           context: export
           file: export/Containerfile
           push: true
-          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          tags: quay.io/crunchtools/trentina-l2-model:${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
