@@ -152,3 +152,58 @@ def test_loader_refuses_unusable_vertex_credential_at_load():
     with pytest.raises(ProfileConfigError) as exc:
         _check_vertex_credentials("p", profile)
     assert "hunter2" not in str(exc.value)
+
+
+def _env_judged(monkeypatch, provider: str, fallback: str = "") -> None:
+    """TRENTINA_MODEL_PROVIDER / TRENTINA_PROVIDER_FALLBACK, on a fresh config."""
+    import trentina.config as cfg_mod
+
+    monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", provider)
+    monkeypatch.setenv("TRENTINA_PROVIDER_FALLBACK", fallback)
+    monkeypatch.setattr(cfg_mod, "_config", None)
+
+
+def _bare_profile(**defense) -> Profile:
+    return Profile(
+        name="p",
+        auth=AuthConfig(bearer_token_env="T"),
+        defense=DefenseConfig(**defense),
+        llm_keys={
+            "vertex": LlmKeyOverride(api_key=SecretStr(ADC)),
+            "gemini": LlmKeyOverride(api_key=SecretStr("k")),
+        },
+    )
+
+
+def test_loader_refuses_inherited_vertex_judge_without_target(monkeypatch):
+    from trentina.gateway.loader import _check_vertex_judges
+
+    _env_judged(monkeypatch, "vertex")
+    with pytest.raises(ProfileConfigError, match=r"TRENTINA_MODEL_PROVIDER.*defense\.vertex"):
+        _check_vertex_judges({"p": _bare_profile()})
+    _check_vertex_judges({"p": _bare_profile(vertex=TARGET.model_dump())})
+    _check_vertex_judges({"p": _bare_profile(provider="gemini")})
+
+
+def test_loader_ignores_vertex_target_when_env_judge_is_not_vertex(monkeypatch):
+    from trentina.gateway.loader import _check_vertex_judges
+
+    _env_judged(monkeypatch, "gemini")
+    _check_vertex_judges({"p": _bare_profile()})
+
+
+def test_fallback_skips_vertex_without_target(monkeypatch, caplog):
+    from trentina.quarantine.providers import get_fallback_providers
+
+    _env_judged(monkeypatch, "gemini", "vertex,gemini")
+    chain = get_fallback_providers(_bare_profile())
+    assert [name for name, _key in chain] == ["gemini"]
+    assert "defense.vertex" in caplog.text
+
+
+def test_fallback_keeps_vertex_with_target(monkeypatch):
+    from trentina.quarantine.providers import get_fallback_providers
+
+    _env_judged(monkeypatch, "gemini", "vertex")
+    chain = get_fallback_providers(_bare_profile(vertex=TARGET.model_dump()))
+    assert [name for name, _key in chain] == ["vertex"]

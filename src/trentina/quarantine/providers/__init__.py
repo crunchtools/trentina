@@ -215,7 +215,8 @@ def get_fallback_providers(profile: Profile) -> list[tuple[str, SecretStr | None
     """Resolve the configured fallback chain to (provider_name, api_key) pairs.
 
     Skips a provider the calling profile has no key for — a warning says the
-    chain is shorter than configured — except ollama, which is keyless.
+    chain is shorter than configured — except ollama, which is keyless; and
+    vertex when the profile has no ``defense.vertex`` to send it to.
     Standalone the profile is the synthesized operator, whose ``llm_keys``
     mirror the environment, so the chain is the global one it always was.
 
@@ -236,6 +237,14 @@ def get_fallback_providers(profile: Profile) -> list[tuple[str, SecretStr | None
             logger.warning(
                 "provider fallback: skipping %r — no key in profile %r",
                 name,
+                profile.name,
+            )
+            continue
+        if name == "vertex" and profile.defense.vertex is None:
+            # Built, it would raise the non-retryable "needs defense.vertex"
+            # and end the chain on a primary's 429 instead of passing it on.
+            logger.warning(
+                "provider fallback: skipping 'vertex' — profile %r has no defense.vertex",
                 profile.name,
             )
             continue

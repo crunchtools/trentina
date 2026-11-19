@@ -1324,6 +1324,7 @@ def _check_judges(registry: dict[str, Profile]) -> None:
     """
     from .service import judge_of
 
+    _check_vertex_judges(registry)
     for name in keyless_profiles(registry):
         provider, _model = judge_of(registry[name])
         logger.warning(
@@ -1337,6 +1338,27 @@ def _check_judges(registry: dict[str, Profile]) -> None:
             provider,
             provider,
         )
+
+
+def _check_vertex_judges(registry: dict[str, Profile]) -> None:
+    """Refuse a profile whose L3 runs on vertex with no ``defense.vertex``.
+
+    ``DefenseConfig`` refuses ``provider: vertex`` without a target, but a
+    profile that leaves ``defense.provider`` unset inherits
+    TRENTINA_MODEL_PROVIDER, which only the loader can see. Unrefused, every
+    L3 call that profile made would fail at runtime.
+    """
+    from .service import judge_of
+
+    for name, profile in registry.items():
+        provider, _model = judge_of(profile)
+        if provider == "vertex" and profile.defense.vertex is None:
+            raise ProfileConfigError(
+                f"Profile {name!r} judges with provider 'vertex' (from "
+                "TRENTINA_MODEL_PROVIDER) but has no defense.vertex (project, "
+                "region). Add defense.vertex, or set defense.provider to another "
+                "provider"
+            )
 
 
 def _check_operator(registry: dict[str, Profile], service_identity: str | None) -> None:
