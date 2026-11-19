@@ -40,7 +40,7 @@ jobs:
 
   container:
     needs: version
-    uses: crunchtools/constitution/.github/workflows/container-release.yml@v1.51.0
+    uses: crunchtools/constitution/.github/workflows/container-release.yml@v1.53.0
     permissions:
       contents: read
       issues: write   # the alert job files a failed schedule as an issue
