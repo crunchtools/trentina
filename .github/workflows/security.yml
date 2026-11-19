@@ -34,6 +34,15 @@ permissions:
 # the same repository back. Quay.io is the only registry (RT#1550).
 env:
   QUAY_IMAGE: quay.io/crunchtools/trentina
+  # The fleet's cosign public key, crunchtools/constitution keys/crunchtools-bootc.pub
+  # (v1.51.1). Copied rather than checked out: the constitution validator refuses a
+  # checkout of crunchtools/constitution outside its own reusable workflows. If the
+  # fleet key rotates, the sign step's key check fails closed until this is updated.
+  COSIGN_PUBLIC_KEY: |
+    -----BEGIN PUBLIC KEY-----
+    MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5TlIf0f5VMBaCLJGtmh9fL3C/xYM
+    nHVNg0KnBqqs/x+WThX8zEKaGmiZ2SM5336mPfJKZl68/lXBnoWlU0E9Tg==
+    -----END PUBLIC KEY-----
 
 jobs:
   dependency-audit:
@@ -147,13 +156,6 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v7
-        with:
-          repository: crunchtools/constitution
-          ref: v1.51.1
-          path: .constitution
-          persist-credentials: false
-
       - name: Download the verified image
         uses: actions/download-artifact@v8
         with:
@@ -241,9 +243,10 @@ jobs:
           QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
           IMAGE: ${{ env.QUAY_IMAGE }}
           DIGEST: ${{ steps.push.outputs.digest }}
-          PUB: .constitution/keys/crunchtools-bootc.pub
         run: |
           set -euo pipefail
+          PUB="$RUNNER_TEMP/crunchtools-bootc.pub"
+          printf '%s' "$COSIGN_PUBLIC_KEY" > "$PUB"
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::the digest to sign is not a sha256 digest" >&2; exit 1; }
           [ -n "$COSIGN_PRIVATE_KEY" ] || { echo "::error::no COSIGN_PRIVATE_KEY in the cosign-signing environment; main was not moved" >&2; exit 1; }
           cosign public-key --key env://COSIGN_PRIVATE_KEY > "$RUNNER_TEMP/secret.pub"
