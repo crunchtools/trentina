@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.25.0] - 2026-11-19
+
 ### Added
 - **`vertex` L3 provider: Gemini on Vertex AI with Google OAuth.** A profile
   sets `defense.provider: vertex`, `defense.model` and `defense.vertex`
