@@ -29,7 +29,7 @@ dependencies = [
     # per-profile backend grants itself (#479), with its own envelope rather
     # than fastmcp's store, so it must not depend on fastmcp keeping either.
     "cryptography>=44",
-    "py-key-value-aio>=0.4.6,<0.5",
+    "py-key-value-aio>=0.4.6,<0.6",
     # petit, as a library — preprocess/petit.py's line grouping.
     #
     # The DISTRIBUTION is petit-log-crunchtools; the IMPORT is `petit`. It has
