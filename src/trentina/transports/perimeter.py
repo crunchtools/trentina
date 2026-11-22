@@ -240,7 +240,10 @@ def _bind_git(asked: Binding) -> Bound | None:
             name=asked.name,
             type="git",
             origins={"origin": Origin(remote.host)},
-            options={"hidden_refs": tuple(remote.hidden_refs)},
+            # What the remote hides, less what this profile's grant shows.
+            options={
+                "hidden_refs": tuple(p for p in remote.hidden_refs if p not in lists.show_refs)
+            },
         ),
         grant=Grant(
             origins=frozenset({"origin"}),
