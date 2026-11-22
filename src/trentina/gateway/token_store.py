@@ -18,18 +18,30 @@ there is no path to validate and no traversal to defend. The name's shape is
 what makes the join safe, so this reuses ``key_store``'s shape rather than
 inventing a second one.
 
+A token is stored as its SHA-256 digest, ``sha256:<64 hex>``, never as the
+token: the plaintext exists only in the one ``mint`` return, which the operator
+hands to the agent. A token is 256 bits of randomness, so an unsalted digest
+cannot be searched, and the gateway only ever needs to compare, not recall. A
+file left in the old plaintext form is migrated to a digest on first load
+(``read_digest``).
+
 The store lives beside the key store and the audit database — ``/data`` in the
 container — which ``tools/confine.py`` refuses to every file tool.
 """
 
 from __future__ import annotations
 
+import hashlib
+import logging
+import os
+import re
 import secrets
 from pathlib import Path
 
 from ..config import get_config
-from ..logsafe import hold
 from . import secret_file
+
+logger = logging.getLogger(__name__)
 
 #: The lead-in every minted token carries. An opaque random string has no shape
 #: a scrubber could recognise, unlike a PEM; this is what gives it one, so
@@ -39,6 +51,9 @@ MINTED_PREFIX = "trt_"
 
 #: 32 bytes, url-safe. The token is the whole credential for a profile.
 _TOKEN_BYTES = 32
+
+_DIGEST_PREFIX = b"sha256:"
+_DIGEST_RE = re.compile(r"^sha256:([0-9a-f]{64})$")
 
 
 def tokens_dir() -> Path:
@@ -60,34 +75,87 @@ def ensure_tokens_dir() -> Path:
     return secret_file.private_dir("tokens")
 
 
+def _encode(digest: bytes) -> bytes:
+    return _DIGEST_PREFIX + digest.hex().encode("ascii") + b"\n"
+
+
 def mint(name: str) -> str:
-    """Write a new bearer token under ``name``; return it.
+    """Write the digest of a new bearer token under ``name``; return the token.
 
     ``secret_file.write_once`` is what refuses an existing name, so a token in
     use is never replaced underneath a live profile; rotation is a new name.
 
-    Unlike ``key_store.mint``, the value IS passed to ``logsafe.hold``. A
-    private key is held out of every record by pattern and nothing retains it
-    after the write; a bearer token is retained in memory for the gateway's
-    lifetime anyway — ``auth.verify_bearer`` compares against it on every
-    request — so holding it costs nothing and covers the one place a shape
-    might not.
+    Only the digest reaches disk. The value is NOT passed to ``logsafe.hold``:
+    nothing retains it after this return, and ``credential_shapes`` recognises
+    the ``trt_`` lead-in in any log record, so there is nothing to hold.
     """
     ensure_tokens_dir()
     path = token_path(name)
     token = MINTED_PREFIX + secrets.token_urlsafe(_TOKEN_BYTES)
-    secret_file.write_once(path, token.encode("utf-8"))
-    hold(token, "PROFILE_TOKEN")
+    digest = hashlib.sha256(token.encode("utf-8")).digest()
+    secret_file.write_once(path, _encode(digest))
     return token
 
 
-def read_token(name: str) -> str:
-    """The stored token for ``name``, or raise ``OSError``.
+def _read_bytes(path: Path) -> bytes:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as fh:
+        return fh.read()
+
+
+def _parse(raw: bytes) -> bytes | None:
+    match = _DIGEST_RE.match(raw.decode("utf-8", errors="replace").strip())
+    return bytes.fromhex(match.group(1)) if match else None
+
+
+def _migrate(path: Path, legacy: bytes) -> bytes:
+    """Replace a plaintext token file with its digest, crash-safely.
+
+    The backup goes first so the plaintext is never the only copy at the moment
+    of the rename. A crash before the rename leaves the original intact and the
+    rerun redoes this; a crash after it leaves a ``.bak`` the next successful
+    read removes.
+    """
+    digest = hashlib.sha256(legacy.decode("utf-8").strip().encode("utf-8")).digest()
+    bak = path.with_name(path.name + ".bak")
+    secret_file.replace_atomically(bak, legacy)
+    secret_file.replace_atomically(path, _encode(digest))
+    _confirm_digest(path, digest)
+    bak.unlink(missing_ok=True)
+    return digest
+
+
+def _confirm_digest(path: Path, digest: bytes) -> None:
+    """Refuse to drop the backup unless ``path`` now reads back as ``digest``."""
+    if _parse(_read_bytes(path)) != digest:
+        raise OSError(f"token {path.name!r}: migration did not read back as a digest")
+
+
+def read_digest(name: str) -> bytes:
+    """The stored SHA-256 of the token ``name`` (32 raw bytes), or raise.
 
     Read on every load and every reload, which is what makes a token minted
-    after startup take effect without one. Held on the way out for the same
-    reason ``mint`` holds it.
+    after startup take effect without one. A legacy plaintext file is migrated
+    here, on first load. A successful read of a digest file also removes a
+    leftover ``.bak`` or ``.staged``: that is the crash recovery.
+
+    Raises:
+        OSError: the file is missing or unreadable.
+        ValueError: the file is empty, or starts like a digest and is not one.
     """
-    token = token_path(name).read_text(encoding="utf-8").strip()
-    hold(token, "PROFILE_TOKEN")
-    return token
+    path = token_path(name)
+    raw = _read_bytes(path)
+    digest = _parse(raw)
+    if digest is None:
+        if not raw.strip():
+            raise ValueError("is empty")
+        # A damaged digest is not a plaintext token: migrating it would make
+        # the digest's own text a bearer that authenticates.
+        if raw.strip().startswith(_DIGEST_PREFIX):
+            raise ValueError("holds a malformed digest")
+        digest = _migrate(path, raw)
+        logger.warning("token_store: migrated token %r from plaintext to a digest", name)
+        return digest
+    for suffix in (".bak", ".staged", ".bak.staged"):
+        path.with_name(path.name + suffix).unlink(missing_ok=True)
+    return digest

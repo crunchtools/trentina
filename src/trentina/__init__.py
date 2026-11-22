@@ -107,6 +107,11 @@ def main() -> None:
                 # Where the CONNECT listener binds if a profile turns out to
                 # have client_egress; the server's lifespan starts it (#442).
                 configure_listeners(args.host, args.egress_port)
+                # Before the first profile load, which reads the sealed stores,
+                # and before the env scrub: the KEK is read once, here (#868).
+                from .gateway.at_rest import configure as configure_at_rest
+
+                configure_at_rest()
                 _run_with_gateway(mcp, host=args.host, port=args.port, log_level=log_level)
             else:
                 mcp.run(

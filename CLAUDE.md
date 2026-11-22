@@ -125,6 +125,13 @@ uv run trentina
   least 32 characters (`openssl rand -base64 48`). Read once at startup by
   `gateway/backend_tokens.py`, then scrubbed. Unset: those backends report
   "needs auth" and nothing is stored. Rotating it drops every grant.
+- `TRENTINA_SECRETS_KEK` / `TRENTINA_SECRETS_KEK_FILE` — seals `/data/keys` and
+  `/data/secrets` (#868, `gateway/at_rest.py`): one key per line, newest first,
+  each at least 32 characters; a `MultiFernet`, so a new first line reseals on
+  the next start. Read once by `at_rest.configure` before the first profile
+  load, then scrubbed. Unset: plaintext, and a WARNING every start;
+  `TRENTINA_REQUIRE_HARDENED` refuses instead. See
+  `docs/deployment-hardening.md#sealing-data-868`.
 - `TRENTINA_REGISTRATION_TTL_DAYS` — lifetime of a PROMOTED registration
   (default 90). A new one is provisional for an hour; a token exchange
   promotes it and every later exchange re-stamps it. See `gateway/oauth_store.py`.
