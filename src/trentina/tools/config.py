@@ -672,11 +672,25 @@ def _credential_facts(added: dict[str, str]) -> dict[str, str]:
     """What a person needs to see about a credential allowance: which tool, which kinds."""
     if len(added) > _MAX_PROPOSAL_ROWS:
         raise _too_many("credential allowances", len(added))
+    unshowable = sorted(
+        where for where, what in added.items() if config_guard.UNSHOWABLE_DESTINATION in what
+    )
+    if unshowable:
+        # As for an egress grant: an approval must say where the keys would go.
+        raise ConfigWriteError(
+            {
+                "error": (
+                    f"these credential allowances are on a backend with no destination a "
+                    f"person could check ({', '.join(unshowable)}), so nothing was changed"
+                )
+            }
+        )
     return {
         **dict(sorted(added.items())),
         "What this means": (
             "The gateway refuses a tool call whose arguments carry a credential. These "
-            "tools will be able to send the kinds listed to their backend, as written."
+            "tools will be able to send the kinds listed, as written, to the destination "
+            "named on each row. Check that destination: it is where the keys go."
         ),
     }
 

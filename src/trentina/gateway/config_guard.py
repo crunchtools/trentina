@@ -614,9 +614,28 @@ def credentials_widened(before: dict[str, Profile], after: dict[str, Profile]) -
                     shown = "every tool" if tool == "*" else tool
                     sent = "any credential" if new == ["*"] else ", ".join(new)
                     added[f"credentials_allowed:{name}.{backend_name}.{tool}"] = (
-                        f"{sent} may leave in the arguments of {shown}"
+                        f"{sent} may leave in the arguments of {shown}, "
+                        f"sent to {backend_destination(backend)}"
                     )
     return added
+
+
+def backend_destination(backend: Any) -> str:
+    """Where a backend's calls go, as a person checks it: origin, transport, carrier.
+
+    Shown in every allowance row so that the row, and so the approval's digest,
+    changes with the destination: an approval opened for one host cannot be
+    spent on a write restaged to another. The origin only, as for an egress
+    grant, since a backend url may carry a credential in its userinfo or query;
+    a ``unix://`` socket has no host, so its path is the destination.
+    """
+    if str(backend.url).startswith("unix://"):
+        origin = "unix://" + urlparse(str(backend.url)).path
+    else:
+        origin = _origin_only(backend.url)
+        if origin == UNSHOWABLE_DESTINATION:
+            return UNSHOWABLE_DESTINATION
+    return f"{origin} (transport {backend.transport}, carrier {backend.carrier or 'from the url'})"
 
 
 def widened(before: dict[str, str], after: dict[str, str]) -> dict[str, str]:

@@ -2412,6 +2412,7 @@ class TestAllowingACredentialOut:
         shown = result["shown_for_approval"]
         assert shown["credentials_allowed:ag.web.fetch_tool"] == (
             "github_token may leave in the arguments of fetch_tool"
+            ", sent to internal://web (transport mcp, carrier from the url)"
         )
         assert gateway.read_text(encoding="utf-8") == before
 
@@ -2425,6 +2426,7 @@ class TestAllowingACredentialOut:
         assert result["awaiting"] == "credential allowance"
         assert result["shown_for_approval"]["credentials_allowed:ag.web.*"] == (
             "any credential may leave in the arguments of every tool"
+            ", sent to internal://web (transport mcp, carrier from the url)"
         )
 
     async def test_approving_it_persists_it(self, gateway: pathlib.Path) -> None:
