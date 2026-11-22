@@ -52,6 +52,7 @@ import base64
 import json
 import math
 import re
+import threading
 from itertools import accumulate
 from typing import TYPE_CHECKING
 from urllib.parse import unquote
@@ -72,11 +73,12 @@ under 2.5; at 3.0 it would be 14%, and a real fragment would go unseen)."""
 _BLOCK = FRAGMENT_MIN // 2
 
 MAX_BLOCKS = 32
-"""Blocks searched per token. A longer body (a PEM key) is searched by this
-many, evenly spaced, so the cost of a token is bounded however long it is: a
-piece is found when it covers one, so the shortest piece always found grows
-with the token, about ``len(body) / MAX_BLOCKS + FRAGMENT_MIN`` characters (a
-1,600-character key body: about 66)."""
+"""Blocks searched per token. A longer token (a PEM key) is searched by this
+many, evenly spaced over its secret body, so the cost of a token is bounded
+however long it is. A piece is found when it covers one, so the shortest piece
+always found grows with the token: at most ``len(token) / MAX_BLOCKS +
+FRAGMENT_MIN`` characters as written, an RSA-2048 PEM 69 and an RSA-4096 PEM
+118. A shorter piece is found only when it happens to cover a kept block."""
 
 # Fixed lead-ins of vendor credentials: every token of the kind starts with one,
 # so a window over it matches somebody else's. Longest match wins. The shapes
@@ -516,14 +518,18 @@ def _has_fragment(hay: str, token: str, starts: frozenset[int], block: str, at: 
 
 _MATCHERS: dict[frozenset[str], TokenMatcher] = {}
 _MATCHERS_MAX = 64
+_MATCHERS_LOCK = threading.Lock()
 
 
 def matcher_for(tokens: frozenset[str]) -> TokenMatcher:
     """The matcher for a token set, built once. For tokens that outlive a call
     (a profile's honeytokens); a per-call token builds its own."""
-    matcher = _MATCHERS.get(tokens)
-    if matcher is None:
-        if len(_MATCHERS) >= _MATCHERS_MAX:
-            _MATCHERS.pop(next(iter(_MATCHERS)))
-        matcher = _MATCHERS[tokens] = TokenMatcher(tokens)
-    return matcher
+    # Called from worker threads (``asyncio.to_thread``): the evict and the
+    # insert are one step, or two threads evict the same first key.
+    with _MATCHERS_LOCK:
+        matcher = _MATCHERS.get(tokens)
+        if matcher is None:
+            if len(_MATCHERS) >= _MATCHERS_MAX:
+                _MATCHERS.pop(next(iter(_MATCHERS)))
+            matcher = _MATCHERS[tokens] = TokenMatcher(tokens)
+        return matcher
