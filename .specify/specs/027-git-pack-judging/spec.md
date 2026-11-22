@@ -2,7 +2,7 @@
 
 > **Spec ID:** 027-git-pack-judging
 > **Status:** Draft, rulings recorded
-> **Version:** 0.3.1
+> **Version:** 0.3.2
 > **Author:** Scott McCarty
 > **Date:** 2026-11-22
 > **Ticket:** #453 (known gap 29), Ashigaru a1054
@@ -275,6 +275,10 @@ Gap 29 narrows to these, each stated in the docs when its phase lands:
   wider than a lead-in is the case this misses.
 - **Instructions split across files**, and authorship (a judged commit is
   still not one the owner wrote).
+- **Opaque decodable streams.** A binary with no magic and no strings (raw
+  deflate, brotli, a bare encrypted stream) is judged as its label, so an
+  instruction an agent could decode with a hint from elsewhere is unread
+  ([#911](https://github.com/crunchtools/trentina/issues/911)).
 - **Push contents**, beyond the credential scan.
 - **Pending under `flag`**: objects delivered before their verdict, named as
   pending and judged after.
