@@ -97,20 +97,39 @@ AUTH_DETECT = re.compile(
     r"\b(?:Bearer|Basic)\s+([A-Za-z0-9+/=._~-]{20,}+)(?![A-Za-z0-9+/=._~-])", re.IGNORECASE
 )
 
-#: Prose shapes a token never has, each matched against the whole token: a
-#: path ending in a file extension (``src/trentina/guards.py``); an identifier
-#: of lowercase words joined by ``_``, ``-`` or ``.``
-#: (``credentials_allowed_well_formed``), each part starting with a letter; and
-#: camelCase or PascalCase words of three letters or more
-#: (``credentialsAllowedWellFormed``). Every part is a WORD, letters first,
-#: which is what a random token is not: a UUID's segments are hex and mostly
-#: start with a digit, and a token_urlsafe value has capitals mid-run.
-_PROSE_TOKEN = re.compile(
-    r"(?:[^/]*/)+[^/]*\.[a-z]{1,5}"
-    r"|[a-z]{2,}(?:[_.-][a-z][a-z0-9]*)+"
-    r"|[a-z]{3,}(?:[A-Z][a-z]{2,})+"
-    r"|(?:[A-Z][a-z]{2,}){2,}"
-)
+#: A word part of an identifier, and a camel hump: letters first, which is what
+#: a random token's pieces are not.
+_WORD_PART = re.compile(r"[a-z][a-z0-9]*")
+_HUMP = re.compile(r"[A-Z][a-z]{2,}")
+_FILE_EXTENSION = re.compile(r"[a-z]{1,5}")
+_SEPARATOR = re.compile(r"[_.-]")
+_BEFORE_CAPITAL = re.compile(r"(?=[A-Z])")
+
+
+def _is_prose(token: str) -> bool:
+    """Whether ``token`` is a shape prose has and a random token does not.
+
+    A path ending in a file extension (``src/trentina/guards.py``); lowercase
+    words joined by ``_``, ``-`` or ``.`` (``credentials_allowed_well_formed``);
+    or camelCase or PascalCase words of three letters or more
+    (``credentialsAllowedWellFormed``). A UUID's segments are hex and mostly start
+    with a digit, and a 43-character token_urlsafe value has capitals mid-run,
+    so each matches one of these with negligible odds. Split and checked part by
+    part rather than with one pattern, so there is no nested quantifier to
+    backtrack.
+    """
+    stem, dot, extension = token.rpartition(".")
+    if dot and "/" in stem and _FILE_EXTENSION.fullmatch(extension):
+        return True
+    words = _SEPARATOR.split(token)
+    if len(words) > 1 and words[0].isalpha() and all(_WORD_PART.fullmatch(w) for w in words):
+        return len(words[0]) >= 2
+    head, *humps = _BEFORE_CAPITAL.split(token)
+    if not humps or not all(_HUMP.fullmatch(hump) for hump in humps):
+        return False
+    if head == "":
+        return len(humps) >= 2
+    return len(head) >= 3 and head.isalpha() and head.islower()
 
 
 def _has_digit_or_capital(match: re.Match[str]) -> bool:
@@ -125,7 +144,7 @@ def _looks_like_a_token(match: re.Match[str]) -> bool:
         + any(c.isupper() for c in token)
         + any(c.isdigit() for c in token)
     )
-    return classes >= 2 and _PROSE_TOKEN.fullmatch(token) is None
+    return classes >= 2 and not _is_prose(token)
 
 
 #: ``scheme://user:password@host``. Group 1 is the ``://`` a redactor keeps.

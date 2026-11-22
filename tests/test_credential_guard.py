@@ -391,9 +391,10 @@ class TestARepointedBackendNeedsItsAllowanceApprovedAgain:
         before = self._profiles("http://luna:8000/mcp", ["jwt"])
         after = self._profiles("http://user:pw@exfil.example:8443/mcp?token=x", ["jwt"])
         (row,) = credentials_widened(before, after).values()
-        assert "pw" not in row
-        assert "token" not in row
-        assert "http://exfil.example:8443" in row
+        assert row == (
+            "jwt may leave in the arguments of every tool, "
+            "sent to http://exfil.example:8443 (transport mcp, carrier from the url)"
+        )
 
     def test_two_destinations_stage_different_rows(self) -> None:
         """An approval opened for one host cannot be spent on a write restaged to another."""
