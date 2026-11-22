@@ -15,15 +15,24 @@ name: L2 - fine-tune
 # the card the recipe was found on; the runner builds the data, exports and
 # gates. That runner is our own uncached one when UNCACHED_RUNNER_LABEL is
 # set (the CPU gates took 15 of a run's 26 minutes on GitHub's), and clearing
-# it moves the job back to GitHub-hosted. Only a hand dispatch reaches this
-# job, so no fork or Dependabot code runs there. Containers are podman,
-# rootless on both, so what they write is the runner user's and no step
-# needs sudo. RUNPOD_API_KEY lives in the `runpod` environment, which releases it
-# only to this job, dispatched by hand on main or feature/l2-* (deployment
-# branch policy): no push, pull request or fork run ever sees it. The pod
-# gets only public datasets and the public base model.
+# it moves the job back to GitHub-hosted. Only a hand dispatch or the weekly
+# schedule reaches this job, so no fork or Dependabot code runs there.
+# Containers are podman, rootless on both, so what they write is the runner
+# user's and no step needs sudo. RUNPOD_API_KEY lives in the `runpod` environment, which releases it
+# only to this job, on main or feature/l2-* (deployment branch policy): no
+# push, pull request or fork run ever sees it. The pod gets only public
+# datasets and the public base model.
+#
+# The weekly canary (a930) trains and gates the default recipe on main and
+# publishes nothing, so a dataset revision that vanishes, a dependency that
+# moves or a pod API change shows up within a week instead of on the next
+# hand run. A failed canary on main opens one issue (label l2-canary), and a
+# passing one closes it. Dispatching with canary set takes the same path; the
+# publish job runs only for a dispatch without it, whatever the inputs say.
 
 on:
+  schedule:
+    - cron: "23 3 * * 0"   # weekly canary: Sunday, clear of Monday's image rebuilds
   workflow_dispatch:
     inputs:
       per_envelope:
@@ -40,6 +49,10 @@ on:
         default: "2"
       publish:
         description: "Push the full fine-tune, if it passes every gate, as quay.io/crunchtools/trentina-l2-model"
+        type: boolean
+        default: false
+      canary:
+        description: "Run as the weekly canary: never publish, and alert on failure"
         type: boolean
         default: false
 
@@ -165,8 +178,8 @@ jobs:
   publish:
     needs: train
     # Default branch only (constitution VII): a dispatch on feature/l2-* trains
-    # and gates, but never publishes.
-    if: inputs.publish && github.ref == 'refs/heads/main'
+    # and gates, but never publishes. Nor does the schedule or a canary dispatch.
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && !inputs.canary && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: cosign-signing
@@ -261,3 +274,40 @@ jobs:
       - name: Drop registry auth
         if: always()
         run: rm -rf "$RUNNER_TEMP/auth.json" "$RUNNER_TEMP/docker"
+
+  # The canary's verdict, as one issue: the first failure opens it, each later
+  # one comments, a passing canary closes it. No checkout and no repo code;
+  # it holds nothing but the token's issues: write.
+  alert:
+    needs: train
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main'
+      && (github.event_name == 'schedule' || inputs.canary)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write   # opens, comments on and closes the l2-canary issue
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RESULT: ${{ needs.train.result }}
+      TITLE: "L2 training canary failed"
+      LABEL: l2-canary
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Open, comment on or close the alert issue
+        run: |
+          set -euo pipefail
+          open=$(gh issue list --state open --label "$LABEL" --author app/github-actions \
+            --json number,title --jq "[.[] | select(.title == env.TITLE)][0].number // empty")
+          echo "train: $RESULT; open alert: ${open:-none}"
+          if [[ "$RESULT" == success ]]; then
+            [[ -z "$open" ]] || gh issue close "$open" --reason completed \
+              --comment "The [latest canary]($RUN_URL) passed."
+          elif [[ -n "$open" ]]; then
+            gh issue comment "$open" --body "Failed again: [run]($RUN_URL) at \`${GITHUB_SHA::12}\`, train: $RESULT."
+          else
+            gh label create "$LABEL" --color B60205 2>/dev/null || true
+            gh issue create --title "$TITLE" --label "$LABEL" --body \
+              "The [weekly L2 training canary]($RUN_URL) failed at \`${GITHUB_SHA::12}\` (train: $RESULT): the default recipe no longer trains, exports or passes every L2 gate. The step summary and the \`l2-model\` artifact say which. Each later failure comments here; the next passing canary closes it."
+          fi
