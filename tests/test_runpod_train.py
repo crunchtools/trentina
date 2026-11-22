@@ -280,6 +280,30 @@ def test_create_waits_out_a_busy_api_then_proceeds(
     assert (tmp_path / "env").read_text() == "POD_ID=p1\nPOD_HOST=192.0.2.1\nPOD_PORT=10802\n"
 
 
+@pytest.mark.parametrize("status", sorted(runpod_train.DEAD))
+def test_a_dead_pod_is_given_up_on_at_once(
+    status: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ERROR, EXITED or TERMINATED never becomes RUNNING: no 600 s wait, no ssh."""
+    replies: list[Any] = [{"id": "p1"}, {"id": "p1", "status": status, "ssh": None}]
+    slept: list[float] = []
+
+    def api(*_: Any) -> Any:
+        return replies.pop(0)
+
+    def no_ssh(*_: Any) -> list[str]:
+        raise AssertionError("ssh to a dead pod")
+
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("GITHUB_ENV", str(tmp_path / "env"))
+    monkeypatch.setattr(runpod_train, "api", api)
+    monkeypatch.setattr(runpod_train.time, "sleep", slept.append)
+    monkeypatch.setattr(runpod_train, "ssh_base", no_ssh)
+    assert runpod_train.create() == 1
+    assert not slept, "the ready loop must not wait on a dead pod"
+    assert (tmp_path / "env").read_text() == "POD_ID=p1\n", "terminate still finds it"
+
+
 def test_unreachable_ssh_is_tried_again(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runpod_train.time, "sleep", lambda _: None)
     attempts: list[int] = []

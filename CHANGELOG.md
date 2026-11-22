@@ -20,7 +20,7 @@ under that name.
 
 ### Fixed
 
-- `l2-train` trains again (a911). It drives RunPod's REST v2 at `api.runpod.io/v2`, since v1 at `rest.runpod.io` is retired and no longer resolves. It also passes `warmup_steps=0.06`, a ratio of the steps, because transformers 5.23 on the pod dropped `warmup_ratio`. Every export now carries the trainer's own tokenizer files, because the builder's transformers (held below 4.58 by optimum-onnx) cannot read a tokenizer saved by 5.x. Proof: run 44983947568 on the old corpus passed all three gates.
+- `l2-train` trains again (a911). It drives RunPod's REST v2 at `api.runpod.io/v2`, since v1 at `rest.runpod.io` is retired and no longer resolves. A pod that reaches `ERROR`, `EXITED` or `TERMINATED` is given up on at once instead of after the 600 s wait. It also passes `warmup_steps=0.06`, a ratio of the steps, because transformers 5.23 on the pod dropped `warmup_ratio`. Every export now carries the trainer's own tokenizer files, because the builder's transformers (held below 4.58 by optimum-onnx) cannot read a tokenizer saved by 5.x. Proof: run 44983947568 on the old corpus passed all three gates.
 
 ### Removed
 

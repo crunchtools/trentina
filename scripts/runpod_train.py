@@ -80,6 +80,9 @@ def boot_command(watchdog_seconds: int) -> str:
     )
 
 
+DEAD = frozenset({"ERROR", "EXITED", "TERMINATED"})
+"""v2 pod statuses no wait recovers from: give up at once, so terminate runs."""
+
 CAPACITY_HINTS = ("available", "capacity", "instances")
 """Words in a create refusal that mean "try again soon", not "this request is wrong"."""
 
@@ -209,6 +212,9 @@ def create() -> int:
     deadline, last = time.monotonic() + READY_FOR_SECONDS, b"not yet addressable"
     while time.monotonic() < deadline:
         pod = api("GET", f"{API}/{pod['id']}")
+        if pod.get("status") in DEAD:
+            print(f"pod {pod['id']} is {pod['status']}, not starting", file=sys.stderr)
+            return 1
         if (direct := ssh_direct(pod)) is not None:
             host, port = direct
             probe = subprocess.run(
