@@ -12,7 +12,7 @@ under that name.
 
 ### Added
 
-- `defense.l3_daily_quota`: a per-profile cap on L3 judgements per UTC day (#891). Unset is unlimited; cache hits and background warm-up are free. At the cap the verdict carries a new `l3_quota` gap, distinct from `l3_unavailable`: `block` and `redact` refuse, `flag` delivers with it. In memory, so a restart resets it.
+- `defense.l3_daily_quota`: a per-profile cap on L3 judgements per UTC day (#891). Unset is unlimited; cache hits and background warm-up are free, an unanswered judgement is refunded, and a derived federation ingress shares its profile's count. At the cap the verdict carries a new `l3_quota` gap, distinct from `l3_unavailable`: `block` and `redact` refuse, `flag` delivers with it. In memory, so a restart resets it.
 - `quarantine_stats` reports `l3_quota` `{limit, used, remaining, resets_at}`: an agent's own, an operator's per profile.
 
 ### Fixed

@@ -1960,8 +1960,10 @@ class DefenseConfig(BaseModel):
         description=(
             "L3 judgements this profile may run per UTC day (#891). Unset (the "
             "default) is unlimited. A cache hit is free; background warm-up is "
-            "not counted. At the cap L3 is not asked: the verdict carries the "
-            "l3_quota gap, block and redact refuse on it, flag delivers with it. "
+            "not counted; a judgement L3 did not answer is refunded; a derived "
+            "federation ingress spends its profile's count. At the cap L3 is "
+            "not asked: the verdict carries the l3_quota gap, block and redact "
+            "refuse on it, flag delivers with it. "
             "Counted in memory, so a restart starts the day again"
         ),
     )

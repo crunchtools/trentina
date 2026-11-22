@@ -7,7 +7,11 @@ shared: a profile that spends its own leaves every other profile's intact.
 
 What is counted is a judgement that actually runs: a miss in
 ``quarantine/l3_cache.py``, once per scan however many providers the fallback
-chain then tries. A verdict-cache hit, an L3-cache hit and a caller sharing a
+chain then tries. One that comes back unanswered (``l3_unavailable``) or
+raises is refunded, so retries through a provider outage do not spend the
+day. The count is kept by ``grant_owner``, as the judge's key and the L3
+cache are: a derived ``<profile>-federation`` ingress spends its profile's
+cap, not a second one. A verdict-cache hit, an L3-cache hit and a caller sharing a
 flight in progress are free. Background work (the boot warm-up and the tool
 aggregate) is the gateway's, not the agent's, and is not counted.
 
@@ -32,11 +36,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Profile name -> (UTC day, judgements run that day).
+#: Grant owner -> (UTC day, judgements run that day).
 _usage: dict[str, tuple[str, int]] = {}
 
-#: Profile name -> the UTC day it was last logged as spent, so the line is said
-#: once a day and the map holds one entry per profile, not one per day.
+#: Grant owner -> the UTC day it was last logged as spent, so the line is said
+#: once a day and the map holds one entry per owner, not one per day.
 _spent_logged: dict[str, str] = {}
 
 
@@ -56,28 +60,45 @@ def charge(profile: Profile) -> bool:
     """
     if l3_priority.get() is Priority.BACKGROUND:
         return True
+    owner = profile.grant_owner
     day = _clock().date().isoformat()
-    used = _used(profile.name, day)
+    used = _used(owner, day)
     limit = profile.defense.l3_daily_quota
     if limit is not None and used >= limit:
-        if _spent_logged.get(profile.name) != day:
-            _spent_logged[profile.name] = day
+        if _spent_logged.get(owner) != day:
+            _spent_logged[owner] = day
             logger.warning(
                 "L3 daily quota spent for profile %r (%d judgements, UTC day %s): "
                 "verdicts report l3_quota until midnight UTC, and block and redact refuse on it",
-                profile.name,
+                owner,
                 limit,
                 day,
             )
         return False
-    _usage[profile.name] = (day, used + 1)
+    _usage[owner] = (day, used + 1)
     return True
+
+
+def refund(profile: Profile) -> None:
+    """Give back a judgement ``charge`` took that L3 did not answer.
+
+    Called in the same task as the charge, so a background caller, which was
+    never charged, is never refunded. A charge from a day that has since
+    ended is gone with that day.
+    """
+    if l3_priority.get() is Priority.BACKGROUND:
+        return
+    owner = profile.grant_owner
+    day = _clock().date().isoformat()
+    used = _used(owner, day)
+    if used:
+        _usage[owner] = (day, used - 1)
 
 
 def snapshot(profile: Profile) -> dict[str, Any]:
     """``profile``'s cap, today's count and when it resets, for quarantine_stats."""
     now = _clock()
-    used = _used(profile.name, now.date().isoformat())
+    used = _used(profile.grant_owner, now.date().isoformat())
     limit = profile.defense.l3_daily_quota
     midnight = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), UTC)
     return {

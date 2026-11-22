@@ -72,6 +72,7 @@ from .quarantine.classifier import (
 from .quarantine.l3_cache import detect_once
 from .quarantine.prompts import L2_BLINDSPOT_CAVEAT, RISK_LEVELS
 from .quarantine.quota import charge as charge_l3
+from .quarantine.quota import refund as refund_l3
 from .unpack.child import run_unpacking
 from .unpack.scan import MAX_MEDIA_TOKEN, unpack
 
@@ -423,9 +424,19 @@ async def _judge_within_quota(content: str, briefing: str) -> dict[str, Any]:
     keep an unanswered verdict (both caches, the detection row) declines this
     one; ``gaps_of`` reports it as ``l3_quota`` alone.
     """
-    if not charge_l3(bound_profile()):
+    profile = bound_profile()
+    if not charge_l3(profile):
         return {"injection_detected": False, "l3_unavailable": True, "l3_quota": True}
-    return await quarantine_detect(content, layer1_context=briefing)
+    # An unanswered judgement is refunded, so retries through a provider
+    # outage do not spend the day's cap.
+    try:
+        verdict = await quarantine_detect(content, layer1_context=briefing)
+    except BaseException:
+        refund_l3(profile)
+        raise
+    if verdict.get("l3_unavailable"):
+        refund_l3(profile)
+    return verdict
 
 
 async def defend(

@@ -108,6 +108,44 @@ class TestCharge:
         assert quota.snapshot(b)["used"] == 1
 
 
+class TestGrantOwner:
+    def test_a_derived_ingress_spends_its_profiles_cap(self) -> None:
+        source = _profile("alpha", limit=2)
+        ingress = _profile("alpha-federation", limit=2)
+        object.__setattr__(ingress, "federation_of", "alpha")
+        assert ingress.grant_owner == "alpha"
+
+        assert quota.charge(source) is True
+        assert quota.charge(ingress) is True
+        assert quota.charge(ingress) is False
+        assert quota.charge(source) is False
+        assert quota.snapshot(source)["used"] == quota.snapshot(ingress)["used"] == 2
+
+
+class TestRefund:
+    def test_a_refund_gives_back_one_judgement(self) -> None:
+        p = _profile(limit=1)
+        assert quota.charge(p) is True
+        quota.refund(p)
+        assert quota.snapshot(p)["used"] == 0
+        assert quota.charge(p) is True
+
+    def test_a_refund_never_goes_below_zero(self) -> None:
+        p = _profile(limit=1)
+        quota.refund(p)
+        assert quota.snapshot(p)["used"] == 0
+
+    def test_a_background_refund_takes_nothing_back(self) -> None:
+        p = _profile(limit=3)
+        quota.charge(p)
+        token = l3_priority.set(Priority.BACKGROUND)
+        try:
+            quota.refund(p)
+        finally:
+            l3_priority.reset(token)
+        assert quota.snapshot(p)["used"] == 1
+
+
 class TestSnapshot:
     def test_the_numbers_and_the_next_utc_midnight(self, monkeypatch: pytest.MonkeyPatch) -> None:
         p = _profile(limit=5)
@@ -243,6 +281,37 @@ class TestThroughDefend:
         assert calls == 1
         assert quota.snapshot(p)["used"] == 1
         assert all(not gaps_of(v).l3_quota and not gaps_of(v).l3_unavailable for v in verdicts)
+
+    async def test_an_outage_does_not_spend_the_cap(self) -> None:
+        p = _profile(limit=1)
+        unanswered = {"injection_detected": False, "l3_unavailable": True}
+        for i in range(3):
+            with patch(f"{_D}.quarantine_detect", new_callable=AsyncMock, return_value=unanswered):
+                verdict, _ = await self._defend_unpatched_detect(p, f"page {i}")
+            assert gaps_of(verdict).l3_unavailable
+            assert not gaps_of(verdict).l3_quota
+        assert quota.snapshot(p)["used"] == 0
+
+    async def test_a_judgement_that_raises_is_refunded(self) -> None:
+        p = _profile(limit=1)
+        with (
+            patch(f"{_D}.quarantine_detect", new_callable=AsyncMock, side_effect=RuntimeError),
+            pytest.raises(RuntimeError),
+        ):
+            await self._defend_unpatched_detect(p, "page")
+        assert quota.snapshot(p)["used"] == 0
+
+    async def _defend_unpatched_detect(self, p: Profile, content: str) -> tuple:
+        with (
+            patch(f"{_D}.classify_async", return_value=BENIGN_LOW),
+            patch(f"{_D}.record_detection"),
+            patch(f"{_D}.emit_detection_event"),
+            profile_context(p),
+        ):
+            verdict = await defend(
+                content, source="https://example.com", source_type="url", defense=p.defense
+            )
+        return verdict, None
 
     async def test_a_refused_payload_is_judged_again_the_next_utc_day(
         self, monkeypatch: pytest.MonkeyPatch

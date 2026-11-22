@@ -50,10 +50,12 @@ def test_the_key_binds_content_owner_judge_and_effort(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.parametrize(
-    "gap", ["l3_unavailable", "l3_truncated", "l2_truncated", "l2_unavailable", "oversize"]
+    "gap",
+    ["l3_unavailable", "l3_quota", "l3_truncated", "l2_truncated", "l2_unavailable", "oversize"],
 )
-def test_an_incomplete_verdict_is_never_kept(gap: str) -> None:
-    verdict_cache._cache_put("k", {**_CLEAN, gap: True})
+@pytest.mark.parametrize("description", [False, True])
+def test_an_incomplete_verdict_is_never_kept(gap: str, description: bool) -> None:
+    verdict_cache._cache_put("k", {**_CLEAN, gap: True}, description=description)
     assert verdict_cache._cache_get("k") == (False, None)
 
 
