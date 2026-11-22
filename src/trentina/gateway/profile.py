@@ -1832,7 +1832,7 @@ class DefenseConfig(BaseModel):
     reports and block-mode refuses on — never a config option that fails
     silent.
 
-    There is no cost control for L3 any more, and that is the point. It used
+    There is no cost control for L3 that SKIPS it, and that is the point. It used
     to live in an `l3_threshold` key, which meant clean traffic never reached the
     judge — and since L2 FLAGS at `l2_threshold` while escalation needed
     that gate, there was a band L2 flagged that L3 never reviewed.
@@ -1845,7 +1845,9 @@ class DefenseConfig(BaseModel):
 
     What a profile still controls is `l2_threshold` — how suspicious L2 must
     be before it FLAGS, which is a consequence and not an execution — and
-    `enforcement`, which is what a flag costs.
+    `enforcement`, which is what a flag costs. `l3_daily_quota` (#891) caps
+    how often L3 runs for one profile, but it is not a skip: past it the
+    verdict carries the `l3_quota` gap, which block and redact refuse on.
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
@@ -1950,6 +1952,19 @@ class DefenseConfig(BaseModel):
             "to the model's own MALICIOUS label. Unset (the default) uses the "
             "loaded model's threshold alone (#350); at or above that "
             "threshold it changes nothing, so it can only make L2 stricter"
+        ),
+    )
+    l3_daily_quota: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "L3 judgements this profile may run per UTC day (#891). Unset (the "
+            "default) is unlimited. A cache hit is free; background warm-up is "
+            "not counted; a judgement L3 did not answer is refunded; a derived "
+            "federation ingress spends its profile's count. At the cap L3 is "
+            "not asked: the verdict carries the l3_quota gap, block and redact "
+            "refuse on it, flag delivers with it. "
+            "Counted in memory, so a restart starts the day again"
         ),
     )
     audit: bool = Field(default=True, description="Write detection rows to SQLite")

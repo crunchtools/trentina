@@ -268,7 +268,7 @@ What remains, with its rate:
 | Tool-description verdicts | 0 since 6.1.0: the cache is keyed per grant owner, so a hit is a fact about this profile's own earlier listing. It was shared across profiles with equal thresholds and judge, justified on the ground that no agent writes a backend's tools/list — true for one person's gateway, and not the answer for a service, where a hit told a profile that a neighbour held the same backend |
 | DNS backstop | Takes 16 profiles stalling 4 lookups each; then 1 bit per stalled lookup's lifetime (the OS resolver timeout) |
 | L2 turn-taking | A backlog delays another profile by at most one scan per profile waiting, each under `admission_tokens`; under 1 bit per scan, and noisy |
-| L3 provider quota on a shared key | Profiles given the same `llm_keys` value share the provider's quota for it, which no gateway can split. Give each agent its own key |
+| L3 provider quota on a shared key | Profiles given the same `llm_keys` value share the provider's quota for it, which no gateway can split. Give each agent its own key. `defense.l3_daily_quota` caps one profile's own share of it |
 
 Two things a role does not change. Evicting a cache or resetting a circuit is
 keyed by backend URL, so doing it to a backend you do hold is felt by every
@@ -379,6 +379,7 @@ Each profile configures its defense **policy** — never the layers' existence. 
 | `modes` | list | `[enforcement]` | The modes the agent may choose per call — see [Content modes](#content-modes) |
 | `l2_threshold` | float | unset | L2 score at/above which content is flagged, in addition to the model's own MALICIOUS label. Unset, the L2 model's own threshold decides (0.7 for the default model, 0.5 for Prompt Guard 2; `CLASSIFIER_THRESHOLD` overrides it gateway-wide). Below that threshold it flags content the classifier itself labels BENIGN, so set it knowingly; at or above it, it changes nothing. The thresholds are measured, not midpoints; see `docs/benchmark.md`. |
 | `l3_prompt_pack` | path | unset | An L3 prompt pack for this profile's judge (#354). It applies to the exact (provider, model) it names and no other; checked when the profile loads. `generic` turns shipped packs off. See [L3 prompt tuning](l3-prompt-tuning.md). |
+| `l3_daily_quota` | int | unset | Cap on L3 judgements this profile runs per UTC day (#891); unset is unlimited. Verdict-cache and L3-cache hits are free, the background warm-up is not counted, and a judgement L3 did not answer is refunded. Counted by grant owner, so a derived `-federation` ingress spends its profile's cap. At the cap the verdict carries the `l3_quota` gap: `block` and `redact` refuse, `flag` delivers with it. Kept in memory, so a restart resets it. |
 | `audit` | bool | `true` | Write detection rows to SQLite |
 | `provider` | string | `null` | LLM provider override (`gemini`, `openai`, `anthropic`, `ollama`, `openrouter`, `vertex`) |
 | `vertex` | map | unset | `project` and `region` for the `vertex` provider; required when `provider: vertex`. See [Gemini on Vertex AI](#gemini-on-vertex-ai-vertex) |
@@ -471,7 +472,7 @@ sqlite3 -readonly /data/trentina.db "SELECT datetime(timestamp,'unixepoch'),
   ORDER BY timestamp DESC LIMIT 50"
 ```
 
-The operator's `quarantine_stats` also carries `fanout`: per profile, the
+The operator's `quarantine_stats` also carries `l3_quota`, a map of profile to `{limit, used, remaining, resets_at}` for every profile with a cap or a judgement today (an agent's slice carries its own as `l3_quota`, #891), and `fanout`: per profile, the
 distinct hosts fetched and the calls to declared tools in the last ten
 minutes, attempts refused by policy included. Each call can pass judging on
 its own; a swarm shows only as a rate. `contrib/nagios/check_trentina_fanout`

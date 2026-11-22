@@ -74,3 +74,11 @@ file = "src/trentina/token_variants.py"
 evidence = "# Fixed lead-ins of vendor credentials: every token of the kind starts with one,\n# so a window over it matches somebody else's. Longest match wins. The shapes\n# ``credential_shapes`` knows (``ghp_`` family, ``github_pat_``, ``sk-``,\n# ``AIza``, ``ya29.``, ``syt_``, ``trt_``, ``xox?-``, AWS id prefixes) plus the\n# common longer forms of ``sk-``, GitLab and Slack.\n_PREFIXES = tuple("
 status = "not-a-bug"
 reason = "credential_shapes holds regexes for redaction, not a prefix list; this table is a superset with longer forms it does not need. A prefix missing here only lets a window over that prefix count as a fragment, a false-positive risk for one vendor, never a missed trip."
+
+[[findings]]
+agent = "constitution"
+category = "constitution"
+file = "src/trentina/defense.py"
+evidence = "if day is None:\n    return {\"injection_detected\": False, \"l3_unavailable\": True, \"l3_quota\": True}"
+status = "not-a-bug"
+reason = "A spent quota is a gap, not a pass: block and redact refuse on l3_quota whatever TRENTINA_REQUIRE_L3 says, stricter than l3_unavailable, as #891 specifies. flag delivering through a gap with the warning is the existing rule for every gap, l3_unavailable included (core/dispose.py, docs/defense-pipeline.md); flag is the deliberate-reading grant, kept out of agent policies. Ruled on by Josui Prime for #898 (flag delivers with the verdict attached)."

@@ -431,6 +431,7 @@ response another tool produced, and behind the gateway the router answers
 it.
 
 ### Stats
+- quarantine_stats — `l3_quota` `{limit, used, remaining, resets_at}` (#891): an agent's own in its slice, an operator's per profile for those with a cap or a judgement today.
 - quarantine_stats — operator `config` carries `provider` and `llm_available`
   (0.41.0); its `has_api_key` was removed in 0.43.0.
   `admission_tokens` replaced `max_content` there and in the D-Bus status

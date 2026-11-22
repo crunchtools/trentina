@@ -127,7 +127,7 @@ def layer_states(verdict: DefenseVerdict) -> dict[str, str]:
     )
     l3 = (
         LayerState.UNAVAILABLE
-        if gaps.l3_unavailable
+        if gaps.l3_unavailable or gaps.l3_quota
         else LayerState.PARTIAL
         if gaps.l3_truncated
         else LayerState.COMPLETE
