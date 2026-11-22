@@ -34,10 +34,13 @@ def test_every_locked_requirement_is_exact_and_hashed() -> None:
 
 
 def test_lock_matches_its_input() -> None:
-    """The .in pins transformers; a hand edit of one file and not the other is a stale lock."""
-    pinned = re.search(
-        r"^transformers==(\S+)$", (ROOT / "scripts/l2-export-requirements.in").read_text(), re.M
-    )
-    locked = re.search(r"^transformers==(\S+) \\$", LOCK.read_text(), re.M)
-    assert pinned and locked
-    assert pinned.group(1) == locked.group(1)
+    """Every input is in the lock at its pinned version; a hand edit of one file is a stale lock."""
+    locked = dict(re.findall(r"^([a-z0-9][a-z0-9._-]*)==(\S+) \\$", LOCK.read_text(), re.M))
+    inputs = (ROOT / "scripts/l2-export-requirements.in").read_text().splitlines()
+    reqs = [line for line in inputs if line and not line.startswith("#")]
+    assert reqs
+    for req in reqs:
+        name, _, version = re.sub(r"\[[^\]]+\]", "", req).partition("==")
+        assert name in locked, req
+        if version:
+            assert locked[name] == version, req

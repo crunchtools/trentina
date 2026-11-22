@@ -1,0 +1,42 @@
+name: L2 exporter lock
+
+# Builds the Containerfile's model-builder stage whenever its inputs change,
+# so a lock that will not install (a bad hash, a wheel missing for 3.14, a
+# dependency --no-deps left out) fails on the pull request -- a Dependabot bump
+# included -- rather than at the next l2-train dispatch (#871, #877).
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - Containerfile
+      - scripts/l2-export-requirements.txt
+      - scripts/export_l2_model.py
+      - .github/workflows/l2-export-lock.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build model-builder from the lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the stage
+        run: podman build --target model-builder -t l2-builder -f Containerfile .
+
+      # --no-deps installs only what the lock lists; importing what the
+      # exporter imports is what shows nothing it needs was left out.
+      - name: Import the exporter's stack
+        run: >-
+          podman run --rm l2-builder python -c
+          "import torch, transformers, sentencepiece, safetensors, huggingface_hub, optimum.exporters.onnx"
