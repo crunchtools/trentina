@@ -114,7 +114,7 @@ async def run(
             readings[case_id].append(await judge(body, briefing))
 
     for _ in range(votes):
-        l3_cache._verdicts.clear()
+        l3_cache.reset_l3_cache()
         await asyncio.gather(*(one(case_id, body) for case_id, body in cases))
     return readings
 
