@@ -51,9 +51,11 @@ def leaked_tokens(profile: Profile, sent: Any) -> list[str]:
     ``sent`` is a request's whole ``params``, whatever its shape: the check
     runs before the tool name is resolved or the arguments are known to be a
     mapping, because a hijacked agent reaching for a tool it was never given
-    is the call most worth an alarm.
+    is the call most worth an alarm. A string is already text (a proxied
+    request's body, often JSON itself) and is searched as it is: dumping it
+    would escape it a second time and match neither form of a multi-line token.
     """
-    text = json.dumps(sent, ensure_ascii=False, default=str)
+    text = sent if isinstance(sent, str) else json.dumps(sent, ensure_ascii=False, default=str)
     by_value: dict[str, list[str]] = {}
     for token, planted in profile.honeytokens.items():
         if planted.value is not None:

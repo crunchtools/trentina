@@ -409,12 +409,13 @@ one does; the rest name the benchmark that measured them.
     text and no picture. Tested.
 17. **A planted credential is matched as planted, encoded or in part, and no further** (#357, #864). The
     honeytoken check ([decoys](profiles.md#decoy-tools-and-honeytokens))
-    finds the value as written, base64, hex or percent-encoded, reversed, or
+    finds the value as written (a multi-line PEM also as JSON writes it, line
+    breaks as `\n`), base64, hex or percent-encoded, reversed, or
     as any 16 consecutive characters of a value of 32 or more
     (`token_variants.py`; the L3 canary is matched the same way). A fragment
     is taken from the secret body only: not a vendor prefix (`ghp_`,
     `sk-proj-`, `AKIA`), a JWT's header and payload, PEM armour, the fixed head and public
-    half of a key, or a window of low entropy. Base64 is also found across
+    half of a key (an RSA key's modulus and exponent, an EC key's public point), or a window of low entropy. Base64 is also found across
     line breaks (76 columns, CRLF, JSON-escaped `\n`). It runs on
     a tool call's arguments and on the body, headers and query of a
     `/proxy/http` or `/proxy/llm` request (#865). A caller that splits it into

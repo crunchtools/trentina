@@ -599,7 +599,7 @@ The value is found as planted, base64-encoded (standard or URL-safe, at any
 offset in a larger blob, also across line breaks), hex-encoded,
 percent-encoded, reversed, or as any 16 consecutive characters of its secret
 body when it is 32 or longer. A vendor prefix (`ghp_`, `sk-proj-`), a JWT's
-header and payload, PEM armour, the fixed head of a key and low-entropy windows do not
+header and payload, PEM armour, the public half and fixed head of a key and low-entropy windows do not
 count, so a different token that shares them is not a trip. A shorter value is
 matched whole. A value paraphrased, split across calls or put through another
 encoding is not seen.

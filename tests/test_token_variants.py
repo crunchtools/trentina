@@ -368,7 +368,8 @@ def test_a_long_token_searches_a_bounded_number_of_blocks() -> None:
     body = "".join(honey.splitlines()[1:-1])
     # Any piece longer than the spacing of the kept blocks covers one of them.
     span = len(honey) // MAX_BLOCKS + 2 * FRAGMENT_MIN
-    for start in range(300, len(body) - span, 97):
+    # From past the public modulus and exponent, which are never a piece of it.
+    for start in range(450, len(body) - span, 97):
         assert matcher.found(body[start : start + span]) == [honey], start
 
 
@@ -407,3 +408,106 @@ def test_a_truncated_or_malformed_openssh_body_falls_back_without_raising(cut: i
     matcher = TokenMatcher([broken])
     assert matcher.found(broken) == [broken]
     assert matcher.found("unrelated text " * 20) == []
+
+
+def _rsa_key(shape: str) -> tuple[str, str, bytes, str]:
+    """A fresh RSA 2048 key as a PEM in ``shape`` (``pkcs8`` or ``pkcs1``), with
+    its OpenSSH public line, its SubjectPublicKeyInfo PEM and the bare base64
+    of its DER modulus."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_format = (
+        serialization.PrivateFormat.PKCS8
+        if shape == "pkcs8"
+        else serialization.PrivateFormat.TraditionalOpenSSL
+    )
+    pem = key.private_bytes(
+        serialization.Encoding.PEM, private_format, serialization.NoEncryption()
+    ).decode()
+    public = key.public_key()
+    openssh = public.public_bytes(
+        serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
+    ).decode()
+    spki = public.public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    ).decode()
+    modulus = public.public_numbers().n.to_bytes(256, "big")
+    return pem, openssh, spki, base64.b64encode(modulus).decode()
+
+
+@pytest.mark.parametrize("shape", ["pkcs8", "pkcs1"])
+def test_the_public_half_of_an_rsa_private_key_is_not_a_hit(shape: str) -> None:
+    for _ in range(10):
+        pem, openssh, spki, modulus = _rsa_key(shape)
+        matcher = TokenMatcher([pem])
+        assert matcher.found(openssh) == []
+        assert matcher.found(spki) == []
+        assert matcher.found(modulus) == []
+        assert matcher.found(json.dumps({"pub": spki, "ssh": openssh})) == []
+        # The private half still is: d, p, q, dP, dQ and qInv follow n and e.
+        body = "".join(pem.splitlines()[1:-1])
+        private = body[len(body) // 3 : len(body) // 3 + 80]
+        assert matcher.found(private) == [pem]
+        assert matcher.found(body[-100:-20]) == [pem]
+
+
+def _der(tag: int, content: bytes) -> bytes:
+    size = len(content)
+    head = bytes([size]) if size < 0x80 else bytes([0x82]) + size.to_bytes(2, "big")
+    return bytes([tag]) + head + content
+
+
+def test_the_private_fields_of_a_der_key_are_found_through_long_form_lengths() -> None:
+    from trentina.token_variants import _der_secret
+
+    fields = [_der(0x02, bytes([i]) * (200 if i == 3 else 4)) for i in range(9)]
+    pkcs1 = _der(0x30, b"".join(fields))
+    marked = _der_secret(pkcs1)
+    assert sum(marked) == 200 + 4 * 5
+    algorithm = _der(0x30, _der(0x06, b"\x2a\x86\x48") + _der(0x05, b""))
+    pkcs8 = _der(0x30, _der(0x02, b"\0") + algorithm + _der(0x04, pkcs1))
+    assert sum(_der_secret(pkcs8)) == 200 + 4 * 5
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [b"", b"\x30", b"\x30\x84\xff\xff\xff\xff", b"\x30\x03\x02\x01", b"\x1f\x01\0", b"\x30\x00"],
+)
+def test_a_der_body_that_does_not_parse_falls_back_to_its_head(raw: bytes) -> None:
+    body = base64.b64encode(raw + random.Random(5).randbytes(90)).decode()
+    pem = f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n"
+    matcher = TokenMatcher([pem])
+    assert matcher.found(body[:48]) == []
+    assert matcher.found(body[80:100]) == [pem]
+
+
+@pytest.mark.parametrize(("kind", "scalar"), [("ed25519", (30, 62)), ("ec", (60, 90))])
+def test_a_curve_key_matches_by_its_private_scalar_not_its_public_point(
+    kind: str, scalar: tuple[int, int]
+) -> None:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+
+    key = (
+        ed25519.Ed25519PrivateKey.generate()
+        if kind == "ed25519"
+        else ec.generate_private_key(ec.SECP256R1())
+    )
+    pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    matcher = TokenMatcher([pem])
+    public = (
+        key.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+    assert matcher.found(public) == []
+    body = "".join(pem.splitlines()[1:-1])
+    assert matcher.found(f"scalar {body[scalar[0] : scalar[1]]}") == [pem]
+    assert matcher.found(body[:20]) == []
+    assert matcher.found(pem) == [pem]

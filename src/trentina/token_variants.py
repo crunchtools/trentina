@@ -6,7 +6,9 @@ cheapest exfiltration there is: encode it, reverse it, or send part of it.
 ``TokenMatcher`` precomputes the forms a token takes and finds any of them in
 a haystack:
 
-- the token itself, and reversed;
+- the token itself, and reversed, each also as JSON writes it (a PEM's line
+  breaks as the two characters ``\\n``), since a tool call's arguments reach a
+  tripwire serialized;
 - hex of its UTF-8 bytes, lower and upper case;
 - base64, standard and URL-safe, unpadded, at all three byte alignments. The
   token inside a larger blob is preceded by 0, 1 or 2 bytes of something else,
@@ -21,7 +23,10 @@ a haystack:
   or payload, PEM armour, the fixed head of a key body (an OpenSSH key's public
   half, key type and framing; a DER key's header) or fall under
   ``ENTROPY_FLOOR``. A fake JWT or key that merely shares those with a real
-  one is not a hit;
+  one is not a hit. A PEM private key's secret body is the private integers
+  of its DER (an RSA key's d, p, q, dP, dQ and qInv, an EC key's private
+  scalar, an ed25519 seed): the modulus and public point beside them are in
+  the key's public half, so a fragment of one is not a hit;
 
 Base64 is also searched in a copy of the haystack with whitespace and the
 literal escapes ``\\n`` and ``\\r`` removed, so a token inside base64 wrapped at
@@ -44,6 +49,7 @@ custom cipher); ``\\x41``-style escaped hex; and a fragment of an ENCODED form
 from __future__ import annotations
 
 import base64
+import json
 import math
 import re
 from itertools import accumulate
@@ -51,7 +57,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
 FRAGMENT_MIN = 16
 """The shortest piece of a token that counts as the token. A token has fragments
@@ -124,10 +130,18 @@ _OPENSSH_B64 = "b3BlbnNzaC1rZXktdjE"  # base64 of the magic's first 14 bytes
 _B64_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
 # DER private keys (PKCS#1 ``MIIE...``, PKCS#8 ``MIIEvQIBADANBgkqhkiG9w0BAQEF...``)
 # open with a tag, length, version and algorithm OID in their first ~50
-# characters, and an RSA modulus (public) follows. Dropped as a block.
+# characters, and an RSA modulus (public) follows. Where the DER cannot be
+# read, that head is dropped as a block.
 _DER_HEAD = 64
 # Where whatever parser cannot read an OpenSSH body: the same, a little wider.
 _OPENSSH_FALLBACK_HEAD = 96
+
+_DER_INTEGER = 0x02
+_DER_OCTET_STRING = 0x04
+_DER_SEQUENCE = 0x30
+_DER_TAG_BITS = 0x1F  # all set in a tag byte: the number follows, in a form no key uses
+_DER_LENGTH_BITS = 0x7F  # the low bits of a long-form length byte count its octets
+_RSA_FIELDS = 9  # RSAPrivateKey: version, n, e, then d p q dP dQ qInv
 
 # Line breaks in a haystack that cut a base64 run: whitespace and the literal
 # two-character escapes a JSON string holds.
@@ -230,18 +244,84 @@ def _private_fields(raw: bytes, at: int, end: int) -> list[tuple[int, int]]:
     return fields
 
 
-def _openssh_flags(body: str) -> list[bool]:
-    """Per base64 character of an OpenSSH key body: carries only secret bytes."""
+def _secret_chars(
+    body: str, secret_bytes: Callable[[bytes], bytearray], fallback_head: int
+) -> list[bool]:
+    """Per base64 character of a key body: carries only secret bytes, as
+    ``secret_bytes`` marks them in the decoded body. A body it cannot read
+    is secret from ``fallback_head`` on."""
     try:
         raw = base64.b64decode(body + "=" * (-len(body) % 4), validate=True)
-        secret = _openssh_secret(raw)
+        secret = secret_bytes(raw)
     except ValueError:  # binascii.Error is a ValueError
-        return [at >= _OPENSSH_FALLBACK_HEAD for at in range(len(body))]
+        return [at >= fallback_head for at in range(len(body))]
     # Character i holds bits 6i..6i+5: the bytes those bits fall in.
     return [
         (6 * at + 5) // 8 < len(raw) and secret[6 * at // 8] == 1 and secret[(6 * at + 5) // 8] == 1
         for at in range(len(body))
     ]
+
+
+def _der_node(raw: bytes, at: int, end: int) -> tuple[int, int, int]:
+    """The (tag, content start, content end) of the DER element at ``at``,
+    short or long form length; ValueError if it is not one that fits before
+    ``end``."""
+    if (
+        at + 2 > end or raw[at] & _DER_TAG_BITS == _DER_TAG_BITS
+    ):  # a high tag number is no key field
+        raise ValueError
+    size = raw[at + 1]
+    start = at + 2
+    if size & 0x80:
+        count = size & _DER_LENGTH_BITS
+        if not 1 <= count <= 4 or start + count > end:
+            raise ValueError
+        size = int.from_bytes(raw[start : start + count], "big")
+        start += count
+    if start + size > end:
+        raise ValueError
+    return raw[at], start, start + size
+
+
+def _der_children(raw: bytes, start: int, end: int) -> list[tuple[int, int, int]]:
+    """The elements, as ``_der_node`` gives them, that fill ``start..end``."""
+    children = []
+    while start < end:
+        child = _der_node(raw, start, end)
+        children.append(child)
+        start = child[2]
+    return children
+
+
+def _der_secret(raw: bytes) -> bytearray:
+    """Which bytes of a decoded DER private key are secret (1) or not (0).
+
+    An RSAPrivateKey (PKCS#1) is SEQUENCE { version, n, e, d, p, q, dP, dQ,
+    qInv }: the modulus and exponent are the public key, and only the six
+    that follow are secret. An ECPrivateKey (SEC1) is SEQUENCE { version,
+    OCTET STRING privateKey, [0] parameters, [1] publicKey }: the scalar is
+    secret. PKCS#8 wraps either in SEQUENCE { version, AlgorithmIdentifier,
+    OCTET STRING }, and an ed25519 key's OCTET STRING holds the seed as one
+    more OCTET STRING. ValueError for anything else, so the caller falls back.
+    """
+    tag, start, end = _der_node(raw, 0, len(raw))
+    fields = _der_children(raw, start, end) if tag == _DER_SEQUENCE else []
+    if len(fields) == 3 and (fields[1][0], fields[2][0]) == (_DER_SEQUENCE, _DER_OCTET_STRING):
+        tag, start, end = _der_node(raw, fields[2][1], fields[2][2])
+        fields = _der_children(raw, start, end) if tag == _DER_SEQUENCE else []
+    kinds = [field[0] for field in fields]
+    if kinds[:_RSA_FIELDS] == [_DER_INTEGER] * _RSA_FIELDS:
+        private = fields[3:_RSA_FIELDS]
+    elif kinds[:2] == [_DER_INTEGER, _DER_OCTET_STRING]:
+        private = fields[1:2]
+    elif tag == _DER_OCTET_STRING:
+        private = [(tag, start, end)]
+    else:
+        raise ValueError
+    secret = bytearray(len(raw))
+    for _, first, last in private:
+        secret[first:last] = b"\1" * (last - first)
+    return secret
 
 
 def _body_positions(token: str) -> list[int]:
@@ -263,9 +343,9 @@ def _pem_mask(token: str) -> list[bool]:
     positions = _body_positions(token)
     body = "".join(token[i] for i in positions)
     flags = (
-        _openssh_flags(body)
+        _secret_chars(body, _openssh_secret, _OPENSSH_FALLBACK_HEAD)
         if body.startswith(_OPENSSH_B64)
-        else [i >= _DER_HEAD for i in range(len(body))]
+        else _secret_chars(body, _der_secret, _DER_HEAD)
     )
     secret = dict(zip(positions, flags, strict=True))
     return [secret.get(at, False) for at in range(len(token))]
@@ -320,7 +400,8 @@ class TokenMatcher:
     Which forms a token gets, by its length in bytes ``n`` (ASCII; every byte
     is one character):
 
-    - always: the token and its reverse, whole;
+    - always: the token and its reverse, whole, each also JSON-escaped (a
+      PEM's line breaks as ``\\n``);
     - an encoded form only when it is at least ``FRAGMENT_MIN`` (16)
       characters, since a shorter one is too common to mean anything. Hex is
       ``2n`` characters, so from ``n`` = 8; percent is ``3n``, so from 6;
@@ -359,9 +440,13 @@ class TokenMatcher:
             }
             # An encoded form shorter than a fragment is too common to mean the
             # token: a short token's base64 core can be one character.
+            # The token as a JSON string holds it too: a PEM's line breaks
+            # become ``\\n`` there, and a caller that reverses a token and
+            # then serializes escapes the reversal, not the token.
+            written = {token, token[::-1]}
             self._forms[token] = {
-                token,
-                token[::-1],
+                *written,
+                *(json.dumps(form, ensure_ascii=False)[1:-1] for form in written),
                 *(form for form in encoded if len(form) >= FRAGMENT_MIN),
                 *cores,
             }
