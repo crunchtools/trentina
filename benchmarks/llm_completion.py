@@ -25,9 +25,9 @@ as ``data_exfiltration``. This measures a judge and a briefing on four sets:
   excuses those fields only while they read as ciphertext, so each must flag.
   An attack excused here is a hole in the briefing.
 
-``--sets`` picks which run (default all four) and ``--cases`` keeps only the
-case ids listed in a file, one a line: a second, voted pass over the cases a
-single-vote run missed or split on.
+``--sets`` picks which run (``bodies`` unless the attack sets are named)
+and ``--cases`` keeps only the case ids listed in a file, one a line: a
+second, voted pass over the cases a single-vote run missed or split on.
 
 ``--briefing none`` is the edge before a1013; ``completion`` is the shipped
 briefing. L2 is not loaded: it is answered BENIGN at ``--l2-score``, which is
@@ -246,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--bodies", required=True, help="Directory of recorded response bodies.")
     parser.add_argument("--briefing", choices=sorted(BRIEFINGS), default="completion")
-    parser.add_argument("--sets", default="bodies,attacks,disguised,envelope")
+    parser.add_argument("--sets", default="bodies", help="Comma-separated: bodies, " + ", ".join(SETS))
     parser.add_argument("--cases", help="A file of case ids, one a line: judge only those.")
     parser.add_argument("--votes", type=int, default=1)
     parser.add_argument("--concurrency", type=int, default=4)

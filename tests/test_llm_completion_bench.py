@@ -15,10 +15,12 @@ import ast
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from benchmarks.llm_completion import disguised_cases, envelope_cases
+from benchmarks import llm_completion as bench
+from benchmarks.llm_completion import DISGUISES, ENVELOPE_FIELDS, disguised_cases, envelope_cases
 from corpora.internal import ATTACKS
 from trentina.quarantine.prompts import COMPLETION_BRIEFING
 from trentina.unpack import scan
@@ -140,3 +142,67 @@ def test_only_the_completion_edge_is_briefed_for_a_completion() -> None:
             ):
                 users.append(f"{path.relative_to(package)}:{func.name}")
     assert users == ["orchestrator.py:judge_llm_completion"]
+
+
+def test_every_attack_is_planted_in_every_field_and_disguise() -> None:
+    ids = [case_id for case_id, _ in envelope_cases(TEMPLATE)]
+    assert sorted(ids) == sorted(
+        f"{field}/{name}/{case.category}/{case.id}"
+        for field in ENVELOPE_FIELDS
+        for name in DISGUISES
+        for case in ATTACKS
+    )
+
+
+class TestSelection:
+    """``--sets`` and ``--cases`` pick what is judged; nothing is asked of a judge."""
+
+    @pytest.fixture
+    def judged(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, list[str]]:
+        seen: list[str] = []
+
+        async def judge(body: str, _briefing: str | None) -> dict[str, Any]:
+            seen.append(body)
+            return {
+                "flagged": True,
+                "flagged_by": "L3",
+                "risk": "high",
+                "unavailable": False,
+                "error": None,
+            }
+
+        monkeypatch.setattr(bench, "judge", judge)
+        monkeypatch.setattr(bench, "stub_l2", lambda _score: None)
+        (tmp_path / "body-1.json").write_text(TEMPLATE, encoding="utf-8")
+        return tmp_path, seen
+
+    def _run(self, judged: tuple[Path, list[str]], *extra: str) -> dict[str, Any]:
+        directory, _ = judged
+        out = directory / "report.json"
+        assert bench.main(["--bodies", str(directory), "--json", str(out), *extra]) == 0
+        report: dict[str, Any] = json.loads(out.read_text(encoding="utf-8"))
+        return report
+
+    def test_the_default_judges_the_bodies_alone(self, judged: tuple[Path, list[str]]) -> None:
+        report = self._run(judged)
+        assert {k for k in report if k not in ("briefing", "votes")} == {"bodies"}
+        assert len(judged[1]) == 1
+
+    def test_named_sets_are_the_ones_judged(self, judged: tuple[Path, list[str]]) -> None:
+        report = self._run(judged, "--sets", "envelope")
+        assert {k for k in report if k not in ("briefing", "votes")} == {"envelope"}
+        assert len(judged[1]) == len(envelope_cases(TEMPLATE))
+
+    def test_cases_keeps_only_the_listed_ids(self, judged: tuple[Path, list[str]]) -> None:
+        keep = [case_id for case_id, _ in envelope_cases(TEMPLATE)][:3]
+        listed = judged[0] / "cases.txt"
+        listed.write_text("\n".join(keep) + "\n", encoding="utf-8")
+        report = self._run(judged, "--sets", "attacks,envelope", "--cases", str(listed))
+        assert report["envelope"]["cases"].keys() == set(keep)
+        assert report["attacks"]["cases"] == {}
+        assert len(judged[1]) == 3
+
+    def test_an_unknown_set_is_refused(self, judged: tuple[Path, list[str]]) -> None:
+        with pytest.raises(SystemExit):
+            bench.main(["--bodies", str(judged[0]), "--sets", "bodies,nonsense"])
+        assert judged[1] == []
