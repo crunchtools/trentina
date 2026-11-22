@@ -67,7 +67,7 @@ def unmasked(document: str) -> str:
     entities (decoded up to three rounds, so ``&amp;#103;hp_`` is ``ghp_``),
     zero-width and other format characters or combining marks (Cf, Mn and Me,
     variation selectors included, dropped), or compatibility forms such as
-    fullwidth letters (NFKC, bounded: past twice the input it raises
+    fullwidth letters (NFKC, bounded: past twice the input plus 64K it raises
     ``ExpansionError``, which detection reports as ``EXPANSION_KIND``). ASCII
     text skips the Unicode passes. The judge's copy keeps
     ``reveal`` alone: these change how text reads to a model, and the layers
@@ -96,6 +96,9 @@ _INVISIBLE = frozenset({"Cf", "Mn", "Me"})
 #: eighteen, and 8 MB of it took 7.5 s and 443 MB to fold (#882 review).
 _NFKC_GROWTH = 2
 _NFKC_CHUNK = 4096
+#: Characters NFKC may add beyond the ratio, so short text full of wide
+#: compatibility forms is folded rather than refused (#882 re-review).
+_NFKC_FLOOR = 64 * 1024
 
 #: The kind ``detect_credentials`` reports for a document whose NFKC fold blew
 #: past ``_NFKC_GROWTH``. Not a ``CredentialKind``: it is not a credential, it is
@@ -127,15 +130,17 @@ def _bounded_nfkc(text: str) -> str:
     how non-ASCII text folds; no credential shape is in that.
     """
     out: list[str] = []
-    start = 0
+    start = grown = 0
     while start < len(text):
         end = min(start + _NFKC_CHUNK, len(text))
         while end < len(text) and end < start + 2 * _NFKC_CHUNK and not text[end].isascii():
             end += 1
         folded = unicodedata.normalize("NFKC", text[start:end])
-        # Per chunk, so a bomb stops at its first chunk rather than after it
-        # has already built twice the whole input.
-        if len(folded) > _NFKC_GROWTH * (end - start) + 16:
+        # Checked as it goes, so a bomb stops within a few chunks rather than
+        # after building twice the whole input. Ratio plus a floor: one ﷺ in a
+        # name or forty ellipses is ordinary text that more than doubles.
+        grown += len(folded)
+        if grown > _NFKC_GROWTH * end + _NFKC_FLOOR:
             raise ExpansionError
         out.append(folded)
         start = end

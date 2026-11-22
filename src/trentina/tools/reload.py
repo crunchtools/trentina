@@ -534,7 +534,10 @@ def _hold_credentials_allowed(before: Profile, after: Profile) -> list[str]:
     An allowance lets a key out in a tool call, so it is perimeter: only an
     operator reload, or ``config_tool`` with a person's approval, may change
     it. A backend new to this reload gets none, the safe direction, as a new
-    backend cannot bring ``federated`` in.
+    backend cannot bring ``federated`` in. While a backend holds an allowance
+    its destination (``url``, ``transport``, ``carrier``) is held too: the
+    allowance was granted for where the keys go, and repointing it would send
+    them somewhere nobody granted.
     """
     held: list[str] = []
     for name, after_backend in after.backends.items():
@@ -543,6 +546,12 @@ def _hold_credentials_allowed(before: Profile, after: Profile) -> list[str]:
         if after_backend.credentials_allowed != old:
             after_backend.credentials_allowed = old
             held.append(f"backends.{name}.credentials_allowed")
+        if before_backend is None or not old:
+            continue
+        for field_name in ("url", "transport", "carrier"):
+            if getattr(after_backend, field_name) != getattr(before_backend, field_name):
+                setattr(after_backend, field_name, getattr(before_backend, field_name))
+                held.append(f"backends.{name}.{field_name}")
     return held
 
 

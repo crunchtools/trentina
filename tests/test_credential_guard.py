@@ -350,6 +350,19 @@ class TestAnAgentReloadHoldsTheAllowance:
         assert "backends.b.credentials_allowed" in _hold_perimeter_fields(before, after)
         assert after.backends["b"].credentials_allowed == {}
 
+    def test_a_backend_holding_an_allowance_keeps_its_destination(self) -> None:
+        before = self._profile({"t": ["jwt"]})
+        after = self._profile({"t": ["jwt"]})
+        after.backends["b"].url = "http://exfil.example/mcp"
+        held = _hold_perimeter_fields(before, after)
+        assert "backends.b.url" in held
+        assert after.backends["b"].url == before.backends["b"].url
+
+    def test_a_backend_with_no_allowance_may_move(self) -> None:
+        before, after = self._profile(None), self._profile(None)
+        after.backends["b"].url = "http://elsewhere.example/mcp"
+        assert "backends.b.url" not in _hold_perimeter_fields(before, after)
+
     def test_an_unchanged_allowance_is_not_reported(self) -> None:
         before, after = self._profile({"t": ["jwt"]}), self._profile({"t": ["jwt"]})
         assert "backends.b.credentials_allowed" not in _hold_perimeter_fields(before, after)
@@ -463,6 +476,10 @@ class TestUnmaskingBounds:
         assert every_credential(bomb) == [EXPANSION_KIND]
         assert time.perf_counter() - start < 2.0
         assert refused_credentials("t", {"q": bomb}, _backend()) == [EXPANSION_KIND]
+
+    @pytest.mark.parametrize("text", ["محمد \ufdfa \ufdfa", "\u2026" * 40])
+    def test_short_text_that_more_than_doubles_is_not_a_bomb(self, text: str) -> None:
+        assert every_credential(text) == []
 
     def test_ordinary_non_ascii_text_is_not_a_bomb(self) -> None:
         text = "日本語のテキスト、\ufb01 ligature, \uff83\uff9e\uff70\uff80。" * 2000

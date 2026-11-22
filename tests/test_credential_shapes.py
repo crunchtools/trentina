@@ -13,6 +13,7 @@ import pytest
 
 from trentina import credential_shapes as c
 from trentina.credential_shapes import CredentialKind as K
+from trentina.gateway.outbound import every_credential
 
 # A 42-char key body, split in the source so no scanner reads the file as a leak.
 _TAIL = "Zq7" * 14
@@ -94,6 +95,7 @@ _HOSTILE = [
     "-----BEGIN ",
     "-----BEGIN A PRIVATE KEY-----",  # the PEM body loop
     "?key=",
+    "?token=",
     "sk-",
     "eyJ",
     "Bearer ",
@@ -107,4 +109,18 @@ def test_find_stays_linear(unit: str) -> None:
     for text in (unit * (1_000_000 // len(unit)), unit + "a" * 1_000_000):
         start = time.perf_counter()
         c.find(text)
+        assert time.perf_counter() - start < 2.0
+
+
+#: What the unmasking passes decode or fold, each repeated: escapes, entities,
+#: format characters, combining marks and a wide compatibility form.
+_HOSTILE_UNMASKED = [*_HOSTILE, "%25", "&amp;", "\\u0041", "\u200b", "\u0301", "\ufdfa", "\uff47"]
+
+
+@pytest.mark.parametrize("unit", _HOSTILE_UNMASKED)
+def test_every_credential_stays_linear(unit: str) -> None:
+    """The guard's whole read, raw and unmasked, is as linear as ``find``."""
+    for text in (unit * (1_000_000 // len(unit)), unit + "a" * 1_000_000):
+        start = time.perf_counter()
+        every_credential(text)
         assert time.perf_counter() - start < 2.0
