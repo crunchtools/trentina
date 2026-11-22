@@ -546,7 +546,9 @@ class BackendTokenStore:
             if ttl > 0:
                 await self._seal(collection, key, sealed, ttl=ttl)
             await self._previous.delete(key, collection=collection)
-            logger.info("backend-tokens: %s %s resealed under the current key", collection, key)
+            logger.info(
+                "backend-tokens: a %s record was resealed under the current key", collection
+            )
             return sealed if ttl > 0 else None
 
     async def _unseal_from(
