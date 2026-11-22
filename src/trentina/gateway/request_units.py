@@ -19,6 +19,11 @@ judge, a truncation) or refused is judged again next time. A flagged request
 still reaches the caller's audit row through ``flag_reason``; only the
 detection row is written once per kept verdict rather than once per request.
 
+L1's risk is a count per document, so it is graded on the whole request
+(#866): each unit's verdict carries L1's suspicious count, and ``merge`` sums
+them. Four markers split over two messages are four, a high, as they were
+before the request was cut, not two mediums. L1 still reads each unit once.
+
 The admission cap is one cap on the whole request. A request over it is
 judged whole, as before: ``block`` refuses it as ``oversize`` and ``flag``
 reads its head. Only a request under the cap is cut.
@@ -40,6 +45,7 @@ import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
+from ..l1.pipeline import risk_level_for_count
 from ..logsafe import exc_kind, exc_where
 from ..modes import Mode
 from ..orchestrator import OutboundVerdict, judge_outbound, outbound_trip
@@ -69,6 +75,9 @@ MAX_ENTRIES = 4096
 _TRANSIENT_GAPS = frozenset({"l2_unavailable", "l3_unavailable"})
 
 _RISK_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+
+#: L1 risks that flag on their own, as ``defense._decide`` rules for one document.
+_BLOCKING_L1_RISKS = ("high", "critical")
 
 _verdicts: OrderedDict[str, tuple[float, OutboundVerdict]] = OrderedDict()
 _inflight: dict[str, asyncio.Task[OutboundVerdict]] = {}
@@ -291,7 +300,7 @@ async def judge_units(
             for unit in units
         )
     )
-    return merge(verdicts)
+    return merge(verdicts, mode)
 
 
 async def _one_cap(units: list[str]) -> list[str]:
@@ -389,18 +398,28 @@ def _settle(key: str, task: asyncio.Task[OutboundVerdict]) -> None:
         )
 
 
-def merge(verdicts: list[OutboundVerdict]) -> OutboundVerdict:
-    """One request's verdict from its units': any unit's finding is the request's."""
+def merge(verdicts: list[OutboundVerdict], mode: Mode = Mode.FLAG) -> OutboundVerdict:
+    """One request's verdict from its units': any unit's finding is the request's.
+
+    L1's counts are added across the units (#866), so a request whose units
+    are each under L1's threshold and together over it is flagged by L1, and
+    refused under ``block``, as the request judged whole was.
+    """
     flagged = [v for v in verdicts if v.flagged]
     worst = max(flagged or verdicts, key=lambda v: _RISK_RANK.get(v.risk, 0))
+    l1_suspicious = sum(v.l1_suspicious for v in verdicts)
+    l1_risk = risk_level_for_count(l1_suspicious)
+    # No unit flagged alone, and L1's count over the whole request flags it.
+    by_l1 = not flagged and l1_risk in _BLOCKING_L1_RISKS
     return OutboundVerdict(
-        refused=any(v.refused for v in verdicts),
+        refused=any(v.refused for v in verdicts) or (by_l1 and mode is Mode.BLOCK),
         kinds=list(dict.fromkeys(k for v in verdicts for k in v.kinds)),
-        flagged=bool(flagged),
-        flagged_by=worst.flagged_by if flagged else None,
+        flagged=bool(flagged) or by_l1,
+        flagged_by="L1" if by_l1 else worst.flagged_by if flagged else None,
         unjudged=any(v.unjudged for v in verdicts),
         gaps=list(dict.fromkeys(g for v in verdicts for g in v.gaps)),
-        risk=worst.risk,
+        risk=l1_risk if by_l1 else worst.risk,
+        l1_suspicious=l1_suspicious,
     )
 
 

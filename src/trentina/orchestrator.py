@@ -376,6 +376,9 @@ class OutboundVerdict:
     #: Ids of the profile's honeytokens found in the request (#865), never values.
     #: A trip refuses in every mode, as on MCP, and no layer ran over the request.
     tripped: list[str] = field(default_factory=list)
+    #: L1's suspicious-detection count for this document, flagged or not, so
+    #: ``request_units.merge`` can grade L1's risk on the whole request (#866).
+    l1_suspicious: int = 0
 
     @property
     def reason(self) -> str | None:
@@ -517,6 +520,7 @@ async def judge_outbound(
     kinds = await asyncio.to_thread(detect_credentials, document)
     flagged, unjudged, flagged_by, risk = False, True, None, "unknown"
     gaps = ["l3_unavailable"]
+    l1_suspicious = 0
     # The partial-scan and blocklist rules live in Posture, so this path fails
     # closed for any future mode exactly as the tools do. Was `mode is Mode.BLOCK`
     # here -- a fail-open for a later non-BLOCK mode, masked only because redact is
@@ -547,6 +551,7 @@ async def judge_outbound(
         unjudged = g.blocking()
         gaps = g.names()
         risk = verdict.risk_level
+        l1_suspicious = verdict.pipeline.stats.suspicious_detections()
         layer_refuses = refusal_reason(flagged_by, g) is not None
     except Exception as exc:  # TimeoutError too: no verdict was reached
         logger.error(  # backend is server-configured (#262-safe); the message may carry the request
@@ -569,6 +574,7 @@ async def judge_outbound(
         unjudged=unjudged,
         gaps=gaps,
         risk=risk,
+        l1_suspicious=l1_suspicious,
     )
 
 

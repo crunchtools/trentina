@@ -34,6 +34,7 @@ under that name.
 
 ### Fixed
 
+- **L1 counts a `/proxy/llm` request whole again (#866, gap 34).** Since requests were cut into units (a341), L1 graded each message on its own, so four markers split over two messages were two mediums and flagged nothing. Each unit's `OutboundVerdict` now carries L1's suspicious count, and `request_units.merge` grades the sum: past L1's threshold the request is flagged by L1, and refused under `block`. L1 still reads each unit once, and a kept verdict carries its count.
 - `token_variants.matcher_for` builds and evicts under a lock: it is called from worker threads, and two could evict the same entry past 64 token sets. `MAX_BLOCKS`' docstring states the real fragment bound, `len(token) / 32 + 16` characters as written (an RSA-4096 PEM: 118), held by a test at 2048 and 4096 bits (a916 follow-up to #873).
 
 ### Changed

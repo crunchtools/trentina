@@ -681,10 +681,14 @@ one does; the rest name the benchmark that measured them.
     Judged whole, a Gatehouse burst timed most of its requests out unread.
     What the cut costs, each by design:
 
-    - **L1 counts per unit.** Its risk is a count per document (1 to 3
+    - *Closed for L1 (#866).* L1's risk is a count per document (1 to 3
       findings medium, 4 to 10 high), so four markers spread across two
-      messages are two mediums, which flag nothing, where the whole request
-      was a high, which flags.
+      messages were two mediums, which flagged nothing. Each unit's verdict
+      now carries L1's count, and `request_units.merge` grades the sum, so
+      they are four, a high, which flags as the whole request did. L1 still
+      reads each unit once; L2 and L3 still read a unit alone. A response
+      delivered in parts is not summed: its parts are judged when asked for,
+      in any order, each behind the 64-token lead-in L1 also reads.
     - **The frame is judged with no message beside it.** Anthropic's
       `system` and every tool definition stay in the frame; OpenAI's system
       prompt is a `messages` item and is its own unit, read without the user

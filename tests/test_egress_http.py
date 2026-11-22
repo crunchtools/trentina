@@ -29,7 +29,11 @@ from trentina import database as database_mod
 from trentina.gateway import egress_http, loader
 from trentina.gateway.destination import DestinationKind
 from trentina.gateway.profile import AuthConfig, EgressGrant, EgressUpstream, Profile
+from trentina.l1.pipeline import run_l1
 from trentina.transports import perimeter
+
+#: What ``defend``'s fakes carry as L1's result: nothing counted.
+NO_L1 = run_l1("")
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -106,7 +110,7 @@ class _Net:
 
 def _clean_verdict() -> SimpleNamespace:
     return SimpleNamespace(
-        flagged=False, flagged_by=None, risk_level="low", content="x", pipeline=None
+        flagged=False, flagged_by=None, risk_level="low", content="x", pipeline=NO_L1
     )
 
 
@@ -331,7 +335,9 @@ class TestRequestJudging:
     def test_flagged_request_blocks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from trentina.defense import Layer
 
-        flagged = SimpleNamespace(flagged=True, flagged_by=Layer.L2, risk_level="high")
+        flagged = SimpleNamespace(
+            flagged=True, flagged_by=Layer.L2, pipeline=NO_L1, risk_level="high"
+        )
         _stub_judge(monkeypatch, req=flagged)
         h = _harness(monkeypatch)
         resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
@@ -344,7 +350,9 @@ class TestRequestJudging:
     ) -> None:
         from trentina.defense import Layer
 
-        flagged = SimpleNamespace(flagged=True, flagged_by=Layer.L2, risk_level="high")
+        flagged = SimpleNamespace(
+            flagged=True, flagged_by=Layer.L2, pipeline=NO_L1, risk_level="high"
+        )
         _stub_judge(monkeypatch, req=flagged)
         h = _harness(monkeypatch, enforcement="flag")
         resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
@@ -359,7 +367,9 @@ class TestResponseJudging:
     ) -> None:
         from trentina.defense import Layer
 
-        flagged = SimpleNamespace(flagged=True, flagged_by=Layer.L2, risk_level="high")
+        flagged = SimpleNamespace(
+            flagged=True, flagged_by=Layer.L2, pipeline=NO_L1, risk_level="high"
+        )
         _stub_judge(monkeypatch, resp=flagged)
         h = _harness(monkeypatch)
         resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
@@ -374,7 +384,9 @@ class TestResponseJudging:
     ) -> None:
         from trentina.defense import Layer
 
-        flagged = SimpleNamespace(flagged=True, flagged_by=Layer.L2, risk_level="high")
+        flagged = SimpleNamespace(
+            flagged=True, flagged_by=Layer.L2, pipeline=NO_L1, risk_level="high"
+        )
         _stub_judge(monkeypatch, resp=flagged)
         h = _harness(monkeypatch, enforcement="flag")
         resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
@@ -529,7 +541,9 @@ class TestBodyFidelity:
         flagged readable request surfaces its finding, not just binary_unread."""
         from trentina.defense import Layer
 
-        flagged = SimpleNamespace(flagged=True, flagged_by=Layer.L2, risk_level="high")
+        flagged = SimpleNamespace(
+            flagged=True, flagged_by=Layer.L2, pipeline=NO_L1, risk_level="high"
+        )
         _stub_judge(monkeypatch, req=flagged)
         h = _harness(monkeypatch, enforcement="flag")
         resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, content=b"\xff\xfe\x00k")
@@ -615,7 +629,9 @@ class TestFlagAudit:
         """#5: the researcher grant is not a blind spot — the finding is audited."""
         from trentina.defense import Layer
 
-        flagged = SimpleNamespace(flagged=True, flagged_by=Layer.L2, risk_level="high")
+        flagged = SimpleNamespace(
+            flagged=True, flagged_by=Layer.L2, pipeline=NO_L1, risk_level="high"
+        )
         _stub_judge(monkeypatch, req=flagged)
         h = _harness(monkeypatch, enforcement="flag")
         resp = h.client.get("/proxy/http/gh/repos/x", headers=_AUTH)
@@ -841,7 +857,9 @@ class TestHoneytokenInRequest:
     ) -> None:
         from trentina.defense import Layer
 
-        flagged = SimpleNamespace(flagged=True, flagged_by=Layer.L2, risk_level="high")
+        flagged = SimpleNamespace(
+            flagged=True, flagged_by=Layer.L2, pipeline=NO_L1, risk_level="high"
+        )
         _stub_judge(monkeypatch, req=flagged)
         ordinary = _harness(monkeypatch).client.get("/proxy/http/gh/repos/x", headers=_AUTH)
         _stub_judge(monkeypatch)
