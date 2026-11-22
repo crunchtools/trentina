@@ -82,3 +82,11 @@ file = "src/trentina/defense.py"
 evidence = "if day is None:\n    return {\"injection_detected\": False, \"l3_unavailable\": True, \"l3_quota\": True}"
 status = "not-a-bug"
 reason = "A spent quota is a gap, not a pass: block and redact refuse on l3_quota whatever TRENTINA_REQUIRE_L3 says, stricter than l3_unavailable, as #891 specifies. flag delivering through a gap with the warning is the existing rule for every gap, l3_unavailable included (core/dispose.py, docs/defense-pipeline.md); flag is the deliberate-reading grant, kept out of agent policies. Ruled on by Josui Prime for #898 (flag delivers with the verdict attached)."
+
+[[findings]]
+agent = "constitution"
+category = "constitution"
+file = "src/trentina/orchestrator.py"
+evidence = "l3_context=COMPLETION_BRIEFING,"
+status = "not-a-bug"
+reason = "PERIMETER_VERSION sweeps verdicts a cache holds, and no completion verdict is held: judge_llm_completion records a detection row and returns, nothing writes it to the perimeter store, and the only cache it passes through (quarantine/l3_cache) keys on the briefing text, so a new briefing is already a new key. Bumping would sweep every cached tool-description verdict on every profile for nothing; constitution 2.8.0 applies the same test ('the route reaches no verdict a cache holds'). a1013, review a1045."
