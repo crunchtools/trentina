@@ -9,8 +9,8 @@ proxy, agent-egress-bench's ``fetch_proxy``), and ``/proxy/http``'s judging:
 - **which hosts**: the instance's ``hosts`` and the profile's grant, both, by
   NAME before anything is resolved. An address is never a host; ``*`` is any
   name and is approved by a person as that.
-- **which ports and schemes**: http or https, on 80 or 443 (any port for a
-  name on ``TRENTINA_FETCH_PRIVATE_NAMES``).
+- **which ports and schemes**: http or https, on 80 or 443 (or the port a
+  ``TRENTINA_FETCH_PRIVATE_NAMES`` entry names, ``name:8000`` or ``name:*``).
 - **what it carries**: the request line, query, forwarded headers and body are
   judged before it leaves (layers, the credential detector), and the response
   before it is delivered. No profile token is ever injected: an agent-chosen

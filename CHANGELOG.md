@@ -16,6 +16,7 @@ under that name.
 
 ### Fixed
 
+- **`TRENTINA_FETCH_PRIVATE_NAMES` no longer lifts the port rule by itself (a1063).** A listed name could reach any port, so a fixture or lab name was a licence to walk every service on that host; `TRENTINA_FETCH_ALLOW_PRIVATE` never lifted it. A bare name now keeps `fetch`'s and `forward`'s ports (80/443). `name:8000` adds that port for that name and `name:*` every port; an entry whose port is not one is dropped with a warning. **Migration:** a deployment that reaches a listed name on another port must name it, e.g. `mcp-gw-personal:8000` for #778's plain-http OAuth brokering, which otherwise fails `egress_port`. The benchmark workflow now lists its fixtures as `name:*`.
 - **`sdlc ci`'s image-tests fit a 4 GB seat (a1000).** They ran a fixed `-n 4`, and every xdist worker loads the L2 model (1.5 GB at peak, measured) and starts an OCR or PDF child of about the same, so a 4 GB seat had workers killed for memory until the run failed. They now pass `-n auto --worker-mb 1800`, and `tests/conftest.py` sizes `-n auto` from the memory the tightest cgroup from the process to the root can still take (and `MemAvailable`), never above the CPU count. One that fits runs in-process. `--maxprocesses 4` keeps the GitHub runners at the four they ran; without `--worker-mb`, `-n auto` is xdist's own.
 
 ## [6.27.0] - 2026-11-22
