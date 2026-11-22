@@ -61,3 +61,7 @@ research_notes/
 # pinned tag. A whole second repo, not ours to track.
 .gates/
 benchmarks/agent_egress/.run/
+
+# mutmut workdir and report (scripts/mutation_advisory.py)
+mutants/
+mutation-report/

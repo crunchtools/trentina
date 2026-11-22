@@ -10,6 +10,11 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- `tests/test_approval_state_machine.py`: a Hypothesis `RuleBasedStateMachine` over `pending` and `approver` together, the way the approval route composes them. It holds, at every step, that an approval applies only the proposal whose digest the person read, that nothing is applied while enrolment is open or no approver is configured, that an expired entry is never applied, and that a proposal applies at most once. Derandomized with no example database, so CI explores the same sequences every run. In place of the TLA+ model proposed in #859; `hypothesis` joins the `dev` extra.
+- `mutation-advisory.yml` runs mutmut over the security modules: the guards, approver, pending, egress policy, auth, file confinement, the L3 schema and provider base, and the egress guard. A pull request mutates only the modules it touches, or whose owning tests it touches; a weekly run mutates all of them. Each module is run against the tests that own it (`scripts/mutation_advisory.py`, `MODULES`), under a 40-minute cap that still reports what it checked. The score and every surviving mutant's diff go to the job summary. Advisory: `continue-on-error`, never a required check (#858).
+
 ### Security
 
 - **A honeytoken in a `/proxy/http` or `/proxy/llm` request is now a trip (#865).** `judge_outbound` matched nothing against the profile's planted credentials, so one sent out through egress or the LLM proxy was never seen; only MCP `tools/call` checked. Each route now checks the raw request first, before any other refusal, an admission count or a cached unit (a body that is not UTF-8 is read as latin-1), records `decoy_tripped`, and refuses in every mode, `flag` included, as MCP does. On `/proxy/llm` a delivered tool result is left out (only where its API puts it, and only when it answers a call made earlier in the request, Codex's `custom_tool_call_output` included): an agent that only read a planted file is not refused for the rest of its session. Each unit's scan is remembered, so a turn scans only what is new. The agent is told `flagged`, which names nothing; git, Matrix and the CONNECT tunnel stay known gaps.
