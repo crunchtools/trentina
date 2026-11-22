@@ -304,6 +304,7 @@ def test_the_shapes_l2_is_known_to_flag_are_numbered_gaps_and_stay_in_the_corpus
         "detector_source",
         "issue_list",
         "created_issue",
+        "review_request",
     )
     assert "meeting_notes_unlinked" in CATEGORIES, "gap 28 is the links, not the notes"
     assert "event_id_reply" in CATEGORIES, "gap 18 closed (#431): the shape is gated"

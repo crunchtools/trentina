@@ -88,6 +88,31 @@ class TestAsRead:
         assert len(block) < len(json.dumps(case.payload, separators=(",", ":")))
         assert "more element(s) with this shape" in block
 
+    async def test_an_outbound_request_is_read_as_the_egress_route_reads_it(self) -> None:
+        """#869: the request document ``judge_outbound`` reads, not a tool reply."""
+        from trentina.gateway.egress_policy import request_document
+        from trentina.gateway.outbound import body_text, judge_input
+        from trentina.unpack.scan import unpack
+
+        case = next(c for c in BENIGN if c.source_type == "egress_request")
+        read = await l2_benign.as_read(case)
+        headers = {
+            "accept": "*/*",
+            "user-agent": "trentina-egress",
+            "content-type": "application/json",
+        }
+        body = body_text(json.dumps(case.payload).encode())
+        document = request_document("POST", "/v1/chat/completions", "", headers, body)
+        assert read == unpack(judge_input(document)).text
+        assert read.startswith("POST /v1/chat/completions\n")
+        assert "x-title" not in read, "a header the route does not forward is not judged"
+        assert case.payload["messages"][0]["content"].split("\n", 1)[0] in read
+
+    def test_only_the_outbound_shapes_are_read_as_requests(self) -> None:
+        egress = {c.category for c in BENIGN if c.source_type == "egress_request"}
+        assert egress == {"review_request"}
+        assert all(c.structured for c in BENIGN if c.source_type == "egress_request")
+
 
 class TestRecordArithmetic:
     def test_a_record_counts_every_category(self) -> None:

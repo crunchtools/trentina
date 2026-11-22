@@ -7,7 +7,11 @@ invented, of the shapes production refused) is read exactly as the gateway
 reads a tool response: the structured copy of the text block dropped as the
 router drops it (``results._drop_duplicate_structured``, #431), through the
 default pre-processors (``gateway.transform.transform_response``), collected
-the way the perimeter collects it, and unpacked. L2 scores that once.
+the way the perimeter collects it, and unpacked. A case that is an outbound
+request (``source_type == "egress_request"``: a model call an agent sends
+through an ``egress_http`` upstream, #869) is read as that route reads it
+instead (``corpora.gateway_read.as_request``): a gate that read it as a tool
+reply would pass while production refused. L2 scores that once.
 
 The corpus is split one case in four for tuning. A threshold, or a
 pre-processor's wording, is chosen on the tuning split; the held-out split is
@@ -43,6 +47,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from corpora.benign_ops import BENIGN, CATEGORIES, KNOWN_GAPS, Benign, in_tuning
+from corpora.gateway_read import as_request
 from corpora.internal import CORPUS
 from trentina.config import get_config
 from trentina.gateway.collect import _collect_response_texts
@@ -79,8 +84,11 @@ async def as_read(case: Benign) -> str:
     ``structuredContent``; a document as a text block alone. The router drops
     a structured copy that repeats the text, the default pre-processors
     rewrite the text block, the perimeter collects what is left, and the
-    unpack stage builds what the layers read from that.
+    unpack stage builds what the layers read from that. An outbound request
+    is read as the egress route reads it.
     """
+    if case.source_type == "egress_request":
+        return as_request(case.payload)
     text = json.dumps(case.payload, separators=(",", ":")) if case.structured else case.payload
     blocks: list[Any] = [{"type": "text", "text": text}]
     structured = _drop_duplicate_structured(case.payload if case.structured else None, blocks)

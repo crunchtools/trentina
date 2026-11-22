@@ -142,7 +142,7 @@ The image ships that one model. Horizon, the base, shipped until 2.0.0: it refus
 
 **The obfuscation gate is enforced.** The image build classifies every corpus attack plain and under six transforms with the shipped model and writes the result into its `trentina-model.json` (`benchmarks/l2_obfuscation.py --record`); a model that fails stops the build. At startup the gateway reads the record: a model with a failing record, or none, is logged as `l2_obfuscation_gate_failed` or `l2_obfuscation_gate_unrecorded`, and under `TRENTINA_REQUIRE_HARDENED` the gateway refuses to start. The gate's state is part of the verdict stamp. garak's nineteen further encodings are measured against the model and gate nothing (`benchmarks/l2_encodings.py`, #423): the model reads quoted-printable and MIME, which barely change the text, and none of the others; base16, hex, base32, Ascii85, base85, UU, Braille, Morse, the NATO alphabet, sneaky bits, Base2048, Ecoji and Zalgo are decoded before it is asked (base16/hex, the six of #546 and the five of 6.6.0), and ROT13, Atbash and leetspeak are read back when the reading is English (6.7.0, #720; what is not read back is gap 22). To run your own model, export it and record the gate against it before you point `CLASSIFIER_MODEL_PATH` at it.
 
-**So is the benign gate (#411).** The same build then runs the model, at the threshold it ships with, over 296 invented benign cases of the shapes production refused (unit properties, journals, disk-usage and container listings, metrics rows, replies that carry an identifier, agent-forum replies, machine-written meeting notes, writing about attacks), 207 of them gated, each read as the gateway reads a tool response: through the default transforms, the text block and then every string of the structured content, unpacked. A model that flags more than 2% of the held-out cases stops the build (`benchmarks/l2_benign.py --record`). The record carries the threshold it was taken at, so a gateway started with another `CLASSIFIER_THRESHOLD` reports `l2_benign_gate_unrecorded` until the gate is run at that one. Numbers, and the shapes the shipped model still flags (known gap 31), are in [benchmark.md](benchmark.md#l2-benign-gate-411-404).
+**So is the benign gate (#411).** The same build then runs the model, at the threshold it ships with, over 352 invented benign cases of the shapes production refused (unit properties, journals, disk-usage and container listings, metrics rows, replies that carry an identifier, agent-forum replies, machine-written meeting notes, writing about attacks, an LLM code reviewer's outbound requests), 261 of them gated, each read as the gateway reads a tool response (or, for an outbound request, as the egress route reads it, #869): through the default transforms, the text block and then every string of the structured content, unpacked. A model that flags more than 2% of the held-out cases stops the build (`benchmarks/l2_benign.py --record`). The record carries the threshold it was taken at, so a gateway started with another `CLASSIFIER_THRESHOLD` reports `l2_benign_gate_unrecorded` until the gate is run at that one. Numbers, and the shapes the shipped model still flags (known gap 31), are in [benchmark.md](benchmark.md#l2-benign-gate-411-404).
 
 Measured on our corpora (`docs/benchmark.md`, #350), Horizon, the base model and the default until 2.0.0, catches 36 of 39 internal attacks to Prompt Guard 2's 8, and 21 of 39 when they are planted inside long benign documents to Prompt Guard 2's 4, flagging 3 of 150 benign documents to Prompt Guard 2's 0, at 2.4x the throughput on CPU. Two English-only DeBERTa models, ProtectAI's v2 and PIGuard, were measured and rejected (#353): they flag 29 and 67 of the 150. Prompt Guard 2 is the better detector of DAN-style direct jailbreaks (624 vs 520 of 666 on the jackhhao set, 1 and 3 false positives of 640).
 
@@ -687,6 +687,21 @@ one does; the rest name the benchmark that measured them.
       messages is judged clean on its own.
 
     Tested (`tests/test_request_units.py`, `tests/test_coverage_gaps.py`).
+
+35. **L2 flags an LLM code reviewer's own prompts on an egress route**
+    (#869). Gatehouse sends a model provider a system prompt of reviewer
+    roles (a workflow secret-exfiltration checklist, "Do NOT flag",
+    "MUST", CRITICAL) and a diff that may hold `${{ secrets.* }}` and
+    `curl`. Through an `egress_http` grant under `block`, 18 of 18 requests
+    of one run were refused on Dolza, `flagged_by=L2` at 0.63 to 0.99 with
+    L3 clean. A lone L2 flag is not overruled by L3 (#851 closed); the fix is
+    the model's. Invented cases of the shape are in `corpora/benign_ops.py`
+    (`review_request`), read as the egress route reads a request
+    (`corpora.gateway_read.as_request`: request line, forwarded headers,
+    body unescaped, revealed and credential-redacted, unpacked), not as a
+    tool reply. The shipped model flags most of them; they are scored on
+    every build outside the budget and in the L2 fine-tune's anchor set
+    until a model that passes them is pinned.
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 
