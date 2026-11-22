@@ -132,7 +132,7 @@ profiles:
 | `tools` | one of these two | Backend name to the exact tool names whose calls are judged. No globs. |
 | `egress_http` | one of these two | [Terminating-egress](egress-http.md) upstream names whose outbound requests are judged. No globs; each is a grant this profile holds. |
 | `timeout_seconds` | no | How long a judgment may take before the call is refused. Default 30. |
-| `refuse_when_flagged` | no | Refuse these calls without asking the judge once the session has been delivered flagged content. Default false. |
+| `refuse_when_flagged` | no | Refuse these calls without asking the judge once the session has been delivered flagged content, tripped a decoy or tried to send a credential (#860). Default false. |
 
 A block must guard something: set `tools`, `egress_http`, or both.
 
@@ -248,7 +248,7 @@ code and nothing else:
 | `other` | judge | A refusal with no listed reason, or an answer that was not an explicit allow. |
 | `arguments_flagged` | layers | L1, L2 or L3 flagged the arguments. |
 | `arguments_unjudged` | layers | The layers could not finish reading the arguments. |
-| `session_flagged` | gateway | `refuse_when_flagged` is set, and this session was delivered flagged content or sent no session ID. |
+| `session_flagged` | gateway | `refuse_when_flagged` is set, and this session was delivered flagged content, tripped a decoy, tried to send a credential, or sent no session ID. |
 | `gatekeeper_unavailable` | gateway | No judge is configured, or it failed, timed out, answered off-schema or leaked its canary. |
 
 It fails closed. Anything other than an explicit allow refuses the call.

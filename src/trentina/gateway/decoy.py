@@ -22,16 +22,20 @@ a Matrix message or a CONNECT tunnel.
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any
 
 from ..database import record_capture, record_detection
 from ..dbus_interface import emit_detection_event
 from ..token_variants import matcher_for
-from .context import current_call
+from .context import current_call, current_session
 from .profile import HONEYTOKEN_REF_RE
+from .session_marks import mark_flagged
 
 if TYPE_CHECKING:
     from .profile import Backend, DecoyTool, Profile
+
+logger = logging.getLogger(__name__)
 
 LAYER = "decoy"
 """What a trip's detection row and event are credited to, where a layer's name goes."""
@@ -120,11 +124,17 @@ def record_trip(profile: str, backend: str, tool: str, what: str) -> None:
     """A detection row and a live event for a trip. ``what`` is the kind of
     trip and the ids of any planted credentials, never a value.
 
+    The session is marked before anything is written (#860): a trip is
+    evidence the agent is being steered, so ``refuse_when_flagged`` and the
+    gatekeeper's judge see it as they see delivered flagged content. On
+    ``/proxy/http`` and ``/proxy/llm`` there is no session, and nothing is marked.
+
     Never blocklisted: ``blocked`` keys the blocklist, which refuses a source
     on its next fetch, and a tool is not a source. Called after the audit row
     is written, so a write that fails here loses the detection and not the
     trip: it surfaces as the gateway error it is.
     """
+    mark_session(f"trip {what}")
     source = f"{profile}:{backend}:{tool}"
     record_detection(
         source_type="decoy",
@@ -141,3 +151,20 @@ def record_trip(profile: str, backend: str, tool: str, what: str) -> None:
         call_ref=current_call.get() or None,
     )
     emit_detection_event(LAYER, source, "high", {"trip": what})
+
+
+def mark_session(why: str) -> None:
+    """Mark the calling session flagged for what the agent itself did (#860).
+
+    A decoy trip and a refused credential are the agent misbehaving, not
+    content arriving, and they share the one mark ``refuse_when_flagged``
+    reads. ``why`` names the kind, never a value.
+    """
+    session = current_session.get()
+    if mark_flagged(session):
+        logger.info(
+            "gateway: session %s… marked flagged by %s call_ref=%s",
+            session[:8],
+            why,
+            current_call.get() or "?",
+        )
