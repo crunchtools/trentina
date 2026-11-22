@@ -14,7 +14,9 @@ outside the store. The name's shape is what makes the join safe.
 
 The store lives beside the audit database — ``/data`` in the container — which
 is the same directory ``backend_tokens`` keeps its grants in and which
-``tools/confine.py`` refuses to every file tool.
+``tools/confine.py`` refuses to every file tool. Each file is sealed under the
+KEK when there is one (``at_rest``, #868); a key minted before that is sealed
+the first time it is read.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from ..config import get_config
-from . import secret_file
+from . import at_rest, secret_file
 
 #: A key name, shaped like a backend or profile name. It becomes a filename, so
 #: the shape is what keeps it one: no dot, no slash, no traversal.
@@ -78,7 +80,7 @@ def mint(name: str) -> str:
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    secret_file.write_once(path, private_pem)
+    secret_file.write_once(path, at_rest.seal(private_pem))
     return (
         key.public_key()
         .public_bytes(
@@ -93,6 +95,7 @@ def read_key(name: str) -> str:
     """The stored private PEM for ``name``, or raise ``OSError``.
 
     Read on every load and every reload, which is what makes a key minted after
-    startup take effect without one.
+    startup take effect without one. ``at_rest.read`` unseals it, and raises
+    ``ProfileConfigError`` for a sealed key no KEK opens.
     """
-    return key_path(name).read_text(encoding="utf-8")
+    return at_rest.read(key_path(name)).decode("utf-8")

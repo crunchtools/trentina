@@ -12,6 +12,8 @@ actually load-bearing:
   existing file, a planted file and a symlink in one move; a write that fails
   part way is unlinked, so the name stays free rather than becoming
   permanently unusable.
+- Both are fsynced, and so is the directory after a rename, so a crash
+  leaves either the old file or the new one and never a torn one.
 
 Everything here lives under ``get_config().db_path``'s directory — ``/data`` in
 the container — which ``tools/confine.py`` refuses to every file tool.
@@ -54,25 +56,43 @@ def write_once(path: Path, payload: bytes) -> None:
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
     except BaseException:
         path.unlink(missing_ok=True)
         raise
+    _fsync_dir(path.parent)
 
 
 def replace_atomically(path: Path, payload: bytes) -> None:
     """Put ``payload`` at ``path`` 0600, replacing whatever was there.
 
-    For the one secret that is MEANT to be replaced: an approval password a
-    person changes. Staged and renamed rather than truncated and rewritten,
+    For a secret that is MEANT to be replaced: an approval password a person
+    changes, a rotated outside credential, and a file ``at_rest`` seals or
+    reseals. Staged, fsynced and renamed rather than truncated and rewritten,
     because a half-written verifier would lock approvals out until somebody
-    noticed.
+    noticed, and a half-written sealed key would lose the key. A staged file
+    a crash left behind is truncated by the next write; ``O_NOFOLLOW``
+    refuses one planted as a symlink.
     """
     staged = path.with_name(path.name + ".staged")
-    fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, FILE_MODE)
+    fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, FILE_MODE)
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(staged, path)
     except BaseException:
         staged.unlink(missing_ok=True)
         raise
+    _fsync_dir(path.parent)
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Make a create or a rename in ``directory`` durable."""
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)

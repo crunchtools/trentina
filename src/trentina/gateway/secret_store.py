@@ -25,19 +25,21 @@ argument would copy it into the operator's transcript and the audit log::
 ``put`` is write-once, so a value in use is not replaced by accident;
 ``--replace`` is for rotating an outside credential, which keeps its name.
 The store lives beside the others under ``/data``, which ``tools/confine.py``
-refuses to every file tool.
+refuses to every file tool. Each value is sealed under the KEK when there is
+one (``at_rest``, #868), so ``put`` needs ``TRENTINA_SECRETS_KEK_FILE`` in the
+environment it runs in, as ``podman exec`` into the gateway's container has.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 from pathlib import Path
 
 from ..config import get_config
-from . import secret_file
+from ..errors import ConfigError
+from . import at_rest, secret_file
 from .errors import ProfileConfigError
 
 #: An env var name. It becomes a filename, so the shape is what keeps it one:
@@ -63,22 +65,20 @@ def read_secret(name: str) -> str:
 
     Absent is "", like an unset variable, so "is this required?" stays the
     caller's. A file that exists and cannot be read is a broken store, not an
-    absent secret, and raises. ``O_NOFOLLOW`` refuses a symlink planted in the
-    directory. Not held here: the loader holds what it resolves, once.
+    absent secret, and raises. ``at_rest.read`` refuses a symlink planted in
+    the directory and unseals the value. Not held here: the loader holds what
+    it resolves, once.
     """
     path = _path(name)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        return at_rest.read(path).decode("utf-8").strip()
     except FileNotFoundError:
         return ""
     except OSError as exc:
         raise ProfileConfigError(
             f"secret store: cannot read {name} ({exc.strerror or type(exc).__name__})"
         ) from exc
-    try:
-        with os.fdopen(fd, "rb") as fh:
-            return fh.read().decode("utf-8").strip()
-    except (OSError, UnicodeDecodeError) as exc:
+    except UnicodeDecodeError as exc:
         raise ProfileConfigError(
             f"secret store: cannot read {name} ({type(exc).__name__})"
         ) from exc
@@ -94,7 +94,7 @@ def put(name: str, value: str, *, replace: bool = False) -> None:
     if not value:
         raise ProfileConfigError(f"secret store: refusing an empty value for {name}")
     secret_file.private_dir(_DIR_NAME)
-    payload = value.encode("utf-8")
+    payload = at_rest.seal(value.encode("utf-8"))
     if replace:
         secret_file.replace_atomically(path, payload)
     else:
@@ -123,6 +123,13 @@ def main(argv: list[str] | None = None) -> int:
         for name in names():
             print(name)
         return 0
+    try:
+        # The gateway's own refusal, here too: under TRENTINA_REQUIRE_HARDENED
+        # a value is never written unsealed.
+        at_rest.configure()
+    except ConfigError as exc:
+        print(exc, file=sys.stderr)
+        return 1
     try:
         put(args.name, sys.stdin.read(), replace=args.replace)
     except FileExistsError:

@@ -17,6 +17,7 @@ from trentina import logsafe
 from trentina import perimeter_db as perimeter_db_mod
 from trentina.gateway import upstream as upstream_mod
 from trentina.gateway.aggregate import reset_profile_tools_cache
+from trentina.gateway.at_rest import reset as reset_at_rest
 from trentina.gateway.backend import reset_tool_list_cache
 from trentina.gateway.circuit import breaker
 from trentina.gateway.loader import reset_active_config
@@ -48,6 +49,9 @@ def _reset_singletons() -> None:
     reset_profile_tools_cache()
     reset_verdict_cache()
     reset_l3_cache()
+    # The KEK is read once and kept; a test that sets one must not seal the
+    # stores of every test after it.
+    reset_at_rest()
     reset_request_units()
     reset_scanned()
     # The sqlite connection is bound to the thread that created it, and

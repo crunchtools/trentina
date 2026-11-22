@@ -1237,3 +1237,9 @@ path = "tests/test_provider_vertex.py"
 pattern = "handle"
 justification = "httpx.MockTransport handler: one callable routes every request, so the token-endpoint vs generateContent branch is the router itself and has no call site to move to."
 classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "corpora/fetch.py"
+justification = "pinned (a benchmark file checked against a SHA-256) is matched to at_rest.configure (the startup KEK read). They share an if/raise/return shape and no statement: one hashes a download, the other decides whether a gateway may start without its sealing key."
+classification = "by_design"
