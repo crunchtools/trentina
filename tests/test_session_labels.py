@@ -142,6 +142,12 @@ class TestCredentialSeen:
         await session_marks._mark_session(Assembled(result=result, outcome=Outcome.OK))
         assert session_marks.labels(session) == {L.CREDENTIAL_SEEN}
 
+    async def test_an_embedded_resource_uri_is_read(self, session: str) -> None:
+        uri = "https://api.example/v1?token=" + GITHUB
+        result = {"content": [{"type": "resource", "resource": {"uri": uri, "text": "clean"}}]}
+        await session_marks._mark_session(Assembled(result=result, outcome=Outcome.OK))
+        assert session_marks.labels(session) == {L.CREDENTIAL_SEEN}
+
     async def test_a_clean_response_labels_nothing(self, session: str) -> None:
         await session_marks._mark_session(_delivered("nothing secret here"))
         assert session_marks.labels(session) == frozenset()
@@ -164,12 +170,10 @@ class TestCredentialSeen:
 class TestEarlyRefusalsStillLabel:
     """A credential sent with a call refused before the credential check (#892 review)."""
 
-    async def test_non_object_arguments(self, session: str) -> None:
-        from trentina.gateway import request_edge
-        from trentina.gateway.profile import Backend
-
-        backend = Backend(url="http://luna:8000/mcp", tools_allow=["*"])
-        assert await request_edge.mark_refused_credentials(backend, "echo", ["tok " + GITHUB])
+    async def test_non_object_arguments(self, tmp_path: Any, session: str) -> None:
+        _, seen, row = await _credential_call(tmp_path, ["tok " + GITHUB])
+        assert seen == []
+        assert row["error_message"] == "arguments must be an object"
         assert session_marks.labels(session) == {L.TRIPPED}
 
     async def test_a_refused_mode(self, tmp_path: Any, session: str) -> None:

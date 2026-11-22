@@ -205,7 +205,7 @@ _SCHEMAS: dict[str, dict[str, Any]] = {
 
 async def _call(
     tmp_path: Any,
-    arguments: dict[str, Any],
+    arguments: Any,
     backend: Backend | None = None,
     tool: str = "echo",
     mode: Any = None,
@@ -240,7 +240,7 @@ async def _call(
         {"name": n, "inputSchema": s, "annotations": {"readOnlyHint": False}}
         for n, s in _SCHEMAS.items()
     ]
-    args = dict(arguments)
+    args: Any = dict(arguments) if isinstance(arguments, dict) else arguments
     if mode is not None:
         args["trentina_mode"] = mode
     try:
