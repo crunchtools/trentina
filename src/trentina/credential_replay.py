@@ -41,7 +41,7 @@ import yaml
 
 from .gateway.guards import refused_credentials
 from .gateway.modes_policy import MODE_PARAM, PROMPT_PARAM
-from .gateway.profile import Backend
+from .gateway.profile import DESTINATION_NAME_RE, Backend
 from .transforms.policy import PREPROCESS_PARAM
 
 if TYPE_CHECKING:
@@ -214,6 +214,10 @@ def replay(
         if pair is None and call.name is not None and profile in policy:
             pair = resolver.resolve(profile, call.name)
         backend = policy[profile].backends.get(pair[0]) if pair and profile in policy else None
+        # A tool name the profile schema would refuse, ``*`` above all, is not a
+        # call: printed as a key it would allow every tool on the backend.
+        if pair is not None and not DESTINATION_NAME_RE.fullmatch(pair[1]):
+            pair = None
         if pair is None or backend is None:
             report.unresolved += 1
             continue

@@ -276,3 +276,11 @@ def test_gateway_arguments_are_not_scanned(tmp_path, profiles, db, capsys):
     )
     code, _ = run(capsys, profiles, db, str(write(tmp_path, call)))
     assert code == 0
+
+
+def test_a_star_or_unsafe_tool_name_is_unresolved_never_printed(tmp_path, profiles, db, capsys):
+    calls = write(tmp_path, direct("*", KEY), direct("x: [jwt]\n  y", KEY))
+    code, out = run(capsys, profiles, db, str(calls), "--all")
+    assert code == 0
+    assert "(0 calls replayed, 0 would be refused, 2 unresolved)" in out
+    assert '"*"' not in out

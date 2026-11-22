@@ -19,11 +19,9 @@ The ORIGINAL request is what each caller forwards upstream — never these copie
 
 from __future__ import annotations
 
-import functools
 import html
 import json
 import re
-import sys
 import unicodedata
 from urllib.parse import unquote
 
@@ -109,20 +107,15 @@ class ExpansionError(ValueError):
     """NFKC grew the text past ``_NFKC_GROWTH``; the fold stopped there."""
 
 
-@functools.cache
-def _invisible_table() -> dict[int, None]:
-    """``str.translate``'s table deleting every ``_INVISIBLE`` code point.
-
-    Built once, on first use (a pass over the code space, a few hundred ms), so
-    the strip itself runs in C rather than a Python loop per character.
-    """
-    return {
-        cp: None for cp in range(sys.maxunicode + 1) if unicodedata.category(chr(cp)) in _INVISIBLE
-    }
-
-
 def _without_marks(text: str) -> str:
-    return text.translate(_invisible_table())
+    """``text`` less every ``_INVISIBLE`` character.
+
+    The deletion table holds only the distinct characters the text has, found
+    by ``set`` in C, so the per-character work is ``translate``'s and the
+    Python loop is over the alphabet, not the text.
+    """
+    table = {ord(c): None for c in set(text) if unicodedata.category(c) in _INVISIBLE}
+    return text.translate(table) if table else text
 
 
 def _bounded_nfkc(text: str) -> str:
