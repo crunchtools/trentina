@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -305,3 +306,66 @@ class TestFederationLinks:
         profiles_file = self._file(tools_allow=["send_message"])
         del profiles_file["profiles"]["josui"]["federation"]
         assert profile_lint.check_federation_links(profiles_file) == []
+
+
+class TestReleaseMinting:
+    """a936: only the operator may create or move a release, tag or ref."""
+
+    @staticmethod
+    def _file(allow: list[str], deny: list[str] | None = None, **profile: Any) -> dict[str, Any]:
+        github = {"url": "http://mcp-github:8000/mcp", "tools_allow": allow}
+        if deny is not None:
+            github["tools_deny"] = deny
+        return {"profiles": {"seat": {"backends": {"github": github}, **profile}}}
+
+    @pytest.mark.parametrize(
+        "name",
+        ["create_release", "github_create_tag", "update_ref", "delete_tag", "publishRelease"],
+    )
+    def test_release_writers(self, name: str) -> None:
+        assert profile_lint.mints_releases(name)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["get_release_details", "list_tags", "tag_pomodoro_to_ticket", "create_pull_request"],
+    )
+    def test_not_release_writers(self, name: str) -> None:
+        assert not profile_lint.mints_releases(name)
+
+    def test_a_wildcard_on_a_forge_is_a_finding(self) -> None:
+        (finding,) = profile_lint.check_release_minting(self._file(["*"]))
+        assert finding.code == "agent-mints-releases"
+        assert "'seat'" in finding.message and "'github'" in finding.message
+
+    def test_a_literal_anywhere_is_a_finding(self) -> None:
+        profiles_file = {
+            "profiles": {
+                "seat": {
+                    "backends": {
+                        "tools": {"url": "http://mcp-x:8000/mcp", "tools_allow": ["create_tag"]}
+                    }
+                }
+            }
+        }
+        assert len(profile_lint.check_release_minting(profiles_file)) == 1
+
+    def test_the_documented_deny_closes_it(self) -> None:
+        doc = (REPO / "docs" / "tool-filtering.md").read_text()
+        block = doc.split("### Releases stay with the operator")[1].split("```yaml")[1]
+        github = yaml.safe_load(block.split("```")[0])["github"]
+        assert profile_lint.check_release_minting(self._file(["*"], github["tools_deny"])) == []
+        assert not any(
+            fnmatchcase("get_release_details", p) or fnmatchcase("list_tags", p)
+            for p in github["tools_deny"]
+        )
+
+    def test_the_operator_is_clean_and_assistants_are_not(self) -> None:
+        assert profile_lint.check_release_minting(self._file(["*"], role="operator")) == []
+        assistant = {**self._file(["*"]), "assistants": {"profiles": ["seat"], "reason": "x"}}
+        assert len(profile_lint.check_release_minting(assistant)) == 1
+
+    def test_a_wildcard_off_a_forge_is_clean(self) -> None:
+        profiles_file = {
+            "profiles": {"seat": {"backends": {"memory": {"url": "http://mcp-memory:8000/mcp"}}}}
+        }
+        assert profile_lint.check_release_minting(profiles_file) == []

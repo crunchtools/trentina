@@ -107,6 +107,18 @@ _FILLERS = tuple(
     for fill in (verb, f"{verb}_x", f"x_{verb}", f"{verb}_message", f"{verb}_post")
 )
 
+#: With a write verb, these make a tool mint or move a release: create_release, delete_tag.
+RELEASE_NOUNS = frozenset({"release", "releases", "tag", "tags", "ref", "refs"})
+
+#: Names a release-tool glob is filled with: what ``create_*`` on a forge admits.
+_RELEASE_FILLERS = (
+    "create_release", "update_release", "publish_release", "delete_release",
+    "create_tag", "delete_tag", "create_ref", "update_ref",
+)  # fmt: skip
+
+#: A backend name or host carrying one of these is a forge.
+FORGE_WORDS = ("github", "gitlab", "gitea", "forgejo")
+
 _TOKEN_RE = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
 _REQUIRE_RE = re.compile(r"^TRENTINA_REQUIRE_[A-Z0-9_]+$")
 FETCH_TOOL = "fetch_tool"
@@ -403,6 +415,63 @@ def check_self_authorize(profiles_file: dict[str, Any]) -> list[Finding]:
     return findings
 
 
+def mints_releases(name: str) -> bool:
+    """A write whose object is a release, tag or ref: ``create_release``, ``github_create_tag``.
+
+    The verb is the one ``classify`` finds; the noun is looked for after it, so
+    ``tag_pomodoro_to_ticket``, whose verb is ``tag``, is not one.
+    """
+    return "write" in classify(name) and any(w in RELEASE_NOUNS for w in tokens(name)[1:])
+
+
+def _is_forge(backend: str, spec: dict[str, Any]) -> bool:
+    host = urlsplit(str(spec.get("url", ""))).hostname or ""
+    return any(word in f"{backend} {host}".lower() for word in FORGE_WORDS)
+
+
+def release_tools(backend: str, spec: dict[str, Any]) -> list[str]:
+    """Allow patterns that admit a release-minting tool past ``tools_deny``."""
+    forge = _is_forge(backend, spec)
+    held = []
+    for pattern in spec.get("tools_allow", ["*"]):
+        if not any(c in pattern for c in "*?["):
+            candidates: tuple[str, ...] = (pattern,)
+        elif forge:
+            candidates = tuple(
+                pattern.replace("*", fill).replace("?", "x") for fill in _RELEASE_FILLERS
+            )
+        else:
+            continue
+        if any(
+            fnmatchcase(name, pattern) and _admits(spec, name) and mints_releases(name)
+            for name in candidates
+        ):
+            held.append(pattern)
+    return held
+
+
+def check_release_minting(profiles_file: dict[str, Any]) -> list[Finding]:
+    """A non-operator profile that can create or move a release, tag or ref (a936)."""
+    findings = []
+    for profile, body in _profiles(profiles_file).items():
+        if body.get("role", "agent") == "operator":
+            continue
+        for backend, spec in (body.get("backends") or {}).items():
+            if not isinstance(spec, dict):
+                continue
+            held = release_tools(str(backend), spec)
+            if held:
+                findings.append(
+                    Finding(
+                        "agent-mints-releases",
+                        f"profile {profile!r} is not an operator and backend {backend!r} "
+                        f"admits a release/tag-writing tool ({', '.join(held)}); "
+                        "add them to tools_deny",
+                    )
+                )
+    return findings
+
+
 def check_federation_links(profiles_file: dict[str, Any]) -> list[Finding]:
     """What a shared profile gives a peer, where the operator probably did not mean it.
 
@@ -512,6 +581,7 @@ def lint(profiles_file: dict[str, Any], *, config_source: str | None = None) -> 
         *check_guarded_destinations(profiles_file),
         *check_oauth_subjects(profiles_file),
         *check_self_authorize(profiles_file),
+        *check_release_minting(profiles_file),
         *check_federation_links(profiles_file),
         *check_require_defaults(config_source),
     ]
