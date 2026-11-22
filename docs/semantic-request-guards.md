@@ -155,7 +155,7 @@ lasting 12 hours from the last time it was set (#861):
 | Label | Set when |
 |---|---|
 | `flagged_delivery` | The session was delivered flagged or partly judged content. |
-| `tripped` | The session called a decoy, sent a planted credential, or tried to send a real one (#860). Also set when that credential rides on a call refused earlier for a refused mode, a held tool or non-object arguments. |
+| `tripped` | The session called a decoy, sent a planted credential, or tried to send a real one (#860). Also set when that credential rides on a call refused earlier by the allowlist, for a refused mode, a held tool or non-object arguments. |
 | `credential_seen` | The session was delivered a response (outcome ok or tool error) whose text holds a credential shape. A refused response sets nothing. The kinds are logged, never the values. |
 
 `refuse_when: [label, ...]` refuses these calls once the session carries any

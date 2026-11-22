@@ -30,6 +30,7 @@ import json
 import logging
 import time
 from collections import OrderedDict
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -61,7 +62,17 @@ class SessionLabel(StrEnum):
 FLAG_LABELS = frozenset({SessionLabel.FLAGGED_DELIVERY, SessionLabel.TRIPPED})
 """What ``refuse_when_flagged`` and the ``session_flagged`` fact cover."""
 
-_marks: OrderedDict[str, dict[SessionLabel, float]] = OrderedDict()
+
+@dataclass
+class _Entry:
+    labels: dict[SessionLabel, float] = field(default_factory=dict)
+    """Each live label and the monotonic time it was last set."""
+    unknown_until: float = 0.0
+    """Set when the entry was created while a dropped entry could have been
+    this session's: until then the labels here are not its whole history."""
+
+
+_marks: OrderedDict[str, _Entry] = OrderedDict()
 _unknown_until = 0.0
 """Monotonic time before which a session with no entry may be one we dropped."""
 
@@ -77,40 +88,43 @@ def mark(session: str, label: SessionLabel) -> bool:
         return False
     current = labels(session)
     first = current is None or label not in current
-    _marks.setdefault(session, {})[label] = time.monotonic()
+    now = time.monotonic()
+    # A session evicted by a flood and labelled again must not read as having
+    # only its new label: its dropped ones may have refused it. A window
+    # already past reads as known, so it needs no special case.
+    _marks.setdefault(session, _Entry(unknown_until=_unknown_until)).labels[label] = now
     _marks.move_to_end(session)
     while len(_marks) > MAX_MARKS:
         _, dropped = _marks.popitem(last=False)
-        if _unknown_until <= time.monotonic():
+        if _unknown_until <= now:
             logger.warning(
                 "session marks: table full at %d, dropping the oldest; unmarked "
                 "sessions read as unknown until the dropped marks expire",
                 MAX_MARKS,
             )
-        _unknown_until = max(_unknown_until, max(dropped.values()) + MARK_TTL_SECONDS)
+        _unknown_until = max(_unknown_until, max(dropped.labels.values()) + MARK_TTL_SECONDS)
     return first
 
 
 def labels(session: str) -> frozenset[SessionLabel] | None:
     """The live labels on *session*.
 
-    None when there is no session to ask about, or when it has no entry but
-    the table has dropped one recently enough that it might have been this
-    session's.
+    None when there is no session to ask about, or when the table has dropped
+    an entry recently enough that it might have been this session's: whether
+    this session has an entry since or not.
     """
     if not session:
         return None
     now = time.monotonic()
     entry = _marks.get(session)
-    if entry is not None:
-        for label in [lb for lb, at in entry.items() if now - at > MARK_TTL_SECONDS]:
-            del entry[label]
-        if entry:
-            return frozenset(entry)
+    if entry is None:
+        return None if now < _unknown_until else frozenset()
+    entry.labels = {lb: at for lb, at in entry.labels.items() if now - at <= MARK_TTL_SECONDS}
+    known = now >= entry.unknown_until
+    if known and not entry.labels:
         # The entry outlived every label in it; an expired one is not a drop.
         del _marks[session]
-        return frozenset()
-    return None if now < _unknown_until else frozenset()
+    return frozenset(entry.labels) if known else None
 
 
 def was_flagged(session: str) -> bool | None:

@@ -93,9 +93,9 @@ async def mark_refused_credentials(backend: Backend, tool_name: str, arguments: 
 
     Refused below whatever else is wrong with the call; trying to send one is
     the session's to answer for, as a decoy trip is (#860). Also called where
-    a call is refused before its arguments are checked (a refused mode, a held
-    tool, arguments that are not an object), so a credential sent alongside
-    one of those still labels the session (#861).
+    a call is refused before its arguments are checked (a tool the allowlist
+    denies, a refused mode, a held tool, arguments that are not an object), so
+    a credential sent alongside one of those still labels the session (#861).
     """
     if not isinstance(arguments, dict):
         arguments = {"arguments": arguments}

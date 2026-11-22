@@ -46,9 +46,11 @@ Ruled in the #861 triage (a916), scoped here:
 2. `tripped` is set by `decoy.mark_session`: a decoy trip, a planted
    credential, or a refused real credential in a call's arguments (#860).
    `request_edge.mark_refused_credentials` is also called where a call is
-   refused before its arguments are checked (a refused mode, a held tool,
-   non-object arguments), so a credential sent alongside one of those labels
-   the session too.
+   refused before its arguments are checked (a tool the allowlist denies, a
+   refused mode, a held tool, non-object arguments), so a credential sent
+   alongside one of those labels the session too. An unknown tool is the one
+   early refusal left out: it names no backend, so there is no
+   `credentials_allowed` to check the credential against.
 3. `credential_seen` is set when a delivered response (outcome `OK` or
    `TOOL_ERROR`, the same gate as `_mark_session`) holds any
    `credential_shapes.kinds` match over the text the agent receives. A refused
@@ -60,6 +62,9 @@ Ruled in the #861 triage (a916), scoped here:
    `{label: monotonic time}`. TTL (`MARK_TTL_SECONDS`, 12h) applies per label;
    `MAX_MARKS` and the dropped-entry rule are unchanged: while a dropped entry
    could still be live, a session with no entry has unknown labels, not empty.
+   An entry created inside that window records it (`_Entry.unknown_until`), so
+   a session evicted by a flood and then labelled again reads unknown, not as
+   carrying only its new label, until the window passes.
 5. `labels(session) -> frozenset[SessionLabel] | None`. `None` means no
    session or possibly dropped. `was_flagged` stays as "a `FLAG_LABELS` label
    is live" (None preserved); `FLAG_LABELS` is `flagged_delivery` and
@@ -95,8 +100,10 @@ Ruled in the #861 triage (a916), scoped here:
 - `refuse_when_flagged: true` and `refuse_when: [flagged_delivery, tripped]`
   behave identically across the existing #457 tests; both together join; a
   label listed twice fails to load.
-- A credential on a call refused for a refused mode, a held tool or
-  non-object arguments labels the session `tripped`.
+- A credential on a call refused by the allowlist, for a refused mode, a held
+  tool or non-object arguments labels the session `tripped`.
+- A session dropped by a flood and labelled again reads unknown until the
+  dropped entries would have expired.
 - `judge_egress` with `refuse_when` set still reaches the judge.
 
 ## Versioning

@@ -107,6 +107,35 @@ class TestLabels:
             now.return_value = 5000.0 + ttl + 1
             assert session_marks.labels("unseen") == frozenset()
 
+    def test_a_dropped_session_relabelled_stays_unknown(
+        self, session: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #899 review: a flood evicts a tripped session, which then picks up
+        # another label. It must not read as carrying only that one.
+        monkeypatch.setattr(session_marks, "MAX_MARKS", 3)
+        session_marks.mark("victim", L.TRIPPED)
+        for n in range(3):
+            session_marks.mark(f"flood-{n}", L.CREDENTIAL_SEEN)
+        session_marks.mark("victim", L.CREDENTIAL_SEEN)
+        assert session_marks.labels("victim") is None
+        assert session_marks.was_flagged("victim") is None
+
+    def test_a_relabelled_session_is_known_once_the_window_passes(
+        self, session: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(session_marks, "MAX_MARKS", 1)
+        ttl = session_marks.MARK_TTL_SECONDS
+        with patch.object(session_marks.time, "monotonic") as now:
+            now.return_value = 1000.0
+            session_marks.mark("victim", L.TRIPPED)
+            session_marks.mark("flood", L.CREDENTIAL_SEEN)
+            now.return_value = 2000.0
+            session_marks.mark("victim", L.CREDENTIAL_SEEN)
+            now.return_value = 1000.0 + ttl - 1
+            assert session_marks.labels("victim") is None
+            now.return_value = 1000.0 + ttl + 1
+            assert session_marks.labels("victim") == {L.CREDENTIAL_SEEN}
+
     def test_no_session_is_unknown(self) -> None:
         assert session_marks.labels("") is None
         assert session_marks.mark("", L.TRIPPED) is False
@@ -174,6 +203,15 @@ class TestEarlyRefusalsStillLabel:
         _, seen, row = await _credential_call(tmp_path, ["tok " + GITHUB])
         assert seen == []
         assert row["error_message"] == "arguments must be an object"
+        assert session_marks.labels(session) == {L.TRIPPED}
+
+    async def test_a_tool_the_allowlist_denies(self, tmp_path: Any, session: str) -> None:
+        from trentina.gateway.profile import Backend
+
+        backend = Backend(url="http://luna:8000/mcp", tools_allow=["other"])
+        _, seen, row = await _credential_call(tmp_path, {"text": "tok " + GITHUB}, backend)
+        assert seen == []
+        assert row["outcome"] == "denied_allowlist"
         assert session_marks.labels(session) == {L.TRIPPED}
 
     async def test_a_refused_mode(self, tmp_path: Any, session: str) -> None:

@@ -856,6 +856,7 @@ class McpServerFace(Face):
         )
 
         if not filter_tools([{"name": tool_name}], backend):
+            await request_edge.mark_refused_credentials(backend, tool_name, arguments)
             message = f"Tool {tool_name!r} not permitted on backend {backend_name!r}"
             audit._audit(
                 profile.name,
