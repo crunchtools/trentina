@@ -26,6 +26,7 @@ from ..database import (
     opened_path,
     snapshot_reader,
 )
+from ..gateway.compress import get_profiles
 from ..gateway.errors import ScopeError
 from ..gateway.scope import CallerScope, require_caller
 from ..gateway.service import judge_stamp, service_profile
@@ -36,6 +37,7 @@ from ..perimeter_db import opened_path as perimeter_opened_path
 from ..perimeter_db import perimeter_stamp
 from ..perimeter_db import snapshot_reader as perimeter_snapshot_reader
 from ..quarantine.classifier import is_classifier_available, model_info
+from ..quarantine.quota import snapshot as l3_quota
 
 GATEWAY_AUDIT_LOOKBACK_DAYS = 30
 
@@ -100,7 +102,10 @@ def _agent_stats(scope: CallerScope) -> dict[str, Any]:
             "l2_threshold": defense.l2_threshold,
             "enforcement": defense.enforcement,
             "modes": defense.modes,
+            "l3_daily_quota": defense.l3_daily_quota,
         },
+        # Its own cap and what is left of it today (#891).
+        "l3_quota": l3_quota(scope.profile),
         "classifier": _classifier(),
         "blocklist": get_blocklist_stats(profile=scope.name),
         # An agent is not shown its own decoy trips (#357), here or among its
@@ -164,6 +169,16 @@ def _snapshot(scope: CallerScope, path: str, perimeter_path: str) -> dict[str, A
         return _agent_stats(scope) if not scope.is_operator else _gateway_stats()
 
 
+def _l3_quotas() -> dict[str, dict[str, Any]]:
+    """Every profile with a daily L3 cap or a judgement today, by name (#891)."""
+    quotas = {}
+    for name, profile in sorted((get_profiles() or {}).items()):
+        quota = l3_quota(profile)
+        if quota["limit"] is not None or quota["used"]:
+            quotas[name] = quota
+    return quotas
+
+
 def _gateway_stats() -> dict[str, Any]:
     """The operator's gateway-wide view. Runs in a worker thread."""
     config = get_config()
@@ -208,6 +223,7 @@ def _gateway_stats() -> dict[str, Any]:
             ).items()
         },
         "fanout": get_fanout(),
+        "l3_quota": _l3_quotas(),
         "compression": get_compression_stats(),
         "surface": {name: surface_report(name) for name in surface_profiles()},
         "plugins": _plugins(),

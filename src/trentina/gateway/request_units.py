@@ -76,7 +76,7 @@ TTL_SECONDS = 600.0
 MAX_ENTRIES = 4096
 
 #: Gaps that say the judge did not answer, so the next request asks again.
-_TRANSIENT_GAPS = frozenset({"l2_unavailable", "l3_unavailable"})
+_TRANSIENT_GAPS = frozenset({"l2_unavailable", "l3_unavailable", "l3_quota"})
 
 _RISK_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 

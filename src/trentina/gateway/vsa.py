@@ -62,6 +62,7 @@ def content_digest(blocks: list[Any] | None, structured: Any, is_error: bool) ->
 _GAP_FLAGS = (
     "l2_unavailable",
     "l3_unavailable",
+    "l3_quota",
     "binary_unread",
     "l2_truncated",
     "l3_truncated",

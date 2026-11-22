@@ -829,7 +829,7 @@ The gateway applies the same rule to proxied responses and tool descriptions und
 
 ## When a layer errors or times out
 
-A layer that cannot give a verdict leaves a **gap** (`modes.Gaps`, derived once by `modes.gaps_of`). L2 with no model, or a model that failed to load, is `l2_unavailable`. L3 with no provider, a provider error or timeout after its fallbacks, or an answer outside the response schema is `l3_unavailable`; a missing answer is never read as clean. What a gap costs depends on the mode, and the **default mode depends on the surface**:
+A layer that cannot give a verdict leaves a **gap** (`modes.Gaps`, derived once by `modes.gaps_of`). L2 with no model, or a model that failed to load, is `l2_unavailable`. L3 with no provider, a provider error or timeout after its fallbacks, or an answer outside the response schema is `l3_unavailable`; a missing answer is never read as clean. A profile that has spent `defense.l3_daily_quota` gets `l3_quota` instead, not `l3_unavailable`, so a spent cap is not read as a provider outage (#891). What a gap costs depends on the mode, and the **default mode depends on the surface**:
 
 | Surface | Setting | Default |
 |---|---|---|
@@ -849,7 +849,7 @@ The gateway is what most deployments run, so for them the default is `flag`: unj
 | Alert ingress: `block` | Refused (403), the same `Gaps.blocking()` rule | Forwarded |
 | Alert ingress: `flag` | Forwarded, with the warning when flagged | Same |
 
-Two things hold in every row. A layer that ran but read only part of the payload (`l2_truncated`, `l3_truncated`), an over-cap payload and unread binary are never excused by `TRENTINA_REQUIRE_*`: `block` and `redact` refuse them. And `flag` is the only mode that delivers through a gap, so a mode added later fails closed until someone implements it (`response_edge.py`).
+Two things hold in every row. A layer that ran but read only part of the payload (`l2_truncated`, `l3_truncated`), a spent L3 quota (`l3_quota`), an over-cap payload and unread binary are never excused by `TRENTINA_REQUIRE_*`: `block` and `redact` refuse them. And `flag` is the only mode that delivers through a gap, so a mode added later fails closed until someone implements it (`response_edge.py`).
 
 ## Related
 

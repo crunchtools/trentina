@@ -10,6 +10,11 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- `defense.l3_daily_quota`: a per-profile cap on L3 judgements per UTC day (#891). Unset is unlimited; cache hits and background warm-up are free. At the cap the verdict carries a new `l3_quota` gap, distinct from `l3_unavailable`: `block` and `redact` refuse, `flag` delivers with it. In memory, so a restart resets it.
+- `quarantine_stats` reports `l3_quota` `{limit, used, remaining, resets_at}`: an agent's own, an operator's per profile.
+
 ### Fixed
 
 - **A request L1 flags on its summed count writes a detection row (#866 follow-up).** No unit's `defend` flagged, so none wrote one; `judge_units` now does, under the profile's `defense.audit`, with the summed count and the number of units in `layer1_stats`. `request_units.merge` takes `mode` as a required argument: its `flag` default would have let a caller skip a refusal under `block`.

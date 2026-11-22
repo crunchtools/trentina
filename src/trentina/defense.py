@@ -71,6 +71,7 @@ from .quarantine.classifier import (
 )
 from .quarantine.l3_cache import detect_once
 from .quarantine.prompts import L2_BLINDSPOT_CAVEAT, RISK_LEVELS
+from .quarantine.quota import charge as charge_l3
 from .unpack.child import run_unpacking
 from .unpack.scan import MAX_MEDIA_TOKEN, unpack
 
@@ -410,10 +411,21 @@ async def _stage_two(content: str, defense: DefenseConfig | None, briefing: str)
         _log_no_judge(defense)
         return {"l3_unavailable": True, "injection_detected": False}
     # Identical judgements share one call (``quarantine/l3_cache.py``): the
-    # recording below stays per caller, only the verdict is reused.
-    return await detect_once(
-        content, briefing, lambda: quarantine_detect(content, layer1_context=briefing)
-    )
+    # recording below stays per caller, only the verdict is reused. The daily
+    # quota (#891) is charged inside, so only a judgement that runs costs one.
+    return await detect_once(content, briefing, lambda: _judge_within_quota(content, briefing))
+
+
+async def _judge_within_quota(content: str, briefing: str) -> dict[str, Any]:
+    """One L3 detection, or the ``l3_quota`` marker when the profile's cap is spent.
+
+    The marker also carries ``l3_unavailable``, so every path that declines to
+    keep an unanswered verdict (both caches, the detection row) declines this
+    one; ``gaps_of`` reports it as ``l3_quota`` alone.
+    """
+    if not charge_l3(bound_profile()):
+        return {"injection_detected": False, "l3_unavailable": True, "l3_quota": True}
+    return await quarantine_detect(content, layer1_context=briefing)
 
 
 async def defend(
