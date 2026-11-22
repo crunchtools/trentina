@@ -572,6 +572,10 @@ def _collapsed(
     )
 
 
+#: What decides where a backend's calls, and so their arguments, are sent.
+_DESTINATION_FIELDS = ("url", "transport", "carrier")
+
+
 def _allows(allowance: dict[str, list[str]], tool: str, kind: str) -> bool:
     """Whether ``allowance`` already lets ``tool`` carry ``kind``.
 
@@ -589,14 +593,21 @@ def credentials_widened(before: dict[str, Profile], after: dict[str, Profile]) -
     tool, so a new one is a way for a key to leave in a tool call. It is
     compared by COVERAGE, not by key: ``["*"]`` narrowed to ``["github_token"]``
     adds a key and allows nothing new, so it applies at once, and a backend new
-    to the file brings its whole allowance as new.
+    to the file brings its whole allowance as new. So does a backend whose
+    destination moved (``url``, ``transport``, ``carrier``): an allowance was
+    approved for where the keys went, and repointing it sends them somewhere
+    nobody approved.
     """
     added: dict[str, str] = {}
     for name, profile in after.items():
         old_profile = before.get(name)
         for backend_name, backend in profile.backends.items():
             old_backend = old_profile.backends.get(backend_name) if old_profile else None
-            old = old_backend.credentials_allowed if old_backend is not None else {}
+            same_place = old_backend is not None and all(
+                getattr(old_backend, field) == getattr(backend, field)
+                for field in _DESTINATION_FIELDS
+            )
+            old = old_backend.credentials_allowed if old_backend and same_place else {}
             for tool, kinds in backend.credentials_allowed.items():
                 new = [kind for kind in kinds if not _allows(old, tool, kind)]
                 if new:
