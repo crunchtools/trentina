@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -201,6 +202,47 @@ class TestThroughDefend:
         second.assert_not_awaited()
         assert quota.snapshot(p)["used"] == 1
         assert not gaps_of(verdict).l3_quota
+
+    async def test_callers_sharing_a_flight_are_charged_once(self) -> None:
+        p = _profile(limit=5)
+        release = asyncio.Event()
+        calls = 0
+
+        async def held_detect(*_args: object, **_kwargs: object) -> dict:
+            nonlocal calls
+            calls += 1
+            await release.wait()
+            return {"injection_detected": False}
+
+        with (
+            patch(f"{_D}.classify_async", return_value=BENIGN_LOW),
+            patch(f"{_D}.record_detection"),
+            patch(f"{_D}.emit_detection_event"),
+            patch(f"{_D}.quarantine_detect", side_effect=held_detect),
+            profile_context(p),
+        ):
+            both = asyncio.gather(
+                *(
+                    defend(
+                        "one page",
+                        source="https://example.com",
+                        source_type="url",
+                        defense=p.defense,
+                    )
+                    for _ in range(2)
+                )
+            )
+            while calls == 0:
+                await asyncio.sleep(0)
+            # Let the second caller reach the flight the first one started.
+            for _ in range(50):
+                await asyncio.sleep(0)
+            release.set()
+            verdicts = await both
+
+        assert calls == 1
+        assert quota.snapshot(p)["used"] == 1
+        assert all(not gaps_of(v).l3_quota and not gaps_of(v).l3_unavailable for v in verdicts)
 
     async def test_a_refused_payload_is_judged_again_the_next_utc_day(
         self, monkeypatch: pytest.MonkeyPatch
