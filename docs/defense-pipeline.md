@@ -685,8 +685,9 @@ one does; the rest name the benchmark that measured them.
       findings medium, 4 to 10 high), so four markers spread across two
       messages were two mediums, which flagged nothing. Each unit's verdict
       now carries L1's count, and `request_units.merge` grades the sum, so
-      they are four, a high, which flags as the whole request did. L1 still
-      reads each unit once; L2 and L3 still read a unit alone. A response
+      they are four, a high, which flags as the whole request did, and the
+      request writes its own detection row (`layer1_stats` holds the summed
+      count and the number of units). L1 still reads each unit once; L2 and L3 still read a unit alone. A response
       delivered in parts is not summed: its parts are judged when asked for,
       in any order, each behind the 64-token lead-in L1 also reads.
     - **The frame is judged with no message beside it.** Anthropic's

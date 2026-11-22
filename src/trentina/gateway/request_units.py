@@ -23,6 +23,8 @@ L1's risk is a count per document, so it is graded on the whole request
 (#866): each unit's verdict carries L1's suspicious count, and ``merge`` sums
 them. Four markers split over two messages are four, a high, as they were
 before the request was cut, not two mediums. L1 still reads each unit once.
+No unit's ``defend`` wrote a detection row for that flag, so ``judge_units``
+writes one for the request.
 
 The admission cap is one cap on the whole request. A request over it is
 judged whole, as before: ``block`` refuses it as ``oversize`` and ``flag``
@@ -45,6 +47,8 @@ import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
+from ..database import record_detection
+from ..dbus_interface import emit_detection_event
 from ..l1.pipeline import risk_level_for_count
 from ..logsafe import exc_kind, exc_where
 from ..modes import Mode
@@ -300,7 +304,60 @@ async def judge_units(
             for unit in units
         )
     )
-    return merge(verdicts, mode)
+    merged = merge(verdicts, mode)
+    if merged.flagged and not any(v.flagged for v in verdicts):
+        _record_summed(
+            merged,
+            len(units),
+            source=source,
+            source_type=source_type,
+            backend=backend,
+            profile=profile,
+        )
+    return merged
+
+
+def _record_summed(
+    merged: OutboundVerdict,
+    units: int,
+    *,
+    source: str,
+    source_type: str,
+    backend: str,
+    profile: Profile,
+) -> None:
+    """The detection row for a request L1 flags on its summed count alone (#866).
+
+    ``defend`` writes a row only when the document it read flags, and here no
+    unit did. Counts only, as ``defend``'s row: never a unit's text. A failed
+    write is an audit gap, logged, and never loses the verdict.
+    """
+    if not profile.defense.audit:
+        return
+    try:
+        record_detection(
+            source_type=source_type,
+            source=source,
+            domain=None,
+            layer1_stats={"l1_suspicious_summed": merged.l1_suspicious, "units": units},
+            risk_level=merged.risk,
+            profile=profile.name,
+            backend=backend,
+            direction="request",
+            provenance="model_output",
+            blocked=merged.refused,
+            verdicts={"flagged_by": merged.flagged_by},
+        )
+        emit_detection_event(
+            "L1", source, merged.risk, {"l1_suspicious_summed": merged.l1_suspicious}
+        )
+    except Exception as exc:
+        logger.error(  # backend is server-configured (#262-safe)
+            "request_units: failed to record the summed L1 detection backend=%s: %s at %s",
+            backend,
+            exc_kind(exc),
+            exc_where(exc),
+        )
 
 
 async def _one_cap(units: list[str]) -> list[str]:
@@ -398,7 +455,7 @@ def _settle(key: str, task: asyncio.Task[OutboundVerdict]) -> None:
         )
 
 
-def merge(verdicts: list[OutboundVerdict], mode: Mode = Mode.FLAG) -> OutboundVerdict:
+def merge(verdicts: list[OutboundVerdict], mode: Mode) -> OutboundVerdict:
     """One request's verdict from its units': any unit's finding is the request's.
 
     L1's counts are added across the units (#866), so a request whose units
