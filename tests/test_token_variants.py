@@ -334,3 +334,39 @@ def test_the_shortest_token_with_each_encoded_form(length: int, form: str) -> No
     }[form]
     if form == "hex":  # a percent form decodes to the token itself
         assert TokenMatcher([shorter]).found(one_short) == []
+
+
+def _rsa_pem() -> str:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+
+
+def test_a_der_pem_key_matches_by_its_body_never_by_armour_or_der_head() -> None:
+    honey, other = _rsa_pem(), _rsa_pem()
+    matcher = TokenMatcher([honey])
+    other_lines = other.splitlines()
+    # Another key's armour line and its DER head (the start of its body).
+    assert matcher.found(other_lines[0] + "\n" + other_lines[1]) == []
+    assert matcher.found(other) == []
+    body = "".join(honey.splitlines()[1:-1])
+    assert matcher.found(body[600:680]) == [honey]
+
+
+def test_a_long_token_searches_a_bounded_number_of_blocks() -> None:
+    from trentina.token_variants import MAX_BLOCKS
+
+    honey = _rsa_pem()
+    matcher = TokenMatcher([honey])
+    assert len(matcher._blocks[honey]) <= MAX_BLOCKS
+    body = "".join(honey.splitlines()[1:-1])
+    # Any piece longer than the spacing of the kept blocks covers one of them.
+    span = len(honey) // MAX_BLOCKS + 2 * FRAGMENT_MIN
+    for start in range(300, len(body) - span, 97):
+        assert matcher.found(body[start : start + span]) == [honey], start

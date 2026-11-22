@@ -1456,6 +1456,26 @@ class TestHoneytokenInLlmRequest:
         assert resp.status_code == 403
         assert not fake.sent
 
+    @pytest.mark.parametrize("where", ["query", "header"])
+    def test_a_token_in_the_query_or_a_forwarded_header_is_a_trip(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path, where: str
+    ) -> None:
+        _stub_defend(monkeypatch)
+        fake = _FakeClient()
+        url = "/proxy/llm/gemini/v1beta/models/gemini-2.5-flash:generateContent"
+        headers = {"authorization": "Bearer agent1-tok"}
+        if where == "query":
+            url += f"?pageToken={self.HONEY}"
+        else:
+            headers["accept"] = f"application/json; x={self.HONEY}"
+        body = {"contents": [{"parts": [{"text": "hello"}]}]}
+        client = self._client(fake, monkeypatch, "flag")
+        resp = client.post(url, headers=headers, content=json.dumps(body).encode())
+        assert (resp.status_code, resp.json()["block_reason"]) == (403, "flagged")
+        assert not fake.sent
+        [row] = _rows(audit_db)
+        assert row["outcome"] == "decoy_tripped"
+
     def test_a_count_past_its_deadline_still_trips(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from trentina.gateway import request_units
 

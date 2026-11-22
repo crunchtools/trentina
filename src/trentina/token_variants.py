@@ -34,11 +34,11 @@ importable from both.
 
 Read time is linear in the haystack: one substring search per form (a handful
 per token) and one ``find`` per block of a token's eight characters that some
-admissible window covers, plus one ``re.sub`` when the haystack has line
-breaks. What this does not see: a token paraphrased, split across calls, or in
-an encoding not listed (ROT13, gzip, a custom cipher); ``\\x41``-style escaped
-hex; and a fragment of an ENCODED form (a piece of the token's base64 or hex),
-which is matched only whole.
+admissible window covers, at most ``MAX_BLOCKS`` a token, plus one ``re.sub``
+when the haystack has line breaks. What this does not see: a token
+paraphrased, split across calls, or in an encoding not listed (ROT13, gzip, a
+custom cipher); ``\\x41``-style escaped hex; and a fragment of an ENCODED form
+(a piece of the token's base64 or hex), which is matched only whole.
 """
 
 from __future__ import annotations
@@ -64,6 +64,13 @@ random alphanumerics score about 3.9 and 16 random hex digits 3.4 (0.2% fall
 under 2.5; at 3.0 it would be 14%, and a real fragment would go unseen)."""
 
 _BLOCK = FRAGMENT_MIN // 2
+
+MAX_BLOCKS = 32
+"""Blocks searched per token. A longer body (a PEM key) is searched by this
+many, evenly spaced, so the cost of a token is bounded however long it is: a
+piece is found when it covers one, so the shortest piece always found grows
+with the token, about ``len(body) / MAX_BLOCKS + FRAGMENT_MIN`` characters (a
+1,600-character key body: about 66)."""
 
 # Fixed lead-ins of vendor credentials: every token of the kind starts with one,
 # so a window over it matches somebody else's. Longest match wins. The shapes
@@ -367,6 +374,9 @@ class TokenMatcher:
                     for at in range(0, len(token) - _BLOCK + 1, _BLOCK)
                     if any(start in starts for start in range(max(0, at - _BLOCK), at + 1))
                 ]
+                if len(blocks) > MAX_BLOCKS:
+                    step = len(blocks) / MAX_BLOCKS
+                    blocks = [blocks[int(i * step)] for i in range(MAX_BLOCKS)]
                 if blocks:
                     self._blocks[token] = blocks
                     self._starts[token] = starts
