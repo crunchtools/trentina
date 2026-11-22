@@ -1240,6 +1240,14 @@ classification = "by_design"
 
 [[exceptions]]
 check = "copy_paste_detection"
+path = "scripts/mutation_advisory.py"
+item = "main"
+justification = "A CLI main: parse arguments, run, print, append to the job summary, return 0. It shares that statement shape with pdf_worker.main and corpora/fetch.py's pinned, and no code; there is nothing to extract."
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
 path = "corpora/fetch.py"
-justification = "pinned (a benchmark file checked against a SHA-256) is matched to at_rest.configure (the startup KEK read). They share an if/raise/return shape and no statement: one hashes a download, the other decides whether a gateway may start without its sealing key."
+item = "pinned"
+justification = "Matched only by shape: against scripts/mutation_advisory.py's main (a CLI entry point with the same run-print-return shape) and gateway/at_rest.configure (the startup KEK read, an if/raise/return), sharing none of the same code."
 classification = "by_design"

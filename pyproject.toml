@@ -104,6 +104,9 @@ dev = [
     # Runs the suite across every core: addopts sets -n auto, and -n0 runs a
     # single test in-process.
     "pytest-xdist>=3.6",
+    # Stateful property tests (tests/test_approval_state_machine.py, #859).
+    # CI runs them derandomized: the same examples on every run.
+    "hypothesis>=6.170",
     "ruff>=0.8",
     "mypy>=1.13",
     # A benign out-of-tree transform plugin, the test fixture + worked example
@@ -264,6 +267,9 @@ max-complexity = 10
 # constant, the runner's temp path, or the host and port RunPod's API returned.
 # S310: urlopen only ever gets API, a constant https URL, plus a pod id.
 "scripts/runpod_train.py" = ["S310", "S603"]
+# S603: mutmut, resolved once from PATH; the only argument from outside is a
+# mutant name mutmut itself printed.
+"scripts/mutation_advisory.py" = ["S603"]
 "benchmarks/redact_input.py" = ["E402"]
 "benchmarks/l1_false_positives.py" = ["E402"]
 "benchmarks/unpack_archives.py" = ["E402"]

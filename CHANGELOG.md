@@ -10,6 +10,11 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- `tests/test_approval_state_machine.py`: a Hypothesis `RuleBasedStateMachine` over `pending` and `approver` together, the way the approval route composes them. It holds, at every step, that an approval applies only the proposal whose digest the person read, that nothing is applied while enrolment is open or no approver is configured, that an expired entry is never applied, and that a proposal applies at most once. Derandomized with no example database, so CI explores the same sequences every run. In place of the TLA+ model proposed in #859; `hypothesis` joins the `dev` extra.
+- `mutation-advisory.yml` runs mutmut over the security modules: the guards, approver, pending, egress policy, auth, file confinement, the L3 schema and provider base, and the egress guard. A pull request mutates only the modules it touches, or whose owning tests it touches; a weekly run mutates all of them. Each module is run against the tests that own it (`scripts/mutation_advisory.py`, `MODULES`), under a 40-minute cap that still reports what it checked. The score and every surviving mutant's diff go to the job summary. Advisory: `continue-on-error`, never a required check (#858).
+
 ### Security
 
 - **Federation private keys and the secret store are sealed at rest under one KEK (#868).** `TRENTINA_SECRETS_KEK[_FILE]` holds one key per line, newest first; `gateway/at_rest.py` makes them a `MultiFernet`, seals every new file in `/data/keys` and `/data/secrets`, and at startup seals every plaintext file (backup, staged write, fsync, rename, read back, then the backup goes: idempotent, and a crash at any point leaves a readable original or a sealed file whose backup the next read removes) and reseals one opened by any line but the first. Without a KEK the gateway warns on every start and stays plaintext; `TRENTINA_REQUIRE_HARDENED` refuses to start without a usable one, and so does `secret_store put`. Sealing is two-pass: if any sealed file does not open under the configured lines, or the disk fills, nothing more is sealed or resealed (a mistyped first line would otherwise lock the right key out), and the log names an 8-hex fingerprint of the first key. The stores are `flock`ed while sealing and during `secret_store put`, and stale `.staged`/`.bak.staged` copies go on the first sealed read. A token file that starts `sha256:` and does not parse is refused rather than migrated. `secret_file` now fsyncs every write and the directory after it.
@@ -29,6 +34,10 @@ under that name.
 - Inherits crunchtools/constitution v1.53.0; every constitution workflow pin moves with it.
 - The `parent-image-updated` dispatch to crunchtools/data-collector moves into container-release's `downstream` input and fires when promote moves `:main` or `:latest`.
 - Gatehouse triage now receives `review_result`, so a PR whose review job died before posting is held instead of passing.
+
+### Fixed
+
+- `l2-train` trains again (a911). It drives RunPod's REST v2 at `api.runpod.io/v2`, since v1 at `rest.runpod.io` is retired and no longer resolves. A pod that reaches `ERROR`, `EXITED` or `TERMINATED` is given up on at once instead of after the 600 s wait. It also passes `warmup_steps=0.06`, a ratio of the steps, because transformers 5.23 on the pod dropped `warmup_ratio`. Every export now carries the trainer's own tokenizer files, because the builder's transformers (held below 4.58 by optimum-onnx) cannot read a tokenizer saved by 5.x. Proof: run 44983947568 on the old corpus passed all three gates.
 
 ### Removed
 
