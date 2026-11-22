@@ -242,6 +242,27 @@ class TestFairShare:
         lim.release(held, Outcome.FAILED)
         assert lim.in_flight == 0
 
+    async def test_a_pause_refuses_one_profiles_turn_and_keeps_anothers(self) -> None:
+        lim = AdaptiveLimiter(JUDGE, start=1, ceiling=1)
+        held = await lim.acquire()
+        refused, kept = [], []
+        for profile, budget, waiters in (("alpha", 0.1, refused), ("beta", 5.0, kept)):
+            token = l3_throttle_budget.set(budget)
+            try:
+                with profile_context(_profile(profile)):
+                    waiters.extend(asyncio.ensure_future(lim.acquire()) for _ in range(2))
+            finally:
+                l3_throttle_budget.reset(token)
+        await _settle()
+        lim.release(held, Outcome.THROTTLED, retry_after=0.5)
+        await asyncio.gather(*refused, return_exceptions=True)
+        assert all(isinstance(w.exception(), QuarantineAgentError) for w in refused)
+        assert list(lim._waiters[Priority.FOREGROUND]) == ["beta"]
+        first = await asyncio.wait_for(kept[0], timeout=2)
+        lim.release(first, Outcome.OK)
+        lim.release(await asyncio.wait_for(kept[1], timeout=2), Outcome.OK)
+        assert not lim._waiters[Priority.FOREGROUND]
+
     async def test_unbound_work_on_a_live_gateway_queues_rather_than_failing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
