@@ -1,31 +1,40 @@
-"""Which sessions have been delivered content the layers flagged (#456).
+"""What each session has been delivered or done, as a closed set of labels (#456, #861).
 
 Under ``flag`` a flagged response reaches the agent with a warning attached,
-and the session that read it keeps every tool it had. Semantic request guards ask
-whether that happened before it lets a guarded call leave, so the router
-marks a session here when it delivers a warning, and the gatekeeper reads it.
+and the session that read it keeps every tool it had. Semantic guards ask
+what the session has seen before a guarded call leaves or a guarded response
+is delivered, so the gateway labels a session here and the gatekeeper reads it.
+
+Every label is set by gateway code, never by a judge: content must not be
+able to steer its own taint. ``SessionLabel`` is the whole set, and adding one
+is a code change.
 
 Keyed by the session fingerprint (``context.current_session``), never the
 session ID. Held in memory only: a restart forgets, which is the same as the
-session itself, whose ID does not survive one either. A mark lasts
-``MARK_TTL_SECONDS`` from the last flag, far longer than the 300-second idle
-timeout that ends a session, and the table holds at most ``MAX_MARKS``, the
-oldest dropped first, so a flood of sessions costs bounded memory.
+session itself, whose ID does not survive one either. Each label lasts
+``MARK_TTL_SECONDS`` from the last time it was set, far longer than the
+300-second idle timeout that ends a session, and the table holds at most
+``MAX_MARKS`` sessions, the oldest dropped first, so a flood of sessions
+costs bounded memory.
 
-A dropped mark must not read as a clean session, or a flood of flagged
-sessions would launder an older one. So until every dropped mark would have
-expired anyway, a session with no mark is unknown (None) rather than clean:
-the judge is told so, and ``refuse_when_flagged`` refuses it (#457).
+A dropped entry must not read as a clean session, or a flood of marked
+sessions would launder an older one. So until every dropped entry would have
+expired anyway, a session with no entry is unknown (None) rather than clean:
+the judge is told so, and ``refuse_when`` refuses it (#457).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 from collections import OrderedDict
+from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from ..credential_shapes import kinds as credential_kinds
 from ..outcomes import Outcome
 from ..reserved import WARNING_KEY
 from .context import current_call, current_session
@@ -38,52 +47,90 @@ logger = logging.getLogger(__name__)
 MARK_TTL_SECONDS = 12 * 3600
 MAX_MARKS = 10_000
 
-_marks: OrderedDict[str, float] = OrderedDict()
+
+class SessionLabel(StrEnum):
+    """What a session has been delivered or done (#861)."""
+
+    FLAGGED_DELIVERY = "flagged_delivery"
+    """Delivered content the layers flagged or only partly judged (#456)."""
+    TRIPPED = "tripped"
+    """Called a decoy, sent a planted credential, or tried to send a real one (#860)."""
+    CREDENTIAL_SEEN = "credential_seen"
+    """Delivered a response holding a credential shape (``credential_shapes``)."""
+
+
+FLAG_LABELS = frozenset({SessionLabel.FLAGGED_DELIVERY, SessionLabel.TRIPPED})
+"""What ``refuse_when_flagged`` and the ``session_flagged`` fact cover."""
+
+
+@dataclass
+class _Entry:
+    labels: dict[SessionLabel, float] = field(default_factory=dict)
+    """Each live label and the monotonic time it was last set."""
+    unknown_until: float = 0.0
+    """Set when the entry was created while a dropped entry could have been
+    this session's: until then the labels here are not its whole history."""
+
+
+_marks: OrderedDict[str, _Entry] = OrderedDict()
 _unknown_until = 0.0
-"""Monotonic time before which an unmarked session may be one we dropped."""
+"""Monotonic time before which a session with no entry may be one we dropped."""
 
 
-def mark_flagged(session: str) -> bool:
-    """Record that *session* was delivered flagged or partly judged content.
+def mark(session: str, label: SessionLabel) -> bool:
+    """Set *label* on *session*.
 
-    Returns True when this is the session's first live mark, so the caller
-    can log the call that tainted it once rather than on every flag after.
+    Returns True when the label was not already live, so the caller can log
+    the call that set it once rather than on every call after.
     """
     global _unknown_until
     if not session:
         return False
-    first = was_flagged(session) is not True
-    _marks[session] = time.monotonic()
+    current = labels(session)
+    first = current is None or label not in current
+    now = time.monotonic()
+    # A session evicted by a flood and labelled again must not read as having
+    # only its new label: its dropped ones may have refused it. A window
+    # already past reads as known, so it needs no special case.
+    _marks.setdefault(session, _Entry(unknown_until=_unknown_until)).labels[label] = now
     _marks.move_to_end(session)
     while len(_marks) > MAX_MARKS:
-        _, at = _marks.popitem(last=False)
-        if _unknown_until <= time.monotonic():
+        _, dropped = _marks.popitem(last=False)
+        if _unknown_until <= now:
             logger.warning(
                 "session marks: table full at %d, dropping the oldest; unmarked "
                 "sessions read as unknown until the dropped marks expire",
                 MAX_MARKS,
             )
-        _unknown_until = max(_unknown_until, at + MARK_TTL_SECONDS)
+        _unknown_until = max(_unknown_until, max(dropped.labels.values()) + MARK_TTL_SECONDS)
     return first
 
 
-def was_flagged(session: str) -> bool | None:
-    """Whether *session* carries a live mark.
+def labels(session: str) -> frozenset[SessionLabel] | None:
+    """The live labels on *session*.
 
-    None when there is no session to ask about, or when it has no mark but
-    the table has dropped one recently enough that it might have been this
-    session's.
+    None when there is no session to ask about, or when the table has dropped
+    an entry recently enough that it might have been this session's: whether
+    this session has an entry since or not.
     """
     if not session:
         return None
     now = time.monotonic()
-    at = _marks.get(session)
-    if at is not None and now - at > MARK_TTL_SECONDS:
+    entry = _marks.get(session)
+    if entry is None:
+        return None if now < _unknown_until else frozenset()
+    entry.labels = {lb: at for lb, at in entry.labels.items() if now - at <= MARK_TTL_SECONDS}
+    known = now >= entry.unknown_until
+    if known and not entry.labels:
+        # The entry outlived every label in it; an expired one is not a drop.
         del _marks[session]
-        at = None
-    if at is not None:
-        return True
-    return None if now < _unknown_until else False
+    return frozenset(entry.labels) if known else None
+
+
+def was_flagged(session: str) -> bool | None:
+    """Whether *session* carries a live ``FLAG_LABELS`` label, None when unknown."""
+    live = labels(session)
+    return None if live is None else bool(live & FLAG_LABELS)
 
 
 def clear() -> None:
@@ -93,26 +140,61 @@ def clear() -> None:
     _unknown_until = 0.0
 
 
-def _mark_session(assembled: Assembled, internal: Any = None) -> None:
-    """Mark the session when content it receives was flagged or partly judged (#456).
+async def _mark_session(assembled: Assembled, internal: Any = None) -> None:
+    """Label the session for what a delivered response carried (#456, #861).
 
-    Semantic request guards read the mark before a guarded call leaves. A refused
-    response reached the agent as a refusal, not as content, so it does not
-    mark. An internal tool judges its own content and says so in the result
-    it returns, which is where its warning is read (``internal``).
+    ``flagged_delivery`` when the content was flagged or partly judged,
+    ``credential_seen`` when the text the agent receives holds a credential
+    shape. A refused response reached the agent as a refusal, not as content,
+    so it labels nothing. An internal tool judges its own content and says so
+    in the result it returns, which is where its warning is read (``internal``).
     """
     if assembled.outcome not in (Outcome.OK, Outcome.TOOL_ERROR):
         return
+    session = current_session.get()
+    if not session:
+        return
     if assembled.warning is not None or (internal is not None and _carries_warning(internal)):
-        session = current_session.get()
-        if mark_flagged(session):
-            # The taint's origin, once per session: the call_ref joins it to
-            # the audit row of the response that carried the flag (#457).
-            logger.info(
-                "gateway: session %s… marked flagged by call_ref=%s",
-                session[:8],
-                current_call.get() or "?",
-            )
+        _log_first(session, SessionLabel.FLAGGED_DELIVERY, "")
+    # Off the loop: linear, but in the response's size.
+    found = await asyncio.to_thread(credential_kinds, _delivered_text(assembled.result))
+    if found:
+        # The kinds, never the matched text.
+        _log_first(session, SessionLabel.CREDENTIAL_SEEN, ",".join(sorted(found)))
+
+
+def _log_first(session: str, label: SessionLabel, detail: str) -> None:
+    if mark(session, label):
+        # The label's origin, once per session: the call_ref joins it to the
+        # audit row of the response that set it (#457).
+        logger.info(
+            "gateway: session %s… labelled %s%s by call_ref=%s",
+            session[:8],
+            label.value,
+            f" ({detail})" if detail else "",
+            current_call.get() or "?",
+        )
+
+
+def _delivered_text(result: dict[str, Any]) -> str:
+    """The text a delivered tools/call result puts in front of the agent."""
+    parts: list[str] = []
+    for block in result.get("content") or ():
+        if not isinstance(block, dict):
+            continue
+        text = block.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+        resource = block.get("resource")
+        if isinstance(resource, dict):
+            # A URI carries a credential as readily as a body: ?token=, user:pass@.
+            parts.extend(v for k in ("uri", "text") if isinstance(v := resource.get(k), str))
+        if isinstance(block.get("uri"), str):
+            parts.append(block["uri"])
+    structured = result.get("structuredContent")
+    if structured is not None:
+        parts.append(json.dumps(structured, ensure_ascii=False, default=str))
+    return "\n".join(parts)
 
 
 def _carries_warning(call_result: Any) -> bool:

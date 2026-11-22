@@ -47,6 +47,7 @@ from corpora.gatekeeper import CASES, POLICIES, SCENARIOS, GateCase
 from trentina.config import get_config
 from trentina.gateway import gatekeeper
 from trentina.gateway.profile import AuthConfig, Backend, Profile, SemanticGuardsConfig
+from trentina.gateway.session_marks import SessionLabel
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -105,7 +106,11 @@ def _facts(case: GateCase) -> gatekeeper.CallFacts:
         destination=case.destination,
         destination_kind="param" if case.destination is not None else None,
         first_contact=case.first_contact,
-        session_flagged=case.session_flagged,
+        session_labels=(
+            None
+            if case.session_flagged is None
+            else frozenset({SessionLabel.FLAGGED_DELIVERY} if case.session_flagged else ())
+        ),
     )
 
 

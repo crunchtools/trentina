@@ -34,6 +34,7 @@ from ..config import MODE_NAMES, SUPPORTED_PROVIDERS, canonical_mode
 from ..credential_shapes import CredentialKind
 from ..credential_shapes import kinds as credential_kinds
 from .key_store import KEY_NAME_RE
+from .session_marks import FLAG_LABELS, SessionLabel
 
 logger = logging.getLogger(__name__)
 
@@ -2364,10 +2365,22 @@ class SemanticGuardsConfig(BaseModel):
         default=False,
         description=(
             "Refuse these calls outright, without asking the judge, once the "
-            "session has been delivered flagged or partly judged content, and "
-            "for the rest of that session (#457). A call whose session the "
+            "session has been delivered flagged or partly judged content, or "
+            "tripped a decoy or tried to send a credential, and for the rest of "
+            "that session (#457, #860). Shorthand for ``refuse_when: "
+            "[flagged_delivery, tripped]``. A call whose session the "
             "gateway cannot identify is refused too. For unattended profiles: an "
             "interactive one reads flagged content routinely."
+        ),
+    )
+    refuse_when: list[SessionLabel] = Field(
+        default_factory=list,
+        description=(
+            "Refuse these calls outright, without asking the judge, once the "
+            "session carries any of these labels, and while it does (#861): "
+            "``flagged_delivery``, ``tripped``, ``credential_seen``. A call whose "
+            "session the gateway cannot identify is refused too. "
+            "``refuse_when_flagged: true`` adds ``flagged_delivery`` and ``tripped``."
         ),
     )
     timeout_seconds: float = Field(
@@ -2419,6 +2432,19 @@ class SemanticGuardsConfig(BaseModel):
         if not self.tools and not self.egress_http:
             raise ValueError("semantic_request_guards guards nothing: set tools or egress_http")
         return self
+
+    @field_validator("refuse_when")
+    @classmethod
+    def _labels_once(cls, refuse_when: list[SessionLabel]) -> list[SessionLabel]:
+        if len(set(refuse_when)) != len(refuse_when):
+            raise ValueError("semantic guards: refuse_when lists a label twice")
+        return refuse_when
+
+    @property
+    def refusing_labels(self) -> frozenset[SessionLabel]:
+        """Every label that refuses these calls unasked, ``refuse_when_flagged`` included."""
+        flagged = FLAG_LABELS if self.refuse_when_flagged else frozenset()
+        return frozenset(self.refuse_when) | flagged
 
     def guards(self, backend: str, tool: str) -> bool:
         """Whether a call to ``tool`` on ``backend`` is judged."""

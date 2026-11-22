@@ -30,7 +30,7 @@ from ..dbus_interface import emit_detection_event
 from ..token_variants import matcher_for
 from .context import current_call, current_session
 from .profile import HONEYTOKEN_REF_RE
-from .session_marks import mark_flagged
+from .session_marks import SessionLabel, mark
 
 if TYPE_CHECKING:
     from .profile import Backend, DecoyTool, Profile
@@ -124,9 +124,9 @@ def record_trip(profile: str, backend: str, tool: str, what: str) -> None:
     """A detection row and a live event for a trip. ``what`` is the kind of
     trip and the ids of any planted credentials, never a value.
 
-    The session is marked before anything is written (#860): a trip is
-    evidence the agent is being steered, so ``refuse_when_flagged`` and the
-    gatekeeper's judge see it as they see delivered flagged content. On
+    The session is labelled ``tripped`` before anything is written (#860,
+    #861): a trip is evidence the agent is being steered, so ``refuse_when``
+    and the gatekeeper's judge see it. On
     ``/proxy/http`` and ``/proxy/llm`` there is no session, and nothing is marked.
 
     Never blocklisted: ``blocked`` keys the blocklist, which refuses a source
@@ -154,16 +154,16 @@ def record_trip(profile: str, backend: str, tool: str, what: str) -> None:
 
 
 def mark_session(why: str) -> None:
-    """Mark the calling session flagged for what the agent itself did (#860).
+    """Label the calling session ``tripped`` for what the agent itself did (#860).
 
     A decoy trip and a refused credential are the agent misbehaving, not
-    content arriving, and they share the one mark ``refuse_when_flagged``
-    reads. ``why`` names the kind, never a value.
+    content arriving: their own label, apart from ``flagged_delivery``, which
+    ``refuse_when_flagged`` covers too (#861). ``why`` names the kind, never a value.
     """
     session = current_session.get()
-    if mark_flagged(session):
+    if mark(session, SessionLabel.TRIPPED):
         logger.info(
-            "gateway: session %s… marked flagged by %s call_ref=%s",
+            "gateway: session %s… labelled tripped by %s call_ref=%s",
             session[:8],
             why,
             current_call.get() or "?",

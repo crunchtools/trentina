@@ -86,6 +86,7 @@ profiles:
         memory: [search_memory, read_note]
       timeout_seconds: 30         # optional, 5 to 120
       refuse_when_flagged: false  # optional; true for unattended profiles
+      refuse_when: []             # optional; labels: flagged_delivery, tripped, credential_seen
 ```
 
 | Field | Required | Meaning |
@@ -94,6 +95,7 @@ profiles:
 | `tools` | yes | Backend name to the exact tool names whose responses are judged. No globs. |
 | `timeout_seconds` | no | How long a judgment may take before the response is withheld. Default 30. |
 | `refuse_when_flagged` | no | Withhold these responses without asking the judge once the session has been delivered flagged content, tripped a decoy or tried to send a credential (#860). Default false. |
+| `refuse_when` | no | Session labels that withhold these responses without asking the judge: `flagged_delivery`, `tripped`, `credential_seen` (#861). Default empty. A label listed twice does not load. |
 
 `semantic_response_guards` reuses the request guards' config shape, so
 `egress_http` is accepted syntactically, but it has no meaning on a response —
@@ -125,7 +127,8 @@ The judge is given three things, kept apart:
 
 - **The policy**, in its instructions, from the operator.
 - **The gateway's facts**, stated as true: the backend and tool, and whether
-  this session was delivered content the layers flagged.
+  this session was delivered content the layers flagged, and whether it was
+  delivered a credential.
 - **The backend's response**, exactly as it arrived: every text block joined,
   each embedded resource read whole (its `text` and its `uri`/`mimeType`, so a
   secret hidden in a resource URI is judged too, not only the body), and the
@@ -136,7 +139,7 @@ The judge is the profile's own L3 model, called under the same rules as every
 L3 request: no tools, a per-request canary, and a closed JSON schema for the
 answer.
 
-### Refusing a flagged session outright
+### Refusing a marked session outright
 
 `refuse_when_flagged: true` withholds every guarded response in a session once
 that session has been delivered flagged or partly judged content, without
@@ -144,6 +147,18 @@ asking the judge, with the code `session_flagged` (#457). A session the gateway
 cannot identify is treated the same way. Turn it on for unattended profiles; leave
 it off for an assistant a person talks to, which reads flagged content
 routinely. Unguarded tools are untouched.
+
+`refuse_when: [label, ...]` does the same for any listed session label:
+`flagged_delivery`, `tripped` or `credential_seen`. The last is set when the
+session was delivered a response whose text holds a credential shape (the
+kinds are logged, never the values), so a guarded response is withheld once
+the session has read a secret. `refuse_when_flagged: true` is shorthand for
+`[flagged_delivery, tripped]`; both may be set and the lists are joined. The
+labels are set by gateway code, never by a judge, and each lasts 12 hours from
+the last time it was set (#861). `credential_seen` refuses with
+`session_credential_seen`; the other two, and an unidentifiable session, with
+`session_flagged`. The labels are described in
+[Semantic Request Guards](semantic-request-guards.md#refusing-a-marked-session-outright).
 
 ## Refusals
 
@@ -164,7 +179,8 @@ agent.
 | `other` | judge | A refusal with no listed reason, or an answer that was not an explicit allow. |
 | `uninspectable_response` | gateway | The result carries a content block the judge cannot read as text (an image, audio, a binary blob, a resource link, or any block type other than text), so the policy cannot be checked against it. |
 | `response_oversize` | gateway | The result is too large to judge in one admission window (over `Config.admission_tokens`). It is refused, not truncated. |
-| `session_flagged` | gateway | `refuse_when_flagged` is set, and this session was delivered flagged content, tripped a decoy, tried to send a credential, or sent no session ID. |
+| `session_flagged` | gateway | `refuse_when` or `refuse_when_flagged` lists a label this session carries (`flagged_delivery`, `tripped`), or it sent no session ID. |
+| `session_credential_seen` | gateway | `refuse_when` lists `credential_seen`, and this session was delivered a credential. |
 | `gatekeeper_unavailable` | gateway | No judge is configured, or it failed, timed out, answered off-schema or leaked its canary. |
 
 It fails closed. Anything other than an explicit allow withholds the response.

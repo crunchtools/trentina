@@ -205,10 +205,11 @@ _SCHEMAS: dict[str, dict[str, Any]] = {
 
 async def _call(
     tmp_path: Any,
-    arguments: dict[str, Any],
+    arguments: Any,
     backend: Backend | None = None,
     tool: str = "echo",
     mode: Any = None,
+    reply: str = "ok",
 ) -> tuple[dict[str, Any], list[dict[str, Any]], Any]:
     """(response, calls the backend received, the audit row)."""
     import trentina.database as db_mod
@@ -229,7 +230,7 @@ async def _call(
     async def fake_call(_bn: str, _b: Backend, _tn: str, args: dict[str, Any]) -> BackendCall:
         seen.append(args)
         return BackendCall(
-            content=[{"type": "text", "text": "ok"}], is_error=False, structured_content=None
+            content=[{"type": "text", "text": reply}], is_error=False, structured_content=None
         )
 
     async def fake_scan(**_kwargs: Any) -> Any:
@@ -239,7 +240,7 @@ async def _call(
         {"name": n, "inputSchema": s, "annotations": {"readOnlyHint": False}}
         for n, s in _SCHEMAS.items()
     ]
-    args = dict(arguments)
+    args: Any = dict(arguments) if isinstance(arguments, dict) else arguments
     if mode is not None:
         args["trentina_mode"] = mode
     try:

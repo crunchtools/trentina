@@ -88,6 +88,24 @@ def _normalize_arguments(
     return normalized
 
 
+async def mark_refused_credentials(backend: Backend, tool_name: str, arguments: Any) -> list[str]:
+    """The credential kinds a call may not carry, labelling the session ``tripped`` if any.
+
+    Refused below whatever else is wrong with the call; trying to send one is
+    the session's to answer for, as a decoy trip is (#860). Also called where
+    a call is refused before its arguments are checked (a tool the allowlist
+    denies, a refused mode, a held tool, arguments that are not an object), so
+    a credential sent alongside one of those still labels the session (#861).
+    """
+    if not isinstance(arguments, dict):
+        arguments = {"arguments": arguments}
+    # Off the loop, as the honeytoken match is: linear, but in the arguments' size.
+    credentials = await asyncio.to_thread(refused_credentials, tool_name, arguments, backend)
+    if credentials:
+        mark_session(f"{REASON_CREDENTIAL} {','.join(credentials)}")
+    return credentials
+
+
 async def _refuse_call(
     profile: Profile,
     backend: Backend,
@@ -105,12 +123,7 @@ async def _refuse_call(
     guards last (#456), so the cheap and certain rules have spoken before a
     model is asked anything.
     """
-    # Off the loop, as the honeytoken match is: linear, but in the arguments' size.
-    credentials = await asyncio.to_thread(refused_credentials, tool_name, forwarded, backend)
-    if credentials:
-        # Refused below whatever else is wrong with the call; trying to send
-        # one is the session's to answer for, as a decoy trip is (#860).
-        mark_session(f"{REASON_CREDENTIAL} {','.join(credentials)}")
+    credentials = await mark_refused_credentials(backend, tool_name, forwarded)
     refused = _refuse_arguments(
         backend,
         tool_name,

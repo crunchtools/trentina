@@ -514,7 +514,7 @@ async def _read_part(
         )
 
     assembled = await _deliver_part(profile, paged, number, mode=mode, prompt=prompt, policy=policy)
-    session_marks._mark_session(assembled)
+    await session_marks._mark_session(assembled)
     delivered, digest = await asyncio.to_thread(wire_digest, assembled.result)
     audit._audit(
         profile.name,
