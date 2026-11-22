@@ -56,7 +56,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
-def _cgroup_headroom_mb() -> int | None:
+def _cgroup_headroom_mb(
+    root: pathlib.Path = pathlib.Path("/sys/fs/cgroup"),
+    membership: pathlib.Path = pathlib.Path("/proc/self/cgroup"),
+) -> int | None:
     """What the tightest cgroup from this process up to the root can still take.
 
     Leaf to root, because a limit set on a parent binds a child that shows
@@ -65,8 +68,7 @@ def _cgroup_headroom_mb() -> int | None:
     reclaims it before it kills anything. A level without a `memory.max` (the
     root, or the controller not enabled there) sets no limit.
     """
-    root = pathlib.Path("/sys/fs/cgroup")
-    rel = pathlib.Path("/proc/self/cgroup").read_text(encoding="utf-8").partition("::")[2].strip()
+    rel = membership.read_text(encoding="utf-8").partition("::")[2].strip()
     node = root / rel.lstrip("/")
     found: list[int] = []
     for level in (node, *node.parents):
@@ -85,10 +87,9 @@ def _cgroup_headroom_mb() -> int | None:
     return min(found, default=None)
 
 
-def _mem_available_mb() -> int:
+def _mem_available_mb(meminfo_path: pathlib.Path = pathlib.Path("/proc/meminfo")) -> int:
     meminfo = dict(
-        line.split(":", 1)
-        for line in pathlib.Path("/proc/meminfo").read_text(encoding="utf-8").splitlines()
+        line.split(":", 1) for line in meminfo_path.read_text(encoding="utf-8").splitlines()
     )
     return int(meminfo["MemAvailable"].split()[0]) // 1024
 
