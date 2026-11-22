@@ -722,6 +722,13 @@ classification = "by_design"
 
 [[exceptions]]
 check = "redundant_error_handling"
+path = "src/trentina/gateway/request_units.py"
+pattern = "_record_summed"
+justification = "As defend's detection write (defense.py): the request's summed-L1 verdict already exists, so a failed SQLite write or D-Bus emit is logged (kind and frames, never the message -- #262) and the verdict is returned. Re-raising would turn an audit gap into a failed request under flag (#866 follow-up)."
+classification = "by_design"
+
+[[exceptions]]
+check = "redundant_error_handling"
 path = "src/trentina/events.py"
 pattern = "emit"
 justification = "One subscriber's failure must not stop the event reaching the others, and must never propagate into the detection path that emitted it. Logged by kind and frames (#262) and the loop continues."
