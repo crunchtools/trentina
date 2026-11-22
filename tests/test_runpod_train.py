@@ -37,15 +37,57 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[urllib.request.Request]:
 
 def test_pod_is_the_card_the_recipe_was_found_on() -> None:
     spec = runpod_train.pod_spec("ssh-ed25519 AAAA test", b"host key")
-    assert spec["cloudType"] == "SECURE"
-    assert spec["gpuTypeIds"] == ["NVIDIA GeForce RTX 4090"]
-    assert spec["interruptible"] is False
-    assert spec["imageName"] == runpod_train.IMAGE
+    assert spec["cloud"] == "SECURE"
+    assert spec["gpu"] == {"id": "NVIDIA GeForce RTX 4090", "count": 1}
+    assert spec["image"] == runpod_train.IMAGE
+    assert spec["ports"] == ["22/tcp"], "ssh.direct needs the published port"
     assert spec["env"]["PUBLIC_KEY"] == "ssh-ed25519 AAAA test"
     assert base64.b64decode(spec["env"]["POD_HOST_KEY"]) == b"host key"
-    boot = spec["dockerStartCmd"][0]
+    assert spec["entrypoint"] == ["bash", "-c"]
+    boot = spec["cmd"][0]
     assert boot.startswith(f"(sleep {runpod_train.WATCHDOG_SECONDS}; runpodctl remove pod")
     assert boot.endswith("exec /opt/nvidia/nvidia_entrypoint.sh /start.sh")
+
+
+def test_the_spec_holds_only_fields_api_v2_accepts() -> None:
+    """v2 refuses an unknown body field with 422 (``CreatePodRequest`` is
+    ``unevaluatedProperties: false``); v1's flat names would all be refused."""
+    spec = runpod_train.pod_spec("ssh-ed25519 AAAA test", b"host key")
+    assert set(spec) <= {
+        "name",
+        "cloud",
+        "gpu",
+        "image",
+        "disk",
+        "ports",
+        "env",
+        "entrypoint",
+        "cmd",
+    }
+    assert runpod_train.API == "https://api.runpod.io/v2/pods"
+
+
+@pytest.mark.parametrize(
+    ("pod", "direct"),
+    [
+        (
+            {"status": "RUNNING", "ssh": {"direct": {"host": "192.0.2.1", "port": 10802}}},
+            ("192.0.2.1", 10802),
+        ),
+        ({"status": "STARTING", "ssh": {"direct": {"host": "192.0.2.1", "port": 10802}}}, None),
+        (
+            {
+                "status": "RUNNING",
+                "ssh": {"proxy": {"host": "ssh.runpod.io", "port": 22}, "direct": None},
+            },
+            None,
+        ),
+        ({"status": "PROVISIONING", "ssh": None}, None),
+    ],
+)
+def test_ssh_is_the_pods_own_sshd_once_running(pod: dict[str, Any], direct: object) -> None:
+    """scp needs the direct mapping; the proxy carries a shell only."""
+    assert runpod_train.ssh_direct(pod) == direct
 
 
 def test_ssh_pins_the_host_key_it_made(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -219,7 +261,8 @@ def test_create_waits_out_a_busy_api_then_proceeds(
     replies: list[Any] = [
         urllib.error.HTTPError(runpod_train.API, 503, "busy", {}, io.BytesIO(b"")),
         {"id": "p1"},
-        {"id": "p1", "publicIp": "192.0.2.1", "portMappings": {"22": 10802}},
+        {"id": "p1", "status": "STARTING", "ssh": {"proxy": None, "direct": None}},
+        {"id": "p1", "status": "RUNNING", "ssh": {"direct": {"host": "192.0.2.1", "port": 10802}}},
     ]
 
     def api(*_: Any) -> Any:
@@ -235,6 +278,30 @@ def test_create_waits_out_a_busy_api_then_proceeds(
     monkeypatch.setattr(runpod_train, "ssh_base", lambda *_: [shutil.which("true") or "true"])
     assert runpod_train.create() == 0
     assert (tmp_path / "env").read_text() == "POD_ID=p1\nPOD_HOST=192.0.2.1\nPOD_PORT=10802\n"
+
+
+@pytest.mark.parametrize("status", sorted(runpod_train.DEAD))
+def test_a_dead_pod_is_given_up_on_at_once(
+    status: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ERROR, EXITED or TERMINATED never becomes RUNNING: no 600 s wait, no ssh."""
+    replies: list[Any] = [{"id": "p1"}, {"id": "p1", "status": status, "ssh": None}]
+    slept: list[float] = []
+
+    def api(*_: Any) -> Any:
+        return replies.pop(0)
+
+    def no_ssh(*_: Any) -> list[str]:
+        raise AssertionError("ssh to a dead pod")
+
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("GITHUB_ENV", str(tmp_path / "env"))
+    monkeypatch.setattr(runpod_train, "api", api)
+    monkeypatch.setattr(runpod_train.time, "sleep", slept.append)
+    monkeypatch.setattr(runpod_train, "ssh_base", no_ssh)
+    assert runpod_train.create() == 1
+    assert not slept, "the ready loop must not wait on a dead pod"
+    assert (tmp_path / "env").read_text() == "POD_ID=p1\n", "terminate still finds it"
 
 
 def test_unreachable_ssh_is_tried_again(monkeypatch: pytest.MonkeyPatch) -> None:
