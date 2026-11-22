@@ -243,3 +243,13 @@ def test_an_unreadable_db_exits_two(tmp_path, profiles, capsys):
     f = write(tmp_path, {"profile": "exedore-max", "name": "create_issue", "arguments": {"q": KEY}})
     assert main([str(f), "--profiles", str(profiles), "--db", str(tmp_path / "none.db")]) == 2
     assert "tool_names" in capsys.readouterr().err
+
+
+def test_a_yaml_error_names_the_line_not_the_text(tmp_path, db, capsys):
+    p = tmp_path / "p.yaml"
+    p.write_text("profiles:\n  a: [unclosed " + KEY + "\n")
+    f = write(tmp_path, direct("t", "x"))
+    assert main([str(f), "--profiles", str(p), "--db", str(db)]) == 2
+    err = capsys.readouterr().err
+    assert "line" in err
+    assert KEY not in err

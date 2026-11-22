@@ -1446,6 +1446,8 @@ class Backend(BaseModel):
                 raise ValueError(f"credentials_allowed: tool {tool!r} is not '*' or a tool name")
             if not isinstance(kinds, list) or not kinds:
                 raise ValueError(f"{where}: a non-empty list of kinds")
+            if not all(isinstance(k, str) for k in kinds):
+                raise ValueError(f"{where}: every kind is a string")
             if "*" in kinds and len(kinds) > 1:
                 raise ValueError(f"{where}: '*' already allows every kind; list it alone")
             unknown = sorted(str(k) for k in kinds if k != "*" and k not in known)

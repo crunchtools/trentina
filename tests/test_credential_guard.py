@@ -46,6 +46,9 @@ class TestRefusedCredentials:
         encoded = "".join(f"%{ord(ch):02x}" for ch in GITHUB)
         assert refused_credentials("t", {"q": encoded}, _backend()) == [K.GITHUB_TOKEN]
 
+    def test_a_key_in_a_mapping_key_is_found(self) -> None:
+        assert refused_credentials("t", {"q": {GITHUB: "x"}}, _backend()) == [K.GITHUB_TOKEN]
+
     def test_a_key_escaped_in_every_character_is_found(self) -> None:
         escaped = "".join(f"\\u{ord(c):04x}" for c in OPENAI)
         assert refused_credentials("t", {"q": escaped}, _backend()) == [K.OPENAI_KEY]
@@ -115,6 +118,8 @@ class TestValidation:
             {"t": "github_token"},
             {"bad tool!": ["github_token"]},
             {"t": ["*", "openai_key"]},
+            [["github_token"]],
+            {"t": [{"kind": "jwt"}]},
         ],
         ids=[
             "unknown",
@@ -126,6 +131,8 @@ class TestValidation:
             "per-tool-non-list",
             "bad-tool-name",
             "per-tool-star-mixed",
+            "unhashable-list",
+            "unhashable-mapping",
         ],
     )
     def test_a_malformed_allowance_fails_the_load(self, value: Any) -> None:

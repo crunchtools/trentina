@@ -31,6 +31,7 @@ import json
 import sqlite3
 import sys
 from collections import Counter, defaultdict
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -88,7 +89,7 @@ def load_policy(path: Path) -> dict[str, Policy]:
     try:
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
-        raise ReplayError(f"cannot read {path}: {type(exc).__name__}") from None
+        raise ReplayError(f"cannot read {path}: {_why(exc)}") from None
     profiles = document.get("profiles") if isinstance(document, dict) else None
     if not isinstance(profiles, dict) or not profiles:
         raise ReplayError(f"{path}: no 'profiles' mapping")
@@ -178,7 +179,7 @@ class Resolver:
                     names = {r[0]: (r[1], r[2]) for r in rows}
                 except sqlite3.Error as exc:
                     raise ReplayError(
-                        f"cannot read tool_names from {self._db_path}: {type(exc).__name__}"
+                        f"cannot read tool_names from {self._db_path}: {_why(exc)}"
                     ) from None
             self._issued[profile] = names
         return self._issued[profile]
@@ -265,16 +266,39 @@ def render_json(reports: dict[str, ProfileReport], skipped: int) -> str:
     return json.dumps(doc, indent=2)
 
 
-def _lines(paths: list[str]) -> Iterator[str]:
+def read_calls(
+    paths: list[str], *, profile: str | None, server: str, skipped: Counter[str]
+) -> Iterator[Call]:
+    """The calls in ``paths`` (``-`` is stdin), a line at a time, so a history of
+    any length is replayed in the memory of one line. A line that is not a
+    call, or names no profile, counts in ``skipped["lines"]``."""
     for path in paths:
-        if path == "-":
-            yield from sys.stdin
-            continue
         try:
-            with Path(path).open(encoding="utf-8", errors="replace") as fh:
-                yield from fh
+            with (
+                nullcontext(sys.stdin)
+                if path == "-"
+                else Path(path).open(encoding="utf-8", errors="replace") as lines
+            ):
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    found = parse_line(line, profile=profile, server=server)
+                    if found is None or any(c.profile is None for c in found):
+                        skipped["lines"] += 1
+                    else:
+                        yield from found
         except OSError as exc:
-            raise ReplayError(f"cannot read {path}: {type(exc).__name__}") from None
+            raise ReplayError(f"cannot read {path}: {_why(exc)}") from None
+
+
+def _why(exc: Exception) -> str:
+    """Where and why a read failed, never the text read: a YAML problem can quote it."""
+    mark = getattr(exc, "problem_mark", None)
+    if mark is not None:
+        return f"{type(exc).__name__} at line {mark.line + 1}, column {mark.column + 1}"
+    if isinstance(exc, OSError) and exc.strerror:
+        return exc.strerror
+    return f"{type(exc).__name__}: {exc}" if isinstance(exc, sqlite3.Error) else type(exc).__name__
 
 
 def _check_profile(profile: str | None, policy: dict[str, Policy]) -> None:
@@ -317,24 +341,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         policy = load_policy(Path(args.profiles))
         _check_profile(args.profile, policy)
-        skipped = 0
-        calls: list[Call] = []
-        for line in _lines(args.files):
-            if not line.strip():
-                continue
-            found = parse_line(line, profile=args.profile, server=args.mcp_server)
-            if found is None or any(c.profile is None for c in found):
-                skipped += 1
-            else:
-                calls.extend(found)
+        skipped: Counter[str] = Counter()
+        calls = read_calls(
+            args.files, profile=args.profile, server=args.mcp_server, skipped=skipped
+        )
         reports = replay(calls, policy, Resolver(policy, args.db), current=args.current)
     except ReplayError as exc:
         print(f"trentina-credential-replay: {exc}", file=sys.stderr)
         return 2
 
-    print(render_json(reports, skipped) if args.json else render_yaml(reports))
-    if skipped and not args.json:
-        print(f"# {skipped} line(s) skipped (not a call, or no profile)")
+    print(render_json(reports, skipped["lines"]) if args.json else render_yaml(reports))
+    if skipped["lines"] and not args.json:
+        print(f"# {skipped['lines']} line(s) skipped (not a call, or no profile)")
     return 1 if any(r.refused for r in reports.values()) else 0
 
 

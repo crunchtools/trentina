@@ -111,7 +111,10 @@ def refused_credentials(
     # clean, which is enough to refuse, but here an ALLOWED raw kind would hide an
     # escaped kind that is not.
     document = "\n".join(iter_leaves(arguments))
-    found = {*detect_credentials(document), *detect_credentials(reveal(document))}
+    found = set(detect_credentials(document))
+    revealed = reveal(document)
+    if revealed != document:
+        found.update(detect_credentials(revealed))
     return sorted(kind for kind in found if kind not in allowed)
 
 
