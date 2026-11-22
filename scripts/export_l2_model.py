@@ -30,7 +30,8 @@ import tempfile
 from pathlib import Path
 
 TOKENIZER_FILES = ["tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"]
-"""What the runtime's tokenizer loads; a ``cls-linear`` export copies these."""
+"""What the runtime's tokenizer loads. Every export carries the source's own,
+and nothing else of these names."""
 
 FILES = ["config.json", "model.safetensors", *TOKENIZER_FILES]
 """What a sequence-classification export needs. Named rather than globbed, so
@@ -105,6 +106,7 @@ def main() -> int:
             from optimum.exporters.onnx import main_export
 
             main_export(src, output=args.out, task="text-classification")
+        _carry_tokenizer(Path(src), Path(args.out))
 
     manifest = {
         "id": args.id,
@@ -124,6 +126,21 @@ def main() -> int:
     (Path(args.out) / "trentina-model.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"exported {args.repo}@{args.revision} to {args.out}")
     return 0
+
+
+def _carry_tokenizer(src: Path, out: Path) -> None:
+    """Give ``out`` the source's tokenizer files exactly, never an exporter's re-save.
+
+    optimum-onnx holds this stage's transformers below 4.58, which cannot read
+    a tokenizer the pod's transformers 5 saved ("Tokenizer class
+    TokenizersBackend does not exist"), so an export through it carried none
+    the runtime could load (a911). The runtime's transformers reads the
+    trainer's own.
+    """
+    for name in TOKENIZER_FILES:
+        (out / name).unlink(missing_ok=True)
+        if (src / name).is_file():
+            shutil.copy(src / name, out / name)
 
 
 def _export_cls_linear(src: Path, out: Path) -> None:
@@ -178,9 +195,6 @@ def _export_cls_linear(src: Path, out: Path) -> None:
         opset_version=ONNX_OPSET,
         dynamo=False,
     )
-    for name in TOKENIZER_FILES:
-        if (src / name).is_file():
-            shutil.copy(src / name, out / name)
     (out / "config.json").write_text(json.dumps(raw, indent=2) + "\n")
 
 
