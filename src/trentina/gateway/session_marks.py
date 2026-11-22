@@ -172,8 +172,11 @@ def _delivered_text(result: dict[str, Any]) -> str:
         if isinstance(text, str):
             parts.append(text)
         resource = block.get("resource")
-        if isinstance(resource, dict) and isinstance(resource.get("text"), str):
-            parts.append(resource["text"])
+        if isinstance(resource, dict):
+            # A URI carries a credential as readily as a body: ?token=, user:pass@.
+            parts.extend(v for k in ("uri", "text") if isinstance(v := resource.get(k), str))
+        if isinstance(block.get("uri"), str):
+            parts.append(block["uri"])
     structured = result.get("structuredContent")
     if structured is not None:
         parts.append(json.dumps(structured, ensure_ascii=False, default=str))

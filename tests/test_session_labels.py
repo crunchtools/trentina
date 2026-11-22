@@ -119,6 +119,12 @@ class TestCredentialSeen:
         await session_marks._mark_session(Assembled(result=result, outcome=Outcome.OK))
         assert session_marks.labels(session) == {L.CREDENTIAL_SEEN}
 
+    async def test_a_resource_uri_is_read(self, session: str) -> None:
+        uri = "https://api.example/v1?token=" + GITHUB
+        result = {"content": [{"type": "resource_link", "uri": uri, "name": "x"}]}
+        await session_marks._mark_session(Assembled(result=result, outcome=Outcome.OK))
+        assert session_marks.labels(session) == {L.CREDENTIAL_SEEN}
+
     async def test_a_clean_response_labels_nothing(self, session: str) -> None:
         await session_marks._mark_session(_delivered("nothing secret here"))
         assert session_marks.labels(session) == frozenset()
