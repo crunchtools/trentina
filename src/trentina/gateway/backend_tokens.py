@@ -27,6 +27,14 @@ stale read is refused rather than lost.
 
 Dynamic client registrations live in their own collection: revoking a grant
 keeps the client, so re-authorizing does not register another one.
+
+Rotating the key is two deploys, not a mass re-authorization. The store's
+directory is named for the key, so a new key opens an empty one. Set
+``TRENTINA_BACKEND_TOKEN_KEY_PREVIOUS`` to the old key alongside the new, and a
+record missing from the new directory is looked for in the old one, opened
+with the old key, resealed under the new one and removed from the old. Once
+every slot in use has been read, drop ``_PREVIOUS``: what is left in the old
+directory belonged to slots nobody used.
 """
 
 from __future__ import annotations
@@ -53,13 +61,15 @@ from .profile import BACKEND_NAME_RE, PROFILE_NAME_RE
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
 
-    from cryptography.fernet import Fernet
+    from cryptography.fernet import Fernet, MultiFernet
 
     from .profile import Backend, Profile
 
 logger = logging.getLogger(__name__)
 
 KEY_ENV = "TRENTINA_BACKEND_TOKEN_KEY"
+#: The key being rotated out: read with, never written with.
+PREVIOUS_KEY_ENV = "TRENTINA_BACKEND_TOKEN_KEY_PREVIOUS"
 #: Characters. Length is not entropy, but a key this short was typed, not
 #: generated; the docs say ``openssl rand -base64 48``.
 MIN_KEY_CHARS = 32
@@ -261,9 +271,14 @@ class BackendTokenStore:
     There is no listing: nothing reads a slot without naming its profile.
     """
 
-    def __init__(self, records: Any, fernet: Fernet) -> None:
+    def __init__(
+        self, records: Any, fernet: Fernet | MultiFernet, previous: Any | None = None
+    ) -> None:
         self._records = records
         self._fernet = fernet
+        #: The store under the key being rotated out, drained as it is read.
+        self._previous = previous
+        self._migrate_lock = asyncio.Lock()
         self._locks: dict[str, asyncio.Lock] = {}
         self._holders: dict[str, asyncio.Task[Any] | None] = {}
         self._flow_lock = asyncio.Lock()
@@ -359,7 +374,7 @@ class BackendTokenStore:
 
     async def delete_grant(self, profile: str, name: str) -> bool:
         """Drop the slot's grant; its client registration stays."""
-        return bool(await self._records.delete(slot_key(profile, name), collection=_GRANTS))
+        return await self._delete(slot_key(profile, name), _GRANTS)
 
     # --------------------------------------------------------------- clients
 
@@ -402,7 +417,7 @@ class BackendTokenStore:
 
     async def delete_client(self, profile: str, name: str) -> bool:
         """Drop the slot's client registration."""
-        return bool(await self._records.delete(slot_key(profile, name), collection=_CLIENTS))
+        return await self._delete(slot_key(profile, name), _CLIENTS)
 
     # ----------------------------------------------------------------- flows
 
@@ -482,12 +497,12 @@ class BackendTokenStore:
         """
         async with self._flow_lock:
             flow = await self.peek_flow(key)
-            await self._records.delete(key, collection=_FLOWS)
+            await self._delete(key, _FLOWS)
         return flow
 
     async def drop_flow(self, key: str) -> None:
         """Forget a flow without finishing it."""
-        await self._records.delete(key, collection=_FLOWS)
+        await self._delete(key, _FLOWS)
 
     # --------------------------------------------------------------- envelope
 
@@ -502,8 +517,42 @@ class BackendTokenStore:
             ttl=RECORD_TTL.total_seconds() if ttl is None else ttl,
         )
 
+    async def _delete(self, key: str, collection: str) -> bool:
+        """Drop a record under both keys: a revoked grant must not return from the old one."""
+        dropped = bool(await self._records.delete(key, collection=collection))
+        if self._previous is not None:
+            dropped = bool(await self._previous.delete(key, collection=collection)) or dropped
+        return dropped
+
     async def _unseal(self, collection: str, key: str, model: type[_S]) -> _S | None:
         """Read and decrypt one record; None for anything that is not a good one.
+
+        A record only the previous key's store holds is moved into this one on
+        the way: resealed under the current key, then removed from the old.
+        """
+        sealed = await self._unseal_from(self._records, collection, key, model)
+        if sealed is not None or self._previous is None:
+            return sealed
+        # Serialized and re-checked, so a reader that saw the old record
+        # cannot write it over a grant a refresh has stored since.
+        async with self._migrate_lock:
+            sealed = await self._unseal_from(self._records, collection, key, model)
+            if sealed is not None:
+                return sealed
+            sealed = await self._unseal_from(self._previous, collection, key, model)
+            if sealed is None:
+                return None
+            ttl = (sealed.stored_until - _now()).total_seconds()
+            if ttl > 0:
+                await self._seal(collection, key, sealed, ttl=ttl)
+            await self._previous.delete(key, collection=collection)
+            logger.info("backend-tokens: %s %s resealed under the current key", collection, key)
+            return sealed if ttl > 0 else None
+
+    async def _unseal_from(
+        self, records: Any, collection: str, key: str, model: type[_S]
+    ) -> _S | None:
+        """Read and decrypt one record from ``records``; None for anything not a good one.
 
         Every refusal is logged by key (operator names, or a hash) and
         exception class, never by content: a record that fails to parse may
@@ -512,7 +561,7 @@ class BackendTokenStore:
         from cryptography.fernet import InvalidToken
 
         try:
-            envelope = await self._records.get(key, collection=collection)
+            envelope = await records.get(key, collection=collection)
         except Exception as exc:
             logger.warning(
                 "backend-tokens: %s %s unreadable (%s at %s)",
@@ -526,10 +575,11 @@ class BackendTokenStore:
             return None
         # TRUST: a record read back from the data volume
         #   untrusted: the file's contents; anything with write access to /data wrote it
-        #   judged-by: Fernet (authenticated encryption) under the derived key, then
+        #   judged-by: Fernet (authenticated encryption) under the derived key (or the
+        #     previous key's, while one is set), then
         #     the sealed slot, key and origin compared to what was asked for
         #   on-failure: fail-closed; the record reads as absent and the backend needs auth
-        #   owner: backend_tokens.BackendTokenStore._unseal
+        #   owner: backend_tokens.BackendTokenStore._unseal_from
         #   evidence: T2 test_backend_tokens planted-plaintext, copied-slot and moved-host cases
         ciphertext = envelope.get("ct") if isinstance(envelope, dict) else None
         if not isinstance(ciphertext, str) or envelope.get("v") != _ENVELOPE_VERSION:
@@ -573,39 +623,81 @@ def _derive(secret: str, purpose: bytes) -> bytes:
     )
 
 
+def _read_key(env: str) -> str:
+    """A key from ``env`` (or its ``_FILE``), "" when unset; a short one is refused."""
+    secret = read_secret_env(env, record=False)
+    if secret and len(secret) < MIN_KEY_CHARS:
+        raise ProfileConfigError(
+            f"{env} is under {MIN_KEY_CHARS} characters; generate one with "
+            "`openssl rand -base64 48`"
+        )
+    return secret
+
+
+def _key_directory(base: Path, secret: str) -> Path:
+    return base / hashlib.sha256(_derive(secret, b"directory")).hexdigest()[:12]
+
+
+def _records_at(directory: Path) -> Any:
+    from key_value.aio.stores import filetree
+
+    return filetree.FileTreeStore(
+        data_directory=directory,
+        key_sanitization_strategy=filetree.FileTreeV1KeySanitizationStrategy(directory),
+        collection_sanitization_strategy=(
+            filetree.FileTreeV1CollectionSanitizationStrategy(directory)
+        ),
+    )
+
+
 def open_backend_token_store(root: Path | None = None) -> BackendTokenStore | None:
     """The store under ``root`` (default: beside the audit DB), or None without a key.
 
     The directory is named for a fingerprint of a key derived for that
-    purpose alone, so a rotated key starts empty and every slot authorizes
-    again, and the name says nothing about the encryption key.
+    purpose alone, so a rotated key starts empty, and the name says nothing
+    about the encryption key. With ``PREVIOUS_KEY_ENV`` set, the old key's
+    directory is drained into the new one as its records are read.
     """
-    secret = read_secret_env(KEY_ENV, record=False)
+    secret = _read_key(KEY_ENV)
+    previous = _read_key(PREVIOUS_KEY_ENV)
     if not secret:
+        if previous:
+            logger.warning(
+                "backend-tokens: %s is set without %s; ignored", PREVIOUS_KEY_ENV, KEY_ENV
+            )
         return None
-    if len(secret) < MIN_KEY_CHARS:
-        raise ProfileConfigError(
-            f"{KEY_ENV} is under {MIN_KEY_CHARS} characters; generate one with "
-            "`openssl rand -base64 48`"
-        )
-    from cryptography.fernet import Fernet
-    from key_value.aio.stores import filetree
+    from cryptography.fernet import Fernet, MultiFernet
 
     base = root if root is not None else Path(get_config().db_path).parent / "backend-oauth"
-    directory = base / hashlib.sha256(_derive(secret, b"directory")).hexdigest()[:12]
+    directory = _key_directory(base, secret)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     for path in (base, directory):
         os.chmod(path, 0o700)
+    keys = [secret] if previous in ("", secret) else [secret, previous]
+    fernets = [Fernet(base64.urlsafe_b64encode(_derive(key, b"fernet"))) for key in keys]
     return BackendTokenStore(
-        filetree.FileTreeStore(
-            data_directory=directory,
-            key_sanitization_strategy=filetree.FileTreeV1KeySanitizationStrategy(directory),
-            collection_sanitization_strategy=(
-                filetree.FileTreeV1CollectionSanitizationStrategy(directory)
-            ),
-        ),
-        Fernet(base64.urlsafe_b64encode(_derive(secret, b"fernet"))),
+        _records_at(directory), MultiFernet(fernets), _previous_records(base, keys[1:])
     )
+
+
+def _previous_records(base: Path, previous: list[str]) -> Any | None:
+    """The rotated-out key's store, to drain; None when there is none.
+
+    Never created: a previous key with no directory has nothing to hand over.
+    """
+    if not previous:
+        return None
+    old = _key_directory(base, previous[0])
+    if not old.is_dir():
+        logger.warning(
+            "backend-tokens: %s is set but has no store; nothing to migrate", PREVIOUS_KEY_ENV
+        )
+        return None
+    os.chmod(old, 0o700)
+    logger.info(
+        "backend-tokens: draining the store under %s into the current key's", PREVIOUS_KEY_ENV
+    )
+    return _records_at(old)
 
 
 _store: BackendTokenStore | None = None

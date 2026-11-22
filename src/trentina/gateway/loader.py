@@ -8,6 +8,7 @@ gateway routes if loading fails.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import os
 import re
@@ -98,6 +99,7 @@ _GATEWAY_SECRET_ENVS = frozenset(
         "OPENROUTER_API_KEY",
         "TRENTINA_APPROVAL_PASSWORD_HASH",
         "TRENTINA_BACKEND_TOKEN_KEY",
+        "TRENTINA_BACKEND_TOKEN_KEY_PREVIOUS",
         "TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET",
         "TRENTINA_OAUTH_JWT_SIGNING_KEY",
         "TRENTINA_OTLP_HEADERS",
@@ -1275,7 +1277,21 @@ def _resolve_matrix_ingress_secrets(name: str, matrix_ingress: MatrixIngressConf
 
 
 def _resolve_alert_ingress_secrets(name: str, alert_ingress: AlertIngressConfig) -> None:
-    alert_ingress.token = _require_env(name, alert_ingress.token_env, "alert_ingress")
+    # Only the digest is kept, as for a minted profile token: the plaintext
+    # never sits on the profile, so a config dump or crash report cannot leak it.
+    # The value may already be a digest (sha256:<hex>), as in token_store.
+    value = _require_env(name, alert_ingress.token_env, "alert_ingress").get_secret_value()
+    digest = token_store.parse_digest(value.encode("utf-8"))
+    if digest is None:
+        # A damaged digest is not a plaintext token: hashing it would make the
+        # digest's own text a bearer that authenticates.
+        if value.strip().startswith("sha256:"):
+            raise ProfileConfigError(
+                f"Profile {name!r}: alert_ingress {alert_ingress.token_env} holds "
+                "a malformed digest (expected sha256:<64 lowercase hex>)"
+            )
+        digest = hashlib.sha256(value.encode("utf-8")).digest()
+    alert_ingress.token_sha256 = digest
 
     if alert_ingress.forward_secret_env:
         fwd_secret = read_profile_secret(alert_ingress.forward_secret_env)

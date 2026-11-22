@@ -10,6 +10,7 @@ was actually called with.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import Iterator
 from typing import Any
@@ -112,7 +113,7 @@ def test_an_alert(judged: list[tuple[str, str | None]], monkeypatch: pytest.Monk
         alert_ingress=AlertIngressConfig(token_env="ALERT_TOK", forward_url="http://x:1/hook")
     )
     assert profile.alert_ingress is not None
-    profile.alert_ingress.token = SecretStr("tok")
+    profile.alert_ingress.token_sha256 = hashlib.sha256(b"tok").digest()
     client = TestClient(_alert_app({"agent1": profile}), headers=AUTH)
     assert client.post("/alert", json={"output": PAYLOAD}).status_code == 200
     _only_own(judged)

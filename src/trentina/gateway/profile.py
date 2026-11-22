@@ -1671,12 +1671,15 @@ class AlertIngressConfig(BaseModel):
 
     token_env: str = Field(
         ...,
-        description="Env var name whose value is the alert ingress token",
+        description=(
+            "Env var name whose value is the alert ingress token, either the "
+            "plaintext or its digest written sha256:<64 lowercase hex>"
+        ),
     )
-    token: SecretStr | None = Field(
+    token_sha256: bytes | None = Field(
         default=None,
         exclude=True,
-        description="Resolved token (load-time only)",
+        description="SHA-256 of the alert ingress token (load-time only)",
     )
     enforcement: EnforcementMode = Field(
         default="flag",

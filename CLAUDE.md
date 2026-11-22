@@ -124,7 +124,11 @@ uv run trentina
   per-(profile, backend) grants for `auth: {type: oauth}` backends (#479); at
   least 32 characters (`openssl rand -base64 48`). Read once at startup by
   `gateway/backend_tokens.py`, then scrubbed. Unset: those backends report
-  "needs auth" and nothing is stored. Rotating it drops every grant.
+  "needs auth" and nothing is stored. `TRENTINA_BACKEND_TOKEN_KEY_PREVIOUS[_FILE]`
+  is the key being rotated out: a record missing under the new key is read
+  from the old key's directory, resealed under the new key and removed there,
+  and a delete reaches both. Rotation is two deploys; without `_PREVIOUS` it
+  drops every grant.
 - `TRENTINA_SECRETS_KEK` / `TRENTINA_SECRETS_KEK_FILE` — seals `/data/keys` and
   `/data/secrets` (#868, `gateway/at_rest.py`): one key per line, newest first,
   each at least 32 characters; a `MultiFernet`, so a new first line reseals on
