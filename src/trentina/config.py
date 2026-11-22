@@ -188,7 +188,8 @@ def _split_name_port(item: str) -> tuple[str, str] | None:
     if item.startswith("["):
         inside, bracket, rest = item[1:].partition("]")
         host, port_text = inside, rest.removeprefix(":")
-        if not bracket or (rest and not rest.startswith(":")) or not _is_ipv6(host):
+        # `[::1]:` names a port and gives none: malformed, as `name:` is.
+        if not bracket or rest[:1] not in ("", ":") or rest == ":" or not _is_ipv6(host):
             return None
     elif item.count(":") > 1:
         host, port_text = item, ""

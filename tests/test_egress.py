@@ -541,7 +541,7 @@ class TestPrivateNames:
             "TRENTINA_FETCH_PRIVATE_NAMES",
             "Lab., lab:8000 fix.test:*,fix.test:9000 "
             "a.test:http b.test:0 c.test:70000 d.test:\u00b2 ::1 [FD00::9]:8000 "
-            "e.test:*:* :8000 f.test: [::1 [::2]x [nope]:80 1:2:zz",
+            "e.test:*:* :8000 f.test: [::1 [::2]x [nope]:80 1:2:zz [::3]:",
         )
         config = config_mod.Config()
         assert config.fetch_private_ports == {
@@ -556,7 +556,7 @@ class TestPrivateNames:
         assert config.private_name_port("fix.test", 1)
         assert not config.private_name_port("a.test", 80)
         assert "port is not one" in caplog.text
-        assert caplog.text.count("is not a name; dropped") == 7
+        assert caplog.text.count("is not a name; dropped") == 8
         assert "a.test:http" not in caplog.text
         assert "e.test" not in caplog.text
 
