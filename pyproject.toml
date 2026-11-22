@@ -386,10 +386,13 @@ labels = { "org.opencontainers.image.revision" = "@git.sha", "org.opencontainers
 # Tests that only mean something inside the image: it starts and answers, its
 # native libraries load, L2 runs on the model it ships, and the OCR and PDF
 # workers run as child processes with no network and a read-only root.
+# `-n auto` is sized by memory in tests/conftest.py: `--worker-mb` is a worker
+# with L2 loaded (1.5 GB measured) and a share of an OCR child, so a 4 GB seat
+# runs in-process and an 8 GB runner keeps its four.
 [tool.sdlc.ci.image-tests]
 kind = "pytest-in-image"
 mounts = ["tests", "corpora"]
-args = ["-q", "-rfE", "-n", "4"]
+args = ["-q", "-rfE", "-n", "auto", "--maxprocesses", "4", "--worker-mb", "1800"]
 tests = [
   "tests/image/",
   "tests/test_l2_integration.py",

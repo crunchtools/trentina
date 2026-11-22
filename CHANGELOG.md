@@ -10,6 +10,10 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`sdlc ci`'s image-tests fit a 4 GB seat (a1000).** They ran a fixed `-n 4`, and every xdist worker loads the L2 model (1.5 GB at peak, measured) and starts an OCR or PDF child of about the same, so a 4 GB seat had workers killed for memory until the run failed. They now pass `-n auto --worker-mb 1800`, and `tests/conftest.py` sizes `-n auto` from the memory the tightest cgroup from the process to the root can still take (and `MemAvailable`), never above the CPU count. One that fits runs in-process. `--maxprocesses 4` keeps the GitHub runners at the four they ran; without `--worker-mb`, `-n auto` is xdist's own.
+
 ## [6.27.0] - 2026-11-22
 
 ### Added

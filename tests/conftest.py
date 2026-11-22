@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import pathlib
+import sys
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -31,6 +33,82 @@ from trentina.quarantine.providers import reset_provider
 
 if TYPE_CHECKING:
     from trentina.gateway.profile import Profile
+
+
+# The in-image suites load the L2 model in every xdist worker (about 1.5 GB at
+# peak) and start an OCR or PDF child of about the same again. A fixed `-n 4`
+# was four of those on a seat with a 4 GB ceiling, and the kernel killed
+# workers until the run failed. So `sdlc ci`'s image-tests pass `-n auto` with
+# `--worker-mb`, and the worker count is the memory this container can still
+# take divided by that, never more than its CPUs (`--maxprocesses` keeps the
+# GitHub runners at the four they always ran). One that fits runs in-process:
+# a lone xdist worker costs a controller and saves nothing. Without
+# `--worker-mb`, `-n auto` means what xdist says it means.
+MIB = 1024 * 1024
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--worker-mb",
+        type=int,
+        default=0,
+        help="size `-n auto` by memory: the MB one xdist worker needs at its peak",
+    )
+
+
+def _cgroup_headroom_mb() -> int | None:
+    """What the tightest cgroup from this process up to the root can still take.
+
+    Leaf to root, because a limit set on a parent binds a child that shows
+    `max`, and rootless podman drops a child's own `--memory` when the
+    controller is not delegated. Inactive page cache counts as free: the kernel
+    reclaims it before it kills anything. A level without a `memory.max` (the
+    root, or the controller not enabled there) sets no limit.
+    """
+    root = pathlib.Path("/sys/fs/cgroup")
+    rel = pathlib.Path("/proc/self/cgroup").read_text(encoding="utf-8").partition("::")[2].strip()
+    node = root / rel.lstrip("/")
+    found: list[int] = []
+    for level in (node, *node.parents):
+        limit = level / "memory.max"
+        if limit.is_file() and limit.read_text(encoding="utf-8").strip().isdigit():
+            used = int((level / "memory.current").read_text(encoding="utf-8"))
+            stat = dict(
+                line.split()
+                for line in (level / "memory.stat").read_text(encoding="utf-8").splitlines()
+            )
+            found.append(
+                (int(limit.read_text(encoding="utf-8")) - used + int(stat["inactive_file"])) // MIB
+            )
+        if level == root:
+            break
+    return min(found, default=None)
+
+
+def _mem_available_mb() -> int:
+    meminfo = dict(
+        line.split(":", 1)
+        for line in pathlib.Path("/proc/meminfo").read_text(encoding="utf-8").splitlines()
+    )
+    return int(meminfo["MemAvailable"].split()[0]) // 1024
+
+
+def pytest_xdist_auto_num_workers(config: pytest.Config) -> int | None:
+    per_worker: int = config.getoption("worker_mb")
+    if per_worker < 1:
+        return None
+    headroom = max(
+        0, min(mb for mb in (_cgroup_headroom_mb(), _mem_available_mb()) if mb is not None)
+    )
+    cpus = os.process_cpu_count() or 1
+    fits = min(cpus, headroom // per_worker)
+    workers = fits if fits > 1 else 0
+    print(
+        f"xdist: {headroom} MB free at {per_worker} MB a worker, {cpus} CPUs: "
+        f"{workers or 'no'} workers",
+        file=sys.stderr,
+    )
+    return workers
 
 
 @pytest.fixture(autouse=True)
