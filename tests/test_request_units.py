@@ -94,6 +94,16 @@ async def _judge(
     )
 
 
+def _counted_under_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the admission count: a 50 ms deadline is the judge's, and a cold
+    tokenizer can take longer than that on its own."""
+
+    async def counted(_whole: str) -> tuple[int, int]:
+        return 1, 2
+
+    monkeypatch.setattr(defense_mod, "admission", counted)
+
+
 class TestRequestUnits:
     def test_the_frame_then_each_message(self) -> None:
         frame, system, user = ru.request_units("POST /v1", _body("review it"))
@@ -152,11 +162,7 @@ class TestOneJudgementPerUnit:
     async def test_a_timed_out_unit_is_judged_again(
         self, defend: _Defend, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        async def counted(_whole: str) -> tuple[int, int]:
-            return 1, 2
-
-        # The 50 ms deadline is the judge's: a cold tokenizer can take longer.
-        monkeypatch.setattr(defense_mod, "admission", counted)
+        _counted_under_the_cap(monkeypatch)
         agent = _profile("dolza-max")
         defend.delay = 1.0
         first = await _judge(agent, _body("reviewer"), deadline=0.05)
@@ -326,8 +332,9 @@ class TestOneCap:
 
 class TestSharedFlights:
     async def test_a_late_joiner_waits_no_longer_than_its_own_deadline(
-        self, defend: _Defend, caplog: pytest.LogCaptureFixture
+        self, defend: _Defend, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        _counted_under_the_cap(monkeypatch)
         agent = _profile("dolza-max")
         defend.delay = 0.5
         first = asyncio.ensure_future(_judge(agent, _body("reviewer"), deadline=5.0))
