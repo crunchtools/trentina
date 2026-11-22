@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -244,6 +245,16 @@ class TestCanaryTokens:
         assert _check_canary({"text": f"Some {canary} here"}, canary) is True
         assert _check_canary({"text": "Clean output"}, canary) is False
 
+    def test_check_canary_detects_an_encoded_or_partial_leak(self) -> None:
+        canary = _generate_canary()
+        hexed = canary.encode().hex()
+        b64 = base64.b64encode(canary.encode()).decode()
+        assert _check_canary({"text": hexed}, canary) is True
+        assert _check_canary({"text": b64}, canary) is True
+        assert _check_canary({"text": canary[::-1]}, canary) is True
+        assert _check_canary({"text": canary[-16:]}, canary) is True
+        assert _check_canary({"text": canary[-15:]}, canary) is False
+
 
 class TestRuntimeChecks:
     """Verify _enforce_quarantine raises on tool injection."""
@@ -471,3 +482,42 @@ class TestPostExtractionTruncation:
         ):
             resp = await quarantine_extract("page", "Extract")
             assert len(resp["content"]["extracted_text"]) == MAX_EXTRACTED_TEXT
+
+
+class TestSearchCanary:
+    """#873 review: the OpenRouter search answer is matched as the judge's is."""
+
+    CANARY = "CANARY-5f1c9a7e3b2d48e6a0c4f7b19d3e8a26"
+
+    def _raw(self, content: str, url: str = "https://example.com/a") -> bytes:
+        note = {"type": "url_citation", "url_citation": {"url": url, "title": "t"}}
+        message = {"content": content, "annotations": [note]}
+        return json.dumps({"choices": [{"message": message}]}).encode()
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "CANARY-5f1c9a7e3b2d48e6a0c4f7b19d3e8a26"[::-1],
+            base64.b64encode(b"CANARY-5f1c9a7e3b2d48e6a0c4f7b19d3e8a26").decode(),
+        ],
+    )
+    def test_an_encoded_canary_in_the_answer_is_a_leak(self, content: str) -> None:
+        from trentina.errors import SearchCanaryLeakedError
+        from trentina.quarantine.agent import _parse_openrouter_search
+
+        with pytest.raises(SearchCanaryLeakedError):
+            _parse_openrouter_search(self._raw(f"the answer {content}"), self.CANARY)
+
+    def test_a_canary_in_a_citation_is_a_leak(self) -> None:
+        from trentina.errors import SearchCanaryLeakedError
+        from trentina.quarantine.agent import _parse_openrouter_search
+
+        url = "https://example.com/?q=" + self.CANARY.encode().hex()
+        with pytest.raises(SearchCanaryLeakedError):
+            _parse_openrouter_search(self._raw("a plain answer", url), self.CANARY)
+
+    def test_a_clean_answer_passes(self) -> None:
+        from trentina.quarantine.agent import _parse_openrouter_search
+
+        parsed = _parse_openrouter_search(self._raw("a plain answer"), self.CANARY)
+        assert parsed

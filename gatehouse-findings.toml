@@ -64,3 +64,13 @@ file = "src/trentina/gateway/request_units.py"
 evidence = "```python\nwhole = \"\\n\".join(units)\ntokens, cap = await admission(whole)\nreturn [whole] if tokens > cap else units\n```"
 status = "not-a-bug"
 reason = "The body forwarded upstream is itself re-serialized by llm_policy.admit (the provider parses what was judged), and body_text re-dumps it with the same json.dumps defaults the units use, so there is no original whitespace left to count: the joined units carry the forwarded body's fields with one newline between units instead of a comma."
+
+
+
+[[findings]]
+agent = "general"
+category = "quality"
+file = "src/trentina/token_variants.py"
+evidence = "# Fixed lead-ins of vendor credentials: every token of the kind starts with one,\n# so a window over it matches somebody else's. Longest match wins. The shapes\n# ``credential_shapes`` knows (``ghp_`` family, ``github_pat_``, ``sk-``,\n# ``AIza``, ``ya29.``, ``syt_``, ``trt_``, ``xox?-``, AWS id prefixes) plus the\n# common longer forms of ``sk-``, GitLab and Slack.\n_PREFIXES = tuple("
+status = "not-a-bug"
+reason = "credential_shapes holds regexes for redaction, not a prefix list; this table is a superset with longer forms it does not need. A prefix missing here only lets a window over that prefix count as a fragment, a false-positive risk for one vendor, never a missed trip."

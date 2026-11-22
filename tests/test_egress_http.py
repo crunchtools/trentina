@@ -762,3 +762,118 @@ class TestGatekeeper:
         assert resp.status_code == 200
         assert calls == []
         assert len(h.net.sent) == 1
+
+
+_HONEY = "HT-7f3a91c2d8e4b605"
+
+
+def _trips(path: Path) -> list[tuple[str, str, str]]:
+    conn = sqlite3.connect(path)
+    try:
+        return conn.execute(
+            "SELECT backend, tool, profile FROM detections WHERE source_type = 'decoy'"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+class TestHoneytokenInRequest:
+    """#865: a planted credential in what egress sends is a trip, in every mode."""
+
+    @staticmethod
+    def _planted(h: _Harness) -> None:
+        from pydantic import SecretStr
+
+        from trentina.gateway.profile import Honeytoken
+
+        h.profiles["agent1"].honeytokens = {
+            "aws-key": Honeytoken(value_env="K", value=SecretStr(_HONEY))
+        }
+
+    @pytest.mark.parametrize("enforcement", ["block", "flag"])
+    @pytest.mark.parametrize("where", ["body", "header", "query"])
+    def test_it_is_refused_unexplained_and_audited_as_a_trip(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        audit_db: Path,
+        enforcement: Literal["block", "flag"],
+        where: str,
+    ) -> None:
+        _stub_judge(monkeypatch)
+        h = _harness(monkeypatch, enforcement=enforcement)
+        self._planted(h)
+        headers = dict(_AUTH)
+        url = "/proxy/http/gh/repos/x"
+        content = None
+        if where == "header":
+            headers["accept-language"] = _HONEY
+        elif where == "query":
+            url += f"?ref={_HONEY}"
+        else:
+            content = json.dumps({"k": f"the key is {_HONEY}"}).encode()
+        resp = h.client.post(url, headers=headers, content=content)
+        assert resp.status_code == 403
+        assert resp.json()["block_reason"] == "flagged"
+        assert h.net.sent == []
+        assert _HONEY not in resp.text
+        [row] = _rows(audit_db)
+        assert (row["outcome"], row["error_message"]) == ("decoy_tripped", "flagged")
+        assert _HONEY not in str(tuple(row))
+        assert _trips(audit_db) == [("http:gh", "request", "agent1")]
+
+    @pytest.mark.parametrize("enforcement", ["block", "flag"])
+    def test_a_body_that_is_not_utf8_is_still_checked(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path, enforcement: Literal["block", "flag"]
+    ) -> None:
+        """No layer reads such a body, and flag forwards it: the trip check reads it as latin-1."""
+        _stub_judge(monkeypatch)
+        h = _harness(monkeypatch, enforcement=enforcement)
+        self._planted(h)
+        content = _HONEY.encode() + b"\xff"
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, content=content)
+        assert (resp.status_code, resp.json()["block_reason"]) == (403, "flagged")
+        assert h.net.sent == []
+        [row] = _rows(audit_db)
+        assert row["outcome"] == "decoy_tripped"
+
+    def test_the_agent_cannot_tell_it_from_an_ordinary_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from trentina.defense import Layer
+
+        flagged = SimpleNamespace(flagged=True, flagged_by=Layer.L2, risk_level="high")
+        _stub_judge(monkeypatch, req=flagged)
+        ordinary = _harness(monkeypatch).client.get("/proxy/http/gh/repos/x", headers=_AUTH)
+        _stub_judge(monkeypatch)
+        h = _harness(monkeypatch)
+        self._planted(h)
+        tripped = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, json={"k": _HONEY})
+        assert (tripped.status_code, tripped.json()) == (ordinary.status_code, ordinary.json())
+        assert tripped.headers["x-trentina-reason"] == ordinary.headers["x-trentina-reason"]
+
+    def test_no_layer_runs_on_a_trip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trentina import defense as defense_mod
+
+        _stub_judge(monkeypatch)
+        calls: list[str] = []
+
+        async def defend(*_a: Any, **_k: Any) -> Any:
+            calls.append("defend")
+            return _clean_verdict()
+
+        monkeypatch.setattr(defense_mod, "defend", defend)
+        h = _harness(monkeypatch)
+        self._planted(h)
+        h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, json={"k": _HONEY})
+        assert calls == []
+
+    def test_a_clean_request_is_not_a_trip(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        _stub_judge(monkeypatch)
+        h = _harness(monkeypatch)
+        self._planted(h)
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, json={"k": "HT-7f3a91c2"})
+        assert resp.status_code == 200
+        assert len(h.net.sent) == 1
+        assert _trips(audit_db) == []

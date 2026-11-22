@@ -8,6 +8,7 @@ held here.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -17,6 +18,7 @@ from pydantic import SecretStr, ValidationError
 
 from trentina.database import get_db, get_gateway_call_stats
 from trentina.gateway.backend import BackendCall
+from trentina.gateway.decoy import leaked_tokens
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.loader import load_profiles
 from trentina.gateway.profile import AuthConfig, Backend, DecoyTool, Honeytoken, Profile
@@ -298,3 +300,36 @@ async def test_a_planted_credential_trips_when_the_params_are_not_even_a_mapping
     assert [(row[2], row[3]) for row in list(map(tuple, get_db().execute(AUDITED)))] == [
         ("decoy_tripped", "honeytoken aws-key")
     ]
+
+
+def _pem_profile(kind: str) -> tuple[Profile, str]:
+    """A profile whose honeytoken is a freshly generated PKCS#8 PEM private key."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
+
+    key = (
+        ed25519.Ed25519PrivateKey.generate()
+        if kind == "ed25519"
+        else rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    )
+    pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    profile = _profile()
+    profile.honeytokens["aws-key"] = Honeytoken(value_env="KAGE_AWS_KEY", value=SecretStr(pem))
+    return profile, pem
+
+
+@pytest.mark.parametrize("kind", ["rsa", "ed25519"])
+def test_a_multi_line_pem_honeytoken_trips_inside_a_dict_and_inside_json_text(kind: str) -> None:
+    """JSON writes a PEM's line breaks as ``\\n``; an ed25519 key has no
+    fragment to fall back on, so the escaped form is all that finds it. A string
+    is already text and is searched as it is, not escaped a second time."""
+    profile, pem = _pem_profile(kind)
+    assert leaked_tokens(profile, {"arguments": {"note": f"key:\n{pem}"}}) == ["aws-key"]
+    assert leaked_tokens(profile, json.dumps({"k": pem})) == ["aws-key"]
+    assert leaked_tokens(profile, json.dumps({"k": pem[::-1]})) == ["aws-key"]
+    assert leaked_tokens(profile, "the key is " + pem) == ["aws-key"]
+    assert leaked_tokens(profile, {"arguments": {"note": "nothing planted"}}) == []

@@ -94,6 +94,21 @@ default while the request false-positive rate is measured, moving to `block` at
 a future major) forwards and returns the verdict on the `X-Trentina-Warning`
 header. `redact` is meaningless on an outbound call and rejected.
 
+A [honeytoken](profiles.md#decoy-tools-and-honeytokens) in what the agent
+wrote is the one finding `flag` refuses (#865): the request is not sent, the
+caller is told `flagged`, and the audit row is `decoy_tripped`. It is checked
+before the units are counted or judged, over the request with every delivered
+tool result cut: a conversation carries what its tools returned, and an agent
+that read the planted file is not sending it. A result is cut only where its
+API puts it and only when it answers a call made earlier in the same request:
+an OpenAI `role: tool` entry by `tool_call_id`, a Responses
+`function_call_output` or `custom_tool_call_output` by `call_id`, an Anthropic
+`tool_result` block of a `user` entry by `tool_use_id`, a Gemini
+`functionResponse` by its id or name. A result anywhere else is checked. What
+remains open: an agent that writes both the call and its answer can pass a
+token off as delivered, to its own model provider. Each unit's scan is
+remembered, so a turn scans only what is new.
+
 Three consequences worth stating plainly:
 
 - **The outbound prompt now reaches L3, with credentials cut.** `defend()` sends

@@ -77,6 +77,7 @@ from .loader import read_secret_env
 from .modes_policy import effective_mode
 from .outbound import (
     REASON_CREDENTIAL,
+    REASON_DECOY,
     REASON_FLAGGED,
     REASON_UNJUDGED,
     body_text,
@@ -340,6 +341,9 @@ JSON = "application/json"
 
 #: The outbound reason code -> this route's audit Reason.
 _REASON_OF = {
+    # A honeytoken trip (#865) is worded as a layer flag, the one refusal that
+    # names nothing the agent could use; see ``perimeter._REQUEST_REASON``.
+    REASON_DECOY: Reason.FLAGGED,
     REASON_CREDENTIAL: Reason.CREDENTIAL,
     REASON_FLAGGED: Reason.FLAGGED,
     REASON_UNJUDGED: Reason.UNJUDGED,
@@ -404,8 +408,15 @@ class MarkedRefusalError(RefusedError):
     token for an admission refusal, or the request judge's verdict. The facts
     go to this caller's marker only, never to a log or the audit row."""
 
-    def __init__(self, reason: str, *, status: int | None = None, **marker: Any) -> None:
-        super().__init__(reason, status=status)
+    def __init__(
+        self,
+        reason: str,
+        *,
+        status: int | None = None,
+        outcome: Outcome | None = None,
+        **marker: Any,
+    ) -> None:
+        super().__init__(reason, status=status, outcome=outcome)
         self.marker = marker
 
 
@@ -573,10 +584,12 @@ async def _judge_request(ctx: InTree, units: list[str], mode: Mode) -> str | Non
         logger.warning("llm_proxy: request blocked profile=%s reason=%s", op.profile.name, reason)
         raise MarkedRefusalError(
             reason,
-            flagged_by=verdict.flagged_by,
+            # A trip names the exact-match layer, as a deterministic L1 flag does.
+            flagged_by="L1" if verdict.tripped else verdict.flagged_by,
             gaps=verdict.gaps or None,
             kinds=verdict.kinds or None,
             mode=mode.value,
+            outcome=Outcome.DECOY_TRIPPED if verdict.tripped else None,
         )
     if verdict.warning is not None:
         op.flag_reason = reason

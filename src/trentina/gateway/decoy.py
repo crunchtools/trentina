@@ -6,13 +6,17 @@ evidence that something else is steering it. A honeytoken is a fake
 credential planted where only an attacker's instructions lead; one appearing
 in the arguments of any call, to any backend, is the same evidence.
 
-Both checks are exact and deterministic: a tool name, a substring. Neither
-reads the content that caused the call. The audit's ``session`` and
-``call_ref`` columns are what lead back to that.
+Both checks are deterministic: a tool name, and a planted value found as it
+was planted, encoded (base64, hex, percent), reversed or in part
+(``token_variants``, #864). Neither reads the content that caused the call.
+The audit's ``session`` and ``call_ref`` columns are what lead back to that.
 
-What this does not see: a planted credential the agent encoded, split or
-paraphrased before sending it (``tests/test_coverage_gaps.py`` holds that
-open), and anything an agent does without a tool call through the gateway.
+The value is checked in a tool call's arguments and, through
+``orchestrator.judge_outbound``, in a ``/proxy/http`` or ``/proxy/llm``
+request (#865). What this does not see: a planted credential the agent
+paraphrased, split across calls or encoded some other way
+(``tests/test_coverage_gaps.py`` holds that open), and anything sent by git,
+a Matrix message or a CONNECT tunnel.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..database import record_capture, record_detection
 from ..dbus_interface import emit_detection_event
+from ..token_variants import matcher_for
 from .context import current_call
 from .profile import HONEYTOKEN_REF_RE
 
@@ -46,14 +51,19 @@ def leaked_tokens(profile: Profile, sent: Any) -> list[str]:
     ``sent`` is a request's whole ``params``, whatever its shape: the check
     runs before the tool name is resolved or the arguments are known to be a
     mapping, because a hijacked agent reaching for a tool it was never given
-    is the call most worth an alarm.
+    is the call most worth an alarm. A string is already text (a proxied
+    request's body, often JSON itself) and is searched as it is: dumping it
+    would escape it a second time and match neither form of a multi-line token.
     """
-    text = json.dumps(sent, ensure_ascii=False, default=str)
-    return sorted(
-        token
-        for token, planted in profile.honeytokens.items()
-        if planted.value is not None and planted.value.get_secret_value() in text
-    )
+    text = sent if isinstance(sent, str) else json.dumps(sent, ensure_ascii=False, default=str)
+    by_value: dict[str, list[str]] = {}
+    for token, planted in profile.honeytokens.items():
+        if planted.value is not None:
+            by_value.setdefault(planted.value.get_secret_value(), []).append(token)
+    if not by_value:
+        return []
+    hits = matcher_for(frozenset(by_value)).found(text)
+    return sorted(token for value in hits for token in by_value[value])
 
 
 def canned_result(profile: Profile, decoy: DecoyTool) -> dict[str, Any]:

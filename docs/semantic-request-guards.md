@@ -97,7 +97,8 @@ sentences is usually right.
   with every guarded call.
 
 What leaves the gateway for each guarded call: the policy, the facts, and the
-arguments. They go to the profile's own judge provider, the one that already
+arguments with every credential shape cut (#863), the copy egress already sends.
+They go to the profile's own judge provider, the one that already
 reads every response the agent is delivered, under the same quarantine. No
 provider sees anything it would not see without semantic request guards, except the
 policy and the call it is asked about.
@@ -208,8 +209,10 @@ The judge is given three things, kept apart:
   tool; the destination (from `destination_params`); whether this profile has
   completed a call to that destination before; and whether this session was
   delivered content the layers flagged or could not finish reading.
-- **The arguments**, exactly as the agent wrote them, marked as untrusted
-  data. A claim in them that the call was approved is evidence, not
+- **The arguments**, as the agent wrote them with every escaping decoded and
+  every credential replaced by `[REDACTED]` (#863), marked as untrusted data.
+  The judge is told a `[REDACTED]` value is a credential the call carries, so
+  `credential_material` still refuses one. A claim in them that the call was approved is evidence, not
   permission.
 
 "Before" means within the audit's retention

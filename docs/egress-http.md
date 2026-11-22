@@ -74,6 +74,13 @@ an outbound call, so it is rejected at load.
 A refusal is a JSON deny marker (`{blocked, block_reason, scanner}`), with
 `X-Trentina-Reason` and a closed reason from `egress_policy.REASONS`.
 
+A [honeytoken](profiles.md#decoy-tools-and-honeytokens) in the request's body,
+headers or query refuses in every mode, `flag` included, before any layer runs
+and before any other refusal. A body that is not UTF-8 is checked too, read as
+latin-1.
+The caller sees `flagged`, the same as a layer's flag; the audit row says
+`decoy_tripped`.
+
 ## Configuration
 
 ```yaml

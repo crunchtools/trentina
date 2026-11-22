@@ -23,6 +23,7 @@ from trentina.gateway.loader import reset_active_config
 from trentina.gateway.matrix_proxy import reset_extractors
 from trentina.gateway.request_units import reset_request_units
 from trentina.gateway.verdict_cache import reset_verdict_cache
+from trentina.orchestrator import reset_scanned
 from trentina.quarantine.l3_cache import reset_l3_cache
 from trentina.quarantine.limiter import reset_limiters
 from trentina.quarantine.providers import reset_provider
@@ -48,6 +49,7 @@ def _reset_singletons() -> None:
     reset_verdict_cache()
     reset_l3_cache()
     reset_request_units()
+    reset_scanned()
     # The sqlite connection is bound to the thread that created it, and
     # Starlette's TestClient runs apps on a worker thread — a connection one
     # test created on the main thread poisons the next test's defend()

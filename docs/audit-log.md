@@ -149,7 +149,7 @@ blocked 34 hostile pages.
 | `denied_response_guard` | blocked | A literal response guard rejected the backend's result. |
 | `denied_gatekeeper` | blocked | [Semantic request guards](semantic-request-guards.md) refused the call before it was forwarded. The message is the reason code, then what the gatekeeper was told: `first_contact` and `session_flagged`. |
 | `denied_response_gatekeeper` | blocked | [Semantic response guards](semantic-response-guards.md) refused delivery of the backend's result. The backend was contacted and answered; the answer was withheld. Distinct from `denied_response_guard`, the deterministic literal response guard. |
-| `decoy_tripped` | tripped | A [decoy tool](profiles.md#decoy-tools-and-honeytokens) was called, or a planted credential was in a call's arguments. An alarm about the caller. |
+| `decoy_tripped` | tripped | A [decoy tool](profiles.md#decoy-tools-and-honeytokens) was called, or a planted credential was in a call's arguments or in a `/proxy/http` or `/proxy/llm` request (refused in every mode, worded as `flagged`). An alarm about the caller. |
 | `tool_error` | failed | Backend completed but reported `isError`. |
 | `backend_error` | failed | Upstream failed: network, timeout, auth, 4xx/5xx. |
 | `gateway_error` | failed | Our own bug. The only outcome that should page anyone. |

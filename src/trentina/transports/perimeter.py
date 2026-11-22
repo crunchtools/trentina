@@ -51,6 +51,7 @@ from ..gateway.gatekeeper import judge_egress
 from ..gateway.modes_policy import effective_mode
 from ..gateway.outbound import (
     REASON_CREDENTIAL,
+    REASON_DECOY,
     REASON_FLAGGED,
     REASON_UNJUDGED,
     body_text,
@@ -68,7 +69,7 @@ from ..gateway.upstream import (
 )
 from ..logsafe import exc_kind
 from ..modes import Mode
-from ..orchestrator import judge_egress_response, judge_outbound
+from ..orchestrator import judge_egress_response, judge_outbound, outbound_trip
 from ..outcomes import Outcome
 from ..reach.egress import check_url, open_pinned
 from ..seal import UNSEALED, Seal, require
@@ -121,6 +122,11 @@ JUDGE_DEADLINE = 60.0
 _SNIFF = 8192
 
 _REQUEST_REASON = {
+    # A honeytoken trip (#865) must say nothing of why, as MCP's "Invalid
+    # arguments" does. `flagged` is the least revealing refusal that exists in
+    # every mode: no kinds, gaps or layer on the wire, and it is what a layer
+    # flag looks like. The audit row still records decoy_tripped.
+    REASON_DECOY: "flagged",
     REASON_CREDENTIAL: "credential_in_request",
     REASON_FLAGGED: "flagged",
     REASON_UNJUDGED: "not_fully_judged",
@@ -507,12 +513,20 @@ class PinnedUpstream(Upstream):
                 judged_body = content.decode("utf-8")
             except UnicodeDecodeError:
                 judged_body = None
+        profile = self.op.profile
+        name = self.bound.instance.name
+        # The trip check reads every byte, before any other refusal: latin-1
+        # decodes any body, so one that is not UTF-8 cannot carry a token past it.
+        raw_body = content.decode("latin-1") if content else None
+        sent = request_document(method, f"/{path}", query, headers, raw_body)
+        if (trip := await outbound_trip(profile, f"{self.route}:{name}", [sent])) is not None:
+            reason = _REQUEST_REASON[trip.reason or REASON_UNJUDGED]
+            logger.warning("perimeter: request blocked profile=%s reason=%s", profile.name, reason)
+            raise RefusedError(reason, outcome=Outcome.DECOY_TRIPPED)
         binary = bool(content) and judged_body is None
         if binary and mode is not Mode.FLAG:
             raise RefusedError("binary_body")
         document = request_document(method, f"/{path}", query, headers, judged_body)
-        profile = self.op.profile
-        name = self.bound.instance.name
         verdict = await judge_outbound(
             document,
             source=f"{self.route}:{profile.name}:{name}",

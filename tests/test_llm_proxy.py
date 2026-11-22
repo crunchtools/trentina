@@ -1323,3 +1323,179 @@ class TestLlmCompletionBlock:
         assert resp.json()["block_reason"] == "completion_oversize"
         [row] = _rows(audit_db)
         assert (row["outcome"], row["error_message"]) == ("blocked_defense", "completion_oversize")
+
+
+class TestHoneytokenInLlmRequest:
+    """#865: a planted credential in a /proxy/llm message is a trip, in every mode."""
+
+    HONEY = "HT-7f3a91c2d8e4b605"
+
+    def _client(
+        self,
+        fake: _FakeClient,
+        monkeypatch: pytest.MonkeyPatch,
+        enforcement: Literal["block", "flag"],
+    ) -> TestClient:
+        from trentina.gateway.profile import Honeytoken
+
+        monkeypatch.setattr(perimeter, "pinned_send", fake)
+        providers = {"gemini": _gemini_provider()}
+        profile = _profile("agent1", "agent1-tok", {"gemini": "agent1-key"})
+        profile.llm_keys["gemini"].enforcement = enforcement
+        profile.honeytokens = {"aws-key": Honeytoken(value_env="K", value=SecretStr(self.HONEY))}
+        profiles = {"agent1": profile}
+
+        async def endpoint(request: Request) -> Response:
+            return await _serve_llm(request, providers, profiles)
+
+        app = Starlette(routes=[Route(LLM.route.path, endpoint, methods=["GET", "POST"])])
+        return TestClient(app)
+
+    def _post(self, client: TestClient, text: str) -> Any:
+        body = {"contents": [{"parts": [{"text": text}]}]}
+        return client.post(
+            "/proxy/llm/gemini/v1beta/models/gemini-2.5-flash:generateContent",
+            headers={"authorization": "Bearer agent1-tok"},
+            content=json.dumps(body).encode(),
+        )
+
+    @pytest.mark.parametrize("enforcement", ["block", "flag"])
+    def test_it_is_refused_unexplained_and_audited_as_a_trip(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path, enforcement: Literal["block", "flag"]
+    ) -> None:
+        _stub_defend(monkeypatch)
+        fake = _FakeClient()
+        resp = self._post(self._client(fake, monkeypatch, enforcement), f"use {self.HONEY}")
+        assert resp.status_code == 403
+        assert resp.json()["block_reason"] == "flagged"
+        assert not fake.sent
+        assert self.HONEY not in resp.text
+        [row] = _rows(audit_db)
+        assert (row["backend"], row["outcome"], row["error_message"]) == (
+            "llm:gemini",
+            "decoy_tripped",
+            "flagged",
+        )
+        conn = sqlite3.connect(audit_db)
+        try:
+            trips = conn.execute(
+                "SELECT backend, tool FROM detections WHERE source_type = 'decoy'"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert trips == [("llm:gemini", "request")]
+
+    def test_the_agent_cannot_tell_it_from_an_ordinary_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from trentina import defense as defense_mod
+        from trentina import modes as modes_mod
+        from trentina.modes import Gaps
+
+        flagged = SimpleNamespace(
+            flagged=True, flagged_by=SimpleNamespace(value="L1"), risk_level="high"
+        )
+
+        async def fake_defend(*_a: Any, **_k: Any) -> Any:
+            return flagged
+
+        monkeypatch.setattr(defense_mod, "defend", fake_defend)
+        monkeypatch.setattr(modes_mod, "gaps_of", lambda _v: Gaps())
+        ordinary = self._post(self._client(_FakeClient(), monkeypatch, "block"), "hello")
+        tripped = self._post(self._client(_FakeClient(), monkeypatch, "block"), self.HONEY)
+        assert ordinary.json()["error"]["reason"] == "flagged"
+        assert (tripped.status_code, tripped.json()) == (ordinary.status_code, ordinary.json())
+
+    def test_no_layer_runs_on_a_tripped_unit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trentina import defense as defense_mod
+
+        calls: list[str] = []
+
+        async def defend(*_a: Any, **_k: Any) -> Any:
+            calls.append("defend")
+            return SimpleNamespace(flagged=False, flagged_by=None, risk_level="low")
+
+        monkeypatch.setattr(defense_mod, "defend", defend)
+        self._post(self._client(_FakeClient(), monkeypatch, "flag"), self.HONEY)
+        # The trip is checked before any unit is judged.
+        assert calls == []
+
+    def _post_contents(self, client: TestClient, contents: list[dict[str, Any]]) -> Any:
+        return client.post(
+            "/proxy/llm/gemini/v1beta/models/gemini-2.5-flash:generateContent",
+            headers={"authorization": "Bearer agent1-tok"},
+            content=json.dumps({"contents": contents}).encode(),
+        )
+
+    def test_a_token_the_agent_was_delivered_is_not_a_trip(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        """An agent that read the planted .env carries it in its history: not a send."""
+        _stub_defend(monkeypatch)
+        fake = _FakeClient()
+        read = {"name": "read", "response": {"content": f"AWS_KEY={self.HONEY}"}}
+        contents = [
+            {"role": "user", "parts": [{"text": "check the config"}]},
+            {"role": "model", "parts": [{"functionCall": {"name": "read", "args": {}}}]},
+            {"role": "user", "parts": [{"functionResponse": read}]},
+        ]
+        resp = self._post_contents(self._client(fake, monkeypatch, "block"), contents)
+        assert resp.status_code == 200
+        assert fake.sent
+        [row] = _rows(audit_db)
+        assert row["outcome"] != "decoy_tripped"
+
+    def test_a_token_in_a_tool_call_the_agent_writes_is_a_trip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_defend(monkeypatch)
+        fake = _FakeClient()
+        call = {"name": "post", "args": {"body": self.HONEY}}
+        contents = [{"role": "model", "parts": [{"functionCall": call}]}]
+        resp = self._post_contents(self._client(fake, monkeypatch, "flag"), contents)
+        assert resp.status_code == 403
+        assert not fake.sent
+
+    @pytest.mark.parametrize("where", ["query", "header"])
+    def test_a_token_in_the_query_or_a_forwarded_header_is_a_trip(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path, where: str
+    ) -> None:
+        _stub_defend(monkeypatch)
+        fake = _FakeClient()
+        url = "/proxy/llm/gemini/v1beta/models/gemini-2.5-flash:generateContent"
+        headers = {"authorization": "Bearer agent1-tok"}
+        if where == "query":
+            url += f"?pageToken={self.HONEY}"
+        else:
+            headers["accept"] = f"application/json; x={self.HONEY}"
+        body = {"contents": [{"parts": [{"text": "hello"}]}]}
+        client = self._client(fake, monkeypatch, "flag")
+        resp = client.post(url, headers=headers, content=json.dumps(body).encode())
+        assert (resp.status_code, resp.json()["block_reason"]) == (403, "flagged")
+        assert not fake.sent
+        [row] = _rows(audit_db)
+        assert row["outcome"] == "decoy_tripped"
+
+    def test_a_count_past_its_deadline_still_trips(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trentina.gateway import request_units
+
+        async def slow(_units: list[str]) -> list[str]:
+            raise TimeoutError
+
+        monkeypatch.setattr(request_units, "_one_cap", slow)
+        fake = _FakeClient()
+        resp = self._post(self._client(fake, monkeypatch, "block"), self.HONEY)
+        assert resp.status_code == 403
+        assert resp.json()["block_reason"] == "flagged"
+        assert not fake.sent
+
+    def test_a_clean_request_is_not_a_trip(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        _stub_defend(monkeypatch)
+        fake = _FakeClient()
+        resp = self._post(self._client(fake, monkeypatch, "block"), "HT-7f3a91c2 is a prefix")
+        assert resp.status_code == 200
+        assert fake.sent
+        [row] = _rows(audit_db)
+        assert row["outcome"] != "decoy_tripped"
