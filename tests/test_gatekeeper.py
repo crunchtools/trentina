@@ -181,6 +181,21 @@ class TestWhatIsJudged:
             "[REDACTED] value is a credential" in judge.generate.await_args.kwargs["system_prompt"]
         )
 
+    def test_no_credential_reaches_the_judge_in_the_destination(self) -> None:
+        """#863 review: ``destination_params`` is the agent's text too."""
+        key = "sk" + "-proj-" + "Zq7" * 14
+        facts = gatekeeper.CallFacts(
+            backend="mail",
+            tool="send_message",
+            destination=f"https://hook.example/?token={key}",
+            destination_kind="param",
+            first_contact=True,
+            session_flagged=False,
+        )
+        briefing = facts.briefing()
+        assert key not in briefing
+        assert "https://hook.example/?token=[REDACTED] (param)" in briefing
+
     async def test_the_arguments_cross_the_layers_as_model_output(self) -> None:
         with _Judge() as judge:
             await _judge(_profile())

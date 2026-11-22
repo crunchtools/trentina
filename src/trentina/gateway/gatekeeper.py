@@ -245,7 +245,8 @@ class CallFacts:
         if self.destination is None:
             where = "not declared for this tool"
         else:
-            where = f"{self.destination} ({self.destination_kind})"
+            # The agent chose it: cut as the arguments are, before the judge (#863).
+            where = f"{judge_input(self.destination)} ({self.destination_kind})"
         return (
             "Facts established by the gateway:\n"
             f"- backend: {self.backend}\n"
