@@ -1,6 +1,6 @@
 # trentina Constitution
 
-> **Version:** 2.25.0
+> **Version:** 2.26.0
 > **Ratified:** 2026-09-22
 > **Amended:** 2026-11-22
 > **Status:** Active
@@ -123,6 +123,27 @@ one. Two caches are held to this: the perimeter verdict cache
 (`gateway/verdict_cache.py`) and the L3 detection cache
 (`quarantine/l3_cache.py`); `tests/test_verdict_cache_rule.py` checks both.
 
+The one place L3 may be left unasked on purpose is an **opt-in escalation
+policy** (a962), `defense.l3_escalation: l2_flagged`, set per profile, backend
+or LLM provider. It is a recorded, bounded skip, not an off switch, and all
+five of these hold:
+
+1. **Opt-in, by name.** The default is `always`. Opting in is a Human Approval
+   decision (2, below).
+2. **L1 and L2 still run and decide.** L3 is skipped only when L1 found
+   nothing and L2 read the whole input and passed it. An L1 finding, an L2
+   flag, an L2 failure or partial read, or an over-cap input escalates.
+3. **Never for a caller that refuses.** block and redact always escalate. The
+   mode decides only whether a skip is permitted, never which layers run for
+   a call that enforces. So the skip reaches `flag`, which delivers anyway.
+4. **Never silent.** A skip is the `l3_skipped` gap, never clean and never
+   `l3_unavailable`. block and redact refuse on it, and no cache keeps it.
+5. **Three edges only:** MCP tool responses and `/proxy/llm` requests and
+   completions. Tool descriptions, egress, Matrix, alerts and the internal
+   tools always run L3.
+
+`tests/test_l3_always_runs.py` holds the default and the five rules.
+
 - **L1 (deterministic):** `l1/` counts obfuscation, hidden markup, encoded
   blobs, exfiltration URLs, delimiters and directives, by type; its counts
   brief L3. It never modifies what the agent receives.
@@ -163,7 +184,8 @@ image whose header states 4 by 4 pixels or less, too small to draw a letter
 or a QR code, is read by its type.
 
 The mode (`trentina_mode`, chosen per call within the profile's policy)
-decides what is delivered, never which layers run. No text written by L3
+decides what is delivered, never which layers run. The opt-in escalation
+policy reads the mode only to refuse a skip to block and redact. No text written by L3
 reaches the agent: findings leave the perimeter as closed-enum labels and
 scores only.
 
@@ -308,7 +330,8 @@ model, so the question is not whether it may but whether it can be talked into
 it.
 
 1. **Who holds the operator profile**, including how a caller becomes one.
-2. **Turning on a trust that stops a layer running.**
+2. **Turning on a trust that stops a layer running**, the opt-in escalation
+   policy (`l3_escalation: l2_flagged`, a962) included.
 3. **Who may authenticate** to a federation ingress as a primary gateway.
 4. **Standing a profile's perimeter down** from enforcing to detect-only.
 5. **Opening a way out of network isolation.**
@@ -541,3 +564,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.23.0 | 2026-11-22 | Decoys: a honeytoken is checked in what leaves by `/proxy/http` and `/proxy/llm` too (#865), not only in a tool call's arguments. Each route checks the raw request first (`orchestrator.outbound_trip`), before any other refusal, an admission count or a cached verdict, so a body no layer reads or a count past its deadline cannot carry a token out; on `/proxy/llm` a tool result is left out where its API puts it and only when it answers a call made earlier in the same request, since an agent that read the planted file carries it in its history without sending it; an agent forging both a call and its answer is the residual. A trip refuses a trip in every mode, `flag` included, as a trip refuses on MCP regardless of mode. The agent is told `flagged`, which names nothing a caller can use; the audit row is `decoy_tripped`. Git, Matrix and the CONNECT tunnel stay documented gaps. Kept deterministic and outside the layers: no model reads the match, and no layer is skipped for a request that is not a trip. `PERIMETER_VERSION` does not move: no verdict a layer reaches changes |
 | 2.24.0 | 2026-11-22 | Credentials in Tool-Call Arguments added (#862), CTO ruling: an MCP `tools/call` whose arguments carry a credential shape is refused as `denied_guard` in every mode, `flag` included, unless the backend lists that kind in `credentials_allowed` for the tool or for every tool. The list is validated at load (unknown kinds and `*` beside named kinds fail), the refusal and audit row carry the kinds and the tool and never the value, and `trentina-credential-replay` reads past calls to print the allowances a profile would need before the block is deployed. Deterministic and outside the layers; the judge-side redaction of #863 stays. `PERIMETER_VERSION` does not move: no verdict a layer reaches changes |
 | 2.25.0 | 2026-11-22 | Human Approval gains a sixth decision (#883), CTO ruling: widening `credentials_allowed` through `config_tool` (a kind, or `*`, a tool may newly carry past the #862 guard) is proposed by the operator agent and applied only on a person's approval. Compared by coverage, so `["*"]` narrowed to named kinds is a narrowing and applies at once, as every withdrawal does. An agent reload holds each backend's allowance, as it holds `federated`. `PERIMETER_VERSION` does not move: no verdict changes |
+| 2.26.0 | 2026-11-22 | Layer Contract gains a stated, opt-in escalation policy (a962): `defense.l3_escalation: l2_flagged`, per profile, backend or LLM provider, skips L3 only on a flag-mode call where L1 found nothing and L2 read the whole input and passed it, and only on MCP tool responses and `/proxy/llm` requests and completions. block and redact always escalate. A skip is the `l3_skipped` gap, never clean, refused by block and redact and kept by no cache. Opting in is Human Approval decision 2. It exists because L3 was re-judging ~10k of our own gatehouse model's texts a day that L2 had passed, at a cost the daily quota could only cap. `PERIMETER_VERSION` does not move: a skip is never cached |

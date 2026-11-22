@@ -82,3 +82,11 @@ file = "src/trentina/defense.py"
 evidence = "if day is None:\n    return {\"injection_detected\": False, \"l3_unavailable\": True, \"l3_quota\": True}"
 status = "not-a-bug"
 reason = "A spent quota is a gap, not a pass: block and redact refuse on l3_quota whatever TRENTINA_REQUIRE_L3 says, stricter than l3_unavailable, as #891 specifies. flag delivering through a gap with the warning is the existing rule for every gap, l3_unavailable included (core/dispose.py, docs/defense-pipeline.md); flag is the deliberate-reading grant, kept out of agent policies. Ruled on by Josui Prime for #898 (flag delivers with the verdict attached)."
+
+[[findings]]
+agent = "general"
+category = "quality"
+file = "src/trentina/defense.py"
+evidence = "```python\ndef _l3_skipped() -> dict[str, Any]:\n    \"\"\"...\n    ``l3_unavailable`` rides along as on the quota marker...\n    \"\"\"\n    return {\"injection_detected\": False, \"l3_unavailable\": True, \"l3_skipped\": True}\n```"
+status = "not-a-bug"
+reason = "Deliberately the shape of the #891 l3_quota marker: l3_unavailable on the raw assessment is what every unanswered-verdict path (both caches, the detection row) already keys on, so a skip fails closed through them with no new branch. The one derivation consumers read, modes.gaps_of, gives l3_skipped precedence and reports l3_unavailable False; warning.py and report.py read Gaps, never the raw flag. tests/test_l3_escalation.py holds that the gap is l3_skipped alone. a962."
