@@ -11,6 +11,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Fleet policy (constitution XV.3): nothing under 7 days old.
+    cooldown:
+      default-days: 7
     groups:
       minor-and-patch:
         update-types:
@@ -21,6 +24,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Fleet policy (constitution XV.3): nothing under 7 days old.
+    cooldown:
+      default-days: 7
     groups:
       minor-and-patch:
         update-types:
@@ -39,6 +45,27 @@ updates:
     directory: "/scripts"
     schedule:
       interval: "weekly"
+    # Fleet policy (constitution XV.3): nothing under 7 days old.
+    cooldown:
+      default-days: 7
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # The Containerfiles' FROM lines are pinned by digest (XV.2). This entry
+  # proposes each new base digest as a pull request, gated like any other
+  # change, so the weekly rebuild never picks up a base nobody reviewed.
+  - package-ecosystem: "docker"
+    directories:
+      - "/"
+      - "/.oss-scanner"
+    schedule:
+      interval: "weekly"
+    # Fleet policy (constitution XV.3): nothing under 7 days old.
+    cooldown:
+      default-days: 7
     groups:
       minor-and-patch:
         update-types:

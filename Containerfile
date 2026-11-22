@@ -56,7 +56,10 @@ FROM quay.io/crunchtools/trentina-l2-model@sha256:02c8a8ff165f1c133535f00523de68
 # /usr/lib*/python3.14/site-packages, and when `latest` moved to 3.15 the
 # locked onnxruntime had no wheel for it and the build stopped. Moving to a new
 # Python is a deliberate change to these tags, the lock and those COPY lines.
-FROM quay.io/hummingbird/python:3.14-builder AS model-builder
+# Each base is also pinned by digest (constitution XV): a rebuild runs the
+# base a reviewed pull request named, and Dependabot's docker entry proposes
+# the next digest weekly instead of the tag moving under the build.
+FROM quay.io/hummingbird/python:3.14-builder@sha256:2cb296b79c1d802f1a3e8023892e854ecb6789a78dd306c4bbd27ebbbd3f76c8 AS model-builder
 USER 0
 
 RUN pip install --no-cache-dir \
@@ -98,7 +101,7 @@ COPY --from=l2-model /model/ /models/prompt-injection-guard-small-ct/
 #
 # uv is pinned so a cold runner installs with the same uv a warm one cached.
 # ============================================================
-FROM quay.io/hummingbird/python:3.14-builder AS lock
+FROM quay.io/hummingbird/python:3.14-builder@sha256:2cb296b79c1d802f1a3e8023892e854ecb6789a78dd306c4bbd27ebbbd3f76c8 AS lock
 USER 0
 RUN pip install --no-cache-dir uv==0.13.7
 WORKDIR /lock
@@ -145,7 +148,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv export --frozen --no-dev --extra matrix --extra bridge --no-emit-project \
       --format requirements-txt -o /requirements.txt
 
-FROM quay.io/hummingbird/python:3.14-builder AS deps
+FROM quay.io/hummingbird/python:3.14-builder@sha256:2cb296b79c1d802f1a3e8023892e854ecb6789a78dd306c4bbd27ebbbd3f76c8 AS deps
 USER 0
 
 # onnxruntime >= 1.29 reads /etc/machine-id during module init. When that file
@@ -217,7 +220,7 @@ RUN cd /gate \
 # libraries, the dependency set, the model, Trentina, and the version label
 # last -- declared first, a version change invalidated every layer after it.
 # ============================================================
-FROM quay.io/hummingbird/python:3.14
+FROM quay.io/hummingbird/python:3.14@sha256:d1ffdf4c7b9bc54fe389ce2afcd0bf9572ad5d77548ee24d43dbef8ed538089e
 
 WORKDIR /app
 

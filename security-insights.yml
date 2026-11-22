@@ -1,0 +1,74 @@
+# OpenSSF Security Insights, schema 2.0.0:
+# https://github.com/ossf/security-insights/blob/main/spec/schema.cue
+header:
+  schema-version: 2.0.0
+  last-updated: '2026-11-22'
+  last-reviewed: '2026-11-22'
+  url: https://raw.githubusercontent.com/crunchtools/trentina/main/security-insights.yml
+
+project:
+  name: Trentina
+  homepage: https://github.com/crunchtools/trentina
+  administrators:
+    - name: Scott McCarty
+      primary: true
+      social: https://github.com/fatherlinux
+  repositories:
+    - name: trentina
+      comment: The MCP security gateway, its container image and its Cockpit plugin.
+      url: https://github.com/crunchtools/trentina
+  vulnerability-reporting:
+    reports-accepted: true
+    bug-bounty-available: false
+    policy: https://github.com/crunchtools/trentina/blob/main/SECURITY.md
+    comment: Report privately through GitHub's private vulnerability reporting; SECURITY.md gives scope and response times.
+  documentation:
+    design: https://github.com/crunchtools/trentina/blob/main/.oss-scanner/threat_model.md
+    signature-verification: https://github.com/crunchtools/trentina/blob/main/docs/deployment-hardening.md#verify-the-image
+
+repository:
+  url: https://github.com/crunchtools/trentina
+  status: active
+  accepts-change-request: true
+  accepts-automated-change-request: true
+  core-team:
+    - name: Scott McCarty
+      primary: true
+      social: https://github.com/fatherlinux
+  license:
+    url: https://github.com/crunchtools/trentina/blob/main/LICENSE
+    expression: AGPL-3.0-or-later
+  documentation:
+    security-policy: https://github.com/crunchtools/trentina/blob/main/SECURITY.md
+    contributing-guide: https://github.com/crunchtools/trentina/blob/main/CONTRIBUTING.md
+  security:
+    assessments:
+      self:
+        comment: Threat model of the gateway's own attack surface, each control traced to the code.
+        evidence: https://github.com/crunchtools/trentina/blob/main/.oss-scanner/threat_model.md
+        date: '2026-11-22'
+    tools:
+      - name: CodeQL
+        type: SAST
+        comment: security-extended plus Trentina's own query pack (security.yml).
+        rulesets: [security-extended, .github/codeql]
+        integration: {adhoc: true, ci: true, release: false}
+        results: {}
+      - name: Semgrep
+        type: SAST
+        comment: Trentina's structural rules under .semgrep (security.yml).
+        rulesets: [.semgrep]
+        integration: {adhoc: true, ci: true, release: false}
+        results: {}
+      - name: pip-audit
+        type: SCA
+        comment: Locked dependency scan, through the constitution's dependency-audit workflow (security.yml).
+        rulesets: [default]
+        integration: {adhoc: true, ci: true, release: false}
+        results: {}
+      - name: zizmor
+        type: SAST
+        comment: GitHub Actions workflow audit, through the constitution's validate workflow (constitution.yml).
+        rulesets: [default]
+        integration: {adhoc: false, ci: true, release: false}
+        results: {}

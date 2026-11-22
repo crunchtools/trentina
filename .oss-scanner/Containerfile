@@ -1,0 +1,26 @@
+# Build environment for Anthropic's OSS Scanner (https://red.anthropic.com/oss-scanner/).
+# The scanner builds this with the repository root as the context and then runs
+# its agents with no network, so everything the test suite needs is installed
+# here. Nothing here is published: the shipped image is the root Containerfile.
+#
+# Same digest-pinned base and uv as the root Containerfile, so the scanner sees
+# the dependency set production runs. Docker ignores .containerignore, so
+# tests/, docs/ and corpora/ all arrive with `COPY . /src`.
+FROM quay.io/hummingbird/python:3.14-builder@sha256:2cb296b79c1d802f1a3e8023892e854ecb6789a78dd306c4bbd27ebbbd3f76c8
+USER 0
+RUN pip install --no-cache-dir uv==0.13.7
+
+COPY . /src
+WORKDIR /src
+
+# Every extra and group from the committed lock, never re-resolved (XV rule 7).
+RUN uv sync --locked --all-extras --all-groups
+
+# The shipped L2 model, so tests that load it run instead of skipping.
+COPY --from=quay.io/crunchtools/trentina-l2-model@sha256:02c8a8ff165f1c133535f00523de68169c1c12c58632d415e2cd0e4c579ee4c6 \
+    /model/ /models/prompt-injection-guard-small-ct/
+
+# A smoke run proves the image works; a failure warns rather than aborts.
+# Four workers: one per core starves a build sandbox and the workers die.
+RUN uv run --locked pytest -q -n 4 \
+    || echo "WARNING: pytest reported failures"

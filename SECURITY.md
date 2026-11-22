@@ -120,6 +120,20 @@ Before each release:
 
 ## 5. Reporting Security Issues
 
-Report security vulnerabilities using [GitHub's private security advisory](https://github.com/crunchtools/trentina/security/advisories/new).
+Report a vulnerability privately through [GitHub's private vulnerability reporting](https://github.com/crunchtools/trentina/security/advisories/new). Do NOT open a public issue for one.
 
-Do NOT open public issues for security vulnerabilities.
+### Scope
+
+In scope: the gateway's own code under `src/trentina/`, the published images `quay.io/crunchtools/trentina` and `quay.io/crunchtools/trentina-l2-model`, the Cockpit plugin, and this repository's GitHub Actions workflows. That includes a planted instruction that gets past all three layers, and any attack on the gateway itself: [`.oss-scanner/threat_model.md`](.oss-scanner/threat_model.md) lists where untrusted input enters and the invariants that must hold.
+
+Out of scope: anything the constitution lists as not defended ([`.specify/memory/constitution.md`](.specify/memory/constitution.md), Threat Model) or as a known gap ([docs/defense-pipeline.md](docs/defense-pipeline.md#known-gaps)), unless you show it is worse than documented; a model jailbroken directly by its own user; and a deployment that drops the containment in [docs/deployment-hardening.md](docs/deployment-hardening.md).
+
+### What to expect
+
+- Acknowledgement within 5 business days.
+- An assessment (accepted, needs more information, or declined, with the reason) within 10 business days.
+- A fix target of 30 days for critical and high severity, 90 days otherwise. The fix ships as a signed image release; the advisory is published with it and credits you unless you ask otherwise.
+
+### If you get no reply
+
+If the advisory has had no response after 5 business days, open a public issue titled "Security contact requested" with no details of the vulnerability, and mention @fatherlinux. We will reply on the private advisory.

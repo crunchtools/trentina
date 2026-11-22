@@ -19,11 +19,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-permissions:
-  contents: read
-  issues: write
-  pull-requests: write
-  security-events: write
+# Default-deny: each job names what it needs, and only the two SARIF
+# uploads (codeql, semgrep) can write to code scanning.
+permissions: {}
 
 jobs:
   dependency-audit:
@@ -76,7 +74,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -91,38 +89,50 @@ jobs:
   codeql:
     name: CodeQL Analysis
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # security-extended plus Trentina's own query pack (#269), which models
       # MCP tool arguments as remote input and egress/defend/logsafe as
       # barriers. The config file lists both; a `queries:` input here would
       # replace it.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           languages: python
           config-file: ./.github/codeql/codeql-config.yml
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           category: "/language:python"
 
   semgrep:
     name: Semgrep (in-repo rules)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
 
     # Trentina's own structural rules (.semgrep/trentina.yml, #269). Run from
     # the upstream image with docker rather than as a container job, so the
     # SARIF upload runs on the host. Pinned: a rule-engine upgrade should be
     # a reviewed change, like any other gate.
     env:
-      SEMGREP_IMAGE: docker.io/semgrep/semgrep:1.177.0
+      SEMGREP_IMAGE: docker.io/semgrep/semgrep:1.177.0@sha256:acaac22ffc7b7cc5926de0751b223bce0b2491c33d18422fa72f632c78d81198
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Rule tests
         run: docker run --rm -v "$PWD:/src" -w /src "$SEMGREP_IMAGE" sh .semgrep/run-tests.sh
@@ -135,7 +145,7 @@ jobs:
 
       - name: Upload SARIF
         if: always() && hashFiles('semgrep.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           sarif_file: semgrep.sarif
           category: semgrep

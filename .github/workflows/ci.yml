@@ -20,6 +20,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Default-deny: each job names what it needs.
+permissions: {}
+
 jobs:
   # Lint, types and the suite moved to `security.yml`'s `sdlc ci` job, which
   # runs them from python-sdlc at the release .pre-commit-config.yaml pins --
@@ -37,12 +40,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          version: "latest"
+          version: "0.13.7"
 
       - name: Set up Python 3.14
         run: uv python install 3.14
@@ -63,15 +68,19 @@ jobs:
     # code nobody has reviewed yet.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       HAS_OPENROUTER_KEY: ${{ secrets.OPENROUTER_API_KEY != '' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          version: "latest"
+          version: "0.13.7"
 
       # Single-version job: pinned to the NEWEST supported Python, which is
       # what the container runs. Anything that cannot run across the whole
@@ -112,12 +121,15 @@ jobs:
     # code nobody has reviewed yet. Merged code is. The offline half (EVAL.yml
     # shape, the grader, a mocked run) is in the test job on every PR.
     if: github.event_name == 'push'
+    permissions:
+      contents: read
     env:
       HAS_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
       BASE_SHA: ${{ github.event.before }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Did the reviewed surface change?
@@ -142,9 +154,9 @@ jobs:
 
       - name: Install uv
         if: env.HAS_ANTHROPIC_KEY == 'true' && steps.surface.outputs.changed == 'true'
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          version: "latest"
+          version: "0.13.7"
 
       # Dependencies install without the key: no install hook ever sees it.
       - name: Install dependencies
@@ -161,7 +173,7 @@ jobs:
 
       - name: Upload eval results
         if: always() && hashFiles('boundary-review-eval.json') != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: boundary-review-eval
           path: boundary-review-eval.json
@@ -169,4 +181,6 @@ jobs:
 
   gourmand:
     name: Code Quality (Gourmand)
+    permissions:
+      contents: read
     uses: crunchtools/gatehouse/.github/workflows/gourmand.yml@v0

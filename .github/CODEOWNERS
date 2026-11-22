@@ -1,0 +1,35 @@
+# Owner review for the files where one bad change defeats the perimeter
+# (crunchtools/trentina#856). Narrow on purpose: everything else is gated by
+# the required checks, and a list that covers the whole tree teaches people to
+# approve without reading. Bots (Dependabot, ashigaru-crunchtools,
+# crunchtools-ci) author commits here; these paths are the ones a bot-authored
+# change should not reach unreviewed. The ruleset decides whether this review
+# is required; this file only says whose it is.
+
+# What runs in CI and builds the image, with its secrets.
+/.github/                                    @fatherlinux
+/.sdlc/                                      @fatherlinux
+/.pre-commit-config.yaml                     @fatherlinux
+/Containerfile                               @fatherlinux
+/.oss-scanner/                               @fatherlinux
+
+# Human approval and authentication.
+/src/trentina/gateway/approver.py            @fatherlinux
+/src/trentina/gateway/approval_*             @fatherlinux
+/src/trentina/gateway/pending.py             @fatherlinux
+/src/trentina/gateway/config_guard.py        @fatherlinux
+/src/trentina/gateway/auth.py                @fatherlinux
+/src/trentina/gateway/oauth_*                @fatherlinux
+/src/trentina/gateway/federation_keys.py     @fatherlinux
+/src/trentina/gateway/vsa.py                 @fatherlinux
+
+# Egress, confinement and the judge's quarantine.
+/src/trentina/reach/egress.py                @fatherlinux
+/src/trentina/gateway/egress_*               @fatherlinux
+/src/trentina/gateway/client_egress.py       @fatherlinux
+/src/trentina/tools/confine.py               @fatherlinux
+/src/trentina/quarantine/providers/base.py   @fatherlinux
+/src/trentina/unpack/child.py                @fatherlinux
+
+# The rules every change is judged by.
+/.specify/memory/constitution.md             @fatherlinux

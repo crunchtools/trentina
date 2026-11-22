@@ -98,12 +98,14 @@ jobs:
             reasoning: minimal
           - model: anthropic/claude-haiku-4.5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          version: "latest"
+          version: "0.13.7"
 
       # Dependencies install without the key: no install hook ever sees it.
       - name: Install dependencies
@@ -132,7 +134,7 @@ jobs:
 
       - name: Upload results
         if: always() && hashFiles('decoy-tools.json') != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.slug.outputs.name }}
           path: decoy-tools.json
@@ -165,12 +167,14 @@ jobs:
           - { mode: judge, model: anthropic/claude-haiku-4.5 }
           - { mode: judge, model: google/gemini-3.8-flash, reasoning: minimal }
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          version: "latest"
+          version: "0.13.7"
 
       # Dependencies install without the key: no install hook ever sees it.
       - name: Install dependencies
@@ -198,7 +202,7 @@ jobs:
 
       - name: Upload results
         if: always() && hashFiles('detonation.json') != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.slug.outputs.name }}
           path: detonation.json
@@ -220,12 +224,14 @@ jobs:
           - google/gemini-3.8-flash
         arm: [none, benign, malicious]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          version: "latest"
+          version: "0.13.7"
 
       # Dependencies install without the key: no install hook ever sees it.
       - name: Install dependencies
@@ -255,7 +261,7 @@ jobs:
 
       - name: Upload results
         if: always() && hashFiles('detonation.json') != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.slug.outputs.name }}
           path: detonation.json
@@ -276,12 +282,14 @@ jobs:
           - { model: anthropic/claude-haiku-4.5, pack: claude-haiku-4.5 }
           - { model: google/gemini-3.8-flash, pack: gemini-3.8-flash, reasoning: minimal }
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          version: "latest"
+          version: "0.13.7"
 
       # Dependencies install without the key: no install hook ever sees it.
       - name: Install dependencies
@@ -309,7 +317,7 @@ jobs:
 
       - name: Upload results
         if: always() && hashFiles('generic.json') != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pack-${{ matrix.pack }}
           path: |
@@ -323,12 +331,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          version: "latest"
+          version: "0.13.7"
 
       # Dependencies install without the key: no install hook ever sees it.
       - name: Install dependencies
@@ -382,7 +392,7 @@ jobs:
 
       - name: Upload results
         if: always() && hashFiles('candidate.json') != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tune-${{ inputs.split }}-${{ github.run_id }}
           path: |
@@ -407,12 +417,14 @@ jobs:
           - { model: anthropic/claude-haiku-4.5 }
           - { model: google/gemini-3.8-flash, reasoning: minimal }
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          version: "latest"
+          version: "0.13.7"
 
       # Dependencies install without the key: no install hook ever sees it.
       - name: Install dependencies
@@ -443,7 +455,7 @@ jobs:
 
       - name: Upload results
         if: always() && hashFiles('results/*.json') != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.slug.outputs.name }}
           path: results/
@@ -464,7 +476,9 @@ jobs:
           - { model: anthropic/claude-haiku-4.5 }
           - { model: google/gemini-3.8-flash, reasoning: minimal }
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # The image this checkout builds, so the arguments step is L1, L2 and
       # L3 with the pinned model that passed its gates, as production runs it
@@ -506,7 +520,7 @@ jobs:
 
       - name: Upload results
         if: always() && hashFiles('results/*.json') != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.slug.outputs.name }}
           path: results/
@@ -523,7 +537,9 @@ jobs:
         include:
           - { model: google/gemini-3.5-flash-lite }
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # The image this checkout builds, so the response axis is L1, L2 and L3
       # with the pinned model, as production judges a fetched response (#462).
@@ -563,7 +579,7 @@ jobs:
 
       - name: Upload results
         if: always() && hashFiles('results/*.json') != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.slug.outputs.name }}
           path: results/
@@ -583,7 +599,9 @@ jobs:
       BENCH_REF: ${{ inputs.bench_ref }}
       AEB_TRENTINA_MODE: ${{ matrix.mode }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Built without the key: no build step ever sees it.
       - name: Build the image
@@ -670,7 +688,7 @@ jobs:
       # Not hashFiles(): an outcome-only condition keeps a missing summary loud.
       - name: Upload results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agent-egress-bench-${{ matrix.mode }}
           path: results/
@@ -692,12 +710,14 @@ jobs:
           - { model: anthropic/claude-haiku-4.5 }
           - { model: google/gemini-3.8-flash, reasoning: minimal }
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          version: "latest"
+          version: "0.13.7"
 
       # Dependencies install without the key: no install hook ever sees it.
       - name: Install dependencies
@@ -733,7 +753,7 @@ jobs:
 
       - name: Upload results
         if: always() && hashFiles('results/**/*.json') != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.slug.outputs.name }}
           path: results/
@@ -759,12 +779,14 @@ jobs:
           - { mode: judge, model: anthropic/claude-haiku-4.5, flags: "--votes 3" }
           - { mode: judge, model: google/gemini-3.8-flash, flags: "--votes 3", reasoning: minimal }
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          version: "latest"
+          version: "0.13.7"
 
       # Dependencies install without the key: no install hook ever sees it.
       - name: Install dependencies
@@ -796,7 +818,7 @@ jobs:
 
       - name: Upload results
         if: always() && hashFiles('detonation.json') != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.slug.outputs.name }}
           path: detonation.json
@@ -812,12 +834,14 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          version: "latest"
+          version: "0.13.7"
 
       - name: Install dependencies
         run: |
