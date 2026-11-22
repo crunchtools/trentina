@@ -68,10 +68,48 @@ QUERY_SECRET = re.compile(
     re.IGNORECASE,
 )
 
+#: ``QUERY_SECRET`` for DETECTION: the value must look like a secret rather
+#: than a setting, 16 characters or more with a digit or a capital in them.
+#: ``?key=rhel`` and ``&token=next`` are parameters, not credentials.
+QUERY_DETECT = re.compile(
+    r"[?&](?:api[_-]?key|key|access_token|refresh_token|id_token|token"
+    r"|client_secret|secret|password|passwd|sig|signature)="
+    r"(?!\[REDACTED)(?=[^\s&#\"'<>]*[0-9A-Z])[^\s&#\"'<>]{16,}+",
+    re.IGNORECASE,
+)
+
 #: An ``Authorization`` value. Group 1 is the scheme a redactor keeps. Twenty
 #: characters keeps prose ("Bearer token") and the bare ``Bearer`` of a
 #: challenge out of it.
 AUTH_VALUE = re.compile(r"\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{20,}", re.IGNORECASE)
+
+#: The token characters a DETECTED ``Authorization`` value may hold: base64,
+#: base64url without ``_`` and JWT's dots. ``/`` stays in, because a base64
+#: ``Basic`` credential holds one about a third of the time; ``_`` is out, so
+#: an identifier after the scheme word is not read as a token.
+_TOKEN = r"[A-Za-z0-9+/=.~-]"
+
+#: ``AUTH_VALUE`` for DETECTION, which refuses a request where redaction only
+#: cuts a log line, so it must not fire on prose (#882 review): ``Bearer`` or
+#: ``Basic`` as a header spells it, then a token of 20 or more that is shaped
+#: like one, mixed case with a digit, or a 32-character hex run. "the bearer
+#: credentials_allowed_well_formed check" and "a Basic src/trentina/guards.py
+#: fix" are neither. Every lookahead stays inside the one token run, which no
+#: other start shares, so the scan is still linear.
+AUTH_DETECT = re.compile(
+    r"\b(?:Bearer|Basic)\s+"
+    r"(?:(?="
+    + _TOKEN
+    + r"*[0-9])(?="
+    + _TOKEN
+    + r"*[a-z])(?="
+    + _TOKEN
+    + r"*[A-Z])"
+    + _TOKEN
+    + r"{20,}+"
+    r"|[0-9a-fA-F]{32,}+)"
+    r"(?![A-Za-z0-9_])"
+)
 
 #: ``scheme://user:password@host``. Group 1 is the ``://`` a redactor keeps.
 USERINFO = re.compile(r"(://)[^/\s:@]{1,256}:[^/\s@]{1,1024}@")
@@ -129,10 +167,12 @@ PEM_REDACT = re.compile(
 KEY_SHAPE = re.compile(_BOUNDARY + "(?:" + "|".join(body for _, body in _KEY_SHAPES) + ")")
 
 #: Every finder, kind kept, for ``find``/``kinds``. Built from the same tables
-#: as the redaction patterns, so there is genuinely one source.
+#: as the redaction patterns, so there is genuinely one source; the query and
+#: ``Authorization`` finders are the stricter detection forms, since a finding
+#: refuses a request and a redaction only over-cuts a log line.
 _FINDERS: tuple[tuple[CredentialKind, re.Pattern[str]], ...] = (
-    (CredentialKind.QUERY_SECRET, QUERY_SECRET),
-    (CredentialKind.AUTHORIZATION, AUTH_VALUE),
+    (CredentialKind.QUERY_SECRET, QUERY_DETECT),
+    (CredentialKind.AUTHORIZATION, AUTH_DETECT),
     (CredentialKind.URL_USERINFO, USERINFO),
     *((kind, re.compile(_BOUNDARY + body)) for kind, body in _KEY_SHAPES),
     (CredentialKind.PEM_PRIVATE_KEY, PEM_KEY),
