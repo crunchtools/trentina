@@ -547,10 +547,9 @@ class TestPrivateNames:
         assert config.fetch_private_ports == {
             "lab": frozenset({8000}),
             "fix.test": None,
-            "::1": frozenset(),
-            "fd00::9": frozenset({8000}),
         }
-        assert config.fetch_private_names == frozenset({"lab", "fix.test", "::1", "fd00::9"})
+        assert config.fetch_private_names == frozenset({"lab", "fix.test"})
+        assert caplog.text.count("is an IP address; dropped") == 2
         assert config.private_name_port("lab", 8000)
         assert not config.private_name_port("lab", 8001)
         assert config.private_name_port("fix.test", 1)
@@ -559,6 +558,46 @@ class TestPrivateNames:
         assert caplog.text.count("is not a name; dropped") == 8
         assert "a.test:http" not in caplog.text
         assert "e.test" not in caplog.text
+
+    def test_names_with_ports_survive_and_addresses_do_not(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a1067: an address in any spelling is dropped, with or without a port."""
+        monkeypatch.setenv(
+            "TRENTINA_FETCH_PRIVATE_NAMES",
+            "mcp-gw-personal:8000 lab:* [::1]:8000 ::1 127.0.0.1:80 127.1 "
+            "2130706433:* 0x7f.1 0x7f000001",
+        )
+        config = config_mod.Config()
+        assert config.fetch_private_ports == {
+            "mcp-gw-personal": frozenset({8000}),
+            "lab": None,
+        }
+        assert caplog.text.count("is an IP address; dropped") == 7
+        assert "127.1" not in caplog.text
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://[::1]/",
+            "http://[::1]:8019/",
+            "http://127.0.0.1/",
+            "http://127.1:8019/",
+            "http://2130706433/",
+            "http://0x7f.1/",
+            "http://0x7f000001:8019/",
+        ],
+    )
+    async def test_check_url_lifts_nothing_for_a_literal(
+        self, monkeypatch: pytest.MonkeyPatch, url: str
+    ) -> None:
+        """Even with a literal on the set by some other road, check_url holds both rules."""
+        listed = ("::1", "127.0.0.1", "127.1", "2130706433", "0x7f.1", "0x7f000001")
+        monkeypatch.setattr(config_mod.get_config(), "fetch_private_ports", dict.fromkeys(listed))
+        monkeypatch.setattr(egress, "_lookup", lambda _h, _p: ["127.0.0.1"])
+        with pytest.raises(EgressRefusedError) as exc:
+            await egress.check_url(url)
+        assert exc.value.reason in ("port", "non_global_address")
 
     async def test_a_redirect_to_another_port_on_the_name_is_refused(
         self, monkeypatch: pytest.MonkeyPatch

@@ -7,6 +7,7 @@ import ipaddress
 import json
 import logging
 import os
+import socket
 from fnmatch import fnmatch
 from pathlib import Path
 from urllib.parse import urlparse, urlsplit
@@ -203,6 +204,20 @@ def _split_name_port(item: str) -> tuple[str, str] | None:
     return (host, port_text) if host else None
 
 
+def is_address_literal(host: str) -> bool:
+    """True when ``host`` is an IP address in any spelling the resolver takes.
+
+    Asked of ``getaddrinfo`` with ``AI_NUMERICHOST``, which never touches the
+    network and accepts what a fetch would dial as an address: ``::1``,
+    ``127.1``, ``2130706433``, ``0x7f.1``, ``0x7f000001``.
+    """
+    try:
+        socket.getaddrinfo(host, None, flags=socket.AI_NUMERICHOST)
+    except (OSError, UnicodeError, ValueError):
+        return False
+    return True
+
+
 def _is_ipv6(text: str) -> bool:
     try:
         ipaddress.IPv6Address(text)
@@ -219,7 +234,8 @@ def insecure_name_ports(name: str, warning: str) -> dict[str, frozenset[int] | N
     maps to the extra ports it was given (empty for none, None for all). An
     entry that is not a name, or whose port is not one, is dropped with a
     warning: a typo must not widen the hatch, and a dropped name is refused,
-    which is fail-closed. The entry itself is not logged.
+    which is fail-closed. So is an IP address, bracketed or not (a1067). The
+    entry itself is not logged.
     """
     entries: dict[str, frozenset[int] | None] = {}
     for item in os.environ.get(name, "").replace(",", " ").split():
@@ -228,6 +244,11 @@ def insecure_name_ports(name: str, warning: str) -> dict[str, frozenset[int] | N
             logger.warning("config: %s has an entry that is not a name; dropped", name)
             continue
         host, port_text = split
+        # The hatch decides on a name: a listed `::1` or `127.1` would lift
+        # the address rule for the very address it exists to keep (a1067).
+        if is_address_literal(host):
+            logger.warning("config: %s has an entry that is an IP address; dropped", name)
+            continue
         ports: frozenset[int] | None
         if port_text == ANY_PORT:
             ports = None
