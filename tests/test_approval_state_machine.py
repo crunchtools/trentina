@@ -336,7 +336,7 @@ class ApprovalMachine(RuleBasedStateMachine):
 
     # ---- time ------------------------------------------------------------
 
-    @rule(seconds=st.sampled_from([1.0, 60.0, 300.0, 450.0, 899.0, 901.0, 2000.0]))
+    @rule(seconds=st.sampled_from([1.0, 60.0, 300.0, 450.0, 899.0, 900.0, 901.0, 2000.0]))
     def advance_clock(self, seconds: float) -> None:
         CLOCK.wall += seconds
         CLOCK.mono += seconds
