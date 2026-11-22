@@ -8,14 +8,18 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from tests.test_credential_guard import GITHUB
 from tests.test_credential_guard import _call as _credential_call
+from tests.test_gatekeeper import _judge as _judge_call
+from tests.test_gatekeeper import _judge_response, _response_profile
 from tests.test_gatekeeper import _profile as _guarded_profile
 from tests.test_gateway_decoy import PLANTED
 from tests.test_gateway_decoy import _rpc as _decoy_rpc
+from trentina import orchestrator
 from trentina.gateway import gatekeeper, session_marks
 from trentina.gateway.context import current_session
 from trentina.gateway.decoy import record_trip
@@ -80,3 +84,48 @@ class TestCredentialRefusals:
     async def test_a_clean_call_does_not(self, tmp_path: Any, session: str) -> None:
         await _credential_call(tmp_path, {"text": "hello"})
         assert session_marks.was_flagged(session) is False
+
+
+@pytest.mark.usefixtures("env")
+class TestRefuseWhenFlagged:
+    """The mark a trip or a refused credential sets is the one ``refuse_when_flagged``
+    refuses on: a guarded call or response is refused before any layer or judge runs."""
+
+    @pytest.fixture
+    def asked(self) -> Iterator[list[AsyncMock]]:
+        defend, generate = AsyncMock(), AsyncMock()
+        with (
+            patch.object(orchestrator, "defend", defend),
+            patch.object(gatekeeper, "quarantine_generate", generate),
+        ):
+            yield [defend, generate]
+
+    async def _trip(self) -> None:
+        await _decoy_rpc("tools/call", {"name": "host__send_email", "arguments": {"to": "a@b.c"}})
+
+    async def test_a_guarded_call_after_a_trip_is_refused_unasked(
+        self, session: str, asked: list[AsyncMock]
+    ) -> None:
+        await self._trip()
+        refusal = await _judge_call(_guarded_profile(refuse_when_flagged=True))
+        assert refusal is not None
+        assert refusal.reason == gatekeeper.SESSION_FLAGGED
+        assert not any(mock.await_count for mock in asked)
+
+    async def test_a_guarded_response_after_a_trip_is_refused_unasked(
+        self, session: str, asked: list[AsyncMock]
+    ) -> None:
+        await self._trip()
+        refusal = await _judge_response(_response_profile(refuse_when_flagged=True))
+        assert refusal is not None
+        assert refusal.reason == gatekeeper.SESSION_FLAGGED
+        assert not any(mock.await_count for mock in asked)
+
+    async def test_a_guarded_call_after_a_refused_credential_is_refused_unasked(
+        self, tmp_path: Any, session: str, asked: list[AsyncMock]
+    ) -> None:
+        await _credential_call(tmp_path, {"text": "tok " + GITHUB})
+        refusal = await _judge_call(_guarded_profile(refuse_when_flagged=True))
+        assert refusal is not None
+        assert refusal.reason == gatekeeper.SESSION_FLAGGED
+        assert not any(mock.await_count for mock in asked)
