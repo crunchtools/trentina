@@ -20,6 +20,10 @@ under that name.
 
 - **A request L1 flags on its summed count writes a detection row (#866 follow-up).** No unit's `defend` flagged, so none wrote one; `judge_units` now does, under the profile's `defense.audit`, with the summed count and the number of units in `layer1_stats`. `request_units.merge` takes `mode` as a required argument: its `flag` default would have let a caller skip a refusal under `block`.
 
+### Documentation
+
+- `TRENTINA_FETCH_PRIVATE_NAMES` is documented in the configuration reference and the fetch rules as the narrower form of `TRENTINA_FETCH_ALLOW_PRIVATE`, and a test pins that it lets only the named host answer privately on the fetch path (a1047).
+
 ## [6.26.0] - 2026-11-22
 
 ### Added

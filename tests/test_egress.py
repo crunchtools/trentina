@@ -500,6 +500,24 @@ class TestEscapeHatch:
         monkeypatch.delenv("TRENTINA_FETCH_ALLOW_PRIVATE", raising=False)
         assert config_mod.Config().fetch_allow_private is False
 
+    async def test_private_names_lifts_the_address_rule_for_those_names_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("TRENTINA_FETCH_ALLOW_PRIVATE", raising=False)
+        monkeypatch.setenv("TRENTINA_FETCH_PRIVATE_NAMES", "GitLab.Internal.Example.")
+        config_mod._config = None
+        route(
+            monkeypatch,
+            lambda _r: httpx.Response(200, text="inside"),
+            {"gitlab.internal.example": ["10.0.0.9"], "wiki.internal.example": ["10.0.0.10"]},
+        )
+
+        content, _, _ = await fetch_url("https://gitlab.internal.example/")
+        assert content == "inside"
+
+        err = await _refusal("https://wiki.internal.example/")
+        assert err.reason == "non_global_address"
+
 
 class TestDeliveredAsARefusal:
     """The agent gets a refusal with no way round it; the audit calls it a block."""
