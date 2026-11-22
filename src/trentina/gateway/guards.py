@@ -21,11 +21,11 @@ policy for known terms, not a classifier.
 
 from __future__ import annotations
 
-import json
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
 
-from .outbound import detect_credentials
+from ..jsonwalk import iter_leaves
+from .outbound import detect_credentials, reveal
 
 if TYPE_CHECKING:
     from .profile import Backend, ParameterConstraint
@@ -105,8 +105,14 @@ def refused_credentials(
     }
     if "*" in allowed or not arguments:
         return []
-    found = detect_credentials(json.dumps(arguments, ensure_ascii=False, default=str))
-    return [kind for kind in found if kind not in allowed]
+    # The string leaves as the backend reads them, not ``json.dumps``: that doubles
+    # each backslash, and a key written as ``\\uXXXX`` text would not reveal.
+    # Both forms, always: ``detect_credentials`` reveals only when the raw text is
+    # clean, which is enough to refuse, but here an ALLOWED raw kind would hide an
+    # escaped kind that is not.
+    document = "\n".join(iter_leaves(arguments))
+    found = {*detect_credentials(document), *detect_credentials(reveal(document))}
+    return sorted(kind for kind in found if kind not in allowed)
 
 
 def check_response_guards(

@@ -1,6 +1,6 @@
 # trentina Constitution
 
-> **Version:** 2.23.0
+> **Version:** 2.24.0
 > **Ratified:** 2026-09-22
 > **Amended:** 2026-11-22
 > **Status:** Active
@@ -247,6 +247,24 @@ flagged mark, held in memory) are the gateway's own, written by
 deterministic code. The block is perimeter: held on an agent reload, refused
 on a honeypot. `PERIMETER_VERSION` does not move: no scan reaches a
 different conclusion. That the judge is a model is known gap 30.
+
+## Credentials in Tool-Call Arguments
+
+Every `tools/call`'s arguments are scanned for credential shapes
+(`outbound.detect_credentials`, as written and revealed) on the request edge,
+right after the literal request guards (#862). It is deterministic and not a
+layer: no model reads the match and no layer is skipped for a call that is
+clean. Three rules:
+
+- **Block is the default.** A shape the backend does not allow is refused as
+  `denied_guard` in every mode, `flag` included: what would leave is the
+  secret itself, and no delivery mode makes sending it safe.
+- **The opt-out is per backend and per tool, by kind.** `credentials_allowed`
+  lists the kinds (or `*`) a backend, or one of its tools, may carry. It is
+  validated at load: an unknown kind, or `*` beside named kinds, fails, so an
+  allowance cannot quietly allow nothing or more than it reads as.
+- **The refusal and the audit row name the kinds and the tool, never the
+  value.** The judge-side redaction (#863) is unchanged.
 
 ## Blocklist Integrity
 
@@ -519,3 +537,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.21.0 | 2026-11-22 | Semantic Request Guards: the layers and the judge read a tool call's arguments through `outbound.judge_input`, as egress always has, so a credential an agent put in a guarded call never reaches the external judge (#863). The judge is told a `[REDACTED]` value is a credential the call carries, so `credential_material` refusals still fire. `PERIMETER_VERSION` does not move: a verdict cache keys on the content hash, so a redacted copy is a new key, never a stale hit |
 | 2.22.0 | 2026-11-22 | Decoys (#864): "exact matches" is wrong for a honeytoken and the L3 canary, which are now found as written, encoded (base64 at all three alignments, hex, percent), reversed, or in any 16-character piece of a token at least 32 long (`token_variants.py`). Still no model, still not a layer, and still a tripwire for the common case: a token paraphrased, split across calls or in another encoding is not seen (gap 17). `PERIMETER_VERSION` does not move: no verdict changes |
 | 2.23.0 | 2026-11-22 | Decoys: a honeytoken is checked in what leaves by `/proxy/http` and `/proxy/llm` too (#865), not only in a tool call's arguments. Each route checks the raw request first (`orchestrator.outbound_trip`), before any other refusal, an admission count or a cached verdict, so a body no layer reads or a count past its deadline cannot carry a token out; on `/proxy/llm` a tool result is left out where its API puts it and only when it answers a call made earlier in the same request, since an agent that read the planted file carries it in its history without sending it; an agent forging both a call and its answer is the residual. A trip refuses a trip in every mode, `flag` included, as a trip refuses on MCP regardless of mode. The agent is told `flagged`, which names nothing a caller can use; the audit row is `decoy_tripped`. Git, Matrix and the CONNECT tunnel stay documented gaps. Kept deterministic and outside the layers: no model reads the match, and no layer is skipped for a request that is not a trip. `PERIMETER_VERSION` does not move: no verdict a layer reaches changes |
+| 2.24.0 | 2026-11-22 | Credentials in Tool-Call Arguments added (#862), CTO ruling: an MCP `tools/call` whose arguments carry a credential shape is refused as `denied_guard` in every mode, `flag` included, unless the backend lists that kind in `credentials_allowed` for the tool or for every tool. The list is validated at load (unknown kinds and `*` beside named kinds fail), the refusal and audit row carry the kinds and the tool and never the value, and `trentina-credential-replay` reads past calls to print the allowances a profile would need before the block is deployed. Deterministic and outside the layers; the judge-side redaction of #863 stays. `PERIMETER_VERSION` does not move: no verdict a layer reaches changes |

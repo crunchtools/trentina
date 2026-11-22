@@ -1237,3 +1237,9 @@ path = "tests/test_provider_vertex.py"
 pattern = "handle"
 justification = "httpx.MockTransport handler: one callable routes every request, so the token-endpoint vs generateContent branch is the router itself and has no call site to move to."
 classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/credential_replay.py"
+justification = "_parser is a sequence of argparse add_argument calls, as scripts/runpod_train.cli is; the flags, help and semantics differ in every call. What they share is the argparse idiom, and a helper to wrap add_argument would hide each flag's definition behind indirection."
+classification = "by_design"

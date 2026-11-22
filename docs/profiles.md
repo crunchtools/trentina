@@ -483,6 +483,30 @@ check_trentina_fanout --db /data/trentina.db \
     --hosts-warn 20 --hosts-crit 50 --comms-warn 30 --comms-crit 100
 ```
 
+## Credentials in Arguments
+
+Every `tools/call`'s arguments are scanned for credential shapes (a GitHub or
+OpenAI key, a bearer token, a private key, and the rest of the
+[detector's kinds](credential-guard.md)), as written and percent- or
+`\u`-decoded. A hit is `denied_guard` in every `trentina_mode`, and the
+backend is never called. `credentials_allowed` opts a backend out, by kind:
+
+```yaml
+backends:
+  github:
+    url: "http://mcp-github:8000/mcp"
+    credentials_allowed: [github_token]          # every tool of the backend
+  vault:
+    url: "http://mcp-vault:8000/mcp"
+    credentials_allowed:                         # tool name -> kinds
+      store_secret: ["*"]                        # "*" alone: every kind
+      "*": [authorization]                       # "*" as the key: every tool
+```
+
+An unknown kind, `"*"` beside named kinds, a repeated kind, an empty list or
+a bad tool name fails the load. `decoy://` backends take none. See
+[Credential Guard](credential-guard.md).
+
 ## Semantic Request Guards
 
 `semantic_request_guards` names the tools whose calls the profile's judge reads
@@ -965,6 +989,7 @@ operator reload applies an edit to `git_remotes` or to a `git` block.
 - [MCP Gateway](gateway.md) — how the gateway routes calls to backends
 - [Tool Filtering](tool-filtering.md) — allowlist/denylist configuration
 - [Literal Request Guards](literal-request-guards.md) — argument-level restrictions
+- [Credential Guard](credential-guard.md) — credential shapes in tool-call arguments
 - [Semantic Request Guards](semantic-request-guards.md) — a judge reads guarded calls
 - [Semantic Response Guards](semantic-response-guards.md) — a judge reads guarded responses
 - [Defense Pipeline](defense-pipeline.md) — L1/L2/L3 configuration details
