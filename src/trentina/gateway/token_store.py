@@ -103,7 +103,8 @@ def _read_bytes(path: Path) -> bytes:
         return fh.read()
 
 
-def _parse(raw: bytes) -> bytes | None:
+def parse_digest(raw: bytes) -> bytes | None:
+    """The 32 raw bytes of a ``sha256:<64 hex>`` value, or None for anything else."""
     match = _DIGEST_RE.match(raw.decode("utf-8", errors="replace").strip())
     return bytes.fromhex(match.group(1)) if match else None
 
@@ -127,7 +128,7 @@ def _migrate(path: Path, legacy: bytes) -> bytes:
 
 def _confirm_digest(path: Path, digest: bytes) -> None:
     """Refuse to drop the backup unless ``path`` now reads back as ``digest``."""
-    if _parse(_read_bytes(path)) != digest:
+    if parse_digest(_read_bytes(path)) != digest:
         raise OSError(f"token {path.name!r}: migration did not read back as a digest")
 
 
@@ -145,7 +146,7 @@ def read_digest(name: str) -> bytes:
     """
     path = token_path(name)
     raw = _read_bytes(path)
-    digest = _parse(raw)
+    digest = parse_digest(raw)
     if digest is None:
         if not raw.strip():
             raise ValueError("is empty")

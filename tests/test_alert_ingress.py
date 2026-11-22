@@ -19,6 +19,8 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
+from trentina.gateway.errors import ProfileConfigError
+
 if TYPE_CHECKING:
     from starlette.requests import Request
     from starlette.responses import Response
@@ -55,7 +57,7 @@ def _make_profile(
             token_env="DUMMY_ALERT_TOKEN",
             forward_url=forward_url,
         )
-        profile.alert_ingress.token = SecretStr(alert_token)
+        profile.alert_ingress.token_sha256 = hashlib.sha256(alert_token.encode()).digest()
     return profile
 
 
@@ -103,6 +105,53 @@ class TestAlertIngressConfig:
     def test_rejects_non_http_url(self) -> None:
         with pytest.raises(ValueError, match="http://"):
             AlertIngressConfig(token_env="MY_TOKEN", forward_url="ftp://bad/hook")
+
+
+class TestAlertTokenIsHeldAsDigest:
+    """The loader keeps SHA-256 of the token, never the token (#a934)."""
+
+    @staticmethod
+    def _load(monkeypatch: pytest.MonkeyPatch, value: str) -> AlertIngressConfig:
+        from trentina.gateway.loader import _resolve_alert_ingress_secrets
+
+        monkeypatch.setenv("LOAD_ALERT_TOKEN", value)
+        cfg = AlertIngressConfig(token_env="LOAD_ALERT_TOKEN", forward_url="http://x:1/hook")
+        _resolve_alert_ingress_secrets("p", cfg)
+        return cfg
+
+    @staticmethod
+    def _profile(cfg: AlertIngressConfig) -> Profile:
+        profile = Profile(name="p", auth=AuthConfig(bearer_token_env="DUMMY_TOKEN"))
+        profile.alert_ingress = cfg
+        return profile
+
+    def test_plaintext_is_stored_as_digest_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = self._load(monkeypatch, "tok-plain-secret")
+        assert cfg.token_sha256 == hashlib.sha256(b"tok-plain-secret").digest()
+        assert not hasattr(cfg, "token")
+        for value in vars(cfg).values():
+            raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+            assert raw != "tok-plain-secret"
+        assert "tok-plain-secret" not in repr(cfg.model_dump())
+
+    def test_digest_form_is_stored_decoded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        digest = hashlib.sha256(b"tok-via-digest").hexdigest()
+        cfg = self._load(monkeypatch, f"sha256:{digest}")
+        assert cfg.token_sha256 == bytes.fromhex(digest)
+        profiles = {"p": self._profile(cfg)}
+        assert _resolve_profile_by_alert_token("tok-via-digest", profiles) is not None
+        # The digest text is not itself a bearer.
+        assert _resolve_profile_by_alert_token(f"sha256:{digest}", profiles) is None
+
+    @pytest.mark.parametrize("bad", ["sha256:abc", "sha256:" + "A" * 64, "sha256:" + "g" * 64])
+    def test_malformed_digest_fails_closed(self, monkeypatch: pytest.MonkeyPatch, bad: str) -> None:
+        with pytest.raises(ProfileConfigError, match="malformed digest"):
+            self._load(monkeypatch, bad)
+
+    def test_wrong_token_of_same_length_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        profiles = {"p": self._profile(self._load(monkeypatch, "tok-aaaa"))}
+        assert _resolve_profile_by_alert_token("tok-aaab", profiles) is None
+        assert _resolve_profile_by_alert_token("tok-aaaa", profiles) is not None
 
 
 def _alert_app(profiles: dict[str, Profile]) -> Starlette:

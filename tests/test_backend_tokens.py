@@ -14,6 +14,7 @@ from pydantic import SecretStr, ValidationError
 from trentina.gateway import backend_tokens
 from trentina.gateway.backend_tokens import (
     KEY_ENV,
+    PREVIOUS_KEY_ENV,
     BackendClient,
     BackendFlow,
     BackendGrant,
@@ -367,3 +368,92 @@ class TestOpening:
             assert "needs auth" not in caplog.text
             assert configure_backend_tokens(wants) is None
         assert 'report "needs auth"' in caplog.text
+
+
+class TestKeyRotation:
+    """``_PREVIOUS`` drains the old key's store into the new one as it is read."""
+
+    def _rotated(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> BackendTokenStore:
+        monkeypatch.setenv(PREVIOUS_KEY_ENV, KEY)
+        return _open(tmp_path, monkeypatch, OTHER_KEY)
+
+    async def test_a_grant_survives_a_rotation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        await _put(_open(tmp_path, monkeypatch))
+        (old_file,) = _grant_files(tmp_path)
+        grant = await self._rotated(tmp_path, monkeypatch).get_grant("josui", "era", ERA)
+        assert grant is not None
+        assert grant.access_token.get_secret_value() == CANARY
+        assert grant.generation == 1
+        assert not old_file.exists()
+        (new_file,) = _grant_files(tmp_path)
+        assert new_file.parent.parent != old_file.parent.parent
+        # Resealed under the new key: it opens once _PREVIOUS is gone.
+        monkeypatch.delenv(PREVIOUS_KEY_ENV)
+        after = await _open(tmp_path, monkeypatch, OTHER_KEY).get_grant("josui", "era", ERA)
+        assert after is not None and after.access_token.get_secret_value() == CANARY
+
+    async def test_a_client_survives_a_rotation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = BackendClient(
+            client_id="c1",
+            client_secret=SecretStr("s3cret"),
+            auth_method="client_secret_post",
+            issuer="https://auth.era.app",
+            token_endpoint="https://auth.era.app/token",
+        )
+        await _open(tmp_path, monkeypatch).put_client("josui", "era", ERA, client)
+        got = await self._rotated(tmp_path, monkeypatch).get_client("josui", "era", ERA)
+        assert got is not None and got.client_secret is not None
+        assert got.client_secret.get_secret_value() == "s3cret"
+
+    async def test_a_refresh_after_rotation_continues_the_generation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        await _put(_open(tmp_path, monkeypatch))
+        store = self._rotated(tmp_path, monkeypatch)
+        async with store.locked("josui", "era"):
+            stored = await store.put_grant("josui", "era", ERA, GRANT, expected_generation=1)
+        assert stored.generation == 2
+        assert len(_grant_files(tmp_path)) == 1
+
+    async def test_a_revoke_during_rotation_reaches_the_old_store(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        await _put(_open(tmp_path, monkeypatch))
+        store = self._rotated(tmp_path, monkeypatch)
+        assert await store.delete_grant("josui", "era") is True
+        assert _grant_files(tmp_path) == []
+        assert await store.get_grant("josui", "era", ERA) is None
+
+    async def test_a_third_key_still_reads_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        await _put(_open(tmp_path, monkeypatch))
+        monkeypatch.setenv(PREVIOUS_KEY_ENV, OTHER_KEY)
+        store = _open(tmp_path, monkeypatch, "t" * 48)
+        assert await store.get_grant("josui", "era", ERA) is None
+        assert len(_grant_files(tmp_path)) == 1
+
+    def test_previous_without_a_current_key_opens_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(KEY_ENV, raising=False)
+        monkeypatch.setenv(PREVIOUS_KEY_ENV, KEY)
+        assert open_backend_token_store(tmp_path) is None
+
+    def test_a_short_previous_key_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(KEY_ENV, KEY)
+        monkeypatch.setenv(PREVIOUS_KEY_ENV, "short-but-sixteen")
+        with pytest.raises(ProfileConfigError, match=PREVIOUS_KEY_ENV):
+            open_backend_token_store(tmp_path)
+
+    def test_a_previous_key_with_no_store_creates_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._rotated(tmp_path, monkeypatch)
+        assert len(list(tmp_path.iterdir())) == 1

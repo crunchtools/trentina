@@ -103,13 +103,14 @@ def _resolve_profile_by_alert_token(
     token: str,
     profiles: dict[str, Profile],
 ) -> Profile | None:
-    token_bytes = token.encode("utf-8")
+    # Compare digests, not tokens: both sides are 32 bytes, so the comparison
+    # time does not depend on the token's length or on how much of it matches.
+    presented = hashlib.sha256(token.encode("utf-8")).digest()
     match: Profile | None = None
     for profile in profiles.values():
-        if profile.alert_ingress is None or profile.alert_ingress.token is None:
+        if profile.alert_ingress is None or profile.alert_ingress.token_sha256 is None:
             continue
-        expected = profile.alert_ingress.token.get_secret_value().encode("utf-8")
-        if hmac.compare_digest(token_bytes, expected) and match is None:
+        if hmac.compare_digest(presented, profile.alert_ingress.token_sha256) and match is None:
             match = profile
     return match
 

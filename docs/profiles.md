@@ -783,7 +783,9 @@ backends:
   Without that key, these backends report "needs auth" and nothing is stored.
 - A grant is bound to its profile name, its backend name and the backend URL's
   host. Renaming either, or pointing the `url` at another host, means
-  authorizing again. Rotating the key drops every grant.
+  authorizing again. To rotate the key without re-authorizing, set the old one
+  as `TRENTINA_BACKEND_TOKEN_KEY_PREVIOUS_FILE` beside the new one for a
+  deploy: each grant is resealed under the new key the first time it is read.
 - `issuer` pins the authorization server. Unset, the first one the backend's
   metadata names is used, and a later change is refused until the grant is
   revoked: a backend cannot quietly send its users to a new login server.
