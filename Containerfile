@@ -62,12 +62,14 @@ FROM quay.io/crunchtools/trentina-l2-model@sha256:02c8a8ff165f1c133535f00523de68
 FROM quay.io/hummingbird/python:3.14-builder@sha256:2cb296b79c1d802f1a3e8023892e854ecb6789a78dd306c4bbd27ebbbd3f76c8 AS model-builder
 USER 0
 
-RUN pip install --no-cache-dir \
-    torch --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir \
-    optimum[onnxruntime] \
-    transformers \
-    sentencepiece
+# The exporter's stack comes from a hashed lock (constitution XV.7, #871), so
+# every training round exports with the versions the last one did, not with
+# whatever was released that morning. --no-deps for the same reason as `deps`
+# below: the list is the whole resolved set. The file carries its own index
+# lines: PyPI, plus the CPU-only PyTorch index for torch's +cpu wheel.
+COPY scripts/l2-export-requirements.txt /tmp/l2-export-requirements.txt
+RUN pip install --no-cache-dir --require-hashes --no-deps \
+    -r /tmp/l2-export-requirements.txt
 
 # The exporter stays for l2-train, which builds this stage to export what it
 # trains (scripts/export_l2_model.py); the image no longer exports a model
