@@ -104,6 +104,9 @@ dev = [
     # Runs the suite across every core: addopts sets -n auto, and -n0 runs a
     # single test in-process.
     "pytest-xdist>=3.6",
+    # Stateful property tests (tests/test_approval_state_machine.py, #859).
+    # CI runs them derandomized: the same examples on every run.
+    "hypothesis>=6.170",
     "ruff>=0.8",
     "mypy>=1.13",
     # A benign out-of-tree transform plugin, the test fixture + worked example
