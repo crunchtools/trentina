@@ -1505,3 +1505,41 @@ class TestHoneytokenInLlmRequest:
         assert fake.sent
         [row] = _rows(audit_db)
         assert row["outcome"] != "decoy_tripped"
+
+
+class TestLlmCompletionAttribution:
+    """The completion edge's detection row carries the same columns the request
+    edge's does (#902): profile, backend and direction, and ``blocked`` per mode."""
+
+    def _capture(self, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+        from trentina import defense as defense_mod
+
+        seen: list[dict[str, Any]] = []
+
+        async def capturing_defend(_doc: Any, **kw: Any) -> Any:
+            seen.append(kw["attribution"])
+            return SimpleNamespace(flagged=False, flagged_by=None, pipeline=NO_L1, risk_level="low")
+
+        monkeypatch.setattr(defense_mod, "defend", capturing_defend)
+        return seen
+
+    @pytest.mark.parametrize(("mode", "blocked"), [("flag", False), ("block", True)])
+    def test_the_completion_row_is_attributed(
+        self, monkeypatch: pytest.MonkeyPatch, mode: str, blocked: bool
+    ) -> None:
+        from trentina.orchestrator import judge_llm_completion
+
+        seen = self._capture(monkeypatch)
+        profile = _profile("agent1", "agent1-tok", {"anthropic": "agent1-key"})
+        profile.defense = DefenseConfig(llm_completion=mode)
+        asyncio.run(
+            judge_llm_completion("hi", profile=profile, provider_name="anthropic", deadline=5.0)
+        )
+        assert seen == [
+            {
+                "direction": "response",
+                "blocked": blocked,
+                "profile": "agent1",
+                "backend": "llm:anthropic",
+            }
+        ]
