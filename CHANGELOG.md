@@ -13,6 +13,7 @@ under that name.
 ### Added
 
 - `tests/test_approval_state_machine.py`: a Hypothesis `RuleBasedStateMachine` over `pending` and `approver` together, the way the approval route composes them. It holds, at every step, that an approval applies only the proposal whose digest the person read, that nothing is applied while enrolment is open or no approver is configured, that an expired entry is never applied, and that a proposal applies at most once. Derandomized with no example database, so CI explores the same sequences every run. In place of the TLA+ model proposed in #859; `hypothesis` joins the `dev` extra.
+- `mutation-advisory.yml` runs mutmut over the security modules: the guards, approver, pending, egress policy, auth, file confinement, the L3 schema and provider base, and the egress guard. A pull request mutates only the modules it touches, or whose owning tests it touches; a weekly run mutates all of them. Each module is run against the tests that own it (`scripts/mutation_advisory.py`, `MODULES`), under a 40-minute cap that still reports what it checked. The score and every surviving mutant's diff go to the job summary. Advisory: `continue-on-error`, never a required check (#858).
 
 ### Security
 
