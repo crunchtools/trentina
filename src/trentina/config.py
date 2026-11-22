@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import ipaddress
 import json
 import logging
 import os
@@ -169,11 +170,79 @@ def insecure_opt_in(name: str, warning: str) -> bool:
 def insecure_names(name: str, warning: str) -> frozenset[str]:
     """Read a security escape hatch that names hosts (default none), lower-cased,
     and WARN when it names any — the ``insecure_opt_in`` shape, for a list."""
-    raw = os.environ.get(name, "").replace(",", " ").split()
-    names = frozenset(host.strip().lower().removesuffix(".") for host in raw)
-    if names:
+    return frozenset(insecure_name_ports(name, warning))
+
+
+#: A ``name:*`` entry: the name may reach any port, said as plainly as that.
+ANY_PORT = "*"
+_MAX_PORT = 65535
+
+
+def _split_name_port(item: str) -> tuple[str, str] | None:
+    """One ``TRENTINA_FETCH_PRIVATE_NAMES`` entry as (host, port text), or None.
+
+    ``[::1]:8000`` is ``::1`` on 8000, unbracketed as httpx names it; a bare
+    ``::1`` is the address with no port. An empty name, or a host that still
+    holds a colon and is no address (``name:*:*``), is not an entry.
+    """
+    if item.startswith("["):
+        inside, bracket, rest = item[1:].partition("]")
+        host, port_text = inside, rest.removeprefix(":")
+        # `[::1]:` names a port and gives none: malformed, as `name:` is.
+        if not bracket or rest[:1] not in ("", ":") or rest == ":" or not _is_ipv6(host):
+            return None
+    elif item.count(":") > 1:
+        host, port_text = item, ""
+        if not _is_ipv6(host):
+            return None
+    else:
+        host, _, port_text = item.partition(":")
+        if item.endswith(":"):
+            return None
+    host = host.strip().lower().removesuffix(".")
+    return (host, port_text) if host else None
+
+
+def _is_ipv6(text: str) -> bool:
+    try:
+        ipaddress.IPv6Address(text)
+    except ValueError:
+        return False
+    return True
+
+
+def insecure_name_ports(name: str, warning: str) -> dict[str, frozenset[int] | None]:
+    """Read a host escape hatch whose entries may carry a port (a1063).
+
+    ``name`` lets the host through on the ports the rule already allows and no
+    other; ``name:8000`` adds that port; ``name:*`` adds every port. Each name
+    maps to the extra ports it was given (empty for none, None for all). An
+    entry that is not a name, or whose port is not one, is dropped with a
+    warning: a typo must not widen the hatch, and a dropped name is refused,
+    which is fail-closed. The entry itself is not logged.
+    """
+    entries: dict[str, frozenset[int] | None] = {}
+    for item in os.environ.get(name, "").replace(",", " ").split():
+        split = _split_name_port(item)
+        if split is None:
+            logger.warning("config: %s has an entry that is not a name; dropped", name)
+            continue
+        host, port_text = split
+        ports: frozenset[int] | None
+        if port_text == ANY_PORT:
+            ports = None
+        elif not port_text:
+            ports = frozenset()
+        elif port_text.isascii() and port_text.isdigit() and 0 < int(port_text) <= _MAX_PORT:
+            ports = frozenset({int(port_text)})
+        else:
+            logger.warning("config: %s has an entry whose port is not one; dropped", name)
+            continue
+        had = entries.get(host, frozenset())
+        entries[host] = None if had is None or ports is None else had | ports
+    if entries:
         logger.warning(warning)
-    return names
+    return entries
 
 
 def part_settings() -> tuple[int, int, int]:
@@ -513,7 +582,9 @@ class Config:
         # Exact names whose non-global answers are accepted (#535): a narrower
         # hatch than TRENTINA_FETCH_ALLOW_PRIVATE, for a fixture or a lab host,
         # that leaves the address rule on for every other name.
-        self.fetch_private_names: frozenset[str] = insecure_names(
+        # A bare name keeps the port rule (80/443), as the hatch above does;
+        # `name:port` or `name:*` widens it for that name only (a1063).
+        self.fetch_private_ports = insecure_name_ports(
             "TRENTINA_FETCH_PRIVATE_NAMES",
             "[WARNING] TRENTINA_FETCH_PRIVATE_NAMES is set: those names may resolve to a "
             "loopback, private or link-local address; every other name may not.",
@@ -710,6 +781,19 @@ class Config:
             name == "ollama" or bool(self.provider_key(name))
             for name in (self.provider, *self.provider_fallback)
         )
+
+    @property
+    def fetch_private_names(self) -> frozenset[str]:
+        """Every name on ``TRENTINA_FETCH_PRIVATE_NAMES``, whatever its ports."""
+        return frozenset(self.fetch_private_ports)
+
+    def private_name_port(self, host: str, port: int) -> bool:
+        """True when ``TRENTINA_FETCH_PRIVATE_NAMES`` lets ``host`` reach ``port``
+        beyond the port rule: only by ``host:port`` or ``host:*`` (a1063)."""
+        if host not in self.fetch_private_ports:
+            return False
+        ports = self.fetch_private_ports[host]
+        return ports is None or port in ports
 
     def is_trusted_domain(self, url: str) -> bool:
         """Check if a URL's domain is in the trust allowlist."""

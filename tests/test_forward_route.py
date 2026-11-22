@@ -147,14 +147,27 @@ class TestThePrivateAddressRule:
         assert status == 200
         assert len(seen) == 1
 
-    def test_a_private_name_is_exempt_from_the_port_rule_too(
+    def test_a_bare_private_name_keeps_the_port_rule(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """A benchmark's fixtures listen on ports the runner picks (cto, #535);
-        the name's env opt-in covers the port, and only that name's."""
+        """Answering privately is not a licence to walk the host's ports (a1063)."""
         from trentina import config as config_mod
 
         monkeypatch.setenv("TRENTINA_FETCH_PRIVATE_NAMES", HOST)
+        monkeypatch.setattr(config_mod, "_config", None)
+        _, body, seen, _ = _go(
+            monkeypatch, tmp_path, _fetch(f"http://{HOST}:8443/x"), reply(200, "{}")
+        )
+        assert (body["error"]["reason"], seen) == ("port", [])
+
+    def test_a_private_name_with_a_star_is_exempt_from_the_port_rule(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A benchmark's fixtures listen on ports the runner picks (cto, #535);
+        `name:*` covers the port, and only that name's (a1063)."""
+        from trentina import config as config_mod
+
+        monkeypatch.setenv("TRENTINA_FETCH_PRIVATE_NAMES", f"{HOST}:*")
         monkeypatch.setattr(config_mod, "_config", None)
         status, _, seen, _ = _go(
             monkeypatch, tmp_path, _fetch(f"http://{HOST}:8443/x"), reply(200, "{}")

@@ -898,16 +898,17 @@ class TestPlainHttpBackendResource:
         monkeypatch: pytest.MonkeyPatch,
         *,
         allowlisted: bool,
+        entry: str = "mcp.era.example:8000",
     ) -> Profile:
         from tests.egress_harness import route
-        from trentina.config import get_config
+        from trentina.config import Config, get_config
         from trentina.gateway import loader
 
         server.resource = self.HTTP_URL
         # The backend name resolves to a private address, as a container does.
         route(monkeypatch, server.handle, {"mcp.era.example": ["10.89.0.82"]})
-        names = frozenset({"mcp.era.example"}) if allowlisted else frozenset()
-        monkeypatch.setattr(get_config(), "fetch_private_names", names)
+        monkeypatch.setenv("TRENTINA_FETCH_PRIVATE_NAMES", entry if allowlisted else "")
+        monkeypatch.setattr(get_config(), "fetch_private_ports", Config().fetch_private_ports)
         p = profile_with_era("josui", url=self.HTTP_URL)
         monkeypatch.setattr(
             loader,
@@ -924,6 +925,15 @@ class TestPlainHttpBackendResource:
         assert link.startswith(f"https://gw.example{START_PATH}?flow=")
         # The authorize step was reached: the http resource ping was permitted.
         assert (await authorize_url(link)).startswith("https://auth.era.example/authorize")
+
+    async def test_a_bare_name_does_not_open_its_port(
+        self, server: FakeServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The name lets plain http through, not port 8000: that takes
+        `mcp.era.example:8000` (a1063)."""
+        p = self._wire(server, monkeypatch, allowlisted=True, entry="mcp.era.example")
+        with pytest.raises(BackendAuthError, match="egress_port"):
+            await start(p, "era", authorized_by="self")
 
     async def test_unlisted_name_is_refused(
         self, server: FakeServer, monkeypatch: pytest.MonkeyPatch
@@ -965,8 +975,8 @@ class TestPlainHttpBackendResource:
 
         monkeypatch.setattr(
             get_config(),
-            "fetch_private_names",
-            frozenset({"mcp.era.example", "other.era.example"}),
+            "fetch_private_ports",
+            {"mcp.era.example": frozenset(), "other.era.example": frozenset()},
         )
         with pytest.raises(BackendAuthError, match="not_https"):
             await backend_oauth._request(

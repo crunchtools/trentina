@@ -99,9 +99,12 @@ benchmark drives.
     that marker, so it never counts as containment.
 
 `TRENTINA_FETCH_PRIVATE_NAMES` (comma-separated exact names, warned at startup)
-lets those names resolve to a loopback or private address, on any port. It
-exists for a benchmark's local fixtures, which listen on ports the runner
-picks. Every other name is still held to the address rule and the port rule.
+lets those names resolve to a loopback or private address. A bare name keeps
+the port rule (80/443), as `TRENTINA_FETCH_ALLOW_PRIVATE` does. `name:8000`
+adds that port for that name, and `name:*` adds every port, for a benchmark's
+local fixtures that listen on ports the runner picks. An entry with a bad port
+is dropped with a warning. Every other name is still held to the address rule
+and the port rule.
 
 ## Route plugins (`dist:`)
 

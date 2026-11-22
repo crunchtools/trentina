@@ -641,7 +641,7 @@ jobs:
             -e TRENTINA_GATEWAY_ENABLED=1 -e TRENTINA_PROFILES_PATH=/cfg/profiles.yaml \
             -e BENCH_TOKEN -e OPENROUTER_API_KEY -e QUARANTINE_MODEL="$MODEL" \
             -e TRENTINA_MODEL_PROVIDER=openrouter -e QUARANTINE_DB=/tmp/trentina.db \
-            -e TRENTINA_FETCH_PRIVATE_NAMES=aeb-fixture.test,cdn.fixture.example.com \
+            -e 'TRENTINA_FETCH_PRIVATE_NAMES=aeb-fixture.test:*,cdn.fixture.example.com:*' \
             trentina:bench "$@"
           EOF
           chmod +x run-gateway.sh

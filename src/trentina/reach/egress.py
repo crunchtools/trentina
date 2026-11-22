@@ -218,10 +218,12 @@ async def check_url(url: str | httpx.URL) -> ResolvedTarget:
         raise EgressRefusedError("scheme")
     port = DEFAULT_PORTS[parsed.scheme] if parsed.port is None else parsed.port
     host = parsed.raw_host.decode("ascii")
-    # A name on TRENTINA_FETCH_PRIVATE_NAMES may reach any port: the operator
-    # let it answer privately by env, which is the decision the port rule makes.
-    private_name = host.lower() in get_config().fetch_private_names
-    if port not in ALLOWED_PORTS and not private_name:
+    # A name on TRENTINA_FETCH_PRIVATE_NAMES may answer privately, but keeps
+    # the port rule unless its entry names the port (`name:8000`, `name:*`):
+    # a fixture's name is not a licence to walk that host's services (a1063).
+    config = get_config()
+    private_name = host.lower() in config.fetch_private_names
+    if port not in ALLOWED_PORTS and not config.private_name_port(host.lower(), port):
         raise EgressRefusedError("port")
     if not host:
         raise EgressRefusedError("unresolvable")
@@ -229,7 +231,7 @@ async def check_url(url: str | httpx.URL) -> ResolvedTarget:
     addresses = await _resolve(host, port)
     if not addresses:
         raise EgressRefusedError("unresolvable")
-    if not get_config().fetch_allow_private and not private_name:
+    if not config.fetch_allow_private and not private_name:
         for answer in addresses:
             try:
                 ip = ipaddress.ip_address(answer)
