@@ -10,6 +10,8 @@ under that name.
 
 ## [Unreleased]
 
+## [6.26.0] - 2026-11-22
+
 ### Added
 
 - `docs/deployment-hardening.md` carries the backend grant key rotation runbook, and says not to use `TRENTINA_BACKEND_TOKEN_KEY_PREVIOUS` after a key leak: while it is set, a record planted under the old key is accepted.
