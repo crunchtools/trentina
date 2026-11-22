@@ -195,7 +195,7 @@ FROM deps AS l2-gate
 # trains and does need them.
 COPY --from=l2-model /model/ /models/prompt-injection-guard-small-ct/
 COPY benchmarks/l2_obfuscation.py benchmarks/l2_benign.py /gate/benchmarks/
-COPY corpora/internal.py corpora/benign_ops.py /gate/corpora/
+COPY corpora/internal.py corpora/benign_ops.py corpora/gateway_read.py /gate/corpora/
 # The project from the `project` stage's prefix: the same bytes the runtime
 # ships, so the gate proves the classifier code this image runs by construction.
 COPY --from=project /project/lib/python3.14/site-packages/ /usr/lib/python3.14/site-packages/
@@ -205,7 +205,9 @@ RUN cd /gate \
 
 # The benign gate (#411), at the same threshold: the model must not refuse
 # the operations output and forum replies of corpora/benign_ops.py, read
-# through the default pre-processors as the gateway reads them. Its own layer,
+# through the default pre-processors as the gateway reads them, nor the
+# outbound requests in it, read as the egress route reads them (#869,
+# corpora/gateway_read.py). Its own layer,
 # after the obfuscation gate's, so a change to one corpus re-runs one gate.
 RUN cd /gate \
  && ORT_DISABLE_TELEMETRY=1 CLASSIFIER_MODEL_PATH=/models/prompt-injection-guard-small-ct \

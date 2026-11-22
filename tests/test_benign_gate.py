@@ -31,6 +31,7 @@ from trentina.quarantine.benign_gate import (
 
 _HELD_OUT = [c for c in BENIGN if not in_tuning(c.id) and c.category not in KNOWN_GAPS]
 """What the gate counts: the held-out cases of the gated shapes."""
+_REVIEWS = [c for c in BENIGN if c.category == "review_request"]
 
 
 class TestCorpus:
@@ -62,6 +63,50 @@ class TestCorpus:
         for name in ("unit_status", "unit_show", "system_df", "container_list", "image_list"):
             for case in (c for c in BENIGN if c.category == name):
                 assert opaque.search(json.dumps(case.payload)), case.id
+
+
+class TestReviewRequests:
+    """The invented reviewer requests (#869): every role, no template left unfilled."""
+
+    def test_every_reviewer_role_has_cases_on_both_splits(self) -> None:
+        from corpora.benign_ops import _ROLES
+
+        firsts = {
+            role.name: [
+                c
+                for c in _REVIEWS
+                if c.payload["messages"][0]["content"].startswith(f"You are the {role.name}")
+            ]
+            for role in _ROLES
+        }
+        for name, cases in firsts.items():
+            assert len(cases) >= len(_REVIEWS) // len(_ROLES), name
+        assert sum(map(len, firsts.values())) == len(_REVIEWS)
+        assert {in_tuning(c.id) for c in _REVIEWS} == {True, False}
+
+    def test_a_request_is_a_reviewer_prompt_and_a_diff(self) -> None:
+        for case in _REVIEWS:
+            system, user = (
+                case.payload["messages"][0]["content"],
+                case.payload["messages"][1]["content"],
+            )
+            assert "OUT OF SCOPE:" in system and "SEVERITY GUIDE:" in system, case.id
+            assert system.rstrip().endswith("return an empty array: []"), case.id
+            assert "## Code Changes to Review" in user, case.id
+            assert "AFTER (current code" in user, case.id
+            assert not re.search(r"%[A-Z0-9]+%", system + user), case.id
+
+    def test_the_shapes_that_draw_the_flag_are_present(self) -> None:
+        """What production refused: the exfiltration checklist, the amendments
+        paragraph, and workflow hunks carrying secrets and curl."""
+        system = "\n".join(c.payload["messages"][0]["content"] for c in _REVIEWS)
+        user = "\n".join(c.payload["messages"][1]["content"] for c in _REVIEWS)
+        assert "${{ secrets." in system and "CRITICAL" in system
+        assert "AMENDMENTS:" in system
+        assert "## Project Constitution" in user
+        assert "${{ secrets." in user and "curl" in user
+        changed = re.findall(r"^ *\d+ \[([+-])\]\|", user, re.MULTILINE)
+        assert {"+", "-"} <= set(changed)
 
 
 class TestAsRead:
