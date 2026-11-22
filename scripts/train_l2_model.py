@@ -279,7 +279,7 @@ def main() -> int:
             learning_rate=args.lr,
             per_device_train_batch_size=args.batch,
             per_device_eval_batch_size=args.batch,
-            warmup_ratio=0.06,
+            warmup_steps=0.06,  # under 1: a ratio of the steps (5.x dropped warmup_ratio)
             weight_decay=0.01,
             adam_beta2=0.98,
             adam_epsilon=1e-6,

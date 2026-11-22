@@ -31,6 +31,7 @@ from trentina.quarantine.benign_gate import (
 
 _HELD_OUT = [c for c in BENIGN if not in_tuning(c.id) and c.category not in KNOWN_GAPS]
 """What the gate counts: the held-out cases of the gated shapes."""
+_REVIEWS = [c for c in BENIGN if c.category == "review_request"]
 
 
 class TestCorpus:
@@ -64,6 +65,50 @@ class TestCorpus:
                 assert opaque.search(json.dumps(case.payload)), case.id
 
 
+class TestReviewRequests:
+    """The invented reviewer requests (#869): every role, no template left unfilled."""
+
+    def test_every_reviewer_role_has_cases_on_both_splits(self) -> None:
+        from corpora.benign_ops import _ROLES
+
+        firsts = {
+            role.name: [
+                c
+                for c in _REVIEWS
+                if c.payload["messages"][0]["content"].startswith(f"You are the {role.name}")
+            ]
+            for role in _ROLES
+        }
+        for name, cases in firsts.items():
+            assert len(cases) >= len(_REVIEWS) // len(_ROLES), name
+        assert sum(map(len, firsts.values())) == len(_REVIEWS)
+        assert {in_tuning(c.id) for c in _REVIEWS} == {True, False}
+
+    def test_a_request_is_a_reviewer_prompt_and_a_diff(self) -> None:
+        for case in _REVIEWS:
+            system, user = (
+                case.payload["messages"][0]["content"],
+                case.payload["messages"][1]["content"],
+            )
+            assert "OUT OF SCOPE:" in system and "SEVERITY GUIDE:" in system, case.id
+            assert system.rstrip().endswith("return an empty array: []"), case.id
+            assert "## Code Changes to Review" in user, case.id
+            assert "AFTER (current code" in user, case.id
+            assert not re.search(r"%[A-Z0-9]+%", system + user), case.id
+
+    def test_the_shapes_that_draw_the_flag_are_present(self) -> None:
+        """What production refused: the exfiltration checklist, the amendments
+        paragraph, and workflow hunks carrying secrets and curl."""
+        system = "\n".join(c.payload["messages"][0]["content"] for c in _REVIEWS)
+        user = "\n".join(c.payload["messages"][1]["content"] for c in _REVIEWS)
+        assert "${{ secrets." in system and "CRITICAL" in system
+        assert "AMENDMENTS:" in system
+        assert "## Project Constitution" in user
+        assert "${{ secrets." in user and "curl" in user
+        changed = re.findall(r"^ *\d+ \[([+-])\]\|", user, re.MULTILINE)
+        assert {"+", "-"} <= set(changed)
+
+
 class TestAsRead:
     async def test_a_tool_response_is_read_once_as_the_router_reads_it(self) -> None:
         """#431: the structured copy repeats the text block and is dropped."""
@@ -87,6 +132,31 @@ class TestAsRead:
         block = read.split("\n", 1)[0]
         assert len(block) < len(json.dumps(case.payload, separators=(",", ":")))
         assert "more element(s) with this shape" in block
+
+    async def test_an_outbound_request_is_read_as_the_egress_route_reads_it(self) -> None:
+        """#869: the request document ``judge_outbound`` reads, not a tool reply."""
+        from trentina.gateway.egress_policy import request_document
+        from trentina.gateway.outbound import body_text, judge_input
+        from trentina.unpack.scan import unpack
+
+        case = next(c for c in BENIGN if c.source_type == "egress_request")
+        read = await l2_benign.as_read(case)
+        headers = {
+            "accept": "*/*",
+            "user-agent": "trentina-egress",
+            "content-type": "application/json",
+        }
+        body = body_text(json.dumps(case.payload).encode())
+        document = request_document("POST", "/v1/chat/completions", "", headers, body)
+        assert read == unpack(judge_input(document)).text
+        assert read.startswith("POST /v1/chat/completions\n")
+        assert "x-title" not in read, "a header the route does not forward is not judged"
+        assert case.payload["messages"][0]["content"].split("\n", 1)[0] in read
+
+    def test_only_the_outbound_shapes_are_read_as_requests(self) -> None:
+        egress = {c.category for c in BENIGN if c.source_type == "egress_request"}
+        assert egress == {"review_request"}
+        assert all(c.structured for c in BENIGN if c.source_type == "egress_request")
 
 
 class TestRecordArithmetic:

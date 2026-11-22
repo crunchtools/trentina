@@ -1237,3 +1237,9 @@ path = "tests/test_provider_vertex.py"
 pattern = "handle"
 justification = "httpx.MockTransport handler: one callable routes every request, so the token-endpoint vs generateContent branch is the router itself and has no call site to move to."
 classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "corpora/benign_ops.py"
+justification = "review_change and review_user generate invented code-review requests for the L2 benign gate (#869). The matches, discovery.find and mcp._deliver_trusted, share their statement shapes (draw, build a list, join) and nothing else: no call, name or data in common, and one is a test corpus while the others serve tool calls."
+classification = "by_design"

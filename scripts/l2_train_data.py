@@ -17,7 +17,8 @@ chosen on) goes in as an anchor: logs, unit status and source code are shapes
 no public set has, and without them the model drifts off what the shipped one
 reads well there (run 40202667628: 4 to 41 of 221 benign_ops cases flagged).
 Each row is rendered the way the gateway renders a tool reply
-(``corpora.gateway_read.as_read``).
+(``corpora.gateway_read.as_read``), or an anchor that is an outbound request
+the way the egress route reads one (``as_request``, #869).
 
     uv run python scripts/l2_train_data.py --out build/l2-train
 
@@ -46,7 +47,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from corpora.benign_ops import BENIGN, in_tuning
 from corpora.envelopes import MAKERS
-from corpora.gateway_read import as_read
+from corpora.gateway_read import as_read, as_request
 
 SEED = 20261025
 VAL_ONE_IN = 10
@@ -320,7 +321,10 @@ async def anchors() -> list[dict[str, Any]]:
     rows = []
     for case in BENIGN:
         if in_tuning(case.id):
-            text = await as_read(case.payload, case.category)
+            if case.source_type == "egress_request":
+                text = as_request(case.payload)
+            else:
+                text = await as_read(case.payload, case.category)
             row = {"text": text, "label": 0, "shape": "ops", "distill": True}
             rows += [row] * ANCHOR_REPEATS
     return rows

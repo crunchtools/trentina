@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from corpora.benign_ops import BENIGN, in_tuning
+from corpora.benign_ops import BENIGN, Benign, in_tuning
 from corpora.envelopes import MAKERS, slug
-from corpora.gateway_read import as_read
+from corpora.gateway_read import as_read, as_request
 from scripts.l2_train_data import ANCHOR_REPEATS, anchors, attack_at, build, plant
 from scripts.train_l2_model import windows
 
@@ -67,14 +67,37 @@ def test_training_starts_from_the_shipped_revision() -> None:
     assert pinned.group(1) == trained.group(1)
 
 
+def _read(case: Benign) -> str:
+    """A case as the gateway reads it: a request as the egress route does (#869)."""
+    if case.source_type == "egress_request":
+        return as_request(case.payload)
+    return asyncio.run(as_read(case.payload, case.category))
+
+
 def test_training_anchors_hold_no_held_out_case() -> None:
     """The anchor is benign_ops's tuning split; a held-out case in training voids the gate."""
     rows = asyncio.run(anchors())
     tuning = [c for c in BENIGN if in_tuning(c.id)]
-    held_out = {asyncio.run(as_read(c.payload, c.category)) for c in BENIGN if not in_tuning(c.id)}
+    held_out = {_read(c) for c in BENIGN if not in_tuning(c.id)}
     assert len(rows) == len(tuning) * ANCHOR_REPEATS
     assert all(r["label"] == 0 for r in rows)
     assert not {r["text"] for r in rows} & held_out
+
+
+def test_training_anchors_read_each_case_as_the_gateway_does() -> None:
+    """An outbound request is trained on as the egress route reads it, a reply as
+    a tool reply: the text the model is gated and judged on (#869)."""
+    rows = asyncio.run(anchors())
+    tuning = [c for c in BENIGN if in_tuning(c.id)]
+    by_text: dict[str, int] = {}
+    for row in rows:
+        assert (row["label"], row["shape"], row["distill"]) == (0, "ops", True)
+        by_text[row["text"]] = by_text.get(row["text"], 0) + 1
+    for kind in ("egress_request", "tool_response"):
+        case = next(c for c in tuning if c.source_type == kind)
+        assert by_text.get(_read(case)) == ANCHOR_REPEATS, case.id
+    request = next(c for c in tuning if c.source_type == "egress_request")
+    assert by_text.get(asyncio.run(as_read(request.payload, request.category))) is None
 
 
 def test_plant_keeps_the_text_and_adds_the_attack() -> None:
