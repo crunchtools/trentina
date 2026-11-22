@@ -6,6 +6,7 @@ import base64
 import json
 import random
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
 import pytest
@@ -336,11 +337,11 @@ def test_the_shortest_token_with_each_encoded_form(length: int, form: str) -> No
         assert TokenMatcher([shorter]).found(one_short) == []
 
 
-def _rsa_pem() -> str:
+def _rsa_pem(bits: int = 2048) -> str:
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
 
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=bits)
     return key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
@@ -371,6 +372,22 @@ def test_a_long_token_searches_a_bounded_number_of_blocks() -> None:
     # From past the public modulus and exponent, which are never a piece of it.
     for start in range(450, len(body) - span, 97):
         assert matcher.found(body[start : start + span]) == [honey], start
+
+
+@pytest.mark.parametrize(("bits", "bound"), [(2048, 69), (4096, 118)])
+def test_every_piece_at_the_stated_bound_is_found(bits: int, bound: int) -> None:
+    """``MAX_BLOCKS``' docstring: a piece of ``len(token) / MAX_BLOCKS +
+    FRAGMENT_MIN`` characters as written is always found. Shorter pieces of an
+    RSA-4096 key miss about one time in 25 at 80 characters."""
+    from trentina.token_variants import MAX_BLOCKS
+
+    honey = _rsa_pem(bits)
+    assert len(honey) // MAX_BLOCKS + FRAGMENT_MIN == bound
+    matcher = TokenMatcher([honey])
+    kept = [at for _block, at in matcher._blocks[honey]]
+    # Every start over the secret span the kept blocks cover.
+    for start in range(kept[0], kept[-1] + FRAGMENT_MIN // 2 - bound + 1):
+        assert matcher.found(honey[start : start + bound]) == [honey], start
 
 
 def _openssh(kind: str) -> str:
@@ -511,3 +528,11 @@ def test_a_curve_key_matches_by_its_private_scalar_not_its_public_point(
     assert matcher.found(f"scalar {body[scalar[0] : scalar[1]]}") == [pem]
     assert matcher.found(body[:20]) == []
     assert matcher.found(pem) == [pem]
+
+
+def test_matcher_for_is_safe_across_threads() -> None:
+    """Worker threads build and evict matchers at once past the cache's size."""
+    sets = [frozenset({f"token-{n}-" + "x7Q" * 12}) for n in range(400)]
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        built = list(pool.map(matcher_for, sets))
+    assert all(isinstance(m, TokenMatcher) for m in built)
