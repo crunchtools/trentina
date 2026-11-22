@@ -159,6 +159,23 @@ class TestParameterGuards:
         assert result is not None
         assert secret not in result
 
+    def test_an_absent_parameter_does_not_end_the_checks(self) -> None:
+        """A guard whose parameter is absent is skipped, not the guards after it.
+
+        Ending the loop there would fail open: every later guard goes unread.
+        """
+        guards = {
+            "send_gmail_message": {
+                "cc": ParameterConstraint(allow=["alice@example.com"]),
+                "to": ParameterConstraint(deny=["*@evil.com"]),
+            }
+        }
+        result = check_request_guards(
+            "send_gmail_message", {"to": "mallory@evil.com"}, _backend(guards)
+        )
+        assert result is not None
+        assert "'to'" in result
+
 
 class TestResponseGuards:
     """check_response_guards behaviour on content blocks and structured fields."""
@@ -293,3 +310,27 @@ class TestResponseGuards:
         assert result is not None
         assert secret not in result
         assert "ship date" not in result
+
+    def test_an_absent_field_does_not_end_the_checks(self) -> None:
+        """A structured field the result lacks is skipped, not the guards after it."""
+        backend = _backend(
+            response={
+                "memory_search": {
+                    "owner": ParameterConstraint(allow=["scott"]),
+                    "content": ParameterConstraint(deny=["*NIGHTJAR*"]),
+                }
+            }
+        )
+        result = check_response_guards(
+            "memory_search", _text("The NIGHTJAR roadmap"), {"id": 7}, backend
+        )
+        assert result is not None
+        assert "'content'" in result
+
+    def test_a_non_dict_block_does_not_hide_the_blocks_after_it(self) -> None:
+        """A malformed block is skipped; the text blocks after it are still read."""
+        blocks: list[object] = ["not a block", *_text("The NIGHTJAR roadmap")]
+        result = check_response_guards(
+            "memory_search", blocks, None, _guarded("content", deny=["*NIGHTJAR*"])
+        )
+        assert result is not None
