@@ -145,6 +145,7 @@ class TestThresholdCannotSuppressL3:
             "l3_context",
             "precomputed_l1",
             "attribution",
+            "l2_advisory",
         }, (
             "a new parameter here may be a new way to skip L3 — if one is "
             "added, it needs a test in this file saying why it is allowed to"
@@ -163,6 +164,13 @@ class TestL3RunsRegardlessOfOtherLayers:
 
     async def test_runs_on_model_output(self) -> None:
         _, mocks = await _defend(provenance=Provenance.MODEL_OUTPUT)
+        mocks["quarantine_detect"].assert_called_once()
+
+    async def test_l2_advisory_does_not_skip_l3(self) -> None:
+        """#848: ``l2_advisory`` reads L3's verdict to waive an L2-only
+        refusal, so L3 must run for it to mean anything; it only changes a
+        consequence."""
+        _, mocks = await _defend(classification=MALICIOUS, l2_advisory=True)
         mocks["quarantine_detect"].assert_called_once()
 
     async def test_stop_on_partial_does_not_skip_l3(self) -> None:
