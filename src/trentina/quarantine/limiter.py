@@ -6,9 +6,11 @@ user-facing scans, the perimeter, compression, the boot warm-up. The key is in
 the limiter's identity because a provider throttles per key (#291): keyed by
 judge alone, one profile driving its own key into 429s paused, then refused,
 every other profile's L3 on that model, and block refused their content.
-Callers queue FIFO; foreground work is granted a slot before background work,
-so a warm-up judging hundreds of tool descriptions never makes a user's
-``tools/call`` wait behind it.
+Foreground work is granted a slot before background work, so a warm-up
+judging hundreds of tool descriptions never makes a user's ``tools/call`` wait
+behind it. Within a priority each profile queues FIFO and a freed slot goes to
+the next profile in rotation (#867), as ``classifier.FairGate`` does for L2:
+profiles sharing a key no longer wait behind one profile's backlog.
 
 The limit is found, not configured, by the rule TCP uses for the same
 problem (AIMD):
@@ -89,7 +91,7 @@ def throttle_budget() -> float:
 
 
 class AdaptiveLimiter:
-    """A FIFO queue in front of one judge, with an AIMD concurrency limit."""
+    """A fair queue in front of one judge, with an AIMD concurrency limit."""
 
     def __init__(self, judge: tuple[str, str], start: int, ceiling: int) -> None:
         """Create the limiter for one judge.
@@ -113,9 +115,11 @@ class AdaptiveLimiter:
         self._backoff = 0.0
         self._pause_until = 0.0
         self._timer: asyncio.TimerHandle | None = None
-        self._waiters: dict[Priority, collections.deque[asyncio.Future[int]]] = {
-            p: collections.deque() for p in Priority
-        }
+        # Per priority, one FIFO per profile, in the order their turns come.
+        self._waiters: dict[
+            Priority,
+            collections.OrderedDict[str | None, collections.deque[asyncio.Future[int]]],
+        ] = {p: collections.OrderedDict() for p in Priority}
         # Each queued caller's throttle budget, so a pause that begins while
         # it waits can refuse it rather than hold it past what it allowed.
         self._budgets: dict[asyncio.Future[int], float] = {}
@@ -136,7 +140,18 @@ class AdaptiveLimiter:
             self.in_flight += 1
             return self.epoch
         fut: asyncio.Future[int] = asyncio.get_running_loop().create_future()
-        queue = self._waiters[l3_priority.get()]
+        # Imported here: the gateway package imports this one on its way in.
+        from ..gateway.context import get_current_profile
+        from ..gateway.errors import ScopeError
+
+        try:
+            key: str | None = get_current_profile().name
+        except ScopeError:
+            # The boot warm-up and other gateway-side work run with no
+            # profile bound; they share one turn rather than being refused.
+            key = None
+        turns = self._waiters[l3_priority.get()]
+        queue = turns.setdefault(key, collections.deque())
         queue.append(fut)
         self._budgets[fut] = throttle_budget()
         self._pump()
@@ -148,6 +163,8 @@ class AdaptiveLimiter:
                 self.release(fut.result(), Outcome.FAILED)
             elif fut in queue:
                 queue.remove(fut)
+                if not queue and turns.get(key) is queue:
+                    del turns[key]
             raise
         finally:
             self._budgets.pop(fut, None)
@@ -224,10 +241,13 @@ class AdaptiveLimiter:
                     )
                 )
         # One pass per queue, so a long pause cannot pile up dead futures.
-        for priority in Priority:
-            self._waiters[priority] = collections.deque(
-                f for f in self._waiters[priority] if f not in refused
-            )
+        for turns in self._waiters.values():
+            for key in list(turns):
+                kept = collections.deque(f for f in turns[key] if f not in refused)
+                if kept:
+                    turns[key] = kept
+                else:
+                    del turns[key]
 
     def _pump(self) -> None:
         """Grant queued waiters the free slots, foreground first."""
@@ -248,10 +268,16 @@ class AdaptiveLimiter:
         self._pump()
 
     def _next_waiter(self) -> asyncio.Future[int] | None:
+        """The next live waiter: highest priority, then the next profile's turn."""
         for priority in Priority:
-            queue = self._waiters[priority]
-            while queue:
+            turns = self._waiters[priority]
+            while turns:
+                key, queue = next(iter(turns.items()))
                 fut = queue.popleft()
+                if queue:
+                    turns.move_to_end(key)
+                else:
+                    del turns[key]
                 if not fut.done():
                     return fut
         return None
