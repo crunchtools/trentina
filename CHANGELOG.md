@@ -18,6 +18,10 @@ under that name.
 - The `parent-image-updated` dispatch to crunchtools/data-collector moves into container-release's `downstream` input and fires when promote moves `:main` or `:latest`.
 - Gatehouse triage now receives `review_result`, so a PR whose review job died before posting is held instead of passing.
 
+### Fixed
+
+- `l2-train` trains again (a911). It drives RunPod's REST v2 at `api.runpod.io/v2`, since v1 at `rest.runpod.io` is retired and no longer resolves. It also passes `warmup_steps=0.06`, a ratio of the steps, because transformers 5.23 on the pod dropped `warmup_ratio`. Every export now carries the trainer's own tokenizer files, because the builder's transformers (held below 4.58 by optimum-onnx) cannot read a tokenizer saved by 5.x. Proof: run 44983947568 on the old corpus passed all three gates.
+
 ### Removed
 
 - `security.yml`'s `publish` job, its image hand-off from `sdlc ci`, the `published-digests` artifact and the bespoke promote in `container.yml`; `sdlc ci` still builds the image for its in-image tests and publishes nothing.
