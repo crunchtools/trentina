@@ -425,17 +425,18 @@ async def _judge_within_quota(content: str, briefing: str) -> dict[str, Any]:
     one; ``gaps_of`` reports it as ``l3_quota`` alone.
     """
     profile = bound_profile()
-    if not charge_l3(profile):
+    day = charge_l3(profile)
+    if day is None:
         return {"injection_detected": False, "l3_unavailable": True, "l3_quota": True}
     # An unanswered judgement is refunded, so retries through a provider
     # outage do not spend the day's cap.
     try:
         verdict = await quarantine_detect(content, layer1_context=briefing)
     except BaseException:
-        refund_l3(profile)
+        refund_l3(profile, day)
         raise
     if verdict.get("l3_unavailable"):
-        refund_l3(profile)
+        refund_l3(profile, day)
     return verdict
 
 

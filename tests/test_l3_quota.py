@@ -62,7 +62,7 @@ class TestCharge:
 
     def test_the_limit_allows_n_and_refuses_the_next(self) -> None:
         p = _profile(limit=3)
-        assert [quota.charge(p) for _ in range(5)] == [True, True, True, False, False]
+        assert [quota.charge(p) is not None for _ in range(5)] == [True, True, True, False, False]
         # A refusal is not a judgement: it does not count.
         assert quota.snapshot(p)["used"] == 3
 
@@ -115,32 +115,47 @@ class TestGrantOwner:
         object.__setattr__(ingress, "federation_of", "alpha")
         assert ingress.grant_owner == "alpha"
 
-        assert quota.charge(source) is True
-        assert quota.charge(ingress) is True
-        assert quota.charge(ingress) is False
-        assert quota.charge(source) is False
+        assert quota.charge(source) is not None
+        assert quota.charge(ingress) is not None
+        assert quota.charge(ingress) is None
+        assert quota.charge(source) is None
         assert quota.snapshot(source)["used"] == quota.snapshot(ingress)["used"] == 2
 
 
 class TestRefund:
     def test_a_refund_gives_back_one_judgement(self) -> None:
         p = _profile(limit=1)
-        assert quota.charge(p) is True
-        quota.refund(p)
+        day = quota.charge(p)
+        assert day is not None
+        quota.refund(p, day)
         assert quota.snapshot(p)["used"] == 0
-        assert quota.charge(p) is True
+        assert quota.charge(p) is not None
 
-    def test_a_refund_never_goes_below_zero(self) -> None:
+    def test_a_refund_never_goes_below_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
         p = _profile(limit=1)
-        quota.refund(p)
+        _on_day(monkeypatch, 2026, 11, 22)
+        quota.refund(p, "2026-11-22")
         assert quota.snapshot(p)["used"] == 0
+
+    def test_yesterdays_charge_is_not_refunded_from_today(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        p = _profile(limit=2)
+        _on_day(monkeypatch, 2026, 11, 22)
+        day = quota.charge(p)
+        assert day == "2026-11-22"
+        _on_day(monkeypatch, 2026, 11, 23)
+        quota.charge(p)
+        quota.refund(p, day)
+        assert quota.snapshot(p)["used"] == 1
 
     def test_a_background_refund_takes_nothing_back(self) -> None:
         p = _profile(limit=3)
-        quota.charge(p)
+        day = quota.charge(p)
+        assert day is not None
         token = l3_priority.set(Priority.BACKGROUND)
         try:
-            quota.refund(p)
+            quota.refund(p, day)
         finally:
             l3_priority.reset(token)
         assert quota.snapshot(p)["used"] == 1

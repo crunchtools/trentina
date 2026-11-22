@@ -716,7 +716,7 @@ classification = "gourmand_bug"
 [[exceptions]]
 check = "redundant_error_handling"
 path = "src/trentina/defense.py"
-line = 593
+line = 594
 justification = "Recording a detection is bookkeeping: a failed SQLite write or D-Bus emit must not destroy a verdict that already exists, so the failure is logged (kind and frames, never the message -- #262) and the verdict is returned. Re-raising would turn an audit gap into a lost flag."
 classification = "by_design"
 

@@ -53,15 +53,17 @@ def _used(name: str, day: str) -> int:
     return entry[1] if entry is not None and entry[0] == day else 0
 
 
-def charge(profile: Profile) -> bool:
-    """Count one L3 judgement against ``profile``; False when its cap is spent.
+def charge(profile: Profile) -> str | None:
+    """Count one L3 judgement against ``profile``; None when its cap is spent.
 
-    A profile without ``defense.l3_daily_quota`` is counted and never refused.
+    Otherwise the UTC day it was counted on, for ``refund``. Background work
+    is not counted. A profile without ``defense.l3_daily_quota`` is counted
+    and never refused.
     """
-    if l3_priority.get() is Priority.BACKGROUND:
-        return True
-    owner = profile.grant_owner
     day = _clock().date().isoformat()
+    if l3_priority.get() is Priority.BACKGROUND:
+        return day
+    owner = profile.grant_owner
     used = _used(owner, day)
     limit = profile.defense.l3_daily_quota
     if limit is not None and used >= limit:
@@ -74,22 +76,22 @@ def charge(profile: Profile) -> bool:
                 limit,
                 day,
             )
-        return False
+        return None
     _usage[owner] = (day, used + 1)
-    return True
+    return day
 
 
-def refund(profile: Profile) -> None:
-    """Give back a judgement ``charge`` took that L3 did not answer.
+def refund(profile: Profile, day: str) -> None:
+    """Give back a judgement ``charge`` counted on ``day`` that L3 did not answer.
 
-    Called in the same task as the charge, so a background caller, which was
-    never charged, is never refunded. A charge from a day that has since
-    ended is gone with that day.
+    A charge from a day that has since ended is gone with that day: refunding
+    it from today's count would hand out one judgement more than the cap.
+    Called in the task that charged, so background work, never counted, is
+    never refunded.
     """
     if l3_priority.get() is Priority.BACKGROUND:
         return
     owner = profile.grant_owner
-    day = _clock().date().isoformat()
     used = _used(owner, day)
     if used:
         _usage[owner] = (day, used - 1)
