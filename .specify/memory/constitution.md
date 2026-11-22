@@ -1,6 +1,6 @@
 # trentina Constitution
 
-> **Version:** 2.20.0
+> **Version:** 2.21.0
 > **Ratified:** 2026-09-22
 > **Amended:** 2026-11-17
 > **Status:** Active
@@ -232,6 +232,8 @@ that inside the threat model, which assumes the judge compromised:
   agent's text, so they cross L1, L2 and L3 through `defend()` like any
   payload, and a flag or an unfinished read refuses. The judge is then
   called through `quarantine_generate`: no tools, a canary, a closed schema.
+  Both read the credential-redacted copy (`outbound.judge_input`), never the
+  raw arguments, so no secret reaches an external judge (#863).
 - **Nothing it writes reaches the agent.** The agent is told a reason code
   from a closed set; the policy and the judge's output stay in the gateway.
 
@@ -509,3 +511,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.18.0 | 2026-11-07 | Stdio backends (#724): `unix://` joins the backend locations by name. 2.17.0 admitted a scheme only through an operator-installed plugin, and the built-in `unix` carrier is not one, so it is stated rather than read into that clause. The gateway still starts nothing: the stdio server is the host's, run by systemd socket activation, and the gateway connects to its socket. The socket must sit under the operator's `TRENTINA_SOCKET_ROOTS` (unset, none loads), checked as written at load and again at every connect through a directory opened without following links. A `unix://` backend carries no `headers`, `auth` or `federated`, since nothing on that wire is HTTP. `PERIMETER_VERSION` does not move: no verdict changes |
 | 2.19.0 | 2026-11-11 | Human Approval property 1 states the enrolment bootstrap explicitly (RT#1609). The one-time code `approval_enrol` hands the operator agent is not the approval capability and never was: the capability is the passkey or password a person sets, returned to nothing and stored only as a verifier. The code gates who may set the FIRST approver on a gateway with none; `enrolling()` refuses once one is configured, so it cannot replace or act as a working approver. The agent must see it to relay the setup link and cannot use it, because every state-changing approval route is POST-only and no Trentina tool makes a POST. Stated here because the property's "not a token in a tool result" wording, read alone, re-fired a CRITICAL on every enrol PR though the carve-out lived only in CLAUDE.md and the code. This PR also caps a kept code at `MAX_ENROL_WINDOW_SECONDS` from mint inside `enrolling()`, so a reopen cannot stretch its life. `PERIMETER_VERSION` does not move: no verdict changes |
 | 2.20.0 | 2026-11-17 | Verdict caches (#816), CTO ruling: a cache serving a layer's verdict is that layer's read reused, not an off switch, and is allowed only on four conditions — the key binds the exact content hash, the grant owner and everything that can change that layer's verdict (model, prompt pack, effort when set, the layer's version); only completed verdicts are cached, never errors, timeouts, refusals or unjudged results; entries have a bounded TTL and are dropped when a key input changes; and a miss or a cache failure falls back to judging, never to a pass. Gatehouse had flagged each new cache as a CRITICAL "layer skipped" because the Layer Contract named federation as the only boundary where a payload is delivered without the layers running here. `tests/test_verdict_cache_rule.py` holds both caches to it; the perimeter verdict cache has no TTL and is held open as a strict xfail until it gets one. `PERIMETER_VERSION` does not move: no verdict changes |
+| 2.21.0 | 2026-11-22 | Semantic Request Guards: the layers and the judge read a tool call's arguments through `outbound.judge_input`, as egress always has, so a credential an agent put in a guarded call never reaches the external judge (#863). The judge is told a `[REDACTED]` value is a credential the call carries, so `credential_material` refusals still fire. `PERIMETER_VERSION` does not move: a verdict cache keys on the content hash, so a redacted copy is a new key, never a stale hit |

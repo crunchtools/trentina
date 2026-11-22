@@ -10,6 +10,10 @@ under that name.
 
 ## [Unreleased]
 
+### Security
+
+- **A guarded tool call's credentials no longer reach the external judge (#863).** The gatekeeper's arguments pass through `outbound.judge_input` (escapes decoded, every credential shape cut) before `defend()` and the judge read them, as `/proxy/http` already did; the call still forwards the arguments as written. The judge is told a `[REDACTED]` value is a credential the call carries, so `credential_material` still refuses.
+
 ### Changed
 
 - **Images build and release through constitution's `container-release.yml`, like every other crunchtools image.** `container.yml` and `demo-container.yml` now call it at constitution v1.53.0 with `sign: true`: a pull request builds and boot-gates its head digest, the merge promotes that digest to `:main`, a `v*` tag promotes it to the version tags and `:latest`, and promote cosign-signs the digest before any tag moves. `quay.io/crunchtools/trentina-demo` gets the same path, still `:main` only. Supersedes #840; closes #842.

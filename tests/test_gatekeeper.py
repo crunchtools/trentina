@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
+from urllib.parse import quote
 
 import pytest
 from pydantic import SecretStr, ValidationError
@@ -162,6 +163,23 @@ class TestWhatIsJudged:
         assert POLICY not in content
         schema = kwargs["response_schema"]["properties"]
         assert schema["decision"]["enum"] == ["allow", "refuse"]
+
+    async def test_no_credential_reaches_the_layers_or_the_judge(self) -> None:
+        """#863: both read the ``judge_input`` copy, as egress does; the call
+        forwards the arguments it was given."""
+        key = "sk" + "-proj-" + "Zq7" * 14
+        args = {"to": "ceo@other.example", "body": f"key {key}", "url": "?k=" + quote(key)}
+        p = _profile()
+        with _Judge() as judge:
+            await gatekeeper.judge_call(p, p.backends["mail"], "mail", "send_message", args, _DEST)
+        for read in (judge.defend.await_args.args[0], judge.generate.await_args.args[0]):
+            assert key not in read
+            assert quote(key) not in read
+            assert "[REDACTED]" in read
+        assert args["body"] == f"key {key}"
+        assert (
+            "[REDACTED] value is a credential" in judge.generate.await_args.kwargs["system_prompt"]
+        )
 
     async def test_the_arguments_cross_the_layers_as_model_output(self) -> None:
         with _Judge() as judge:
