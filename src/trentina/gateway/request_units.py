@@ -117,18 +117,22 @@ def _is_tool_result(item: dict[str, Any]) -> bool:
     )
 
 
-def _without_tool_results(value: Any) -> Any:
-    match value:
-        case dict():
-            return {k: _without_tool_results(v) for k, v in value.items()}
-        case list():
-            return [
-                _without_tool_results(item)
-                for item in value
-                if not (isinstance(item, dict) and _is_tool_result(item))
-            ]
-        case _:
-            return value
+#: Where a block of an entry sits: Anthropic's ``content``, Gemini's ``parts``.
+_BLOCK_LISTS = ("content", "parts")
+
+
+def _without_result_blocks(entry: dict[str, Any]) -> dict[str, Any]:
+    """``entry`` without the tool-result blocks in its ``content`` or ``parts``.
+
+    Only there, where the APIs put a result: nothing deeper is looked at, so a
+    tool-call argument the agent shaped like a result is still checked.
+    """
+    kept = dict(entry)
+    for name in _BLOCK_LISTS:
+        blocks = entry.get(name)
+        if isinstance(blocks, list):
+            kept[name] = [b for b in blocks if not (isinstance(b, dict) and _is_tool_result(b))]
+    return kept
 
 
 def agent_written(units: list[str]) -> str:
@@ -136,8 +140,11 @@ def agent_written(units: list[str]) -> str:
 
     A conversation carries the tool results the agent was DELIVERED. One that
     holds a planted credential is the agent reading the decoy, not sending it,
-    and checking it would refuse every later turn of the session. Assistant
-    text, tool-use inputs, user and system text and the frame stay. Each unit
+    and checking it would refuse every later turn of the session. A result is
+    cut only where the APIs put one: a whole entry (OpenAI ``role: tool``, a
+    Responses ``function_call_output``) or a block of an entry's ``content`` or
+    ``parts``. Assistant text, tool-use inputs, user and system text and the
+    frame stay. Each unit
     ends in one line of JSON (``request_units``); a unit that does not is kept
     whole.
     """
@@ -149,10 +156,11 @@ def agent_written(units: list[str]) -> str:
         except ValueError:
             kept.append(unit)
             continue
-        if isinstance(parsed, dict) and _is_tool_result(parsed):
-            continue
-        cut = json.dumps(_without_tool_results(parsed), ensure_ascii=False)
-        kept.append(f"{head}{sep}{cut}")
+        if not isinstance(parsed, dict):
+            kept.append(unit)
+        elif not _is_tool_result(parsed):
+            cut = json.dumps(_without_result_blocks(parsed), ensure_ascii=False)
+            kept.append(f"{head}{sep}{cut}")
     return "\n".join(kept)
 
 

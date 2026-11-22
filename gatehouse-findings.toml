@@ -66,13 +66,6 @@ status = "not-a-bug"
 reason = "The body forwarded upstream is itself re-serialized by llm_policy.admit (the provider parses what was judged), and body_text re-dumps it with the same json.dumps defaults the units use, so there is no original whitespace left to count: the joined units carry the forwarded body's fields with one newline between units instead of a comma."
 
 
-[[findings]]
-agent = "security"
-category = "security"
-file = "src/trentina/gateway/request_units.py"
-evidence = "def _is_tool_result(item: dict[str, Any]) -> bool:\n    return (\n        item.get(\"type\") in _RESULT_TYPES\n        or item.get(\"role\") in _RESULT_ROLES\n        or \"functionResponse\" in item\n    )"
-status = "not-a-bug"
-reason = "Decided by the operator on the #873 review: a delivered tool result is left out so an agent that only read the planted file is not refused for the rest of its session. The upstream of /proxy/llm is the operator's own model provider, not an attacker's; the exits an attacker reaches (MCP tool calls, /proxy/http) check every byte the agent writes and take no role from it."
 
 [[findings]]
 agent = "general"

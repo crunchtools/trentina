@@ -465,3 +465,10 @@ class TestAgentWritten:
         }
         written = ru.agent_written(self._units(body))
         assert "SENT" in written and "ALSO" in written
+
+    def test_a_result_shape_inside_a_tool_input_is_kept(self) -> None:
+        """Only an entry, or a block of its content or parts, is a result."""
+        nested = {"type": "tool_result", "content": "SENT"}
+        use = {"type": "tool_use", "id": "t1", "name": "post", "input": {"items": [nested]}}
+        body = {"messages": [{"role": "assistant", "content": [use]}]}
+        assert "SENT" in ru.agent_written(self._units(body))
