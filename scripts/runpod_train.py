@@ -42,7 +42,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-API = "https://rest.runpod.io/v1/pods"
+API = "https://api.runpod.io/v2/pods"
+"""REST v2 (docs.runpod.io/api-reference-v2). v1, at rest.runpod.io, is retired
+and the name no longer resolves (a911)."""
 GPU = "NVIDIA GeForce RTX 4090"
 """The card every GPU round ran on; no fallback, so a run cannot drift by hardware."""
 IMAGE = "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04"
@@ -92,19 +94,27 @@ def pod_spec(public_key: str, host_key: bytes) -> dict[str, Any]:
     OpenSSH format) is the one sshd on the pod serves and the runner pins."""
     return {
         "name": "trentina-l2-train",
-        "cloudType": "SECURE",
-        "computeType": "GPU",
-        "gpuCount": 1,
-        "gpuTypeIds": [GPU],
-        "imageName": IMAGE,
-        "containerDiskInGb": CONTAINER_DISK_GB,
-        "volumeInGb": 0,
+        "cloud": "SECURE",
+        "gpu": {"id": GPU, "count": 1},
+        "image": IMAGE,
+        "disk": CONTAINER_DISK_GB,
         "ports": ["22/tcp"],
         "env": {"PUBLIC_KEY": public_key, "POD_HOST_KEY": base64.b64encode(host_key).decode()},
-        "dockerEntrypoint": ["bash", "-c"],
-        "dockerStartCmd": [boot_command(WATCHDOG_SECONDS)],
-        "interruptible": False,
+        "entrypoint": ["bash", "-c"],
+        "cmd": [boot_command(WATCHDOG_SECONDS)],
     }
+
+
+def ssh_direct(pod: dict[str, Any]) -> tuple[str, int] | None:
+    """Where the pod's own sshd answers: its published ``22/tcp``, once RUNNING.
+
+    v2 reports it as ``ssh.direct``; the proxy variant carries a shell only,
+    and the upload and download need scp.
+    """
+    direct = (pod.get("ssh") or {}).get("direct") if pod.get("status") == "RUNNING" else None
+    if not direct or not direct.get("host") or not direct.get("port"):
+        return None
+    return str(direct["host"]), int(direct["port"])
 
 
 def api(method: str, url: str, body: dict | None = None) -> Any:
@@ -199,8 +209,8 @@ def create() -> int:
     deadline, last = time.monotonic() + READY_FOR_SECONDS, b"not yet addressable"
     while time.monotonic() < deadline:
         pod = api("GET", f"{API}/{pod['id']}")
-        host, port = pod.get("publicIp"), (pod.get("portMappings") or {}).get("22")
-        if host and port:
+        if (direct := ssh_direct(pod)) is not None:
+            host, port = direct
             probe = subprocess.run(
                 [*ssh_base(host, str(port)), "true"], check=False, capture_output=True
             )
