@@ -34,7 +34,8 @@ directory is named for the key, so a new key opens an empty one. Set
 record missing from the new directory is looked for in the old one, opened
 with the old key, resealed under the new one and removed from the old. Once
 every slot in use has been read, drop ``_PREVIOUS``: what is left in the old
-directory belonged to slots nobody used.
+directory belonged to slots nobody used. Not after a leak: while it is set, a
+record sealed under the old key is accepted, whoever wrote it.
 """
 
 from __future__ import annotations
@@ -348,7 +349,7 @@ class BackendTokenStore:
         if (current.generation if current else 0) != expected_generation:
             raise GrantConflictError(slot)
         stored = grant.model_copy(update={"generation": expected_generation + 1})
-        await self._seal(
+        await self._write(
             _GRANTS,
             slot,
             _SealedGrant(
@@ -398,7 +399,7 @@ class BackendTokenStore:
     ) -> None:
         """Record the slot's client registration."""
         slot = slot_key(profile, name)
-        await self._seal(
+        await self._write(
             _CLIENTS,
             slot,
             _SealedClient(
@@ -424,7 +425,7 @@ class BackendTokenStore:
     async def put_flow(self, key: str, flow: BackendFlow) -> None:
         """Record a flow under ``key`` (a ``flow_key``) until it expires or is taken."""
         pending = flow.pending_client
-        await self._seal(
+        await self._write(
             _FLOWS,
             key,
             _SealedFlow(
@@ -505,6 +506,17 @@ class BackendTokenStore:
         await self._delete(key, _FLOWS)
 
     # --------------------------------------------------------------- envelope
+
+    async def _write(
+        self, collection: str, key: str, record: _Sealed, *, ttl: float | None = None
+    ) -> None:
+        """Seal a new record, never while a migration is running.
+
+        A first read moving the old key's copy of this slot either finishes
+        before this write, or sees this write and leaves the old copy alone.
+        """
+        async with self._migrate_lock:
+            await self._seal(collection, key, record, ttl=ttl)
 
     async def _seal(
         self, collection: str, key: str, record: _Sealed, *, ttl: float | None = None

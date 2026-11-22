@@ -419,6 +419,41 @@ class TestKeyRotation:
         assert stored.generation == 2
         assert len(_grant_files(tmp_path)) == 1
 
+    async def test_a_write_racing_a_migration_is_not_overwritten(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        old = BackendClient(
+            client_id="old",
+            issuer="https://auth.era.app",
+            token_endpoint="https://auth.era.app/token",
+        )
+        new = old.model_copy(update={"client_id": "new"})
+        await _open(tmp_path, monkeypatch).put_client("josui", "era", ERA, old)
+        store = self._rotated(tmp_path, monkeypatch)
+        previous = store._previous
+        assert previous is not None
+        read_old = asyncio.Event()
+        release = asyncio.Event()
+        real_get = previous.get
+
+        async def paused_get(*args: object, **kwargs: object) -> object:
+            value = await real_get(*args, **kwargs)
+            read_old.set()
+            await release.wait()
+            return value
+
+        monkeypatch.setattr(previous, "get", paused_get)
+        reader = asyncio.create_task(store.get_client("josui", "era", ERA))
+        await read_old.wait()
+        # The migration holds the old record; the new registration must wait it out.
+        writer = asyncio.create_task(store.put_client("josui", "era", ERA, new))
+        await asyncio.sleep(0)
+        assert not writer.done()
+        release.set()
+        await asyncio.gather(reader, writer)
+        got = await store.get_client("josui", "era", ERA)
+        assert got is not None and got.client_id == "new"
+
     async def test_a_revoke_during_rotation_reaches_the_old_store(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
