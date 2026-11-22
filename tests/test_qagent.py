@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -243,6 +244,16 @@ class TestCanaryTokens:
         canary = "CANARY-abc123"
         assert _check_canary({"text": f"Some {canary} here"}, canary) is True
         assert _check_canary({"text": "Clean output"}, canary) is False
+
+    def test_check_canary_detects_an_encoded_or_partial_leak(self) -> None:
+        canary = _generate_canary()
+        hexed = canary.encode().hex()
+        b64 = base64.b64encode(canary.encode()).decode()
+        assert _check_canary({"text": hexed}, canary) is True
+        assert _check_canary({"text": b64}, canary) is True
+        assert _check_canary({"text": canary[::-1]}, canary) is True
+        assert _check_canary({"text": canary[-16:]}, canary) is True
+        assert _check_canary({"text": canary[-15:]}, canary) is False
 
 
 class TestRuntimeChecks:

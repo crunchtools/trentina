@@ -38,9 +38,11 @@ environment. The gateway's logs redact credential shapes and never print a
 caller-chosen string. Backend OAuth grants are stored encrypted per
 (profile, backend).
 
-**Gap.** Gap 17: the honeytoken tripwire matches a planted credential only as
-it was planted, so an encoded or split value is not seen, nor is anything an
-agent sends without a tool call through the gateway.
+**Gap.** Gap 17: the honeytoken tripwire matches a planted credential as
+planted, base64, hex or percent-encoded, reversed, or in a 16-character piece
+(#864), so a value paraphrased, split across calls or put through another
+encoding is not seen, nor is anything an agent sends without a tool call
+through the gateway.
 
 ### MCP02 Privilege Escalation via Scope Creep
 

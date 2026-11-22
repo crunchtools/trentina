@@ -32,6 +32,7 @@ from ..errors import (
 )
 from ..l1.pipeline import run_l1
 from ..logsafe import exc_kind
+from ..token_variants import TokenMatcher
 from ..unpack.child import run_unpacking
 from ..unpack.scan import unpack
 from .limiter import THROTTLE_STATUS, limited_generate, throttle_budget
@@ -102,8 +103,10 @@ def _inject_canary(system_prompt: str, canary: str) -> str:
 
 
 def _check_canary(parsed: Any, canary: str) -> bool:
-    """Check if the canary leaked into the Q-Agent response."""
-    return canary in json.dumps(parsed)
+    """Check if the canary leaked into the Q-Agent response, as written,
+    encoded, reversed or in part (#864). The matcher is built per call
+    because the canary is new on every call."""
+    return bool(TokenMatcher([canary]).found(json.dumps(parsed)))
 
 
 _RETRYABLE_STATUS_CODES = frozenset({429, 503})

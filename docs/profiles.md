@@ -593,6 +593,12 @@ it appears in the arguments of any tool call, to any backend, the call is
 recorded as `decoy_tripped` and refused with `Invalid arguments`, which says
 nothing of why. The audit row names the token's id, never its value.
 
+The value is found as planted, base64-encoded (standard or URL-safe, at any
+offset in a larger blob), hex-encoded, percent-encoded, reversed, or as any
+16 consecutive characters of it when it is 32 or longer. A shorter value is
+matched whole. A value paraphrased, split across calls or put through another
+encoding is not seen.
+
 The gateway checks for a honeytoken; it does not plant one. Put the value
 where only an attacker's instructions lead: a `.env` in the agent's
 workspace, a file a decoy `read_file` returns (`{honeytoken:<id>}` in a

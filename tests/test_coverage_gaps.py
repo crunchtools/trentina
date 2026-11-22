@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import codecs
 import inspect
 import io
 import json
@@ -275,10 +276,11 @@ def test_url_safe_and_unpadded_base64_is_read_raw() -> None:
     assert unpack(unpadded).text == unpadded
 
 
-def test_a_planted_credential_is_matched_only_as_it_was_planted() -> None:
-    """#357: the honeytoken check is a substring match on the call's arguments.
-    A caller that encodes or splits the value before sending it is not seen."""
-    planted = "AKIAQ7HONEYTOKEN4X2B"
+def test_a_planted_credential_is_not_seen_rotated_or_split_short() -> None:
+    """#357, narrowed by #864: the honeytoken check finds the value as planted,
+    encoded (base64, hex, percent), reversed or in a 16-character piece. A
+    value split into short pieces, or sent in an encoding not listed, is not seen."""
+    planted = "AK" + "IAQ7HONEYTOKEN4X2B"
     profile = Profile(
         name="alpha",
         auth=AuthConfig(bearer_token_env="TEST"),
@@ -286,9 +288,31 @@ def test_a_planted_credential_is_matched_only_as_it_was_planted() -> None:
         honeytokens={"aws-key": Honeytoken(value_env="K", value=SecretStr(planted))},
     )
     assert leaked_tokens(profile, {"arguments": {"body": f"the key is {planted}"}}) == ["aws-key"]
-    encoded = base64.b64encode(planted.encode()).decode()
-    assert leaked_tokens(profile, {"arguments": {"body": encoded}}) == []
+    rot13 = codecs.encode(planted, "rot13")
+    assert leaked_tokens(profile, {"arguments": {"body": rot13}}) == []
     assert leaked_tokens(profile, {"arguments": {"a": planted[:10], "b": planted[10:]}}) == []
+
+
+def test_a_planted_credential_is_seen_encoded_reversed_or_in_part() -> None:
+    """#864: base64, hex, percent, reversed and a 16-character piece all trip it."""
+    planted = "AK" + "IAQ7HONEYTOKEN4X2BQ9ZLMN3VWRP8"
+    profile = Profile(
+        name="alpha",
+        auth=AuthConfig(bearer_token_env="TEST"),
+        backends={"tickets": Backend(url="http://tickets:8000/mcp")},
+        honeytokens={"aws-key": Honeytoken(value_env="K", value=SecretStr(planted))},
+    )
+    sent = [
+        base64.b64encode(planted.encode()).decode(),
+        base64.urlsafe_b64encode(b"k=" + planted.encode()).decode().rstrip("="),
+        planted.encode().hex(),
+        "".join(f"%{b:02X}" for b in planted.encode()),
+        planted[::-1],
+        planted[5:21],
+    ]
+    for body in sent:
+        assert leaked_tokens(profile, {"arguments": {"body": body}}) == ["aws-key"], body
+    assert leaked_tokens(profile, {"arguments": {"body": planted[5:20]}}) == []
 
 
 def test_the_shapes_l2_is_known_to_flag_are_numbered_gaps_and_stay_in_the_corpus() -> None:
