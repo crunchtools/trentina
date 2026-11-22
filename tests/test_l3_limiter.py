@@ -1,4 +1,4 @@
-"""The adaptive L3 limiter: FIFO queue, priority, AIMD (#216)."""
+"""The adaptive L3 limiter: fair queue, priority, AIMD (#216, #867)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,9 @@ import pytest
 
 from trentina.config import get_config
 from trentina.errors import QuarantineAgentError
+from trentina.gateway import loader
+from trentina.gateway.context import profile_context
+from trentina.gateway.profile import AuthConfig, Profile
 from trentina.quarantine import classifier
 from trentina.quarantine.limiter import (
     AdaptiveLimiter,
@@ -162,6 +165,132 @@ class TestQueue:
 
         await asyncio.gather(*(work() for _ in range(30)))
         assert peak == 3
+
+
+def _profile(name: str) -> Profile:
+    return Profile(name=name, auth=AuthConfig(bearer_token_env="X"))
+
+
+class TestFairShare:
+    """Profiles sharing a key waited FIFO behind one profile's backlog (#867)."""
+
+    @staticmethod
+    async def _drain(
+        lim: AdaptiveLimiter, calls: list[tuple[str, str]], priority: Priority | None = None
+    ) -> list[str]:
+        held = await lim.acquire()
+        order: list[str] = []
+
+        async def take(label: str) -> None:
+            if priority is not None:
+                l3_priority.set(priority)
+            epoch = await lim.acquire()
+            order.append(label)
+            lim.release(epoch, Outcome.FAILED)
+
+        tasks = []
+        for profile, label in calls:
+            with profile_context(_profile(profile)):
+                tasks.append(asyncio.ensure_future(take(label)))
+        await _settle()
+        lim.release(held, Outcome.FAILED)
+        await asyncio.gather(*tasks)
+        return order
+
+    async def test_a_backlog_delays_another_profile_by_one_turn(self) -> None:
+        lim = AdaptiveLimiter(JUDGE, start=1, ceiling=1)
+        calls = [("alpha", f"a{i}") for i in range(6)] + [("beta", "b0")]
+        order = await self._drain(lim, calls)
+        assert order.index("b0") == 1, order
+
+    async def test_profiles_take_turns_and_each_stays_fifo(self) -> None:
+        lim = AdaptiveLimiter(JUDGE, start=1, ceiling=1)
+        calls = [("alpha", f"a{i}") for i in range(3)] + [("beta", f"b{i}") for i in range(3)]
+        order = await self._drain(lim, calls)
+        assert order == ["a0", "b0", "a1", "b1", "a2", "b2"]
+
+    async def test_a_federation_ingress_shares_its_profiles_turn(self) -> None:
+        lim = AdaptiveLimiter(JUDGE, start=1, ceiling=1)
+        held = await lim.acquire()
+        ingress = _profile("alpha-federation")
+        object.__setattr__(ingress, "federation_of", "alpha")
+        waiters = []
+        for profile in (_profile("alpha"), ingress):
+            with profile_context(profile):
+                waiters.append(asyncio.ensure_future(lim.acquire()))
+        await _settle()
+        assert list(lim._waiters[Priority.FOREGROUND]) == ["alpha"]
+        assert len(lim._waiters[Priority.FOREGROUND]["alpha"]) == 2
+        lim.release(held, Outcome.FAILED)
+        for waiter in waiters:
+            lim.release(await asyncio.wait_for(waiter, timeout=1), Outcome.OK)
+
+    async def test_foreground_still_goes_before_any_profiles_background(self) -> None:
+        lim = AdaptiveLimiter(JUDGE, start=1, ceiling=1)
+        held = await lim.acquire()
+        order: list[str] = []
+
+        async def take(label: str, priority: Priority) -> None:
+            l3_priority.set(priority)
+            epoch = await lim.acquire()
+            order.append(label)
+            lim.release(epoch, Outcome.FAILED)
+
+        with profile_context(_profile("alpha")):
+            background = asyncio.ensure_future(take("bg", Priority.BACKGROUND))
+        await _settle()
+        with profile_context(_profile("beta")):
+            foreground = asyncio.ensure_future(take("fg", Priority.FOREGROUND))
+        await _settle()
+        lim.release(held, Outcome.FAILED)
+        await asyncio.gather(background, foreground)
+        assert order == ["fg", "bg"]
+
+    async def test_a_cancelled_waiter_leaves_no_turn_behind(self) -> None:
+        lim = AdaptiveLimiter(JUDGE, start=1, ceiling=1)
+        held = await lim.acquire()
+        with profile_context(_profile("alpha")):
+            waiter = asyncio.ensure_future(lim.acquire())
+        await _settle()
+        waiter.cancel()
+        await _settle()
+        assert not lim._waiters[Priority.FOREGROUND]
+        lim.release(held, Outcome.FAILED)
+        assert lim.in_flight == 0
+
+    async def test_a_pause_refuses_one_profiles_turn_and_keeps_anothers(self) -> None:
+        lim = AdaptiveLimiter(JUDGE, start=1, ceiling=1)
+        held = await lim.acquire()
+        refused, kept = [], []
+        for profile, budget, waiters in (("alpha", 0.1, refused), ("beta", 5.0, kept)):
+            token = l3_throttle_budget.set(budget)
+            try:
+                with profile_context(_profile(profile)):
+                    waiters.extend(asyncio.ensure_future(lim.acquire()) for _ in range(2))
+            finally:
+                l3_throttle_budget.reset(token)
+        await _settle()
+        lim.release(held, Outcome.THROTTLED, retry_after=0.5)
+        await asyncio.gather(*refused, return_exceptions=True)
+        assert all(isinstance(w.exception(), QuarantineAgentError) for w in refused)
+        assert list(lim._waiters[Priority.FOREGROUND]) == ["beta"]
+        first = await asyncio.wait_for(kept[0], timeout=2)
+        lim.release(first, Outcome.OK)
+        lim.release(await asyncio.wait_for(kept[1], timeout=2), Outcome.OK)
+        assert not lim._waiters[Priority.FOREGROUND]
+
+    async def test_unbound_work_on_a_live_gateway_queues_rather_than_failing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The boot warm-up runs with no profile bound; it takes one shared turn.
+        monkeypatch.setattr(loader, "get_active_config", object)
+        lim = AdaptiveLimiter(JUDGE, start=1, ceiling=1)
+        held = await lim.acquire()
+        waiter = asyncio.ensure_future(lim.acquire())
+        await _settle()
+        assert None in lim._waiters[Priority.FOREGROUND]
+        lim.release(held, Outcome.FAILED)
+        lim.release(await asyncio.wait_for(waiter, timeout=1), Outcome.OK)
 
 
 class _FakeProvider(Provider):
