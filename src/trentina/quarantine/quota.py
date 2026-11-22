@@ -35,8 +35,9 @@ logger = logging.getLogger(__name__)
 #: Profile name -> (UTC day, judgements run that day).
 _usage: dict[str, tuple[str, int]] = {}
 
-#: (profile, day) pairs already logged as spent, so the line is said once a day.
-_spent_logged: set[tuple[str, str]] = set()
+#: Profile name -> the UTC day it was last logged as spent, so the line is said
+#: once a day and the map holds one entry per profile, not one per day.
+_spent_logged: dict[str, str] = {}
 
 
 #: The clock the day is read from; tests move it.
@@ -59,8 +60,8 @@ def charge(profile: Profile) -> bool:
     used = _used(profile.name, day)
     limit = profile.defense.l3_daily_quota
     if limit is not None and used >= limit:
-        if (profile.name, day) not in _spent_logged:
-            _spent_logged.add((profile.name, day))
+        if _spent_logged.get(profile.name) != day:
+            _spent_logged[profile.name] = day
             logger.warning(
                 "L3 daily quota spent for profile %r (%d judgements, UTC day %s): "
                 "verdicts report l3_quota until midnight UTC, and block and redact refuse on it",

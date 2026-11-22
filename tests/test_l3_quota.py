@@ -202,6 +202,22 @@ class TestThroughDefend:
         assert quota.snapshot(p)["used"] == 1
         assert not gaps_of(verdict).l3_quota
 
+    async def test_a_refused_payload_is_judged_again_the_next_utc_day(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        p = _profile(limit=1)
+        _on_day(monkeypatch, 2026, 11, 22)
+        await self._defend(p, "first page")
+        refused, _ = await self._defend(p, "second page")
+        assert gaps_of(refused).l3_quota
+
+        # Neither cache kept the quota marker: the same payload reaches L3.
+        _on_day(monkeypatch, 2026, 11, 23)
+        verdict, detect = await self._defend(p, "second page")
+        detect.assert_awaited_once()
+        assert not gaps_of(verdict).l3_quota
+        assert not gaps_of(verdict).l3_unavailable
+
     async def test_an_unlimited_profile_never_hits_the_gap(self) -> None:
         p = _profile()
         for i in range(4):
@@ -275,3 +291,19 @@ class TestStats:
 
         assert set(result["l3_quota"]) == {"beta"}
         assert result["l3_quota"]["beta"]["used"] == 1
+
+    async def test_a_capped_profile_shows_before_its_first_judgement(self, gateway: dict) -> None:
+        with profile_context(gateway["alpha"]):
+            result = await get_trentina_stats()
+
+        assert set(result["l3_quota"]) == {"beta"}
+        assert result["l3_quota"]["beta"]["used"] == 0
+
+    async def test_an_unlimited_profile_shows_once_it_has_judged(self, gateway: dict) -> None:
+        quota.charge(gateway["alpha"])
+        with profile_context(gateway["alpha"]):
+            result = await get_trentina_stats()
+
+        assert set(result["l3_quota"]) == {"alpha", "beta"}
+        assert result["l3_quota"]["alpha"]["limit"] is None
+        assert result["l3_quota"]["alpha"]["used"] == 1
