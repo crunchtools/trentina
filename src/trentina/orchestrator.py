@@ -513,7 +513,8 @@ async def judge_outbound(
     from .defense import defend  # heavy; deferred, and the REQUEST-edge test seam
     from .modes import gaps_of, refusal_reason  # resolved here so a test's gaps_of patch is seen
 
-    kinds = detect_credentials(document)
+    # Off the loop: linear, but in a body up to the admission cap.
+    kinds = await asyncio.to_thread(detect_credentials, document)
     flagged, unjudged, flagged_by, risk = False, True, None, "unknown"
     gaps = ["l3_unavailable"]
     # The partial-scan and blocklist rules live in Posture, so this path fails
