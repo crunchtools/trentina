@@ -152,11 +152,14 @@ consuming agent's trust posture, not of which provider answered.
   waiting can make; `redact` is meaningless on a token stream and is refused.
 
 Either way L3 is briefed that it reads a provider's response
-(`prompts.COMPLETION_BRIEFING`, a1013): envelope metadata and opaque
-ciphertext such as `reasoning.encrypted` are not hidden content, and an answer
-that analyses a vulnerability is the model's work for its user. Without it
+(`prompts.COMPLETION_BRIEFING`, a1013), and no other edge is. It excuses a
+closed list of envelope fields (ids, usage, finish reasons, and the `data` and
+`signature` of encrypted reasoning) only while they read as metadata or
+ciphertext; an encoded value anywhere else is content, and an answer that
+analyses a vulnerability is the model's work for its user. Without it
 gemini-2.5-flash-lite flagged about one Gatehouse completion in six.
-`benchmarks/llm_completion.py` measures a judge on recorded bodies.
+`benchmarks/llm_completion.py` measures a judge on recorded bodies and on
+attacks planted in the answer and in the excused fields.
 
 ### What This Buys You
 
