@@ -184,6 +184,33 @@ SHA-256 digests, and a file written before #868 is converted on first load.
 The token is shown once, by `profile_token`, and is not recoverable after.
 `bearer_token_env` profiles are unchanged.
 
+### Rotating the backend grant key
+
+Backend OAuth grants (`/data/backend-oauth`) are encrypted under
+`TRENTINA_BACKEND_TOKEN_KEY_FILE`, in a directory named for a fingerprint of
+that key, so a new key opens an empty store. To rotate on schedule without
+every backend authorizing again:
+
+1. Generate the new key: `openssl rand -base64 48`.
+2. Deploy with the new key as `TRENTINA_BACKEND_TOKEN_KEY_FILE` and the current
+   one as `TRENTINA_BACKEND_TOKEN_KEY_PREVIOUS_FILE`. The startup log says
+   `draining the store under TRENTINA_BACKEND_TOKEN_KEY_PREVIOUS`. If it says
+   `has no store` instead, the previous file is not the key in use: stop.
+3. Let every OAuth backend in use be called once. A grant, client or flow is
+   resealed under the new key the first time it is read, and removed from the
+   old directory (`a backend-grants record was resealed under the current key`).
+4. Deploy without `TRENTINA_BACKEND_TOKEN_KEY_PREVIOUS_FILE`, then delete the
+   old fingerprint directory and the old key. A slot not read in between
+   authorizes again.
+
+To roll back mid-rotation, swap the two files: what has moved is sealed under
+the new key, which is now the previous one.
+
+**After a key leak, do not use `_PREVIOUS`.** While it is set, anyone holding
+the old key and write access to `/data` can plant records the gateway accepts
+and moves under the new key. Set a new key alone, delete the old directory,
+and let every backend authorize again.
+
 Never put a credential in a backend URL in `profiles.yaml`. Use `${VAR}` and
 a header where the backend allows one.
 
