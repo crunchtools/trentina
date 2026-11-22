@@ -1230,7 +1230,7 @@ def _require_token(name: str, token_name: str, what: str) -> bytes:
             "has not minted — create it with profile_token"
         ) from exc
     except ValueError as exc:
-        raise ProfileConfigError(f"Profile {name!r}: {what} token {token_name!r} is empty") from exc
+        raise ProfileConfigError(f"Profile {name!r}: {what} token {token_name!r} {exc}") from exc
 
 
 def _require_env(name: str, env_var: str, what: str) -> SecretStr:

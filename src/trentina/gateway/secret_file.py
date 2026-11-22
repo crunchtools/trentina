@@ -21,10 +21,17 @@ the container — which ``tools/confine.py`` refuses to every file tool.
 
 from __future__ import annotations
 
+import fcntl
 import os
+import threading
+from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..config import get_config
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 DIR_MODE = 0o700
 FILE_MODE = 0o600
@@ -96,3 +103,44 @@ def _fsync_dir(directory: Path) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+class _DirLock:
+    """One store directory's lock: a thread lock in this process, ``flock`` across them."""
+
+    __slots__ = ("depth", "fd", "thread_lock")
+
+    def __init__(self) -> None:
+        self.thread_lock = threading.RLock()
+        self.depth = 0
+        self.fd = -1
+
+
+_locks: dict[Path, _DirLock] = {}
+_locks_guard = threading.Lock()
+
+
+@contextmanager
+def locked(directory: Path) -> Iterator[None]:
+    """Hold ``directory`` exclusively against every other writer, in any process.
+
+    ``secret_store put`` runs as its own process through ``podman exec``, while
+    the gateway may be sealing the same file; without this, a ``--replace``
+    landing between the gateway's read and its write is silently undone.
+    ``flock`` is per open file, so a second open in this process would wait on
+    the first: the thread lock makes the hold reentrant, and nested holds share
+    one ``flock``.
+    """
+    with _locks_guard:
+        lock = _locks.setdefault(directory, _DirLock())
+    with lock.thread_lock:
+        if lock.depth == 0:
+            lock.fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            fcntl.flock(lock.fd, fcntl.LOCK_EX)
+        lock.depth += 1
+        try:
+            yield
+        finally:
+            lock.depth -= 1
+            if lock.depth == 0:
+                os.close(lock.fd)  # closing the descriptor releases the flock

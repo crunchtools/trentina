@@ -9,10 +9,15 @@ usable KEK, and no key or value in a log line.
 
 from __future__ import annotations
 
+import errno
 import io
 import logging
 import os
 import pathlib
+import subprocess
+import sys
+import threading
+import time
 from collections.abc import Iterator
 
 import pytest
@@ -284,3 +289,165 @@ class TestStartup:
         monkeypatch.setattr("sys.stdin", io.StringIO(VALUE))
         assert secret_store.main(["put", "STORE_X"]) == 1
         assert not (secret_store.secrets_dir() / "STORE_X").exists()
+
+
+_TRY_FLOCK = (
+    "import fcntl, os, sys\n"
+    "fd = os.open(sys.argv[1], os.O_RDONLY)\n"
+    "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+)
+
+
+def _disk_full(*_args: object) -> None:
+    raise OSError(errno.ENOSPC, "No space left on device")
+
+
+class TestReviewFixes:
+    """The five defects review found in #885, each reproduced first."""
+
+    def test_a_wrong_first_line_seals_nothing_and_locks_nobody_out(
+        self,
+        data_dir: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        _kek(monkeypatch, OLD)
+        secret_store.put("SEALED", VALUE)
+        at_rest.reset()
+        monkeypatch.delenv(at_rest.KEK_ENV)
+        legacy = _plaintext_secret("LEGACY")
+
+        _kek(monkeypatch, "t" * 48)  # the new first line, mistyped, the old one dropped
+        with caplog.at_level(logging.WARNING):
+            assert at_rest.configure() is True
+        assert _raw(legacy) == VALUE.encode()  # not sealed under the bad key
+        assert secret_store.read_secret("LEGACY") == VALUE
+        assert _raw(legacy) == VALUE.encode()  # nor on a later load
+        wrong = at_rest._read_kek()
+        assert wrong is not None
+        assert wrong.fingerprint in caplog.text
+
+        _kek(monkeypatch, OLD)  # the right key still opens everything
+        assert at_rest.configure() is True
+        assert secret_store.read_secret("SEALED") == VALUE
+        assert secret_store.read_secret("LEGACY") == VALUE
+
+    def test_a_wrong_kek_under_hardened_refuses_before_writing(
+        self, data_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _kek(monkeypatch, OLD)
+        secret_store.put("SEALED", VALUE)
+        monkeypatch.delenv(at_rest.KEK_ENV)
+        at_rest.reset()
+        legacy = _plaintext_secret("LEGACY")
+        _kek(monkeypatch, NEW)
+        monkeypatch.setenv("TRENTINA_REQUIRE_HARDENED", "true")
+        with pytest.raises(ConfigError, match="secrets/SEALED"):
+            at_rest.configure()
+        assert _raw(legacy) == VALUE.encode()
+
+    def test_the_fingerprint_is_not_the_key(self, data_dir: pathlib.Path) -> None:
+        kek = at_rest._Kek([at_rest._derive(NEW)])
+        assert len(kek.fingerprint) == 8
+        assert kek.fingerprint not in NEW
+        assert kek.fingerprint != at_rest._Kek([at_rest._derive(OLD)]).fingerprint
+
+    def test_a_put_replace_racing_a_migration_is_not_lost(
+        self, data_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _plaintext_secret("RACED")
+        _kek(monkeypatch, NEW)
+        real_replace = secret_file.replace_atomically
+        racer: list[threading.Thread] = []
+
+        def slow_replace(path: pathlib.Path, payload: bytes) -> None:
+            if not racer:  # the migration's first write: the backup
+                thread = threading.Thread(
+                    target=secret_store.put,
+                    args=("RACED", "rotated-value-0123456789"),
+                    kwargs={"replace": True},
+                )
+                racer.append(thread)
+                thread.start()
+                time.sleep(0.3)  # without the lock, the put lands now
+            real_replace(path, payload)
+
+        monkeypatch.setattr(secret_file, "replace_atomically", slow_replace)
+        secret_store.read_secret("RACED")
+        racer[0].join(timeout=10)
+        assert secret_store.read_secret("RACED") == "rotated-value-0123456789"
+
+    def test_the_lock_excludes_another_process(
+        self, data_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        directory = secret_file.private_dir("secrets")
+        with secret_file.locked(directory):
+            probe = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    _TRY_FLOCK,
+                    str(directory),
+                ],
+                capture_output=True,
+                check=False,
+            )
+        assert probe.returncode != 0  # BlockingIOError: the gateway holds it
+
+    def test_a_backup_already_gone_does_not_fail_the_migration(
+        self, data_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = _plaintext_secret("LEGACY")
+        _kek(monkeypatch, NEW)
+        real_open = at_rest._open
+
+        def remove_backup_first(
+            kek: at_rest._Kek, target: pathlib.Path, sealed: bytes
+        ) -> tuple[bytes, bool]:
+            target.with_name(target.name + ".bak").unlink(missing_ok=True)
+            return real_open(kek, target, sealed)
+
+        monkeypatch.setattr(at_rest, "_open", remove_backup_first)
+        assert secret_store.read_secret("LEGACY") == VALUE
+        assert _raw(path).startswith(at_rest.SEALED_MAGIC)
+
+    def test_stale_staged_plaintext_goes_on_the_first_sealed_read(
+        self, data_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _kek(monkeypatch, NEW)
+        secret_store.put("STORE_X", VALUE)
+        leftovers = [
+            secret_store.secrets_dir() / name
+            for name in ("STORE_X.staged", "STORE_X.bak.staged", "STORE_X.bak")
+        ]
+        for leftover in leftovers:
+            leftover.write_bytes(VALUE.encode())
+        assert at_rest.configure() is True
+        assert not any(leftover.exists() for leftover in leftovers)
+
+    def test_a_full_disk_warns_and_starts_unhardened(
+        self,
+        data_dir: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        legacy = _plaintext_secret("LEGACY")
+        _kek(monkeypatch, NEW)
+
+        monkeypatch.setattr(secret_file, "replace_atomically", _disk_full)
+        with caplog.at_level(logging.WARNING):
+            assert at_rest.configure() is True
+        assert "data volume is full" in caplog.text
+        assert _raw(legacy) == VALUE.encode()
+        assert secret_store.read_secret("LEGACY") == VALUE  # no write attempted
+
+    def test_a_full_disk_refuses_hardened(
+        self, data_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _plaintext_secret("LEGACY")
+        _kek(monkeypatch, NEW)
+        monkeypatch.setenv("TRENTINA_REQUIRE_HARDENED", "true")
+
+        monkeypatch.setattr(secret_file, "replace_atomically", _disk_full)
+        with pytest.raises(ConfigError, match="full"):
+            at_rest.configure()

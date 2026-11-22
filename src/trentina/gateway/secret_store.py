@@ -93,12 +93,14 @@ def put(name: str, value: str, *, replace: bool = False) -> None:
     value = value.strip()
     if not value:
         raise ProfileConfigError(f"secret store: refusing an empty value for {name}")
-    secret_file.private_dir(_DIR_NAME)
+    directory = secret_file.private_dir(_DIR_NAME)
     payload = at_rest.seal(value.encode("utf-8"))
-    if replace:
-        secret_file.replace_atomically(path, payload)
-    else:
-        secret_file.write_once(path, payload)
+    # Held against the gateway sealing the same file (see secret_file.locked).
+    with secret_file.locked(directory):
+        if replace:
+            secret_file.replace_atomically(path, payload)
+        else:
+            secret_file.write_once(path, payload)
 
 
 def names() -> list[str]:

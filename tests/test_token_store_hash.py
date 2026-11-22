@@ -172,3 +172,28 @@ def test_unresolved_token_is_refused() -> None:
     p = Profile(name="u", auth=AuthConfig(bearer_token_env="U_TOKEN"))
     with pytest.raises(AuthError, match="not resolved"):
         verify_bearer("Bearer x", p)
+
+
+@pytest.mark.usefixtures("data_dir")
+def test_a_malformed_digest_is_refused_not_migrated() -> None:
+    """Review of #885: a damaged ``sha256:`` file was hashed as if it were a
+    token, so its own text became a bearer that authenticated."""
+    path = token_store.token_path("bad")
+    token_store.ensure_tokens_dir()
+    damaged = "sha256:" + "z" * 64
+    path.write_text(damaged + "\n")
+    with pytest.raises(ValueError, match="malformed digest"):
+        token_store.read_digest("bad")
+    assert path.read_text() == damaged + "\n"
+    assert not path.with_name("bad.bak").exists()
+
+
+@pytest.mark.usefixtures("data_dir")
+def test_the_loader_names_a_malformed_digest() -> None:
+    from trentina.gateway.errors import ProfileConfigError
+    from trentina.gateway.loader import _require_token
+
+    token_store.ensure_tokens_dir()
+    token_store.token_path("bad").write_text("sha256:short\n")
+    with pytest.raises(ProfileConfigError, match="malformed digest"):
+        _require_token("agent", "bad", "bearer token")

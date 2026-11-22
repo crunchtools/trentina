@@ -52,6 +52,7 @@ MINTED_PREFIX = "trt_"
 #: 32 bytes, url-safe. The token is the whole credential for a profile.
 _TOKEN_BYTES = 32
 
+_DIGEST_PREFIX = b"sha256:"
 _DIGEST_RE = re.compile(r"^sha256:([0-9a-f]{64})$")
 
 
@@ -75,7 +76,7 @@ def ensure_tokens_dir() -> Path:
 
 
 def _encode(digest: bytes) -> bytes:
-    return b"sha256:" + digest.hex().encode("ascii") + b"\n"
+    return _DIGEST_PREFIX + digest.hex().encode("ascii") + b"\n"
 
 
 def mint(name: str) -> str:
@@ -140,17 +141,21 @@ def read_digest(name: str) -> bytes:
 
     Raises:
         OSError: the file is missing or unreadable.
-        ValueError: the file is empty.
+        ValueError: the file is empty, or starts like a digest and is not one.
     """
     path = token_path(name)
     raw = _read_bytes(path)
     digest = _parse(raw)
     if digest is None:
         if not raw.strip():
-            raise ValueError(f"token {name!r} is empty")
+            raise ValueError("is empty")
+        # A damaged digest is not a plaintext token: migrating it would make
+        # the digest's own text a bearer that authenticates.
+        if raw.strip().startswith(_DIGEST_PREFIX):
+            raise ValueError("holds a malformed digest")
         digest = _migrate(path, raw)
         logger.warning("token_store: migrated token %r from plaintext to a digest", name)
         return digest
-    for suffix in (".bak", ".staged"):
+    for suffix in (".bak", ".staged", ".bak.staged"):
         path.with_name(path.name + suffix).unlink(missing_ok=True)
     return digest

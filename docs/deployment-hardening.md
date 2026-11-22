@@ -154,8 +154,24 @@ stores is read: a plaintext one is sealed (copied to `<name>.bak`, sealed to a
 staged file, fsynced, renamed, read back, then the `.bak` removed), and one
 sealed under any line but the first is resealed under the first.
 
+Before writing anything, startup checks that every file already sealed opens
+under the configured lines. If one does not, the key is wrong or a new first
+line is mistyped: nothing is sealed or resealed (sealing under a wrong key would
+lock out the right one), and the warning names the files and an 8-hex
+fingerprint of the first key, the same on every start with the same key. A full
+disk stops sealing the same way. Both stores are locked (`flock` on the
+directory) while the gateway seals, and `secret_store put` takes the same lock.
+
 To rotate: put the new key on a new first line, restart, and once the startup
-log says the stores are sealed, delete the old line and restart again.
+log says the stores are sealed with the new fingerprint, delete the old line
+and restart again.
+
+Escrow every KEK off-host as well as in OpenBao: it is the only way to read the
+sealed stores, and losing the OpenBao that holds it loses them too.
+
+Rolling back past #868 means restoring the `/data` backup taken before the
+first start with the KEK. An older image cannot read a sealed file, and it
+takes a `sha256:…` token file's text as the bearer token itself.
 
 Without a KEK the gateway starts, keeps both stores in plaintext and says so in
 a WARNING on every start. With `TRENTINA_REQUIRE_HARDENED=true` it refuses to
