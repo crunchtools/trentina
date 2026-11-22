@@ -6,6 +6,7 @@ oracles. Errors carry no token content.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,23 @@ def _email_verified(value: Any) -> bool:
     is unverified, because an unverified email is not an identity we allowlist.
     """
     return value is True or (isinstance(value, str) and value.strip().lower() == "true")
+
+
+def _expected_digest(profile: Profile) -> bytes | None:
+    """The SHA-256 a presented token must match, or None if none resolved.
+
+    A minted token is held only as a digest; an env-sourced one is hashed here.
+    Comparing digests means ``compare_digest`` always sees 32 bytes, so neither
+    length nor content of the token can show in the timing.
+    """
+    auth = profile.auth
+    if auth is None:
+        return None
+    if auth.bearer_token_sha256 is not None:
+        return auth.bearer_token_sha256
+    if auth.bearer_token is not None:
+        return hashlib.sha256(auth.bearer_token.get_secret_value().encode("utf-8")).digest()
+    return None
 
 
 def verify_bearer(authorization_header: str | None, profile: Profile) -> None:
@@ -53,11 +71,11 @@ def verify_bearer(authorization_header: str | None, profile: Profile) -> None:
     if profile.auth is None:
         raise AuthError("profile has no static bearer token")
 
-    if profile.auth.bearer_token is None:
+    expected = _expected_digest(profile)
+    if expected is None:
         raise AuthError("profile token not resolved")
 
-    expected = profile.auth.bearer_token.get_secret_value()
-    if not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
+    if not hmac.compare_digest(hashlib.sha256(presented.encode("utf-8")).digest(), expected):
         raise AuthError("invalid token")
 
 
@@ -221,12 +239,12 @@ def resolve_profile_by_token(
     if scheme.lower() != "bearer" or not presented:
         return None
 
-    presented_bytes = presented.encode("utf-8")
+    presented_digest = hashlib.sha256(presented.encode("utf-8")).digest()
     match: Profile | None = None
     for profile in registry.values():
-        if profile.auth is None or profile.auth.bearer_token is None:
+        expected = _expected_digest(profile)
+        if expected is None:
             continue
-        expected = profile.auth.bearer_token.get_secret_value().encode("utf-8")
-        if hmac.compare_digest(presented_bytes, expected) and match is None:
+        if hmac.compare_digest(presented_digest, expected) and match is None:
             match = profile
     return match
