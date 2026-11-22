@@ -451,3 +451,43 @@ class TestReviewFixes:
         monkeypatch.setattr(secret_file, "replace_atomically", _disk_full)
         with pytest.raises(ConfigError, match="full"):
             at_rest.configure()
+
+    def test_a_read_only_kek_refuses_a_new_value_rather_than_write_plaintext(
+        self, data_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _kek(monkeypatch, OLD)
+        secret_store.put("SEALED", VALUE)
+        _kek(monkeypatch, NEW)  # wrong key: the startup check fails
+        assert at_rest.configure() is True
+        with pytest.raises(ProfileConfigError, match="startup check"):
+            secret_store.put("FRESH", VALUE)
+        assert not (secret_store.secrets_dir() / "FRESH").exists()
+        with pytest.raises(ProfileConfigError, match="startup check"):
+            key_store.mint("fed-b")
+        assert not key_store.key_path("fed-b").exists()
+
+    def test_a_disk_that_fills_part_way_keeps_both_halves_readable(
+        self, data_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        first = _plaintext_secret("AAA_FIRST")
+        second = _plaintext_secret("BBB_SECOND")
+        _kek(monkeypatch, NEW)
+        real_replace = secret_file.replace_atomically
+        writes: list[pathlib.Path] = []
+
+        def fills_up(path: pathlib.Path, payload: bytes) -> None:
+            # The first file's backup and sealed copy fit; the next write does not.
+            if len(writes) >= 2:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            writes.append(path)
+            real_replace(path, payload)
+
+        monkeypatch.setattr(secret_file, "replace_atomically", fills_up)
+        assert at_rest.configure() is True
+        assert _raw(first).startswith(at_rest.SEALED_MAGIC)
+        assert _raw(second) == VALUE.encode()
+        monkeypatch.setattr(secret_file, "replace_atomically", real_replace)
+
+        assert secret_store.read_secret("AAA_FIRST") == VALUE
+        assert secret_store.read_secret("BBB_SECOND") == VALUE
+        assert _raw(second) == VALUE.encode()  # not migrated under the read-only KEK

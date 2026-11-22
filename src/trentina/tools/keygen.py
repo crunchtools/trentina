@@ -20,7 +20,7 @@ import logging
 from typing import Any
 
 from ..gateway import key_store
-from ..gateway.errors import ScopeError
+from ..gateway.errors import ProfileConfigError, ScopeError
 from ..gateway.scope import require_caller, require_operator
 from ..logsafe import exc_kind
 
@@ -54,6 +54,10 @@ async def federation_keygen(name: str) -> dict[str, Any]:
     except OSError as exc:
         logger.warning("federation_keygen failed: %s", exc_kind(exc))
         return {"error": "could not write the key"}
+    except ProfileConfigError as exc:
+        # at_rest refusing to write under a KEK that failed its startup check;
+        # the message is ours and names only the variable.
+        return {"error": str(exc)}
 
     logger.info("federation_keygen: minted a key")
     return {"key": name, "public_key": public_pem}

@@ -170,7 +170,12 @@ def _seal_volume(kek: _Kek) -> str:
         failed = seal_all(kek)
     except OSError as exc:
         kek.writable = False
-        reason = "the data volume is full" if exc.errno == errno.ENOSPC else exc_kind(exc)
+        code = errno.errorcode.get(exc.errno or 0, "no errno")
+        reason = (
+            "the data volume is full"
+            if exc.errno == errno.ENOSPC
+            else f"{exc_kind(exc)} ({code}) while sealing the stores"
+        )
         return (
             f"at-rest: sealing under {KEK_ENV} (key {kek.fingerprint}) stopped: {reason}; "
             "what was sealed stays sealed and nothing more is written"
@@ -210,10 +215,21 @@ def reset() -> None:
 
 
 def seal(plaintext: bytes) -> bytes:
-    """``plaintext`` as it should be written: sealed when there is a KEK."""
+    """``plaintext`` as it should be written: sealed when there is a KEK.
+
+    Raises:
+        ProfileConfigError: there is a KEK and it is read-only this run.
+    """
     kek = _current()
-    if kek is None or not kek.writable:
+    if kek is None:
         return plaintext
+    if not kek.writable:
+        # A KEK is configured, so plaintext is never the answer; nor is
+        # sealing under a key that failed its startup check.
+        raise ProfileConfigError(
+            f"at-rest: {KEK_ENV} failed its startup check, so nothing new is written "
+            "until it is fixed and the gateway restarted"
+        )
     return SEALED_MAGIC + kek.primary.encrypt(plaintext)
 
 
