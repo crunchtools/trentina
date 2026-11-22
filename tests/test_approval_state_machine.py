@@ -47,8 +47,11 @@ subclass whose stamp reads the fake too. Everything is restored in ``teardown``.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import os
 import pathlib
+import secrets
 import tempfile
 from dataclasses import dataclass, field
 from typing import Any
@@ -71,8 +74,23 @@ PASSWORD = "correct horse battery staple"
 WRONG_PASSWORD = "incorrect horse battery staple"
 HASH_ENV = "TRENTINA_APPROVAL_PASSWORD_HASH"
 
-#: scrypt is deliberately slow; one verifier for the whole module, built once.
-VERIFIER = approver.make_verifier(PASSWORD)
+
+def _cheap_verifier(password: str) -> str:
+    """A verifier in ``make_verifier``'s format at scrypt's lowest sensible cost.
+
+    The cost is stored IN the verifier and ``approver._matches`` reads it from
+    there, so every ``verify`` below still runs the real parse and comparison,
+    just without production's ~16 MiB, tens-of-milliseconds derivation on each
+    of the hundreds of calls a run makes.
+    """
+    salt = secrets.token_bytes(16)
+    n, r, p = 2**4, 8, 1
+    derived = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p)
+    parts = ("scrypt", str(n), str(r), str(p), base64.b64encode(salt).decode())
+    return "$".join((*parts, base64.b64encode(derived).decode()))
+
+
+VERIFIER = _cheap_verifier(PASSWORD)
 
 #: A few kinds and a few fact sets, so collisions, and re-stages with identical
 #: facts (hence identical digests), happen within a short sequence.
