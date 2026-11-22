@@ -11,6 +11,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Fleet policy (constitution XV.3): nothing under 7 days old.
+    cooldown:
+      default-days: 7
     groups:
       minor-and-patch:
         update-types:
@@ -21,6 +24,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Fleet policy (constitution XV.3): nothing under 7 days old.
+    cooldown:
+      default-days: 7
     groups:
       minor-and-patch:
         update-types:
@@ -39,6 +45,9 @@ updates:
     directory: "/scripts"
     schedule:
       interval: "weekly"
+    # Fleet policy (constitution XV.3): nothing under 7 days old.
+    cooldown:
+      default-days: 7
     groups:
       minor-and-patch:
         update-types:
@@ -54,6 +63,9 @@ updates:
       - "/.oss-scanner"
     schedule:
       interval: "weekly"
+    # Fleet policy (constitution XV.3): nothing under 7 days old.
+    cooldown:
+      default-days: 7
     groups:
       minor-and-patch:
         update-types:
