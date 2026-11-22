@@ -458,3 +458,10 @@ class TestAgentWritten:
     def test_a_body_that_is_not_json_is_kept_whole(self) -> None:
         units = ru.request_units("POST /x", "plain SENT")
         assert ru.agent_written(units) == "\n".join(units)
+
+    def test_a_type_or_role_that_is_not_a_string_is_kept(self) -> None:
+        body = {
+            "messages": [{"role": ["tool"], "content": "SENT"}, {"type": {"a": 1}, "x": "ALSO"}]
+        }
+        written = ru.agent_written(self._units(body))
+        assert "SENT" in written and "ALSO" in written

@@ -370,3 +370,40 @@ def test_a_long_token_searches_a_bounded_number_of_blocks() -> None:
     span = len(honey) // MAX_BLOCKS + 2 * FRAGMENT_MIN
     for start in range(300, len(body) - span, 97):
         assert matcher.found(body[start : start + span]) == [honey], start
+
+
+def _openssh(kind: str) -> str:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec, rsa
+
+    key = (
+        rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        if kind == "rsa"
+        else ec.generate_private_key(ec.SECP256R1())
+    )
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.OpenSSH,
+        serialization.NoEncryption(),
+    ).decode()
+
+
+@pytest.mark.parametrize("kind", ["rsa", "ecdsa"])
+def test_an_openssh_key_of_another_type_matches_by_its_private_half(kind: str) -> None:
+    honey, other = _openssh(kind), _openssh(kind)
+    matcher = TokenMatcher([honey])
+    assert matcher.found(other) == []
+    body = "".join(honey.splitlines()[1:-1])
+    # The tail of the body is private-key material, never the public half.
+    tail = body[-120:-40]
+    assert matcher.found(tail) == [honey]
+
+
+@pytest.mark.parametrize("cut", [40, 120, 300])
+def test_a_truncated_or_malformed_openssh_body_falls_back_without_raising(cut: int) -> None:
+    lines = _openssh("rsa").splitlines()
+    body = "".join(lines[1:-1])[:cut] + "!!"
+    broken = "\n".join([lines[0], body, lines[-1]])
+    matcher = TokenMatcher([broken])
+    assert matcher.found(broken) == [broken]
+    assert matcher.found("unrelated text " * 20) == []

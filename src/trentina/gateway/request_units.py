@@ -108,9 +108,11 @@ _RESULT_ROLES = frozenset({"tool", "function"})
 
 
 def _is_tool_result(item: dict[str, Any]) -> bool:
+    # The caller's JSON: a ``type`` or ``role`` may be any value, a list included.
+    kind, role = item.get("type"), item.get("role")
     return (
-        item.get("type") in _RESULT_TYPES
-        or item.get("role") in _RESULT_ROLES
+        (isinstance(kind, str) and kind in _RESULT_TYPES)
+        or (isinstance(role, str) and role in _RESULT_ROLES)
         or "functionResponse" in item
     )
 
