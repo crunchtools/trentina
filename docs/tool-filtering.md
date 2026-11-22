@@ -90,6 +90,32 @@ tools_allow:
 
 Restrict a backend to read-only operations by pattern. Useful for monitoring or reporting agents.
 
+### Releases stay with the operator
+
+```yaml
+github:
+  tools_allow: ["*"]
+  tools_deny:
+    - "create_release*"
+    - "update_release*"
+    - "publish_release*"
+    - "delete_release*"
+    - "create_tag*"
+    - "delete_tag*"
+    - "create_ref*"
+    - "update_ref*"
+    - "delete_ref*"
+```
+
+A forge backend authenticates with one token for every profile, usually an org
+admin's, so a seat that can call `create_release` can push a `v*.*.*` tag and
+fire every workflow that tag triggers. Deny the release, tag and ref writers on
+every profile that is not `role: operator`; reads such as
+`get_release_details` and `list_tags` are unaffected by the deny above.
+`profile_lint` reports a non-operator profile that admits one as
+`agent-mints-releases`, and `tool_visibility` confirms the deny for a live
+profile (`excluded_by_denylist`).
+
 ## Context Savings
 
 Tool filtering is the first layer of context reduction. Before description compression even runs, filtering removes tools entirely — their definitions, parameter schemas, and descriptions never enter the agent's context:
