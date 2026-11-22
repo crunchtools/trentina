@@ -90,6 +90,23 @@ class TestLabels:
         assert session_marks.labels("never-seen") is None
         assert session_marks.labels("second") == {L.TRIPPED}
 
+    def test_the_unknown_window_follows_the_latest_dropped_label(
+        self, session: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(session_marks, "MAX_MARKS", 1)
+        ttl = session_marks.MARK_TTL_SECONDS
+        clock = patch.object(session_marks.time, "monotonic")
+        with clock as now:
+            now.return_value = 1000.0
+            session_marks.mark("first", L.FLAGGED_DELIVERY)
+            now.return_value = 5000.0
+            session_marks.mark("first", L.CREDENTIAL_SEEN)
+            session_marks.mark("second", L.TRIPPED)
+            now.return_value = 1000.0 + ttl + 1
+            assert session_marks.labels("unseen") is None
+            now.return_value = 5000.0 + ttl + 1
+            assert session_marks.labels("unseen") == frozenset()
+
     def test_no_session_is_unknown(self) -> None:
         assert session_marks.labels("") is None
         assert session_marks.mark("", L.TRIPPED) is False
