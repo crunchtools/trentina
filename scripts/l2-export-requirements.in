@@ -1,0 +1,12 @@
+# What scripts/export_l2_model.py needs in the Containerfile's model-builder
+# stage, which l2-train.yml builds to export each trained model. Compiled with
+# hashes into l2-export-requirements.txt; regenerate with the command in its
+# header.
+#
+# transformers stays on 4.57.x, not the pod's 5.x: optimum-onnx caps it there,
+# and 4.57.6 is what exported the shipped model (its config.json). Resolving
+# with 5.x only succeeds by falling back to optimum 1.17, which predates it.
+torch
+optimum[onnxruntime]
+transformers==4.57.6
+sentencepiece
