@@ -21,7 +21,10 @@ order no caller may reorder is held here (Trentina 3.0 plan §A/§C).
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -399,23 +402,71 @@ class OutboundVerdict:
         return None
 
 
-async def outbound_trip(profile: Profile, backend: str, sent: str) -> OutboundVerdict | None:
-    """A refusal when ``sent`` carries one of the profile's honeytokens (#865), else None.
+#: Pieces already scanned for honeytokens and what each held, so a
+#: conversation's next turn scans only what is new (#865). Keyed by the
+#: profile, its token set and the piece, all hashed; a reload that changes the
+#: tokens is a new key. Kept apart from every verdict cache: a trip is not a
+#: layer's verdict.
+_SCANNED: OrderedDict[str, tuple[str, ...]] = OrderedDict()
+_SCANNED_MAX = 4096
+
+
+def _scan_keys(profile: Profile, pieces: list[str]) -> list[str]:
+    tokens = sorted(
+        (token, planted.value.get_secret_value())
+        for token, planted in profile.honeytokens.items()
+        if planted.value is not None
+    )
+    prefix = hashlib.sha256(json.dumps([profile.name, tokens]).encode()).digest()
+    return [
+        hashlib.sha256(prefix + piece.encode("utf-8", "surrogatepass")).hexdigest()
+        for piece in pieces
+    ]
+
+
+def _scan(
+    profile: Profile, pieces: list[str], known: dict[str, tuple[str, ...]]
+) -> dict[str, tuple[str, ...]]:
+    """Each piece's key and the honeytoken ids it holds, read from ``known``
+    (a snapshot of what was scanned before) or scanned now."""
+    found: dict[str, tuple[str, ...]] = {}
+    for key, piece in zip(_scan_keys(profile, pieces), pieces, strict=True):
+        if key not in found:
+            found[key] = known[key] if key in known else tuple(leaked_tokens(profile, piece))
+    return found
+
+
+async def outbound_trip(
+    profile: Profile, backend: str, pieces: list[str]
+) -> OutboundVerdict | None:
+    """A refusal when ``pieces`` carry one of the profile's honeytokens (#865), else None.
 
     Each route calls it FIRST, on the raw text it is about to send, before any
     other refusal, admission count or cached verdict: a body no layer reads, a
     count past its deadline and a unit judged before a reload all still reach
     it. Raw, because redaction could cut a credential-shaped honeytoken. A trip
     refuses in every mode, as on MCP, and the layers never run over it. Off
-    the loop: the matcher is linear in the request and a body can be several MiB.
+    the loop, hashing included: a body can be several MiB. A piece scanned
+    before is not scanned again; a conversation's earlier turns are pieces.
     """
-    if not profile.honeytokens:
-        return None
-    tripped = await asyncio.to_thread(leaked_tokens, profile, sent)
+    found: dict[str, tuple[str, ...]] = {}
+    if profile.honeytokens:
+        found = await asyncio.to_thread(_scan, profile, pieces, dict(_SCANNED))
+    for key, hits in found.items():
+        _SCANNED[key] = hits
+        _SCANNED.move_to_end(key)
+    while len(_SCANNED) > _SCANNED_MAX:
+        _SCANNED.popitem(last=False)
+    tripped = sorted({token for hits in found.values() for token in hits})
     if not tripped:
         return None
     record_trip(profile.name, backend, "request", "honeytoken:" + ",".join(tripped))
     return OutboundVerdict(refused=True, tripped=tripped, unjudged=False, gaps=[])
+
+
+def reset_scanned() -> None:
+    """Forget every scanned piece (for testing)."""
+    _SCANNED.clear()
 
 
 async def judge_outbound(

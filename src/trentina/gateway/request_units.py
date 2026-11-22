@@ -100,68 +100,109 @@ def request_units(head: str, body: str | None) -> list[str]:
     return [f"{head}\n{json.dumps(frame, ensure_ascii=False)}", *messages]
 
 
-#: Conversation entries that carry what a tool RETURNED, by API shape: Anthropic
-#: ``tool_result`` blocks, OpenAI ``role: tool``/``function`` messages and
-#: Responses ``function_call_output`` items, Gemini ``functionResponse`` parts.
-_RESULT_TYPES = frozenset({"tool_result", "function_call_output"})
-_RESULT_ROLES = frozenset({"tool", "function"})
+#: Whole conversation entries that answer a call: OpenAI chat ``role: tool``
+#: (by ``tool_call_id``) and Responses outputs (by ``call_id``), Codex's
+#: freeform and ``apply_patch`` results among them.
+_RESULT_ITEMS = frozenset({"function_call_output", "custom_tool_call_output"})
+_CALL_ITEMS = frozenset({"function_call", "custom_tool_call"})
 
 
-def _is_tool_result(item: dict[str, Any]) -> bool:
-    # The caller's JSON: a ``type`` or ``role`` may be any value, a list included.
-    kind, role = item.get("type"), item.get("role")
-    return (
-        (isinstance(kind, str) and kind in _RESULT_TYPES)
-        or (isinstance(role, str) and role in _RESULT_ROLES)
-        or "functionResponse" in item
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _dicts(value: Any) -> list[dict[str, Any]]:
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _calls(entry: dict[str, Any]) -> set[str]:
+    """The ids of the calls ``entry`` makes, in every API shape."""
+    ids = {_text(call.get("id")) for call in _dicts(entry.get("tool_calls"))}
+    if _text(entry.get("type")) in _CALL_ITEMS:
+        ids.add(_text(entry.get("call_id")))
+    for block in _dicts(entry.get("content")):
+        if block.get("type") == "tool_use":
+            ids.add(_text(block.get("id")))
+    for part in _dicts(entry.get("parts")):
+        call = part.get("functionCall")
+        if isinstance(call, dict):
+            # Gemini's id is optional; without one the name is all a response carries.
+            ids.add(_text(call.get("id")) or _text(call.get("name")))
+    return {i for i in ids if i}
+
+
+def _answers(entry: dict[str, Any], called: set[str]) -> bool:
+    """Whether ``entry`` is, whole, a result answering one of ``called``."""
+    match entry:
+        case {"role": "tool", "tool_call_id": str(ref)}:
+            return ref in called
+        case {"type": str(kind), "call_id": str(ref)} if kind in _RESULT_ITEMS:
+            return ref in called
+        case _:
+            return False
+
+
+def _block_answers(block: dict[str, Any], called: set[str]) -> bool:
+    """Whether ``block`` of a user entry is a result answering one of ``called``."""
+    response = block.get("functionResponse")
+    ref = (
+        _text(response.get("id")) or _text(response.get("name"))
+        if isinstance(response, dict)
+        else _text(block.get("tool_use_id"))
+        if block.get("type") == "tool_result"
+        else None
     )
+    return ref is not None and ref in called
 
 
-#: Where a block of an entry sits: Anthropic's ``content``, Gemini's ``parts``.
-_BLOCK_LISTS = ("content", "parts")
-
-
-def _without_result_blocks(entry: dict[str, Any]) -> dict[str, Any]:
-    """``entry`` without the tool-result blocks in its ``content`` or ``parts``.
-
-    Only there, where the APIs put a result: nothing deeper is looked at, so a
-    tool-call argument the agent shaped like a result is still checked.
-    """
+def _without_answers(entry: dict[str, Any], called: set[str]) -> dict[str, Any]:
+    """A user entry without its result blocks that answer ``called``."""
     kept = dict(entry)
-    for name in _BLOCK_LISTS:
-        blocks = entry.get(name)
-        if isinstance(blocks, list):
-            kept[name] = [b for b in blocks if not (isinstance(b, dict) and _is_tool_result(b))]
+    for name in ("content", "parts"):
+        if isinstance(entry.get(name), list):
+            kept[name] = [
+                block
+                for block in entry[name]
+                if not (isinstance(block, dict) and _block_answers(block, called))
+            ]
     return kept
 
 
-def agent_written(units: list[str]) -> str:
-    """The units with every tool result cut: what the agent wrote, for the trip check.
+def agent_written(units: list[str]) -> list[str]:
+    """The units with every delivered tool result cut: what the agent wrote,
+    one piece a unit, for the trip check.
 
     A conversation carries the tool results the agent was DELIVERED. One that
     holds a planted credential is the agent reading the decoy, not sending it,
     and checking it would refuse every later turn of the session. A result is
-    cut only where the APIs put one: a whole entry (OpenAI ``role: tool``, a
-    Responses ``function_call_output``) or a block of an entry's ``content`` or
-    ``parts``. Assistant text, tool-use inputs, user and system text and the
-    frame stay. Each unit
-    ends in one line of JSON (``request_units``); a unit that does not is kept
-    whole.
+    cut only where its API puts it, and only when it answers a call made
+    EARLIER in the same request: an OpenAI ``role: tool`` entry by its
+    ``tool_call_id``, a Responses ``function_call_output`` or
+    ``custom_tool_call_output`` by its ``call_id``, an Anthropic ``tool_result``
+    block of a ``user`` entry by its ``tool_use_id``, a Gemini
+    ``functionResponse`` part of a ``user`` or ``function`` entry by its id or
+    name. A result anywhere else, or
+    answering no call, stays checked. Each unit ends in one line of JSON
+    (``request_units``); a unit that does not is kept whole.
     """
-    kept: list[str] = []
+    called: set[str] = set()
+    pieces: list[str] = []
     for unit in units:
         head, sep, last = unit.rpartition("\n")
         try:
-            parsed = json.loads(last)
+            entry = json.loads(last)
         except ValueError:
-            kept.append(unit)
-            continue
-        if not isinstance(parsed, dict):
-            kept.append(unit)
-        elif not _is_tool_result(parsed):
-            cut = json.dumps(_without_result_blocks(parsed), ensure_ascii=False)
-            kept.append(f"{head}{sep}{cut}")
-    return "\n".join(kept)
+            entry = None
+        if not isinstance(entry, dict):
+            pieces.append(unit)
+        elif not _answers(entry, called):
+            # Results come back in the caller's turn: Gemini also names it ``function``.
+            answering = entry.get("role") in ("user", "function")
+            kept = _without_answers(entry, called) if answering else entry
+            pieces.append(f"{head}{sep}{json.dumps(kept, ensure_ascii=False)}")
+        if isinstance(entry, dict):
+            called |= _calls(entry)
+    return pieces
 
 
 def _key(unit: str, profile: Profile, mode: Mode, source_type: str) -> str:

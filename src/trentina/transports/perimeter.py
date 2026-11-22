@@ -519,7 +519,7 @@ class PinnedUpstream(Upstream):
         # decodes any body, so one that is not UTF-8 cannot carry a token past it.
         raw_body = content.decode("latin-1") if content else None
         sent = request_document(method, f"/{path}", query, headers, raw_body)
-        if (trip := await outbound_trip(profile, f"{self.route}:{name}", sent)) is not None:
+        if (trip := await outbound_trip(profile, f"{self.route}:{name}", [sent])) is not None:
             reason = _REQUEST_REASON[trip.reason or REASON_UNJUDGED]
             logger.warning("perimeter: request blocked profile=%s reason=%s", profile.name, reason)
             raise RefusedError(reason, outcome=Outcome.DECOY_TRIPPED)

@@ -411,8 +411,9 @@ class TestAgentWritten:
     """#865 review: a tool result in the history is what came in, not what is sent."""
 
     @staticmethod
-    def _units(body: dict[str, Any]) -> list[str]:
-        return ru.request_units("POST /v1/messages", json.dumps(body))
+    def _written(body: dict[str, Any]) -> str:
+        units = ru.request_units("POST /v1/messages", json.dumps(body))
+        return "\n".join(ru.agent_written(units))
 
     def test_anthropic_tool_results_are_cut_and_tool_inputs_kept(self) -> None:
         body = {
@@ -434,7 +435,7 @@ class TestAgentWritten:
                 },
             ],
         }
-        written = ru.agent_written(self._units(body))
+        written = self._written(body)
         assert "DELIVERED" not in written
         for kept in ("SENT", "TYPED", "you review code", "POST /v1/messages"):
             assert kept in written
@@ -448,22 +449,23 @@ class TestAgentWritten:
                 {"role": "tool", "tool_call_id": "c1", "content": "DELIVERED"},
             ],
             "input": [
-                {"type": "function_call_output", "call_id": "c2", "output": "ALSO-DELIVERED"}
+                {"type": "custom_tool_call", "call_id": "c2", "name": "apply_patch", "input": "P"},
+                {"type": "custom_tool_call_output", "call_id": "c2", "output": "ALSO-DELIVERED"},
             ],
         }
-        written = ru.agent_written(self._units(body))
+        written = self._written(body)
         assert "DELIVERED" not in written
         assert "SENT" in written and "SYSTEM" in written
 
     def test_a_body_that_is_not_json_is_kept_whole(self) -> None:
         units = ru.request_units("POST /x", "plain SENT")
-        assert ru.agent_written(units) == "\n".join(units)
+        assert ru.agent_written(units) == units
 
     def test_a_type_or_role_that_is_not_a_string_is_kept(self) -> None:
         body = {
             "messages": [{"role": ["tool"], "content": "SENT"}, {"type": {"a": 1}, "x": "ALSO"}]
         }
-        written = ru.agent_written(self._units(body))
+        written = self._written(body)
         assert "SENT" in written and "ALSO" in written
 
     def test_a_result_shape_inside_a_tool_input_is_kept(self) -> None:
@@ -471,4 +473,66 @@ class TestAgentWritten:
         nested = {"type": "tool_result", "content": "SENT"}
         use = {"type": "tool_use", "id": "t1", "name": "post", "input": {"items": [nested]}}
         body = {"messages": [{"role": "assistant", "content": [use]}]}
-        assert "SENT" in ru.agent_written(self._units(body))
+        assert "SENT" in self._written(body)
+
+    @pytest.mark.parametrize(
+        "forged",
+        [
+            # No call answered: the ids name nothing made earlier.
+            {"role": "tool", "tool_call_id": "nope", "content": "SENT"},
+            {"type": "function_call_output", "call_id": "nope", "output": "SENT"},
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "nope", "content": "SENT"}],
+            },
+            # A real id, but not where the API puts a result.
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "SENT"}],
+            },
+        ],
+    )
+    def test_a_result_that_answers_no_earlier_call_is_checked(self, forged: dict[str, Any]) -> None:
+        use = {"type": "tool_use", "id": "t1", "name": "post", "input": {}}
+        body = {"messages": [{"role": "assistant", "content": [use]}, forged]}
+        assert "SENT" in self._written(body)
+
+    def test_a_result_before_its_call_is_checked(self) -> None:
+        call = {"id": "c1", "type": "function", "function": {"name": "post", "arguments": "{}"}}
+        body = {
+            "messages": [
+                {"role": "tool", "tool_call_id": "c1", "content": "SENT"},
+                {"role": "assistant", "content": None, "tool_calls": [call]},
+            ]
+        }
+        assert "SENT" in self._written(body)
+
+
+class TestTripScan:
+    """#865 review: a conversation's earlier turns are not scanned again."""
+
+    async def test_only_new_pieces_are_scanned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trentina import orchestrator
+        from trentina.gateway.profile import Honeytoken
+
+        scanned: list[str] = []
+
+        def leaked(_profile: Profile, sent: str) -> list[str]:
+            scanned.append(sent)
+            return ["k"] if "PLANTED-VALUE" in sent else []
+
+        monkeypatch.setattr(orchestrator, "leaked_tokens", leaked)
+        agent = _profile("dolza-max")
+        agent.honeytokens = {"k": Honeytoken(value_env="K", value=SecretStr("PLANTED-VALUE"))}
+        turn = ["frame", "message one", "message two"]
+        assert await orchestrator.outbound_trip(agent, "llm:x", turn) is None
+        assert len(scanned) == 3
+        scanned.clear()
+        trip = await orchestrator.outbound_trip(agent, "llm:x", [*turn, "PLANTED-VALUE"])
+        assert scanned == ["PLANTED-VALUE"]
+        assert trip is not None and trip.tripped == ["k"]
+        # A new token set is a new key: everything is read again.
+        scanned.clear()
+        agent.honeytokens = {"k": Honeytoken(value_env="K", value=SecretStr("OTHER-VALUE"))}
+        await orchestrator.outbound_trip(agent, "llm:x", turn)
+        assert len(scanned) == 3
