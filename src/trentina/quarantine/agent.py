@@ -907,7 +907,7 @@ def _parse_openrouter_search(raw: bytes, canary: str) -> dict[str, Any]:
         raise QuarantineAgentError("Empty answer in OpenRouter search response")
     sources = _citation_sources(message)
     # Everything returned came from the same untrusted message, citations too.
-    if canary in text or any(canary in value for src in sources for value in src.values()):
+    if _check_canary({"text": text, "sources": sources}, canary):
         raise SearchCanaryLeakedError()
     usage = resp_json.get("usage")
     if not isinstance(usage, dict):

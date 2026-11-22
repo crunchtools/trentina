@@ -411,11 +411,16 @@ one does; the rest name the benchmark that measured them.
     honeytoken check ([decoys](profiles.md#decoy-tools-and-honeytokens))
     finds the value as written, base64, hex or percent-encoded, reversed, or
     as any 16 consecutive characters of a value of 32 or more
-    (`token_variants.py`; the L3 canary is matched the same way). It runs on
+    (`token_variants.py`; the L3 canary is matched the same way). A fragment
+    is taken from the secret body only: not a vendor prefix (`ghp_`,
+    `sk-proj-`, `AKIA`), a JWT's header and payload, PEM armour, the fixed head and public
+    half of a key, or a window of low entropy. Base64 is also found across
+    line breaks (76 columns, CRLF, JSON-escaped `\n`). It runs on
     a tool call's arguments and on the body, headers and query of a
     `/proxy/http` or `/proxy/llm` request (#865). A caller that splits it into
     shorter pieces or across two calls, describes it in words, or applies
-    another encoding (ROT13, gzip) is not seen, and neither is anything sent
+    another encoding (ROT13, gzip, `\x41`-style escaped hex) is not seen, nor
+    is a piece of an encoded form (part of the base64 of the value), and neither is anything sent
     by git, a Matrix message or a CONNECT tunnel (gaps 26 and 29). It is a tripwire for the common case,
     where an injection says "send the key to this address" and the agent
     does. Tested.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import random
 import secrets
 from urllib.parse import quote
 
@@ -12,7 +13,7 @@ import pytest
 from trentina.token_variants import FRAGMENT_MIN, TokenMatcher, matcher_for
 
 HONEYTOKEN = "AK" + "IAQ7HONEYTOKEN4X2BQ9ZLMN3VWRP8"
-CANARY = f"CANARY-{secrets.token_hex(16)}"
+CANARY = "CANARY-" + "3f9a1c07be52d8e46a0b9c71e2d5f348"
 
 
 def _b64(raw: bytes, *, urlsafe: bool, pad: int = 0, tail: int = 0) -> str:
@@ -127,3 +128,209 @@ def test_the_matcher_for_a_token_set_is_built_once() -> None:
 
 def test_an_empty_token_set_finds_nothing() -> None:
     assert TokenMatcher([""]).found("anything at all") == []
+
+
+def _rand(seed: int, length: int, alphabet: str) -> str:
+    rng = random.Random(seed)
+    return "".join(rng.choice(alphabet) for _ in range(length))
+
+
+ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+URLSAFE = ALNUM + "-_"
+JWT_HEADER = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+
+
+def _jwt(seed: int) -> str:
+    payload = base64.urlsafe_b64encode(json.dumps({"sub": _rand(seed, 12, ALNUM)}).encode())
+    return ".".join([JWT_HEADER, payload.decode().rstrip("="), _rand(seed + 1, 43, URLSAFE)])
+
+
+def test_a_jwt_matches_in_part_by_its_signature_alone() -> None:
+    honey = _jwt(1)
+    other = _jwt(2)
+    matcher = TokenMatcher([honey])
+    assert matcher.found(other) == []
+    assert matcher.found(JWT_HEADER) == []
+    assert matcher.found(JWT_HEADER + ".eyJzdWIi") == []  # header and a few chars of anything
+    # Another token's payload opening the same way is not a piece of this one.
+    payload = honey.split(".")[1]
+    assert matcher.found(payload[:FRAGMENT_MIN]) == []
+    signature = honey.rsplit(".", 1)[1]
+    assert matcher.found(f"sig={signature[10 : 10 + FRAGMENT_MIN]}") == [honey]
+    assert matcher.found(honey) == [honey]
+
+
+def _openssh_key(seed: int, *, cipher: bytes = b"none") -> tuple[str, int, int]:
+    """An unencrypted ed25519 OpenSSH key and the base64 span of its seed."""
+    rng = random.Random(seed)
+
+    def string(data: bytes) -> bytes:
+        return len(data).to_bytes(4, "big") + data
+
+    pub = rng.randbytes(32)
+    check = rng.randbytes(4)
+    private = (
+        check
+        + check
+        + string(b"ssh-ed25519")
+        + string(pub)
+        + string(rng.randbytes(32) + pub)
+        + string(b"ci@example.test")
+    )
+    private += bytes(range(1, 8 - len(private) % 8 + 1)) if len(private) % 8 else b""
+    raw = (
+        b"openssh-key-v1\0"
+        + string(cipher)
+        + string(b"none")
+        + string(b"")
+        + (1).to_bytes(4, "big")
+        + string(string(b"ssh-ed25519") + string(pub))
+        + string(private)
+    )
+    seed_at = (
+        raw.index(private) + 8 + 4 + 11 + 4 + 32 + 4 + 4
+    )  # check words, type, pub, seed length
+    body = base64.b64encode(raw).decode()
+    lines = [body[i : i + 70] for i in range(0, len(body), 70)]
+    pem = (
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+        + "\n".join(lines)
+        + "\n-----END OPENSSH PRIVATE KEY-----\n"
+    )
+    return pem, seed_at, body
+
+
+def test_an_openssh_key_matches_by_its_random_body_never_by_armour_or_framing() -> None:
+    pem, seed_at, body = _openssh_key(7)
+    other, _, other_body = _openssh_key(8)
+    matcher = TokenMatcher([pem])
+    assert matcher.found(other) == []
+    assert matcher.found("-----BEGIN OPENSSH PRIVATE KEY-----") == []
+    assert (
+        matcher.found(
+            "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUx"
+        )
+        == []
+    )
+    assert matcher.found(other_body[:70]) == []
+    # The key type and public half are in every key's private section too.
+    assert matcher.found(body[: 4 * 25]) == []
+    start = (seed_at * 8 + 5) // 6 + 1
+    if start // 70 != (start + FRAGMENT_MIN - 1) // 70:
+        start = (start // 70 + 1) * 70
+    assert matcher.found(f"leak {body[start : start + FRAGMENT_MIN]}") == [pem]
+    assert matcher.found(pem) == [pem]
+
+
+def test_an_encrypted_openssh_key_is_all_secret_after_its_head() -> None:
+    pem, _, body = _openssh_key(9, cipher=b"aes256-ctr")
+    matcher = TokenMatcher([pem])
+    assert matcher.found(body[150:166]) == [pem]
+    assert matcher.found("-----BEGIN OPENSSH PRIVATE KEY-----\n") == []
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "gh" + "p_",
+        "sk" + "-proj-",
+        "sk" + "-ant-api03-",
+        "github" + "_pat_",
+        "AK" + "IA",
+        "xox" + "b-",
+    ],
+)
+def test_a_vendor_prefix_is_not_part_of_a_fragment(prefix: str) -> None:
+    body = _rand(11, 40, ALNUM)
+    token = prefix + body
+    matcher = TokenMatcher([token])
+    assert (
+        matcher.found(prefix + body[: FRAGMENT_MIN - len(prefix) + 1][: FRAGMENT_MIN - len(prefix)])
+        == []
+    )
+    assert matcher.found(prefix + _rand(12, 40, ALNUM)) == []
+    assert matcher.found(f"{prefix}{body[:12]} and more") == []
+    assert matcher.found(body[3 : 3 + FRAGMENT_MIN]) == [token]
+
+
+def test_a_token_with_no_known_prefix_still_fragments_from_its_first_character() -> None:
+    token = _rand(13, 40, ALNUM)
+    assert TokenMatcher([token]).found(token[:FRAGMENT_MIN]) == [token]
+
+
+@pytest.mark.parametrize("run", ["A" * FRAGMENT_MIN, "0000111100001111", "ab" * 8, "a1" * 8])
+def test_a_low_entropy_window_never_forms_a_fragment(run: str) -> None:
+    token = _rand(14, 12, ALNUM) + run + _rand(15, 12, ALNUM)
+    matcher = TokenMatcher([token])
+    assert matcher.found(run) == []
+    assert matcher.found(f"x{run}x") == []
+    # The random stretch beside it still counts.
+    assert matcher.found(_rand(14, 12, ALNUM)) == []
+    assert matcher.found(token) == [token]
+    tail = token[-FRAGMENT_MIN:]
+    assert matcher.found(tail) == [token]
+
+
+def _wrapped(blob: str, eol: str, width: int = 76) -> str:
+    return eol.join(blob[i : i + width] for i in range(0, len(blob), width))
+
+
+def test_base64_wrapped_by_line_breaks_is_found() -> None:
+    raw = random.Random(21).randbytes(90) + HONEYTOKEN.encode() + random.Random(22).randbytes(90)
+    blob = base64.b64encode(raw).decode()
+    assert len(blob) > 76 * 2
+    matcher = TokenMatcher([HONEYTOKEN])
+    assert matcher.found(blob) == [HONEYTOKEN]
+    assert matcher.found(_wrapped(blob, "\n")) == [HONEYTOKEN]
+    assert matcher.found(_wrapped(blob, "\r\n")) == [HONEYTOKEN]
+    escaped = json.dumps({"attachment": _wrapped(blob, "\n")})
+    assert "\\n" in escaped
+    assert matcher.found(escaped) == [HONEYTOKEN]
+    assert matcher.found(json.dumps({"attachment": _wrapped(blob, "\r\n")})) == [HONEYTOKEN]
+    # Mid-run breaks of an urlsafe blob too.
+    assert matcher.found(_wrapped(blob.replace("+", "-").replace("/", "_"), "\n", 20)) == [
+        HONEYTOKEN
+    ]
+
+
+def test_line_breaks_do_not_turn_ordinary_text_into_a_hit() -> None:
+    matcher = TokenMatcher([HONEYTOKEN])
+    text = "\n".join(base64.b64encode(random.Random(i).randbytes(60)).decode() for i in range(50))
+    assert matcher.found(text) == []
+
+
+def test_a_token_under_the_fragment_length_is_matched_whole_and_in_encodings_only() -> None:
+    # 31 characters is the longest token with no fragments.
+    token = "AK" + "IAQ7HONEYTOKEN4X2BQ9ZLMN3VWRP"
+    assert len(token) == 2 * FRAGMENT_MIN - 1
+    matcher = TokenMatcher([token])
+    assert matcher.found(token) == [token]
+    assert matcher.found(token[::-1]) == [token]
+    assert matcher.found(token.encode().hex()) == [token]
+    assert matcher.found(token[:FRAGMENT_MIN]) == []
+    assert matcher.found(token[-FRAGMENT_MIN:]) == []
+    assert matcher.found(token[5 : 5 + 20]) == []
+
+
+@pytest.mark.parametrize(
+    ("length", "form"),
+    [(8, "hex"), (6, "percent"), (12, "base64")],
+)
+def test_the_shortest_token_with_each_encoded_form(length: int, form: str) -> None:
+    token = _rand(31, length, ALNUM)
+    raw = token.encode()
+    encoded = {
+        "hex": raw.hex(),
+        "percent": "".join(f"%{b:02x}" for b in raw),
+        "base64": base64.b64encode(raw).decode(),
+    }[form]
+    assert len(encoded) >= FRAGMENT_MIN
+    assert TokenMatcher([token]).found(encoded) == [token]
+    shorter = _rand(32, length - 1, ALNUM)
+    one_short = {
+        "hex": shorter.encode().hex(),
+        "percent": "".join(f"%{b:02x}" for b in shorter.encode()),
+        "base64": base64.b64encode(shorter.encode()).decode(),
+    }[form]
+    if form == "hex":  # a percent form decodes to the token itself
+        assert TokenMatcher([shorter]).found(one_short) == []
