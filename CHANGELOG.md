@@ -21,6 +21,7 @@ under that name.
 ### Fixed
 
 - **L1 counts a `/proxy/llm` request whole again (#866, gap 34).** Since requests were cut into units (a341), L1 graded each message on its own, so four markers split over two messages were two mediums and flagged nothing. Each unit's `OutboundVerdict` now carries L1's suspicious count, and `request_units.merge` grades the sum: past L1's threshold the request is flagged by L1, and refused under `block`. L1 still reads each unit once, and a kept verdict carries its count.
+- **`llm_completion` detection rows carry `profile`, `backend` and `direction` (#902).** `judge_llm_completion` called `defend()` with no attribution, so every `/proxy/llm` response-edge row had them NULL while the request-edge row from the same call had them; a per-backend query undercounted. The row now reads `direction=response`, `backend=llm:<provider>`, and `blocked` is true only for a profile whose `defense.llm_completion` is `block` (flag has already streamed the completion).
 - **A request L1 flags on its summed count writes a detection row (#866 follow-up).** No unit's `defend` flagged, so none wrote one; `judge_units` now does, under the profile's `defense.audit`, with the summed count and the number of units in `layer1_stats`. `request_units.merge` takes `mode` as a required argument: its `flag` default would have let a caller skip a refusal under `block`.
 
 ### Security

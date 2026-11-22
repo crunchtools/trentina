@@ -639,6 +639,15 @@ async def judge_llm_completion(
                     source_type="llm_completion",
                     defense=profile.defense,
                     provenance=Provenance.MODEL_OUTPUT,
+                    # The same row columns the request edge writes (#902), so a
+                    # per-profile or per-backend query sees both edges of a call.
+                    # flag has already streamed the completion: it records only.
+                    attribution={
+                        "direction": "response",
+                        "blocked": profile.defense.llm_completion == "block",
+                        "profile": profile.name,
+                        "backend": f"llm:{provider_name}",
+                    },
                 )
         # Inside the try: a malformed verdict's gap derivation fails closed
         # (unjudged) rather than propagating out of the background task.
