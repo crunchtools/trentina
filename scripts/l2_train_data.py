@@ -67,6 +67,10 @@ REPLAY = 1000
 ANCHOR_REPEATS = 8
 """Times each ``benign_ops`` tuning case appears in training: about 85 cases,
 so the anchor weighs about as much as one envelope's benign rows times five."""
+REQUEST_REPEATS = 3
+"""Times each outbound-request tuning case appears instead: each is a long
+document worth three windows, so at ``ANCHOR_REPEATS`` the requests crowded out
+the short ``meeting_notes`` anchors (#878, run 44986769273)."""
 
 SOURCES: tuple[dict[str, Any], ...] = (
     {
@@ -317,16 +321,17 @@ async def build(
 
 
 async def anchors() -> list[dict[str, Any]]:
-    """``benign_ops``'s tuning split, ``ANCHOR_REPEATS`` times; never its held-out cases."""
+    """``benign_ops``'s tuning split, ``ANCHOR_REPEATS`` times (an outbound request
+    ``REQUEST_REPEATS`` times); never its held-out cases."""
     rows = []
     for case in BENIGN:
         if in_tuning(case.id):
             if case.source_type == "egress_request":
-                text = as_request(case.payload)
+                text, repeats = as_request(case.payload), REQUEST_REPEATS
             else:
-                text = await as_read(case.payload, case.category)
+                text, repeats = await as_read(case.payload, case.category), ANCHOR_REPEATS
             row = {"text": text, "label": 0, "shape": "ops", "distill": True}
-            rows += [row] * ANCHOR_REPEATS
+            rows += [row] * repeats
     return rows
 
 

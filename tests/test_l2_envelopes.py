@@ -13,7 +13,7 @@ import pytest
 from corpora.benign_ops import BENIGN, Benign, in_tuning
 from corpora.envelopes import MAKERS, slug
 from corpora.gateway_read import as_read, as_request
-from scripts.l2_train_data import ANCHOR_REPEATS, anchors, attack_at, build, plant
+from scripts.l2_train_data import ANCHOR_REPEATS, REQUEST_REPEATS, anchors, attack_at, build, plant
 from scripts.train_l2_model import windows
 
 TEXT = "Weekly security roundup\nA patch for the login flow shipped on Tuesday."
@@ -79,7 +79,10 @@ def test_training_anchors_hold_no_held_out_case() -> None:
     rows = asyncio.run(anchors())
     tuning = [c for c in BENIGN if in_tuning(c.id)]
     held_out = {_read(c) for c in BENIGN if not in_tuning(c.id)}
-    assert len(rows) == len(tuning) * ANCHOR_REPEATS
+    repeats = [
+        REQUEST_REPEATS if c.source_type == "egress_request" else ANCHOR_REPEATS for c in tuning
+    ]
+    assert len(rows) == sum(repeats)
     assert all(r["label"] == 0 for r in rows)
     assert not {r["text"] for r in rows} & held_out
 
@@ -93,9 +96,9 @@ def test_training_anchors_read_each_case_as_the_gateway_does() -> None:
     for row in rows:
         assert (row["label"], row["shape"], row["distill"]) == (0, "ops", True)
         by_text[row["text"]] = by_text.get(row["text"], 0) + 1
-    for kind in ("egress_request", "tool_response"):
+    for kind, repeats in (("egress_request", REQUEST_REPEATS), ("tool_response", ANCHOR_REPEATS)):
         case = next(c for c in tuning if c.source_type == kind)
-        assert by_text.get(_read(case)) == ANCHOR_REPEATS, case.id
+        assert by_text.get(_read(case)) == repeats, case.id
     request = next(c for c in tuning if c.source_type == "egress_request")
     assert by_text.get(asyncio.run(as_read(request.payload, request.category))) is None
 
