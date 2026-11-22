@@ -44,3 +44,16 @@ updates:
         update-types:
           - "minor"
           - "patch"
+
+  # The Containerfile's FROM lines are pinned by digest (XV.2). This entry
+  # proposes each new base digest as a pull request, gated like any other
+  # change, so the weekly rebuild never picks up a base nobody reviewed.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"

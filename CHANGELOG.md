@@ -26,6 +26,7 @@ under that name.
 
 - Every third-party action is pinned to a full commit SHA with its version as a comment (constitution XV rule 2), and `setup-uv` installs uv 0.13.7, the version the Containerfile installs, instead of `latest`. Crunchtools' own reusable workflows stay on their release tags (XV rule 5). The constitution caller moves to `@v1` and grants `security-events: write`, so the fleet's zizmor audit runs on every pull request and uploads to code scanning (#850).
 - `ci.yml`, `security.yml` and `publish.yml` default to `permissions: {}` and each job names what it needs; only the CodeQL and Semgrep jobs can write to code scanning, and nothing in `security.yml` keeps `issues` or `pull-requests` write. Every `actions/checkout` sets `persist-credentials: false`, so no job leaves the token in `.git/config` (#855).
+- The Hummingbird base images in every `FROM` and the Semgrep scanner image are pinned by digest, and a weekly Dependabot `docker` entry proposes each new base digest as a gated pull request instead of the tag moving under the build. The `model-builder` stage is still used by `l2-train.yml`, so it is kept; pinning its pip installs is #871 (#854).
 
 ## [6.25.0] - 2026-11-19
 
