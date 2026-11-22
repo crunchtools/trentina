@@ -145,7 +145,9 @@ class AdaptiveLimiter:
         from ..gateway.errors import ScopeError
 
         try:
-            key: str | None = get_current_profile().name
+            # By grant owner, as the judge's key and the L3 quota are (#898):
+            # a derived -federation ingress shares its profile's turn.
+            key: str | None = get_current_profile().grant_owner
         except ScopeError:
             # The boot warm-up and other gateway-side work run with no
             # profile bound; they share one turn rather than being refused.

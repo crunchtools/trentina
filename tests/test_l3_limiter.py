@@ -209,6 +209,22 @@ class TestFairShare:
         order = await self._drain(lim, calls)
         assert order == ["a0", "b0", "a1", "b1", "a2", "b2"]
 
+    async def test_a_federation_ingress_shares_its_profiles_turn(self) -> None:
+        lim = AdaptiveLimiter(JUDGE, start=1, ceiling=1)
+        held = await lim.acquire()
+        ingress = _profile("alpha-federation")
+        object.__setattr__(ingress, "federation_of", "alpha")
+        waiters = []
+        for profile in (_profile("alpha"), ingress):
+            with profile_context(profile):
+                waiters.append(asyncio.ensure_future(lim.acquire()))
+        await _settle()
+        assert list(lim._waiters[Priority.FOREGROUND]) == ["alpha"]
+        assert len(lim._waiters[Priority.FOREGROUND]["alpha"]) == 2
+        lim.release(held, Outcome.FAILED)
+        for waiter in waiters:
+            lim.release(await asyncio.wait_for(waiter, timeout=1), Outcome.OK)
+
     async def test_foreground_still_goes_before_any_profiles_background(self) -> None:
         lim = AdaptiveLimiter(JUDGE, start=1, ceiling=1)
         held = await lim.acquire()

@@ -21,7 +21,7 @@ under that name.
 
 ### Security
 
-- **Profiles sharing an L3 key take turns in its queue (#867).** `AdaptiveLimiter` queued FIFO, so one profile's backlog (a looping or hijacked agent) made every other profile on the same (provider, model, key) wait behind all of it, and `block` refused their content once their throttle budget ran out. Within a priority each profile now has its own FIFO and a freed slot goes to the next profile in rotation, as `classifier.FairGate` does for L2; foreground still goes before background. Work with no profile bound (the boot warm-up) shares one turn. The per-profile daily L3 quota proposed alongside it is #891.
+- **Profiles sharing an L3 key take turns in its queue (#867).** `AdaptiveLimiter` queued FIFO, so one profile's backlog (a looping or hijacked agent) made every other profile on the same (provider, model, key) wait behind all of it, and `block` refused their content once their throttle budget ran out. Within a priority each profile (by grant owner, so a derived `-federation` ingress shares its profile's turn, as it shares the key and the quota) now has its own FIFO and a freed slot goes to the next profile in rotation, as `classifier.FairGate` does for L2; foreground still goes before background. Work with no profile bound (the boot warm-up) shares one turn. The per-profile daily L3 quota proposed alongside it is #891.
 
 ## [6.26.0] - 2026-11-22
 
