@@ -238,7 +238,6 @@ def _migrate(kek: _Kek, path: Path, plaintext: bytes) -> None:
     if check != plaintext:
         raise ProfileConfigError(f"{path.name}: sealed copy did not read back; {backup.name} kept")
     backup.unlink()
-    logger.info("at-rest: sealed %s", path.name)
 
 
 def seal_all() -> list[str]:
