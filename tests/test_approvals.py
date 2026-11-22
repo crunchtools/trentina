@@ -174,6 +174,14 @@ class TestStaging:
         pending.stage(pending.Kind.OPERATOR_PROFILE, FACTS, _applied([]))
         assert pending.outstanding(now=time.time() + pending.TTL_SECONDS + 1) == {}
 
+    def test_an_action_is_still_live_at_exactly_the_ttl(self) -> None:
+        """The TTL is inclusive: expiry is strictly after TTL_SECONDS."""
+        action = pending.Staged(
+            pending.Kind.OPERATOR_PROFILE, FACTS, _applied([]), staged_at=1000.0
+        )
+        assert not action.expired(now=1000.0 + pending.TTL_SECONDS)
+        assert action.expired(now=1000.0 + pending.TTL_SECONDS + 0.001)
+
     def test_an_unknown_kind_name_resolves_to_nothing(self) -> None:
         assert pending.kind_named("root access please") is None
         assert pending.kind_named("operator profile") is pending.Kind.OPERATOR_PROFILE
