@@ -16,6 +16,9 @@ as ``data_exfiltration``. This measures a judge and a briefing on two sets:
   answer (``choices[0].message.content``) inside the first JSON body's own
   envelope, encrypted reasoning and all. What the briefing excuses must not
   include an attack that arrives inside a completion.
+- **disguised**: the same attacks ROT13'd and gzip+base64'd, set in the
+  answer under an ``encrypted_reasoning`` label: the class the briefing
+  excuses in the envelope, arriving where it does not.
 
 ``--briefing none`` is the edge before a1013; ``completion`` is the shipped
 briefing. L2 is not loaded: it is answered BENIGN at ``--l2-score``, which is
@@ -31,9 +34,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import string
+import gzip
 import json
 import sys
 from collections import Counter
+from collections.abc import Callable
+from operator import methodcaller
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +78,43 @@ def envelope(template: str, answer: str) -> str:
 def attack_cases(template: str) -> list[tuple[str, str]]:
     """Each internal corpus attack as the answer of a recorded completion."""
     return [(f"{case.category}/{case.id}", envelope(template, case.payload)) for case in ATTACKS]
+
+
+def _gzip_base64(text: str) -> str:
+    return base64.b64encode(gzip.compress(text.encode())).decode()
+
+
+_ROT13 = str.maketrans(
+    string.ascii_lowercase + string.ascii_uppercase,
+    string.ascii_lowercase[13:]
+    + string.ascii_lowercase[:13]
+    + string.ascii_uppercase[13:]
+    + string.ascii_uppercase[:13],
+)
+
+DISGUISES: dict[str, Callable[[str], str]] = {
+    "rot13": methodcaller("translate", _ROT13),
+    "gzip-base64": _gzip_base64,
+}
+"""How a disguised attack is encoded before it is labelled as reasoning."""
+
+
+def disguised_cases(template: str) -> list[tuple[str, str]]:
+    """Each corpus attack, encoded, as the answer's ``encrypted_reasoning``.
+
+    What the briefing excuses is the provider's own envelope. An answer that
+    labels its own payload as encrypted reasoning is not the envelope, and
+    the layers read it decoded (the unpack stage reads gzip and base64 and
+    ROT13), so each of these must still flag.
+    """
+    return [
+        (
+            f"{name}/{case.category}/{case.id}",
+            envelope(template, json.dumps({"encrypted_reasoning": encode(case.payload)})),
+        )
+        for name, encode in DISGUISES.items()
+        for case in ATTACKS
+    ]
 
 
 def stub_l2(score: float) -> None:
@@ -171,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     sets = {"bodies": recorded}
     if args.attacks:
         sets["attacks"] = attack_cases(recorded[0][1])
+        sets["disguised"] = disguised_cases(recorded[0][1])
 
     briefing = BRIEFINGS[args.briefing]
     report: dict[str, Any] = {"briefing": args.briefing, "votes": args.votes}
@@ -179,9 +225,10 @@ def main(argv: list[str] | None = None) -> int:
         results = {case_id: majority(r) for case_id, r in readings.items()}
         report[name] = {"summary": summarize(results), "cases": results}
         print(f"{name}: {json.dumps(report[name]['summary'])}")
-    if args.attacks:
-        missed = [i for i, r in report["attacks"]["cases"].items() if r["flagged"] is False]
-        print(f"attacks missed: {missed}")
+    for name in ("attacks", "disguised"):
+        if name in report:
+            missed = [i for i, r in report[name]["cases"].items() if r["flagged"] is False]
+            print(f"{name} missed: {missed}")
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return 0
