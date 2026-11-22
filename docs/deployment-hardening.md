@@ -177,3 +177,34 @@ Pin the gateway's address (`--ip`) so the rule cannot drift. The sketch is
 IPv4. If the gateway's network has IPv6, give it the same rules with
 `ip6 saddr <its address>` against `::1/128`, `fc00::/7`, `fe80::/10` and
 `ff00::/8`, or create the network without IPv6.
+
+## Verify the image
+
+Every release of `quay.io/crunchtools/trentina` is signed with cosign before
+any tag moves, and so is every `quay.io/crunchtools/trentina-l2-model` the
+build pulls. The key is the crunchtools fleet key; its canonical copy is
+[`keys/crunchtools-bootc.pub`](https://github.com/crunchtools/constitution/blob/main/keys/crunchtools-bootc.pub)
+in crunchtools/constitution:
+
+```
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5TlIf0f5VMBaCLJGtmh9fL3C/xYM
+nHVNg0KnBqqs/x+WThX8zEKaGmiZ2SM5336mPfJKZl68/lXBnoWlU0E9Tg==
+-----END PUBLIC KEY-----
+```
+
+Resolve the tag to a digest, verify the digest, and deploy that digest, so
+the image you run is the one you checked:
+
+```
+digest=$(skopeo inspect --format '{{.Digest}}' docker://quay.io/crunchtools/trentina:latest)
+cosign verify --key crunchtools-bootc.pub --insecure-ignore-tlog \
+  "quay.io/crunchtools/trentina@$digest"
+```
+
+`--insecure-ignore-tlog` is required, not a shortcut: signatures are made
+with `--tlog-upload=false` and are not in the Rekor transparency log, so the
+key is the only trust root. There is no SBOM or provenance attestation on the
+image yet; that belongs in the shared release workflow
+(crunchtools/constitution `container-release.yml`,
+[constitution#203](https://github.com/crunchtools/constitution/issues/203)).

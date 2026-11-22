@@ -24,6 +24,7 @@ project:
     comment: Report privately through GitHub's private vulnerability reporting; SECURITY.md gives scope and response times.
   documentation:
     design: https://github.com/crunchtools/trentina/blob/main/.oss-scanner/threat_model.md
+    signature-verification: https://github.com/crunchtools/trentina/blob/main/docs/deployment-hardening.md#verify-the-image
 
 repository:
   url: https://github.com/crunchtools/trentina
