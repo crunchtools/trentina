@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import ipaddress
 import json
 import logging
 import os
@@ -177,24 +178,55 @@ ANY_PORT = "*"
 _MAX_PORT = 65535
 
 
+def _split_name_port(item: str) -> tuple[str, str] | None:
+    """One ``TRENTINA_FETCH_PRIVATE_NAMES`` entry as (host, port text), or None.
+
+    ``[::1]:8000`` is ``::1`` on 8000, unbracketed as httpx names it; a bare
+    ``::1`` is the address with no port. An empty name, or a host that still
+    holds a colon and is no address (``name:*:*``), is not an entry.
+    """
+    if item.startswith("["):
+        inside, bracket, rest = item[1:].partition("]")
+        host, port_text = inside, rest.removeprefix(":")
+        if not bracket or (rest and not rest.startswith(":")) or not _is_ipv6(host):
+            return None
+    elif item.count(":") > 1:
+        host, port_text = item, ""
+        if not _is_ipv6(host):
+            return None
+    else:
+        host, _, port_text = item.partition(":")
+        if item.endswith(":"):
+            return None
+    host = host.strip().lower().removesuffix(".")
+    return (host, port_text) if host else None
+
+
+def _is_ipv6(text: str) -> bool:
+    try:
+        ipaddress.IPv6Address(text)
+    except ValueError:
+        return False
+    return True
+
+
 def insecure_name_ports(name: str, warning: str) -> dict[str, frozenset[int] | None]:
     """Read a host escape hatch whose entries may carry a port (a1063).
 
     ``name`` lets the host through on the ports the rule already allows and no
     other; ``name:8000`` adds that port; ``name:*`` adds every port. Each name
     maps to the extra ports it was given (empty for none, None for all). An
-    entry whose port is not one is dropped with a warning: a typo must not
-    widen the hatch, and a dropped name is refused, which is fail-closed.
+    entry that is not a name, or whose port is not one, is dropped with a
+    warning: a typo must not widen the hatch, and a dropped name is refused,
+    which is fail-closed. The entry itself is not logged.
     """
     entries: dict[str, frozenset[int] | None] = {}
     for item in os.environ.get(name, "").replace(",", " ").split():
-        host, sep, port_text = item.rpartition(":")
-        if not sep or ":" in host:
-            # No port, or an IPv6 literal: the whole entry is the name.
-            host, port_text = item, ""
-        host = host.strip().lower().removesuffix(".")
-        if not host:
+        split = _split_name_port(item)
+        if split is None:
+            logger.warning("config: %s has an entry that is not a name; dropped", name)
             continue
+        host, port_text = split
         ports: frozenset[int] | None
         if port_text == ANY_PORT:
             ports = None

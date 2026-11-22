@@ -540,21 +540,40 @@ class TestPrivateNames:
         monkeypatch.setenv(
             "TRENTINA_FETCH_PRIVATE_NAMES",
             "Lab., lab:8000 fix.test:*,fix.test:9000 "
-            "a.test:http b.test:0 c.test:70000 d.test:\u00b2 ::1",
+            "a.test:http b.test:0 c.test:70000 d.test:\u00b2 ::1 [FD00::9]:8000 "
+            "e.test:*:* :8000 f.test: [::1 [::2]x [nope]:80 1:2:zz",
         )
         config = config_mod.Config()
         assert config.fetch_private_ports == {
             "lab": frozenset({8000}),
             "fix.test": None,
             "::1": frozenset(),
+            "fd00::9": frozenset({8000}),
         }
-        assert config.fetch_private_names == frozenset({"lab", "fix.test", "::1"})
+        assert config.fetch_private_names == frozenset({"lab", "fix.test", "::1", "fd00::9"})
         assert config.private_name_port("lab", 8000)
         assert not config.private_name_port("lab", 8001)
         assert config.private_name_port("fix.test", 1)
         assert not config.private_name_port("a.test", 80)
         assert "port is not one" in caplog.text
+        assert caplog.text.count("is not a name; dropped") == 7
         assert "a.test:http" not in caplog.text
+        assert "e.test" not in caplog.text
+
+    async def test_a_redirect_to_another_port_on_the_name_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The listed name on 443 cannot bounce the fetch to its own :8443."""
+        seen: list[int | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.url.port)
+            return httpx.Response(302, headers={"location": "https://lab:8443/admin"})
+
+        self._names(monkeypatch, "lab")
+        route(monkeypatch, handler, {"lab": ["10.0.0.9"]})
+        assert (await _refusal("https://lab/")).reason == "port"
+        assert seen == [None]
 
 
 class TestDeliveredAsARefusal:
