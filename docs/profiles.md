@@ -533,7 +533,9 @@ Guarded tools are exact names on backends the profile has, each allowed by
 that backend's `tools_allow`, or the file does not load. Add
 `refuse_when_flagged: true` on an unattended profile to refuse its guarded calls
 outright once the session has been delivered flagged content, tripped a decoy or
-tried to send a credential (#457, #860). The block is
+tried to send a credential (#457, #860). `refuse_when: [flagged_delivery,
+tripped, credential_seen]` picks the session labels that refuse; the key above
+is shorthand for the first two (#861). The block is
 perimeter: an agent's own reload cannot change it, and a honeypot cannot
 have one. Scenarios, the policy-writing guide, refusal codes and what it
 cannot do are in [Semantic Request Guards](semantic-request-guards.md).
@@ -566,7 +568,7 @@ after.
 Guarded tools are exact names on real backends the profile has, each allowed by
 `tools_allow`, or the file does not load. Like the request twin, the block is
 perimeter — an agent's own reload cannot change it and a honeypot cannot have
-one — and `refuse_when_flagged: true` applies the same way. The full guide is in
+one — and `refuse_when_flagged` and `refuse_when` apply the same way. The full guide is in
 [Semantic Response Guards](semantic-response-guards.md).
 
 ## Decoy Tools and Honeytokens

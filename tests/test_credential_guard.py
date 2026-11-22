@@ -209,6 +209,7 @@ async def _call(
     backend: Backend | None = None,
     tool: str = "echo",
     mode: Any = None,
+    reply: str = "ok",
 ) -> tuple[dict[str, Any], list[dict[str, Any]], Any]:
     """(response, calls the backend received, the audit row)."""
     import trentina.database as db_mod
@@ -229,7 +230,7 @@ async def _call(
     async def fake_call(_bn: str, _b: Backend, _tn: str, args: dict[str, Any]) -> BackendCall:
         seen.append(args)
         return BackendCall(
-            content=[{"type": "text", "text": "ok"}], is_error=False, structured_content=None
+            content=[{"type": "text", "text": reply}], is_error=False, structured_content=None
         )
 
     async def fake_scan(**_kwargs: Any) -> Any:

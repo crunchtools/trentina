@@ -874,6 +874,7 @@ class McpServerFace(Face):
         # A held remote tool is refused here, fail-closed, before the backend is
         # reached; internal and decoy skip, as the list filter does.
         if backend.is_remote and tool_pins.held(backend.url, tool_name):
+            await request_edge.mark_refused_credentials(backend, tool_name, arguments)
             message = f"Tool {tool_name!r} is held pending operator approval"
             audit._audit(
                 profile.name,
@@ -899,6 +900,7 @@ class McpServerFace(Face):
             )
 
         if not isinstance(arguments, dict):
+            await request_edge.mark_refused_credentials(backend, tool_name, arguments)
             message = "arguments must be an object"
             audit._audit(profile.name, backend_name, tool_name, Outcome.DENIED_GUARD, 0, message)
             return Early(_err(req_id, JSONRPC_INVALID_PARAMS, message))
@@ -934,6 +936,7 @@ class McpServerFace(Face):
                 profile, backend, tool_name, arguments
             )
         except (ModeNotPermittedError, TransformNotPermittedError) as exc:
+            await request_edge.mark_refused_credentials(backend, tool_name, arguments)
             audit._audit(
                 profile.name,
                 backend_name,
@@ -1405,7 +1408,7 @@ async def _finish_delivery(
     (``transports.mcp.McpServerFace._assemble``): it hands the ``Assembled`` here
     and the audit row is written exactly once, by this one function.
     """
-    session_marks._mark_session(assembled, None if not backend.is_internal else call_result)
+    await session_marks._mark_session(assembled, None if not backend.is_internal else call_result)
     if normalized or assembled.stripped:
         # REPLACED, never merged into what the result carries (#265): built
         # from the perimeter's own verdict and the gateway's own notes only.

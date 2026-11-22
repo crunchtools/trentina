@@ -124,6 +124,7 @@ profiles:
         mail: [send_message]
       timeout_seconds: 30         # optional, 5 to 120
       refuse_when_flagged: false  # optional; true for unattended profiles
+      refuse_when: []             # optional; labels: flagged_delivery, tripped, credential_seen
 ```
 
 | Field | Required | Meaning |
@@ -133,10 +134,11 @@ profiles:
 | `egress_http` | one of these two | [Terminating-egress](egress-http.md) upstream names whose outbound requests are judged. No globs; each is a grant this profile holds. |
 | `timeout_seconds` | no | How long a judgment may take before the call is refused. Default 30. |
 | `refuse_when_flagged` | no | Refuse these calls without asking the judge once the session has been delivered flagged content, tripped a decoy or tried to send a credential (#860). Default false. |
+| `refuse_when` | no | Session labels that refuse these calls without asking the judge: `flagged_delivery`, `tripped`, `credential_seen` (#861). Default empty. A label listed twice does not load. |
 
 A block must guard something: set `tools`, `egress_http`, or both.
 
-### Refusing a flagged session outright
+### Refusing a marked session outright
 
 By default a flagged session is one fact the judge weighs, and routine work
 goes on in a session that once read a suspicious mail. `refuse_when_flagged:
@@ -146,6 +148,22 @@ session receives, every guarded call it makes is refused with
 client that sends no session ID is refused the same way, because a session
 the gateway cannot identify is not one it knows is clean. Unguarded tools are
 untouched.
+
+A session carries labels, each set by gateway code and never by a judge, each
+lasting 12 hours from the last time it was set (#861):
+
+| Label | Set when |
+|---|---|
+| `flagged_delivery` | The session was delivered flagged or partly judged content. |
+| `tripped` | The session called a decoy, sent a planted credential, or tried to send a real one (#860). Also set when that credential rides on a call refused earlier for a refused mode, a held tool or non-object arguments. |
+| `credential_seen` | The session was delivered a response (outcome ok or tool error) whose text holds a credential shape. A refused response sets nothing. The kinds are logged, never the values. |
+
+`refuse_when: [label, ...]` refuses these calls once the session carries any
+listed label. `refuse_when_flagged: true` stays as shorthand for
+`refuse_when: [flagged_delivery, tripped]`; set both and the two lists are
+joined. A refusal on `flagged_delivery` or `tripped`, or on a session the
+gateway cannot identify, is `session_flagged`; one on `credential_seen` is
+`session_credential_seen`.
 
 Turn it on for profiles that run unattended: a swarm or coding agent that reads
 mail, tickets or web pages and nobody watches. Leave it off for an assistant
@@ -194,7 +212,7 @@ whether the profile has reached it before, a flagged session — not a second
 read. It engages **only under `block`**; `flag` is the researcher grant, where
 nothing is refused. There is no MCP session on `/proxy/http`, so the judge is asked
 with the session "unknown" (its prompt weighs that), and `refuse_when_flagged`
-has **no effect on the egress leg** — honouring it would refuse every request,
+has **no effect on the egress leg**, nor does `refuse_when` — honouring either would refuse every request,
 which is the same as not granting egress; it still governs any guarded tools in
 the same block. The destination is always recorded, so no `destination_params`
 is needed. A refusal is one HTTP `403` with `block_reason: gatekeeper`, not the
@@ -208,7 +226,8 @@ The judge is given three things, kept apart:
 - **The gateway's facts**, which are true and stated as true: the backend and
   tool; the destination (from `destination_params`); whether this profile has
   completed a call to that destination before; and whether this session was
-  delivered content the layers flagged or could not finish reading.
+  delivered content the layers flagged or could not finish reading, and whether
+  it was delivered a credential.
 - **The arguments**, as the agent wrote them with every escaping decoded and
   every credential replaced by `[REDACTED]` (#863), marked as untrusted data.
   The judge is told a `[REDACTED]` value is a credential the call carries, so
@@ -248,7 +267,8 @@ code and nothing else:
 | `other` | judge | A refusal with no listed reason, or an answer that was not an explicit allow. |
 | `arguments_flagged` | layers | L1, L2 or L3 flagged the arguments. |
 | `arguments_unjudged` | layers | The layers could not finish reading the arguments. |
-| `session_flagged` | gateway | `refuse_when_flagged` is set, and this session was delivered flagged content, tripped a decoy, tried to send a credential, or sent no session ID. |
+| `session_flagged` | gateway | `refuse_when` or `refuse_when_flagged` lists a label this session carries (`flagged_delivery`, `tripped`), or it sent no session ID. |
+| `session_credential_seen` | gateway | `refuse_when` lists `credential_seen`, and this session was delivered a credential. |
 | `gatekeeper_unavailable` | gateway | No judge is configured, or it failed, timed out, answered off-schema or leaked its canary. |
 
 It fails closed. Anything other than an explicit allow refuses the call.
@@ -260,7 +280,7 @@ Each refusal writes one [audit](audit-log.md) row with outcome
 Its message is the code, then what the judge was told:
 
 ```
-Refused by semantic request guards: unfamiliar_destination; first_contact=yes session_flagged=yes
+Refused by semantic request guards: unfamiliar_destination; first_contact=yes session_flagged=yes credential_seen=no
 ```
 
 When the arguments are flagged, the detection is recorded like any other,

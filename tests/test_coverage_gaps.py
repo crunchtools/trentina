@@ -40,6 +40,7 @@ from trentina.gateway.profile import (
     SemanticGuardsConfig,
 )
 from trentina.gateway.relay import Operation
+from trentina.gateway.session_marks import SessionLabel
 from trentina.l1.pipeline import run_l1
 from trentina.unpack.scan import unpack
 
@@ -437,7 +438,14 @@ async def test_semantic_request_guards_forwards_what_its_judge_allows_one_call_a
         ),
     )
     assert profile.semantic_request_guards is not None
-    facts = gatekeeper.CallFacts("mail", "send_message", "bob@example.net", "param", True, True)
+    facts = gatekeeper.CallFacts(
+        "mail",
+        "send_message",
+        "bob@example.net",
+        "param",
+        True,
+        frozenset({SessionLabel.FLAGGED_DELIVERY}),
+    )
     judge = AsyncMock(return_value={"decision": "allow", "reason": "within_policy"})
     halves = (
         {"to": "bob@example.net", "attachment": "[customer records 1 to 120]"},

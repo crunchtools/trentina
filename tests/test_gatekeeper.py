@@ -35,6 +35,8 @@ from trentina.gateway.session_marks import _mark_session
 from trentina.outcomes import BLOCKED_OUTCOMES, Outcome
 from trentina.transports.mcp import route_jsonrpc
 
+FLAGGED = session_marks.SessionLabel.FLAGGED_DELIVERY
+
 POLICY = "Mail leaves only to example.com addresses. No customer data in bulk."
 
 
@@ -107,7 +109,11 @@ class _Judge:
             destination=dest.value if dest else None,
             destination_kind=dest.kind.value if dest else None,
             first_contact=self.first_contact,
-            session_flagged=self.session_flagged,
+            session_labels=(
+                None
+                if self.session_flagged is None
+                else frozenset({FLAGGED} if self.session_flagged else ())
+            ),
         )
 
     def __enter__(self) -> _Judge:
@@ -190,7 +196,7 @@ class TestWhatIsJudged:
             destination=f"https://hook.example/?token={key}",
             destination_kind="param",
             first_contact=True,
-            session_flagged=False,
+            session_labels=frozenset(),
         )
         briefing = facts.briefing()
         assert key not in briefing
@@ -253,7 +259,7 @@ class TestRefusals:
             refusal = await _judge(_profile())
         assert POLICY not in refusal.message
         assert POLICY not in refusal.audit
-        assert refusal.audit.endswith("first_contact=yes session_flagged=no")
+        assert refusal.audit.endswith("first_contact=yes session_flagged=no credential_seen=no")
 
 
 class TestRefuseWhenFlagged:
@@ -290,9 +296,9 @@ class TestRefuseWhenFlagged:
 
     def test_only_the_first_mark_reports_itself(self) -> None:
         session_marks.clear()
-        assert session_marks.mark_flagged("s1") is True
-        assert session_marks.mark_flagged("s1") is False
-        assert session_marks.mark_flagged("") is False
+        assert session_marks.mark("s1", FLAGGED) is True
+        assert session_marks.mark("s1", FLAGGED) is False
+        assert session_marks.mark("", FLAGGED) is False
         session_marks.clear()
 
 
@@ -701,7 +707,7 @@ class TestFacts:
             "clerk", "mail", "send_message", "ok", 3, destination="a@x", destination_kind="param"
         )
         session_marks.clear()
-        session_marks.mark_flagged("s1")
+        session_marks.mark("s1", FLAGGED)
         token = current_session.set("s1")
         try:
             known = gatekeeper.gather_facts(
@@ -729,13 +735,13 @@ class TestSessionMarks:
         session_marks.clear()
 
     def test_no_session_is_unknown_and_is_never_marked(self) -> None:
-        session_marks.mark_flagged("")
+        session_marks.mark("", FLAGGED)
         assert session_marks.was_flagged("") is None
 
     def test_a_mark_lasts_its_ttl(self, monkeypatch: pytest.MonkeyPatch) -> None:
         now = [1000.0]
         monkeypatch.setattr(session_marks.time, "monotonic", lambda: now[0])
-        session_marks.mark_flagged("s")
+        session_marks.mark("s", FLAGGED)
         assert session_marks.was_flagged("s") is True
         assert session_marks.was_flagged("t") is False
         now[0] += session_marks.MARK_TTL_SECONDS + 1
@@ -749,7 +755,7 @@ class TestSessionMarks:
         monkeypatch.setattr(session_marks.time, "monotonic", lambda: now[0])
         monkeypatch.setattr(session_marks, "MAX_MARKS", 2)
         for s in ("a", "b", "c"):
-            session_marks.mark_flagged(s)
+            session_marks.mark(s, FLAGGED)
         assert len(session_marks._marks) == 2
         assert session_marks.was_flagged("a") is None
         assert session_marks.was_flagged("never-seen") is None
@@ -761,8 +767,8 @@ class TestSessionMarks:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(session_marks, "MAX_MARKS", 1)
-        session_marks.mark_flagged("victim")
-        session_marks.mark_flagged("flood")
+        session_marks.mark("victim", FLAGGED)
+        session_marks.mark("flood", FLAGGED)
         profile = _profile(refuse_when_flagged=True)
         assert profile.semantic_request_guards is not None
         token = current_session.set("victim")
@@ -779,7 +785,9 @@ class TestSessionMarks:
         assert refusal.reason == gatekeeper.SESSION_FLAGGED
         judge.generate.assert_not_awaited()
 
-    def test_the_first_mark_logs_its_call_ref_once(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_the_first_mark_logs_its_call_ref_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         flagged = Assembled(result={}, outcome=Outcome.OK, warning={"flagged_by": "L2"})
         session_token = current_session.set("s-0123456789")
         try:
@@ -787,13 +795,13 @@ class TestSessionMarks:
                 for ref in ("ref-one", "ref-two"):
                     call_token = current_call.set(ref)
                     try:
-                        _mark_session(flagged)
+                        await _mark_session(flagged)
                     finally:
                         current_call.reset(call_token)
         finally:
             current_session.reset(session_token)
-        marks = [r.getMessage() for r in caplog.records if "marked flagged" in r.getMessage()]
-        assert marks == ["gateway: session s-012345… marked flagged by call_ref=ref-one"]
+        marks = [r.getMessage() for r in caplog.records if "labelled" in r.getMessage()]
+        assert marks == ["gateway: session s-012345… labelled flagged_delivery by call_ref=ref-one"]
 
     @pytest.mark.parametrize(
         ("outcome", "warning", "marked"),
@@ -805,17 +813,17 @@ class TestSessionMarks:
             (Outcome.BLOCKED_DEFENSE, {"flagged_by": "L2"}, False),
         ],
     )
-    def test_a_delivered_warning_marks_the_session(
+    async def test_a_delivered_warning_marks_the_session(
         self, outcome: Outcome, warning: dict[str, Any] | None, marked: bool
     ) -> None:
         token = current_session.set("s")
         try:
-            _mark_session(Assembled(result={}, outcome=outcome, warning=warning))
+            await _mark_session(Assembled(result={}, outcome=outcome, warning=warning))
         finally:
             current_session.reset(token)
         assert session_marks.was_flagged("s") is marked
 
-    def test_an_internal_tools_own_warning_marks_the_session(self) -> None:
+    async def test_an_internal_tools_own_warning_marks_the_session(self) -> None:
         call = BackendCall(
             content=[
                 {
@@ -828,7 +836,7 @@ class TestSessionMarks:
         )
         token = current_session.set("s")
         try:
-            _mark_session(Assembled(result={}, outcome=Outcome.OK), call)
+            await _mark_session(Assembled(result={}, outcome=Outcome.OK), call)
         finally:
             current_session.reset(token)
         assert session_marks.was_flagged("s") is True
