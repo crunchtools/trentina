@@ -467,3 +467,19 @@ class TestUnmaskingBounds:
     def test_ordinary_non_ascii_text_is_not_a_bomb(self) -> None:
         text = "日本語のテキスト、\ufb01 ligature, \uff83\uff9e\uff70\uff80。" * 2000
         assert every_credential(text) == []
+
+    def test_a_destination_with_no_origin_is_the_sentinel_and_refused(self) -> None:
+        from trentina.gateway.config_guard import UNSHOWABLE_DESTINATION
+        from trentina.tools.config import ConfigWriteError, _credential_facts
+
+        auth = AuthConfig(bearer_token_env="TOK")
+        backend = Backend(url="http://luna:8000/mcp", credentials_allowed=["jwt"])
+        before = {"ag": Profile(name="ag", auth=auth, backends={"b": backend})}
+        after = {"ag": Profile(name="ag", auth=auth, backends={"b": backend})}
+        after["ag"].backends["b"] = Backend.model_construct(
+            url="plugin:no-host", transport="mcp", carrier=None, credentials_allowed={"*": ["jwt"]}
+        )
+        added = credentials_widened(before, after)
+        assert added == {"credentials_allowed:ag.b.*": UNSHOWABLE_DESTINATION}
+        with pytest.raises(ConfigWriteError):
+            _credential_facts(added)

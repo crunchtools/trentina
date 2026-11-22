@@ -673,7 +673,7 @@ def _credential_facts(added: dict[str, str]) -> dict[str, str]:
     if len(added) > _MAX_PROPOSAL_ROWS:
         raise _too_many("credential allowances", len(added))
     unshowable = sorted(
-        where for where, what in added.items() if config_guard.UNSHOWABLE_DESTINATION in what
+        where for where, what in added.items() if what == config_guard.UNSHOWABLE_DESTINATION
     )
     if unshowable:
         # As for an egress grant: an approval must say where the keys would go.

@@ -610,13 +610,18 @@ def credentials_widened(before: dict[str, Profile], after: dict[str, Profile]) -
             old = old_backend.credentials_allowed if old_backend and same_place else {}
             for tool, kinds in backend.credentials_allowed.items():
                 new = [kind for kind in kinds if not _allows(old, tool, kind)]
-                if new:
-                    shown = "every tool" if tool == "*" else tool
-                    sent = "any credential" if new == ["*"] else ", ".join(new)
-                    added[f"credentials_allowed:{name}.{backend_name}.{tool}"] = (
-                        f"{sent} may leave in the arguments of {shown}, "
-                        f"sent to {backend_destination(backend)}"
-                    )
+                if not new:
+                    continue
+                shown = "every tool" if tool == "*" else tool
+                sent = "any credential" if new == ["*"] else ", ".join(new)
+                destination = backend_destination(backend)
+                # The sentinel alone, as an egress grant's: the caller tests
+                # equality, never searches display text for it.
+                added[f"credentials_allowed:{name}.{backend_name}.{tool}"] = (
+                    destination
+                    if destination == UNSHOWABLE_DESTINATION
+                    else f"{sent} may leave in the arguments of {shown}, sent to {destination}"
+                )
     return added
 
 
