@@ -19,11 +19,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-permissions:
-  contents: read
-  issues: write
-  pull-requests: write
-  security-events: write
+# Default-deny: each job names what it needs, and only the two SARIF
+# uploads (codeql, semgrep) can write to code scanning.
+permissions: {}
 
 jobs:
   dependency-audit:
@@ -91,9 +89,15 @@ jobs:
   codeql:
     name: CodeQL Analysis
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # security-extended plus Trentina's own query pack (#269), which models
       # MCP tool arguments as remote input and egress/defend/logsafe as
@@ -113,6 +117,10 @@ jobs:
   semgrep:
     name: Semgrep (in-repo rules)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
 
     # Trentina's own structural rules (.semgrep/trentina.yml, #269). Run from
     # the upstream image with docker rather than as a container job, so the
@@ -123,6 +131,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Rule tests
         run: docker run --rm -v "$PWD:/src" -w /src "$SEMGREP_IMAGE" sh .semgrep/run-tests.sh
