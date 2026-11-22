@@ -572,6 +572,77 @@ def _collapsed(
     )
 
 
+#: What decides where a backend's calls, and so their arguments, are sent.
+_DESTINATION_FIELDS = ("url", "transport", "carrier")
+
+
+def _allows(allowance: dict[str, list[str]], tool: str, kind: str) -> bool:
+    """Whether ``allowance`` already lets ``tool`` carry ``kind``.
+
+    A tool's allowance is its own list plus the ``*`` list; the ``*`` tool's is
+    the ``*`` list alone, since a per-tool entry does not cover every tool.
+    """
+    kinds = [*allowance.get("*", ()), *(allowance.get(tool, ()) if tool != "*" else ())]
+    return "*" in kinds or kind in kinds
+
+
+def credentials_widened(before: dict[str, Profile], after: dict[str, Profile]) -> dict[str, str]:
+    """The ``credentials_allowed`` entries ``after`` adds, by what they newly let out (#883).
+
+    An allowance turns the argument credential guard (#862) off for a kind on a
+    tool, so a new one is a way for a key to leave in a tool call. It is
+    compared by COVERAGE, not by key: ``["*"]`` narrowed to ``["github_token"]``
+    adds a key and allows nothing new, so it applies at once, and a backend new
+    to the file brings its whole allowance as new. So does a backend whose
+    destination moved (``url``, ``transport``, ``carrier``): an allowance was
+    approved for where the keys went, and repointing it sends them somewhere
+    nobody approved.
+    """
+    added: dict[str, str] = {}
+    for name, profile in after.items():
+        old_profile = before.get(name)
+        for backend_name, backend in profile.backends.items():
+            old_backend = old_profile.backends.get(backend_name) if old_profile else None
+            same_place = old_backend is not None and all(
+                getattr(old_backend, field) == getattr(backend, field)
+                for field in _DESTINATION_FIELDS
+            )
+            old = old_backend.credentials_allowed if old_backend and same_place else {}
+            for tool, kinds in backend.credentials_allowed.items():
+                new = [kind for kind in kinds if not _allows(old, tool, kind)]
+                if not new:
+                    continue
+                shown = "every tool" if tool == "*" else tool
+                sent = "any credential" if new == ["*"] else ", ".join(new)
+                destination = backend_destination(backend)
+                # The sentinel alone, as an egress grant's: the caller tests
+                # equality, never searches display text for it.
+                added[f"credentials_allowed:{name}.{backend_name}.{tool}"] = (
+                    destination
+                    if destination == UNSHOWABLE_DESTINATION
+                    else f"{sent} may leave in the arguments of {shown}, sent to {destination}"
+                )
+    return added
+
+
+def backend_destination(backend: Any) -> str:
+    """Where a backend's calls go, as a person checks it: origin, transport, carrier.
+
+    Shown in every allowance row so that the row, and so the approval's digest,
+    changes with the destination: an approval opened for one host cannot be
+    spent on a write restaged to another. The origin only, as for an egress
+    grant, since a backend url may carry a credential in its userinfo or query;
+    a ``unix://`` socket has no host, so its path is the destination.
+    """
+    if str(backend.url).startswith("unix://"):
+        origin = "unix://" + urlparse(str(backend.url)).path
+    else:
+        origin = _origin_only(backend.url)
+        if origin == UNSHOWABLE_DESTINATION:
+            return UNSHOWABLE_DESTINATION
+    return f"{origin} (transport {backend.transport}, carrier {backend.carrier or 'from the url'})"
+
+
 def widened(before: dict[str, str], after: dict[str, str]) -> dict[str, str]:
     """The grants ``after`` adds or changes, by the same keys both sides use.
 

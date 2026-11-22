@@ -669,6 +669,33 @@ def _defense_facts(downgraded: dict[str, dict[str, Any]]) -> dict[str, str]:
     return facts
 
 
+def _credential_facts(added: dict[str, str]) -> dict[str, str]:
+    """What a person needs to see about a credential allowance: which tool, which kinds."""
+    if len(added) > _MAX_PROPOSAL_ROWS:
+        raise _too_many("credential allowances", len(added))
+    unshowable = sorted(
+        where for where, what in added.items() if what == config_guard.UNSHOWABLE_DESTINATION
+    )
+    if unshowable:
+        # As for an egress grant: an approval must say where the keys would go.
+        raise ConfigWriteError(
+            {
+                "error": (
+                    f"these credential allowances are on a backend with no destination a "
+                    f"person could check ({', '.join(unshowable)}), so nothing was changed"
+                )
+            }
+        )
+    return {
+        **dict(sorted(added.items())),
+        "What this means": (
+            "The gateway refuses a tool call whose arguments carry a credential. These "
+            "tools will be able to send the kinds listed, as written, to the destination "
+            "named on each row. Check that destination: it is where the keys go."
+        ),
+    }
+
+
 def _egress_facts(added: dict[str, str]) -> dict[str, str]:
     """What a person needs to see about a new way out of network isolation.
 
@@ -850,6 +877,12 @@ def _egress_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Prop
     return [(pending.Kind.EGRESS_GRANT, _egress_facts(granted))] if granted else []
 
 
+def _credential_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Proposal]:
+    """A credential kind a tool may newly carry out in its arguments (#883)."""
+    allowed = config_guard.credentials_widened(before.profiles, after.profiles)
+    return [(pending.Kind.CREDENTIAL_ALLOWANCE, _credential_facts(allowed))] if allowed else []
+
+
 def _needs_approval(
     active: ActiveConfig,
     after: GatewayConfig,
@@ -859,13 +892,14 @@ def _needs_approval(
 ) -> _Proposal | None:
     """Whether this write is one a person has to agree to, and what to show them.
 
-    Five of them, and they are not a privilege boundary — the operator is root.
+    They are not a privilege boundary — the operator is root.
     They exist because the operator is a model, so the question is whether it
     can be talked into a change whose blast radius is out of all proportion to
     how plausible the request would look: minting a second root, believing
     another gateway's scan instead of running our own, admitting a gateway to a
-    federation ingress, standing a profile's perimeter down to detect-only, and
-    opening a way out of network isolation.
+    federation ingress, standing a profile's perimeter down to detect-only,
+    opening a way out of network isolation, and letting a tool carry a
+    credential out in its arguments (#883).
 
     Every rule but ``trust_stays_human`` is computed on the LOADED candidate
     rather than on the mapping the caller sent, because a write reaches any of
@@ -881,6 +915,7 @@ def _needs_approval(
         *_operator_peer_proposals(before, after),
         *_defense_proposals(before, after),
         *_egress_proposals(before, after),
+        *_credential_proposals(before, after),
     ]
     if not proposals:
         return None

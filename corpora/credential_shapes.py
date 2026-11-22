@@ -151,6 +151,18 @@ def _cases() -> list[Case]:
         Case("sk-too-short", 'POST /chat\n{"note": "the sku is sk-123 in the catalog"}'),
         Case("eyj-not-a-jwt", 'POST /log\n{"text": "a token begins eyJ but eyJonly is not one"}'),
         Case("version-header", "GET /v1/data\nx-api-version: 7\naccept: application/json"),
+        # Tool-call prose (#882 review): a PR body, an issue, a memory note.
+        Case(
+            "basic-before-a-path",
+            '{"body": "A Basic src/trentina/gateway/guards.py fix, and a basic '
+            'src/trentina/gateway/profile.py one"}',
+        ),
+        Case(
+            "bearer-before-an-identifier",
+            '{"body": "the bearer credentials_allowed_well_formed check, and the Bearer '
+            'token_variants_matcher_for path"}',
+        ),
+        Case("short-query-values", '{"text": "see https://docs.example/find?key=rhel&token=next"}'),
     ]
     return attacks + benign
 

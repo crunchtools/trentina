@@ -129,6 +129,8 @@ Parse tool name → Backend exists? → Tool in allowlist? → Resolve trentina_
 
 A rejected call returns immediately. The backend never sees the request. The error message is terse and does not include the rejected value (to avoid leaking guard configuration to the agent).
 
+The [credential check](credential-guard.md) runs right after these guards and before the schema check. It is a separate check, on by default and configured by `credentials_allowed`, not by a guard: it refuses a credential shape in any argument of any tool.
+
 ## What Literal Request Guards Cannot Do
 
 A literal request guard only sees what the agent sent. When a tool's retrieval is

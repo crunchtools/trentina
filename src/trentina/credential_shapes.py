@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Callable, Iterator
 from enum import Enum
 
 
@@ -68,10 +69,83 @@ QUERY_SECRET = re.compile(
     re.IGNORECASE,
 )
 
+#: ``QUERY_SECRET`` for DETECTION: the value must look like a secret rather
+#: than a setting, 16 characters or more (group 1) with a digit or a capital in
+#: them, which ``_has_digit_or_capital`` checks. Not a lookahead: the pattern is
+#: IGNORECASE, where ``[0-9A-Z]`` takes any letter, and a case-scoped lookahead
+#: rescans a lowercase run from every ``?key=`` inside it, which is quadratic.
+#: ``?key=rhel`` and ``&token=next`` are parameters, not credentials.
+QUERY_DETECT = re.compile(
+    r"[?&](?:api[_-]?key|key|access_token|refresh_token|id_token|token"
+    r"|client_secret|secret|password|passwd|sig|signature)="
+    r"(?!\[REDACTED)([^\s&#\"'<>]{16,}+)",
+    re.IGNORECASE,
+)
+
 #: An ``Authorization`` value. Group 1 is the scheme a redactor keeps. Twenty
 #: characters keeps prose ("Bearer token") and the bare ``Bearer`` of a
 #: challenge out of it.
 AUTH_VALUE = re.compile(r"\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{20,}", re.IGNORECASE)
+
+#: ``AUTH_VALUE`` for DETECTION, which refuses a request where redaction only
+#: cuts a log line. The scheme in any case and a token of 20 or more in the
+#: base64, base64url and JWT alphabets; group 1 is the token, which
+#: ``_looks_like_a_token`` then has to accept. The regex finds every candidate,
+#: the predicate is what keeps prose out (#882 review), so recall on a real
+#: token is the regex's alone.
+AUTH_DETECT = re.compile(
+    r"\b(?:Bearer|Basic)\s+([A-Za-z0-9+/=._~-]{20,}+)(?![A-Za-z0-9+/=._~-])", re.IGNORECASE
+)
+
+#: A word part of an identifier, and a camel hump: letters first, which is what
+#: a random token's pieces are not.
+_WORD_PART = re.compile(r"[a-z][a-z0-9]*")
+_HUMP = re.compile(r"[A-Z][a-z]{2,}")
+_FILE_EXTENSION = re.compile(r"[a-z]{1,5}")
+_SEPARATOR = re.compile(r"[_.-]")
+_BEFORE_CAPITAL = re.compile(r"(?=[A-Z])")
+
+
+def _is_prose(token: str) -> bool:
+    """Whether ``token`` is a shape prose has and a random token does not.
+
+    A path ending in a file extension (``src/trentina/guards.py``); lowercase
+    words joined by ``_``, ``-`` or ``.`` (``credentials_allowed_well_formed``);
+    or camelCase or PascalCase words of three letters or more
+    (``credentialsAllowedWellFormed``). A UUID's segments are hex and mostly start
+    with a digit, and a 43-character token_urlsafe value has capitals mid-run,
+    so each matches one of these with negligible odds. Split and checked part by
+    part rather than with one pattern, so there is no nested quantifier to
+    backtrack.
+    """
+    stem, dot, extension = token.rpartition(".")
+    if dot and "/" in stem and _FILE_EXTENSION.fullmatch(extension):
+        return True
+    words = _SEPARATOR.split(token)
+    if len(words) > 1 and words[0].isalpha() and all(_WORD_PART.fullmatch(w) for w in words):
+        return len(words[0]) >= 2
+    head, *humps = _BEFORE_CAPITAL.split(token)
+    if not humps or not all(_HUMP.fullmatch(hump) for hump in humps):
+        return False
+    if head == "":
+        return len(humps) >= 2
+    return len(head) >= 3 and head.isalpha() and head.islower()
+
+
+def _has_digit_or_capital(match: re.Match[str]) -> bool:
+    return any(c.isdigit() or c.isupper() for c in match.group(1))
+
+
+def _looks_like_a_token(match: re.Match[str]) -> bool:
+    """Two of lower, upper and digit, and no prose shape: a credential, not a sentence."""
+    token = match.group(1)
+    classes = (
+        any(c.islower() for c in token)
+        + any(c.isupper() for c in token)
+        + any(c.isdigit() for c in token)
+    )
+    return classes >= 2 and not _is_prose(token)
+
 
 #: ``scheme://user:password@host``. Group 1 is the ``://`` a redactor keeps.
 USERINFO = re.compile(r"(://)[^/\s:@]{1,256}:[^/\s@]{1,1024}@")
@@ -129,14 +203,27 @@ PEM_REDACT = re.compile(
 KEY_SHAPE = re.compile(_BOUNDARY + "(?:" + "|".join(body for _, body in _KEY_SHAPES) + ")")
 
 #: Every finder, kind kept, for ``find``/``kinds``. Built from the same tables
-#: as the redaction patterns, so there is genuinely one source.
-_FINDERS: tuple[tuple[CredentialKind, re.Pattern[str]], ...] = (
-    (CredentialKind.QUERY_SECRET, QUERY_SECRET),
-    (CredentialKind.AUTHORIZATION, AUTH_VALUE),
-    (CredentialKind.URL_USERINFO, USERINFO),
-    *((kind, re.compile(_BOUNDARY + body)) for kind, body in _KEY_SHAPES),
-    (CredentialKind.PEM_PRIVATE_KEY, PEM_KEY),
+#: as the redaction patterns, so there is genuinely one source; the query and
+#: ``Authorization`` finders are the stricter detection forms, since a finding
+#: refuses a request and a redaction only over-cuts a log line.
+_Accept = Callable[[re.Match[str]], bool]
+_FINDERS: tuple[tuple[CredentialKind, re.Pattern[str], _Accept | None], ...] = (
+    (CredentialKind.QUERY_SECRET, QUERY_DETECT, _has_digit_or_capital),
+    (CredentialKind.AUTHORIZATION, AUTH_DETECT, _looks_like_a_token),
+    (CredentialKind.URL_USERINFO, USERINFO, None),
+    *((kind, re.compile(_BOUNDARY + body), None) for kind, body in _KEY_SHAPES),
+    (CredentialKind.PEM_PRIVATE_KEY, PEM_KEY, None),
 )
+
+
+def _matches(
+    pattern: re.Pattern[str], accept: _Accept | None, text: str
+) -> Iterator[re.Match[str]]:
+    """Every match of one finder that its predicate, if it has one, accepts."""
+    for match in pattern.finditer(text):
+        if accept is None or accept(match):
+            yield match
+
 
 #: The cheap prefilter: at least one of every pattern's required lead-in. A
 #: line with none of these (almost every line) is checked once and left, which
@@ -164,8 +251,8 @@ def find(text: str) -> list[Finding]:
     if ANY_SHAPE.search(text) is None:
         return []
     out: list[Finding] = []
-    for kind, pattern in _FINDERS:
-        out.extend((kind, m.group(0)) for m in pattern.finditer(text))
+    for kind, pattern, accept in _FINDERS:
+        out.extend((kind, m.group(0)) for m in _matches(pattern, accept, text))
     return out
 
 
@@ -179,8 +266,8 @@ def kinds(text: str) -> Counter[CredentialKind]:
     counter: Counter[CredentialKind] = Counter()
     if ANY_SHAPE.search(text) is None:
         return counter
-    for kind, pattern in _FINDERS:
-        n = sum(1 for _ in pattern.finditer(text))
+    for kind, pattern, accept in _FINDERS:
+        n = sum(1 for _ in _matches(pattern, accept, text))
         if n:
             counter[kind] += n
     return counter
@@ -190,7 +277,7 @@ def has_credential(text: str) -> bool:
     """Whether ``text`` holds any credential shape — the request-path signal."""
     if ANY_SHAPE.search(text) is None:
         return False
-    return any(pattern.search(text) for _, pattern in _FINDERS)
+    return any(next(_matches(pattern, accept, text), None) for _, pattern, accept in _FINDERS)
 
 
 #: What a cut credential leaves behind; matches ``logsafe.REDACTED``.

@@ -24,6 +24,9 @@ from __future__ import annotations
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
 
+from ..jsonwalk import iter_leaves
+from .outbound import every_credential
+
 if TYPE_CHECKING:
     from .profile import Backend, ParameterConstraint
 
@@ -82,6 +85,31 @@ def check_request_guards(
             return f"Parameter {param_name!r} {reason}"
 
     return None
+
+
+def refused_credentials(
+    tool_name: str,
+    arguments: dict[str, Any],
+    backend: Backend,
+) -> list[str]:
+    """The credential kinds in a call's arguments that this tool may not carry (#862).
+
+    The arguments are scanned as written and unmasked (``outbound.every_credential``),
+    so a key escaped, entity-encoded, split by a zero-width character or written
+    in fullwidth is found as a reader would see it.
+    What ``credentials_allowed`` lists for the tool, or for ``*``, is let through;
+    ``["*"]`` lets every kind through. Returns kind names, sorted, never a value.
+    """
+    allowed = {
+        *backend.credentials_allowed.get("*", ()),
+        *backend.credentials_allowed.get(tool_name, ()),
+    }
+    if "*" in allowed or not arguments:
+        return []
+    # The string leaves as the backend reads them, not ``json.dumps``: that doubles
+    # each backslash, and a key written as ``\\uXXXX`` text would not reveal.
+    document = "\n".join(iter_leaves(arguments))
+    return [kind for kind in every_credential(document) if kind not in allowed]
 
 
 def check_response_guards(

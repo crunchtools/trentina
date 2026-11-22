@@ -112,6 +112,8 @@ class Kind(Enum):
     DEFENSE_DOWNGRADE = "defense downgrade"
     #: A new way out of network isolation, read by no layer.
     EGRESS_GRANT = "egress grant"
+    #: A credential kind a tool's arguments may carry past the guard (#862, #883).
+    CREDENTIAL_ALLOWANCE = "credential allowance"
 
 
 @dataclass(frozen=True)

@@ -265,7 +265,8 @@ async def judge_units(
                 units = await _one_cap(units)
         except TimeoutError as exc:
             _log_scan_failed(backend, source_type, exc)
-            kinds = list(dict.fromkeys(k for unit in units for k in detect_credentials(unit)))
+            found = await asyncio.to_thread(lambda: [detect_credentials(u) for u in units])
+            kinds = list(dict.fromkeys(k for unit_kinds in found for k in unit_kinds))
             return OutboundVerdict(refused=mode is Mode.BLOCK, kinds=kinds)
         deadline = max(deadline - (loop.time() - started), 0.001)
     run = functools.partial(

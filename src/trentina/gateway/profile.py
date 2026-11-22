@@ -31,6 +31,7 @@ from pydantic import (
 )
 
 from ..config import MODE_NAMES, SUPPORTED_PROVIDERS, canonical_mode
+from ..credential_shapes import CredentialKind
 from ..credential_shapes import kinds as credential_kinds
 from .key_store import KEY_NAME_RE
 
@@ -139,6 +140,7 @@ _REMOTE_ONLY_FIELDS = (
     "literal_request_guards",
     "literal_response_guards",
     "destination_params",
+    "credentials_allowed",
     "l3_briefing",
     "preprocess_tools",
 )
@@ -1319,6 +1321,18 @@ class Backend(BaseModel):
             "rejects the whole response — nothing partial is delivered."
         ),
     )
+    credentials_allowed: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "The credential kinds this backend's tools may carry in their "
+            "arguments (#862). Every tools/call's revealed arguments are scanned "
+            "for credential shapes and a hit is refused as denied_guard unless "
+            "its kind is listed here. A list covers every tool of the backend; "
+            "a mapping is tool name -> kinds, with '*' as the key for every "
+            "tool. A kind is a credential_shapes.CredentialKind value, or '*' "
+            "alone for all of them; an unknown kind fails the load."
+        ),
+    )
     destination_params: dict[str, str] = Field(
         default_factory=dict,
         description=(
@@ -1413,6 +1427,42 @@ class Backend(BaseModel):
                         f"literal_request_guards.{tool}.trentina_mode: {value!r} matches no mode; "
                         f"use {', '.join(MODE_NAMES)} or a glob over them"
                     )
+        return v
+
+    @field_validator("credentials_allowed", mode="before")
+    @classmethod
+    def credentials_allowed_well_formed(cls, v: Any) -> Any:
+        """Every kind is one the detector names, and ``*`` stands alone.
+
+        A list is the whole backend's, the same as ``{"*": [...]}``. A kind
+        the detector never reports would allow nothing, which is an opt-out
+        quietly not taken, so it is a load error. ``*`` beside named kinds is
+        refused too: it already allows them, and the mix reads as a narrower
+        allowance than it is.
+        """
+        if isinstance(v, list):
+            v = {"*": v}
+        if not isinstance(v, dict):
+            return v  # the field's own type refuses it, in pydantic's words
+        known = {kind.value for kind in CredentialKind}
+        for tool, kinds in v.items():
+            where = f"credentials_allowed.{tool}"
+            if tool != "*" and not (isinstance(tool, str) and DESTINATION_NAME_RE.fullmatch(tool)):
+                raise ValueError(f"credentials_allowed: tool {tool!r} is not '*' or a tool name")
+            if not isinstance(kinds, list) or not kinds:
+                raise ValueError(f"{where}: a non-empty list of kinds")
+            if not all(isinstance(k, str) for k in kinds):
+                raise ValueError(f"{where}: every kind is a string")
+            if "*" in kinds and len(kinds) > 1:
+                raise ValueError(f"{where}: '*' already allows every kind; list it alone")
+            unknown = sorted(str(k) for k in kinds if k != "*" and k not in known)
+            if unknown:
+                raise ValueError(
+                    f"{where}: unknown kind {', '.join(unknown)}; "
+                    f"use '*' or one of {', '.join(sorted(known))}"
+                )
+            if len(set(kinds)) != len(kinds):
+                raise ValueError(f"{where}: lists a kind twice")
         return v
 
     @field_validator("destination_params")

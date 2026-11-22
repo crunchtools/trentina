@@ -97,7 +97,7 @@ claim beyond that here.
 request.
 
 **Trentina.** Arguments are normalized against the tool's schema and held to
-literal-request-guard patterns before the backend sees the call. The content tools
+literal-request-guard patterns, and scanned for credential shapes (#862), before the backend sees the call. The content tools
 fetch through one egress guard (resolved address, pinned connection, checked
 redirects) and read files only within confined roots. Calls to listed tools
 can be judged against a rule in English before they run. The git transport
