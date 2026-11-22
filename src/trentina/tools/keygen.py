@@ -15,6 +15,7 @@ pins, and a public key is not a secret, which is why
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -46,7 +47,8 @@ async def federation_keygen(name: str) -> dict[str, Any]:
         return {"error": "key name must be lowercase letters, digits and hyphens"}
 
     try:
-        public_pem = key_store.mint(name)
+        # A worker thread: the write fsyncs the file and its directory (#868).
+        public_pem = await asyncio.to_thread(key_store.mint, name)
     except FileExistsError:
         return {"error": "a key of that name already exists; rotate to a new name"}
     except OSError as exc:

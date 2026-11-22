@@ -23,6 +23,7 @@ pointing the profile at it — the same shape as ``federation_keygen``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -53,7 +54,8 @@ async def profile_token(name: str) -> dict[str, Any]:
         return {"error": "token name must be lowercase letters, digits and hyphens"}
 
     try:
-        token = token_store.mint(name)
+        # A worker thread: the write fsyncs the file and its directory (#868).
+        token = await asyncio.to_thread(token_store.mint, name)
     except FileExistsError:
         return {"error": "a token of that name already exists; rotate to a new name"}
     except OSError as exc:
