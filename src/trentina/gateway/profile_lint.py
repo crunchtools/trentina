@@ -30,6 +30,10 @@ is SAFE, in the ways the #90 audit and its successors found live:
 - ``agent-self-authorize``: an agent-role profile, not a declared assistant,
   with ``auth.self_authorize`` on a backend (#479). It can start its own
   logins, so the operator should have meant it.
+- ``guarded-egress-under-flag``: a profile lists an upstream under
+  ``semantic_request_guards.egress_http`` whose ``egress_http`` grant sets
+  ``enforcement: flag`` (#848). The gatekeeper only runs under block, so the
+  guard never engages. An unset enforcement defaults to block and is fine.
 
 Both posture checks are for profiles that run unattended, such as swarm or
 coding agents. A personal assistant that a person talks to directly holds
@@ -358,6 +362,31 @@ def check_guarded_destinations(profiles_file: dict[str, Any]) -> list[Finding]:
     return findings
 
 
+def check_guarded_egress_enforcement(profiles_file: dict[str, Any]) -> list[Finding]:
+    """A guarded egress upstream whose grant is flag, so the guard never runs (#848).
+
+    The gatekeeper only engages under block. A grant that does not set
+    ``enforcement`` defaults to block, so only an explicit ``flag`` is a finding.
+    """
+    findings = []
+    for profile, body in _profiles(profiles_file).items():
+        guarded = body.get("semantic_request_guards")
+        grants = body.get("egress_http")
+        if not isinstance(guarded, dict) or not isinstance(grants, dict):
+            continue
+        for upstream in guarded.get("egress_http") or ():
+            grant = grants.get(upstream)
+            if isinstance(grant, dict) and grant.get("enforcement") == "flag":
+                findings.append(
+                    Finding(
+                        "guarded-egress-under-flag",
+                        f"profile {profile!r} guards egress_http/{upstream}, but that "
+                        "grant's enforcement is flag, so the gatekeeper never runs on it",
+                    )
+                )
+    return findings
+
+
 def check_oauth_subjects(profiles_file: dict[str, Any]) -> list[Finding]:
     """An OAuth profile that admits whoever holds an address, not an account (#458)."""
     findings = []
@@ -510,6 +539,7 @@ def lint(profiles_file: dict[str, Any], *, config_source: str | None = None) -> 
         *check_shared_write_backends(profiles_file),
         *check_toxic_flows(profiles_file),
         *check_guarded_destinations(profiles_file),
+        *check_guarded_egress_enforcement(profiles_file),
         *check_oauth_subjects(profiles_file),
         *check_self_authorize(profiles_file),
         *check_federation_links(profiles_file),

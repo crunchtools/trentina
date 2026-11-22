@@ -143,12 +143,14 @@ def _profile(
     *,
     with_cred: bool = True,
     guarded: bool = False,
+    l2: Literal["enforce", "advisory_when_l3_clean"] = "enforce",
 ) -> Profile:
     grant = EgressGrant(
         token_env="AGENT_GH" if with_cred else None,
         methods=["GET", "POST"],
         paths=["/repos/*"],
         enforcement=enforcement,
+        l2=l2,
     )
     if with_cred:
         from pydantic import SecretStr
@@ -196,6 +198,7 @@ def _harness(
     with_cred: bool = True,
     upstream: EgressUpstream | None = None,
     guarded: bool = False,
+    l2: Literal["enforce", "advisory_when_l3_clean"] = "enforce",
 ) -> _Harness:
     net = _Net()
     # pinned_send now owns the checked_target lookup internally, so the one seam
@@ -204,7 +207,7 @@ def _harness(
     up = upstream if upstream is not None else _upstream()
     active = SimpleNamespace(config=SimpleNamespace(egress_upstreams={"gh": up}))
     monkeypatch.setattr(loader, "get_active_config", lambda: active)
-    profiles = {"agent1": _profile(enforcement, with_cred=with_cred, guarded=guarded)}
+    profiles = {"agent1": _profile(enforcement, with_cred=with_cred, guarded=guarded, l2=l2)}
     route = egress_http.HttpRoute()
     entry = perimeter.Mount(route, DestinationKind.EGRESS, active.config, in_tree=True)
 
@@ -762,3 +765,91 @@ class TestGatekeeper:
         assert resp.status_code == 200
         assert calls == []
         assert len(h.net.sent) == 1
+
+
+class TestL2AdvisoryWhenL3Clean:
+    """#848: an egress grant may let L3's explicit clean overrule an L2-only
+    flag. Credentials, gaps and the semantic request guard still refuse."""
+
+    @staticmethod
+    def _l2_only(monkeypatch: pytest.MonkeyPatch, *, advisory: bool) -> list[dict[str, Any]]:
+        """Stub the request judge as L2 flagging alone; record defend's kwargs."""
+        from trentina import defense as defense_mod
+        from trentina.defense import Layer
+
+        _stub_judge(monkeypatch)
+        calls: list[dict[str, Any]] = []
+
+        async def _defend(*_a: Any, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            applied = advisory and kwargs.get("l2_advisory", False)
+            return SimpleNamespace(
+                flagged=True, flagged_by=Layer.L2, risk_level="high", l2_advisory=applied
+            )
+
+        monkeypatch.setattr(defense_mod, "defend", _defend)
+        return calls
+
+    def test_l2_flag_with_l3_clean_passes_to_the_gatekeeper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._l2_only(monkeypatch, advisory=True)
+        gate = TestGatekeeper._patch_judge(monkeypatch, lambda: None)
+        h = _harness(monkeypatch, guarded=True, l2="advisory_when_l3_clean")
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, json={"a": 1})
+        assert resp.status_code == 200
+        assert calls[0]["l2_advisory"] is True
+        assert len(gate) == 1  # the guard is still the boundary
+        assert len(h.net.sent) == 1
+
+    def test_the_gatekeeper_still_refuses(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trentina.gateway.gatekeeper import CallFacts, GateRefusal
+
+        self._l2_only(monkeypatch, advisory=True)
+        refusal = GateRefusal(
+            "policy_violation", CallFacts("http:gh", "POST", "d", "egress", True, None)
+        )
+        TestGatekeeper._patch_judge(monkeypatch, lambda: refusal)
+        h = _harness(monkeypatch, guarded=True, l2="advisory_when_l3_clean")
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, json={"a": 1})
+        assert resp.status_code == 403
+        assert resp.json()["block_reason"] == "gatekeeper"
+        assert h.net.sent == []
+
+    def test_a_credential_is_still_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._l2_only(monkeypatch, advisory=True)
+        gate = TestGatekeeper._patch_judge(monkeypatch, lambda: None)
+        h = _harness(monkeypatch, guarded=True, l2="advisory_when_l3_clean")
+        resp = h.client.post(
+            "/proxy/http/gh/repos/x",
+            headers=_AUTH,
+            content=json.dumps({"k": f"ship {_AWS_KEY}"}).encode(),
+        )
+        assert resp.status_code == 403
+        assert resp.json()["block_reason"] == "credential_in_request"
+        assert gate == []
+        assert h.net.sent == []
+
+    def test_l3_not_clean_still_refuses(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # defend found the advisory not to apply (L3 flagged, unavailable or L1 too)
+        self._l2_only(monkeypatch, advisory=False)
+        h = _harness(monkeypatch, guarded=True, l2="advisory_when_l3_clean")
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, json={"a": 1})
+        assert resp.status_code == 403
+        assert resp.json()["block_reason"] == "flagged"
+        assert h.net.sent == []
+
+    def test_without_the_option_l2_still_refuses(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls = self._l2_only(monkeypatch, advisory=True)
+        h = _harness(monkeypatch, guarded=True)
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, json={"a": 1})
+        assert resp.status_code == 403
+        assert resp.json()["block_reason"] == "flagged"
+        assert calls[0]["l2_advisory"] is False
+        assert h.net.sent == []
+
+    def test_the_option_needs_block(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="needs enforcement: block"):
+            EgressGrant(enforcement="flag", l2="advisory_when_l3_clean")

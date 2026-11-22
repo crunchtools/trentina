@@ -10,6 +10,11 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- **`egress_http.<name>.l2: advisory_when_l3_clean`: a semantic request guard can be the boundary on a model route (#848).** Under `block`, a request L2 alone flagged and L3 explicitly cleared is no longer refused; it goes to the gatekeeper, and the `detections` row is written `blocked=0` with the L2 finding kept. A credential shape, an L1 or L3 flag and every gap still refuse. The option needs `enforcement: block` and is rejected at load otherwise.
+- `profile_lint` reports `guarded-egress-under-flag`: a `semantic_request_guards.egress_http` entry naming a grant whose enforcement is `flag`, where the gatekeeper never runs.
+
 ### Changed
 
 - **Images build and release through constitution's `container-release.yml`, like every other crunchtools image.** `container.yml` and `demo-container.yml` now call it at constitution v1.53.0 with `sign: true`: a pull request builds and boot-gates its head digest, the merge promotes that digest to `:main`, a `v*` tag promotes it to the version tags and `:latest`, and promote cosign-signs the digest before any tag moves. `quay.io/crunchtools/trentina-demo` gets the same path, still `:main` only. Supersedes #840; closes #842.

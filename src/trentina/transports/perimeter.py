@@ -56,7 +56,7 @@ from ..gateway.outbound import (
     body_text,
     judge_input,
 )
-from ..gateway.profile import is_dns_name, profile_for_address
+from ..gateway.profile import L2_ADVISORY, is_dns_name, profile_for_address
 from ..gateway.relay import NO_OPERATION, Operation, Relayed, Slots, upstream_outcome
 from ..gateway.upstream import (
     MAX_POOL_CONNECTIONS,
@@ -184,7 +184,7 @@ def _bind_http(asked: Binding) -> Bound | None:
             origins=frozenset({"origin"}),
             methods=frozenset(m.upper() for m in grant.methods),
             enforcement=Mode(grant.enforcement),
-            options={"paths": tuple(grant.paths)},
+            options={"paths": tuple(grant.paths), "l2": grant.l2},
         ),
         secret=grant.token if credential is not None else None,
         injection=HeaderToken(credential.header, credential.prefix) if credential else None,
@@ -521,6 +521,7 @@ class PinnedUpstream(Upstream):
             profile=profile,
             mode=mode,
             deadline=JUDGE_DEADLINE,
+            l2_advisory=self._l2_advisory(),
         )
         if verdict.refused:
             reason = _REQUEST_REASON[verdict.reason or REASON_UNJUDGED]
@@ -536,6 +537,13 @@ class PinnedUpstream(Upstream):
         if mode is Mode.BLOCK:
             await self._gatekeep(method, document)
         return warning
+
+    def _l2_advisory(self) -> bool:
+        """The ``egress_http`` grant's ``l2: advisory_when_l3_clean`` (#848),
+        read on that route alone: a generic route's free-form grant options
+        cannot switch it on."""
+        bound = self.bound
+        return bound.instance.type == "http" and bound.grant.options.get("l2") == L2_ADVISORY
 
     async def _gatekeep(self, method: str, document: str) -> None:
         """The semantic request guard: the profile's judge decides the intent of

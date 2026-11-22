@@ -401,6 +401,7 @@ async def judge_outbound(
     profile: Profile,
     mode: Mode,
     deadline: float,
+    l2_advisory: bool = False,
 ) -> OutboundVerdict:
     """Judge an agent's outbound request — the request edge for /proxy/llm and egress.
 
@@ -428,6 +429,9 @@ async def judge_outbound(
         profile: The calling profile, whose ``defense`` settings the scan runs under.
         mode: The caller's resolved mode (``block`` or ``flag``).
         deadline: Seconds the scan may take before it counts as unjudged.
+        l2_advisory: The grant's ``l2: advisory_when_l3_clean`` (#848): an L2
+            flag that L3 explicitly cleared does not refuse. A credential, an
+            L1 or L3 flag and every gap still do; the flag is still reported.
 
     Returns:
         An ``OutboundVerdict``: ``refused`` (the caller withholds), plus the
@@ -462,6 +466,7 @@ async def judge_outbound(
                         "profile": profile.name,
                         "backend": backend,
                     },
+                    l2_advisory=l2_advisory,
                 )
         flagged = verdict.flagged
         flagged_by = verdict.flagged_by.value if verdict.flagged_by else None
@@ -469,7 +474,8 @@ async def judge_outbound(
         unjudged = g.blocking()
         gaps = g.names()
         risk = verdict.risk_level
-        layer_refuses = refusal_reason(flagged_by, g) is not None
+        refusing_layer = None if l2_advisory and verdict.l2_advisory else flagged_by
+        layer_refuses = refusal_reason(refusing_layer, g) is not None
     except Exception as exc:  # TimeoutError too: no verdict was reached
         logger.error(  # backend is server-configured (#262-safe); the message may carry the request
             "outbound: request scan failed backend=%s source_type=%s: %s at %s",

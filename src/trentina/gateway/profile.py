@@ -2858,6 +2858,13 @@ class RouteGrant(BaseModel):
         return _no_credential_in(value, "options")
 
 
+#: ``egress_http.<name>.l2`` (#848): L2 flags a model-bound request on its own
+#: label, and a reviewer's system prompt is an instruction to a model, so it
+#: reads as MALICIOUS. This value lets L3's explicit clean overrule an L2-only
+#: flag on that grant. ``enforce`` is the default and every other route's rule.
+L2_ADVISORY = "advisory_when_l3_clean"
+
+
 class EgressGrant(BaseModel):
     """What one profile may do on one egress upstream (#511): ``egress_http.<name>``.
 
@@ -2892,6 +2899,14 @@ class EgressGrant(BaseModel):
             "flag forwards it with the verdict attached"
         ),
     )
+    l2: Literal["enforce", "advisory_when_l3_clean"] = Field(
+        default="enforce",
+        description=(
+            "advisory_when_l3_clean forwards a request L2 alone flagged when L3 "
+            "says clean; credentials, L1 and L3 flags, gaps and the semantic "
+            "request guard still refuse. Needs enforcement: block"
+        ),
+    )
 
     @field_validator("token_env")
     @classmethod
@@ -2923,6 +2938,14 @@ class EgressGrant(BaseModel):
         if len(set(values)) != len(values):
             raise ValueError("paths lists one twice")
         return values
+
+    @model_validator(mode="after")
+    def _l2_advisory_needs_block(self) -> EgressGrant:
+        # Under flag nothing refuses, so the knob would be a no-op that reads
+        # as a decision; say so at load.
+        if self.l2 == L2_ADVISORY and self.enforcement != "block":
+            raise ValueError(f"l2: {L2_ADVISORY} needs enforcement: block")
+        return self
 
     def allows(self, method: str, path: str) -> str | None:
         """Why ``method path`` is refused, or None when allowed.

@@ -71,6 +71,22 @@ an outbound call, so it is rejected at load.
 - `flag` — the request is forwarded and the verdict rides back on
   `x-trentina-warning` (the researcher grant).
 
+### L2 advisory when L3 is clean (#848)
+
+L2 flags on its own `MALICIOUS` label, and a request to a model route carries
+instructions to a model: a code reviewer's system prompt reads as an attack to
+it. On such a grant set `l2: advisory_when_l3_clean` (with `enforcement:
+block`; under `flag` it is rejected at load). When L2 is the **only** layer to
+flag and L3 returns an explicit clean, the request is not refused: it goes on to
+the semantic request guard, which is the boundary on that route, and the
+`detections` row is written `blocked=0` with the L2 finding kept, so calibration
+still sees it and nothing is blocklisted. The verdict also rides back on
+`x-trentina-warning`. A credential shape, an L1 or L3 flag, an L3 that was
+unavailable or read only part of the request, and every other gap refuse exactly
+as before. All three layers still run; the option changes a consequence, not an
+execution. Under [`proxies:`](proxy-plugins.md) the same key goes in the
+grant's `options`.
+
 A refusal is a JSON deny marker (`{blocked, block_reason, scanner}`), with
 `X-Trentina-Reason` and a closed reason from `egress_policy.REASONS`.
 
@@ -97,6 +113,7 @@ profiles:
         methods: [GET, POST]
         paths: ["/repos/example-corp/*"]
         enforcement: block
+        # l2: advisory_when_l3_clean   # optional, block only: see above
     # token_env is optional (absent = no injected credential); a write method is
     # listed, never a switch; paths are prefix globs and empty allows any.
     semantic_request_guards:                    # optional: judge the request's intent

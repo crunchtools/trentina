@@ -144,6 +144,11 @@ class DefenseVerdict:
     unread: tuple[str, ...] = ()
     """Kinds of binary in the delivery that an agent's tools could open and no
     layer read (images, PDFs, archives): the ``binary_unread`` gap (#367)."""
+    l2_advisory: bool = False
+    """L2 was the only layer to flag and L3 returned an explicit clean, on a
+    caller that asked for L2 to be advisory then (#848). ``flagged_by`` still
+    names L2, so the row and the warning keep the finding; only the caller's
+    refusal is waived, and the row is written ``blocked=0``."""
 
     @property
     def flagged(self) -> bool:
@@ -240,10 +245,25 @@ def _decide(
         risk = l3_assessment.get("risk_level")
         return Layer.L3, risk if risk in RISK_LEVELS else "high", l3_assessment
 
-    if pipeline.stats.total_detections() > 0 and l1_risk in _BLOCKING_L1_RISKS:
+    if _l1_flags(pipeline):
         return Layer.L1, l1_risk, None
 
     return None, l1_risk, None
+
+
+def _l1_flags(pipeline: PipelineResult) -> bool:
+    """L1 would flag on its own: detections at a blocking risk level."""
+    stats = pipeline.stats
+    return stats.total_detections() > 0 and stats.risk_level() in _BLOCKING_L1_RISKS
+
+
+def _l3_clean(l3_assessment: dict[str, Any] | None) -> bool:
+    """L3 ran and said, explicitly, that it found no injection."""
+    return (
+        l3_assessment is not None
+        and not l3_assessment.get("l3_unavailable")
+        and l3_assessment.get("injection_detected") is False
+    )
 
 
 def layer_verdicts(
@@ -429,6 +449,7 @@ async def defend(
     l3_context: str | None = None,
     precomputed_l1: PipelineResult | None = None,
     attribution: dict[str, Any] | None = None,
+    l2_advisory: bool = False,
 ) -> DefenseVerdict:
     """Run the three layers over one piece of content and report a verdict.
 
@@ -455,6 +476,10 @@ async def defend(
         attribution: Detection-row columns. ``blocked`` must say whether this
             caller REFUSED the content: ``is_blocked`` reads that column, so a
             flag caller writing ``blocked=1`` blocklists what it delivered.
+        l2_advisory: The caller waives its refusal when L2 is the only layer
+            to flag and L3 says clean (#848). Every layer still runs; the
+            verdict's ``l2_advisory`` says whether it applied, and the row is
+            then written ``blocked=0`` so the finding is kept, not blocklisted.
 
     Returns:
         A verdict. This function never raises on a detection.
@@ -531,6 +556,17 @@ async def defend(
         classification=classification if l2_flagged else None,
         l3_assessment=l3_assessment if l3_flagged else None,
     )
+    # L2 alone, against an explicit L3 clean: an L1 flag or any L3 answer
+    # short of clean (flagged, unavailable, missing) keeps the refusal.
+    advisory = (
+        l2_advisory
+        and flagged_by is Layer.L2
+        and _l3_clean(l3_assessment)
+        and not _l1_flags(pipeline)
+    )
+    if advisory:
+        # The caller forwards it: a blocked row would blocklist a delivery.
+        attribution = {**(attribution or {}), "blocked": False}
 
     if flagged_by is not None and record:
         # TRUST: detection bookkeeping after the verdict exists
@@ -587,6 +623,7 @@ async def defend(
         l3_truncated=l3_truncated,
         oversize=(tokens, cap) if refuse_at_admission else None,
         unread=view.unread if view is not None else (),
+        l2_advisory=advisory,
     )
 
 

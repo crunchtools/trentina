@@ -214,6 +214,36 @@ class TestEntrypoint:
         assert callable(profile_lint.main)
 
 
+class TestGuardedEgressEnforcement:
+    """#848: the gatekeeper only runs under block, so a flag grant makes its guard a no-op."""
+
+    @staticmethod
+    def _file(grant: dict[str, Any] | None = None, guarded: bool = True) -> dict[str, Any]:
+        body: dict[str, Any] = {"egress_http": {"api": grant or {}}}
+        if guarded:
+            body["semantic_request_guards"] = {"egress_http": ["api"]}
+        return {"profiles": {"profile": body}}
+
+    def test_a_flag_grant_is_a_finding(self) -> None:
+        profiles_file = self._file({"enforcement": "flag"})
+        (finding,) = profile_lint.check_guarded_egress_enforcement(profiles_file)
+        assert finding.code == "guarded-egress-under-flag"
+        assert "egress_http/api" in finding.message
+
+    def test_default_and_block_grants_are_clean(self) -> None:
+        assert profile_lint.check_guarded_egress_enforcement(self._file()) == []
+        block = self._file({"enforcement": "block"})
+        assert profile_lint.check_guarded_egress_enforcement(block) == []
+
+    def test_no_guard_is_clean(self) -> None:
+        profiles_file = self._file({"enforcement": "flag"}, guarded=False)
+        assert profile_lint.check_guarded_egress_enforcement(profiles_file) == []
+
+    def test_lint_runs_it(self) -> None:
+        codes = [f.code for f in profile_lint.lint(self._file({"enforcement": "flag"}))]
+        assert "guarded-egress-under-flag" in codes
+
+
 class TestSelfAuthorize:
     """#479: an agent profile that can start its own backend logins."""
 

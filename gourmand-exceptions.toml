@@ -1237,3 +1237,9 @@ path = "tests/test_provider_vertex.py"
 pattern = "handle"
 justification = "httpx.MockTransport handler: one callable routes every request, so the token-endpoint vs generateContent branch is the router itself and has no call site to move to."
 classification = "by_design"
+
+[[exceptions]]
+check = "redundant_error_handling"
+path = "src/trentina/defense.py"
+justification = "Detection bookkeeping after the verdict exists (the TRUST block above defend()'s record_detection call): a failed SQLite write or D-Bus emit is an audit gap to alarm on, and propagating it would lose the verdict defend() promises never to raise on. Log-and-keep-the-verdict is the handling, not a swallow."
+classification = "by_design"
