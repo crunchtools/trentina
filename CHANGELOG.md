@@ -30,6 +30,7 @@ under that name.
 - `.oss-scanner/threat_model.md` models attacks on the gateway itself: each untrusted input surface (tool arguments and responses, tool metadata, fetch, the approval routes, OAuth, federation, git transport, the Matrix bridge, `config_tool`, file reads, egress, the hostile parsers, the L3 answer) with the control that holds it, and the invariants that must hold, each traced to code. `.oss-scanner/Containerfile` is the offline build environment Anthropic's OSS Scanner asks for, and `security-insights.yml` (OpenSSF Security Insights 2.0.0) describes the reporting channel, tools and threat model (#857).
 - SECURITY.md's reporting section gains a scope, response times (acknowledgement within 5 business days, assessment within 10, a fix target of 30 days for critical and high and 90 otherwise) and a fallback if a report gets no reply (#849).
 - `docs/deployment-hardening.md` gains "Verify the image": the signing key, how to verify a digest with cosign, and why `--insecure-ignore-tlog` is needed (signatures are not in Rekor). SBOM and provenance attestations belong in the shared release workflow and are tracked as crunchtools/constitution#203 (#853).
+- `.github/CODEOWNERS` names an owner for the workflows, the sdlc launcher, the Containerfiles, and the approval, authentication, egress, confinement and quarantine code. Whether that review is required, and a tag ruleset for `v*`, are repository settings (#856).
 
 ## [6.25.0] - 2026-11-19
 
