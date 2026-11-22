@@ -22,6 +22,10 @@ under that name.
 
 - `security.yml`'s `publish` job, its image hand-off from `sdlc ci`, the `published-digests` artifact and the bespoke promote in `container.yml`; `sdlc ci` still builds the image for its in-image tests and publishes nothing.
 
+### Security
+
+- Every third-party action is pinned to a full commit SHA with its version as a comment (constitution XV rule 2), and `setup-uv` installs uv 0.13.7, the version the Containerfile installs, instead of `latest`. Crunchtools' own reusable workflows stay on their release tags (XV rule 5). The constitution caller moves to `@v1` and grants `security-events: write`, so the fleet's zizmor audit runs on every pull request and uploads to code scanning (#850).
+
 ## [6.25.0] - 2026-11-19
 
 ### Added

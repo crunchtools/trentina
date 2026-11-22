@@ -32,4 +32,10 @@ permissions:
 jobs:
   constitution:
     name: Constitution
-    uses: crunchtools/constitution/.github/workflows/validate.yml@v1.53.0
+    # security-events: write lets the zizmor job (constitution XV rule 8)
+    # upload its SARIF to code scanning; actions: read is what the upload reads.
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    uses: crunchtools/constitution/.github/workflows/validate.yml@v1
