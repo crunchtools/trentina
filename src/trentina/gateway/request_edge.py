@@ -12,6 +12,7 @@ retired.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -26,9 +27,10 @@ from .decoy import canned_result, keep_arguments, leaked_tokens, record_trip
 from .destination import Destination, destination_of
 from .filter import filter_tools
 from .gatekeeper import judge_call
-from .guards import check_request_guards
+from .guards import check_request_guards, refused_credentials
 from .modes_policy import MODE_PARAM, PROMPT_PARAM, resolve_call, resolve_preprocess
 from .names import resolve_name
+from .outbound import REASON_CREDENTIAL
 from .parts import _read_part
 from .surface import wire_digest
 
@@ -99,14 +101,18 @@ async def _refuse_call(
 ) -> tuple[Outcome, str, str] | None:
     """Every refusal of a call's arguments: outcome, what the agent is told, what is audited.
 
-    The guards and the schema first; semantic request guards last (#456), so the
-    cheap and certain rules have spoken before a model is asked anything.
+    The guards, the credential check and the schema first; semantic request
+    guards last (#456), so the cheap and certain rules have spoken before a
+    model is asked anything.
     """
+    # Off the loop, as the honeytoken match is: linear, but in the arguments' size.
+    credentials = await asyncio.to_thread(refused_credentials, tool_name, forwarded, backend)
     refused = _refuse_arguments(
         backend,
         tool_name,
         {**forwarded, MODE_PARAM: mode.value, PROMPT_PARAM: prompt},
         normalized,
+        credentials,
     )
     if refused is not None:
         outcome, message = refused
@@ -118,11 +124,19 @@ async def _refuse_call(
 
 
 def _refuse_arguments(
-    backend: Backend, tool_name: str, judged: dict[str, Any], normalized: Normalized
+    backend: Backend,
+    tool_name: str,
+    judged: dict[str, Any],
+    normalized: Normalized,
+    credentials: list[str],
 ) -> tuple[Outcome, str] | None:
-    """The request guards' refusal, else the schema's, else None.
+    """The request guards' refusal, else the credential check's, else the schema's.
 
-    Guards first, so a probe a guard refuses still audits as one. A required
+    Guards first, so a probe a guard refuses still audits as one. A credential
+    shape the tool is not allowed (``credentials``, from ``refused_credentials``)
+    is refused in every mode (#862): what would leave is the secret itself, so
+    no delivery mode can make sending it safe. The refusal and the audit row
+    name the kinds and the tool, never the value. A required
     argument that fails its schema would be refused by the backend too;
     answering here spares the round trip, and the breaker never sees a call
     the backend never received. An optional one is refused because the call
@@ -131,6 +145,12 @@ def _refuse_arguments(
     guard_err = check_request_guards(tool_name, judged, backend)
     if guard_err:
         return Outcome.DENIED_GUARD, guard_err
+    if credentials:
+        return Outcome.DENIED_GUARD, (
+            f"{REASON_CREDENTIAL}: {', '.join(credentials)} in the arguments to {tool_name}."
+            " Not forwarded; if this tool takes that credential on purpose, the operator"
+            " can list the kind in the backend's credentials_allowed"
+        )
     if normalized.invalid_required:
         return Outcome.TOOL_ERROR, "Invalid required arguments: " + "; ".join(
             f"{name} {reason}" for name, reason in normalized.invalid_required.items()

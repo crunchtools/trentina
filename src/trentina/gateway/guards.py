@@ -21,8 +21,11 @@ policy for known terms, not a classifier.
 
 from __future__ import annotations
 
+import json
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
+
+from .outbound import detect_credentials
 
 if TYPE_CHECKING:
     from .profile import Backend, ParameterConstraint
@@ -82,6 +85,28 @@ def check_request_guards(
             return f"Parameter {param_name!r} {reason}"
 
     return None
+
+
+def refused_credentials(
+    tool_name: str,
+    arguments: dict[str, Any],
+    backend: Backend,
+) -> list[str]:
+    """The credential kinds in a call's arguments that this tool may not carry (#862).
+
+    The arguments are scanned as written and revealed (``outbound.detect_credentials``),
+    so a key percent- or ``\\u``-escaped is found as the backend would decode it.
+    What ``credentials_allowed`` lists for the tool, or for ``*``, is let through;
+    ``["*"]`` lets every kind through. Returns kind names, sorted, never a value.
+    """
+    allowed = {
+        *backend.credentials_allowed.get("*", ()),
+        *backend.credentials_allowed.get(tool_name, ()),
+    }
+    if "*" in allowed or not arguments:
+        return []
+    found = detect_credentials(json.dumps(arguments, ensure_ascii=False, default=str))
+    return [kind for kind in found if kind not in allowed]
 
 
 def check_response_guards(
