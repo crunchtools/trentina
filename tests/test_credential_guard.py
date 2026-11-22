@@ -16,6 +16,7 @@ from pydantic import SecretStr, ValidationError
 from tests.refusal_shape import refused, refused_text
 from trentina.credential_shapes import CredentialKind as K
 from trentina.gateway.backend import BackendCall
+from trentina.gateway.config_guard import credentials_widened
 from trentina.gateway.guards import refused_credentials
 from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, ParameterConstraint, Profile
@@ -46,6 +47,36 @@ class TestRefusedCredentials:
     def test_a_percent_encoded_key_is_found_revealed(self) -> None:
         encoded = "".join(f"%{ord(ch):02x}" for ch in GITHUB)
         assert refused_credentials("t", {"q": encoded}, _backend()) == [K.GITHUB_TOKEN]
+
+    def test_a_double_entity_encoded_key_is_found(self) -> None:
+        encoded = "&amp;#103;" + GITHUB[1:]
+        assert refused_credentials("t", {"q": encoded}, _backend()) == [K.GITHUB_TOKEN]
+
+    def test_a_zero_width_character_inside_a_key_does_not_hide_it(self) -> None:
+        split = GITHUB[:10] + "\u200b" + GITHUB[10:]
+        assert refused_credentials("t", {"q": split}, _backend()) == [K.GITHUB_TOKEN]
+
+    def test_a_fullwidth_key_is_found(self) -> None:
+        fullwidth = "".join(chr(ord(c) + 0xFEE0) if "!" <= c <= "~" else c for c in GITHUB)
+        assert refused_credentials("t", {"q": fullwidth}, _backend()) == [K.GITHUB_TOKEN]
+
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            "a basic src/trentina/gateway/guards.py fix",
+            "A Basic src/trentina/gateway/guards.py fix",
+            "the bearer credentials_allowed_well_formed check",
+            "the Bearer token_variants_matcher_for path is cached",
+            "see https://docs.example/find?key=rhel&token=next",
+            "Bearer token, Basic auth, and a ?secret=placeholder in the docs",
+        ],
+    )
+    def test_prose_about_credentials_is_not_refused(self, prose: str) -> None:
+        assert refused_credentials("t", {"body": prose}, _backend()) == []
+
+    def test_a_real_authorization_value_is_still_refused(self) -> None:
+        value = "Basic " + "dXNlcjpwYXNzd29yZDEyMzQ1Ng=="
+        assert refused_credentials("t", {"h": value}, _backend()) == [K.AUTHORIZATION]
 
     def test_a_key_in_a_mapping_key_is_found(self) -> None:
         assert refused_credentials("t", {"q": {GITHUB: "x"}}, _backend()) == [K.GITHUB_TOKEN]
@@ -316,3 +347,35 @@ class TestAnAgentReloadHoldsTheAllowance:
     def test_an_unchanged_allowance_is_not_reported(self) -> None:
         before, after = self._profile({"t": ["jwt"]}), self._profile({"t": ["jwt"]})
         assert "backends.b.credentials_allowed" not in _hold_perimeter_fields(before, after)
+
+
+class TestARepointedBackendNeedsItsAllowanceApprovedAgain:
+    """An allowance was approved for where the keys went (#882 review)."""
+
+    def _profiles(self, url: str, allowance: list[str]) -> dict[str, Profile]:
+        backend = Backend(url=url, credentials_allowed=allowance)
+        profile = Profile(
+            name="ag", auth=AuthConfig(bearer_token_env="TOK"), backends={"b": backend}
+        )
+        return {"ag": profile}
+
+    def test_a_new_url_stages_the_whole_allowance(self) -> None:
+        before = self._profiles("http://luna:8000/mcp", ["*"])
+        after = self._profiles("http://exfil.example/mcp", ["*"])
+        assert credentials_widened(before, after) == {
+            "credentials_allowed:ag.b.*": "any credential may leave in the arguments of every tool"
+        }
+
+    def test_the_same_url_stages_nothing(self) -> None:
+        before = self._profiles("http://luna:8000/mcp", ["*"])
+        after = self._profiles("http://luna:8000/mcp", ["*"])
+        assert credentials_widened(before, after) == {}
+
+    def test_a_new_url_with_no_allowance_stages_nothing(self) -> None:
+        backend = Backend(url="http://exfil.example/mcp")
+        after = {
+            "ag": Profile(
+                name="ag", auth=AuthConfig(bearer_token_env="TOK"), backends={"b": backend}
+            )
+        }
+        assert credentials_widened(self._profiles("http://luna:8000/mcp", ["jwt"]), after) == {}

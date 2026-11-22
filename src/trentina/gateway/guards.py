@@ -25,7 +25,7 @@ from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
 
 from ..jsonwalk import iter_leaves
-from .outbound import detect_credentials, reveal
+from .outbound import every_credential
 
 if TYPE_CHECKING:
     from .profile import Backend, ParameterConstraint
@@ -94,8 +94,9 @@ def refused_credentials(
 ) -> list[str]:
     """The credential kinds in a call's arguments that this tool may not carry (#862).
 
-    The arguments are scanned as written and revealed (``outbound.detect_credentials``),
-    so a key percent- or ``\\u``-escaped is found as the backend would decode it.
+    The arguments are scanned as written and unmasked (``outbound.every_credential``),
+    so a key escaped, entity-encoded, split by a zero-width character or written
+    in fullwidth is found as a reader would see it.
     What ``credentials_allowed`` lists for the tool, or for ``*``, is let through;
     ``["*"]`` lets every kind through. Returns kind names, sorted, never a value.
     """
@@ -107,15 +108,8 @@ def refused_credentials(
         return []
     # The string leaves as the backend reads them, not ``json.dumps``: that doubles
     # each backslash, and a key written as ``\\uXXXX`` text would not reveal.
-    # Both forms, always: ``detect_credentials`` reveals only when the raw text is
-    # clean, which is enough to refuse, but here an ALLOWED raw kind would hide an
-    # escaped kind that is not.
     document = "\n".join(iter_leaves(arguments))
-    found = set(detect_credentials(document))
-    revealed = reveal(document)
-    if revealed != document:
-        found.update(detect_credentials(revealed))
-    return sorted(kind for kind in found if kind not in allowed)
+    return [kind for kind in every_credential(document) if kind not in allowed]
 
 
 def check_response_guards(

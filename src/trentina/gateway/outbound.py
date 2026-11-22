@@ -19,8 +19,10 @@ The ORIGINAL request is what each caller forwards upstream — never these copie
 
 from __future__ import annotations
 
+import html
 import json
 import re
+import unicodedata
 from urllib.parse import unquote
 
 from ..credential_shapes import kinds as credential_kinds
@@ -52,6 +54,32 @@ def reveal(document: str) -> str:
     return _JSON_UESC.sub(lambda m: chr(int(m.group(1), 16)), decoded)
 
 
+#: How many rounds of decoding ``unmasked`` applies: enough for a double
+#: encoding (``&amp;#103;``, ``%2541``), bounded so a crafted body cannot make
+#: the scan loop.
+_REVEAL_ROUNDS = 3
+
+
+def unmasked(document: str) -> str:
+    """``reveal`` and more, for DETECTION only — never what the judge reads.
+
+    A key a reader would still see can hide from a shape pattern behind HTML
+    entities (decoded to a fixed point, so ``&amp;#103;hp_`` is ``ghp_``),
+    zero-width and other format characters (Unicode category Cf, dropped), or
+    compatibility forms such as fullwidth letters (NFKC). The judge's copy keeps
+    ``reveal`` alone: these change how text reads to a model, and the layers
+    judge what was sent.
+    """
+    text = document
+    for _ in range(_REVEAL_ROUNDS):
+        decoded = html.unescape(reveal(text))
+        if decoded == text:
+            break
+        text = decoded
+    text = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    return unicodedata.normalize("NFKC", text)
+
+
 def judge_input(document: str) -> str:
     """The copy L1/L2/L3 read — NOT what is forwarded upstream.
 
@@ -79,15 +107,30 @@ def body_text(body: bytes) -> str:
 
 
 def detect_credentials(document: str) -> list[str]:
-    """Credential kind names in ``document`` or its revealed form.
+    """Credential kind names in ``document`` or its unmasked form.
 
-    A key the destination would decode — ``%41%4B...``, ``\\u0041...``, or a mix
-    of literal and escaped characters — must not slip the check, so the revealed
-    form (``reveal``) is scanned when the raw one is clean.
+    A key the destination would decode — ``%41%4B...``, ``\\u0041...``, an HTML
+    entity, or a mix of literal and escaped characters — or one split by a
+    zero-width character or written in fullwidth must not slip the check, so the
+    unmasked form (``unmasked``) is scanned when the raw one is clean.
     """
     found = credential_kinds(document)
     if not found:
-        revealed = reveal(document)
+        revealed = unmasked(document)
         if revealed != document:
             found = credential_kinds(revealed)
+    return sorted(k.value for k in found)
+
+
+def every_credential(document: str) -> list[str]:
+    """Credential kind names in ``document`` AND its unmasked form, both always.
+
+    ``detect_credentials`` stops at the raw text when it holds one, which is
+    enough to refuse; an allowlist needs both, or an ALLOWED raw kind would
+    hide an escaped kind that is not.
+    """
+    found = credential_kinds(document)
+    unmasked_form = unmasked(document)
+    if unmasked_form != document:
+        found.update(credential_kinds(unmasked_form))
     return sorted(k.value for k in found)
