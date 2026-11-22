@@ -94,6 +94,10 @@ default while the request false-positive rate is measured, moving to `block` at
 a future major) forwards and returns the verdict on the `X-Trentina-Warning`
 header. `redact` is meaningless on an outbound call and rejected.
 
+A [honeytoken](profiles.md#decoy-tools-and-honeytokens) in a unit is the one
+finding `flag` refuses (#865): the request is not sent, the caller is told
+`flagged`, and the audit row is `decoy_tripped`.
+
 Three consequences worth stating plainly:
 
 - **The outbound prompt now reaches L3, with credentials cut.** `defend()` sends

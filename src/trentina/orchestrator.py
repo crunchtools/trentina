@@ -30,9 +30,11 @@ from .core.dispose import Decision, dispose
 from .core.stages import _JUDGED_SEAL, IngressDecision, Judged
 from .defense import Provenance, defend, defend_json, defend_selection
 from .gateway.context import profile_context
+from .gateway.decoy import leaked_tokens, record_trip
 from .gateway.internal_edge import JudgeScan, dispose_judgement, prepare_judgement
 from .gateway.outbound import (
     REASON_CREDENTIAL,
+    REASON_DECOY,
     REASON_FLAGGED,
     REASON_UNJUDGED,
     detect_credentials,
@@ -368,10 +370,15 @@ class OutboundVerdict:
     # `gaps` field carries. l3_unavailable is the default while no verdict ran.
     gaps: list[str] = field(default_factory=lambda: ["l3_unavailable"])
     risk: str = "unknown"
+    #: Ids of the profile's honeytokens found in the request (#865), never values.
+    #: A trip refuses in every mode, as on MCP, and no layer ran over the request.
+    tripped: list[str] = field(default_factory=list)
 
     @property
     def reason(self) -> str | None:
-        """The refusal reason code, by precedence credential > flagged > gap."""
+        """The refusal reason code, by precedence honeytoken > credential > flagged > gap."""
+        if self.tripped:
+            return REASON_DECOY
         if self.kinds:
             return REASON_CREDENTIAL
         if self.flagged:
@@ -436,6 +443,13 @@ async def judge_outbound(
     from .defense import defend  # heavy; deferred, and the REQUEST-edge test seam
     from .modes import gaps_of, refusal_reason  # resolved here so a test's gaps_of patch is seen
 
+    # A planted credential in what is about to be sent is a trip (#865), checked
+    # on the RAW document: redaction could cut a credential-shaped honeytoken.
+    # Refused in every mode, as on MCP, and the layers never run over it. Off the loop:
+    # the matcher is linear in the request and a body can be several MiB.
+    if tripped := await asyncio.to_thread(leaked_tokens, profile, document):
+        record_trip(profile.name, backend, "request", "honeytoken:" + ",".join(tripped))
+        return OutboundVerdict(refused=True, tripped=tripped, unjudged=False, gaps=[])
     kinds = detect_credentials(document)
     flagged, unjudged, flagged_by, risk = False, True, None, "unknown"
     gaps = ["l3_unavailable"]

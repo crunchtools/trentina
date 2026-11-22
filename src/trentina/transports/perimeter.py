@@ -51,6 +51,7 @@ from ..gateway.gatekeeper import judge_egress
 from ..gateway.modes_policy import effective_mode
 from ..gateway.outbound import (
     REASON_CREDENTIAL,
+    REASON_DECOY,
     REASON_FLAGGED,
     REASON_UNJUDGED,
     body_text,
@@ -121,6 +122,11 @@ JUDGE_DEADLINE = 60.0
 _SNIFF = 8192
 
 _REQUEST_REASON = {
+    # A honeytoken trip (#865) must say nothing of why, as MCP's "Invalid
+    # arguments" does. `flagged` is the least revealing refusal that exists in
+    # every mode: no kinds, gaps or layer on the wire, and it is what a layer
+    # flag looks like. The audit row still records decoy_tripped.
+    REASON_DECOY: "flagged",
     REASON_CREDENTIAL: "credential_in_request",
     REASON_FLAGGED: "flagged",
     REASON_UNJUDGED: "not_fully_judged",
@@ -525,7 +531,7 @@ class PinnedUpstream(Upstream):
         if verdict.refused:
             reason = _REQUEST_REASON[verdict.reason or REASON_UNJUDGED]
             logger.warning("perimeter: request blocked profile=%s reason=%s", profile.name, reason)
-            raise RefusedError(reason)
+            raise RefusedError(reason, outcome=Outcome.DECOY_TRIPPED if verdict.tripped else None)
         warning = verdict.warning
         if warning is not None:
             self.op.flag_reason = _REQUEST_REASON[verdict.reason or REASON_UNJUDGED]

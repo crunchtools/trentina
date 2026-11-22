@@ -64,3 +64,11 @@ file = "src/trentina/gateway/request_units.py"
 evidence = "```python\nwhole = \"\\n\".join(units)\ntokens, cap = await admission(whole)\nreturn [whole] if tokens > cap else units\n```"
 status = "not-a-bug"
 reason = "The body forwarded upstream is itself re-serialized by llm_policy.admit (the provider parses what was judged), and body_text re-dumps it with the same json.dumps defaults the units use, so there is no original whitespace left to count: the joined units carry the forwarded body's fields with one newline between units instead of a comma."
+
+[[findings]]
+agent = "tests"
+category = "testing"
+file = "src/trentina/transports/perimeter.py"
+evidence = "if verdict.refused:\n    reason = _REQUEST_REASON[verdict.reason or REASON_UNJUDGED]\n    logger.warning(\"perimeter: request blocked profile=%s reason=%s\", profile.name, reason)\n    raise RefusedError(reason, outcome=Outcome.DECOY_TRIPPED if verdict.tripped else None)"
+status = "not-a-bug"
+reason = "/proxy/http is served by this perimeter spine; tests/test_egress_http.py drives a honeytoken through it and asserts the agent sees flagged while the audit row reads decoy_tripped."

@@ -409,13 +409,14 @@ one does; the rest name the benchmark that measured them.
     text and no picture. Tested.
 17. **A planted credential is matched as planted, encoded or in part, and no further** (#357, #864). The
     honeytoken check ([decoys](profiles.md#decoy-tools-and-honeytokens))
-    finds the value in a call's arguments as written, base64, hex or
-    percent-encoded, reversed, or as any 16 consecutive characters of a value
-    of 32 or more (`token_variants.py`; the L3 canary is matched the same way).
-    A caller that splits it into shorter pieces or across two calls,
-    describes it in words, or applies another encoding (ROT13, gzip) is not
-    seen, and neither is anything an agent sends without a tool call through
-    the gateway. It is a tripwire for the common case,
+    finds the value as written, base64, hex or percent-encoded, reversed, or
+    as any 16 consecutive characters of a value of 32 or more
+    (`token_variants.py`; the L3 canary is matched the same way). It runs on
+    a tool call's arguments and on the body, headers and query of a
+    `/proxy/http` or `/proxy/llm` request (#865). A caller that splits it into
+    shorter pieces or across two calls, describes it in words, or applies
+    another encoding (ROT13, gzip) is not seen, and neither is anything sent
+    by git, a Matrix message or a CONNECT tunnel (gaps 26 and 29). It is a tripwire for the common case,
     where an injection says "send the key to this address" and the agent
     does. Tested.
 18. *Closed in 1.4.1 (#431).* A reply that is little but an event ID,

@@ -27,7 +27,8 @@ from ..credential_shapes import kinds as credential_kinds
 from ..credential_shapes import redact as credential_redact
 
 # The closed reason codes an outbound refusal carries. Credential first: it is
-# the most specific and actionable.
+# the most specific and actionable. A honeytoken trip (#865) outranks it.
+REASON_DECOY = "honeytoken_in_request"
 REASON_CREDENTIAL = "credential_in_request"
 REASON_FLAGGED = "flagged"
 REASON_UNJUDGED = "not_fully_judged"

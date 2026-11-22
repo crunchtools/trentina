@@ -291,6 +291,7 @@ def merge(verdicts: list[OutboundVerdict]) -> OutboundVerdict:
         unjudged=any(v.unjudged for v in verdicts),
         gaps=list(dict.fromkeys(g for v in verdicts for g in v.gaps)),
         risk=worst.risk,
+        tripped=list(dict.fromkeys(t for v in verdicts for t in v.tripped)),
     )
 
 

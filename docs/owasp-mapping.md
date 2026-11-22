@@ -40,9 +40,9 @@ caller-chosen string. Backend OAuth grants are stored encrypted per
 
 **Gap.** Gap 17: the honeytoken tripwire matches a planted credential as
 planted, base64, hex or percent-encoded, reversed, or in a 16-character piece
-(#864), so a value paraphrased, split across calls or put through another
-encoding is not seen, nor is anything an agent sends without a tool call
-through the gateway.
+(#864), on a tool call and on a `/proxy/http` or `/proxy/llm` request (#865).
+A value paraphrased, split across calls or put through another encoding is not
+seen, nor is anything an agent sends by git, Matrix or a CONNECT tunnel.
 
 ### MCP02 Privilege Escalation via Scope Creep
 

@@ -591,7 +591,9 @@ honest agent calls out of habit is noise.
 as `bearer_token_env` does for a token; the value is never in the file. If
 it appears in the arguments of any tool call, to any backend, the call is
 recorded as `decoy_tripped` and refused with `Invalid arguments`, which says
-nothing of why. The audit row names the token's id, never its value.
+nothing of why. The same holds for the body, headers or query of a
+`/proxy/http` or `/proxy/llm` request, refused in every mode, `flag`
+included, and worded as an ordinary `flagged` refusal. The audit row names the token's id, never its value.
 
 The value is found as planted, base64-encoded (standard or URL-safe, at any
 offset in a larger blob), hex-encoded, percent-encoded, reversed, or as any

@@ -12,6 +12,7 @@ under that name.
 
 ### Security
 
+- **A honeytoken in a `/proxy/http` or `/proxy/llm` request is now a trip (#865).** `judge_outbound` matched nothing against the profile's planted credentials, so one sent out through egress or the LLM proxy was never seen; only MCP `tools/call` checked. It now checks the raw request before any layer runs, records `decoy_tripped`, and refuses in every mode, `flag` included, as MCP does. The agent is told `flagged`, which names nothing; git, Matrix and the CONNECT tunnel stay known gaps.
 - **A guarded tool call's credentials no longer reach the external judge (#863).** The gatekeeper's arguments pass through `outbound.judge_input` (escapes decoded, every credential shape cut) before `defend()` and the judge read them, as `/proxy/http` already did; the call still forwards the arguments as written. The judge is told a `[REDACTED]` value is a credential the call carries, so `credential_material` still refuses.
 
 ### Changed

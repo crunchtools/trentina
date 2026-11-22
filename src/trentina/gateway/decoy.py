@@ -11,9 +11,12 @@ was planted, encoded (base64, hex, percent), reversed or in part
 (``token_variants``, #864). Neither reads the content that caused the call.
 The audit's ``session`` and ``call_ref`` columns are what lead back to that.
 
-What this does not see: a planted credential the agent paraphrased, split
-across calls or encoded some other way (``tests/test_coverage_gaps.py`` holds
-that open), and anything an agent does without a tool call through the gateway.
+The value is checked in a tool call's arguments and, through
+``orchestrator.judge_outbound``, in a ``/proxy/http`` or ``/proxy/llm``
+request (#865). What this does not see: a planted credential the agent
+paraphrased, split across calls or encoded some other way
+(``tests/test_coverage_gaps.py`` holds that open), and anything sent by git,
+a Matrix message or a CONNECT tunnel.
 """
 
 from __future__ import annotations
