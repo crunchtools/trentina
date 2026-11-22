@@ -253,3 +253,26 @@ def test_a_yaml_error_names_the_line_not_the_text(tmp_path, db, capsys):
     err = capsys.readouterr().err
     assert "line" in err
     assert KEY not in err
+
+
+def test_current_prints_the_existing_allowance_beside_the_new(tmp_path, profiles, db, capsys):
+    code, out = run(capsys, profiles, db, str(write(tmp_path, direct("create_issue", KEY))))
+    assert code == 1
+    assert (
+        "      create_issue: [github_token]   # 1 call\n      update_issue: [github_token]\n"
+        in (out + "\n")
+    )
+    code, out = run(
+        capsys, profiles, db, str(write(tmp_path, direct("create_issue", KEY))), "--json"
+    )
+    merged = json.loads(out)["profiles"]["exedore-max"]["credentials_allowed"]["github"]
+    assert merged == {"create_issue": ["github_token"], "update_issue": ["github_token"]}
+
+
+def test_gateway_arguments_are_not_scanned(tmp_path, profiles, db, capsys):
+    call = direct("create_issue", "hello")
+    call["arguments"].update(
+        {"trentina_mode": {"redact": KEY}, "trentina_prompt": KEY, "trentina_preprocess": KEY}
+    )
+    code, _ = run(capsys, profiles, db, str(write(tmp_path, call)))
+    assert code == 0

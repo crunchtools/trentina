@@ -40,12 +40,15 @@ from urllib.parse import quote
 import yaml
 
 from .gateway.guards import refused_credentials
+from .gateway.modes_policy import MODE_PARAM, PROMPT_PARAM
 from .gateway.profile import Backend
+from .transforms.policy import PREPROCESS_PARAM
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
 Pair = tuple[str, str]  # (backend, tool)
+_GATEWAY_PARAMS = frozenset({MODE_PARAM, PROMPT_PARAM, PREPROCESS_PARAM})
 _SEP = "__"
 
 
@@ -215,7 +218,10 @@ def replay(
             report.unresolved += 1
             continue
         report.replayed += 1
-        kinds = refused_credentials(pair[1], call.arguments, backend if current else open_backend)
+        # What the gateway forwards: its own arguments are stripped before the
+        # live check runs, so a replay must not refuse on them either.
+        forwarded = {k: v for k, v in call.arguments.items() if k not in _GATEWAY_PARAMS}
+        kinds = refused_credentials(pair[1], forwarded, backend if current else open_backend)
         if not kinds:
             continue
         report.refused += 1
@@ -225,7 +231,29 @@ def replay(
     return reports
 
 
-def render_yaml(reports: dict[str, ProfileReport]) -> str:
+def merged_allowance(
+    report: ProfileReport, policy: Policy | None, backend: str, *, current: bool
+) -> dict[str, list[str]]:
+    """The whole ``credentials_allowed`` a backend needs, by tool.
+
+    Under ``--current`` it is what the file allows now plus what the replay
+    found, every tool listed, so pasting it over the old block keeps every
+    allowance it had. Under ``--all`` it is what the replay found alone.
+    """
+    existing = policy.backends.get(backend) if policy and current else None
+    merged = (
+        {tool: set(kinds) for tool, kinds in existing.credentials_allowed.items()}
+        if (existing is not None)
+        else {}
+    )
+    for tool, kinds in report.needs.get(backend, {}).items():
+        merged.setdefault(tool, set()).update(kinds)
+    return {tool: sorted(kinds) for tool, kinds in sorted(merged.items())}
+
+
+def render_yaml(
+    reports: dict[str, ProfileReport], policy: dict[str, Policy], *, current: bool
+) -> str:
     """One pasteable block per profile; only kinds, tool names and counts."""
     out: list[str] = []
     for profile, r in sorted(reports.items()):
@@ -236,18 +264,27 @@ def render_yaml(reports: dict[str, ProfileReport]) -> str:
         )
         if r.needs:
             out.append("backends:")
-        for backend, tools in sorted(r.needs.items()):
+        for backend in sorted(r.needs):
             out.append(f"  {backend}:")
             out.append("    credentials_allowed:")
-            for tool, kinds in sorted(tools.items()):
+            allowance = merged_allowance(r, policy.get(profile), backend, current=current)
+            for tool, kinds in allowance.items():
                 n = r.tool_calls[backend][tool]
-                plural = "" if n == 1 else "s"
-                listed = ", ".join(sorted(kinds))
-                out.append(f"      {tool}: [{listed}]   # {n} call{plural}")
+                note = f"   # {n} call{'' if n == 1 else 's'}" if n else ""
+                out.append(
+                    f"      {_yaml_key(tool)}: [{', '.join(_yaml_key(k) for k in kinds)}]{note}"
+                )
     return "\n".join(out)
 
 
-def render_json(reports: dict[str, ProfileReport], skipped: int) -> str:
+def _yaml_key(name: str) -> str:
+    """``*`` is a YAML alias marker, so it is quoted; a tool or kind name is not."""
+    return '"*"' if name == "*" else name
+
+
+def render_json(
+    reports: dict[str, ProfileReport], policy: dict[str, Policy], skipped: int, *, current: bool
+) -> str:
     doc = {
         "skipped": skipped,
         "profiles": {
@@ -258,6 +295,10 @@ def render_json(reports: dict[str, ProfileReport], skipped: int) -> str:
                 "needs": {
                     b: {t: dict(sorted(k.items())) for t, k in sorted(tools.items())}
                     for b, tools in sorted(r.needs.items())
+                },
+                "credentials_allowed": {
+                    b: merged_allowance(r, policy.get(p), b, current=current)
+                    for b in sorted(r.needs)
                 },
             }
             for p, r in sorted(reports.items())
@@ -350,7 +391,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"trentina-credential-replay: {exc}", file=sys.stderr)
         return 2
 
-    print(render_json(reports, skipped["lines"]) if args.json else render_yaml(reports))
+    print(
+        render_json(reports, policy, skipped["lines"], current=args.current)
+        if args.json
+        else render_yaml(reports, policy, current=args.current)
+    )
     if skipped["lines"] and not args.json:
         print(f"# {skipped['lines']} line(s) skipped (not a call, or no profile)")
     return 1 if any(r.refused for r in reports.values()) else 0
