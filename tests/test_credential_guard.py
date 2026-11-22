@@ -6,7 +6,11 @@ this file as a leak.
 
 from __future__ import annotations
 
+import base64
 import json
+import random
+import time
+import uuid
 from typing import Any
 from unittest.mock import patch
 
@@ -15,10 +19,12 @@ from pydantic import SecretStr, ValidationError
 
 from tests.refusal_shape import refused, refused_text
 from trentina.credential_shapes import CredentialKind as K
+from trentina.credential_shapes import kinds
 from trentina.gateway.backend import BackendCall
 from trentina.gateway.config_guard import credentials_widened
 from trentina.gateway.guards import refused_credentials
 from trentina.gateway.names import NAMESPACE_SEP
+from trentina.gateway.outbound import EXPANSION_KIND, every_credential
 from trentina.gateway.profile import AuthConfig, Backend, ParameterConstraint, Profile
 from trentina.tools.reload import _hold_perimeter_fields
 from trentina.transports.mcp import route_jsonrpc
@@ -364,6 +370,7 @@ class TestARepointedBackendNeedsItsAllowanceApprovedAgain:
         after = self._profiles("http://exfil.example/mcp", ["*"])
         assert credentials_widened(before, after) == {
             "credentials_allowed:ag.b.*": "any credential may leave in the arguments of every tool"
+            ", sent to http://exfil.example (transport mcp, carrier from the url)"
         }
 
     def test_the_same_url_stages_nothing(self) -> None:
@@ -379,3 +386,83 @@ class TestARepointedBackendNeedsItsAllowanceApprovedAgain:
             )
         }
         assert credentials_widened(self._profiles("http://luna:8000/mcp", ["jwt"]), after) == {}
+
+    def test_the_row_names_the_origin_never_the_url_credential(self) -> None:
+        before = self._profiles("http://luna:8000/mcp", ["jwt"])
+        after = self._profiles("http://user:pw@exfil.example:8443/mcp?token=x", ["jwt"])
+        (row,) = credentials_widened(before, after).values()
+        assert "pw" not in row
+        assert "token" not in row
+        assert "http://exfil.example:8443" in row
+
+    def test_two_destinations_stage_different_rows(self) -> None:
+        """An approval opened for one host cannot be spent on a write restaged to another."""
+        before = self._profiles("http://luna:8000/mcp", ["*"])
+        harmless = credentials_widened(before, self._profiles("http://luna:9000/mcp", ["*"]))
+        hostile = credentials_widened(before, self._profiles("http://exfil.example/mcp", ["*"]))
+        assert harmless != hostile
+
+
+def _urlsafe(rng: random.Random, n: int) -> str:
+    return base64.urlsafe_b64encode(rng.randbytes(n)).decode().rstrip("=")
+
+
+class TestAuthorizationRecall:
+    """The #882 re-review: prose kept out structurally, not by narrowing the token."""
+
+    @pytest.mark.parametrize("scheme", ["Bearer", "bearer", "BEARER", "Basic"])
+    def test_random_tokens_are_found_under_any_scheme_case(self, scheme: str) -> None:
+        rng = random.Random(862)
+        tokens = [_urlsafe(rng, 32) for _ in range(500)]
+        tokens += [str(uuid.UUID(int=rng.getrandbits(128), version=4)) for _ in range(500)]
+        missed = [t for t in tokens if K.AUTHORIZATION not in kinds(f"{scheme} {t}")]
+        assert missed == []
+
+    def test_a_base64_basic_credential_with_a_slash_is_found(self) -> None:
+        value = base64.b64encode(b"svc-account:pa?ss>w0rd!").decode()
+        assert "/" in value or "+" in value
+        assert K.AUTHORIZATION in kinds("Authorization: Basic " + value)
+
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            "Bearer credentialsAllowedWellFormed",
+            "Basic CredentialsAllowedWellFormed",
+            "bearer release-notes-for-rhel-eleven",
+            "Bearer docs/credential-guard.md section",
+        ],
+    )
+    def test_identifiers_and_paths_after_the_scheme_are_prose(self, prose: str) -> None:
+        assert K.AUTHORIZATION not in kinds(prose)
+
+
+class TestQueryValues:
+    @pytest.mark.parametrize(
+        "query",
+        ["?token=nextpagecursorabcdef", "?key=rhel-baseos-packages", "&KEY=lowercaseonlyvalue"],
+    )
+    def test_a_lowercase_value_is_a_setting(self, query: str) -> None:
+        assert K.QUERY_SECRET not in kinds(query)
+
+    @pytest.mark.parametrize("query", ["?api_key=Ab3dEfGh1jKlMnOp", "?SIG=0123456789abcdef0123"])
+    def test_a_value_with_a_digit_or_capital_is_a_secret(self, query: str) -> None:
+        assert K.QUERY_SECRET in kinds(query)
+
+
+class TestUnmaskingBounds:
+    def test_a_combining_mark_or_variation_selector_inside_a_key_does_not_hide_it(self) -> None:
+        for mark in ("\u0301", "\ufe0f", "\U000e0100"):
+            assert refused_credentials("t", {"q": GITHUB[:6] + mark + GITHUB[6:]}, _backend()) == [
+                K.GITHUB_TOKEN
+            ]
+
+    def test_an_nfkc_bomb_is_refused_cheaply(self) -> None:
+        bomb = "\ufdfa" * 200_000
+        start = time.perf_counter()
+        assert every_credential(bomb) == [EXPANSION_KIND]
+        assert time.perf_counter() - start < 2.0
+        assert refused_credentials("t", {"q": bomb}, _backend()) == [EXPANSION_KIND]
+
+    def test_ordinary_non_ascii_text_is_not_a_bomb(self) -> None:
+        text = "日本語のテキスト、\ufb01 ligature, \uff83\uff9e\uff70\uff80。" * 2000
+        assert every_credential(text) == []

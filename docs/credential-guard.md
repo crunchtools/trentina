@@ -27,7 +27,9 @@ Adding an allowance through `config_tool` waits for a person's [approval](approv
 
 ## Known limits
 
-The check reads shapes. A key wrapped in base64 or another encoding the destination does not decode, split across two arguments or two calls, or with no recognisable prefix (most passwords) is not seen. `Authorization` and query-string values count only when they look like a token (mixed case with a digit, or long hex) so prose about a "bearer token" is not refused, which means a lowercase-only secret after `Bearer` passes. A planted honeytoken is matched separately, base64 and fragments included, by the [decoy check](profiles.md#decoy-tools-and-honeytokens).
+The check reads shapes. A key wrapped in base64 or another encoding the destination does not decode, buried under four or more layers of percent, `\u` or HTML-entity escaping (three are unwound), split across two arguments or two calls, or with no recognisable prefix (most passwords) is not seen. An `Authorization` value (`Bearer` or `Basic`, any case) counts when it has two of lowercase, uppercase and digits and is not a path or an identifier made of words (`src/x/guards.py`, `credentials_allowed_well_formed`, `credentialsAllowed`), so prose about a "bearer token" is not refused; a secret that is a single-case word passes. A query value counts at 16 characters with a digit or a capital. A planted honeytoken is matched separately, base64 and fragments included, by the [decoy check](profiles.md#decoy-tools-and-honeytokens).
+
+Text whose NFKC fold would more than double a chunk of it (U+FDFA is eighteen characters wide) is not unfolded: it is refused as `unicode_expansion`, the one kind that is not a credential. Only `["*"]` allows it.
 
 ## Before you deploy: replay past calls
 
