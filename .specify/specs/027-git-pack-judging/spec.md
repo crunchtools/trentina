@@ -2,7 +2,7 @@
 
 > **Spec ID:** 027-git-pack-judging
 > **Status:** Draft, rulings recorded
-> **Version:** 0.3.0
+> **Version:** 0.3.1
 > **Author:** Scott McCarty
 > **Date:** 2026-11-22
 > **Ticket:** #453 (known gap 29), Ashigaru a1054
@@ -282,10 +282,13 @@ Gap 29 narrows to these, each stated in the docs when its phase lands:
 ## Push (phase 3)
 
 A push is the agent's own output, so injection judging buys little. The same
-reader runs `credential_shapes.kinds` over every new blob and commit of a
-push before the pack is forwarded, and refuses `credential` on a match unless
-the kind is in the profile's `credentials_allowed`. Deterministic, no L2 or
-L3. It needs the push spooled, which holds it until read.
+reader runs `credential_shapes.kinds` over every text-bearing thing a push
+sends before the pack is forwarded: each new blob (a binary's strings, as
+read on fetch), commit, annotated tag and tree entry name, and the ref names
+and push options in the request. It refuses `credential` on a match unless
+the kind is in the profile's `credentials_allowed`. An object the reader
+cannot read refuses the push, never forwards unscanned. Deterministic, no L2
+or L3. It needs the push spooled, which holds it until read.
 
 ## Configuration
 
