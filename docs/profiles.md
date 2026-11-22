@@ -531,7 +531,8 @@ English (#456). Anything but an explicit allow refuses the call.
 Guarded tools are exact names on backends the profile has, each allowed by
 that backend's `tools_allow`, or the file does not load. Add
 `refuse_when_flagged: true` on an unattended profile to refuse its guarded calls
-outright once the session has been delivered flagged content (#457). The block is
+outright once the session has been delivered flagged content, tripped a decoy or
+tried to send a credential (#457, #860). The block is
 perimeter: an agent's own reload cannot change it, and a honeypot cannot
 have one. Scenarios, the policy-writing guide, refusal codes and what it
 cannot do are in [Semantic Request Guards](semantic-request-guards.md).

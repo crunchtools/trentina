@@ -93,7 +93,7 @@ profiles:
 | `policy` | yes | The rule, in plain language, up to 4,000 characters. Given to the judge, never to the agent. |
 | `tools` | yes | Backend name to the exact tool names whose responses are judged. No globs. |
 | `timeout_seconds` | no | How long a judgment may take before the response is withheld. Default 30. |
-| `refuse_when_flagged` | no | Withhold these responses without asking the judge once the session has been delivered flagged content. Default false. |
+| `refuse_when_flagged` | no | Withhold these responses without asking the judge once the session has been delivered flagged content, tripped a decoy or tried to send a credential (#860). Default false. |
 
 `semantic_response_guards` reuses the request guards' config shape, so
 `egress_http` is accepted syntactically, but it has no meaning on a response —
@@ -164,7 +164,7 @@ agent.
 | `other` | judge | A refusal with no listed reason, or an answer that was not an explicit allow. |
 | `uninspectable_response` | gateway | The result carries a content block the judge cannot read as text (an image, audio, a binary blob, a resource link, or any block type other than text), so the policy cannot be checked against it. |
 | `response_oversize` | gateway | The result is too large to judge in one admission window (over `Config.admission_tokens`). It is refused, not truncated. |
-| `session_flagged` | gateway | `refuse_when_flagged` is set, and this session was delivered flagged content or sent no session ID. |
+| `session_flagged` | gateway | `refuse_when_flagged` is set, and this session was delivered flagged content, tripped a decoy, tried to send a credential, or sent no session ID. |
 | `gatekeeper_unavailable` | gateway | No judge is configured, or it failed, timed out, answered off-schema or leaked its canary. |
 
 It fails closed. Anything other than an explicit allow withholds the response.

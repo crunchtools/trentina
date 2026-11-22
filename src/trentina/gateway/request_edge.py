@@ -23,7 +23,7 @@ from ..transports.jsonrpc import JSONRPC_INVALID_PARAMS, _err, _ok, _refused
 from . import audit, discovery
 from .args import Normalized, normalize_arguments
 from .backend import cache_owner, cached_tool_read_only, cached_tool_schema, loggable_tool
-from .decoy import canned_result, keep_arguments, leaked_tokens, record_trip
+from .decoy import canned_result, keep_arguments, leaked_tokens, mark_session, record_trip
 from .destination import Destination, destination_of
 from .filter import filter_tools
 from .gatekeeper import judge_call
@@ -107,6 +107,10 @@ async def _refuse_call(
     """
     # Off the loop, as the honeytoken match is: linear, but in the arguments' size.
     credentials = await asyncio.to_thread(refused_credentials, tool_name, forwarded, backend)
+    if credentials:
+        # Refused below whatever else is wrong with the call; trying to send
+        # one is the session's to answer for, as a decoy trip is (#860).
+        mark_session(f"{REASON_CREDENTIAL} {','.join(credentials)}")
     refused = _refuse_arguments(
         backend,
         tool_name,
