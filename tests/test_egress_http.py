@@ -853,3 +853,12 @@ class TestL2AdvisoryWhenL3Clean:
 
         with pytest.raises(ValidationError, match="needs enforcement: block"):
             EgressGrant(enforcement="flag", l2="advisory_when_l3_clean")
+
+    def test_a_non_http_route_cannot_switch_it_on(self) -> None:
+        """A generic route's free-form grant options are not the egress grant."""
+        grant = SimpleNamespace(options={"l2": "advisory_when_l3_clean"})
+        for kind, expected in (("http", True), ("forward", False), ("llm", False)):
+            upstream = SimpleNamespace(
+                bound=SimpleNamespace(instance=SimpleNamespace(type=kind), grant=grant)
+            )
+            assert perimeter.PinnedUpstream._l2_advisory(upstream) is expected
