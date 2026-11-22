@@ -6,7 +6,7 @@
 # Same digest-pinned base and uv as the root Containerfile, so the scanner sees
 # the dependency set production runs. Docker ignores .containerignore, so
 # tests/, docs/ and corpora/ all arrive with `COPY . /src`.
-FROM quay.io/hummingbird/python:3.14-builder@sha256:2cb296b79c1d802f1a3e8023892e854ecb6789a78dd306c4bbd27ebbbd3f76c8
+FROM quay.io/hummingbird/python:3.15-builder@sha256:413e423ca767d0124a4d2e4613ebe5a2c7d74fc86d6b6b1fa904237aa3b9e9c6
 USER 0
 RUN pip install --no-cache-dir uv==0.13.7
 
