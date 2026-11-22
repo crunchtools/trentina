@@ -47,6 +47,11 @@ CASES: dict[str, Case] = {}
 #:     instance, so it now has a row; its no-key refusal names its reason.
 #:   * the Matrix proxy refuses a path outside ``_matrix/`` after authentication
 #:     too (it answered before), so a known caller's refusal is recorded.
+#:   * an ``llm_completion`` detection row is attributed like the request
+#:     edge's (#902): profile, ``llm:<provider>`` and ``direction=response``,
+#:     and ``blocked`` only under ``defense.llm_completion: block``. 6.7.0 left
+#:     the three NULL and defaulted ``blocked`` to 1 for a completion that had
+#:     already streamed.
 #: One more holds for every case, in ``_retired``: a ``detections`` row's
 #: ``layer1_stats`` no longer carries ``directives_ciphered_detected``, which
 #: #744 retired when the unpack stage took over reading ROT13 and backwards
@@ -126,6 +131,16 @@ def _gains_row(**fields: Any) -> Callable[[dict[str, Any]], dict[str, Any]]:
     return apply
 
 
+def _completion_attributed(record: dict[str, Any]) -> dict[str, Any]:
+    for row in record["detections"]:
+        if row["source_type"] == "llm_completion":
+            _, profile, provider = row["source"].split(":", 2)
+            row.update(profile=profile, backend=f"llm:{provider}", direction="response", blocked=0)
+    return record
+
+
+for _case in ("llm-completion-flagged", "llm-stream-flagged-completion"):
+    DELTAS[_case] = _completion_attributed
 DELTAS["llm-busy"] = _busy_reads_no_body
 DELTAS["matrix-not-matrix-path"] = _gains_row(
     backend="matrix",
