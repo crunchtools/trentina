@@ -101,6 +101,7 @@ def profile(
     push: Sequence[str] = ("acme/widgets",),
     push_refs: Sequence[str] = ("refs/heads/agent/*",),
     deny: Sequence[str] = ("*-private",),
+    show_refs: Sequence[str] = (),
 ) -> Profile:
     """A profile whose bearer is ``GATEWAY_TOKEN`` and whose grant is on ``REMOTE``."""
     grant = GitGrant(
@@ -109,6 +110,7 @@ def profile(
         push=list(push),
         push_refs=list(push_refs),
         deny=list(deny),
+        show_refs=list(show_refs),
     )
     grant.token = SecretStr(FORGE_TOKEN)
     auth = AuthConfig(bearer_token_env="TOK")

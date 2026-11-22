@@ -10,6 +10,10 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- **`git.<remote>.show_refs`: a profile may fetch a pull request's head by name (a1046).** `refs/pull/` stays hidden by every remote by default, so `git fetch origin pull/7/head` was refused with a bare HTTP 403 (`hidden_ref`; git prints no reason mid-RPC) and a reviewing seat had to guess the head branch, which a fork's pull request does not have. A grant that lists a namespace of its remote's `hidden_refs` in `show_refs` is shown it, in the repositories it may fetch: listed back, and a `ref-prefix` or `want-ref` naming it forwarded. A namespace the remote does not hide fails the load. An agent's reload already holds its own `git` block, so only an operator grants it.
+
 ### Fixed
 
 - **`sdlc ci`'s image-tests fit a 4 GB seat (a1000).** They ran a fixed `-n 4`, and every xdist worker loads the L2 model (1.5 GB at peak, measured) and starts an OCR or PDF child of about the same, so a 4 GB seat had workers killed for memory until the run failed. They now pass `-n auto --worker-mb 1800`, and `tests/conftest.py` sizes `-n auto` from the memory the tightest cgroup from the process to the root can still take (and `MemAvailable`), never above the CPU count. One that fits runs in-process. `--maxprocesses 4` keeps the GitHub runners at the four they ran; without `--worker-mb`, `-n auto` is xdist's own.

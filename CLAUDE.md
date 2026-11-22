@@ -970,7 +970,9 @@ replaced.
   repositories a profile's `git.<remote>` lists (`GitGrant`, `GitRemote` in
   `profile.py`; top-level `git_remotes`). `git_wire.py` is the reading, with
   no I/O: the path, pkt-lines, a push's command list, an upload-pack
-  request, and `RefFilter` for ref listings. `git_transport.py` is the
+  request, and `RefFilter` for ref listings. A grant's `show_refs` takes
+  namespaces out of its remote's `hidden_refs` for that profile alone
+  (`perimeter._bind_git`). `git_transport.py` is the
   route: caller by bearer (`resolve_profile_by_token`), every header and the
   URL built from validated parts, the profile's token injected as Basic,
   upstream through `egress.open_pinned` on `upstream.checked_target`'s

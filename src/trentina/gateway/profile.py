@@ -2677,6 +2677,15 @@ class GitGrant(BaseModel):
         max_length=_MAX_GIT_PATTERNS,
         description="Patterns refused for fetch and push alike; a bare name holds for any owner",
     )
+    show_refs: list[str] = Field(
+        default_factory=list,
+        max_length=_MAX_GIT_PATTERNS,
+        description=(
+            "Namespaces of the remote's hidden_refs this profile may list and fetch "
+            "anyway, in the repositories it may fetch: refs/pull/ to check out a "
+            "pull request's head. Each must be one the remote hides."
+        ),
+    )
 
     @field_validator("token_env")
     @classmethod
@@ -2697,6 +2706,11 @@ class GitGrant(BaseModel):
     def _deny_holds_for_any_owner_when_bare(cls, values: list[str]) -> list[str]:
         checked = _git_patterns([value.lower() for value in values], _GIT_DENY_PATTERN_RE, "deny")
         return [value if "/" in value else f"*/{value}" for value in checked]
+
+    @field_validator("show_refs")
+    @classmethod
+    def _shown_refs_are_namespaces(cls, values: list[str]) -> list[str]:
+        return _git_patterns(values, _GIT_HIDDEN_PREFIX_RE, "show_refs")
 
     @field_validator("push_refs")
     @classmethod
