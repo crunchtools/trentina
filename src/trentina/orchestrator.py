@@ -50,7 +50,7 @@ from .gateway.response_edge import (
 )
 from .logsafe import exc_kind, exc_where, redact_source
 from .modes import Mode, ModePolicy, gaps_of
-from .quarantine.prompts import RISK_LEVELS
+from .quarantine.prompts import COMPLETION_BRIEFING, RISK_LEVELS
 from .transports.base import Early, Transport
 
 logger = logging.getLogger(__name__)
@@ -639,6 +639,7 @@ async def judge_llm_completion(
                     source_type="llm_completion",
                     defense=profile.defense,
                     provenance=Provenance.MODEL_OUTPUT,
+                    l3_context=COMPLETION_BRIEFING,
                     # The same row columns the request edge writes (#902), so a
                     # per-profile or per-backend query sees both edges of a call.
                     # flag has already streamed the completion: it records only.

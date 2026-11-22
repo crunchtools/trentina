@@ -10,7 +10,14 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- `benchmarks/llm_completion.py`: L3 on recorded `/proxy/llm` response bodies, as the completion edge judges them, and on the internal corpus's attacks set inside a real completion's envelope (a1013). The bodies are not shipped.
+
 ### Fixed
+
+- **L3 stops flagging LLM completions for their envelope under gemini-2.5-flash-lite (a1013).** The completion edge handed L3 the raw response body with no briefing, and 2.5 read `reasoning.encrypted` ciphertext as `hidden_content` and security reviews as `data_exfiltration`: 110 of 614 Gatehouse completions flagged in production after the switch, against 10 of 6,389 before. `judge_llm_completion` now briefs L3 with `prompts.COMPLETION_BRIEFING`. On 74 recorded-shape Gatehouse completions (3 votes) the flag rate went from 6.8% to 1.4%, none critical; the internal corpus's attacks inside a completion went from 40 of 43 caught to 42 of 44, the two misses the same in every run.
+- **The gemini-2.5-flash-lite pack no longer loops to the output cap (a1013).** Quoting non-ASCII payload text in a finding sent 2.5 into an escape-character loop until `MAX_OUTPUT_TOKENS`, a `TruncatedResponseError` and so an unavailable judge (25 in five hours in production, about 2% of readings measured). Pack v2's detection prompt has findings written in the judge's own words; the repro went from 3 truncations in 12 readings to 1 in 24, and the full run above had none.
 
 - **`sdlc ci`'s image-tests fit a 4 GB seat (a1000).** They ran a fixed `-n 4`, and every xdist worker loads the L2 model (1.5 GB at peak, measured) and starts an OCR or PDF child of about the same, so a 4 GB seat had workers killed for memory until the run failed. They now pass `-n auto --worker-mb 1800`, and `tests/conftest.py` sizes `-n auto` from the memory the tightest cgroup from the process to the root can still take (and `MemAvailable`), never above the CPU count. One that fits runs in-process. `--maxprocesses 4` keeps the GitHub runners at the four they ran; without `--worker-mb`, `-n auto` is xdist's own.
 

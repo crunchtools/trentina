@@ -1543,3 +1543,23 @@ class TestLlmCompletionAttribution:
                 "backend": "llm:anthropic",
             }
         ]
+
+
+def test_the_completion_edge_briefs_l3(monkeypatch: pytest.MonkeyPatch) -> None:
+    """L3 is told it reads a provider's response, not any content (a1013)."""
+    from trentina import defense as defense_mod
+    from trentina.orchestrator import judge_llm_completion
+    from trentina.quarantine.prompts import COMPLETION_BRIEFING
+
+    seen: list[str | None] = []
+
+    async def capturing_defend(_doc: Any, **kw: Any) -> Any:
+        seen.append(kw.get("l3_context"))
+        return SimpleNamespace(flagged=False, flagged_by=None, pipeline=NO_L1, risk_level="low")
+
+    monkeypatch.setattr(defense_mod, "defend", capturing_defend)
+    profile = _profile("agent1", "agent1-tok", {"anthropic": "agent1-key"})
+    asyncio.run(
+        judge_llm_completion("hi", profile=profile, provider_name="anthropic", deadline=5.0)
+    )
+    assert seen == [COMPLETION_BRIEFING]
