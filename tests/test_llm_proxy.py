@@ -37,8 +37,12 @@ from trentina.gateway.profile import (
 )
 from trentina.gateway.proxy_utils import normalize_proxy_path
 from trentina.gateway.relay import Operation
+from trentina.l1.pipeline import run_l1
 from trentina.transports import perimeter
 from trentina.transports.base import RefusedError
+
+#: What ``defend``'s fakes carry as L1's result: nothing counted.
+NO_L1 = run_l1("")
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -81,7 +85,7 @@ def _clean_judge(monkeypatch: pytest.MonkeyPatch) -> None:
     from trentina import modes as modes_mod
     from trentina.modes import Gaps
 
-    verdict = SimpleNamespace(flagged=False, flagged_by=None, risk_level="low")
+    verdict = SimpleNamespace(flagged=False, flagged_by=None, pipeline=NO_L1, risk_level="low")
 
     async def fake_defend(*_a: Any, **_k: Any) -> Any:
         return verdict
@@ -907,6 +911,7 @@ def _stub_defend(
     verdict = SimpleNamespace(
         flagged=flagged,
         flagged_by=SimpleNamespace(value="L2") if flagged else None,
+        pipeline=NO_L1,
         risk_level=risk,
     )
 
@@ -1040,7 +1045,7 @@ class TestProxyRequestDLP:
 
         async def capturing_defend(document: str, *_a: Any, **_k: Any) -> Any:
             seen.append(document)
-            return SimpleNamespace(flagged=False, flagged_by=None, risk_level="low")
+            return SimpleNamespace(flagged=False, flagged_by=None, pipeline=NO_L1, risk_level="low")
 
         from trentina import defense as defense_mod
         from trentina import modes as modes_mod
@@ -1067,7 +1072,7 @@ class TestProxyRequestDLP:
 
         async def counting_defend(*_a: Any, **_k: Any) -> Any:
             calls.append(1)
-            return SimpleNamespace(flagged=False, flagged_by=None, risk_level="low")
+            return SimpleNamespace(flagged=False, flagged_by=None, pipeline=NO_L1, risk_level="low")
 
         monkeypatch.setattr(defense_mod, "defend", counting_defend)
         monkeypatch.setattr(modes_mod, "gaps_of", lambda _v: Gaps())
@@ -1240,10 +1245,11 @@ def _stub_completion(
     from trentina import orchestrator as orch
     from trentina.modes import Gaps
 
-    clean = SimpleNamespace(flagged=False, flagged_by=None, risk_level="low")
+    clean = SimpleNamespace(flagged=False, flagged_by=None, pipeline=NO_L1, risk_level="low")
     completion = SimpleNamespace(
         flagged=flagged,
         flagged_by=SimpleNamespace(value="L2") if flagged else None,
+        pipeline=NO_L1,
         risk_level=risk,
     )
 
@@ -1393,7 +1399,7 @@ class TestHoneytokenInLlmRequest:
         from trentina.modes import Gaps
 
         flagged = SimpleNamespace(
-            flagged=True, flagged_by=SimpleNamespace(value="L1"), risk_level="high"
+            flagged=True, flagged_by=SimpleNamespace(value="L1"), pipeline=NO_L1, risk_level="high"
         )
 
         async def fake_defend(*_a: Any, **_k: Any) -> Any:
@@ -1413,7 +1419,7 @@ class TestHoneytokenInLlmRequest:
 
         async def defend(*_a: Any, **_k: Any) -> Any:
             calls.append("defend")
-            return SimpleNamespace(flagged=False, flagged_by=None, risk_level="low")
+            return SimpleNamespace(flagged=False, flagged_by=None, pipeline=NO_L1, risk_level="low")
 
         monkeypatch.setattr(defense_mod, "defend", defend)
         self._post(self._client(_FakeClient(), monkeypatch, "flag"), self.HONEY)
