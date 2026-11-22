@@ -133,6 +133,18 @@ class TestVerifyOAuth:
         with pytest.raises(OAuthChallengeError, match="malformed"):
             await verify_oauth("Basic tok", profile, provider)
 
+    async def test_the_binding_is_looked_up_for_the_presented_token(self) -> None:
+        """#298: the binding consulted is the presented token's, not any other's."""
+        profile = _oauth_profile("alice@example.com")
+        claims = {"email": "alice@example.com", "email_verified": True}
+        provider = _StubProvider(
+            {"tok": _StubAccessToken(claims), "theirs": _StubAccessToken(claims)},
+            bound={"tok": "gemini-app", "theirs": "agent-profile"},
+        )
+        await verify_oauth("Bearer tok", profile, provider)
+        with pytest.raises(OAuthChallengeError, match="not issued for this profile"):
+            await verify_oauth("Bearer theirs", profile, provider)
+
     async def test_invalid_token_is_challenge(self) -> None:
         profile = _oauth_profile("alice@example.com")
         provider = _StubProvider({"tok": None})
@@ -333,6 +345,16 @@ class TestResolveProfileByToken:
             "unresolved": Profile(name="unresolved", auth=AuthConfig(bearer_token_env="TEST")),
         }
         assert resolve_profile_by_token("Bearer anything", registry) is None
+
+    def test_profiles_after_an_unresolved_one_still_resolve(self) -> None:
+        """A profile with no token is skipped; the ones after it still authenticate."""
+        registry: dict[str, Profile] = {
+            "unresolved": Profile(name="unresolved", auth=AuthConfig(bearer_token_env="TEST")),
+            "agent1": _profile_with_token("agent1-token", "agent1"),
+        }
+        result = resolve_profile_by_token("Bearer agent1-token", registry)
+        assert result is not None
+        assert result.name == "agent1"
 
     def test_empty_registry_returns_none(self) -> None:
         assert resolve_profile_by_token("Bearer x", {}) is None

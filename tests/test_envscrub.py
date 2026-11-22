@@ -87,6 +87,7 @@ class TestScrub:
             "TRENTINA_OAUTH_JWT_SIGNING_KEY",
             "TRENTINA_OAUTH_GOOGLE_CLIENT_SECRET",
             "TRENTINA_BACKEND_TOKEN_KEY",
+            "TRENTINA_SECRETS_KEK",
             "GEMINI_API_KEY",
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",

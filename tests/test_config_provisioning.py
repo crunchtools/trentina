@@ -13,6 +13,7 @@ against the peer key the secondary really holds.
 
 from __future__ import annotations
 
+import hashlib
 import pathlib
 from collections.abc import Iterator
 from typing import Any
@@ -308,8 +309,8 @@ async def test_an_operator_adds_a_whole_new_agent_profile_in_band(
     running = (get_active_config() or pytest.fail("no gateway")).config.profiles
     assert "newagent" in running, "the profile is serving without a restart"
     auth = running["newagent"].auth
-    assert auth is not None and auth.bearer_token is not None
-    assert auth.bearer_token.get_secret_value() == minted["token"]
+    assert auth is not None and auth.bearer_token_sha256 is not None
+    assert auth.bearer_token_sha256 == hashlib.sha256(minted["token"].encode()).digest()
 
     # And it authenticates: the token the agent was given is the one the
     # gateway will accept.

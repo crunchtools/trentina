@@ -11,6 +11,7 @@ restored.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import pathlib
 from collections.abc import Iterator
@@ -64,7 +65,8 @@ class TestMinting:
 
     async def test_the_token_is_what_was_stored(self, data_dir: pathlib.Path) -> None:
         result = await profile_token("newagent")
-        assert token_store.read_token("newagent") == result["token"]
+        digest = hashlib.sha256(result["token"].encode()).digest()
+        assert token_store.read_digest("newagent") == digest
 
     async def test_it_carries_a_recognisable_shape(self, data_dir: pathlib.Path) -> None:
         """An opaque random string has no shape a scrubber could catch. The
@@ -84,10 +86,11 @@ class TestMinting:
     async def test_a_name_is_written_once(self, data_dir: pathlib.Path) -> None:
         """O_EXCL: a token in use is never replaced underneath a live profile."""
         first = await profile_token("newagent")
-        stored = token_store.read_token("newagent")
+        stored = token_store.read_digest("newagent")
         second = await profile_token("newagent")
         assert "already exists" in second["error"]
-        assert token_store.read_token("newagent") == stored == first["token"]
+        assert token_store.read_digest("newagent") == stored
+        assert stored == hashlib.sha256(first["token"].encode()).digest()
 
     async def test_no_file_tool_can_read_the_store(self, data_dir: pathlib.Path) -> None:
         await profile_token("newagent")
@@ -130,8 +133,8 @@ class TestTokenByName:
         )
         loaded = load_profiles(path)
         auth = loaded.profiles["newagent"].auth
-        assert auth is not None and auth.bearer_token is not None
-        assert auth.bearer_token.get_secret_value() == minted
+        assert auth is not None and auth.bearer_token_sha256 is not None
+        assert auth.bearer_token_sha256 == hashlib.sha256(minted.encode()).digest()
 
     async def test_a_name_with_no_token_fails_closed(self, data_dir: pathlib.Path) -> None:
         path = data_dir.parent / "profiles.yaml"
@@ -184,8 +187,8 @@ class TestTokenByName:
             active = get_active_config()
             assert active is not None
             auth = active.config.profiles["newagent"].auth
-            assert auth is not None and auth.bearer_token is not None
-            assert auth.bearer_token.get_secret_value() == minted
+            assert auth is not None and auth.bearer_token_sha256 is not None
+            assert auth.bearer_token_sha256 == hashlib.sha256(minted.encode()).digest()
         finally:
             os.environ.pop("START_TOKEN", None)
             config_mod._config = None

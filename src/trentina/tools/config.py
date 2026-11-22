@@ -306,8 +306,9 @@ def _profile_facts(
     address nobody recognises is exactly the payload that line would hide.
     A side not holding the profile at all renders as ``absent``.
 
-    No credential VALUE can arrive here. The two secret-bearing fields in
-    these models, ``auth.bearer_token`` and ``oauth.client_secret``, are
+    No credential VALUE can arrive here. The secret-bearing fields in
+    these models, ``auth.bearer_token``, ``auth.bearer_token_sha256`` and
+    ``oauth.client_secret``, are
     declared ``Field(exclude=True)`` and so are absent from the dump
     ``operator_profile`` compares — asserted in ``tests/test_config_tool.py``,
     because a new secret field without that marker would otherwise reach a

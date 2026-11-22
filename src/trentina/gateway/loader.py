@@ -891,7 +891,7 @@ def _resolve_bearer_token(name: str, profile: Profile) -> None:
     if profile.auth is None:
         return
     if profile.auth.bearer_token_name is not None:
-        profile.auth.bearer_token = _require_token(
+        profile.auth.bearer_token_sha256 = _require_token(
             name, profile.auth.bearer_token_name, "bearer token"
         )
         return
@@ -1213,25 +1213,24 @@ def _held(value: str, env_var: str) -> str:
     return value
 
 
-def _require_token(name: str, token_name: str, what: str) -> SecretStr:
-    """Read a bearer token the gateway minted itself, failing closed if it is gone.
+def _require_token(name: str, token_name: str, what: str) -> bytes:
+    """Read the digest of a bearer token the gateway minted, failing closed if it is gone.
 
     Read on every load AND every reload, which is what lets a profile added
     after startup authenticate without one (#635) — the same reason
     ``_require_key`` reads a key here rather than once at startup. The name has
     already been held to ``KEY_NAME_RE`` by the profile model, so it is a
-    filename.
+    filename. Only the digest is held in memory; the token is not stored.
     """
     try:
-        token = token_store.read_token(token_name)
+        return token_store.read_digest(token_name)
     except OSError as exc:
         raise ProfileConfigError(
             f"Profile {name!r}: {what} names token {token_name!r}, which the gateway "
             "has not minted — create it with profile_token"
         ) from exc
-    if not token:
-        raise ProfileConfigError(f"Profile {name!r}: {what} token {token_name!r} is empty")
-    return SecretStr(token)
+    except ValueError as exc:
+        raise ProfileConfigError(f"Profile {name!r}: {what} token {token_name!r} {exc}") from exc
 
 
 def _require_env(name: str, env_var: str, what: str) -> SecretStr:

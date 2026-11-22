@@ -326,6 +326,11 @@ class AuthConfig(BaseModel):
     bearer_token: SecretStr | None = Field(
         default=None, exclude=True, description="Resolved token (load-time only)"
     )
+    bearer_token_sha256: bytes | None = Field(
+        default=None,
+        exclude=True,
+        description="SHA-256 of the minted token (load-time only)",
+    )
 
     @field_validator("bearer_token_env")
     @classmethod
