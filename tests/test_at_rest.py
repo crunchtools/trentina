@@ -21,6 +21,7 @@ import time
 from collections.abc import Iterator
 
 import pytest
+from cryptography.hazmat.primitives import serialization
 
 from trentina import config as config_mod
 from trentina.errors import ConfigError
@@ -491,3 +492,54 @@ class TestReviewFixes:
         assert secret_store.read_secret("AAA_FIRST") == VALUE
         assert secret_store.read_secret("BBB_SECOND") == VALUE
         assert _raw(second) == VALUE.encode()  # not migrated under the read-only KEK
+
+    def test_a_sealing_pass_waits_for_a_key_being_minted(
+        self, data_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-review of #885: ``write_once`` creates the key file and then
+        writes it. A sealing pass (``secret_store put`` in another process)
+        reading in between sealed the empty file over the new one, and the
+        private key whose public half had been returned was lost."""
+        _kek(monkeypatch, NEW)
+        kek = at_rest._current()
+        assert kek is not None
+        real_write_once = secret_file.write_once
+        sealer: list[threading.Thread] = []
+
+        def slow_write_once(path: pathlib.Path, payload: bytes) -> None:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, secret_file.FILE_MODE)
+            thread = threading.Thread(target=at_rest.seal_all, args=(kek,))
+            sealer.append(thread)
+            thread.start()
+            time.sleep(0.3)  # without the lock, the pass seals the empty file now
+            assert thread.is_alive()  # it waits on the keys/ lock instead
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(payload)
+
+        monkeypatch.setattr(secret_file, "write_once", slow_write_once)
+        public_pem = key_store.mint("fed-race")
+        monkeypatch.setattr(secret_file, "write_once", real_write_once)
+        sealer[0].join(timeout=10)
+
+        private = serialization.load_pem_private_key(
+            key_store.read_key("fed-race").encode(), password=None
+        )
+        assert (
+            private.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode()
+            == public_pem
+        )
+
+    def test_an_empty_plaintext_file_is_never_sealed(
+        self, data_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secret_file.private_dir("secrets")
+        empty = secret_store.secrets_dir() / "EMPTY"
+        empty.write_bytes(b"")
+        _kek(monkeypatch, NEW)
+        assert at_rest.configure() is True
+        assert _raw(empty) == b""

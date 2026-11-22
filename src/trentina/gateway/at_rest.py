@@ -275,7 +275,9 @@ def _read_locked(path: Path) -> bytes:
         stored = fh.read()
     kek = _current()
     if not stored.startswith(SEALED_MAGIC):
-        if kek is not None and kek.writable:
+        # An empty file is a write not yet made, never a secret to seal: sealing
+        # it would swap the inode a writer still holds open for an empty one.
+        if kek is not None and kek.writable and stored:
             _migrate(kek, path, stored)
         return stored
     if kek is None:

@@ -72,7 +72,7 @@ def mint(name: str) -> str:
     otherwise retains it after the write, and a private key is already held out
     of every log record by pattern (``credential_shapes.PEM_KEY``).
     """
-    ensure_keys_dir()
+    directory = ensure_keys_dir()
     path = key_path(name)
     key = Ed25519PrivateKey.generate()
     private_pem = key.private_bytes(
@@ -80,7 +80,13 @@ def mint(name: str) -> str:
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    secret_file.write_once(path, at_rest.seal(private_pem))
+    sealed = at_rest.seal(private_pem)
+    # Held against a sealing pass in another process (``secret_store put``):
+    # ``write_once`` creates the file before it writes it, and a pass reading
+    # it in between would seal the empty file over this one, losing a key
+    # whose public half is already on its way to a peer.
+    with secret_file.locked(directory):
+        secret_file.write_once(path, sealed)
     return (
         key.public_key()
         .public_bytes(
