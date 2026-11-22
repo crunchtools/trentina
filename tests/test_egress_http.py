@@ -821,6 +821,21 @@ class TestHoneytokenInRequest:
         assert _HONEY not in str(tuple(row))
         assert _trips(audit_db) == [("http:gh", "request", "agent1")]
 
+    @pytest.mark.parametrize("enforcement", ["block", "flag"])
+    def test_a_body_that_is_not_utf8_is_still_checked(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path, enforcement: Literal["block", "flag"]
+    ) -> None:
+        """No layer reads such a body, and flag forwards it: the trip check reads it as latin-1."""
+        _stub_judge(monkeypatch)
+        h = _harness(monkeypatch, enforcement=enforcement)
+        self._planted(h)
+        content = _HONEY.encode() + b"\xff"
+        resp = h.client.post("/proxy/http/gh/repos/x", headers=_AUTH, content=content)
+        assert (resp.status_code, resp.json()["block_reason"]) == (403, "flagged")
+        assert h.net.sent == []
+        [row] = _rows(audit_db)
+        assert row["outcome"] == "decoy_tripped"
+
     def test_the_agent_cannot_tell_it_from_an_ordinary_flag(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

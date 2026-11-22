@@ -1417,8 +1417,57 @@ class TestHoneytokenInLlmRequest:
 
         monkeypatch.setattr(defense_mod, "defend", defend)
         self._post(self._client(_FakeClient(), monkeypatch, "flag"), self.HONEY)
-        # The frame unit is clean and is judged; the message carrying the token is not.
-        assert len(calls) == 1
+        # The trip is checked before any unit is judged.
+        assert calls == []
+
+    def _post_contents(self, client: TestClient, contents: list[dict[str, Any]]) -> Any:
+        return client.post(
+            "/proxy/llm/gemini/v1beta/models/gemini-2.5-flash:generateContent",
+            headers={"authorization": "Bearer agent1-tok"},
+            content=json.dumps({"contents": contents}).encode(),
+        )
+
+    def test_a_token_the_agent_was_delivered_is_not_a_trip(
+        self, monkeypatch: pytest.MonkeyPatch, audit_db: Path
+    ) -> None:
+        """An agent that read the planted .env carries it in its history: not a send."""
+        _stub_defend(monkeypatch)
+        fake = _FakeClient()
+        read = {"name": "read", "response": {"content": f"AWS_KEY={self.HONEY}"}}
+        contents = [
+            {"role": "user", "parts": [{"text": "check the config"}]},
+            {"role": "model", "parts": [{"functionCall": {"name": "read", "args": {}}}]},
+            {"role": "user", "parts": [{"functionResponse": read}]},
+        ]
+        resp = self._post_contents(self._client(fake, monkeypatch, "block"), contents)
+        assert resp.status_code == 200
+        assert fake.sent
+        [row] = _rows(audit_db)
+        assert row["outcome"] != "decoy_tripped"
+
+    def test_a_token_in_a_tool_call_the_agent_writes_is_a_trip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_defend(monkeypatch)
+        fake = _FakeClient()
+        call = {"name": "post", "args": {"body": self.HONEY}}
+        contents = [{"role": "model", "parts": [{"functionCall": call}]}]
+        resp = self._post_contents(self._client(fake, monkeypatch, "flag"), contents)
+        assert resp.status_code == 403
+        assert not fake.sent
+
+    def test_a_count_past_its_deadline_still_trips(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trentina.gateway import request_units
+
+        async def slow(_units: list[str]) -> list[str]:
+            raise TimeoutError
+
+        monkeypatch.setattr(request_units, "_one_cap", slow)
+        fake = _FakeClient()
+        resp = self._post(self._client(fake, monkeypatch, "block"), self.HONEY)
+        assert resp.status_code == 403
+        assert resp.json()["block_reason"] == "flagged"
+        assert not fake.sent
 
     def test_a_clean_request_is_not_a_trip(
         self, monkeypatch: pytest.MonkeyPatch, audit_db: Path

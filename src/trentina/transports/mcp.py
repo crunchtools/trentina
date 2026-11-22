@@ -1625,7 +1625,8 @@ async def _route_tools_call(profile: Profile, req_id: Any, params: Any) -> dict[
     try:
         # First, on the request as sent: the params may not be a mapping and
         # the name may resolve to nothing, and it is still the alarm (#357).
-        leaked = leaked_tokens(profile, params)
+        # Off the loop: the matcher is linear in the request, up to its byte cap.
+        leaked = await asyncio.to_thread(leaked_tokens, profile, params)
         if leaked:
             return request_edge._leaked(profile, req_id, params, leaked)
         if not isinstance(params, dict):

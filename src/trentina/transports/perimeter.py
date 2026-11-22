@@ -69,7 +69,7 @@ from ..gateway.upstream import (
 )
 from ..logsafe import exc_kind
 from ..modes import Mode
-from ..orchestrator import judge_egress_response, judge_outbound
+from ..orchestrator import judge_egress_response, judge_outbound, outbound_trip
 from ..outcomes import Outcome
 from ..reach.egress import check_url, open_pinned
 from ..seal import UNSEALED, Seal, require
@@ -513,12 +513,20 @@ class PinnedUpstream(Upstream):
                 judged_body = content.decode("utf-8")
             except UnicodeDecodeError:
                 judged_body = None
+        profile = self.op.profile
+        name = self.bound.instance.name
+        # The trip check reads every byte, before any other refusal: latin-1
+        # decodes any body, so one that is not UTF-8 cannot carry a token past it.
+        raw_body = content.decode("latin-1") if content else None
+        sent = request_document(method, f"/{path}", query, headers, raw_body)
+        if (trip := await outbound_trip(profile, f"{self.route}:{name}", sent)) is not None:
+            reason = _REQUEST_REASON[trip.reason or REASON_UNJUDGED]
+            logger.warning("perimeter: request blocked profile=%s reason=%s", profile.name, reason)
+            raise RefusedError(reason, outcome=Outcome.DECOY_TRIPPED)
         binary = bool(content) and judged_body is None
         if binary and mode is not Mode.FLAG:
             raise RefusedError("binary_body")
         document = request_document(method, f"/{path}", query, headers, judged_body)
-        profile = self.op.profile
-        name = self.bound.instance.name
         verdict = await judge_outbound(
             document,
             source=f"{self.route}:{profile.name}:{name}",
@@ -531,7 +539,7 @@ class PinnedUpstream(Upstream):
         if verdict.refused:
             reason = _REQUEST_REASON[verdict.reason or REASON_UNJUDGED]
             logger.warning("perimeter: request blocked profile=%s reason=%s", profile.name, reason)
-            raise RefusedError(reason, outcome=Outcome.DECOY_TRIPPED if verdict.tripped else None)
+            raise RefusedError(reason)
         warning = verdict.warning
         if warning is not None:
             self.op.flag_reason = _REQUEST_REASON[verdict.reason or REASON_UNJUDGED]

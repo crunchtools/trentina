@@ -186,7 +186,8 @@ The layers judge what an agent reads. Two deterministic tripwires watch
 what it then does (#357): a call to a decoy tool (a `decoy://` backend's,
 declared in the profile and answered by nothing), and a planted credential
 (a honeytoken) in the arguments of any call or in the body, headers or
-query of a `/proxy/http` or `/proxy/llm` request (#865). Both are deterministic
+query of a `/proxy/http` or `/proxy/llm` request (#865; on `/proxy/llm` what the
+agent wrote, never a tool result it was delivered). Both are deterministic
 matches with no model behind them (a decoy by name; a honeytoken as planted,
 encoded as base64, hex or percent, reversed, or in a 16-character piece, #864),
 recorded as `decoy_tripped`. They are not a layer: they
@@ -236,7 +237,8 @@ that inside the threat model, which assumes the judge compromised:
   payload, and a flag or an unfinished read refuses. The judge is then
   called through `quarantine_generate`: no tools, a canary, a closed schema.
   Both read the credential-redacted copy (`outbound.judge_input`), never the
-  raw arguments, so no secret reaches an external judge (#863).
+  raw arguments, and so does the destination in the judge's briefing, so no
+  secret reaches an external judge (#863).
 - **Nothing it writes reaches the agent.** The agent is told a reason code
   from a closed set; the policy and the judge's output stay in the gateway.
 
@@ -516,4 +518,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.20.0 | 2026-11-17 | Verdict caches (#816), CTO ruling: a cache serving a layer's verdict is that layer's read reused, not an off switch, and is allowed only on four conditions — the key binds the exact content hash, the grant owner and everything that can change that layer's verdict (model, prompt pack, effort when set, the layer's version); only completed verdicts are cached, never errors, timeouts, refusals or unjudged results; entries have a bounded TTL and are dropped when a key input changes; and a miss or a cache failure falls back to judging, never to a pass. Gatehouse had flagged each new cache as a CRITICAL "layer skipped" because the Layer Contract named federation as the only boundary where a payload is delivered without the layers running here. `tests/test_verdict_cache_rule.py` holds both caches to it; the perimeter verdict cache has no TTL and is held open as a strict xfail until it gets one. `PERIMETER_VERSION` does not move: no verdict changes |
 | 2.21.0 | 2026-11-22 | Semantic Request Guards: the layers and the judge read a tool call's arguments through `outbound.judge_input`, as egress always has, so a credential an agent put in a guarded call never reaches the external judge (#863). The judge is told a `[REDACTED]` value is a credential the call carries, so `credential_material` refusals still fire. `PERIMETER_VERSION` does not move: a verdict cache keys on the content hash, so a redacted copy is a new key, never a stale hit |
 | 2.22.0 | 2026-11-22 | Decoys (#864): "exact matches" is wrong for a honeytoken and the L3 canary, which are now found as written, encoded (base64 at all three alignments, hex, percent), reversed, or in any 16-character piece of a token at least 32 long (`token_variants.py`). Still no model, still not a layer, and still a tripwire for the common case: a token paraphrased, split across calls or in another encoding is not seen (gap 17). `PERIMETER_VERSION` does not move: no verdict changes |
-| 2.23.0 | 2026-11-22 | Decoys: a honeytoken is checked in what leaves by `/proxy/http` and `/proxy/llm` too (#865), not only in a tool call's arguments. `judge_outbound`, the one choke point of both, matches the raw request before any layer runs and refuses a trip in every mode, `flag` included, as a trip refuses on MCP regardless of mode. The agent is told `flagged`, which names nothing a caller can use; the audit row is `decoy_tripped`. Git, Matrix and the CONNECT tunnel stay documented gaps. Kept deterministic and outside the layers: no model reads the match, and no layer is skipped for a request that is not a trip. `PERIMETER_VERSION` does not move: no verdict a layer reaches changes |
+| 2.23.0 | 2026-11-22 | Decoys: a honeytoken is checked in what leaves by `/proxy/http` and `/proxy/llm` too (#865), not only in a tool call's arguments. Each route checks the raw request first (`orchestrator.outbound_trip`), before any other refusal, an admission count or a cached verdict, so a body no layer reads or a count past its deadline cannot carry a token out; on `/proxy/llm` the conversation's tool results are left out, since an agent that read the planted file carries it in its history without sending it. A trip refuses a trip in every mode, `flag` included, as a trip refuses on MCP regardless of mode. The agent is told `flagged`, which names nothing a caller can use; the audit row is `decoy_tripped`. Git, Matrix and the CONNECT tunnel stay documented gaps. Kept deterministic and outside the layers: no model reads the match, and no layer is skipped for a request that is not a trip. `PERIMETER_VERSION` does not move: no verdict a layer reaches changes |

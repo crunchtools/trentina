@@ -94,9 +94,13 @@ default while the request false-positive rate is measured, moving to `block` at
 a future major) forwards and returns the verdict on the `X-Trentina-Warning`
 header. `redact` is meaningless on an outbound call and rejected.
 
-A [honeytoken](profiles.md#decoy-tools-and-honeytokens) in a unit is the one
-finding `flag` refuses (#865): the request is not sent, the caller is told
-`flagged`, and the audit row is `decoy_tripped`.
+A [honeytoken](profiles.md#decoy-tools-and-honeytokens) in what the agent
+wrote is the one finding `flag` refuses (#865): the request is not sent, the
+caller is told `flagged`, and the audit row is `decoy_tripped`. It is checked
+before the units are counted or judged, over the request with every tool result
+cut (Anthropic `tool_result`, OpenAI `role: tool` and `function_call_output`,
+Gemini `functionResponse`): a conversation carries what its tools returned, and
+an agent that read the planted file is not sending it.
 
 Three consequences worth stating plainly:
 

@@ -399,6 +399,25 @@ class OutboundVerdict:
         return None
 
 
+async def outbound_trip(profile: Profile, backend: str, sent: str) -> OutboundVerdict | None:
+    """A refusal when ``sent`` carries one of the profile's honeytokens (#865), else None.
+
+    Each route calls it FIRST, on the raw text it is about to send, before any
+    other refusal, admission count or cached verdict: a body no layer reads, a
+    count past its deadline and a unit judged before a reload all still reach
+    it. Raw, because redaction could cut a credential-shaped honeytoken. A trip
+    refuses in every mode, as on MCP, and the layers never run over it. Off
+    the loop: the matcher is linear in the request and a body can be several MiB.
+    """
+    if not profile.honeytokens:
+        return None
+    tripped = await asyncio.to_thread(leaked_tokens, profile, sent)
+    if not tripped:
+        return None
+    record_trip(profile.name, backend, "request", "honeytoken:" + ",".join(tripped))
+    return OutboundVerdict(refused=True, tripped=tripped, unjudged=False, gaps=[])
+
+
 async def judge_outbound(
     document: str,
     *,
@@ -443,13 +462,6 @@ async def judge_outbound(
     from .defense import defend  # heavy; deferred, and the REQUEST-edge test seam
     from .modes import gaps_of, refusal_reason  # resolved here so a test's gaps_of patch is seen
 
-    # A planted credential in what is about to be sent is a trip (#865), checked
-    # on the RAW document: redaction could cut a credential-shaped honeytoken.
-    # Refused in every mode, as on MCP, and the layers never run over it. Off the loop:
-    # the matcher is linear in the request and a body can be several MiB.
-    if tripped := await asyncio.to_thread(leaked_tokens, profile, document):
-        record_trip(profile.name, backend, "request", "honeytoken:" + ",".join(tripped))
-        return OutboundVerdict(refused=True, tripped=tripped, unjudged=False, gaps=[])
     kinds = detect_credentials(document)
     flagged, unjudged, flagged_by, risk = False, True, None, "unknown"
     gaps = ["l3_unavailable"]

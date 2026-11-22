@@ -405,3 +405,56 @@ class TestMerge:
         merged = ru.merge([clean, clean])
         assert merged.reason is None
         assert merged.warning is None
+
+
+class TestAgentWritten:
+    """#865 review: a tool result in the history is what came in, not what is sent."""
+
+    @staticmethod
+    def _units(body: dict[str, Any]) -> list[str]:
+        return ru.request_units("POST /v1/messages", json.dumps(body))
+
+    def test_anthropic_tool_results_are_cut_and_tool_inputs_kept(self) -> None:
+        body = {
+            "system": "you review code",
+            "messages": [
+                {"role": "user", "content": "read the env"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "t1", "name": "post", "input": {"b": "SENT"}}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "DELIVERED"},
+                        {"type": "text", "text": "TYPED"},
+                    ],
+                },
+            ],
+        }
+        written = ru.agent_written(self._units(body))
+        assert "DELIVERED" not in written
+        for kept in ("SENT", "TYPED", "you review code", "POST /v1/messages"):
+            assert kept in written
+
+    def test_openai_tool_messages_are_cut_and_tool_calls_kept(self) -> None:
+        call = {"id": "c1", "type": "function", "function": {"name": "post", "arguments": "SENT"}}
+        body = {
+            "messages": [
+                {"role": "system", "content": "SYSTEM"},
+                {"role": "assistant", "content": None, "tool_calls": [call]},
+                {"role": "tool", "tool_call_id": "c1", "content": "DELIVERED"},
+            ],
+            "input": [
+                {"type": "function_call_output", "call_id": "c2", "output": "ALSO-DELIVERED"}
+            ],
+        }
+        written = ru.agent_written(self._units(body))
+        assert "DELIVERED" not in written
+        assert "SENT" in written and "SYSTEM" in written
+
+    def test_a_body_that_is_not_json_is_kept_whole(self) -> None:
+        units = ru.request_units("POST /x", "plain SENT")
+        assert ru.agent_written(units) == "\n".join(units)

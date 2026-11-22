@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..logsafe import exc_kind, exc_where
 from ..modes import Mode
-from ..orchestrator import OutboundVerdict, judge_outbound
+from ..orchestrator import OutboundVerdict, judge_outbound, outbound_trip
 from .outbound import detect_credentials
 
 if TYPE_CHECKING:
@@ -100,6 +100,60 @@ def request_units(head: str, body: str | None) -> list[str]:
     return [f"{head}\n{json.dumps(frame, ensure_ascii=False)}", *messages]
 
 
+#: Conversation entries that carry what a tool RETURNED, by API shape: Anthropic
+#: ``tool_result`` blocks, OpenAI ``role: tool``/``function`` messages and
+#: Responses ``function_call_output`` items, Gemini ``functionResponse`` parts.
+_RESULT_TYPES = frozenset({"tool_result", "function_call_output"})
+_RESULT_ROLES = frozenset({"tool", "function"})
+
+
+def _is_tool_result(item: dict[str, Any]) -> bool:
+    return (
+        item.get("type") in _RESULT_TYPES
+        or item.get("role") in _RESULT_ROLES
+        or "functionResponse" in item
+    )
+
+
+def _without_tool_results(value: Any) -> Any:
+    match value:
+        case dict():
+            return {k: _without_tool_results(v) for k, v in value.items()}
+        case list():
+            return [
+                _without_tool_results(item)
+                for item in value
+                if not (isinstance(item, dict) and _is_tool_result(item))
+            ]
+        case _:
+            return value
+
+
+def agent_written(units: list[str]) -> str:
+    """The units with every tool result cut: what the agent wrote, for the trip check.
+
+    A conversation carries the tool results the agent was DELIVERED. One that
+    holds a planted credential is the agent reading the decoy, not sending it,
+    and checking it would refuse every later turn of the session. Assistant
+    text, tool-use inputs, user and system text and the frame stay. Each unit
+    ends in one line of JSON (``request_units``); a unit that does not is kept
+    whole.
+    """
+    kept: list[str] = []
+    for unit in units:
+        head, sep, last = unit.rpartition("\n")
+        try:
+            parsed = json.loads(last)
+        except ValueError:
+            kept.append(unit)
+            continue
+        if isinstance(parsed, dict) and _is_tool_result(parsed):
+            continue
+        cut = json.dumps(_without_tool_results(parsed), ensure_ascii=False)
+        kept.append(f"{head}{sep}{cut}")
+    return "\n".join(kept)
+
+
 def _key(unit: str, profile: Profile, mode: Mode, source_type: str) -> str:
     """Everything that can change a unit's verdict, hashed; never a secret."""
     # Lazy: the gateway service imports this module's caller on its way in.
@@ -148,6 +202,10 @@ async def judge_units(
     than what is left of its own. A count past the deadline is unjudged, as
     ``judge_outbound`` answers a scan past it.
     """
+    # First, before the count can run out its deadline and before any cached
+    # verdict is reused: neither may let a planted credential leave (#865).
+    if (trip := await outbound_trip(profile, backend, agent_written(units))) is not None:
+        return trip
     loop = asyncio.get_running_loop()
     started = loop.time()
     if len(units) > 1:
@@ -291,7 +349,6 @@ def merge(verdicts: list[OutboundVerdict]) -> OutboundVerdict:
         unjudged=any(v.unjudged for v in verdicts),
         gaps=list(dict.fromkeys(g for v in verdicts for g in v.gaps)),
         risk=worst.risk,
-        tripped=list(dict.fromkeys(t for v in verdicts for t in v.tripped)),
     )
 
 
