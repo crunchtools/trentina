@@ -11,12 +11,15 @@ A tool that takes a token on purpose, such as a secret setter, is allowed by kin
 ```yaml
 backends:
   vault:
+    url: http://luna:8000/mcp
     credentials_allowed: [github_token, openai_key]   # every tool on this backend
   memory:
+    url: http://luna:8001/mcp
     credentials_allowed:
       memory_store: [github_token]   # this tool only
       "*": [jwt]                     # every tool
   scratch:
+    url: http://luna:8002/mcp
     credentials_allowed: ["*"]       # every kind, every tool
 ```
 
