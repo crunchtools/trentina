@@ -437,7 +437,9 @@ def release_tools(backend: str, spec: dict[str, Any]) -> list[str]:
         if not any(c in pattern for c in "*?["):
             candidates: tuple[str, ...] = (pattern,)
         elif forge:
-            candidates = tuple(
+            # The bare names catch ``create_*`` and ``*_tag``; filling the glob
+            # catches a namespace prefix such as ``github_*``.
+            candidates = _RELEASE_FILLERS + tuple(
                 pattern.replace("*", fill).replace("?", "x") for fill in _RELEASE_FILLERS
             )
         else:

@@ -337,6 +337,12 @@ class TestReleaseMinting:
         assert finding.code == "agent-mints-releases"
         assert "'seat'" in finding.message and "'github'" in finding.message
 
+    @pytest.mark.parametrize(
+        "pattern", ["create_*", "delete_*", "update_*", "*_tag", "*release*", "github_*"]
+    )
+    def test_a_partial_glob_on_a_forge_is_a_finding(self, pattern: str) -> None:
+        assert len(profile_lint.check_release_minting(self._file([pattern]))) == 1
+
     def test_a_literal_anywhere_is_a_finding(self) -> None:
         profiles_file = {
             "profiles": {
