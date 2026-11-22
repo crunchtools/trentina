@@ -1,6 +1,6 @@
 # trentina Constitution
 
-> **Version:** 2.24.0
+> **Version:** 2.25.0
 > **Ratified:** 2026-09-22
 > **Amended:** 2026-11-22
 > **Status:** Active
@@ -302,7 +302,7 @@ scan-once trust is a different mechanism in a different file, and it *does*
 decide whether a layer runs — so what governs it is written here rather than
 inferred from a neighbour.
 
-Five decisions are not an operator agent's to make alone. Not because the
+Six decisions are not an operator agent's to make alone. Not because the
 operator lacks the authority — it is root on its gateway — but because it is a
 model, so the question is not whether it may but whether it can be talked into
 it.
@@ -312,6 +312,8 @@ it.
 3. **Who may authenticate** to a federation ingress as a primary gateway.
 4. **Standing a profile's perimeter down** from enforcing to detect-only.
 5. **Opening a way out of network isolation.**
+6. **Letting a tool carry a credential out** past the argument credential
+   guard (`credentials_allowed`, #883): a kind, or `*`, a tool may now send.
 
 The last three were added by the security hardening pass. Each is a grant an
 operator could previously make with nobody watching, and the fifth is the
@@ -538,3 +540,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.22.0 | 2026-11-22 | Decoys (#864): "exact matches" is wrong for a honeytoken and the L3 canary, which are now found as written, encoded (base64 at all three alignments, hex, percent), reversed, or in any 16-character piece of a token at least 32 long (`token_variants.py`). Still no model, still not a layer, and still a tripwire for the common case: a token paraphrased, split across calls or in another encoding is not seen (gap 17). `PERIMETER_VERSION` does not move: no verdict changes |
 | 2.23.0 | 2026-11-22 | Decoys: a honeytoken is checked in what leaves by `/proxy/http` and `/proxy/llm` too (#865), not only in a tool call's arguments. Each route checks the raw request first (`orchestrator.outbound_trip`), before any other refusal, an admission count or a cached verdict, so a body no layer reads or a count past its deadline cannot carry a token out; on `/proxy/llm` a tool result is left out where its API puts it and only when it answers a call made earlier in the same request, since an agent that read the planted file carries it in its history without sending it; an agent forging both a call and its answer is the residual. A trip refuses a trip in every mode, `flag` included, as a trip refuses on MCP regardless of mode. The agent is told `flagged`, which names nothing a caller can use; the audit row is `decoy_tripped`. Git, Matrix and the CONNECT tunnel stay documented gaps. Kept deterministic and outside the layers: no model reads the match, and no layer is skipped for a request that is not a trip. `PERIMETER_VERSION` does not move: no verdict a layer reaches changes |
 | 2.24.0 | 2026-11-22 | Credentials in Tool-Call Arguments added (#862), CTO ruling: an MCP `tools/call` whose arguments carry a credential shape is refused as `denied_guard` in every mode, `flag` included, unless the backend lists that kind in `credentials_allowed` for the tool or for every tool. The list is validated at load (unknown kinds and `*` beside named kinds fail), the refusal and audit row carry the kinds and the tool and never the value, and `trentina-credential-replay` reads past calls to print the allowances a profile would need before the block is deployed. Deterministic and outside the layers; the judge-side redaction of #863 stays. `PERIMETER_VERSION` does not move: no verdict a layer reaches changes |
+| 2.25.0 | 2026-11-22 | Human Approval gains a sixth decision (#883), CTO ruling: widening `credentials_allowed` through `config_tool` (a kind, or `*`, a tool may newly carry past the #862 guard) is proposed by the operator agent and applied only on a person's approval. Compared by coverage, so `["*"]` narrowed to named kinds is a narrowing and applies at once, as every withdrawal does. An agent reload holds each backend's allowance, as it holds `federated`. `PERIMETER_VERSION` does not move: no verdict changes |

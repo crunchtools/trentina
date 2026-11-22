@@ -478,6 +478,7 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
             setattr(after, block, getattr(before, block))
             held.append(block)
     held.extend(_hold_federated(before, after))
+    held.extend(_hold_credentials_allowed(before, after))
     held.extend(_hold_matrix_networks(before, after))
     b = before.matrix_ingress
     a = after.matrix_ingress
@@ -524,6 +525,24 @@ def _hold_federated(before: Profile, after: Profile) -> list[str]:
         ):
             after_backend.url = before_backend.url
             held.append(f"backends.{name}.url")
+    return held
+
+
+def _hold_credentials_allowed(before: Profile, after: Profile) -> list[str]:
+    """Hold each backend's ``credentials_allowed`` across an AGENT reload (#883).
+
+    An allowance lets a key out in a tool call, so it is perimeter: only an
+    operator reload, or ``config_tool`` with a person's approval, may change
+    it. A backend new to this reload gets none, the safe direction, as a new
+    backend cannot bring ``federated`` in.
+    """
+    held: list[str] = []
+    for name, after_backend in after.backends.items():
+        before_backend = before.backends.get(name)
+        old = before_backend.credentials_allowed if before_backend is not None else {}
+        if after_backend.credentials_allowed != old:
+            after_backend.credentials_allowed = old
+            held.append(f"backends.{name}.credentials_allowed")
     return held
 
 

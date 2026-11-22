@@ -19,6 +19,7 @@ from trentina.gateway.backend import BackendCall
 from trentina.gateway.guards import refused_credentials
 from trentina.gateway.names import NAMESPACE_SEP
 from trentina.gateway.profile import AuthConfig, Backend, ParameterConstraint, Profile
+from trentina.tools.reload import _hold_perimeter_fields
 from trentina.transports.mcp import route_jsonrpc
 
 _BODY = "Zq7" * 14
@@ -292,3 +293,26 @@ class TestEndToEnd:
         assert "result" in resp
         assert seen == [{"text": "hello"}]
         assert row["outcome"] == "ok"
+
+
+class TestAnAgentReloadHoldsTheAllowance:
+    """An allowance lets a key out, so only an operator may change it (#883)."""
+
+    def _profile(self, allowance: dict[str, list[str]] | None) -> Profile:
+        backend = _backend(credentials_allowed=allowance or {})
+        return Profile(name="ag", auth=AuthConfig(bearer_token_env="TOK"), backends={"b": backend})
+
+    def test_a_widening_is_held(self) -> None:
+        before, after = self._profile(None), self._profile({"*": ["*"]})
+        assert "backends.b.credentials_allowed" in _hold_perimeter_fields(before, after)
+        assert after.backends["b"].credentials_allowed == {}
+
+    def test_a_backend_new_to_the_reload_brings_none(self) -> None:
+        before = Profile(name="ag", auth=AuthConfig(bearer_token_env="TOK"), backends={})
+        after = self._profile({"t": ["jwt"]})
+        assert "backends.b.credentials_allowed" in _hold_perimeter_fields(before, after)
+        assert after.backends["b"].credentials_allowed == {}
+
+    def test_an_unchanged_allowance_is_not_reported(self) -> None:
+        before, after = self._profile({"t": ["jwt"]}), self._profile({"t": ["jwt"]})
+        assert "backends.b.credentials_allowed" not in _hold_perimeter_fields(before, after)

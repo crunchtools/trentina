@@ -572,6 +572,42 @@ def _collapsed(
     )
 
 
+def _allows(allowance: dict[str, list[str]], tool: str, kind: str) -> bool:
+    """Whether ``allowance`` already lets ``tool`` carry ``kind``.
+
+    A tool's allowance is its own list plus the ``*`` list; the ``*`` tool's is
+    the ``*`` list alone, since a per-tool entry does not cover every tool.
+    """
+    kinds = [*allowance.get("*", ()), *(allowance.get(tool, ()) if tool != "*" else ())]
+    return "*" in kinds or kind in kinds
+
+
+def credentials_widened(before: dict[str, Profile], after: dict[str, Profile]) -> dict[str, str]:
+    """The ``credentials_allowed`` entries ``after`` adds, by what they newly let out (#883).
+
+    An allowance turns the argument credential guard (#862) off for a kind on a
+    tool, so a new one is a way for a key to leave in a tool call. It is
+    compared by COVERAGE, not by key: ``["*"]`` narrowed to ``["github_token"]``
+    adds a key and allows nothing new, so it applies at once, and a backend new
+    to the file brings its whole allowance as new.
+    """
+    added: dict[str, str] = {}
+    for name, profile in after.items():
+        old_profile = before.get(name)
+        for backend_name, backend in profile.backends.items():
+            old_backend = old_profile.backends.get(backend_name) if old_profile else None
+            old = old_backend.credentials_allowed if old_backend is not None else {}
+            for tool, kinds in backend.credentials_allowed.items():
+                new = [kind for kind in kinds if not _allows(old, tool, kind)]
+                if new:
+                    shown = "every tool" if tool == "*" else tool
+                    sent = "any credential" if new == ["*"] else ", ".join(new)
+                    added[f"credentials_allowed:{name}.{backend_name}.{tool}"] = (
+                        f"{sent} may leave in the arguments of {shown}"
+                    )
+    return added
+
+
 def widened(before: dict[str, str], after: dict[str, str]) -> dict[str, str]:
     """The grants ``after`` adds or changes, by the same keys both sides use.
 

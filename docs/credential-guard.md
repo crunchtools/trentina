@@ -23,7 +23,7 @@ backends:
     credentials_allowed: ["*"]       # every kind, every tool
 ```
 
-A tool's allowance is its own list plus the `"*"` list. The block is checked at load: an unknown kind, `"*"` beside named kinds, a kind listed twice, an empty list, or a decoy backend carrying it fails the file.
+Adding an allowance through `config_tool` waits for a person's [approval](approvals.md); removing one, or narrowing `["*"]` to named kinds, applies at once. An agent reload does not change it. A tool's allowance is its own list plus the `"*"` list. The block is checked at load: an unknown kind, `"*"` beside named kinds, a kind listed twice, an empty list, or a decoy backend carrying it fails the file.
 
 ## Before you deploy: replay past calls
 

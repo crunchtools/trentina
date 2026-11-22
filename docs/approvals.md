@@ -1,6 +1,6 @@
 # Approvals
 
-Your agent runs this gateway. Six things it cannot do alone:
+Your agent runs this gateway. Seven things it cannot do alone:
 
 - **Move the operator profile** — who is root here, and which of them this
   gateway reports as itself.
@@ -12,6 +12,9 @@ Your agent runs this gateway. Six things it cannot do alone:
   refusing them.
 - **Open a way out** — let an agent's traffic reach somewhere new on the
   internet.
+- **Let a tool send a credential** — add a `credentials_allowed` kind (or `*`)
+  that lets a tool's arguments carry a key past the
+  [credential guard](credential-guard.md).
 - **Let a peer administer this gateway** — widen the admin tools reachable
   through a profile that is both shared and the operator, so the gateway on the
   other end of that link can call them.
@@ -24,17 +27,17 @@ back on, dropping an egress host: your agent does that on its own, because
 each one only makes the gateway stricter. You are asked when something is being
 *granted*.
 
-## Why these five
+## Why these
 
 Your operator agent has the authority; it is root on its gateway. The problem
 is that it is a *model*, so the question was never whether it may, but whether
 it can be talked into it. These are the changes where a plausible-sounding
 request does the most damage: one hands root to someone else, one turns off the
 scanning this product exists to do, one hands a profile — and the accounts it is signed in to —
-to a gateway you have never met, one leaves a profile detecting attacks and permitting them, and one
-gives an agent a route off your network.
+to a gateway you have never met, one leaves a profile detecting attacks and permitting them, one
+gives an agent a route off your network, and one lets a key leave in a tool call.
 
-That last one has the widest blast radius of the five, which is easy to get
+Opening a way out has the widest blast radius, which is easy to get
 backwards. A gateway you trust has at least *scanned* the answer it hands you.
 A tunnel out has no scan at all — nothing reads what crosses it, by design,
 because it is someone else's TLS.
@@ -127,6 +130,9 @@ shows — only things you can actually check:
   not one profile's — any profile configured to use it reaches it. An
   `llm_providers` entry also says it will not be live until the gateway
   restarts, because that section is read only at startup.
+- **Credential allowance** — each tool, on which profile and backend, and the
+  kinds it may now send. Approving it means a key of that kind in that tool's
+  arguments reaches the backend as written.
 
 Approve or decline. Declining changes nothing, and so does ignoring it: a
 proposal expires on its own and a restart cancels it.

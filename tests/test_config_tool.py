@@ -2374,3 +2374,132 @@ class TestAProfileWithNoKeyOfItsOwn:
         config = load_profiles(gateway)
 
         assert "ag" in config.profiles
+
+
+class TestAllowingACredentialOut:
+    """`credentials_allowed` turns the argument credential guard off for a kind
+    on a tool (#862), so adding one waits for a person and taking one away
+    does not (#883)."""
+
+    def _with_allowance(self, allowance: Any) -> dict[str, Any]:
+        backend: dict[str, Any] = {"url": "internal://web", "tools_allow": ["fetch_tool"]}
+        if allowance is not None:
+            backend["credentials_allowed"] = allowance
+        return {
+            "profiles": {
+                "op": _OPERATOR,
+                "ag": {
+                    "auth": {"bearer_token_env": "AG_TOKEN"},
+                    "backends": {"web": backend},
+                    "defense": {"enforcement": "block"},
+                },
+            }
+        }
+
+    async def test_adding_a_kind_is_staged(self, gateway: pathlib.Path) -> None:
+        _rewrite(gateway, self._with_allowance({"fetch_tool": ["jwt"]}))
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set",
+            "profiles.ag.backends.web.credentials_allowed.fetch_tool",
+            ["jwt", "github_token"],
+            await _hash(),
+        )
+
+        assert result["staged"] is True
+        assert result["awaiting"] == "credential allowance"
+        shown = result["shown_for_approval"]
+        assert shown["credentials_allowed:ag.web.fetch_tool"] == (
+            "github_token may leave in the arguments of fetch_tool"
+        )
+        assert gateway.read_text(encoding="utf-8") == before
+
+    async def test_star_is_staged_as_any_credential(self, gateway: pathlib.Path) -> None:
+        _rewrite(gateway, self._with_allowance(None))
+
+        result = await _as_operator(
+            "set", "profiles.ag.backends.web.credentials_allowed", ["*"], await _hash()
+        )
+
+        assert result["awaiting"] == "credential allowance"
+        assert result["shown_for_approval"]["credentials_allowed:ag.web.*"] == (
+            "any credential may leave in the arguments of every tool"
+        )
+
+    async def test_approving_it_persists_it(self, gateway: pathlib.Path) -> None:
+        _rewrite(gateway, self._with_allowance(None))
+        await _as_operator(
+            "set", "profiles.ag.backends.web.credentials_allowed", ["jwt"], await _hash()
+        )
+
+        shown = pending.outstanding()[pending.Kind.CREDENTIAL_ALLOWANCE]
+        await pending.approve(pending.Kind.CREDENTIAL_ALLOWANCE, pending.digest_of(shown))
+
+        active = get_active_config() or pytest.fail("gone")
+        assert active.config.profiles["ag"].backends["web"].credentials_allowed == {"*": ["jwt"]}
+
+    async def test_removing_a_kind_applies_at_once(self, gateway: pathlib.Path) -> None:
+        _rewrite(gateway, self._with_allowance({"fetch_tool": ["jwt", "github_token"]}))
+
+        result = await _as_operator(
+            "set",
+            "profiles.ag.backends.web.credentials_allowed.fetch_tool",
+            ["jwt"],
+            await _hash(),
+        )
+
+        assert result["applied"] is True
+        assert pending.outstanding() == {}
+
+    async def test_narrowing_star_to_named_kinds_applies_at_once(
+        self, gateway: pathlib.Path
+    ) -> None:
+        _rewrite(gateway, self._with_allowance(["*"]))
+
+        result = await _as_operator(
+            "set", "profiles.ag.backends.web.credentials_allowed", ["jwt"], await _hash()
+        )
+
+        assert result["applied"] is True
+
+    async def test_a_tool_entry_under_a_backend_wide_kind_applies_at_once(
+        self, gateway: pathlib.Path
+    ) -> None:
+        _rewrite(gateway, self._with_allowance({"*": ["jwt"]}))
+
+        result = await _as_operator(
+            "set",
+            "profiles.ag.backends.web.credentials_allowed.fetch_tool",
+            ["jwt"],
+            await _hash(),
+        )
+
+        assert result["applied"] is True
+
+    async def test_with_no_approver_a_widening_is_refused(
+        self, gateway: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("TRENTINA_APPROVAL_PASSWORD_HASH", raising=False)
+        _rewrite(gateway, self._with_allowance(None))
+        before = gateway.read_text(encoding="utf-8")
+
+        result = await _as_operator(
+            "set", "profiles.ag.backends.web.credentials_allowed", ["jwt"], await _hash()
+        )
+
+        assert "no approval password" in result["error"]
+        assert gateway.read_text(encoding="utf-8") == before
+        assert pending.outstanding() == {}
+
+    async def test_with_no_approver_a_narrowing_still_applies(
+        self, gateway: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("TRENTINA_APPROVAL_PASSWORD_HASH", raising=False)
+        _rewrite(gateway, self._with_allowance(["jwt", "github_token"]))
+
+        result = await _as_operator(
+            "set", "profiles.ag.backends.web.credentials_allowed", ["jwt"], await _hash()
+        )
+
+        assert result["applied"] is True
