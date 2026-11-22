@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from ..defense import DefenseVerdict
     from ..l1.hidden import HiddenStats
     from ..l1.pipeline import PipelineResult
-    from .profile import DefenseConfig, Profile
+    from .profile import DefenseConfig, L3Escalation, Profile
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +126,7 @@ class PreparedResponseScan:
     l3_context: str | None
     posture: Posture
     attribution: dict[str, Any]
+    l3_escalation: L3Escalation
     key: str
     unscannable: dict[str, int]
     unread: set[str]
@@ -260,6 +261,7 @@ async def prepare_response_scan(
             "blocked": posture.records_block(blocklists=blocklists),
             "call_ref": current_call.get() or None,
         },
+        l3_escalation=profile.l3_escalation_for(backend_name),
         key=key,
         unscannable=unscannable,
         unread=unread,

@@ -171,6 +171,11 @@ EnforcementMode = Annotated[Literal["flag", "block"], BeforeValidator(_canonical
 #: extraction prompt; a default has none.
 ModeName = Annotated[Literal["block", "redact", "flag"], BeforeValidator(_canonical_mode)]
 
+#: When L3 is asked on the edges that honour it (a962): `always` on every input,
+#: `l2_flagged` only on what L1 or L2 flagged or could not fully read. See
+#: `DefenseConfig.l3_escalation`.
+L3Escalation = Literal["always", "l2_flagged"]
+
 
 def _normalize_enforcement(block: Any, *, key: str) -> Any:
     """Refuse `redact` as a default, with an explanation.
@@ -388,6 +393,13 @@ class LlmKeyOverride(BaseModel):
             "credential shape or a flagged body. The default is 'flag' while the "
             "request false-positive rate is measured; it moves to 'block' at a "
             "future major. 'redact' is meaningless on an outbound call and rejected."
+        ),
+    )
+    l3_escalation: L3Escalation | None = Field(
+        default=None,
+        description=(
+            "Override of the profile's defense.l3_escalation for this provider's "
+            "/proxy/llm requests and completions (a962). Unset inherits it."
         ),
     )
 
@@ -1374,6 +1386,13 @@ class Backend(BaseModel):
             "backend. Must include the profile's default (enforcement)."
         ),
     )
+    l3_escalation: L3Escalation | None = Field(
+        default=None,
+        description=(
+            "Override of the profile's defense.l3_escalation for this one "
+            "backend's tool responses (a962). Unset inherits it."
+        ),
+    )
     name_tag: str | None = Field(
         default=None,
         pattern=r"^[a-z][a-z0-9_]{0,15}$",
@@ -1848,6 +1867,16 @@ class DefenseConfig(BaseModel):
     `enforcement`, which is what a flag costs. `l3_daily_quota` (#891) caps
     how often L3 runs for one profile, but it is not a skip: past it the
     verdict carries the `l3_quota` gap, which block and redact refuse on.
+
+    `l3_escalation` (a962) is the one sanctioned exception, opt-in, and it
+    carries its own gap so it cannot pass for "all three layers ran". Under
+    `l2_flagged` a FLAG-mode tool response or /proxy/llm request or completion
+    skips L3 when L1 found nothing and L2 read all of it and did not flag;
+    the verdict says `l3_skipped`. A block or redact caller is always
+    escalated, so its contract is unchanged. Everything else, tool
+    descriptions, egress and Matrix included, runs L3 whatever this says.
+    It exists because the gatehouse proxy paid L3 to re-judge ~10k of our
+    own model's texts a day that L2 had already passed.
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
@@ -1965,6 +1994,19 @@ class DefenseConfig(BaseModel):
             "not asked: the verdict carries the l3_quota gap, block and redact "
             "refuse on it, flag delivers with it. "
             "Counted in memory, so a restart starts the day again"
+        ),
+    )
+    l3_escalation: L3Escalation = Field(
+        default="always",
+        description=(
+            "When L3 is asked on tool responses and /proxy/llm requests and "
+            "completions (a962). always (the default): on every input. "
+            "l2_flagged: only when L1 found anything, L2 flagged, or L2 failed "
+            "or read only part of it; otherwise L3 is skipped and the verdict "
+            "carries the l3_skipped gap, which flag delivers with and block and "
+            "redact refuse on. A block or redact caller is always escalated, so "
+            "the skip only ever reaches flag. Overridable per backend and per "
+            "llm_keys provider"
         ),
     )
     audit: bool = Field(default=True, description="Write detection rows to SQLite")
@@ -3988,6 +4030,24 @@ class Profile(BaseModel):
         file that sets ``federation_of`` at all.
         """
         return self.federation_of or self.name
+
+    def l3_escalation_for(self, backend: str) -> L3Escalation:
+        """This profile's L3 escalation for one backend (a962).
+
+        ``backend`` is a backend name, or ``llm:<provider>`` for /proxy/llm. The
+        backend's or the provider's own override wins; unset, the profile's.
+        Anything else is ``always``.
+        """
+        if backend.startswith("llm:"):
+            key = self.llm_keys.get(backend.removeprefix("llm:"))
+            override = key.l3_escalation if key is not None else None
+        elif backend in self.backends:
+            override = self.backends[backend].l3_escalation
+        else:
+            # Not a backend or provider of this profile (egress's ``http:<name>``):
+            # the policy does not reach it.
+            return "always"
+        return override or self.defense.l3_escalation
 
     def channel_bridges(self) -> dict[str, MatrixBridgeConfig]:
         """Every bridge this profile declares, by channel: ``matrix_bridge``

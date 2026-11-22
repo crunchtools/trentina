@@ -63,6 +63,7 @@ _GAP_FLAGS = (
     "l2_unavailable",
     "l3_unavailable",
     "l3_quota",
+    "l3_skipped",
     "binary_unread",
     "l2_truncated",
     "l3_truncated",

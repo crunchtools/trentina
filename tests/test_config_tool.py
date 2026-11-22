@@ -1477,12 +1477,14 @@ class TestStandingAPerimeterDown:
                         "enforcement": "block",
                         "llm_completion": "block",
                         "flag_grants": [],
+                        "l3_skips": [],
                     },
                     "after": {
                         "modes": ["flag"],
                         "enforcement": "flag",
                         "llm_completion": "flag",
                         "flag_grants": [],
+                        "l3_skips": [],
                     },
                 }
                 for n in range(count)

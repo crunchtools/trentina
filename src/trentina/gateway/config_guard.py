@@ -324,7 +324,7 @@ def default_posture() -> dict[str, Any]:
     stage an approval for every profile ever created, and an approval page a
     person learns to click through protects nothing.
     """
-    return _posture_of(DefenseConfig())
+    return {**_posture_of(DefenseConfig()), "flag_grants": [], "l3_skips": []}
 
 
 def _flag_grants(profile: Profile) -> list[str]:
@@ -339,10 +339,31 @@ def _flag_grants(profile: Profile) -> list[str]:
     return sorted(named)
 
 
+def _l3_skips(profile: Profile) -> list[str]:
+    """Where the profile lets L3 be skipped on what L2 passed (a962).
+
+    ``l3_escalation: l2_flagged`` leaves L3 unasked on clean-looking content, the
+    same kind of narrowing as a ``flag`` grant: the perimeter reads less. So
+    opting in stages for a person, and opting out applies at once.
+    """
+    named = ["defense"] if profile.defense.l3_escalation == "l2_flagged" else []
+    named += [
+        f"backends.{n}" for n, b in profile.backends.items() if b.l3_escalation == "l2_flagged"
+    ]
+    named += [
+        f"llm_keys.{n}" for n, k in profile.llm_keys.items() if k.l3_escalation == "l2_flagged"
+    ]
+    return sorted(named)
+
+
 def defense_posture(profiles: dict[str, Profile]) -> dict[str, dict[str, Any]]:
     """What each profile's perimeter still enforces, by profile."""
     return {
-        name: {**_posture_of(profile.defense), "flag_grants": _flag_grants(profile)}
+        name: {
+            **_posture_of(profile.defense),
+            "flag_grants": _flag_grants(profile),
+            "l3_skips": _l3_skips(profile),
+        }
         for name, profile in profiles.items()
     }
 
@@ -369,6 +390,7 @@ def defense_downgraded(
                 and was["llm_completion"] != UNENFORCED_MODE
             )
             or set(now["flag_grants"]) - set(was.get("flag_grants", []))
+            or set(now["l3_skips"]) - set(was.get("l3_skips", []))
         ):
             downgraded[name] = {"before": was, "after": now}
     return downgraded

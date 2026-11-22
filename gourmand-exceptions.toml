@@ -241,6 +241,12 @@ classification = "by_design"
 
 [[exceptions]]
 check = "redundant_error_handling"
+path = "src/trentina/defense.py"
+justification = "One handler: the detection bookkeeping in defend(), after the verdict exists. defend() is documented never to raise on a detection, so a failed SQLite write or D-Bus emit is logged as an audit gap and flagged_by is kept; propagating would lose the verdict. Its TRUST block states it. Path-wide because this check reports no function for a pattern to match; surfaced when a962 changed defend()."
+classification = "by_design"
+
+[[exceptions]]
+check = "redundant_error_handling"
 path = "src/trentina/gateway/llm_proxy.py"
 pattern = "_schedule_completion_scan"
 justification = "The post-hoc completion scan is a fire-and-forget background task. Its except/log is not redundant defensiveness — a scan crash MUST NOT propagate into the streaming task or the whole completion fails after already reaching the client. Swallow-and-log is the required behaviour, and the finding it records still lands in the detections table."

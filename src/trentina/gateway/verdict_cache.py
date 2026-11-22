@@ -202,12 +202,14 @@ def _cache_put(key: str, value: dict[str, Any] | None, *, description: bool = Fa
     # A verdict reached while L3 was unavailable, or while L2 truncated its
     # input, is NOT the verdict the perimeter would reach today. Keeping it
     # would let an outage's "clean" outlive the outage. A spent L3 quota
-    # (#891) is the same: after midnight or a raised cap, L3 must be asked. This is the one
+    # (#891) is the same: after midnight or a raised cap, L3 must be asked, and
+    # so is a policy skip (a962) once the policy changes. This is the one
     # thing the 900-second TTL was really buying, and refusing the verdict outright
     # buys it without the recurring rescan.
     if value is not None and (
         value.get("l3_unavailable")
         or value.get("l3_quota")
+        or value.get("l3_skipped")
         or value.get("l3_truncated")
         or value.get("l2_truncated")
         or value.get("l2_unavailable")

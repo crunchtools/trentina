@@ -14,6 +14,7 @@ under that name.
 
 - `defense.l3_daily_quota`: a per-profile cap on L3 judgements per UTC day (#891). Unset is unlimited; cache hits and background warm-up are free, an unanswered judgement is refunded, and a derived federation ingress shares its profile's count. At the cap the verdict carries a new `l3_quota` gap, distinct from `l3_unavailable`: `block` and `redact` refuse, `flag` delivers with it. In memory, so a restart resets it.
 - `quarantine_stats` reports `l3_quota` `{limit, used, remaining, resets_at}`: an agent's own, an operator's per profile.
+- `defense.l3_escalation: always | l2_flagged` (a962), overridable per backend and per `llm_keys` provider. The default is `always`, so nothing changes until a profile opts in. Under `l2_flagged`, a flag-mode tool response or `/proxy/llm` request or completion skips L3 when L1 found nothing and L2 read all of it and passed it. The verdict then carries a new `l3_skipped` gap (layer state `skipped`, warning key `l3_skipped`) that `block` and `redact` refuse on. A `block` or `redact` call, `llm_completion: block` included, is always escalated, so in practice the skip only reaches `flag`. Neither verdict cache keeps a skip, and opting in through `config_tool` stages for a person (`l3_skips` on the approval page). Tool descriptions, egress, Matrix, alerts and the internal tools always run L3.
 
 ### Fixed
 

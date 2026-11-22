@@ -666,6 +666,11 @@ def _defense_facts(downgraded: dict[str, dict[str, Any]]) -> dict[str, str]:
         "nothing withheld. Those profiles will still DETECT an injection and will no "
         "longer refuse one."
     )
+    if any(aspect == "l3_skips" for _, _, aspect in changed):
+        facts["What this means"] += (
+            " l3_skips: on flag calls there, L3 no longer reads what L1 and L2 passed, "
+            "so an injection only L3 would catch is delivered marked l3_skipped."
+        )
     return facts
 
 
@@ -751,8 +756,9 @@ _Proposal = tuple[pending.Kind, dict[str, str]]
 #: The three fields of a ``defense`` block that decide what it enforces, in the
 #: order a person reads them.
 #: What a defense downgrade shows, in reading order; ``flag_grants`` is the
-#: same downgrade on one egress grant (#535).
-_DEFENSE_ASPECTS = ("modes", "enforcement", "llm_completion", "flag_grants")
+#: same downgrade on one egress grant (#535), ``l3_skips`` where L3 may be
+#: skipped on what L2 passed (a962).
+_DEFENSE_ASPECTS = ("modes", "enforcement", "llm_completion", "flag_grants", "l3_skips")
 
 
 def _profile_proposals(before: GatewayConfig, after: GatewayConfig) -> list[_Proposal]:

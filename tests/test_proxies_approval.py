@@ -175,3 +175,45 @@ def test_a_proxies_write_round_trips() -> None:
         "type": "forward",
         "hosts": ["x.example"],
     }
+
+
+class TestAnL3SkipIsADowngrade:
+    """``l3_escalation: l2_flagged`` (a962) reads less, so opting in stages."""
+
+    def _posture(self, **defense: Any) -> dict[str, dict[str, Any]]:
+        from trentina.gateway.profile import AuthConfig, Backend, DefenseConfig, Profile
+
+        backend = Backend(url="http://wiki:1/mcp", l3_escalation=defense.pop("backend", None))
+        profile = Profile(
+            name="agent1",
+            auth=AuthConfig(bearer_token_env="TEST"),
+            defense=DefenseConfig(**defense),
+            backends={"wiki": backend},
+        )
+        return config_guard.defense_posture({"agent1": profile})
+
+    def test_opting_a_profile_in_stages(self) -> None:
+        downgraded = config_guard.defense_downgraded(
+            self._posture(), self._posture(l3_escalation="l2_flagged")
+        )
+        assert downgraded["agent1"]["after"]["l3_skips"] == ["defense"]
+
+    def test_opting_a_backend_in_stages_and_shows(self) -> None:
+        from trentina.tools.config import _defense_facts
+
+        downgraded = config_guard.defense_downgraded(
+            self._posture(), self._posture(backend="l2_flagged")
+        )
+        facts = _defense_facts(downgraded)
+        assert "backends.wiki" in facts["agent1.l3_skips"]
+        assert "l3_skipped" in facts["What this means"]
+
+    def test_back_to_always_applies_at_once(self) -> None:
+        assert not config_guard.defense_downgraded(
+            self._posture(l3_escalation="l2_flagged"), self._posture()
+        )
+
+    def test_a_new_profile_opting_in_stages(self) -> None:
+        assert "agent1" in config_guard.defense_downgraded(
+            {}, self._posture(l3_escalation="l2_flagged")
+        )

@@ -12,6 +12,11 @@ someone adds a "cheap path" for clean traffic, this file is what says no.
 
 The one thing that may stop L3 is L3 being unable to run. That is a degraded
 state, and it must be visible as one rather than silently reading as clean.
+
+One opt-in exception exists since a962: ``l3_escalation="l2_flagged"``, which a
+profile, backend or LLM provider must ask for by name. It is never silent (the
+``l3_skipped`` gap), never reaches a caller that refuses on gaps, and never
+skips what L1 or L2 flagged or could not read. ``TestTheOneOptIn`` holds that.
 """
 
 from __future__ import annotations
@@ -145,6 +150,9 @@ class TestThresholdCannotSuppressL3:
             "l3_context",
             "precomputed_l1",
             "attribution",
+            # Allowed, and held in TestTheOneOptIn: "always" by default, and a
+            # skip carries the l3_skipped gap (a962).
+            "l3_escalation",
         }, (
             "a new parameter here may be a new way to skip L3 — if one is "
             "added, it needs a test in this file saying why it is allowed to"
@@ -244,3 +252,45 @@ class TestDeprecatedKeyIsRejected:
         )
         with pytest.raises((ProfileConfigError, ValueError)):
             load_profiles(cfg)
+
+
+@pytest.mark.asyncio
+class TestTheOneOptIn:
+    """``l3_escalation`` (a962): the default runs L3; the opt-in is never silent."""
+
+    def test_the_default_is_always(self) -> None:
+        assert inspect.signature(defend).parameters["l3_escalation"].default == "always"
+        assert DefenseConfig().l3_escalation == "always"
+
+    async def test_a_skip_reads_as_a_gap_not_as_clean(self) -> None:
+        from trentina.modes import gaps_of
+
+        with (
+            patch(f"{_D}.classify_async", return_value=BENIGN_ZERO),
+            patch(f"{_D}.quarantine_detect") as detect,
+        ):
+            verdict = await defend(
+                "Nothing hostile here at all.",
+                source="test://a962",
+                source_type="test",
+                l3_escalation="l2_flagged",
+            )
+        detect.assert_not_called()
+        gaps = gaps_of(verdict)
+        assert gaps.l3_skipped and gaps.blocking()
+
+    @pytest.mark.parametrize("classification", [None, MALICIOUS], ids=["l2-down", "l2-flag"])
+    async def test_the_opt_in_still_escalates_what_l2_did_not_pass(
+        self, classification: ClassifierResult | None
+    ) -> None:
+        with (
+            patch(f"{_D}.classify_async", return_value=classification),
+            patch(f"{_D}.quarantine_detect", return_value={"injection_detected": False}) as detect,
+        ):
+            await defend(
+                "Nothing hostile here at all.",
+                source="test://a962",
+                source_type="test",
+                l3_escalation="l2_flagged",
+            )
+        detect.assert_called_once()

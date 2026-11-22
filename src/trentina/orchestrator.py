@@ -153,6 +153,7 @@ async def scan_tool_response(
         l3_context=prepared.l3_context,
         stop_on_partial=prepared.posture.stop_on_partial,
         attribution=prepared.attribution,
+        l3_escalation=prepared.l3_escalation,
     )
     scan = finish_response_scan(prepared, verdict)
     gated = await gate(scan.verdict, scan.posture, extra_unread=scan.extra_unread)
@@ -544,6 +545,7 @@ async def judge_outbound(
                         "profile": profile.name,
                         "backend": backend,
                     },
+                    l3_escalation=profile.l3_escalation_for(backend),
                 )
         flagged = verdict.flagged
         flagged_by = verdict.flagged_by.value if verdict.flagged_by else None
@@ -639,6 +641,12 @@ async def judge_llm_completion(
                     source_type="llm_completion",
                     defense=profile.defense,
                     provenance=Provenance.MODEL_OUTPUT,
+                    # block withholds on a gap, so it is always escalated (a962).
+                    l3_escalation=(
+                        "always"
+                        if profile.defense.llm_completion == "block"
+                        else profile.l3_escalation_for(f"llm:{provider_name}")
+                    ),
                 )
         # Inside the try: a malformed verdict's gap derivation fails closed
         # (unjudged) rather than propagating out of the background task.

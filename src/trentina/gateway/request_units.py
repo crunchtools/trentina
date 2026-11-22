@@ -76,8 +76,9 @@ TTL_SECONDS = 600.0
 MAX_ENTRIES = 4096
 
 #: Gaps whose verdict is not kept, because the next request may get an answer:
-#: the judge did not answer, or (``l3_quota``) was not asked.
-_TRANSIENT_GAPS = frozenset({"l2_unavailable", "l3_unavailable", "l3_quota"})
+#: the judge did not answer, or (``l3_quota``, ``l3_skipped``) was not asked.
+#: A skip is kept out so a policy change reaches the next request (a962).
+_TRANSIENT_GAPS = frozenset({"l2_unavailable", "l3_unavailable", "l3_quota", "l3_skipped"})
 
 _RISK_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 

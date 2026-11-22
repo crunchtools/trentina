@@ -79,7 +79,7 @@ from .unpack.scan import MAX_MEDIA_TOKEN, unpack
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from .gateway.profile import DefenseConfig
+    from .gateway.profile import DefenseConfig, L3Escalation
     from .transforms import Selection
 
 
@@ -107,6 +107,16 @@ class Provenance(str, Enum):
 
 
 _BLOCKING_L1_RISKS = ("high", "critical")
+
+
+def _l3_skipped() -> dict[str, Any]:
+    """The assessment of an L3 the escalation policy did not ask (a962).
+
+    ``l3_unavailable`` rides along as on the quota marker, so every path that
+    declines to keep an unanswered verdict declines this one; ``gaps_of``
+    reports it as ``l3_skipped`` alone.
+    """
+    return {"injection_detected": False, "l3_unavailable": True, "l3_skipped": True}
 
 
 @dataclass(frozen=True)
@@ -453,6 +463,7 @@ async def defend(
     l3_context: str | None = None,
     precomputed_l1: PipelineResult | None = None,
     attribution: dict[str, Any] | None = None,
+    l3_escalation: L3Escalation = "always",
 ) -> DefenseVerdict:
     """Run the three layers over one piece of content and report a verdict.
 
@@ -479,6 +490,9 @@ async def defend(
         attribution: Detection-row columns. ``blocked`` must say whether this
             caller REFUSED the content: ``is_blocked`` reads that column, so a
             flag caller writing ``blocked=1`` blocklists what it delivered.
+        l3_escalation: ``always``, or ``l2_flagged`` to skip L3 on what L1
+            and L2 wholly read and passed (a962). Never skipped for a
+            ``stop_on_partial`` caller. A skip is the ``l3_skipped`` gap.
 
     Returns:
         A verdict. This function never raises on a detection.
@@ -537,9 +551,24 @@ async def defend(
         )
     )
 
+    # The opt-in skip (a962), for a caller that delivers anyway. One that
+    # refuses on a gap (stop_on_partial: block, redact) is always escalated,
+    # and so is anything L1 found, L2 flagged, or L2 did not wholly read.
+    escalate = (
+        l3_escalation == "always"
+        or stop_on_partial
+        or l2_flagged
+        or classification is None
+        or l2_truncated
+        or tokens > cap
+        or pipeline.stats.total_detections() > 0
+    )
+
     l3_assessment: dict[str, Any] | None = None
     l3_truncated = False
-    if has_text and not refuse_at_admission:
+    if has_text and not refuse_at_admission and not escalate:
+        l3_assessment = _l3_skipped()
+    elif has_text and not refuse_at_admission:
         l3_truncated = tokens > cap
         l3_assessment = await _stage_two(
             await asyncio.to_thread(head, read, cap) if l3_truncated else read,

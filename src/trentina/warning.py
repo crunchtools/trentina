@@ -88,10 +88,13 @@ def build_warning(
         "l2_truncated": gaps.l2_truncated,
         "l3_injection_detected": (
             bool(assessment.get("injection_detected"))
-            if verdict.l3_assessment is not None and not (gaps.l3_unavailable or gaps.l3_quota)
+            if verdict.l3_assessment is not None
+            and not (gaps.l3_unavailable or gaps.l3_quota or gaps.l3_skipped)
             else None
         ),
-        "l3_risk_level": _l3_risk_level(assessment, gaps.l3_unavailable or gaps.l3_quota),
+        "l3_risk_level": _l3_risk_level(
+            assessment, gaps.l3_unavailable or gaps.l3_quota or gaps.l3_skipped
+        ),
         "l3_finding_types": finding_types(assessment),
         "l3_truncated": gaps.l3_truncated,
     }
@@ -101,6 +104,8 @@ def build_warning(
         warning["l3_unavailable"] = True
     if gaps.l3_quota:
         warning["l3_quota"] = True
+    if gaps.l3_skipped:
+        warning["l3_skipped"] = True
     if verdict.oversize is not None:
         warning["oversize"] = True
         warning["tokens"], warning["token_cap"] = verdict.oversize

@@ -127,6 +127,11 @@ class Gaps:
     Told apart from ``l3_unavailable`` so a spent cap is not read as an
     outage, and refused by block and redact whatever ``require_l3`` says:
     the cap is the operator's own limit, not a missing provider."""
+    l3_skipped: bool = False
+    """``l3_escalation: l2_flagged`` did not ask L3 (a962): L1 found nothing
+    and L2 read all of it and passed it. A policy, not an outage, and refused
+    by block and redact whatever ``require_l3`` says, though neither is ever
+    handed one: ``defend`` escalates for a caller that refuses on gaps."""
     l3_truncated: bool = False
     oversize: bool = False
     """Over the admission cap (#225): refused before L2 or L3 ran."""
@@ -145,6 +150,7 @@ class Gaps:
             or self.l2_truncated
             or self.l3_unavailable
             or self.l3_quota
+            or self.l3_skipped
             or self.l3_truncated
             or self.oversize
             or self.binary_unread
@@ -157,6 +163,7 @@ class Gaps:
             self.l2_truncated
             or self.l3_truncated
             or self.l3_quota
+            or self.l3_skipped
             or self.oversize
             or self.binary_unread
             or (self.l2_unavailable and config.require_l2)
@@ -186,6 +193,7 @@ class Gaps:
             self.l2_unavailable
             or self.l3_unavailable
             or self.l3_quota
+            or self.l3_skipped
             or self.oversize
             or self.binary_unread
         )
@@ -218,11 +226,15 @@ def gaps_of(verdict: DefenseVerdict) -> Gaps:
         classification is not None and classification.truncated
     )
     l3_quota = bool(asked and assessment is not None and assessment.get("l3_quota"))
+    l3_skipped = bool(asked and assessment is not None and assessment.get("l3_skipped"))
     return Gaps(
         l2_unavailable=asked and classification is None and not l2_truncated,
         l2_truncated=l2_truncated,
-        l3_unavailable=bool(asked and not _l3_answered(assessment) and not l3_quota),
+        l3_unavailable=bool(
+            asked and not _l3_answered(assessment) and not l3_quota and not l3_skipped
+        ),
         l3_quota=l3_quota,
+        l3_skipped=l3_skipped,
         l3_truncated=verdict.l3_truncated,
         oversize=oversize,
         binary_unread=bool(verdict.unread),
@@ -245,6 +257,7 @@ def refusal_reason(flagged_by: str | None, gaps: Gaps) -> str | None:
             ("L2 read only part of the payload", gaps.l2_truncated),
             ("L3 unavailable", gaps.l3_unavailable),
             ("this profile's daily L3 quota is spent", gaps.l3_quota),
+            ("L3 skipped: this profile escalates only what L1 or L2 flags", gaps.l3_skipped),
             ("L3 read only part of the payload", gaps.l3_truncated),
             # Not "token cap": scrub_credentials redacts whatever follows "token ".
             ("over the admission cap, so neither L2 nor L3 read it", gaps.oversize),

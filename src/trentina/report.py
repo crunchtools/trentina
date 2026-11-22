@@ -74,6 +74,11 @@ class LayerState(str, Enum):
     for L3. Distinct from COMPLETE with nothing found, which is the confusion
     this whole module exists to prevent."""
 
+    SKIPPED = "skipped"
+    """L3 only: ``l3_escalation: l2_flagged`` did not ask it, because L1 found
+    nothing and L2 read all of it and passed it (a962). A policy, so not
+    UNAVAILABLE; never asked, so not COMPLETE."""
+
     NOT_APPLICABLE = "not_applicable"
     """There was nothing to judge — an empty payload, or a JSON body whose
     string leaves are all blank."""
@@ -126,7 +131,9 @@ def layer_states(verdict: DefenseVerdict) -> dict[str, str]:
         else LayerState.COMPLETE
     )
     l3 = (
-        LayerState.UNAVAILABLE
+        LayerState.SKIPPED
+        if gaps.l3_skipped
+        else LayerState.UNAVAILABLE
         if gaps.l3_unavailable or gaps.l3_quota
         else LayerState.PARTIAL
         if gaps.l3_truncated
