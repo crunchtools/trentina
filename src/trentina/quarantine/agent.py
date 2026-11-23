@@ -147,6 +147,15 @@ def resolve_profile_llm(
     return resolved, llm_keys[resolved].api_key, profile.defense.model
 
 
+def _failure_context(provider_name: str | None = None) -> str:
+    """``profile=… provider=…`` for an L3 failure's log line. A provider's 403
+    is a per-key spend cap as often as anything, and the key is the profile's
+    own (a1126): without these the operator cannot tell which key ran dry."""
+    profile = bound_profile()
+    provider = provider_name or profile.defense.provider or get_config().provider
+    return f"profile={profile.name} provider={provider}"
+
+
 def bound_profile() -> Profile:
     """The profile this call is bound to — a live gateway's, or the operator
     synthesized from the environment standalone. Never None.
@@ -553,7 +562,7 @@ async def quarantine_verify(text: str) -> dict[str, Any]:
             turn="verify",
         )
     except QuarantineAgentError as exc:
-        logger.warning("Q-Agent verification failed: %s", exc_kind(exc))
+        logger.warning("Q-Agent verification failed: %s %s", exc_kind(exc), _failure_context())
         return {"injection_detected": False, "l3_unavailable": True}
     parsed.pop("_usage", None)
     return parsed
@@ -644,10 +653,10 @@ async def quarantine_redact(
             content, prompt, briefing=extraction_briefing(detection)
         )
     except TruncatedResponseError:
-        logger.warning("Q-Agent extraction stopped at the output-token cap")
+        logger.warning("Q-Agent extraction stopped at the output-token cap %s", _failure_context())
         return CleanResult(refused_by="t2_truncated")
     except QuarantineAgentError as exc:
-        logger.warning("Q-Agent extraction failed: %s", exc_kind(exc))
+        logger.warning("Q-Agent extraction failed: %s %s", exc_kind(exc), _failure_context())
         return CleanResult(refused_by="t2_unavailable")
     return await _judge_extraction(extraction, content)
 
@@ -723,7 +732,9 @@ async def quarantine_detect(
                 turn="detection",
             )
     except QuarantineAgentError as exc:
-        logger.warning("Q-Agent detection failed: %s", exc_kind(exc))
+        logger.warning(
+            "Q-Agent detection failed: %s %s", exc_kind(exc), _failure_context(provider_name)
+        )
         # "We could not ask" is not "no injection". The distinct marker lets
         # enforcement tell an unavailable judge from a clean verdict — a
         # block-mode profile fails closed on it, and the adversarial review
