@@ -18,8 +18,8 @@ is new to the profile's judge rather than by the size of a history:
   ``Config.git_suspicious``, so a borderline chunk is never diluted by its
   neighbours; the others go to L3 in groups of
   at most ``GROUP_TOKENS``, and a clean group is credited to each unit in it.
-  A flagged group is judged again unit by unit; if no unit flags alone, every
-  unit in it is flagged, since the instruction is then the group's.
+  A flagged group is debited to each unit in it, never asked again unit by
+  unit: L3 reads each unit once.
 - **Files at the tip, whole.** A text blob at the tip of a wanted commit (or a
   blob wanted by id, as a partial clone's lazy fetch asks for it) of at most
   ``Config.whole_tokens`` is also judged whole at L3: the file an agent opens.
@@ -101,6 +101,11 @@ SCREENERS = 2
 
 L3_CALLS = 4
 """L3 calls in flight for one fetch."""
+
+VERDICT_TTL = 30 * 24 * 3600.0
+"""Seconds a git verdict is kept, from its judgement. A chunk's key is its
+content and the stamp names the judge, so a verdict holds until the stamp
+changes; the cap bounds what a judge later found wanting still serves."""
 
 _MEMORY_MAX = 65536
 _memory: OrderedDict[str, tuple[float, dict[str, Any] | None]] = OrderedDict()
@@ -534,9 +539,7 @@ class GitJudge:
         from ..perimeter_db import get_git_verdicts, perimeter_stamp
 
         try:
-            known = get_git_verdicts(
-                [unit.key for unit in batch], perimeter_stamp(), _ttl_seconds()
-            )
+            known = get_git_verdicts([unit.key for unit in batch], perimeter_stamp(), VERDICT_TTL)
         except Exception as exc:
             logger.warning(
                 "git judge: verdict store unread: %s at %s", exc_kind(exc), exc_where(exc)
@@ -857,20 +860,16 @@ def _digest(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _ttl_seconds() -> float:
-    return get_config().verdict_ttl_hours * 3600.0
-
-
 def _memory_get(key: str) -> Any:
     """A verdict this process reached, or ``_MISS``.
 
     It expires as the store's do (#817): counted from the judgement, not the
-    last hit, and dropped once past ``TRENTINA_VERDICT_TTL_HOURS``.
+    last hit, and dropped once past ``VERDICT_TTL``.
     """
     entry = _memory.get(key)
     if entry is None:
         return _MISS
-    if not 0 <= time.time() - entry[0] < _ttl_seconds():
+    if not 0 <= time.time() - entry[0] < VERDICT_TTL:
         del _memory[key]
         return _MISS
     _memory.move_to_end(key)

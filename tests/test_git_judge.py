@@ -199,11 +199,11 @@ async def test_a_flagged_name_in_a_listing_is_found() -> None:
     assert {oid for _k, oid, _l, _r in judge.outcome().flagged} == {f"ref:refs/heads/{L2_MARK}"}
 
 
-async def test_a_verdict_in_memory_expires_with_the_ttl(
+async def test_a_verdict_in_memory_holds_until_the_cap(
     layers: Layers, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#817 holds here too: a verdict is served for the TTL from its judgement, not for
-    the life of the process."""
+    """#817 holds here too: a verdict is served from its judgement up to the
+    cap, not for the life of the process."""
     blob = _blob("an ordinary file\n")
     await _judged(blob)
     git_judge.reset_git_verdicts()  # the in-memory cache only: the store still has it
@@ -212,10 +212,13 @@ async def test_a_verdict_in_memory_expires_with_the_ttl(
     perimeter_db.delete_git_verdicts()
     await _judged(blob)
     assert len(layers.screened) == 2
-    later = git_judge.time.time() + 25 * 3600
-    monkeypatch.setattr(git_judge.time, "time", lambda: later)
+    now = git_judge.time.time()
+    monkeypatch.setattr(git_judge.time, "time", lambda: now + 25 * 3600)
     await _judged(blob)
-    assert len(layers.screened) == 3, "a day-old verdict is judged again"
+    assert len(layers.screened) == 2, "a day-old verdict still holds"
+    monkeypatch.setattr(git_judge.time, "time", lambda: now + git_judge.VERDICT_TTL + 1)
+    await _judged(blob)
+    assert len(layers.screened) == 3, "past the cap it is judged again"
 
 
 # --- the tip's files, judged whole ---------------------------------------------------
