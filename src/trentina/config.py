@@ -87,11 +87,12 @@ DEFAULT_BLOCKLIST_TTL_DAYS = 30
 """Days a block refusal keeps its source on the calling profile's blocklist."""
 
 DEFAULT_VERDICT_TTL_HOURS = 24
-DEFAULT_GIT_SUSPICIOUS = 0.2
-"""An L2 score over this, below the flag threshold, sends a git unit to L3 alone."""
 """Hours a perimeter verdict is served from cache, counted from when it was
 judged (#817). Long enough that a restart re-judges nothing it judged today,
 short enough that no verdict outlives a day."""
+
+DEFAULT_GIT_SUSPICIOUS = 0.2
+"""An L2 score over this, below the flag threshold, sends a git unit to L3 alone."""
 
 MAX_VERDICT_TTL_HOURS = 720
 """The longest a setting may ask for: thirty days, the blocklist's default. A

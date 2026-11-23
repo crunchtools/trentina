@@ -1282,14 +1282,14 @@ classification = "gourmand_bug"
 
 [[exceptions]]
 check = "over_abstraction"
-path = "src/trentina/gateway/git_pack.py"
+path = "src/trentina/unpack/git_pack.py"
 item = "_malformed"
 justification = "_malformed is the one place a refusal for a bad pack is built, with the closed reason 'malformed'. It has about thirty call sites; a refusal spelled out at each is how one of them gets a reason outside REASONS, which the error's callers map to wire words."
 classification = "by_design"
 
 [[exceptions]]
 check = "single_use_helpers"
-path = "src/trentina/gateway/git_pack.py"
+path = "src/trentina/unpack/git_pack.py"
 item = "_inflate"
 justification = "_inflate is the bounded zlib step: it hands the inflater at most one byte more than the entry's declared size, so a bomb is refused before it is held, and it detects a stall. It is a nineteen-line loop with four refusals; inlined into _read_body it takes that method past ruff's complexity limit of 10, and the name documents the guard the module's bounded-memory claim rests on."
 classification = "by_design"
@@ -1323,7 +1323,7 @@ classification = "by_design"
 
 [[exceptions]]
 check = "copy_paste_detection"
-path = "src/trentina/gateway/git_pack.py"
+path = "src/trentina/unpack/git_pack.py"
 justification = "PackReader._read_entry_head and _read_body are reported as identical to _pin_one in tool_pins.py and _rewrite_relation in matrix_bridge/rewrite.py. One steps a packfile's parse state machine (read a header, consume bytes, move to the next state), the others pin a tool and rewrite a Matrix relation. They share a run of guard-then-assign statements, nothing else. Structural collision, not duplication."
 classification = "gourmand_bug"
 
@@ -1347,3 +1347,18 @@ path = "tests/test_git_judging.py"
 pattern = "_flagged"
 justification = "Not single-use: five assertions in four test methods call it, verified by grep. The check does not count callers inside class methods, as for tests/test_reload.py _registry."
 classification = "gourmand_bug"
+
+[[exceptions]]
+check = "single_use_helpers"
+path = "src/trentina/gateway/git_fetch.py"
+pattern = "_header"
+justification = "The shape check on the reader child's untrusted output (kind, object id, offset, length against the inflated limit), a security boundary with its own unit tests in tests/test_git_pack_worker.py, which this check does not count as callers. Inlined, _objects would mix the check with the frame loop."
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/llm_policy.py"
+pattern = "admit"
+justification = "Shape only: the child's main and llm_policy.admit share a run of unpacking and assignments, not logic. One reads argv and limits a process; the other admits an HTTP request."
+classification = "by_design"
+

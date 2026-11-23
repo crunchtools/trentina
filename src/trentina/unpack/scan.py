@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import heapq
 import math
 import re
 import secrets
@@ -801,10 +802,18 @@ def binary_strings(raw: bytes) -> str:
     noise is bounded by ``MAX_STRINGS``. UTF-16LE with non-ASCII characters is
     not read: it is not what ``strings`` shows by default.
     """
-    found = [(m.start(), m.group().decode("ascii")) for m in _ASCII_RUN.finditer(raw)]
-    found += [(m.start(), m.group()[::2].decode("ascii")) for m in _UTF16_RUN.finditer(raw)]
-    found.sort()
-    return " ".join(run for _, run in found)[:MAX_STRINGS]
+    ascii_runs = ((m.start(), m.group().decode("ascii")) for m in _ASCII_RUN.finditer(raw))
+    wide_runs = ((m.start(), m.group()[::2].decode("ascii")) for m in _UTF16_RUN.finditer(raw))
+    # Both scans are already in file order, so they merge without a sort, and
+    # stop once the budget is spent: a blob of short runs is never listed whole.
+    runs: list[str] = []
+    budget = MAX_STRINGS
+    for _start, run in heapq.merge(ascii_runs, wide_runs):
+        runs.append(run)
+        budget -= len(run) + 1
+        if budget <= 0:
+            break
+    return " ".join(runs)[:MAX_STRINGS]
 
 
 def _reads_as_noise(token: str) -> bool:

@@ -51,10 +51,7 @@ from ..logsafe import exc_kind, exc_where
 from ..quarantine.classifier import background_scans
 from ..quarantine.quota import git_quota
 from ..unpack.child import run_unpacking
-from ..unpack.scan import read_binary
-from .context import profile_context
-from .git_chunks import TOKEN_BYTES, Chunk, chunk_blob, estimate_tokens
-from .git_pack import (
+from ..unpack.git_pack import (
     OBJ_BLOB,
     OBJ_COMMIT,
     OBJ_TAG,
@@ -66,6 +63,9 @@ from .git_pack import (
     tag_target,
     tree_entries,
 )
+from ..unpack.scan import read_binary
+from .context import profile_context
+from .git_chunks import TOKEN_BYTES, Chunk, chunk_blob, estimate_tokens
 from .service import judge_of
 from .verdict_cache import _cache_key
 
@@ -98,7 +98,7 @@ L3_CALLS = 4
 """L3 calls in flight for one fetch."""
 
 _MEMORY_MAX = 65536
-_memory: OrderedDict[str, dict[str, Any] | None] = OrderedDict()
+_memory: OrderedDict[str, tuple[float, dict[str, Any] | None]] = OrderedDict()
 """Verdicts this process reached or read back, ahead of the store."""
 
 #: Gaps an object can be left with, each a closed word on the side band.
@@ -179,6 +179,21 @@ class GitJudge:
     its own, outside the request, so a fetch delivered under ``flag`` before
     its last verdict goes on being judged, its verdicts warming the cache and
     landing as ``detections`` rows. ``deadline`` bounds that task.
+
+    Args:
+        profile: whose judge, thresholds and quota the judging runs under;
+            its grant owner is in every verdict key.
+        grant: the git grant fetched under, for its ``l3_daily_quota``.
+        source: ``git:<remote>/<owner>/<repo>``, which a detection row names
+            with ``@<oid>`` after it.
+        call_ref: the ``gateway_calls`` row's reference, carried by every
+            detection row this judging writes.
+        chunk_secret: the gateway's key for chunk boundaries
+            (``git_chunks.chunk_blob``), so an author cannot place a cut.
+        wants: the object ids the fetch asked for. Their trees' blobs are the
+            tip, judged whole; a blob wanted by id is a lazy fetch's checkout.
+        oid_len: bytes in an object id, 20 for sha1 and 32 for sha256: how
+            tree entries are read.
     """
 
     def __init__(
@@ -505,8 +520,7 @@ class GitJudge:
         for unit in batch:
             if unit.key in known:
                 self.stats["cached"] += 1
-                _memory_put(unit.key, known[unit.key])
-                self._settle(unit, known[unit.key], store=False)
+                self._settle(unit, known[unit.key], judged=False)
             else:
                 fresh.append(unit)
         return fresh
@@ -611,16 +625,15 @@ class GitJudge:
         oid = next(iter(unit.oids), "")
         return f"{self.source}@{oid}"
 
-    def _settle(self, unit: Unit, verdict: dict[str, Any] | None, *, store: bool = True) -> None:
-        """One unit is decided: credit its objects, cache a complete verdict."""
+    def _settle(self, unit: Unit, verdict: dict[str, Any] | None, *, judged: bool = True) -> None:
+        """One unit is decided: credit its objects, and cache a complete verdict
+        reached here (one read from the store is already the store's)."""
         if self._units.pop(unit.key, None) is None:
             return
         self._backlog -= unit.held
-        complete = verdict is None or "gap" not in verdict
-        if complete:
+        if judged and (verdict is None or "gap" not in verdict):
             _memory_put(unit.key, verdict)
-            if store:
-                _store(unit.key, verdict)
+            _store(unit.key, verdict)
         for oid in unit.oids:
             state = self._objects.get(oid)
             if state is None:
@@ -799,14 +812,26 @@ def _ttl_seconds() -> float:
 
 
 def _memory_get(key: str) -> Any:
-    entry = _memory.get(key, _MISS)
-    if entry is not _MISS:
-        _memory.move_to_end(key)
-    return entry
+    """A verdict this process reached, or ``_MISS``.
+
+    It expires as the store's do (#817): counted from the judgement, not the
+    last hit, and dropped once past ``TRENTINA_VERDICT_TTL_HOURS``.
+    """
+    entry = _memory.get(key)
+    if entry is None:
+        return _MISS
+    if not 0 <= time.time() - entry[0] < _ttl_seconds():
+        del _memory[key]
+        return _MISS
+    _memory.move_to_end(key)
+    return entry[1]
 
 
 def _memory_put(key: str, verdict: dict[str, Any] | None) -> None:
-    _memory[key] = verdict
+    """Remember a verdict this process reached, from now. A verdict read from
+    the store is not kept here: its age is the store's, and the store is read
+    again on the next fetch."""
+    _memory[key] = (time.time(), verdict)
     _memory.move_to_end(key)
     while len(_memory) > _MEMORY_MAX:
         _memory.popitem(last=False)

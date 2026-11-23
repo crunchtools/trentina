@@ -2,7 +2,7 @@
 
 > **Spec ID:** 027-git-pack-judging
 > **Status:** Draft, rulings recorded
-> **Version:** 0.3.2
+> **Version:** 0.3.3
 > **Author:** Scott McCarty
 > **Date:** 2026-11-22
 > **Ticket:** #453 (known gap 29), Ashigaru a1054
@@ -121,12 +121,16 @@ release path.
 
 ### Pack reading
 
-A new module, `gateway/git_pack.py`; `git_wire.py` stays the no-pack reading
-it is. Pure Python in a worker thread, written to the unpack stage's archive
-discipline: zlib inflates, hashlib hashes, and nothing new joins the runtime
-image. A differential fuzz against `git index-pack --strict` (varint headers,
-a copy size of 0 meaning 0x10000, duplicate objects, a `REF_DELTA` naming
-itself) gates the module.
+A new module, `unpack/git_pack.py`; `git_wire.py` stays the no-pack reading
+it is. Pure Python, written to the unpack stage's archive discipline: zlib
+inflates, hashlib hashes, and nothing new joins the runtime image. It runs in
+a child process (`unpack/git_pack_worker.py`) with CPU and memory limits, no
+credential and a constant argument list, killed at `git.judge_deadline`: the
+Security Gateway profile asks that of a parser for a format an attacker
+controls, and a thread inflating 2 GiB cannot be stopped (v0.3.3, found in
+review; v0.3.2 said a worker thread). A differential fuzz against `git
+index-pack --strict` (varint headers, a copy size of 0 meaning 0x10000,
+duplicate objects, a `REF_DELTA` naming itself) gates the module.
 
 Bounds, each a refusal in `block` and an unjudged delivery in `flag`:
 

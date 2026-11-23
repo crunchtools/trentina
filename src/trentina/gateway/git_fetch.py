@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import uuid
 import weakref
 from collections import OrderedDict
@@ -48,9 +49,18 @@ from ..config import get_config
 from ..logsafe import exc_kind, exc_where
 from ..outcomes import Outcome
 from ..transports.base import RefusedError
+from ..unpack.child import environment
+from ..unpack.git_pack import (
+    DEFAULT_LIMITS,
+    OBJ_BLOB,
+    OBJ_COMMIT,
+    OBJ_TAG,
+    OBJ_TREE,
+    PackObject,
+)
+from ..unpack.git_pack import REASONS as PACK_REASONS
 from .git_chunks import gateway_chunk_key
 from .git_judge import GitJudge, flush_store
-from .git_pack import Limits, PackReader, PackRefusedError
 from .git_wire import (
     PACKFILE_HEADER,
     FetchResponse,
@@ -187,66 +197,154 @@ def new_call_ref() -> str:
     return uuid.uuid4().hex
 
 
+@dataclass(frozen=True)
+class _Reading:
+    """What the reader child is started with: numbers and a directory the
+    gateway chose, never anything the forge or the agent sent."""
+
+    object_format: str
+    max_arrived: int
+    max_inflated: int
+    deadline: int
+    spool_dir: str
+
+    def argv(self) -> list[str]:
+        return [
+            sys.executable,
+            "-m",
+            "trentina.unpack.git_pack_worker",
+            self.object_format,
+            str(self.max_arrived),
+            str(self.max_inflated),
+            str(self.deadline),
+            self.spool_dir,
+        ]
+
+
 class _Feeder:
-    """Hands pack data to the reader in a worker thread, one piece at a time,
-    and each object it resolves to the judge. A reader refusal ends judging
-    and leaves the rest of the pack to be named unjudged."""
+    """Hands pack data to the reader child and each object it resolves to the
+    judge (``unpack.git_pack_worker``).
 
-    def __init__(self, reader: PackReader, judge: GitJudge) -> None:
-        self._reader = reader
+    A refusal from the reader, a child that dies or one past the deadline ends
+    the judging and leaves the rest of the pack to be named unjudged; the
+    pack itself still reaches the agent, under ``flag``. Writing waits for the
+    child to take each piece, so delivery runs no faster than the reading.
+    """
+
+    def __init__(self, reading: _Reading, judge: GitJudge) -> None:
+        self._reading = reading
         self._judge = judge
-        self._queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=16)
-        self._task = asyncio.ensure_future(self._run())
         self._held = bytearray()
-        self.refused: str | None = None
-        self._ended = False
+        self._proc: asyncio.subprocess.Process | None = None
+        self._task: asyncio.Task[None] | None = None
         self._finished = False
+        self.refused: str | None = None
 
-    async def feed(self, data: bytes) -> None:
-        self._held += data
+    async def _started(self) -> asyncio.subprocess.Process | None:
+        if self._proc is None and self.refused is None:
+            try:
+                self._proc = await asyncio.create_subprocess_exec(
+                    *self._reading.argv(),
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    env=environment(),
+                )
+            except OSError:
+                self.refused = "failed"
+                return None
+            self._task = asyncio.ensure_future(self._read(self._proc))
+        return self._proc
+
+    async def feed(self, piece: bytes) -> None:
+        self._held += piece
         if len(self._held) >= FEED_BYTES:
-            await self._queue.put(bytes(self._held))
+            await self._write(bytes(self._held))
             self._held.clear()
 
+    async def _write(self, piece: bytes) -> None:
+        proc = await self._started()
+        if proc is None or proc.stdin is None or self.refused is not None:
+            return
+        try:
+            proc.stdin.write(piece)
+            await proc.stdin.drain()
+        except (ConnectionError, RuntimeError):
+            self.refused = self.refused or "failed"  # the child ended: _read says why
+
     async def finish(self) -> None:
-        """The pack has ended: read what is queued, then the trailer. Once."""
+        """The pack has ended: the child reads the trailer and says so. Once."""
         if not self._finished:
             self._finished = True
             if self._held:
-                await self._queue.put(bytes(self._held))
+                await self._write(bytes(self._held))
                 self._held.clear()
-            await self._queue.put(None)
-        await asyncio.shield(self._task)
+            proc = await self._started()
+            if proc is not None and proc.stdin is not None:
+                proc.stdin.close()
+        if self._task is not None:
+            await asyncio.shield(self._task)
+        else:
+            self._judge.close()
 
     def done(self) -> bool:
-        return self._task.done()
+        return self._finished and (self._task is None or self._task.done())
 
-    async def _drain(self) -> None:
-        """Take what is still queued, so the relay never blocks on a full queue."""
-        while not self._ended:
-            self._ended = await self._queue.get() is None
-
-    async def _run(self) -> None:
+    async def _read(self, proc: asyncio.subprocess.Process) -> None:
         try:
-            while (data := await self._queue.get()) is not None:
-                if self.refused is None:
-                    for obj in await asyncio.to_thread(self._reader.feed, data):
-                        self._judge.submit(obj)
-            self._ended = True
-            if self.refused is None:
-                for obj in await asyncio.to_thread(self._reader.finish):
-                    self._judge.submit(obj)
+            async with asyncio.timeout(self._reading.deadline):
+                ended = await self._objects(proc)
+            if ended:
                 self._judge.finish_pack()
-        except PackRefusedError as refused:
-            self.refused = refused.reason
-            await self._drain()
+        except TimeoutError:
+            self.refused = "deadline"
         except Exception as exc:  # a reader that fails is an unjudged pack, never a lost one
             logger.error("git judge: pack reader failed: %s at %s", exc_kind(exc), exc_where(exc))
             self.refused = "failed"
-            await self._drain()
         finally:
-            self._reader.close()
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
             self._judge.close()
+
+    async def _objects(self, proc: asyncio.subprocess.Process) -> bool:
+        """Read the child's objects into the judge; True when the pack was whole.
+
+        Every header is checked for shape and every length against the
+        inflated limit before a byte of content is read.
+        """
+        stdout = proc.stdout
+        if stdout is None:  # pragma: no cover - started with a pipe
+            return False
+        while header := await stdout.readline():
+            words = header.decode("ascii", "replace").split()
+            if words == ["end"]:
+                return True
+            if len(words) == 2 and words[0] == "refused":
+                self.refused = words[1] if words[1] in PACK_REASONS else "failed"
+                return False
+            kind, oid, offset, length = _header(words, self._reading.max_inflated)
+            content = await stdout.readexactly(length)
+            self._judge.submit(PackObject(oid=oid, kind=kind, content=content, offset=offset))
+        self.refused = self.refused or "failed"  # it ended without saying so
+        return False
+
+
+def _header(words: list[str], limit: int) -> tuple[str, str, int, int]:
+    """One object header from the reader child, or ValueError."""
+    if len(words) != 4 or words[0] not in _KINDS:
+        raise ValueError("not an object header")
+    kind, oid, offset, length = words
+    if len(oid) not in _OID_HEX or not _HEX.issuperset(oid):
+        raise ValueError("not an object id")
+    if not (offset.isdigit() and length.isdigit()) or int(length) > limit:
+        raise ValueError("not a length")
+    return kind, oid, int(offset), int(length)
+
+
+_KINDS = frozenset({OBJ_BLOB, OBJ_COMMIT, OBJ_TAG, OBJ_TREE})
+_OID_HEX = frozenset({40, 64})
+_HEX = frozenset("0123456789abcdef")
 
 
 def _named(judge: GitJudge, refused: str | None, refs: int) -> list[bytes]:
@@ -326,13 +424,15 @@ class _FetchRelay:
         )
         config = get_config()
         config.ensure_perimeter_db_dir()
-        reader = PackReader(
+        reading = _Reading(
             object_format=fetch.object_format,
-            limits=Limits(max_arrived=fetch.grant.max_judged_pack_bytes),
+            max_arrived=fetch.grant.max_judged_pack_bytes,
+            max_inflated=DEFAULT_LIMITS.max_inflated,
+            deadline=fetch.grant.judge_deadline,
             spool_dir=str(Path(config.perimeter_db_path).parent),
         )
         self.judge.start(float(fetch.grant.judge_deadline))
-        self.feeder = _Feeder(reader, self.judge)
+        self.feeder = _Feeder(reading, self.judge)
         return self.feeder
 
     async def take(self, piece: bytes) -> AsyncIterator[bytes]:

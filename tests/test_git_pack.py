@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from trentina.gateway.git_pack import (
+from trentina.unpack.git_pack import (
     REASONS,
     Limits,
     PackObject,

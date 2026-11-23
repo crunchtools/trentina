@@ -995,14 +995,17 @@ replaced.
   `gateway_calls` row per HTTP request (`git:<remote>`, `fetch`/`push`,
   `DestinationKind.GIT`). Reasons are the closed set `git_wire.REASONS`.
   Since spec 027 phase 1 a fetch's answer is judged (`git_fetch.py`): the
-  pack is read by `git_pack.py` (pure Python, no I/O, fuzzed against `git
-  index-pack --strict`) in a worker thread as it streams, each object judged
+  pack is read by `unpack/git_pack.py` (pure Python, no I/O, fuzzed against
+  `git index-pack --strict`) in a child process (`unpack/git_pack_worker.py`:
+  CPU and memory limits, no credential, killed at `judge_deadline`) as it
+  streams, each object judged
   by `git_judge.py` (keyed chunks from `git_chunks.py`, `defense.screen` per
   chunk, `defense.judge_l3` per group, the `git_verdicts` table), its last 64
   KiB held up to 30 s, findings named by object id on the side band under
   `flag`. Listings are buffered and their names judged. A push's pack is not
   read: what remains of known gap 29. A new rule on text the route can read
-  goes in `git_wire.py`; pack parsing stays in `git_pack.py`.
+  goes in `git_wire.py`; pack parsing stays in `unpack/git_pack.py`, and
+  never runs in the gateway's own process.
   `tests/git_harness.py` runs real `git` against `git http-backend`.
 - `egress.open_pinned` — one request to an already-checked `ResolvedTarget`,
   streamed body, idle timeout, no deadline, and any 3xx refused as

@@ -273,6 +273,15 @@ class PackReader:
 
     Any ``PackRefusedError`` is final: the reader refuses again on every later
     call. Not thread-safe; one reader belongs to one stream.
+
+    Args:
+        object_format: ``sha1`` or ``sha256``, the repository's: it sets the
+            hash every object is named by and the length of a ``REF_DELTA``
+            base id and of the trailer. Anything else is a ``ValueError``.
+        limits: what the pack may cost before it is refused (``Limits``).
+        spool_dir: where resolved objects are kept, in one anonymous file,
+            for later deltas to read; None keeps them in memory. The gateway
+            passes the data volume, since a history can inflate to gigabytes.
     """
 
     def __init__(

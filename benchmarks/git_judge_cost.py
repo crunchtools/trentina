@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import random
 import subprocess
 import sys
 import time
@@ -33,7 +34,7 @@ if str(_REPO_ROOT) not in sys.path:
 from trentina.config import get_config
 from trentina.gateway import git_judge
 from trentina.gateway.git_chunks import TOKEN_BYTES, chunk_blob, estimate_tokens
-from trentina.gateway.git_pack import (
+from trentina.unpack.git_pack import (
     OBJ_BLOB,
     OBJ_COMMIT,
     OBJ_TAG,
@@ -41,8 +42,7 @@ from trentina.gateway.git_pack import (
     PackReader,
     commit_tree,
     is_binary,
-    render_commit,
-    render_tag,
+    render_text,
     tree_entries,
 )
 
@@ -80,23 +80,23 @@ def _units(objects: list, head: str, oid_len: int) -> tuple[dict[str, str], Coun
     for obj in objects:
         kinds[obj.kind] += 1
         if obj.kind in (OBJ_COMMIT, OBJ_TAG):
-            text, _enc = (render_commit if obj.kind == OBJ_COMMIT else render_tag)(obj.data)
-            if obj.kind == OBJ_COMMIT and (tree := commit_tree(obj.data)):
+            text, _enc = render_text(obj.content)
+            if obj.kind == OBJ_COMMIT and (tree := commit_tree(obj.content)):
                 commit_trees[obj.oid] = tree
             for c in chunk_blob(text.encode(), _KEY):
                 units[c.key()] = c.lead_in + c.text
         elif obj.kind == OBJ_TREE:
-            entries = tree_entries(obj.data, oid_len=oid_len)
+            entries = tree_entries(obj.content, oid_len=oid_len)
             trees[obj.oid] = entries
             for _mode, name, _oid in entries:
                 units[f"name:{name}"] = name
         elif obj.kind == OBJ_BLOB:
-            if is_binary(obj.data):
+            if is_binary(obj.content):
                 kinds["blob_binary"] += 1
                 continue
-            if len(obj.data) <= whole * TOKEN_BYTES:
-                small[obj.oid] = obj.data
-            for c in chunk_blob(obj.data, _KEY):
+            if len(obj.content) <= whole * TOKEN_BYTES:
+                small[obj.oid] = obj.content
+            for c in chunk_blob(obj.content, _KEY):
                 units[c.key()] = c.lead_in + c.text
     tips, roots = set(), [commit_trees.get(head, "")]
     while roots:
@@ -137,11 +137,25 @@ async def _l2(texts: list[str]) -> tuple[Counter, int, float]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", type=Path, default=_REPO_ROOT)
-    parser.add_argument("--l2", action="store_true", help="run L2 over every unit")
+    parser.add_argument(
+        "--pack",
+        type=Path,
+        help="a pack already made (git pack-objects --all --stdout), for a host without git;"
+        " with --head and --format",
+    )
+    parser.add_argument("--head", help="the tip commit, with --pack")
+    parser.add_argument("--format", default="sha1", help="the object format, with --pack")
+    parser.add_argument("--l2", action="store_true", help="run L2 over the units")
+    parser.add_argument(
+        "--sample", type=int, default=0, help="L2 over this many units drawn at random (seed 0)"
+    )
     parser.add_argument("--json", type=Path, help="write the report here too")
     args = parser.parse_args()
 
-    pack, fmt, head = _pack(args.repo)
+    if args.pack:
+        pack, fmt, head = args.pack.read_bytes(), args.format, args.head
+    else:
+        pack, fmt, head = _pack(args.repo)
     started = time.monotonic()
     reader = PackReader(object_format=fmt)
     objects = reader.feed(pack) + reader.finish()
@@ -161,12 +175,18 @@ def main() -> None:
         "bytes_per_token_estimate": TOKEN_BYTES,
     }
     if args.l2:
-        scores, flagged, seconds = asyncio.run(_l2(list(units.values())))
+        texts = list(units.values())
+        if args.sample:
+            texts = random.Random(0).sample(texts, min(args.sample, len(texts)))
+        scores, flagged, seconds = asyncio.run(_l2(texts))
+        report["l2_units"] = len(texts)
         report["l2"] = {
             "seconds": round(seconds, 1),
-            "ms_per_token": round(seconds * 1000 / max(sum(tokens), 1), 3),
+            "ms_per_token": round(
+                seconds * 1000 / max(sum(estimate_tokens(t) for t in texts), 1), 3
+            ),
             "flagged": flagged,
-            "flag_rate": round(flagged / max(len(units), 1), 5),
+            "flag_rate": round(flagged / max(len(texts), 1), 5),
             "score_histogram": {str(k): v for k, v in sorted(scores.items())},
         }
     print(json.dumps(report, indent=2))

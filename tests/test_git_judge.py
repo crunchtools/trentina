@@ -9,6 +9,7 @@ quota as a gap, and a second judging of the same text served from the cache.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from typing import Any
 
@@ -16,9 +17,9 @@ import pytest
 
 from trentina.defense import Screened
 from trentina.gateway import git_judge
-from trentina.gateway.git_pack import PackObject
 from trentina.l1.pipeline import PipelineResult, PipelineStats
 from trentina.quarantine.classifier import ClassifierResult
+from trentina.unpack.git_pack import PackObject
 
 from . import git_harness as harness
 
@@ -171,3 +172,148 @@ async def test_a_flagged_name_in_a_listing_is_found() -> None:
     judge.close()
     await judge.start(60.0)
     assert {oid for _k, oid, _l, _r in judge.outcome().flagged} == {f"ref:refs/heads/{L2_MARK}"}
+
+
+async def test_a_verdict_in_memory_expires_with_the_ttl(
+    layers: Layers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#817 holds here too: a verdict is served for the TTL from its judgement, not for
+    the life of the process."""
+    blob = _blob("an ordinary file\n")
+    await _judged(blob)
+    git_judge.reset_git_verdicts()  # the in-memory cache only: the store still has it
+    from trentina import perimeter_db
+
+    perimeter_db.delete_git_verdicts()
+    await _judged(blob)
+    assert len(layers.screened) == 2
+    later = git_judge.time.time() + 25 * 3600
+    monkeypatch.setattr(git_judge.time, "time", lambda: later)
+    await _judged(blob)
+    assert len(layers.screened) == 3, "a day-old verdict is judged again"
+
+
+# --- the tip's files, judged whole ---------------------------------------------------
+
+
+def _oid(kind: str, data: bytes) -> str:
+    return hashlib.sha1(
+        b"%s %d\0" % (kind.encode(), len(data)) + data, usedforsecurity=False
+    ).hexdigest()
+
+
+def _tree(*entries: tuple[str, str, PackObject]) -> PackObject:
+    data = b"".join(
+        mode.encode() + b" " + name.encode() + b"\0" + bytes.fromhex(obj.oid)
+        for mode, name, obj in entries
+    )
+    return PackObject(oid=_oid("tree", data), kind="tree", content=data, offset=0)
+
+
+def _commit(tree: PackObject) -> PackObject:
+    data = (
+        f"tree {tree.oid}\nauthor A <a@b> 0 +0000\ncommitter A <a@b> 0 +0000\n\nmessage\n".encode()
+    )
+    return PackObject(oid=_oid("commit", data), kind="commit", content=data, offset=0)
+
+
+class Wholes:
+    """``judge_l3`` calls, split into whole-file ones by their briefing."""
+
+    def __init__(self) -> None:
+        self.whole: list[str] = []
+        self.other: list[str] = []
+
+
+@pytest.fixture
+def wholes(monkeypatch: pytest.MonkeyPatch) -> Wholes:
+    seen = Wholes()
+
+    async def judge_l3(text: str, _defense: Any, briefing: str) -> dict[str, Any]:
+        (seen.whole if "whole" in briefing else seen.other).append(text)
+        return {"injection_detected": False, "risk_level": "none"}
+
+    monkeypatch.setattr(git_judge, "judge_l3", judge_l3)
+    return seen
+
+
+async def _fetched(wants: list[str], *objects: PackObject) -> git_judge.GitJudge:
+    judge = git_judge.GitJudge(
+        profile=harness.profile(),
+        grant=harness.profile().git[harness.REMOTE],
+        source="git:forge/acme/widgets",
+        call_ref="ref",
+        chunk_secret=b"k" * 32,
+        wants=wants,
+    )
+    for obj in objects:
+        judge.submit(obj)
+    judge.finish_pack()
+    judge.close()
+    await judge.start(60.0)
+    return judge
+
+
+async def test_tip_files_are_judged_whole_and_older_versions_are_not(wholes: Wholes) -> None:
+    readme, notes = _blob("the readme, version two\n" * 3), _blob("some notes about it\n" * 3)
+    older = _blob("the readme, version one\n" * 3)
+    tree = _tree(("100644", "README", readme), ("100644", "NOTES", notes))
+    commit = _commit(tree)
+    judge = await _fetched([commit.oid], commit, tree, readme, notes, older)
+    assert judge.stats["l3_whole"] == 2
+    assert sorted(wholes.whole) == sorted([readme.content.decode(), notes.content.decode()])
+    assert not any(older.content.decode() in text for text in wholes.whole)
+    assert judge.outcome().flagged == [] and judge.outcome().pending == 0
+
+
+async def test_a_tip_file_over_the_whole_limit_is_not_judged_whole(
+    wholes: Wholes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trentina.config import Config, get_config
+
+    small, big = _blob("tiny\n"), _blob("a much longer file, with words in it. " * 40)
+    monkeypatch.setattr(Config, "whole_tokens", property(lambda _self: 50))
+    assert get_config().whole_tokens == 50
+    tree = _tree(("100644", "small", small), ("100644", "big", big))
+    commit = _commit(tree)
+    judge = await _fetched([commit.oid], commit, tree, small, big)
+    assert judge.stats["l3_whole"] == 1
+    assert wholes.whole == ["tiny\n"]
+
+
+async def test_a_blob_wanted_by_id_is_judged_whole(wholes: Wholes) -> None:
+    lazy = _blob("a file fetched on its own, at checkout\n")
+    judge = await _fetched([lazy.oid], lazy)
+    assert judge.stats["l3_whole"] == 1
+    assert wholes.whole == [lazy.content.decode()]
+
+
+async def test_nothing_is_judged_whole_without_a_want(wholes: Wholes) -> None:
+    judge = await _fetched([], _blob("a file nobody asked for\n"))
+    assert judge.stats["l3_whole"] == 0 and wholes.whole == []
+
+
+async def test_judging_past_its_deadline_leaves_the_rest_unjudged(
+    layers: Layers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``judge_deadline``: what is still out when it passes is unjudged
+    (``deadline``), named so, and not kept as a verdict."""
+
+    async def slow(content: str, *, source: str) -> Screened:
+        await asyncio.sleep(5)
+        return await layers.screen(content, source=source)
+
+    monkeypatch.setattr(git_judge, "screen", slow)
+    blob = _blob("an ordinary file\n")
+    judge = git_judge.GitJudge(
+        profile=harness.profile(),
+        grant=harness.profile().git[harness.REMOTE],
+        source="git:forge/acme/widgets",
+        call_ref="ref",
+        chunk_secret=b"k" * 32,
+    )
+    judge.submit(blob)
+    judge.close()
+    await judge.start(0.1)
+    assert judge.outcome().unjudged == [("blob", blob.oid, "deadline")]
+    assert git_judge._memory_get(next(iter(judge._objects))) is git_judge._MISS
