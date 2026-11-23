@@ -320,14 +320,34 @@ class TestReleaseMinting:
 
     @pytest.mark.parametrize(
         "name",
-        ["create_release", "github_create_tag", "update_ref", "delete_tag", "publishRelease"],
+        [
+            "create_release",
+            "github_create_tag",
+            "update_ref",
+            "delete_tag",
+            "publishRelease",
+            "create_ruleset_tool",
+            "update_ruleset_tool",
+            "set_org_fork_pr_approval_tool",
+            "create_org_actions_policy_tool",
+            "update_org_actions_policy_tool",
+            "delete_ruleset_tool",
+        ],
     )
     def test_release_writers(self, name: str) -> None:
         assert profile_lint.mints_releases(name)
 
     @pytest.mark.parametrize(
         "name",
-        ["get_release_details", "list_tags", "tag_pomodoro_to_ticket", "create_pull_request"],
+        [
+            "get_release_details",
+            "list_tags",
+            "tag_pomodoro_to_ticket",
+            "create_pull_request",
+            "list_rulesets_tool",
+            "get_ruleset_tool",
+            "get_org_fork_pr_approval_tool",
+        ],
     )
     def test_not_release_writers(self, name: str) -> None:
         assert not profile_lint.mints_releases(name)
@@ -338,7 +358,20 @@ class TestReleaseMinting:
         assert "'seat'" in finding.message and "'github'" in finding.message
 
     @pytest.mark.parametrize(
-        "pattern", ["create_*", "delete_*", "update_*", "*_tag", "*release*", "github_*"]
+        "pattern",
+        [
+            "create_*",
+            "delete_*",
+            "update_*",
+            "*_tag",
+            "*release*",
+            "github_*",
+            "set_*",
+            "*ruleset*",
+            "delete_ruleset*",
+            "create_org_*",
+            "update_org_*",
+        ],
     )
     def test_a_partial_glob_on_a_forge_is_a_finding(self, pattern: str) -> None:
         assert len(profile_lint.check_release_minting(self._file([pattern]))) == 1
@@ -360,6 +393,21 @@ class TestReleaseMinting:
         block = doc.split("### Releases stay with the operator")[1].split("```yaml")[1]
         github = yaml.safe_load(block.split("```")[0])["github"]
         assert profile_lint.check_release_minting(self._file(["*"], github["tools_deny"])) == []
+        org_writers = (
+            "set_org_fork_pr_approval_tool",
+            "create_org_actions_policy_tool",
+            "update_org_actions_policy_tool",
+            "create_ruleset_tool",
+            "update_ruleset_tool",
+        )
+        for name in org_writers:
+            assert profile_lint.mints_releases(name)
+            assert any(fnmatchcase(name, p) for p in github["tools_deny"]), name
+        guards = yaml.safe_load(
+            doc.split("### Releases stay with the operator")[1].split("```yaml")[2].split("```")[0]
+        )["github"]["literal_request_guards"]
+        assert set(org_writers) <= set(guards)
+        assert all(g == {"org": {"allow": ["crunchtools"]}} for g in guards.values())
         assert not any(
             fnmatchcase("get_release_details", p) or fnmatchcase("list_tags", p)
             for p in github["tools_deny"]
