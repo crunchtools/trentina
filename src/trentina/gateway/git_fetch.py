@@ -5,9 +5,9 @@ the forge's answer so that nothing reaches the agent that no layer read, or
 that the agent was not told about by object id:
 
 - **A fetch's pack** streams to the agent as it arrives, while ``git_pack``
-  reads it in a worker thread and ``git_judge`` judges each object. Only the
+  reads it in a child process and ``git_judge`` judges each object. Only the
   tail, the last pack entries and the trailer, is held, for up to
-  ``TAIL_HOLD`` seconds for the judging to catch up. Then the gateway names
+  ``TAIL_HOLD`` seconds for the reading and the judging to catch up. Then the gateway names
   what was flagged and what went unjudged on git's side band, counts in one
   line what is still pending, and delivers. Pending objects go on being
   judged in the background; their verdicts warm the cache and land as
@@ -39,7 +39,7 @@ import logging
 import sys
 import uuid
 import weakref
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from pathlib import Path
@@ -355,17 +355,17 @@ def _named(judge: GitJudge, refused: str | None, refs: int) -> list[bytes]:
         lines.append(f"Trentina: unjudged pack ({refused})")
     if refs:
         lines.append(f"Trentina: flagged ref names in the last listing: {refs}")
-    named = [
-        f"Trentina: flagged {kind} {oid} ({layer}, {risk})"
-        for kind, oid, layer, risk in outcome.flagged
-    ] + [f"Trentina: unjudged {kind} {oid} ({gap})" for kind, oid, gap in outcome.unjudged]
-    if len(named) > MAX_NAMED:
+    if len(outcome.flagged) + len(outcome.unjudged) > MAX_NAMED:
         lines.append(
             f"Trentina: flagged {len(outcome.flagged)} objects, "
             f"unjudged {len(outcome.unjudged)}; read the detections for their ids"
         )
     else:
-        lines += named
+        lines += [
+            f"Trentina: flagged {kind} {oid} ({layer}, {risk})"
+            for kind, oid, layer, risk in outcome.flagged
+        ]
+        lines += [f"Trentina: unjudged {kind} {oid} ({gap})" for kind, oid, gap in outcome.unjudged]
     if outcome.pending:
         lines.append(f"Trentina: pending {outcome.pending} objects, judged after delivery")
     return [progress(line) for line in lines]
@@ -404,7 +404,7 @@ class _FetchRelay:
         self.ctx = ctx
         self.fetch = fetch
         self.parser = FetchResponse(v2=fetch.v2)
-        self.tail: list[bytes] = []
+        self.tail: deque[bytes] = deque()
         self.tail_bytes = 0
         self.judge: GitJudge | None = None
         self.feeder: _Feeder | None = None
@@ -466,28 +466,37 @@ class _FetchRelay:
         self.tail_bytes += len(wire)
         sent = bytearray()
         while self.tail and self.tail_bytes - len(self.tail[0]) >= TAIL_BYTES:
-            first = self.tail.pop(0)
+            first = self.tail.popleft()
             self.tail_bytes -= len(first)
             sent += first
         return bytes(sent)
 
     async def _release(self) -> AsyncIterator[bytes]:
-        """The end of the pack: let the reader finish, wait up to ``TAIL_HOLD``
-        for the judging, name what it found, then send the held tail. A
-        progress line goes out at least every ``KEEPALIVE`` while it waits."""
+        """The end of the pack: give the reader and the judging ``TAIL_HOLD``
+        between them, name what they found, then send the held tail. A reader
+        still going then goes on in the background, and its objects are judged
+        after delivery. A progress line goes out at least every ``KEEPALIVE``."""
         held = b"".join(self.tail)
         self.tail.clear()
         self.tail_bytes = 0
         if self.feeder is None or self.judge is None:
             yield held
             return
+        loop = asyncio.get_running_loop()
+        until = loop.time() + TAIL_HOLD
         finishing = asyncio.ensure_future(self.feeder.finish())
-        while not finishing.done():
+        while not finishing.done() and (left := until - loop.time()) > 0:
             yield _progress(self.judge)
-            await asyncio.wait({finishing}, timeout=KEEPALIVE / 2)
-        await finishing
+            await asyncio.wait({finishing}, timeout=min(KEEPALIVE / 2, left))
         yield _progress(self.judge)
-        await self.judge.wait(TAIL_HOLD)  # under KEEPALIVE: the line above is enough
+        if not finishing.done():
+            _CLOSING.add(finishing)
+            finishing.add_done_callback(_CLOSING.discard)
+            yield progress("Trentina: still reading the pack; the rest is judged after delivery")
+            yield held
+            return
+        await finishing
+        await self.judge.wait(max(until - loop.time(), 0.0))
         yield b"".join(_named(self.judge, self.feeder.refused, self.refs)) + held
 
     def settle(self) -> None:

@@ -457,6 +457,27 @@ class TestPending:
         assert row["source"].endswith(f"@{oid}"), "judging continued after delivery"
         await _background_done()
 
+    async def test_a_slow_reader_does_not_hold_the_tail_past_the_hold(
+        self, judged: Any, audit_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(git_fetch, "TAIL_HOLD", 0.2)
+        finish = git_fetch._Feeder.finish
+
+        async def slow(feeder: git_fetch._Feeder) -> None:
+            await asyncio.sleep(0.5)
+            await finish(feeder)
+
+        monkeypatch.setattr(git_fetch._Feeder, "finish", slow)
+        repo = judged.repo
+        repo.plant({"notes.txt": f"{INSTRUCTION}\n".encode()})
+        oid = repo.rev("HEAD:notes.txt")
+        code, output = await repo.clone(judged, "2")
+        assert code == 0, output
+        assert any(line.startswith("Trentina: still reading") for line in _remote(output)), output
+        (row,) = await _detections(audit_db)
+        assert row["source"].endswith(f"@{oid}"), "reading and judging went on after delivery"
+        await _background_done()
+
 
 # --- the audit row -------------------------------------------------------------
 

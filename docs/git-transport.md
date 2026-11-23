@@ -213,8 +213,8 @@ there and nothing is sent upstream.
 
 Under `enforcement: flag`, the only mode in phase 1, a fetch is delivered
 as it arrives. The gateway holds back only the last 64 KiB of the pack,
-for up to 30 seconds after the forge's last byte, for the judging to catch
-up, and then writes its findings on git's side band, which git prints as
+for up to 30 seconds after the forge's last byte, for the reading and the
+judging to catch up, and then writes its findings on git's side band, which git prints as
 `remote:` lines:
 
 ```
