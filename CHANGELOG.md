@@ -10,6 +10,14 @@ under that name.
 
 ## [Unreleased]
 
+### Added
+
+- `benchmarks/llm_completion.py`: L3 on recorded `/proxy/llm` response bodies, as the completion edge judges them, and on three attack sets built in a real completion's envelope (a1013): the internal corpus's attacks as the answer; the same attacks ROT13'd and gzip+base64'd in the answer under an `encrypted_reasoning` label; and the same in the envelope fields the briefing excuses (`data`, `signature`). `tests/test_llm_completion_bench.py` holds which of them the layers read decoded. The bodies are not shipped.
+
+### Fixed
+
+- **L3 stops flagging LLM completions for their envelope under gemini-2.5-flash-lite (a1013).** The completion edge handed L3 the raw response body with no briefing, and 2.5 read `reasoning.encrypted` ciphertext as `hidden_content` and security reviews as `data_exfiltration`: 110 of 614 Gatehouse completions flagged in production after the switch, against 10 of 6,389 before. `judge_llm_completion` now briefs L3 with `prompts.COMPLETION_BRIEFING`, and no other edge does: the provider's envelope is excused and nothing else is (an encoded value in the answer, reasoning or tool arguments is content), what to flag is examples with the pack's beacon category among them, and findings are described in 2.5's own words, since quoting non-ASCII payload text looped it to `MAX_OUTPUT_TOKENS` (`TruncatedResponseError`, 25 in five hours). Whether an excused field is really ciphertext is decided in code, not by L3: `gateway/completion_envelope.py` flags a completion (L1, high, a detection row) whose `signature`, or encrypted-reasoning `data`, is anything but one base64 token no layer can read. The 2.5 prompt pack is unchanged; a pack-level rule is #908.
+
 ## [6.28.0] - 2026-11-23
 
 **Migration:** `TRENTINA_FETCH_PRIVATE_NAMES` keeps the port rule now (a1063, #912). A deployment that reaches a listed name on a port other than 80/443 must name it, e.g. `mcp-gw-personal:8000`, or those fetches fail `egress_port`.

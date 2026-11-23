@@ -31,7 +31,8 @@ from typing import TYPE_CHECKING, Any
 from .core import gate, identity
 from .core.dispose import Decision, dispose
 from .core.stages import _JUDGED_SEAL, IngressDecision, Judged
-from .defense import Provenance, defend, defend_json, defend_selection
+from .database import record_detection
+from .defense import Layer, Provenance, defend, defend_json, defend_selection, layer_verdicts
 from .gateway.context import profile_context
 from .gateway.decoy import leaked_tokens, record_trip
 from .gateway.internal_edge import JudgeScan, dispose_judgement, prepare_judgement
@@ -50,7 +51,7 @@ from .gateway.response_edge import (
 )
 from .logsafe import exc_kind, exc_where, redact_source
 from .modes import Mode, ModePolicy, gaps_of
-from .quarantine.prompts import RISK_LEVELS
+from .quarantine.prompts import COMPLETION_BRIEFING, RISK_LEVELS
 from .transports.base import Early, Transport
 
 logger = logging.getLogger(__name__)
@@ -630,15 +631,18 @@ async def judge_llm_completion(
         # test seam, and — like the original inline scan — an import failure is
         # caught here rather than left to fail the background task unhandled.
         from .defense import defend
+        from .gateway.completion_envelope import non_ciphertext_fields
 
         with profile_context(profile):
             async with asyncio.timeout(deadline):
+                forged = await non_ciphertext_fields(text)
                 verdict = await defend(
                     text,
                     source=f"llm:{profile.name}:{provider_name}",
                     source_type="llm_completion",
                     defense=profile.defense,
                     provenance=Provenance.MODEL_OUTPUT,
+                    l3_context=COMPLETION_BRIEFING,
                     # The same row columns the request edge writes (#902), so a
                     # per-profile or per-backend query sees both edges of a call.
                     # flag has already streamed the completion: it records only.
@@ -650,8 +654,12 @@ async def judge_llm_completion(
                     },
                 )
         # Inside the try: a malformed verdict's gap derivation fails closed
-        # (unjudged) rather than propagating out of the background task.
+        # (unjudged) rather than propagating out of the background task, and
+        # so does a failed write of the envelope row.
         unjudged = gaps_of(verdict).blocking()
+        forged_only = bool(forged) and not verdict.flagged
+        if forged_only:
+            _record_forged_envelope(profile, provider_name, forged)
     except TimeoutError:
         # The scan outran the deadline. In flag mode the response already
         # streamed, so this is recorded and dropped; in block it withholds.
@@ -670,12 +678,44 @@ async def judge_llm_completion(
             exc_where(exc),
         )
         return LlmCompletionJudgement(flagged=False, unjudged=True, risk="unknown", flagged_by=None)
+    if forged_only:
+        return LlmCompletionJudgement(
+            flagged=True, unjudged=unjudged, risk="high", flagged_by=Layer.L1.value
+        )
     return LlmCompletionJudgement(
         flagged=verdict.flagged,
         unjudged=unjudged,
         risk=verdict.risk_level,
         flagged_by=verdict.flagged_by.value if verdict.flagged_by else None,
     )
+
+
+def _record_forged_envelope(profile: Profile, provider_name: str, fields: list[str]) -> None:
+    """The detection row for a completion whose excused envelope field is not
+    ciphertext (``completion_envelope``). Deterministic, so it is L1's; the
+    layers' own row exists only when they flagged, and here they did not. A
+    failed write raises into ``judge_llm_completion``, which reports the
+    completion unjudged: block withholds it."""
+    logger.warning(
+        "llm: completion envelope field is not ciphertext profile=%s provider=%s fields=%s",
+        profile.name,
+        provider_name,
+        ",".join(fields),
+    )
+    if profile.defense.audit:
+        record_detection(
+            source_type="llm_completion",
+            source=f"llm:{profile.name}:{provider_name}",
+            domain=None,
+            layer1_stats={"envelope_not_ciphertext": len(fields)},
+            risk_level="high",
+            profile=profile.name,
+            backend=f"llm:{provider_name}",
+            direction="response",
+            provenance=Provenance.MODEL_OUTPUT.value,
+            blocked=profile.defense.llm_completion == "block",
+            verdicts=layer_verdicts(Layer.L1, None, None),
+        )
 
 
 @dataclass(frozen=True)

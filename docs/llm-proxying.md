@@ -151,6 +151,17 @@ consuming agent's trust posture, not of which provider answered.
   forfeits streaming, which is the trade an autonomous profile with no human
   waiting can make; `redact` is meaningless on a token stream and is refused.
 
+Either way L3 is briefed that it reads a provider's response
+(`prompts.COMPLETION_BRIEFING`, a1013), and no other edge is: the provider's
+envelope is excused and nothing else, and an answer that analyses a
+vulnerability is the model's work for its user. Without it
+gemini-2.5-flash-lite flagged about one Gatehouse completion in six. Whether an
+excused field really is ciphertext is not asked of L3:
+`gateway/completion_envelope.py` flags a completion whose `signature` or
+encrypted-reasoning `data` is anything but one base64 token no layer can read.
+`benchmarks/llm_completion.py` measures both on recorded bodies and on attacks
+planted in the answer and in those fields.
+
 ### What This Buys You
 
 - **No key in agent environment** — the agent's container/process has no `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `ANTHROPIC_API_KEY`
