@@ -547,8 +547,12 @@ async def relay_fetch(ctx: InTree, resp: Any, fetch: Fetch) -> AsyncIterator[byt
                 yield out
         relay.parser.finish()
         relay.settle()
-    except ValueError:
-        logger.warning("git transport: a fetch answer was not git's; ended it")
+    except ValueError as exc:
+        logger.warning(
+            "git transport: a fetch answer was not git's (%s at %s); ended it",
+            exc_kind(exc),
+            exc_where(exc),
+        )
         op.settle(Outcome.BLOCKED_DEFENSE, "section")
     except RefusedError as failed:
         logger.warning("git transport: upstream %s mid-stream", failed.reason)

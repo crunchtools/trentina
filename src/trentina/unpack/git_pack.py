@@ -588,15 +588,14 @@ def _split(payload: bytes) -> tuple[list[tuple[bytes, bytes]], bytes, bytes]:
     """Headers (continuation lines joined with a newline), the raw header block, the message."""
     cut = payload.find(b"\n\n")
     head, message = (payload, b"") if cut < 0 else (payload[:cut], payload[cut + 2 :])
-    headers: list[tuple[bytes, bytes]] = []
+    lines: list[tuple[bytes, list[bytes]]] = []
     for line in head.split(b"\n"):
-        if line.startswith(b" ") and headers:
-            name, value = headers[-1]
-            headers[-1] = (name, value + b"\n" + line[1:])
+        if line.startswith(b" ") and lines:
+            lines[-1][1].append(line[1:])  # joined once below: a long header stays linear
         else:
             name, _, value = line.partition(b" ")
-            headers.append((name, value))
-    return headers, head, message
+            lines.append((name, [value]))
+    return [(name, b"\n".join(parts)) for name, parts in lines], head, message
 
 
 def _first(headers: list[tuple[bytes, bytes]], name: bytes) -> bytes | None:

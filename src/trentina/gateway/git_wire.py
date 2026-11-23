@@ -518,10 +518,6 @@ def rewrite_err(payload: bytes) -> bytes:
 # --- the fetch request ------------------------------------------------------
 
 
-def _fetch_lines(body: bytes) -> list[bytes | int]:
-    return list(pkt_lines(body))
-
-
 def strip_fetch_request(body: bytes, protocol: str | None) -> bytes:
     """The upload-pack request with ``thin-pack``, ``packfile-uris`` and
     ``sideband-all`` taken out, so the forge never sees them.

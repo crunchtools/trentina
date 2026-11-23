@@ -861,6 +861,14 @@ def test_render_text_encoding_header_not_forged_by_continuation() -> None:
     assert render_text(forged)[1] is None
 
 
+def test_render_text_reads_a_long_continued_header_in_linear_time() -> None:
+    head = b"tree " + b"a" * 40 + b"\ngpgsig x\n" + b" line\n" * 200_000
+    started = time.monotonic()
+    text, _flag = render_text(head + b"\nmessage\n")
+    assert time.monotonic() - started < 2.0
+    assert text.count("line") == 200_000
+
+
 def test_render_text_iso_8859_1() -> None:
     data = b"tree " + b"a" * 40 + b"\nencoding ISO-8859-1\n\ncaf\xe9\n"
     text, flag = render_text(data)

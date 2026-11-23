@@ -6,6 +6,8 @@ driven with a fake judge that records what reached it.
 
 from __future__ import annotations
 
+import asyncio
+import random
 import subprocess
 import sys
 from typing import TYPE_CHECKING, cast
@@ -14,7 +16,7 @@ import pytest
 
 from trentina.gateway import git_fetch, git_judge, git_wire
 from trentina.gateway.git_fetch import _Feeder, _header, _Reading
-from trentina.unpack import child
+from trentina.unpack import child, git_pack_worker
 from trentina.unpack.git_pack import REASONS, PackObject
 
 from .test_git_pack import (
@@ -23,9 +25,11 @@ from .test_git_pack import (
     copy_all_then,
     expected_objects,
     fmt_of,
+    git,
     make_repo,
     object_id,
     repack_bytes,
+    stream_bytes,
 )
 
 if TYPE_CHECKING:
@@ -133,6 +137,30 @@ def test_the_wrong_argument_count_exits_2(tmp_path: Path) -> None:
     )
     assert proc.returncode == 2
     assert proc.stdout == b""
+
+
+def test_the_child_sets_its_own_cpu_and_memory_limits(tmp_path: Path) -> None:
+    """Read back from inside a child run as the gateway runs it: the limits
+    are the child's own, set before the first byte of the pack is read."""
+    probe = (
+        "import os, resource, sys\n"
+        "from trentina.unpack import git_pack_worker as w\n"
+        "os.read = lambda fd, n: b''\n"
+        f"w.main(['w', 'sha1', '1', '1', '1', '7', {str(tmp_path)!r}])\n"
+        "print(resource.getrlimit(resource.RLIMIT_CPU),"
+        " resource.getrlimit(resource.RLIMIT_AS), file=sys.stderr)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        input=b"",
+        capture_output=True,
+        env=child.environment(),
+        check=False,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    memory = git_pack_worker.MEMORY_BYTES
+    assert proc.stderr.decode().split("\n")[-2] == f"(7, 7) ({memory}, {memory})"
 
 
 def test_the_child_environment_carries_no_credential() -> None:
@@ -309,3 +337,30 @@ class _NoOutcome:
 
     def outcome(self) -> git_judge.Outcome:
         return git_judge.Outcome(flagged=[], unjudged=[], pending=0, judged=0, total=0)
+
+
+async def test_objects_reach_the_judge_while_the_pack_still_arrives(tmp_path: Path) -> None:
+    """A pack over ``FEED_BYTES`` is written to the child as it comes, so its
+    first objects are judged before the forge has sent the last byte."""
+    repo = tmp_path / "big"
+    repo.mkdir()
+    git("init", "-q", cwd=repo)
+    rng = random.Random(7)
+    for n in range(6):
+        (repo / f"f{n}.bin").write_bytes(rng.randbytes(512 * 1024))
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "big", cwd=repo)
+    pack = stream_bytes(repo)
+    assert len(pack) > 2 * git_fetch.FEED_BYTES
+    feeder, judge = _feeder(tmp_path / "spool", "sha1")
+    (tmp_path / "spool").mkdir()
+    await _feed_in_pieces(feeder, pack[: len(pack) - 4096], size=64 * 1024)
+    for _ in range(200):
+        if judge.submitted:
+            break
+        await asyncio.sleep(0.02)
+    assert judge.submitted, "objects were read before the pack ended"
+    await feeder.feed(pack[len(pack) - 4096 :])
+    await feeder.finish()
+    assert feeder.refused is None and judge.finished == 1
+    assert len({o.oid for o in judge.submitted}) == 6 + 2  # six blobs, a tree, a commit

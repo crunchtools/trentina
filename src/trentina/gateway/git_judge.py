@@ -13,9 +13,10 @@ is new to the profile's judge rather than by the size of a history:
   or a second ``ls-refs`` is a cache hit, never a ``defend()``.
 - **L1 and L2 on every unit; L3 on small groups.** Units new to the judge are
   screened (``defense.screen``) one by one, names packed together a couple of
-  kilobytes at a time. What L1 or L2 flags is flagged. Of the rest, a unit
-  whose L2 score is over ``Config.git_suspicious`` is judged alone at L3, so a borderline
-  chunk is never diluted by its neighbours; the others go to L3 in groups of
+  kilobytes at a time. What L1 or L2 flags is flagged, and still read by L3,
+  alone: every layer reads every unit. So is a unit whose L2 score is over
+  ``Config.git_suspicious``, so a borderline chunk is never diluted by its
+  neighbours; the others go to L3 in groups of
   at most ``GROUP_TOKENS``, and a clean group is credited to each unit in it.
   A flagged group is judged again unit by unit; if no unit flags alone, every
   unit in it is flagged, since the instruction is then the group's.
@@ -138,6 +139,9 @@ class Unit:
     binary: bytes | None = None
     #: What this unit counts against ``MAX_BACKLOG_BYTES``, fixed when queued.
     held: int = 0
+    #: L1's or L2's flag, carried to L3: every layer reads the unit, and a
+    #: layer's finding stands whatever the next one says.
+    prior: dict[str, Any] | None = None
 
     @property
     def read(self) -> str:
@@ -467,20 +471,27 @@ class GitJudge:
         workers += [
             asyncio.ensure_future(self._screener(screening, screened)) for _ in range(SCREENERS)
         ]
-        ended = 0
-        while ended < SCREENERS:
-            unit = await screened.get()
-            if unit is None:
-                ended += 1
-            elif unit.key in self._units:  # not settled by L1 or L2
-                dispatch.take(unit)
-            idle = not self._screening and self._queue.empty() and screening.empty()
-            if idle and screened.empty():
-                # Nothing more is coming soon: do not hold a group back for company.
-                dispatch.flush()
-        dispatch.flush()
-        await asyncio.gather(*workers)
-        await dispatch.done()
+        try:
+            ended = 0
+            while ended < SCREENERS:
+                unit = await screened.get()
+                if unit is None:
+                    ended += 1
+                elif unit.key in self._units:  # not settled by the screen (a gap)
+                    dispatch.take(unit)
+                idle = not self._screening and self._queue.empty() and screening.empty()
+                if idle and screened.empty():
+                    # Nothing more is coming soon: do not hold a group back for company.
+                    dispatch.flush()
+            dispatch.flush()
+            await asyncio.gather(*workers)
+            await dispatch.done()
+        finally:
+            # Past the deadline nothing spawned here screens or spends L3 any more.
+            await dispatch.cancel()
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
 
     async def _collect(self, screening: asyncio.Queue[Unit | None]) -> None:
         """Queued units the store does not know, on to the screeners."""
@@ -568,9 +579,9 @@ class GitJudge:
         if screened.unread:
             self._settle(unit, {"gap": "binary_unread"})
         elif screened.l2_flagged(self.profile.defense):
-            self._settle(unit, _flag("L2", "high", screened, None))
+            unit.prior = _flag("L2", "high", screened, None)
         elif screened.l1_flagged():
-            self._settle(unit, _flag("L1", screened.pipeline.stats.risk_level(), screened, None))
+            unit.prior = _flag("L1", screened.pipeline.stats.risk_level(), screened, None)
         elif c is None:
             self._settle(unit, {"gap": "l2_unavailable"})
 
@@ -597,6 +608,9 @@ class GitJudge:
         """
         self.stats["l3_whole" if whole else "l3_groups" if len(units) > 1 else "l3_alone"] += 1
         answer = await self._ask(units, whole=whole)
+        if len(units) == 1 and (prior := units[0].prior) is not None:
+            self._settle_flagged(units[0], prior, answer)
+            return
         if "gap" in answer or answer.get("injection_detected") is not True:
             for unit in units:
                 self._settle(unit, answer if "gap" in answer else CLEAN)
@@ -613,6 +627,16 @@ class GitJudge:
                 self._settle(unit, _flag("L3", _risk(one), unit.screened, one))
             else:
                 self._settle(unit, one if "gap" in one else CLEAN)
+
+    def _settle_flagged(self, unit: Unit, prior: dict[str, Any], answer: dict[str, Any]) -> None:
+        """L1 or L2 flagged ``unit`` and L3 has read it: the flag stands."""
+        if "gap" in answer:
+            # A verdict L3 did not finish is not cached.
+            self._settle(unit, prior, judged=False)
+        elif answer.get("injection_detected") is True:
+            self._settle(unit, {**prior, "l3": _l3_fields(answer)})
+        else:
+            self._settle(unit, prior)
 
     def _briefing(self, units: list[Unit], *, whole: bool) -> str:
         stats = PipelineStats()
@@ -740,8 +764,8 @@ class _Dispatch:
         c = unit.screened.classification if unit.screened is not None else None
         if unit.whole:
             self._send([unit], whole=True)
-        elif c is not None and c.score > self._judge._mark:
-            # Borderline: never diluted by its neighbours.
+        elif unit.prior is not None or (c is not None and c.score > self._judge._mark):
+            # Flagged or borderline: never diluted by its neighbours.
             self._send([unit])
         else:
             tokens = estimate_tokens(unit.read)
@@ -763,6 +787,14 @@ class _Dispatch:
         task = asyncio.ensure_future(run())
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    async def cancel(self) -> None:
+        """Stop every L3 call still in flight."""
+        sent = list(self._tasks)
+        for task in sent:
+            task.cancel()
+        await asyncio.gather(*sent, return_exceptions=True)
+        self._tasks.difference_update(sent)
 
     async def done(self) -> None:
         # Drop what was gathered here: a task's discard callback runs on a later
@@ -789,12 +821,20 @@ _MISS: Any = object()
 def _flag(
     layer: str, risk: str, screened: Screened | None, l3: dict[str, Any] | None
 ) -> dict[str, Any]:
-    verdict: dict[str, Any] = {"layer": layer, "risk": risk}
-    if l3 is not None:
-        verdict["l3"] = {k: l3[k] for k in ("injection_detected", "risk_level") if k in l3}
-    if screened is not None:
-        verdict["verdicts"] = layer_verdicts(None, screened.classification, l3)
-    return verdict
+    layers = (
+        {} if screened is None else {"verdicts": layer_verdicts(None, screened.classification, l3)}
+    )
+    return {
+        "layer": layer,
+        "risk": risk,
+        **({} if l3 is None else {"l3": _l3_fields(l3)}),
+        **layers,
+    }
+
+
+def _l3_fields(answer: dict[str, Any]) -> dict[str, Any]:
+    """What a verdict keeps of an L3 answer: closed fields, never its prose."""
+    return {k: answer[k] for k in ("injection_detected", "risk_level") if k in answer}
 
 
 def _risk(answer: dict[str, Any]) -> str:

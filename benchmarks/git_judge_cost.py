@@ -1,7 +1,8 @@
 """What a cold clone costs the git transport's judge (spec 027 phase 1).
 
 Reads a repository's whole history as one pack (``git pack-objects --all``)
-through ``git_pack.PackReader`` and cuts every object into the units
+through the reader child the gateway runs (``unpack.git_pack_worker``, never
+in this process: ``--pack`` may be anyone's) and cuts every object into the units
 ``git_judge`` would judge, with the same keyed chunking, the same dedup by
 key and the same tip rule, and reports: objects by kind, unique units and
 their tokens, how many L3 groups of ``GROUP_TOKENS`` that makes, the tip
@@ -23,6 +24,7 @@ import json
 import random
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from pathlib import Path
@@ -34,12 +36,15 @@ if str(_REPO_ROOT) not in sys.path:
 from trentina.config import get_config
 from trentina.gateway import git_judge
 from trentina.gateway.git_chunks import TOKEN_BYTES, chunk_blob, estimate_tokens
+from trentina.gateway.git_fetch import _header, _Reading
+from trentina.unpack import child
 from trentina.unpack.git_pack import (
+    DEFAULT_LIMITS,
     OBJ_BLOB,
     OBJ_COMMIT,
     OBJ_TAG,
     OBJ_TREE,
-    PackReader,
+    PackObject,
     commit_tree,
     is_binary,
     render_text,
@@ -67,6 +72,29 @@ def _pack(repo: Path) -> tuple[bytes, str, str]:
         check=True,
     ).stdout
     return pack, fmt, head
+
+
+def _read(pack: bytes, fmt: str) -> list[PackObject]:
+    """The pack's objects, read by the reader child under the gateway's limits."""
+    with tempfile.TemporaryDirectory() as spool:
+        reading = _Reading(fmt, len(pack), DEFAULT_LIMITS.max_inflated, 3600, spool)
+        out = subprocess.run(
+            reading.argv(), input=pack, capture_output=True, env=child.environment(), check=True
+        ).stdout
+    objects, i = [], 0
+    while True:
+        eol = out.index(b"\n", i)
+        words = out[i:eol].decode("ascii", "replace").split()
+        if words == ["end"]:
+            return objects
+        if words[:1] == ["refused"]:
+            raise SystemExit(f"the reader refused the pack: {words[1:]}")
+        kind, oid, offset, length, over = _header(words, DEFAULT_LIMITS.max_inflated)
+        i = eol + 1
+        if over:
+            continue
+        objects.append(PackObject(oid=oid, kind=kind, content=out[i : i + length], offset=offset))
+        i += length
 
 
 def _units(objects: list, head: str, oid_len: int) -> tuple[dict[str, str], Counter, int]:
@@ -157,8 +185,7 @@ def main() -> None:
     else:
         pack, fmt, head = _pack(args.repo)
     started = time.monotonic()
-    reader = PackReader(object_format=fmt)
-    objects = reader.feed(pack) + reader.finish()
+    objects = _read(pack, fmt)
     read_seconds = time.monotonic() - started
     units, kinds, tips = _units(objects, head, 32 if fmt == "sha256" else 20)
     tokens = [estimate_tokens(text) for text in units.values()]

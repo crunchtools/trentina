@@ -96,11 +96,22 @@ def _flagged(judge: git_judge.GitJudge) -> dict[str, str]:
     return {oid: layer for _kind, oid, layer, _risk in judge.outcome().flagged}
 
 
-async def test_l2_flags_without_asking_l3(layers: Layers) -> None:
+async def test_an_l2_flag_is_still_judged_at_l3_alone_and_stands(layers: Layers) -> None:
     bad, good = _blob(f"x\n{L2_MARK}\n"), _blob("an ordinary file\n")
     judge = await _judged(bad, good)
+    assert _flagged(judge) == {bad.oid: "L2"}, "L3 finding it clean does not clear it"
+    assert [asked for asked in layers.asked if L2_MARK in asked] == [f"x\n{L2_MARK}\n"]
+
+
+async def test_an_l2_flag_l3_could_not_judge_stands_uncached(layers: Layers) -> None:
+    layers.quota = True
+    bad = _blob(f"x\n{L2_MARK}\n")
+    judge = await _judged(bad)
     assert _flagged(judge) == {bad.oid: "L2"}
-    assert not any(L2_MARK in asked for asked in layers.asked)
+    layers.quota = False
+    layers.asked.clear()
+    await _judged(bad)
+    assert layers.asked, "judged again: an unfinished verdict was not cached"
 
 
 async def test_clean_units_share_one_l3_call(layers: Layers) -> None:
@@ -393,3 +404,37 @@ def test_the_suspicious_mark_reads_its_setting(
     monkeypatch.setenv("TRENTINA_GIT_SUSPICIOUS", "lots")
     assert Config().git_suspicious == DEFAULT_GIT_SUSPICIOUS
     assert "TRENTINA_GIT_SUSPICIOUS is not a number" in caplog.text
+
+
+async def test_nothing_spends_l3_past_the_deadline(
+    layers: Layers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One unit is at L3 while another is still being screened when the
+    deadline passes: the L3 call in flight is cancelled, not left running."""
+    finished: list[str] = []
+
+    async def slow_l3(text: str, _defense: Any, _briefing: str) -> dict[str, Any]:
+        await asyncio.sleep(0.3)
+        finished.append(text)
+        return {"injection_detected": False, "risk_level": "none"}
+
+    async def screen(content: str, *, source: str) -> Screened:
+        if "slow" in content:
+            await asyncio.sleep(5)
+        return await layers.screen(content, source=source)
+
+    monkeypatch.setattr(git_judge, "judge_l3", slow_l3)
+    monkeypatch.setattr(git_judge, "screen", screen)
+    judge = git_judge.GitJudge(
+        profile=harness.profile(),
+        grant=harness.profile().git[harness.REMOTE],
+        source="git:forge/acme/widgets",
+        call_ref="ref",
+        chunk_secret=b"k" * 32,
+    )
+    judge.submit(_blob(f"{BORDER}\n"))  # alone at L3 at once
+    judge.submit(_blob("a slow file\n"))
+    judge.close()
+    await judge.start(0.15)
+    await asyncio.sleep(0.5)
+    assert finished == []
