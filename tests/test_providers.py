@@ -339,7 +339,7 @@ class TestGetProviderFactory:
         provider = get_provider()
         assert isinstance(provider, OpenAIProvider)
         # The default model, spelled the way OpenRouter names it.
-        assert provider.judge == ("openrouter", "google/gemini-3.5-flash-lite")
+        assert provider.judge == ("openrouter", "google/gemini-3.5-flash-lite-20260721")
         config_mod._config = None
 
     def test_openrouter_missing_key_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:

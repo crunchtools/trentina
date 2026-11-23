@@ -10,6 +10,12 @@ under that name.
 
 ## [Unreleased]
 
+**Migration:** every verdict is judged once more after the upgrade (`PERIMETER_VERSION` 26). A federation peer pinning `trust_verdict.judge` to `openrouter/google/gemini-3.5-flash-lite/…` must pin the `-20260721` spelling `judge_stamp` now reports; until it does, that peer's responses are re-judged locally (fail-closed, gap 33), not refused.
+
+### Changed
+
+- **The verdict cache key carries the perimeter stamp, and the default judge is pinned to a dated build (a1061, constitution 2.20.0 condition 1).** The stamp (`PERIMETER_VERSION`, the L2 model, revision, threshold and gates) only marked the persisted row, so a change of L2 swept the store on load while an in-memory verdict kept being served until its TTL. It is now in every key. The default L3 judge was keyed as the alias `google/gemini-3.5-flash-lite`, which OpenRouter can repoint at a new build under a cached verdict; it is now asked for, keyed, pinned and packed as `google/gemini-3.5-flash-lite-20260721`, the build the pack gate measured. `judge_of` names an OpenRouter judge as the driver sends it, so the verdict key, the federation `judge_stamp` and `Provider.judge` agree. Google's API has no dated id for the model, so the `gemini` provider still sends the alias and the TTL bounds it.
+
 ## [6.29.0] - 2026-11-23
 
 **Migration:** verify the audit log with this release's `trentina-audit-verify` (#915). An older one does not know the new `selected` column and reports a break at the first row carrying it.

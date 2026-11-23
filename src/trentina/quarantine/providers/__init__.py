@@ -23,10 +23,22 @@ __all__ = ["Provider", "ProviderResult", "get_fallback_providers", "get_provider
 
 _DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
+#: OpenRouter aliases the gateway asks for by their dated build (a1061,
+#: constitution 2.20.0 condition 1). An alias is repointed when the vendor ships
+#: a new build, and a verdict keyed on the alias would then be served for a
+#: model that never reached it. The build is the one the shipped pack was
+#: measured on: the only build of 3.5 Flash-Lite there has been, and older
+#: than the pack's ``measured`` header. Google's own API has no dated id
+#: for it, so the ``gemini`` provider stays on the alias and the TTL (#817) is
+#: what bounds its drift.
+PINNED = {"google/gemini-3.5-flash-lite": "google/gemini-3.5-flash-lite-20260721"}
+
 
 def openrouter_model(model: str) -> str:
-    """``model`` as OpenRouter names it: the bare default is given its vendor."""
-    return f"google/{model}" if model == _DEFAULT_GEMINI_MODEL else model
+    """``model`` as OpenRouter names it: the bare default is given its vendor,
+    and an alias in ``PINNED`` its dated build."""
+    model = f"google/{model}" if model == _DEFAULT_GEMINI_MODEL else model
+    return PINNED.get(model, model)
 
 
 def _openrouter(key_value: str, model: str, reasoning_effort: str | None) -> Provider:

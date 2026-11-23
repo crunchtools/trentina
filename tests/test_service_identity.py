@@ -44,6 +44,7 @@ from trentina.gateway.service import (
     written_operators,
 )
 from trentina.gateway.sessions import SessionRegistry
+from trentina.perimeter_db import perimeter_stamp
 from trentina.quarantine.providers.base import ProviderResult
 from trentina.transports import mcp
 
@@ -559,7 +560,8 @@ class TestVerdictKey:
         assert (
             key
             == hashlib.sha256(
-                f"tool:external:owner=p:0.5:{provider}/{model}:some text".encode()
+                f"tool:external:stamp={perimeter_stamp()}:owner=p:0.5:{provider}/{model}:"
+                "some text".encode()
             ).hexdigest()
         )
 
@@ -581,7 +583,7 @@ class TestVerdictKey:
         assert (
             unset
             == hashlib.sha256(
-                f"tool:external:owner=p:model:{provider}/{model}:x".encode()
+                f"tool:external:stamp={perimeter_stamp()}:owner=p:model:{provider}/{model}:x".encode()
             ).hexdigest()
         )
         assert unset != explicit

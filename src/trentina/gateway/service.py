@@ -164,15 +164,17 @@ def judge_of(profile: Profile | None) -> tuple[str, str]:
     """The (provider, model) that L3 runs on for ``profile``.
 
     The same resolution the Q-Agent applies: the profile's override, else the
-    env default. None is the env default itself.
+    env default. None is the env default itself. An OpenRouter model is named
+    as the driver sends it (a1061), so a verdict key and a federation pin carry
+    the dated build rather than an alias, and agree with ``Provider.judge``.
     """
     config = get_config()
     if profile is None:
-        return config.provider, config.model
-    return (
-        profile.defense.provider or config.provider,
-        profile.defense.model or config.model,
-    )
+        provider, model = config.provider, config.model
+    else:
+        provider = profile.defense.provider or config.provider
+        model = profile.defense.model or config.model
+    return provider, openrouter_model(model) if provider == "openrouter" else model
 
 
 def judge_stamp(profile: Profile | None) -> str:
@@ -253,8 +255,6 @@ def judge_support(profiles: Mapping[str, Profile]) -> dict[tuple[str, str], str]
     found: dict[tuple[str, str], str] = {}
     for profile in (None, *profiles.values()):
         provider, model = judge_of(profile)
-        if provider == "openrouter":
-            model = openrouter_model(model)
         own = getattr(getattr(profile, "defense", None), "l3_prompt_pack", None)
         status = pack_for((provider, model), own).status
         if status != SUPPORTED:

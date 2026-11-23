@@ -2,7 +2,7 @@
   "pack": "gemini-3.5-flash-lite",
   "version": 1,
   "provider": "openrouter",
-  "model": "google/gemini-3.5-flash-lite",
+  "model": "google/gemini-3.5-flash-lite-20260721",
   "status": "supported",
   "notes": "Detection says what is and is not an injection, and that a text vouching for itself is one. Extraction and verify are the generic prompts.",
   "prompts": {
