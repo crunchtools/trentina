@@ -71,3 +71,12 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    # A new Python minor is a runtime migration, not a base refresh: the uv
+    # lock is solved for one interpreter and onnxruntime ships per-minor
+    # wheels, so 3.14 -> 3.15 failed every build (#874). Digest bumps within
+    # the pinned tag still flow; the next minor is moved by hand.
+    ignore:
+      - dependency-name: "hummingbird/python"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
