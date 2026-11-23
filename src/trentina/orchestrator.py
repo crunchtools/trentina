@@ -631,11 +631,11 @@ async def judge_llm_completion(
         # test seam, and — like the original inline scan — an import failure is
         # caught here rather than left to fail the background task unhandled.
         from .defense import defend
-        from .gateway.completion_envelope import not_ciphertext
+        from .gateway.completion_envelope import non_ciphertext_fields
 
         with profile_context(profile):
             async with asyncio.timeout(deadline):
-                forged = await not_ciphertext(text)
+                forged = await non_ciphertext_fields(text)
                 verdict = await defend(
                     text,
                     source=f"llm:{profile.name}:{provider_name}",

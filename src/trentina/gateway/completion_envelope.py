@@ -69,21 +69,32 @@ def excused_values(body: str) -> list[tuple[str, str]]:
     return found
 
 
-async def not_ciphertext(body: str) -> list[str]:
+async def non_ciphertext_fields(body: str) -> list[str]:
     """The excused fields in ``body`` whose value is not ciphertext, sorted.
 
     Empty means every excused value is one token no layer can read, which is
     what the briefing tells L3 to excuse. The field names are ours, a closed
     set, so they may be logged.
+
+    The token test is a regex. What passes it is unpacked once per field
+    name, every value of that name a line of one text, so a stream with a
+    signature on every thinking block costs at most two unpacking passes,
+    not one a value. A line is one token with no space, so no value is read
+    together with its neighbour.
     """
-    failed = set()
+    failed: set[str] = set()
+    tokens: dict[str, list[str]] = {}
     for name, value in excused_values(body):
         if not value:
             continue
-        if not _TOKEN.fullmatch(value):
+        if _TOKEN.fullmatch(value):
+            tokens.setdefault(name, []).append(value)
+        else:
             failed.add(name)
+    for name, values in tokens.items():
+        if name in failed:
             continue
-        stats = (await run_unpacking(unpack, value)).stats
+        stats = (await run_unpacking(unpack, "\n".join(values))).stats
         if stats.text_decoded or stats.archives_opened or stats.images_read:
             failed.add(name)
     return sorted(failed)
