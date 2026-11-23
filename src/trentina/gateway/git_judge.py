@@ -752,8 +752,12 @@ class _Dispatch:
         task.add_done_callback(self._tasks.discard)
 
     async def done(self) -> None:
+        # Drop what was gathered here: a task's discard callback runs on a later
+        # turn, and gather over tasks already done returns without yielding one.
         while self._tasks:
-            await asyncio.gather(*list(self._tasks))
+            sent = list(self._tasks)
+            await asyncio.gather(*sent)
+            self._tasks.difference_update(sent)
 
 
 _SOURCE_TYPE = {

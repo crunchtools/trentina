@@ -317,3 +317,23 @@ async def test_judging_past_its_deadline_leaves_the_rest_unjudged(
     await judge.start(0.1)
     assert judge.outcome().unjudged == [("blob", blob.oid, "deadline")]
     assert git_judge._memory_get(next(iter(judge._objects))) is git_judge._MISS
+
+
+async def test_waiting_on_l3_calls_already_finished_returns() -> None:
+    """A call whose discard callback has not run yet is done, and gather over
+    done tasks returns without yielding: waiting on it again would spin."""
+
+    class Counted(set[asyncio.Task[None]]):
+        checks = 0
+
+        def __bool__(self) -> bool:
+            self.checks += 1
+            assert self.checks < 4, "done() spun on finished calls"
+            return len(self) > 0
+
+    dispatch = git_judge._Dispatch.__new__(git_judge._Dispatch)
+    finished = asyncio.ensure_future(asyncio.sleep(0))
+    await finished
+    dispatch._tasks = Counted({finished})
+    await dispatch.done()
+    assert not dispatch._tasks
