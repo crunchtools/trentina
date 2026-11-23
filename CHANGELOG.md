@@ -10,7 +10,7 @@ under that name.
 
 ## [Unreleased]
 
-**Migration:** every verdict is judged once more after the upgrade (`PERIMETER_VERSION` 26). A federation peer pinning `trust_verdict.judge` to `openrouter/google/gemini-3.5-flash-lite/…` must pin the `-20260721` spelling `judge_stamp` now reports; until it does, that peer's responses are re-judged locally (fail-closed, gap 33), not refused.
+**Migration:** every verdict is judged once more after the upgrade (`PERIMETER_VERSION` 26). A federation peer must re-pin BOTH `trust_verdict.perimeter_stamp` (now `26:…`) and `trust_verdict.judge` (the `-20260721` spelling `judge_stamp` now reports): the stamp is checked first, so updating only the judge still fails `stamp_mismatch` on every response. Until both are re-pinned, that peer's responses are re-judged locally (fail-closed, gap 33), not refused.
 
 ### Changed
 

@@ -149,6 +149,16 @@ class TestWhichPackACallGets:
         assert pack_for(("openai", "gpt-4o-mini"), path) is GENERIC
         assert pack_for((_JUDGE[0], "another/model"), path) is GENERIC
 
+    @pytest.mark.parametrize("alias", ["google/gemini-3.5-flash-lite", "gemini-3.5-flash-lite"])
+    def test_an_operators_pack_for_the_alias_names_the_dated_build(
+        self, tmp_path: Path, alias: str
+    ) -> None:
+        """a1061: a pack written before the pin keeps applying to the judge."""
+        path = _file(tmp_path, _pack(model=alias))
+        assert pack_for(("openrouter", "google/gemini-3.5-flash-lite-20260721"), path).id == (
+            "test-pack/1"
+        )
+
     def test_the_environment_names_a_pack_for_every_profile(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
