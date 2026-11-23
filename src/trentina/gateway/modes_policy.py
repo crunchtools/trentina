@@ -269,6 +269,9 @@ def resolve_select(
 ) -> tuple[tuple[str, ...], ...] | None:
     """The call's ``trentina_select`` paths, or None when it sent none (#915).
 
+    An explicit ``null`` is none, as it is for ``trentina_mode``: a client
+    that fills every declared parameter sends one for each it left out.
+
     Offered on every remote, non-federated backend. An internal tool judges
     its own ingress and returns its own shape, and a federated peer judges
     before this gateway sees the bytes, so neither has a raw result to pick

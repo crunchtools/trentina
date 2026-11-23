@@ -76,8 +76,9 @@ current_federated_verdict: ContextVar[str | None] = ContextVar(
 )
 # How a ``trentina_select`` call was delivered (#915): ``unjudged`` when every
 # picked leaf was a typed value no layer read, ``judged`` when the projection
-# went through the layers. Set on the response path, read by the audit, as
-# ``current_federated_verdict`` is. None for every call without a select.
+# went through the layers, ``refused`` when the result was not JSON. Set on
+# the response path, read by the audit, as ``current_federated_verdict`` is.
+# None for every call without a select.
 current_select: ContextVar[str | None] = ContextVar("current_select", default=None)
 
 

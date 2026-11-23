@@ -304,10 +304,11 @@ _CALL_COLUMNS = (
     # is actually running on the peer's scan.
     ("federated_verdict", "TEXT"),
     # How a ``trentina_select`` call was delivered (#915): ``unjudged`` (every
-    # picked leaf a typed value, no layer read it) or ``judged`` (the
-    # projection crossed the layers). NULL for older rows and every call
-    # without a select; it enters row_hash only when non-NULL. The one place
-    # an operator sees which deliveries skipped the layers.
+    # picked leaf a typed value, no layer read it), ``judged`` (the
+    # projection crossed the layers) or ``refused`` (the result was not one
+    # JSON document). NULL for older rows and every call without a select;
+    # it enters row_hash only when non-NULL. The one place an operator sees
+    # which deliveries skipped the layers.
     ("selected", "TEXT"),
     # The hash chain (#472): a digest of the call's detection rows, the
     # previous row's hash, and this row's.
