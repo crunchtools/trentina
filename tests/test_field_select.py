@@ -65,6 +65,7 @@ REVIEWS = [
         "author_association": "NONE",
     },
 ]
+EXTRACTION = '{"summary": "two reviews"}'
 BLOCKED = IngressDecision(
     warning={"flagged_by": "L2", "risk_level": "high", "blocked": True},
     blocked=True,
@@ -72,12 +73,12 @@ BLOCKED = IngressDecision(
 )
 
 
-def _profile(**backend: Any) -> Profile:
+def _profile(modes: tuple[str, ...] = ("block",), **backend: Any) -> Profile:
     profile = Profile(
         name="seat",
         short_names=False,
         auth=AuthConfig(bearer_token_env="TEST"),
-        defense=DefenseConfig(enforcement="block", modes=["block"]),
+        defense=DefenseConfig(enforcement="block", modes=list(modes)),
         backends={"github": Backend(url=URL, tools_allow=["*"], **backend)},
     )
     assert profile.auth is not None
@@ -103,6 +104,8 @@ async def _call(
         # records every document it was asked to read.
         text = "\n".join(b.get("text", "") for b in kwargs["content_blocks"] or ())
         read.append(text)
+        if kwargs["mode"] is not None and kwargs["mode"].value == "redact":
+            return IngressDecision(warning=None, extraction=EXTRACTION)
         return BLOCKED if "IGNORE ALL PREVIOUS" in text else IngressDecision(warning=None)
 
     scan = AsyncMock(side_effect=judge)
@@ -186,6 +189,45 @@ class TestTheIncident:
         assert len(read) == 1
         assert "https://github.com/octocat" in resp["result"]["content"][0]["text"]
         assert selected == field_select.JUDGED
+
+
+class TestBesideTheRestOfTheEdge:
+    """What runs before a select, and the modes after it."""
+
+    async def test_a_response_guard_reads_the_whole_result_first(self) -> None:
+        # The forbidden literal is in a body nobody selected: still withheld.
+        profile = _profile(
+            literal_response_guards={TOOL: {"content": ParameterConstraint(deny=["*IGNORE ALL*"])}}
+        )
+        resp, read, audit, selected = await _call({SELECT_PARAM: ["[].commit_id"]}, profile=profile)
+        assert SHA_A not in json.dumps(resp)
+        assert read == []
+        assert audit.call_args.args[3] is Outcome.DENIED_RESPONSE_GUARD
+        assert selected is None
+
+    async def test_redact_extracts_from_the_projection(self) -> None:
+        profile = _profile(modes=("block", "redact"))
+        resp, read, _, selected = await _call(
+            {SELECT_PARAM: ["[].body"], "trentina_mode": {"redact": "what do they say"}},
+            profile=profile,
+        )
+        assert resp["result"]["content"] == [{"type": "text", "text": EXTRACTION}]
+        assert len(read) == 1
+        assert INJECTION in read[0] and SHA_A not in read[0]
+        assert selected == field_select.JUDGED
+
+    async def test_redact_never_rewrites_typed_values(self) -> None:
+        profile = _profile(modes=("block", "redact"))
+        resp, read, _, selected = await _call(
+            {SELECT_PARAM: ["[].commit_id"], "trentina_mode": {"redact": "the SHAs"}},
+            profile=profile,
+        )
+        assert json.loads(resp["result"]["content"][0]["text"]) == [
+            {"commit_id": SHA_A},
+            {"commit_id": SHA_B},
+        ]
+        assert read == []
+        assert selected == field_select.UNJUDGED
 
 
 class TestShapes:
