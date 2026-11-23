@@ -106,3 +106,11 @@ file = "src/trentina/gateway/field_select.py"
 evidence = "for path in paths:\n    picked = _merge(picked, _pick(document, path))"
 status = "not-a-bug"
 reason = "Bounded and linear: at most 32 paths, each walking only the nodes on its own path (one visit per list element it crosses), so the cost is O(paths x matched nodes) over a result already capped at the backend response limit. Next to the transform and an L2 scan of the same result it is noise, and the unjudged path skips both. A trie would save microseconds for more code."
+
+[[findings]]
+agent = "performance"
+category = "performance"
+file = "src/trentina/gateway/git_judge.py"
+evidence = "for unit in self._from_store(batch):"
+status = "not-a-bug"
+reason = "The perimeter store's singleton connection is bound to the loop's thread by design (perimeter_db.snapshot_reader docstring: check_same_thread=False was rejected), and a worker thread gets a read-only snapshot that cannot touch used_at. get_git_verdicts is batches of 500 primary-key lookups through json_each, the same order of work as the verdict cache's own on-loop reads, and commits only when a batch had hits. Moving it to a thread raised sqlite3.ProgrammingError in this branch's first cut. a1062."

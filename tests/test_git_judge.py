@@ -438,3 +438,71 @@ async def test_nothing_spends_l3_past_the_deadline(
     await judge.start(0.15)
     await asyncio.sleep(0.5)
     assert finished == []
+
+
+def _tag(target: PackObject, name: str) -> PackObject:
+    data = (
+        f"object {target.oid}\ntype {target.kind}\ntag {name}\ntagger A <a@b> 0 +0000\n\nrelease\n"
+    ).encode()
+    return PackObject(oid=_oid("tag", data), kind="tag", content=data, offset=0)
+
+
+async def test_a_wanted_tag_of_a_tag_reaches_nested_files_and_skips_submodules(
+    wholes: Wholes,
+) -> None:
+    top, deep = _blob("a file at the top\n"), _blob("a file two trees down\n")
+    inner = _tree(("100644", "deep.txt", deep))
+    middle = _tree(("40000", "inner", inner))
+    module = _blob("not a blob at all: a submodule's commit id\n")
+    tree = _tree(("100644", "top.txt", top), ("40000", "middle", middle), ("160000", "lib", module))
+    commit = _commit(tree)
+    outer = _tag(_tag(commit, "v1"), "v1-signed")
+    await _fetched(
+        [outer.oid], outer, _tag(commit, "v1"), commit, tree, middle, inner, top, deep, module
+    )
+    assert sorted(wholes.whole) == sorted([top.content.decode(), deep.content.decode()])
+    assert module.content.decode() not in wholes.whole, "a submodule is out of scope"
+
+
+async def test_a_screen_that_fails_leaves_the_unit_l2_unavailable_and_uncached(
+    layers: Layers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(_content: str, *, source: str) -> Screened:
+        raise RuntimeError(f"model gone for {source}")
+
+    monkeypatch.setattr(git_judge, "screen", broken)
+    blob = _blob("an ordinary file\n")
+    judge = await _judged(blob)
+    assert judge.outcome().unjudged == [("blob", blob.oid, "l2_unavailable")]
+    assert layers.asked == []
+    assert not git_judge._memory
+
+
+async def test_a_screen_with_no_classification_is_l2_unavailable(
+    layers: Layers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def no_l2(content: str, *, source: str) -> Screened:
+        screened = await layers.screen(content, source=source)
+        screened.classification = None
+        return screened
+
+    monkeypatch.setattr(git_judge, "screen", no_l2)
+    blob = _blob("an ordinary file\n")
+    judge = await _judged(blob)
+    assert judge.outcome().unjudged == [("blob", blob.oid, "l2_unavailable")]
+
+
+@pytest.mark.parametrize("failure", ["raises", "unavailable"])
+async def test_an_l3_that_fails_leaves_the_unit_l3_unavailable_and_uncached(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    async def broken(_text: str, _defense: Any, _briefing: str) -> dict[str, Any]:
+        if failure == "raises":
+            raise RuntimeError("provider down")
+        return {"injection_detected": False, "l3_unavailable": True}
+
+    monkeypatch.setattr(git_judge, "judge_l3", broken)
+    blob = _blob("an ordinary file\n")
+    judge = await _judged(blob)
+    assert judge.outcome().unjudged == [("blob", blob.oid, "l3_unavailable")]
+    assert not git_judge._memory
