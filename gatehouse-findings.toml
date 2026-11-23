@@ -114,3 +114,11 @@ file = "src/trentina/gateway/git_judge.py"
 evidence = "for unit in self._from_store(batch):"
 status = "not-a-bug"
 reason = "The perimeter store's singleton connection is bound to the loop's thread by design (perimeter_db.snapshot_reader docstring: check_same_thread=False was rejected), and a worker thread gets a read-only snapshot that cannot touch used_at. get_git_verdicts is batches of 500 primary-key lookups through json_each, the same order of work as the verdict cache's own on-loop reads, and commits only when a batch had hits. Moving it to a thread raised sqlite3.ProgrammingError in this branch's first cut. a1062."
+
+[[findings]]
+agent = "tests"
+category = "testing"
+file = "benchmarks/git_judge_cost.py"
+evidence = "def _units(objects: list, head: str, oid_len: int) -> tuple[dict[str, str], Counter, int]:\n    \"\"\"Unique units by key, objects by kind, and tip files judged whole.\"\"\"\n    units: dict[str, str] = {}\n    kinds: Counter = Counter()\n    trees: dict[str, list] = {}\n    commit_trees: dict[str, str] = {}"
+status = "not-a-bug"
+reason = "A measurement script run by hand to size the L3 bill (spec 027's cost table), never imported by the gateway or shipped in the image. Its numbers are checked against the production path's own counters (GitJudge.stats, l3_groups/l3_alone/l3_whole) when phase 1 metrics are read on a seat clone, which is the test that matters; a unit test of the estimate would pin the estimate, not the bill. a1062."

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import subprocess
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -137,8 +138,9 @@ class Repo(SimpleNamespace):
         )
 
 
-@pytest.fixture
-async def judged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[Any]:
+async def _serve(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, object_format: str
+) -> AsyncIterator[Any]:
     """The gateway in front of ``git http-backend``, serving a small clean repository."""
     backend = harness.http_backend()
     assert backend is not None
@@ -146,10 +148,12 @@ async def judged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterat
     home.mkdir()
     bare = tmp_path / "forge" / "acme" / "widgets.git"
     bare.parent.mkdir(parents=True)
-    harness.git_sync(home, "init", "--bare", "-b", "main", str(bare))
+    harness.git_sync(
+        home, "init", "--bare", f"--object-format={object_format}", "-b", "main", str(bare)
+    )
     harness.git_sync(home, "config", "transfer.advertiseSID", "true", cwd=bare)
     seed = tmp_path / "seed"
-    harness.git_sync(home, "init", "-b", "main", str(seed))
+    harness.git_sync(home, "init", f"--object-format={object_format}", "-b", "main", str(seed))
     repo = Repo(home=home, bare=bare, seed=seed, work=tmp_path / "clone")
     repo.plant(
         {"README.md": b"A small library.\n", "src/app.py": b"def main():\n    return 1\n"},
@@ -158,6 +162,23 @@ async def judged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterat
     real = harness.Forge(bare.parent.parent, backend)
     async for running in _stack(monkeypatch, real):
         running.repo = repo
+        yield running
+
+
+@pytest.fixture
+async def judged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[Any]:
+    async for running in _serve(monkeypatch, tmp_path, "sha1"):
+        yield running
+
+
+@pytest.fixture
+async def judged_sha256(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[Any]:
+    """The same, over a SHA-256 repository (64-hex object ids)."""
+    try:
+        harness.git_sync(tmp_path, "init", "--object-format=sha256", str(tmp_path / "probe"))
+    except subprocess.CalledProcessError:
+        pytest.skip("this git cannot make a SHA-256 repository")
+    async for running in _serve(monkeypatch, tmp_path, "sha256"):
         yield running
 
 
@@ -314,24 +335,44 @@ class TestAPlantedInstruction:
         assert code == 0, output
         assert ("blob", oid) in _flagged(output), output
         assert layers.asked, "L3 was asked"
-        (row,) = await _detections(audit_db)
-        assert row["source"].endswith(f"@{oid}")
-        assert row["source_type"] == "git_blob"
+        rows = [row for row in await _detections(audit_db) if row["source"].endswith(f"@{oid}")]
+        assert [row["source_type"] for row in rows] == ["git_blob"]
 
-    async def test_a_group_l3_flags_is_judged_again_unit_by_unit(
+    async def test_a_sha256_repository_names_the_flagged_object_by_its_64_hex_id(
+        self, judged_sha256: Any, audit_db: Path
+    ) -> None:
+        repo = judged_sha256.repo
+        repo.plant({"notes.txt": f"notes\n{INSTRUCTION}\n".encode()})
+        bad, good = repo.rev("HEAD:notes.txt"), repo.rev("HEAD:README.md")
+        assert len(bad) == 64
+        code, output = await repo.clone(judged_sha256, "2")
+        assert code == 0, output
+        repo.git("fsck", "--strict", cwd=repo.work)
+        named = {
+            (words[2], words[3])
+            for words in (line.split() for line in _remote(output))
+            if words[:2] == ["Trentina:", "flagged"] and len(words) > 3
+        }
+        assert ("blob", bad) in named, output
+        assert not any(oid == good for _, oid in named)
+        assert len(named) == 1, "nothing else was named"
+        (row,) = await _detections(audit_db)
+        assert row["source"].endswith(f"@{bad}")
+
+    async def test_a_group_l3_flags_names_each_unit_in_it_once(
         self, judged: Any, layers: Layers
     ) -> None:
-        """Two small files share one L3 group; only the one that carries the
-        instruction is named."""
+        """Two small files share one L3 group; L3 reads them once, so both
+        are named."""
         repo = judged.repo
         repo.plant({"a.txt": b"harmless\n", "b.txt": f"harmful {SLEEPER}\n".encode()})
         bad, good = repo.rev("HEAD:b.txt"), repo.rev("HEAD:a.txt")
         code, output = await repo.clone(judged, "2")
         assert code == 0, output
         named = _flagged(output)
-        assert ("blob", bad) in named
-        assert ("blob", good) not in named
-        assert any(text.count("harm") >= 2 for text in layers.asked), "they went as one group"
+        assert {("blob", bad), ("blob", good)} <= named
+        groups = [text for text in layers.asked if "harmless" in text and SLEEPER in text]
+        assert len(groups) == 1, "one group, read once"
 
 
 # --- the cache ----------------------------------------------------------------
