@@ -105,6 +105,13 @@ github:
     - "create_ref*"
     - "update_ref*"
     - "delete_ref*"
+    - "create_*ruleset*"
+    - "update_*ruleset*"
+    - "delete_*ruleset*"
+    - "set_org_*"
+    - "create_org_*"
+    - "update_org_*"
+    - "delete_org_*"
 ```
 
 A forge backend authenticates with one token for every profile, usually an org
@@ -115,6 +122,29 @@ every profile that is not `role: operator`; reads such as
 `profile_lint` reports a non-operator profile that admits one as
 `agent-mints-releases`, and `tool_visibility` confirms the deny for a live
 profile (`excluded_by_denylist`).
+
+The ruleset writers and the org Actions settings writers (`set_org_*`,
+`create_org_*`, `update_org_*`) are on the list for the same reason (a1093): a
+ruleset is what keeps `v*.*.*` and `ashigaru/release-*` App-only, and the org
+Actions settings decide which fork and `pull_request_target` runs get secrets.
+The operator holds them with the org pinned. Each of these tools, reads
+included, takes a required `org`, because a guard passes an absent argument:
+
+```yaml
+github:
+  tools_allow: ["*"]
+  literal_request_guards:
+    get_org_fork_pr_approval_tool: {org: {allow: ["crunchtools"]}}
+    set_org_fork_pr_approval_tool: {org: {allow: ["crunchtools"]}}
+    list_org_actions_policies_tool: {org: {allow: ["crunchtools"]}}
+    get_org_actions_policy_tool: {org: {allow: ["crunchtools"]}}
+    create_org_actions_policy_tool: {org: {allow: ["crunchtools"]}}
+    update_org_actions_policy_tool: {org: {allow: ["crunchtools"]}}
+    list_rulesets_tool: {org: {allow: ["crunchtools"]}}
+    get_ruleset_tool: {org: {allow: ["crunchtools"]}}
+    create_ruleset_tool: {org: {allow: ["crunchtools"]}}
+    update_ruleset_tool: {org: {allow: ["crunchtools"]}}
+```
 
 ## Context Savings
 

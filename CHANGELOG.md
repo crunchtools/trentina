@@ -10,6 +10,10 @@ under that name.
 
 ## [Unreleased]
 
+### Changed
+
+- **`agent-mints-releases` also catches ruleset and org Actions settings writes (a1093, #917).** mcp-github gains tools that set the org's fork PR approval policy, its Actions event policies (the `pull_request_target` allowance GitHub enforces from 2026-12-02) and org/repo rulesets. Each can lift what guards a release tag or decide which workflows run with secrets, so a write whose object is a `ruleset` or an `org` now counts as release-minting for a non-operator profile. [Tool filtering](docs/tool-filtering.md#releases-stay-with-the-operator) adds them to the deny and gives the operator's `literal_request_guards` pinning `org` to `crunchtools`.
+
 ## [6.28.0] - 2026-11-23
 
 **Migration:** `TRENTINA_FETCH_PRIVATE_NAMES` keeps the port rule now (a1063, #912). A deployment that reaches a listed name on a port other than 80/443 must name it, e.g. `mcp-gw-personal:8000`, or those fetches fail `egress_port`.

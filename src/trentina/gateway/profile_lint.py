@@ -107,13 +107,17 @@ _FILLERS = tuple(
     for fill in (verb, f"{verb}_x", f"x_{verb}", f"{verb}_message", f"{verb}_post")
 )
 
-#: With a write verb, these make a tool mint or move a release: create_release, delete_tag.
-RELEASE_NOUNS = frozenset({"release", "releases", "tag", "tags", "ref", "refs"})
+#: With a write verb, these make a tool mint or move a release, or lift what guards one:
+#: create_release, delete_tag, update_ruleset, set_org_fork_pr_approval (a1093).
+RELEASE_NOUNS = frozenset(
+    {"release", "releases", "tag", "tags", "ref", "refs", "ruleset", "rulesets", "org", "orgs"}
+)
 
 #: Names a release-tool glob is filled with: what ``create_*`` on a forge admits.
 _RELEASE_FILLERS = (
     "create_release", "update_release", "publish_release", "delete_release",
     "create_tag", "delete_tag", "create_ref", "update_ref",
+    "create_ruleset", "update_ruleset", "set_org_policy",
 )  # fmt: skip
 
 #: A backend name or host carrying one of these is a forge.
@@ -416,7 +420,7 @@ def check_self_authorize(profiles_file: dict[str, Any]) -> list[Finding]:
 
 
 def mints_releases(name: str) -> bool:
-    """A write whose object is a release, tag or ref: ``create_release``, ``github_create_tag``.
+    """A write on a release, tag, ref, ruleset or org: ``create_release``, ``update_ruleset``.
 
     The verb is the one ``classify`` finds; the noun is looked for after it, so
     ``tag_pomodoro_to_ticket``, whose verb is ``tag``, is not one.
@@ -453,7 +457,11 @@ def release_tools(backend: str, spec: dict[str, Any]) -> list[str]:
 
 
 def check_release_minting(profiles_file: dict[str, Any]) -> list[Finding]:
-    """A non-operator profile that can create or move a release, tag or ref (a936)."""
+    """A non-operator profile that can create or move a release, tag or ref (a936).
+
+    A ruleset or org Actions policy write counts too (a1093): it lifts what
+    guards a release tag, or decides which workflows run with secrets.
+    """
     findings = []
     for profile, body in _profiles(profiles_file).items():
         if body.get("role", "agent") == "operator":
@@ -467,7 +475,7 @@ def check_release_minting(profiles_file: dict[str, Any]) -> list[Finding]:
                     Finding(
                         "agent-mints-releases",
                         f"profile {profile!r} is not an operator and backend {backend!r} "
-                        f"admits a release/tag-writing tool ({', '.join(held)}); "
+                        f"admits a release/tag/ruleset/org-writing tool ({', '.join(held)}); "
                         "add them to tools_deny",
                     )
                 )
