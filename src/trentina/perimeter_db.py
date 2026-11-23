@@ -92,7 +92,7 @@ PIN_APPROVED = "approved"
 PIN_PENDING = "pending"
 PIN_REJECTED = "rejected"
 
-PERIMETER_VERSION = "25"
+PERIMETER_VERSION = "26"
 """Bump whenever a change could alter what a scan CONCLUDES: a new detector, a
 retuned L3 prompt, a different L2 model or threshold set. Rows stamped with any
 other value are swept on load, so an older perimeter's verdict is unusable
@@ -126,6 +126,9 @@ unpack stage reads a run of decimal digits as a number, not as hex (#431).
 (garak's base16) decodes whole (#546).
 "24" (6.6.0): the unpack stage decodes the NATO alphabet, sneaky bits, Base2048,
 Ecoji and Zalgo (gap 23 and the rest of garak's list).
+"26" (a1061): the verdict key carries this stamp, and an OpenRouter judge is
+named by its dated build, so every key is new; the rows written under the old
+ones could never be read again and are swept instead.
 
 The L2 model and its threshold are no longer bumped here: they are an
 operator setting since 0.55.0 (#350), so :func:`perimeter_stamp` carries them."""
@@ -142,11 +145,17 @@ def perimeter_stamp() -> str:
     without loading the model; one that does not resolve stamps as absent.
     """
     from .config import get_config
-    from .quarantine.classifier import resolve_model
 
     config = get_config()
+    return stamp_of(config.classifier_model_path, config.classifier_threshold)
+
+
+def stamp_of(model_path: str, threshold: float | None) -> str:
+    """:func:`perimeter_stamp` for the L2 model at ``model_path`` under ``threshold``."""
+    from .quarantine.classifier import resolve_model
+
     try:
-        model = resolve_model(config.classifier_model_path, config.classifier_threshold)
+        model = resolve_model(model_path, threshold)
     except (OSError, ValueError):
         return f"{PERIMETER_VERSION}:l2-absent"
     polarity = ",".join(str(i) for i in model.malicious)

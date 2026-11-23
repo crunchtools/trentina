@@ -326,6 +326,6 @@ for all of them; `reload_profiles` reported that as `service_identity_moved`,
 a result key dropped in 6.1.1 along with the behaviour. A reload now
 invalidates exactly the profiles it names in `changed`.
 
-Verdicts reached by the env-default model keep their cache keys, so an
-operator that runs the default model inherits everything judged before
-operators existed.
+A verdict's cache key also carries the perimeter stamp and the judge's dated
+build, so a new L2 model, a `PERIMETER_VERSION` bump or a new judge build
+re-judges everything once.

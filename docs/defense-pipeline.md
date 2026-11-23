@@ -147,7 +147,7 @@ The image ships that one model. Horizon, the base, shipped until 2.0.0: it refus
 
 Measured on our corpora (`docs/benchmark.md`, #350), Horizon, the base model and the default until 2.0.0, catches 36 of 39 internal attacks to Prompt Guard 2's 8, and 21 of 39 when they are planted inside long benign documents to Prompt Guard 2's 4, flagging 3 of 150 benign documents to Prompt Guard 2's 0, at 2.4x the throughput on CPU. Two English-only DeBERTa models, ProtectAI's v2 and PIGuard, were measured and rejected (#353): they flag 29 and 67 of the 150. Prompt Guard 2 is the better detector of DAN-style direct jailbreaks (624 vs 520 of 666 on the jackhhao set, 1 and 3 false positives of 640).
 
-Each model directory carries a `trentina-model.json`: its id, pinned revision, threshold, and which outputs are malicious. A model whose polarity cannot be read from it or its labels does not load, and L2's absence is then a gap like any other (`TRENTINA_REQUIRE_L2`). The model, revision and threshold are part of the perimeter verdict stamp, so switching models sweeps cached verdicts.
+Each model directory carries a `trentina-model.json`: its id, pinned revision, threshold, and which outputs are malicious. A model whose polarity cannot be read from it or its labels does not load, and L2's absence is then a gap like any other (`TRENTINA_REQUIRE_L2`). The model, revision and threshold are part of the perimeter verdict stamp, which is in every cached verdict's key, so switching models sweeps cached verdicts in memory as well as on disk.
 
 **What it misses:** whatever needs reasoning rather than pattern: social engineering and quiet exfiltration requests most of all. A low L2 score is never evidence of safety, and L3 is told so on every call.
 

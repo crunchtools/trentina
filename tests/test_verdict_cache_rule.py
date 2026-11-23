@@ -24,7 +24,7 @@ from trentina.config import DEFAULT_VERDICT_TTL_HOURS, MAX_VERDICT_TTL_HOURS, ge
 from trentina.gateway import verdict_cache
 from trentina.gateway.profile import AuthConfig, Profile
 
-_JUDGE = ("openrouter", "google/gemini-3.5-flash-lite")
+_JUDGE = ("openrouter", "google/gemini-3.5-flash-lite-20260721")
 _CLEAN: dict[str, Any] = {"injection_detected": False}
 
 
@@ -36,7 +36,11 @@ def test_the_key_binds_content_owner_judge_and_effort(monkeypatch: pytest.Monkey
         effort: str | None = None,
     ) -> str:
         monkeypatch.setattr(
-            verdict_cache, "get_config", lambda: SimpleNamespace(reasoning_effort=effort)
+            verdict_cache,
+            "get_config",
+            lambda: SimpleNamespace(
+                reasoning_effort=effort, classifier_model_path="m", classifier_threshold=None
+            ),
         )
         profile = Profile(name=owner, auth=AuthConfig(bearer_token_env="T"))
         return verdict_cache._cache_key(profile, "response", text, judge)
@@ -47,6 +51,37 @@ def test_the_key_binds_content_owner_judge_and_effort(monkeypatch: pytest.Monkey
     assert key(owner="beta") != base
     assert key(judge=("anthropic", "claude-haiku-5-5")) != base
     assert key(effort="high") != base
+
+
+def test_the_key_binds_the_perimeter_stamp(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Condition 1 (a1061): a verdict reached under another L2 or perimeter
+    version is not served, in memory as well as from the store."""
+    profile = Profile(name="alpha", auth=AuthConfig(bearer_token_env="T"))
+
+    def key(stamp: str) -> str:
+        monkeypatch.setattr(perimeter_db, "stamp_of", lambda *_: stamp)
+        verdict_cache.reset_verdict_cache()
+        return verdict_cache._cache_key(profile, "response", "same text", _JUDGE)
+
+    assert key("26:guard@rev1") == key("26:guard@rev1")
+    assert key("26:guard@rev2") != key("26:guard@rev1")
+    assert key("27:guard@rev1") != key("26:guard@rev1")
+
+
+def test_the_default_judge_is_keyed_by_its_dated_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Condition 1 (a1061): the key names the build, never an alias a vendor
+    can repoint, and the shipped pack still applies to it."""
+    from trentina.gateway.service import judge_of
+    from trentina.quarantine.packs import SUPPORTED, pack_for
+
+    monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", "openrouter")
+    for alias in ("gemini-3.5-flash-lite", "google/gemini-3.5-flash-lite"):
+        monkeypatch.setenv("QUARANTINE_MODEL", alias)
+        monkeypatch.setattr(config_mod, "_config", None)
+        judge = judge_of(None)
+        assert judge == ("openrouter", "google/gemini-3.5-flash-lite-20260721")
+        assert pack_for(judge).status == SUPPORTED
+    monkeypatch.setattr(config_mod, "_config", None)
 
 
 @pytest.mark.parametrize(

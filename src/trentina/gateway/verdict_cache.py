@@ -118,11 +118,25 @@ def reset_verdict_cache() -> None:
     _descriptions.clear()
     _responses.clear()
     _inflight.clear()
+    _stamp_for.cache_clear()
     _persist_broken = False
+
+
+@functools.lru_cache(maxsize=8)
+def _stamp_for(model_path: str, threshold: float | None) -> str:
+    """``perimeter_stamp`` for one L2 setting, read once: it reads two files."""
+    from ..perimeter_db import stamp_of
+
+    return stamp_of(model_path, threshold)
 
 
 def _cache_key(profile: Profile, kind: str, text: str, judge: tuple[str, str]) -> str:
     """The verdict key: what was judged, under which thresholds, by which model.
+
+    Since a1061 the key carries ``perimeter_stamp`` (``PERIMETER_VERSION`` and
+    the L2 model, revision and gates) as constitution 2.20.0 condition 1 asks.
+    It used to stamp only the persisted row, which swept the store on load but
+    let an in-memory verdict outlive a change of L2 until its TTL.
 
     ``profile`` supplies the thresholds — a profile's gate stays its own — and
     since 6.1.0 its GRANT OWNER, so no verdict is shared between tenants. The
@@ -141,15 +155,16 @@ def _cache_key(profile: Profile, kind: str, text: str, judge: tuple[str, str]) -
     that verdict is still filed under the primary judge. The chain is
     gateway-wide config, so this cannot carry a verdict across profiles.
     """
-    d = profile.defense
+    d, config = profile.defense, get_config()
     # Unset defers to the model's own threshold, which the store's stamp
     # carries (#350); an explicit one keeps its pre-0.55 spelling.
     pack = pack_for(judge, d.l3_prompt_pack)
-    effort = get_config().reasoning_effort
+    effort = config.reasoning_effort
     # The pack is named by id and text (#354): editing a prompt sweeps the
     # verdicts it reached. How long the judge thinks changes what it concludes,
     # so that is here too.
     parts = {
+        f"stamp={_stamp_for(config.classifier_model_path, config.classifier_threshold)}": True,
         f"owner={profile.grant_owner}": True,
         "model" if d.l2_threshold is None else f"{d.l2_threshold}": True,
         f"{judge[0]}/{judge[1]}": True,

@@ -35,7 +35,7 @@ from trentina.quarantine.packs import (
 from trentina.quarantine.prompts import L2_BLINDSPOT_CAVEAT
 from trentina.quarantine.providers import reset_provider
 
-_JUDGE = ("openrouter", "google/gemini-3.5-flash-lite")
+_JUDGE = ("openrouter", "google/gemini-3.5-flash-lite-20260721")
 _BENIGN = BRIEFINGS["benign"]
 _RULES = " ".join(FRAMING) + " the content you are analyzing."
 
@@ -148,6 +148,16 @@ class TestWhichPackACallGets:
         assert pack_for(_JUDGE, path).id == "test-pack/1"
         assert pack_for(("openai", "gpt-4o-mini"), path) is GENERIC
         assert pack_for((_JUDGE[0], "another/model"), path) is GENERIC
+
+    @pytest.mark.parametrize("alias", ["google/gemini-3.5-flash-lite", "gemini-3.5-flash-lite"])
+    def test_an_operators_pack_for_the_alias_names_the_dated_build(
+        self, tmp_path: Path, alias: str
+    ) -> None:
+        """a1061: a pack written before the pin keeps applying to the judge."""
+        path = _file(tmp_path, _pack(model=alias))
+        assert pack_for(("openrouter", "google/gemini-3.5-flash-lite-20260721"), path).id == (
+            "test-pack/1"
+        )
 
     def test_the_environment_names_a_pack_for_every_profile(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -674,12 +684,14 @@ class TestSupportedJudges:
         found = service.judge_support({"old": old, "new": new, "own": own})
         assert found[("openrouter", "google/gemini-2.5-flash-lite")] == packs.DEPRECATED
         assert found[("openai", "gpt-4o-mini")] == packs.UNMEASURED
-        assert ("openrouter", "google/gemini-3.5-flash-lite") not in found
+        assert ("openrouter", "google/gemini-3.5-flash-lite-20260721") not in found
         with caplog.at_level("WARNING", logger=service.logger.name):
             service.log_judge_support({"old": old, "new": new})
         said = [r.getMessage() for r in caplog.records if r.getMessage().startswith("judge:")]
         assert any("gemini-2.5-flash-lite is deprecated" in line for line in said)
-        assert all("supported: openrouter/google/gemini-3.5-flash-lite" in line for line in said)
+        assert all(
+            "supported: openrouter/google/gemini-3.5-flash-lite-20260721" in line for line in said
+        )
         assert not any("model=google/gemini-3.5-flash-lite is" in line for line in said)
 
     def test_the_bare_default_through_openrouter_is_the_supported_judge(

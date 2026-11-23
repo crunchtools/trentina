@@ -139,17 +139,24 @@ shipped pack says where it stands in its `status` key.
 
 | Judge (through OpenRouter) | Status | Benign flagged, of 362 | Planted instructions missed, of 99 |
 |---|---|---|---|
-| `google/gemini-3.5-flash-lite` | supported, and the default | 3 | 0 |
+| `google/gemini-3.5-flash-lite-20260721` | supported, and the default | 3 | 0 |
 | `google/gemini-2.5-flash-lite` | deprecated: fails the gate | 54 | 5 |
 | `google/gemini-3.8-flash` | unmeasured | | |
 | `anthropic/claude-haiku-4.5` | unmeasured | | |
+
+The default judge is asked for by its dated build: `gemini-3.5-flash-lite` and
+`google/gemini-3.5-flash-lite` both resolve to `google/gemini-3.5-flash-lite-20260721`
+on OpenRouter, the build the pack was measured on, so a vendor repointing the
+alias cannot change the judge under a cached verdict. Google's own API has no
+dated id for it; the `gemini` provider sends the alias, and
+`TRENTINA_VERDICT_TTL_HOURS` bounds its drift.
 
 Any other model, on any provider, runs on the generic prompts and is
 unmeasured. That includes `vertex` ([profile setup](profiles.md#gemini-on-vertex-ai-vertex)), which no shipped pack names. A judge that is not supported still works. Startup, and a
 profile reload, log one line for each such judge a profile names:
 
 ```
-judge: provider=openrouter model=google/gemini-2.5-flash-lite is deprecated on the L3 pack gate; supported: openrouter/google/gemini-3.5-flash-lite.
+judge: provider=openrouter model=google/gemini-2.5-flash-lite is deprecated on the L3 pack gate; supported: openrouter/google/gemini-3.5-flash-lite-20260721.
 ```
 
 A deprecated pack stays in the image through the 1.x releases. A model

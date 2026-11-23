@@ -30,6 +30,7 @@ from trentina.quarantine.prompts import (
     EXTRACTION_RESPONSE_SCHEMA,
     EXTRACTION_SYSTEM_PROMPT,
 )
+from trentina.quarantine.providers import openrouter_model
 from trentina.quarantine.providers.base import ProviderResult
 
 pytestmark = pytest.mark.usefixtures("standalone_l3")
@@ -460,7 +461,8 @@ class TestModelDefault:
     def test_default_model_is_the_supported_judge(self) -> None:
         """#397: the default is the one judge whose pack passes the gate."""
         assert DEFAULT_MODEL == "gemini-3.5-flash-lite"
-        assert supported_judges() == [("openrouter", f"google/{DEFAULT_MODEL}")]
+        assert supported_judges() == [("openrouter", openrouter_model(DEFAULT_MODEL))]
+        assert openrouter_model(DEFAULT_MODEL).endswith("-20260721"), "a dated build (a1061)"
 
 
 class TestPostExtractionTruncation:
