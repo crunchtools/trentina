@@ -538,7 +538,9 @@ class GitJudge:
                 [unit.key for unit in batch], perimeter_stamp(), _ttl_seconds()
             )
         except Exception as exc:
-            logger.warning("git judge: verdict store unread: %s", exc_kind(exc))
+            logger.warning(
+                "git judge: verdict store unread: %s at %s", exc_kind(exc), exc_where(exc)
+            )
             known = {}
         fresh = []
         for unit in batch:

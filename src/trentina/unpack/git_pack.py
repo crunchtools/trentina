@@ -616,39 +616,6 @@ def render_text(payload: bytes) -> tuple[str, str | None]:
     return head.decode(codec, "replace") + "\n\n" + message.decode(codec, "replace"), flag
 
 
-@dataclass(frozen=True)
-class Commit:
-    """A commit's parsed headers. ``headers`` holds every one, in order."""
-
-    tree: str | None
-    parents: tuple[str, ...]
-    author: str | None
-    committer: str | None
-    encoding: str | None
-    headers: tuple[tuple[str, str], ...]
-    message: bytes
-
-
-def _text(value: bytes | None) -> str | None:
-    return None if value is None else value.decode("utf-8", "replace")
-
-
-def parse_commit(payload: bytes) -> Commit:
-    """A commit's headers and raw message. Never raises: a missing header is None."""
-    headers, _head, message = _split(payload)
-    return Commit(
-        tree=_hex_header(headers, b"tree"),
-        parents=tuple(v.decode("ascii", "replace") for k, v in headers if k == b"parent"),
-        author=_text(_first(headers, b"author")),
-        committer=_text(_first(headers, b"committer")),
-        encoding=_text(_first(headers, b"encoding")),
-        headers=tuple(
-            (k.decode("utf-8", "replace"), v.decode("utf-8", "replace")) for k, v in headers
-        ),
-        message=message,
-    )
-
-
 def _hex_header(headers: list[tuple[bytes, bytes]], name: bytes) -> str | None:
     value = _first(headers, name)
     text = None if value is None else value.decode("ascii", "replace")
@@ -663,8 +630,8 @@ def commit_tree(payload: bytes) -> str | None:
 def tag_target(payload: bytes) -> tuple[str, str] | None:
     """The ``(id, type)`` an annotated tag points at, or None."""
     headers = _split(payload)[0]
-    oid, kind = _hex_header(headers, b"object"), _text(_first(headers, b"type"))
-    return None if oid is None or kind is None else (oid, kind)
+    oid, kind = _hex_header(headers, b"object"), _first(headers, b"type")
+    return None if oid is None or kind is None else (oid, kind.decode("utf-8", "replace"))
 
 
 _MODE = re.compile(rb"[0-7]{1,7}")

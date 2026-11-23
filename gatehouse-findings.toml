@@ -122,3 +122,11 @@ file = "benchmarks/git_judge_cost.py"
 evidence = "def _units(objects: list, head: str, oid_len: int) -> tuple[dict[str, str], Counter, int]:\n    \"\"\"Unique units by key, objects by kind, and tip files judged whole.\"\"\"\n    units: dict[str, str] = {}\n    kinds: Counter = Counter()\n    trees: dict[str, list] = {}\n    commit_trees: dict[str, str] = {}"
 status = "not-a-bug"
 reason = "A measurement script run by hand to size the L3 bill (spec 027's cost table), never imported by the gateway or shipped in the image. Its numbers are checked against the production path's own counters (GitJudge.stats, l3_groups/l3_alone/l3_whole) when phase 1 metrics are read on a seat clone, which is the test that matters; a unit test of the estimate would pin the estimate, not the bill. a1062."
+
+[[findings]]
+agent = "constitution"
+category = "constitution"
+file = "src/trentina/gateway/git_judge.py"
+evidence = "unit = self._unit(text, \"\", \"git_blob\", whole=True)\nself._add(unit, oid, state)"
+status = "not-a-bug"
+reason = "Spec 027 v0.3.0 (approved by Josui Prime) requires it: a tip file of at most 16K tokens is judged whole at L3 on top of its chunks, because it is the file an agent opens. The two are different payloads, not one payload read twice: a chunk is a keyed slice behind a 64-token lead-in, cached across every version of history that carries it, and its verdict is reused for files that are not at the tip; the whole file is the tip's exact bytes, which no chunk group contains, so an instruction split across chunk boundaries is read as one only here. Dropping the chunk read would leave history unjudged at L3 when the tip moves; dropping the whole read reopens the split-instruction residual the spec closes for the file the agent opens. a1062."
