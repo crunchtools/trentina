@@ -577,19 +577,19 @@ class TestPrivateNames:
         assert "127.1" not in caplog.text
 
     @pytest.mark.parametrize(
-        "url",
+        ("url", "reason"),
         [
-            "http://[::1]/",
-            "http://[::1]:8019/",
-            "http://127.0.0.1/",
-            "http://127.1:8019/",
-            "http://2130706433/",
-            "http://0x7f.1/",
-            "http://0x7f000001:8019/",
+            ("http://[::1]/", "non_global_address"),
+            ("http://[::1]:8019/", "port"),
+            ("http://127.0.0.1/", "non_global_address"),
+            ("http://127.1:8019/", "port"),
+            ("http://2130706433/", "non_global_address"),
+            ("http://0x7f.1/", "non_global_address"),
+            ("http://0x7f000001:8019/", "port"),
         ],
     )
     async def test_check_url_lifts_nothing_for_a_literal(
-        self, monkeypatch: pytest.MonkeyPatch, url: str
+        self, monkeypatch: pytest.MonkeyPatch, url: str, reason: str
     ) -> None:
         """Even with a literal on the set by some other road, check_url holds both rules."""
         listed = ("::1", "127.0.0.1", "127.1", "2130706433", "0x7f.1", "0x7f000001")
@@ -597,7 +597,7 @@ class TestPrivateNames:
         monkeypatch.setattr(egress, "_lookup", lambda _h, _p: ["127.0.0.1"])
         with pytest.raises(EgressRefusedError) as exc:
             await egress.check_url(url)
-        assert exc.value.reason in ("port", "non_global_address")
+        assert exc.value.reason == reason
 
     async def test_a_redirect_to_another_port_on_the_name_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
