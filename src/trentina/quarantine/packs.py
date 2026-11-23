@@ -258,17 +258,15 @@ def pack_for(judge: tuple[str, str], operator_path: str | None = None) -> Prompt
     asks for ``generic`` gets it for every judge, and one whose own pack no
     longer loads gets what they would have had without it.
 
-    An OpenRouter model in the operator's pack is read as the driver sends it
-    (a1061), so a pack written for an alias still names the dated build that
-    ``judge_of`` reports.
+    The model in the operator's pack is read as the driver sends it (a1061,
+    #922), so a pack written for an alias or the Gemini default still names
+    the model that ``judge_of`` reports.
     """
-    from .providers import openrouter_model
+    from .providers import driver_model
 
     own = operator_pack(operator_path)
     if own is GENERIC:
         return own
-    if own is not None:
-        model = openrouter_model(own.model) if own.provider == "openrouter" else own.model
-        if (own.provider, model) == judge:
-            return own
+    if own is not None and (own.provider, driver_model(own.provider, own.model)) == judge:
+        return own
     return shipped().get(judge, GENERIC)

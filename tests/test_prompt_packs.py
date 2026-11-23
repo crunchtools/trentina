@@ -159,6 +159,27 @@ class TestWhichPackACallGets:
             "test-pack/1"
         )
 
+    @pytest.mark.parametrize(
+        ("provider", "judge_model"),
+        [
+            ("anthropic", "claude-haiku-4-5-20251001"),
+            ("openai", "gpt-4o-mini"),
+            ("ollama", "qwen-judge:1b"),
+        ],
+    )
+    def test_an_operators_pack_for_the_default_names_the_providers_own_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, judge_model: str
+    ) -> None:
+        """#922: a pack written for the Gemini default applies to the model
+        that provider actually sends in its place, and to no other."""
+        monkeypatch.setenv("OLLAMA_MODEL", "qwen-judge:1b")
+        config_mod._config = None
+        path = _file(tmp_path, _pack(provider=provider, model="gemini-3.5-flash-lite"))
+        assert pack_for((provider, judge_model), path).id == "test-pack/1"
+        assert pack_for((provider, "gemini-3.5-flash-lite"), path) is GENERIC
+        assert pack_for((provider, "another-model"), path) is GENERIC
+        config_mod._config = None
+
     def test_the_environment_names_a_pack_for_every_profile(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

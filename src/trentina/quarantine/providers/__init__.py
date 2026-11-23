@@ -19,7 +19,13 @@ logger = logging.getLogger(__name__)
 #: (provider, key, model, project, region); the last two are empty except for vertex.
 _provider_cache: dict[tuple[str, str, str, str, str], Provider] = {}
 
-__all__ = ["Provider", "ProviderResult", "get_fallback_providers", "get_provider"]
+__all__ = [
+    "Provider",
+    "ProviderResult",
+    "driver_model",
+    "get_fallback_providers",
+    "get_provider",
+]
 
 _DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
@@ -41,6 +47,30 @@ def openrouter_model(model: str) -> str:
     return PINNED.get(model, model)
 
 
+def driver_model(provider: str, model: str) -> str:
+    """``model`` as ``provider``'s driver sends it, and so as ``Provider.judge`` names it.
+
+    The one place the per-provider defaults are resolved (#922): the Gemini
+    default is not a model anthropic, openai or ollama serve, so each gives it
+    its own default, and OpenRouter gives it a vendor and a dated build.
+    ``get_provider`` builds on this and ``judge_of`` reports it, so a verdict
+    key and a federation pin name the model that reached the verdict.
+    """
+    if provider == "openrouter":
+        return openrouter_model(model)
+    if model != _DEFAULT_GEMINI_MODEL:
+        return model
+    from .anthropic import DEFAULT_MODEL as ANTHROPIC_DEFAULT
+    from .openai import DEFAULT_MODEL as OPENAI_DEFAULT
+
+    defaults = {
+        "anthropic": ANTHROPIC_DEFAULT,
+        "openai": OPENAI_DEFAULT,
+        "ollama": get_config().ollama_model,
+    }
+    return defaults.get(provider, model)
+
+
 def _openrouter(key_value: str, model: str, reasoning_effort: str | None) -> Provider:
     """The OpenAI driver pointed at OpenRouter, where model ids carry a vendor."""
     from .openai import OPENROUTER_API_BASE, OPENROUTER_ROUTING, OpenAIProvider
@@ -49,7 +79,7 @@ def _openrouter(key_value: str, model: str, reasoning_effort: str | None) -> Pro
         raise QuarantineAgentError("OPENROUTER_API_KEY not configured")
     return OpenAIProvider(
         api_key=key_value,
-        model=openrouter_model(model),
+        model=driver_model("openrouter", model),
         base_url=OPENROUTER_API_BASE,
         routing=OPENROUTER_ROUTING,
         reasoning_effort=reasoning_effort,
@@ -103,12 +133,11 @@ def _anthropic(api_key: SecretStr | None, model: str) -> Provider:
     key_value = api_key.get_secret_value() if api_key else config.anthropic_api_key
     if not key_value:
         raise QuarantineAgentError("ANTHROPIC_API_KEY not configured")
-    default_model = model if model != _DEFAULT_GEMINI_MODEL else "claude-haiku-4-5-20251001"
     # TRENTINA_ANTHROPIC_BASE_URL is the host, as Anthropic's own clients read
     # it: the driver's base carries the API version segment.
     return AnthropicProvider(
         api_key=key_value,
-        model=default_model,
+        model=driver_model("anthropic", model),
         base_url=(
             f"{config.anthropic_base_url}/v1" if config.anthropic_base_url else ANTHROPIC_API_BASE
         ),
@@ -181,12 +210,9 @@ def get_provider(
             key_value = api_key.get_secret_value() if api_key else config.openai_api_key
             if not key_value:
                 raise QuarantineAgentError("OPENAI_API_KEY not configured")
-            default_model = (
-                resolved_model if resolved_model != _DEFAULT_GEMINI_MODEL else "gpt-4o-mini"
-            )
             provider = OpenAIProvider(
                 api_key=key_value,
-                model=default_model,
+                model=driver_model("openai", resolved_model),
                 base_url=config.openai_base_url or OPENAI_API_BASE,
             )
 
@@ -203,11 +229,8 @@ def get_provider(
         case "ollama":
             from .ollama import OllamaProvider
 
-            default_model = (
-                resolved_model if resolved_model != _DEFAULT_GEMINI_MODEL else config.ollama_model
-            )
             provider = OllamaProvider(
-                model=default_model,
+                model=driver_model("ollama", resolved_model),
                 base_url=config.ollama_base_url,
             )
 
