@@ -584,6 +584,9 @@ class GitJudge:
             unit.prior = _flag("L1", screened.pipeline.stats.risk_level(), screened, None)
         elif c is None:
             self._settle(unit, {"gap": "l2_unavailable"})
+        elif screened.l2_truncated:
+            # Only a binary's strings can outgrow L2's budget; a chunk cannot.
+            self._settle(unit, {"gap": "too_large"})
 
     async def _ask(self, units: list[Unit], *, whole: bool = False) -> dict[str, Any]:
         """One L3 call over ``units``; ``{"gap": ...}`` when it gave no verdict."""

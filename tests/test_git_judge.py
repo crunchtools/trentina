@@ -10,6 +10,7 @@ quota as a gap, and a second judging of the same text served from the cache.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 from typing import Any
 
@@ -482,9 +483,7 @@ async def test_a_screen_with_no_classification_is_l2_unavailable(
     layers: Layers, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def no_l2(content: str, *, source: str) -> Screened:
-        screened = await layers.screen(content, source=source)
-        screened.classification = None
-        return screened
+        return dataclasses.replace(await layers.screen(content, source=source), classification=None)
 
     monkeypatch.setattr(git_judge, "screen", no_l2)
     blob = _blob("an ordinary file\n")
@@ -506,3 +505,16 @@ async def test_an_l3_that_fails_leaves_the_unit_l3_unavailable_and_uncached(
     judge = await _judged(blob)
     assert judge.outcome().unjudged == [("blob", blob.oid, "l3_unavailable")]
     assert not git_judge._memory
+
+
+async def test_a_unit_l2_read_only_part_of_is_unjudged(
+    layers: Layers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def head_only(content: str, *, source: str) -> Screened:
+        return dataclasses.replace(await layers.screen(content, source=source), l2_truncated=True)
+
+    monkeypatch.setattr(git_judge, "screen", head_only)
+    blob = _blob("an ordinary file\n")
+    judge = await _judged(blob)
+    assert judge.outcome().unjudged == [("blob", blob.oid, "too_large")]
+    assert layers.asked == [] and not git_judge._memory
