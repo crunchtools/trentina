@@ -10,7 +10,9 @@ under that name.
 
 ## [Unreleased]
 
-**Migration:** every verdict is judged once more after the upgrade (`PERIMETER_VERSION` 26). A federation peer must re-pin BOTH `trust_verdict.perimeter_stamp` (now `26:…`) and `trust_verdict.judge` (the `-20260721` spelling `judge_stamp` now reports): the stamp is checked first, so updating only the judge still fails `stamp_mismatch` on every response. Until both are re-pinned, that peer's responses are re-judged locally (fail-closed, gap 33), not refused.
+## [6.30.0] - 2026-11-23
+
+**Migration:** every cached verdict is judged once more after the upgrade (`PERIMETER_VERSION` 26). A federation peer must re-pin BOTH `trust_verdict.perimeter_stamp` (now `26:…`) and `trust_verdict.judge`: the stamp is checked first, so updating only the judge still fails `stamp_mismatch` on every response. The judge to pin is the one this release's `judge_stamp` reports: the `-20260721` build for the OpenRouter default (#921), and the provider's own model for anthropic, openai or ollama on the default (#926). Until both are re-pinned, that peer's responses are re-judged locally (fail-closed, gap 33), not refused.
 
 ### Changed
 
@@ -19,7 +21,7 @@ under that name.
 
 ### Fixed
 
-- **`judge_of` names the model the judge runs on for anthropic, openai and ollama (#922, a1111).** With `QUARANTINE_MODEL` unset, those drivers swap the Gemini default for their own (`claude-haiku-4-5-20251001`, `gpt-4o-mini`, `OLLAMA_MODEL`), but `judge_of` still reported `gemini-3.5-flash-lite`, so the verdict key, `judge_stamp` and the pack lookup named a model that never reached the verdict. One `driver_model` now resolves the per-provider default for `get_provider`, `judge_of` and `pack_for`. **Migration:** a federation peer pinning `trust_verdict.judge` for such a gateway re-pins to the reported spelling; its cached verdicts are judged once more.
+- **`judge_of` names the model the judge runs on for anthropic, openai and ollama (#922, a1111).** With `QUARANTINE_MODEL` unset, those drivers swap the Gemini default for their own (`claude-haiku-4-5-20251001`, `gpt-4o-mini`, `OLLAMA_MODEL`), but `judge_of` still reported `gemini-3.5-flash-lite`, so the verdict key, `judge_stamp` and the pack lookup named a model that never reached the verdict. One `driver_model` now resolves the per-provider default for `get_provider`, `judge_of` and `pack_for`.
 
 ## [6.29.0] - 2026-11-23
 
