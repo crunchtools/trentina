@@ -7,6 +7,7 @@ is invisible here for a stated reason.
 from __future__ import annotations
 
 import base64
+import contextvars
 import inspect
 import io
 import json
@@ -14,7 +15,7 @@ import subprocess
 import types
 
 import pytest
-from pypdf import PdfWriter
+from pypdf import Configuration, PdfWriter, get_configuration
 
 from trentina.transforms.base import Applied, Cost, Declined, TransformContext, TransformRecord
 from trentina.transforms.detect import (
@@ -34,6 +35,11 @@ from trentina.unpack.scan import SCANNED_PAGE, unpack
 from .office_files import b64, zipped
 from .pdf_files import pdf, show
 from .test_unpack import _defend
+
+
+class _ReachedReaderError(Exception):
+    """Ends the worker once it has reached PdfReader."""
+
 
 _NOTE = "The maintenance window for the storage cluster is Tuesday at 02:00 UTC."
 _EMPTY: dict[str, object] = {
@@ -294,6 +300,22 @@ class TestTheWorkerIsContained:
         assert "RLIMIT_CPU" in source
         assert "RLIMIT_AS" in source
         assert source.index("setrlimit") < source.index("PdfReader(")
+
+    def test_it_caps_inflation_before_it_reads(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: list[Configuration] = []
+
+        def reader(_data: object) -> None:
+            seen.append(get_configuration())
+            raise _ReachedReaderError
+
+        monkeypatch.setattr(pdf_worker.resource, "setrlimit", lambda *_a: None)
+        monkeypatch.setattr(pdf_worker, "PdfReader", reader)
+        monkeypatch.setattr(pdf_worker.sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(b"")))
+        with pytest.raises(_ReachedReaderError):
+            # A copied context, so the worker's configuration stays out of the other tests.
+            contextvars.copy_context().run(pdf_worker.main)
+        assert seen[0].zlib_maximum_output_length == pdf_worker.MAX_STREAM_BYTES
+        assert seen[0].lzw_maximum_output_length == pdf_worker.MAX_STREAM_BYTES
 
     @pytest.mark.parametrize(
         "answer",

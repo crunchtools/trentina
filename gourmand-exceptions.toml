@@ -186,6 +186,12 @@ classification = "by_design"
 
 [[exceptions]]
 check = "copy_paste_detection"
+path = "src/trentina/unpack/pdf_worker.py"
+justification = "main() and logsafe.configure() match on statement shape only: a run of library calls, then an assignment and a branch. One sets the PDF child's rlimits and pypdf's inflation caps before it reads the file, the other sets logging levels. tests/test_unpack_pdf.py also pins setrlimit inside main() ahead of PdfReader(), which a shared helper would hide."
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
 path = "src/trentina/config.py"
 justification = "is_trusted_domain and is_trusted_path consult different allowlists with different matching rules — hostname suffix versus fnmatch globbing. They share the shape of the not-a-list guard, nothing else."
 classification = "by_design"
