@@ -329,7 +329,9 @@ class TestReleaseMinting:
             "create_ruleset_tool",
             "update_ruleset_tool",
             "set_org_fork_pr_approval_tool",
-            "set_org_pull_request_target_policy_tool",
+            "create_org_actions_policy_tool",
+            "update_org_actions_policy_tool",
+            "delete_ruleset_tool",
         ],
     )
     def test_release_writers(self, name: str) -> None:
@@ -366,6 +368,9 @@ class TestReleaseMinting:
             "github_*",
             "set_*",
             "*ruleset*",
+            "delete_ruleset*",
+            "create_org_*",
+            "update_org_*",
         ],
     )
     def test_a_partial_glob_on_a_forge_is_a_finding(self, pattern: str) -> None:

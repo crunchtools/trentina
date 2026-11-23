@@ -117,7 +117,8 @@ RELEASE_NOUNS = frozenset(
 _RELEASE_FILLERS = (
     "create_release", "update_release", "publish_release", "delete_release",
     "create_tag", "delete_tag", "create_ref", "update_ref",
-    "create_ruleset", "update_ruleset", "set_org_policy",
+    "create_ruleset", "update_ruleset", "delete_ruleset", "set_org_policy",
+    "create_org_actions_policy", "update_org_actions_policy",
 )  # fmt: skip
 
 #: A backend name or host carrying one of these is a forge.
