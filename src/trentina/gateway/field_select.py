@@ -219,13 +219,14 @@ def project(document: Any, paths: tuple[tuple[str, ...], ...]) -> Projection:
         picked = _merge(picked, _pick(document, path))
     if picked is _MISSING:
         picked = None
-    # Every key position a path names, as keys from the root with ``[]``
-    # dropped: ``[].user.login`` names ``("user",)`` and ``("user", "login")``.
-    named = frozenset(
-        keys[:i]
-        for keys in (tuple(s for s in path if s != ITERATE) for path in paths)
-        for i in range(1, len(keys) + 1)
-    )
+    # Every key position a path names, as a trie of keys from the root with
+    # ``[]`` dropped: ``[].user.login`` names ``user`` and, under it, ``login``.
+    named: dict[str, Any] = {}
+    for path in paths:
+        node = named
+        for segment in path:
+            if segment != ITERATE:
+                node = node.setdefault(segment, {})
     leaves, safe = _leaves(picked, named)
     try:
         text = json.dumps(picked, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
@@ -317,7 +318,7 @@ def _merge(a: Any, b: Any) -> Any:
     return a
 
 
-def _leaves(picked: Any, named: frozenset[tuple[str, ...]]) -> tuple[int, bool]:
+def _leaves(picked: Any, named: dict[str, Any]) -> tuple[int, bool]:
     """How many leaves the projection holds, and whether each is a safe value.
 
     A dict's keys are leaves too, as ``jsonwalk`` says. A key at a position the
@@ -327,21 +328,26 @@ def _leaves(picked: Any, named: frozenset[tuple[str, ...]]) -> tuple[int, bool]:
     The check is by POSITION, not by name: a path that names ``login`` at the
     root does not vouch for a ``login`` key inside a subtree another path
     picked whole.
+
+    Each frame carries the trie node of its position (None once outside every
+    named one) and its own key, never the path to it: a subtree picked whole
+    can be deep, and copying a path at every node is quadratic in it.
     """
     count, safe = 0, True
-    stack: list[tuple[Any, tuple[str, ...]]] = [(picked, ())]
+    stack: list[tuple[Any, dict[str, Any] | None, str | None]] = [(picked, named, None)]
     while stack:
-        node, at = stack.pop()
+        node, trie, key = stack.pop()
         if isinstance(node, dict):
             for k, v in node.items():
-                if (*at, k) not in named:
+                child = trie.get(k) if trie is not None else None
+                if child is None:
                     safe = False
-                stack.append((v, (*at, k)))
+                stack.append((v, child, k))
         elif isinstance(node, list):
-            stack.extend((x, at) for x in node)
+            stack.extend((x, trie, key) for x in node)
         else:
             count += 1
-            safe = safe and _safe_leaf(at[-1] if at else None, node)
+            safe = safe and _safe_leaf(key, node)
     return count, safe
 
 

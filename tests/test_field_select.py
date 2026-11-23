@@ -438,6 +438,14 @@ class TestTyping:
         exact = field_select.parse_paths(["reviews[].login", "reviews[].sha"])
         assert field_select.project(doc, exact).safe
 
+    def test_a_deep_subtree_is_typed_in_linear_time(self) -> None:
+        # Gatehouse on #916: a path copied per node was quadratic in depth.
+        deep: Any = 1
+        for i in range(20_000):
+            deep = {f"k{i % 7}": deep}
+        picked = field_select.project({"user": deep}, (("user",),))
+        assert not picked.safe and picked.leaves == 1
+
     def test_nan_and_infinity_are_refused(self) -> None:
         doc = field_select.document_of([{"type": "text", "text": '[{"n": NaN}, {"n": 1}]'}], None)
         with pytest.raises(ValueError, match="NaN"):
