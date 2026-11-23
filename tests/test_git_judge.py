@@ -187,6 +187,20 @@ async def test_a_message_in_an_encoding_tools_read_differently_is_flagged() -> N
     assert _flagged(judge) == {commit.oid: "L1"}
 
 
+async def test_a_detection_row_that_cannot_be_written_leaves_the_flag(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def refuse(**_fields: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(git_judge, "record_detection", refuse)
+    bad = _blob(f"{L2_MARK}\n")
+    judge = await _judged(bad)
+    assert _flagged(judge) == {bad.oid: "L2"}
+    assert "detection row lost" in caplog.text
+    assert L2_MARK not in caplog.text and "disk full" not in caplog.text
+
+
 async def test_a_flagged_name_in_a_listing_is_found() -> None:
     judge = git_judge.GitJudge(
         profile=harness.profile(),

@@ -7,7 +7,7 @@ import base64
 import io
 import zipfile
 
-from trentina.unpack.scan import binary_strings, read_binary, unpack
+from trentina.unpack.scan import MAX_STRINGS, binary_strings, read_binary, unpack
 
 NOISE = bytes(range(0x80, 0x100)) * 2
 
@@ -71,3 +71,15 @@ def test_read_binary_reads_strings_of_a_binary_inside_an_archive() -> None:
         archive.writestr("tool.bin", member)
     out = read_binary(buffer.getvalue())
     assert blob in out.text
+
+
+def test_strings_under_the_budget_are_all_kept() -> None:
+    runs = [f"run {n:06d} ".ljust(99, "a") for n in range(MAX_STRINGS // 100 - 1)]
+    assert binary_strings(b"\xff".join(run.encode() for run in runs)) == " ".join(runs)
+
+
+def test_strings_past_the_budget_stop_at_it() -> None:
+    runs = [f"run {n:06d} ".ljust(99, "a") for n in range(MAX_STRINGS // 100 + 5)]
+    read = binary_strings(b"\xff".join(run.encode() for run in runs))
+    assert len(read) == MAX_STRINGS
+    assert " ".join(runs).startswith(read)
