@@ -606,8 +606,9 @@ class GitJudge:
     async def _l3(self, units: list[Unit], *, whole: bool = False) -> None:
         """Judge ``units`` together and settle each by the answer.
 
-        A flagged group is judged again unit by unit. When no unit flags
-        alone, the instruction is the group's, and each unit is flagged.
+        L3 reads each unit once: a clean group is credited to each unit in
+        it and a flagged group is debited to each, never asked again unit by
+        unit to place the finding.
         """
         self.stats["l3_whole" if whole else "l3_groups" if len(units) > 1 else "l3_alone"] += 1
         answer = await self._ask(units, whole=whole)
@@ -618,18 +619,12 @@ class GitJudge:
             for unit in units:
                 self._settle(unit, answer if "gap" in answer else CLEAN)
             return
-        if len(units) == 1:
-            self._settle(units[0], _flag("L3", _risk(answer), units[0].screened, answer))
-            return
-        alone = [await self._ask([unit]) for unit in units]
-        together = not any(one.get("injection_detected") is True for one in alone)
-        for unit, one in zip(units, alone, strict=True):
-            if together:
-                self._settle(unit, _flag("L3", _risk(answer), unit.screened, answer))
-            elif one.get("injection_detected") is True:
-                self._settle(unit, _flag("L3", _risk(one), unit.screened, one))
-            else:
-                self._settle(unit, one if "gap" in one else CLEAN)
+        from ..quarantine.prompts import RISK_LEVELS
+
+        risk = answer.get("risk_level")
+        risk = risk if risk in RISK_LEVELS else "high"
+        for unit in units:
+            self._settle(unit, _flag("L3", risk, unit.screened, answer))
 
     def _settle_flagged(self, unit: Unit, prior: dict[str, Any], answer: dict[str, Any]) -> None:
         """L1 or L2 flagged ``unit`` and L3 has read it: the flag stands."""
@@ -838,13 +833,6 @@ def _flag(
 def _l3_fields(answer: dict[str, Any]) -> dict[str, Any]:
     """What a verdict keeps of an L3 answer: closed fields, never its prose."""
     return {k: answer[k] for k in ("injection_detected", "risk_level") if k in answer}
-
-
-def _risk(answer: dict[str, Any]) -> str:
-    from ..quarantine.prompts import RISK_LEVELS
-
-    risk = answer.get("risk_level")
-    return risk if risk in RISK_LEVELS else "high"
 
 
 def _apply(state: ObjectState, verdict: dict[str, Any] | None) -> None:

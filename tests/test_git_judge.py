@@ -3,7 +3,7 @@
 The transport tests drive real git through the route; these feed
 ``GitJudge`` objects directly, so each rule of the grouping is pinned on its
 own: L1 and L2 on every unit, a suspicious score judged alone at L3, a clean
-group credited to each unit, a flagged group judged again unit by unit, the
+group credited to each unit, a flagged group debited to each unit, the
 quota as a gap, and a second judging of the same text served from the cache.
 """
 
@@ -129,12 +129,13 @@ async def test_a_suspicious_score_is_judged_alone(layers: Layers) -> None:
     assert any(asked.strip() == BORDER for asked in layers.asked), "never diluted"
 
 
-async def test_a_flagged_group_is_judged_again_unit_by_unit(layers: Layers) -> None:
+async def test_a_flagged_group_flags_each_unit_without_asking_again(layers: Layers) -> None:
     bad = _blob(f"{L3_MARK}\n")
     good = [_blob(f"ordinary file number {n}\n") for n in range(3)]
     judge = await _judged(bad, *good)
-    assert _flagged(judge) == {bad.oid: "L3"}
-    assert len(layers.asked) == 1 + 4
+    assert set(_flagged(judge)) == {blob.oid for blob in (bad, *good)}
+    assert set(_flagged(judge).values()) == {"L3"}
+    assert len(layers.asked) == 1, "L3 reads each unit once"
 
 
 async def test_an_instruction_only_the_group_carries_flags_every_unit_in_it() -> None:

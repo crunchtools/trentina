@@ -52,7 +52,7 @@ a partial clone. v0.3.0 records the four rulings, made on a second review.
   [named residual](#residual-gap) the layer contract does not reach.
 - **L1 and L2 per chunk; L3 on small groups.** L1 and L2 run on every chunk.
   L3 judges new chunks in groups of at most 4K tokens, and a clean group is
-  credited to each chunk in it. A chunk whose L2 score is over a lower
+  credited to each chunk in it, a flagged group debited to each. A chunk whose L2 score is over a lower
   "suspicious" mark, below the flag threshold, is judged alone at L3, so a
   borderline chunk is never diluted by its neighbours. Commits, tags, tree
   names and ref names follow the same rule and are cached per member, so a
