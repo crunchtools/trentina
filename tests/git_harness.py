@@ -131,6 +131,8 @@ class Forge:
     port: int = 0
     requests: list[dict[str, str]] = field(default_factory=list)
     bodies: list[int] = field(default_factory=list)
+    #: The request bodies themselves, inflated as the backend reads them.
+    payloads: list[bytes] = field(default_factory=list)
 
     def app(self) -> Starlette:
         return Starlette(routes=[Route("/{path:path}", self.handle, methods=["GET", "POST"])])
@@ -139,6 +141,7 @@ class Forge:
         self.requests.append({k.lower(): v for k, v in request.headers.items()})
         body = await request.body()
         self.bodies.append(len(body))
+        self.payloads.append(body)
         env = {
             "GIT_PROJECT_ROOT": str(self.root),
             "GIT_HTTP_EXPORT_ALL": "1",

@@ -270,6 +270,9 @@ class _Pass:
     budget: Budget = field(default_factory=Budget)
     darkroom: _Darkroom = field(default_factory=_Darkroom)
     exposed: list[_Exposure] = field(default_factory=list)
+    wide_strings: bool = False
+    """Read a binary's strings the way ``binary_strings`` does (git blobs),
+    including inside the archives opened in this pass."""
 
     def expose(self, kind: str, decoded: bytes) -> str | None:
         """Set an image aside for this pass and return its mark, or None."""
@@ -476,9 +479,13 @@ def _labelled_with_strings(kind: Kind, decoded: bytes, state: _Pass) -> str:
     """A label, then the readable strings inside the bytes.
 
     Those strings are what a ``strings`` tool would show an agent, so the
-    layers read them too, bare after the label.
+    layers read them too, bare after the label. A pass for a git blob
+    (``read_binary``) reads them with ``binary_strings`` instead.
     """
-    inside = " ".join(run.decode("ascii") for run in _SENTENCE.findall(decoded) if b" " in run)
+    if state.wide_strings:
+        inside = binary_strings(decoded)
+    else:
+        inside = " ".join(run.decode("ascii") for run in _SENTENCE.findall(decoded) if b" " in run)
     label = _label(kind, decoded, state)
     return f"{label} {inside}" if inside else label
 
@@ -730,6 +737,24 @@ def read_blobs(blobs: list[str]) -> list[Unpacked | None]:
     return [None if entry is None else entry[0].result(entry[1]) for entry in passes]
 
 
+def read_binary(raw: bytes) -> Unpacked:
+    """What the layers read for raw bytes that are not text (a git binary blob).
+
+    Like ``read_blob`` without the base64 hop: an image, PDF, archive or office
+    file is opened as anywhere else, and the rest is its label then
+    ``binary_strings``. No extractable text means the label alone, which is not
+    ``binary_unread``. Pure and CPU-bound: call it through ``run_unpacking``.
+    """
+    state = _Pass(wide_strings=True)
+    kind = identify(raw)
+    text = (
+        _read_or_labelled(kind, raw, state)
+        if kind.extractable
+        else _labelled_with_strings(kind, raw, state)
+    )
+    return state.result(text)
+
+
 UNDECODABLE = Kind("undecodable blob", extractable=True)
 """A blob ``read_blob`` could not decode. Counted as unread."""
 
@@ -757,6 +782,29 @@ _SENTENCE = re.compile(rb"[\x20-\x7e]{12,}")
 with a space in them: twelve random bytes are all printable about once in
 150,000 tries, and nearly never hold a space as well."""
 _VOWELS = frozenset("aeiouAEIOU")
+
+_ASCII_RUN = re.compile(rb"[\x20-\x7e]{12,}")
+_UTF16_RUN = re.compile(rb"(?:[\x20-\x7e]\x00){12,}")
+MAX_STRINGS = 1024 * 1024
+"""Characters ``binary_strings`` returns at most; a larger binary's tail is not read here."""
+
+
+def binary_strings(raw: bytes) -> str:
+    """The text a ``strings`` tool would show an agent, for git blobs.
+
+    Printable ASCII runs and UTF-16LE runs (ASCII characters each followed by
+    a NUL, what ``strings -el`` shows), at least twelve characters each, in
+    file order, joined by a space. Unlike the reader ``_labelled_with_strings``
+    uses for tokens, a run needs no space in it: a base64 blob or a one-word
+    instruction is text an agent reads. Random bytes pass that bar rarely
+    enough (twelve printable bytes in a row, about one in 150,000) that the
+    noise is bounded by ``MAX_STRINGS``. UTF-16LE with non-ASCII characters is
+    not read: it is not what ``strings`` shows by default.
+    """
+    found = [(m.start(), m.group().decode("ascii")) for m in _ASCII_RUN.finditer(raw)]
+    found += [(m.start(), m.group()[::2].decode("ascii")) for m in _UTF16_RUN.finditer(raw)]
+    found.sort()
+    return " ".join(run for _, run in found)[:MAX_STRINGS]
 
 
 def _reads_as_noise(token: str) -> bool:

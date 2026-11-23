@@ -128,6 +128,10 @@ class Operation:
     #: recorded and not only shown to the agent.
     flag_reason: str | None = None
     holds_slot: bool = False
+    #: Joins this call's row to the ``detections`` rows its content raised.
+    call_ref: str | None = None
+    #: Closed counts a route keeps on its row, e.g. a fetch's unjudged objects.
+    normalized: dict[str, str] | None = None
     #: The route's audit policy (``Audit.ON_FINDING``): a row only for a
     #: refusal, a failure or a finding, never for clean traffic.
     only_on_finding: bool = False
@@ -181,6 +185,8 @@ class Operation:
                 bytes_arrived=self.received,
                 bytes_delivered=self.sent,
                 destination=self.destination,
+                normalized=self.normalized,
+                call_ref=self.call_ref,
                 destination_kind=(
                     self.destination_kind.value
                     if self.destination and self.destination_kind

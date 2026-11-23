@@ -71,8 +71,8 @@ from .quarantine.classifier import (
 )
 from .quarantine.l3_cache import detect_once
 from .quarantine.prompts import L2_BLINDSPOT_CAVEAT, RISK_LEVELS
-from .quarantine.quota import charge as charge_l3
-from .quarantine.quota import refund as refund_l3
+from .quarantine.quota import charge_for_call as charge_l3
+from .quarantine.quota import refund_for_call as refund_l3
 from .unpack.child import run_unpacking
 from .unpack.scan import MAX_MEDIA_TOKEN, unpack
 
@@ -612,6 +612,78 @@ async def defend(
         oversize=(tokens, cap) if refuse_at_admission else None,
         unread=view.unread if view is not None else (),
     )
+
+
+# --- stage by stage, for many small pieces (spec 027) --------------------------
+
+
+@dataclass(frozen=True)
+class Screened:
+    """Stage one alone over one piece: the unpack stage, then L1 and L2.
+
+    The git transport judges a repository as thousands of chunks of about
+    2 KB. Running ``defend()`` on each would call L3 once a chunk; spec 027
+    runs L1 and L2 on every chunk and L3 on groups of them, and this is the
+    first half. Nothing is recorded: the caller words its own detection row.
+    """
+
+    read: str
+    pipeline: PipelineResult
+    classification: ClassifierResult | None
+    l2_truncated: bool
+    unread: tuple[str, ...]
+
+    def l1_flagged(self) -> bool:
+        """L1's own verdict, by ``_decide``'s rule for crediting L1."""
+        stats = self.pipeline.stats
+        return stats.total_detections() > 0 and stats.risk_level() in _BLOCKING_L1_RISKS
+
+    def l2_flagged(self, defense: DefenseConfig | None) -> bool:
+        """L2's verdict: the model's label, or the profile's stricter threshold."""
+        c = self.classification
+        return c is not None and (
+            c.label == "MALICIOUS"
+            or (
+                defense is not None
+                and defense.l2_threshold is not None
+                and c.score >= defense.l2_threshold
+            )
+        )
+
+
+async def screen(content: str, *, source: str) -> Screened:
+    """The unpack stage and L1 ∥ L2 over ``content``, as ``defend()`` runs them.
+
+    Never refuses at admission: a git chunk is at most 8 KB, far under the
+    cap, and a caller that hands in more reads ``l2_truncated``.
+    """
+    view = await run_unpacking(unpack, content) if content.strip() else None
+    read = view.text if view is not None else content
+    pipeline, classification, l2_truncated = await _stage_one(
+        read,
+        source,
+        None,
+        unpacked=read is not content,
+        scan=bool(content.strip()),
+        stop_on_partial=False,
+    )
+    return Screened(
+        read=read,
+        pipeline=pipeline,
+        classification=classification,
+        l2_truncated=l2_truncated,
+        unread=view.unread if view is not None else (),
+    )
+
+
+async def judge_l3(text: str, defense: DefenseConfig | None, briefing: str) -> dict[str, Any]:
+    """L3 over ``text``: stage two, the same call ``defend()`` makes.
+
+    The caller binds the profile (``profile_context``) for the quota, as
+    every L3 call needs. The answer carries ``l3_unavailable`` (and
+    ``l3_quota``) when no verdict was reached.
+    """
+    return await _stage_two(text, defense, briefing)
 
 
 # --- structured payloads -----------------------------------------------------

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
+import contextvars
 import functools
 import json
 import logging
@@ -25,13 +27,16 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..config import DEFAULT_CLASSIFIER_THRESHOLD, get_config, int_env
 from ..errors import UnscannableContentError
 from ..logsafe import exc_kind, exc_where
 from .benign_gate import benign_state
 from .obfuscation import gate_state
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -642,7 +647,7 @@ async def classify_async(
     ``fail_on_truncate`` is for callers that refuse a partial scan anyway.
     """
     gate = _l2_gate()
-    await gate.acquire(_caller())
+    await gate.acquire(_caller(), background=BACKGROUND.get())
     # The permit follows the THREAD, not this coroutine: releasing on cancel
     # would let the next scan start beside one still running and break the
     # bound. So a cancelled caller (a request past its deadline) STOPS its
@@ -685,6 +690,14 @@ class FairGate:
     could read. Here each caller key has its own FIFO, and a freed permit
     goes to the next key in rotation. Another profile's backlog now delays a
     scan by at most one scan per profile waiting, not by the backlog.
+
+    There are two classes (spec 027). Foreground is a tool call's scan.
+    Background is bulk work (git judging, warming) and yields: a background
+    caller gets a permit only when no foreground caller is queued, and a freed
+    permit goes to a foreground waiter first. Background waiters rotate among
+    themselves as foreground ones do, and take every permit while no
+    foreground caller waits, so they are slowed, never starved by an idle gate.
+    A scan already running is never interrupted.
     """
 
     def __init__(self, permits: int) -> None:
@@ -692,18 +705,22 @@ class FairGate:
         self._queues: collections.OrderedDict[
             str | None, collections.deque[asyncio.Future[None]]
         ] = collections.OrderedDict()
+        self._background: collections.OrderedDict[
+            str | None, collections.deque[asyncio.Future[None]]
+        ] = collections.OrderedDict()
 
     def locked(self) -> bool:
         """True when a new caller would have to wait."""
         return self._free == 0
 
-    async def acquire(self, key: str | None) -> None:
-        """Wait for a permit in ``key``'s turn."""
-        if self._free > 0 and not self._queues:
+    async def acquire(self, key: str | None, *, background: bool = False) -> None:
+        """Wait for a permit in ``key``'s turn, behind every foreground waiter if background."""
+        if self._free > 0 and not self._queues and not self._background:
             self._free -= 1
             return
         waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._queues.setdefault(key, collections.deque()).append(waiter)
+        queues = self._background if background else self._queues
+        queues.setdefault(key, collections.deque()).append(waiter)
         try:
             await waiter
         except asyncio.CancelledError:
@@ -713,18 +730,45 @@ class FairGate:
             raise
 
     def release(self) -> None:
-        """Hand the permit to the next key in rotation, or put it back."""
-        while self._queues:
-            key, queue = next(iter(self._queues.items()))
+        """Hand the permit to the next waiter, foreground first, or put it back."""
+        if self._hand_on(self._queues) or self._hand_on(self._background):
+            return
+        self._free += 1
+
+    @staticmethod
+    def _hand_on(
+        queues: collections.OrderedDict[str | None, collections.deque[asyncio.Future[None]]],
+    ) -> bool:
+        """Grant the next key in rotation in ``queues``; False when none waits."""
+        while queues:
+            key, queue = next(iter(queues.items()))
             waiter = queue.popleft()
             if queue:
-                self._queues.move_to_end(key)
+                queues.move_to_end(key)
             else:
-                del self._queues[key]
+                del queues[key]
             if not waiter.done():
                 waiter.set_result(None)
-                return
-        self._free += 1
+                return True
+        return False
+
+
+BACKGROUND: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "trentina_l2_background", default=False
+)
+"""True in work that must yield L2 to tool calls (spec 027). Read by
+:func:`classify_async` when it takes a permit, so ``defend()`` needs no new
+parameter. A task inherits it from the one that created it."""
+
+
+@contextlib.contextmanager
+def background_scans() -> Iterator[None]:
+    """Run the scans inside as background: they wait behind every tool-call scan."""
+    token = BACKGROUND.set(True)
+    try:
+        yield
+    finally:
+        BACKGROUND.reset(token)
 
 
 def _caller() -> str | None:

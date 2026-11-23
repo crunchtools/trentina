@@ -17,12 +17,19 @@ operation, and on a push which refs. It checks each against the profile's
 lists, injects the profile's forge token, and opens its own connection to
 the forge.
 
-**What this is not:** a path the defense pipeline reads. The gateway decides
-*which repository* and *which branch*. It does not read *what is in them*. A
-pack (file contents, file names, commit messages, author names) crosses in
-both directions without any layer looking at it, ref names are bounded
-but not judged, and the gateway cannot tell a commit the repository's owner
-wrote from one an outsider wrote and someone merged. This is [known gap 29](defense-pipeline.md#known-gaps), and
+**What a fetch brings back is judged** (spec 027 phase 1). The gateway
+reads every object in the pack as git reads it, inflating each entry,
+resolving deltas and hashing it itself, and judges it: text files as
+chunks of about 2 KB cut where a key only the gateway holds says, each read
+behind the end of the one before (L1 and L2 on every chunk, L3 on groups of
+them), every file at the tip of a branch the agent asked for whole at L3, a
+binary file by what the unpack stage opens in it or by its strings, commits
+and tags whole, file names one by one. Every name in a ref listing is judged
+before it is listed. Verdicts are cached per profile, so a second clone or a
+day's new commits cost only what is new. What a push carries is not read,
+history is judged in chunks rather than whole, and the gateway cannot tell a
+commit the owner wrote from one an outsider wrote and someone merged: that is
+what remains of [known gap 29](defense-pipeline.md#known-gaps), and
 [what is not enforced](#what-is-not-enforced) below says exactly where the
 line is.
 
@@ -68,6 +75,10 @@ A profile's `git` block has one entry per remote it may use:
 | `push_refs` | Branch patterns a push may create or move, each under `refs/heads/`. Required with `push`. |
 | `deny` | Patterns refused for fetch and push alike, checked first. |
 | `show_refs` | Namespaces of the remote's `hidden_refs` this profile may list and fetch anyway, in the repositories it may fetch. `[refs/pull/]` lets a reviewing agent run `git fetch origin pull/7/head`. Each entry must be one the remote hides, or the file is refused. |
+| `enforcement` | What a flagged or unjudged object does. `flag` (the default and, in phase 1, the only value) delivers it and names it on git's side band. |
+| `max_judged_pack_bytes` | Largest pack, as it arrived, whose objects are judged. Default 256 MiB. Past it the rest is delivered and named unjudged (`too_large`). |
+| `judge_deadline` | Seconds a fetch's judging may run, after delivery included. Default 900. What is left then is unjudged (`deadline`). |
+| `l3_daily_quota` | L3 judgements this grant's fetches may run per UTC day, apart from the profile's `defense.l3_daily_quota`. Default 2000; unset is unlimited. At the cap an object is unjudged (`l3_quota`). |
 
 Repository patterns are lower-case and compared with the owner and name the
 caller asked for, lower-cased. `*` stands for any run of name characters and
@@ -180,8 +191,57 @@ there and nothing is sent upstream.
     cannot hide a character. Such a branch cannot be fetched by name through
     this route. A namespace in the grant's `show_refs` is not hidden for that
     profile: it is listed, and a `ref-prefix` or `want-ref` naming it is
-    forwarded. Its refs reach the agent like any branch, pack unread, an
-    outsider's pull request included.
+    forwarded. Its refs reach the agent like any branch, judged as any
+    other, an outsider's pull request included.
+13. **What moves content off the judged path is taken out.** Before a fetch
+    request is checked, `thin-pack`, `packfile-uris` and `sideband-all` are
+    removed from it, so the forge sends every object whole, in the pack, and
+    parses exactly the bytes that were checked. A v0 or v1 fetch that did not
+    ask for `side-band-64k` is refused `sideband`: the gateway names what it
+    found on that band, and git always asks for it. A listing's capabilities
+    are rewritten: `agent=` is the gateway's, `session-id=`, `bundle-uri` and
+    `object-info` are dropped. A fetch answer is held to the sections git
+    defines (acknowledgments, shallow-info, wanted-refs, packfile); anything
+    else ends it.
+14. **The forge's own words are replaced.** Its side-band progress and
+    error lines are dropped, on fetch and on push, and the gateway writes its
+    own. An `ERR` line becomes `ERR refused by forge`; a push's `unpack
+    <reason>` becomes `unpack error` and `ng <ref> <reason>` becomes `ng
+    <ref> rejected`.
+
+### What a fetch tells the agent
+
+Under `enforcement: flag`, the only mode in phase 1, a fetch is delivered
+as it arrives. The gateway holds back only the last 64 KiB of the pack,
+for up to 30 seconds after the forge's last byte, for the judging to catch
+up, and then writes its findings on git's side band, which git prints as
+`remote:` lines:
+
+```
+remote: Trentina: judged 4810/4810 objects
+remote: Trentina: flagged blob 3f2a…9c (L2, high)
+remote: Trentina: unjudged blob 77e0…1b (binary_unread)
+remote: Trentina: pending 1200 objects, judged after delivery
+```
+
+Closed words and an object id, never a path or any of the content. Map an id
+to a path with `git rev-list --objects --all | grep <oid>`. Past 20 objects
+it is one line with the counts. A gap is one of `l2_unavailable`,
+`l3_unavailable`, `l3_quota`, `binary_unread`, `backlog`, `deadline`,
+`too_large` and `failed`. Pending objects go on being judged after the
+fetch, at background priority, for up to the grant's `judge_deadline`; their
+verdicts land as `detections` rows and warm the cache, so the next fetch is
+quick. A flagged name in a ref listing is listed, recorded, and counted on
+the side band of that repository's next fetch.
+
+A profile's judged fetches run one at a time in two lanes, `fetch` and
+`promisor` (a partial clone's lazy fetches), so a checkout never waits
+behind a clone. A fetch that finds its lane busy waits, up to four of them,
+and past that is refused `busy`.
+
+**Clones made before phase 1 hold history no layer read.** A fetch brings
+only what is new, and judging does not reach back into a checkout: re-clone
+the repositories an agent works in.
 
 The headers sent upstream are built by the gateway: the profile's token as
 HTTP Basic, `User-Agent`, `Accept`, `Content-Type`, the validated
@@ -197,13 +257,18 @@ makes no progress for 5 minutes ends it.
 
 ## What is not enforced
 
-- **Pack contents are not read.** Not on a fetch and not on a push. A pack
-  is compressed objects: file contents, file names, commit and tag messages,
-  author names. The gateway terminates this connection and could inflate
-  one; it does not, and no layer judges any of it. An instruction written
-  into a README, a source comment or a commit message reaches the agent's
-  checkout as it was written. What the agent then does with a file it opens
-  is not something this route sees.
+- **A push's pack is not read.** It is the agent's own output, carried as
+  it was written. Phase 3 adds a credential scan.
+- **History is judged in chunks.** A file at the tip of a branch the agent
+  fetched is judged whole; an older version, which an agent can read with
+  `git show`, was judged chunk by chunk, each behind the last 64 tokens of
+  the chunk before, so an instruction spread wider than that across a chunk
+  boundary is missed. So is an instruction split across files.
+- **`flag` delivers before it is sure.** What is flagged or unjudged is
+  delivered and named; what is still pending when the pack ends is
+  delivered and judged after. `block`, which refuses a fetch with anything
+  flagged in it, ships in phase 2 with a way for a person to release an
+  object.
 - **The gateway cannot tell whose commits they are.** `fetch: [acme/*]` is
   "these repositories", not "code these people wrote". A merged pull
   request, a dependency bot's commit and a change by a compromised account
@@ -214,12 +279,6 @@ makes no progress for 5 minutes ends it.
   comment or a tool response. Whether it is served is the forge's setting,
   not the gateway's; a forge that serves any commit reachable from any ref
   serves a pull request's.
-- **Ref names are not judged.** Branch and tag names are text someone with
-  push access chose. The gateway drops hidden namespaces and names that are
-  not one token of printable ASCII, at most 255 bytes, and passes the rest
-  on. No layer reads them, and a name can still be words joined by hyphens.
-- **The forge's progress and status lines are not read.** They travel in
-  the same side-band stream as the pack.
 - **`ok` means carried, not accepted.** A push the forge rejects (a
   protected branch, a failed hook) is still an HTTP `200` whose answer says
   so inside that stream. The audit row says the gateway forwarded it.
@@ -297,7 +356,14 @@ destination, and one refused before its remote was matched has the backend
 | `backend_error` | Any other forge error, `upstream_content`, `upstream_failed`, `upstream_idle`. |
 | `cancelled` | The client went away, or the request's task was cancelled, before the answer was complete. |
 
-No layer reads a pack, so there is no `detections` row to join.
+A fetch whose objects were judged carries counts in `normalized`
+(`git_objects`, `git_flagged`, `git_unjudged`, `git_pending`, `git_units`,
+`git_cached`, and `git_pack` when the pack could not be read) and a
+`call_ref`. Each flagged object is one `detections` row with the same
+`call_ref`, `source_type` `git_blob`, `git_commit`, `git_tag`, `git_tree` or
+`git_refs`, and `source` `git:<remote>/<owner>/<repo>@<oid>`, with `blocked`
+unset under `flag`. A fetch that found something is `ok` with the error
+message `git_flagged`.
 
 ## Who may change it
 

@@ -1277,3 +1277,73 @@ path = "tests/test_field_select.py"
 symbol = "_profile"
 justification = "Not single-use: _profile is called at test_field_select.py:125 (the default in _call), :238 (the guarded profile) and :269 (the instructions test). The check appears to count only the call whose result is assigned to a name, not one inside an `or` or passed as an argument."
 classification = "gourmand_bug"
+
+# --- spec 027: git packs and the judging of what they hold ---
+
+[[exceptions]]
+check = "over_abstraction"
+path = "src/trentina/gateway/git_pack.py"
+item = "_malformed"
+justification = "_malformed is the one place a refusal for a bad pack is built, with the closed reason 'malformed'. It has about thirty call sites; a refusal spelled out at each is how one of them gets a reason outside REASONS, which the error's callers map to wire words."
+classification = "by_design"
+
+[[exceptions]]
+check = "single_use_helpers"
+path = "src/trentina/gateway/git_pack.py"
+item = "_inflate"
+justification = "_inflate is the bounded zlib step: it hands the inflater at most one byte more than the entry's declared size, so a bomb is refused before it is held, and it detects a stall. It is a nineteen-line loop with four refusals; inlined into _read_body it takes that method past ruff's complexity limit of 10, and the name documents the guard the module's bounded-memory claim rests on."
+classification = "by_design"
+
+[[exceptions]]
+check = "single_use_helpers"
+path = "src/trentina/gateway/git_fetch.py"
+item = "_hold"
+justification = "_hold is the held-back tail: it keeps TAIL_BYTES of the pack from the agent until the judging has had its say, and frames each piece as a band-1 pkt-line. take() is a dispatcher over the parser's events and sits at ruff's complexity limit of 10, so the loop cannot move into it; the name is the concept (the hold)."
+classification = "by_design"
+
+[[exceptions]]
+check = "redundant_error_handling"
+path = "src/trentina/gateway/git_fetch.py"
+justification = "Judging a ref listing's names never costs the listing: a failed wait is logged by kind and place (never the message, #262) and the outcome is read as it stands, which counts what is still pending as unjudged. Re-raising would fail a listing the agent can use because an audit-side wait broke."
+classification = "by_design"
+
+[[exceptions]]
+check = "redundant_error_handling"
+path = "src/trentina/gateway/git_judge.py"
+item = "_record"
+justification = "Recording a detection row is bookkeeping, as defense.defend's is: a failed SQLite write must not cost the fetch its verdict, so the loss is logged by kind and place (never the message, #262) and the object stays flagged on the side band. Re-raising would turn an audit gap into a failed clone."
+classification = "by_design"
+
+[[exceptions]]
+check = "redundant_error_handling"
+path = "src/trentina/gateway/git_judge.py"
+item = "flush_store"
+justification = "The verdict store is a cache: a failed write is a slower next fetch, never a wrong answer, so it is logged by kind and the fetch goes on, as verdict_cache's writes do. Re-raising would fail a fetch whose verdicts were already delivered."
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/git_pack.py"
+justification = "PackReader._read_entry_head and _read_body are reported as identical to _pin_one in tool_pins.py and _rewrite_relation in matrix_bridge/rewrite.py. One steps a packfile's parse state machine (read a header, consume bytes, move to the next state), the others pin a tool and rewrite a Matrix relation. They share a run of guard-then-assign statements, nothing else. Structural collision, not duplication."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/unpack/alphabets.py"
+item = "decode_base2048"
+justification = "decode_base2048 decodes Base2048 text; it is reported as matching functions in discovery.py, session_marks.py and (since spec 027) git_chunks.py, which share only a lookup-then-loop-then-build shape. Structural collision, not duplication."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "single_use_helpers"
+path = "tests/test_git_judging.py"
+pattern = "_db"
+justification = "Not single-use: called from _detections (which several tests poll) and from the audit-row test, verified by grep. The check stops counting once a module-level helper is one of the callers, as for tests/test_reload.py _registry."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "single_use_helpers"
+path = "tests/test_git_judging.py"
+pattern = "_flagged"
+justification = "Not single-use: five assertions in four test methods call it, verified by grep. The check does not count callers inside class methods, as for tests/test_reload.py _registry."
+classification = "gourmand_bug"

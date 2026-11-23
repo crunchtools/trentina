@@ -51,7 +51,7 @@ Everything entering through the gateway is judged at its ingress — the firewal
 - **Egress HTTP requests** through the terminating egress route (#511), judged on the way out exactly as an LLM request is (`egress_request`): method, path, query, forwarded headers and body as one document, credential-redacted for the judge, plus the credential detector. **Egress responses** are judged as ingress like a fetched page (`egress_response`): under `block` a flagged, unjudged or binary (unreadable) response is withheld with "executed, response withheld"; under `flag` it is delivered with the verdict on `x-trentina-warning`.
 - **Alert webhooks** (`alert`), and the standalone web tools (`safe_*`, `quarantine_*`).
 
-**Two paths through the gateway still do not cross the pipeline.** Bytes in a [client egress](client-egress.md) tunnel are TLS the gateway holds no key for (known gap 26), and on the [git transport](git-transport.md) a pack is one the gateway could inflate and does not, and a ref listing is one it reads only to drop hidden and malformed names (known gap 29). On both, what the gateway decides is deterministic and recorded (the host; the repository and the branch), and what it carries is judged by no layer. They are exceptions to rule 1 of the [layer contract](#layer-contract), stated here so that rule is not read as covering them. The [terminating egress route](egress-http.md) and the [`/proxy/llm` proxy](llm-proxying.md) are not exceptions: a client that can be re-pointed at them has its request judged (`egress_request`/`llm_request`) and its response judged as ingress (`egress_response`/`llm_completion`, the latter post-stream), so the tunnel is the fallback for a client that cannot.
+**Two paths through the gateway still do not cross the pipeline.** Bytes in a [client egress](client-egress.md) tunnel are TLS the gateway holds no key for (known gap 26), and on the [git transport](git-transport.md) a push's pack crosses unread, and a fetch's history is judged in chunks rather than whole, with objects still pending under `flag` delivered before their verdict (known gap 29). On both, what the gateway decides is deterministic and recorded (the host; the repository and the branch). They are exceptions to rule 1 of the [layer contract](#layer-contract), stated here so that rule is not read as covering them. The [terminating egress route](egress-http.md) and the [`/proxy/llm` proxy](llm-proxying.md) are not exceptions: a client that can be re-pointed at them has its request judged (`egress_request`/`llm_request`) and its response judged as ingress (`egress_response`/`llm_completion`, the latter post-stream), so the tunnel is the fallback for a client that cannot.
 
 **The mode is per call, the policy per profile.** `defense.modes` lists what the agent may choose through `trentina_mode`, which the gateway inserts into every tool; `defense.enforcement` is the default an omitted mode resolves to — `flag` (content delivered intact with a `_trentina_warning`) or `block` (flagged responses refused). See [Profiles](profiles.md#content-modes). `TRENTINA_ENFORCEMENT_OVERRIDE=flag` is the kill switch, and beats the call's own choice.
 
@@ -277,8 +277,9 @@ gaps below.
 | An HTTP request through the [terminating egress route](egress-http.md) | the request line, query, forwarded headers and body as one document | L1/L2/L3 on a credential-redacted copy, plus the credential detector | judged (`egress_request`); `block` refuses before sending, `flag` forwards with the verdict |
 | The response to an egress request | the body, if text | L1/L2/L3 like a fetched page | judged (`egress_response`); refused with "executed, response withheld" under `block` |
 | A binary egress response | its content type | no layer reads it | the `binary_unread` gap: `block` withholds it, `flag` delivers it with the warning (gap 32) |
-| A pack carried by the [git transport](git-transport.md), in either direction: file contents, file names, commit messages | as the forge sent it; a push, as the agent sent it | nothing. The gateway reads the request line, a push's command list and ref listings, and decides on those | not judged; the route decides the repository and the branch and records the bytes (gap 29) |
-| A ref listing on the git transport: branch and tag names | each name that is one token of printable ASCII, at most 255 bytes, outside a hidden namespace | nothing. The gateway reads each line to drop the rest | not judged; names are bounded, not read for meaning (gap 29) |
+| A pack a fetch brings back on the [git transport](git-transport.md): file contents, file names, commits and tags | as the forge sent it, under `flag`; forge side-band text replaced by the gateway's | every object, inflated and hashed by the gateway: text blobs as keyed chunks behind a 64-token lead-in (L1 and L2 each, L3 in groups of 4K tokens), a file at the tip of a wanted ref whole at L3, a binary by the unpack stage or its strings, a commit or tag whole, tree names one by one (spec 027) | judged; under `flag` a flagged or unjudged object is named by id on git's side band and recorded, and objects not judged by the end of the pack are counted pending and judged after delivery (gap 29) |
+| A ref listing on the git transport: branch and tag names, `symref` targets | the listing, capabilities rewritten; each name one token of printable ASCII, at most 255 bytes, outside a hidden namespace | each name, with L1, L2 and L3 | judged before it is listed; under `flag` a flagged name is listed and recorded (gap 29) |
+| A pack a push carries | as the agent sent it | nothing | not judged; the route decides the repository and the branch (gap 29, push is spec 027 phase 3) |
 | A federated response carrying a valid signed verdict, from a backend whose `federated.trust_verdict` is pinned (#592, D2a) | as the peer delivered it | nothing locally | NOT re-judged here: the peer judged it under the pinned `perimeter_stamp` and `judge`, and the signature binds that verdict to these exact bytes. Fail-closed — a missing, forged, stale or mismatched assertion is re-judged locally (gap 33) |
 | A remote backend's tool that is new or whose definition (description, schema, annotations) changed | withheld from every profile until an operator approves it ([pinning](tool-pinning.md), #469) | the new definition, as any tool description | held, `*` allowlists and flag mode included |
 | Any of those three under `unjudged: annotate` | as it arrived, media with the warning header | nothing | forwarded unjudged, by the operator's choice |
@@ -566,33 +567,31 @@ one does; the rest name the benchmark that measured them.
     none of the 24 `meeting_notes` cases flags, and the shape is gated
     beside `meeting_notes_unlinked`. The number is kept so later gaps keep
     theirs.
-29. **No layer reads what the git transport carries** (#453). A profile
-    with a `git` block clones, fetches and pushes through `/proxy/git`. The
-    gateway terminates that connection, so this is a choice and not a
-    limit. It reads the repository, the endpoint, the protocol, a fetch
-    request, a push's command list and every ref listing, and enforces its
-    deterministic rules on them. It hands none of it to L1, L2 or L3. Two
-    things reach the agent unjudged. The first is the pack, in either
-    direction (file contents, file names, commit and tag messages, author
-    names), with the side-band stream it travels in, which also carries the
-    forge's own progress and status lines: it is passed on without being
-    looked at, so an instruction written into a file or a commit message
-    reaches the agent's checkout as written, and a push carries out
-    whatever the agent put in it, to any repository and branch its lists
-    allow. The second is the ref listing: branch and tag names are text
-    someone with push access chose, and the gateway only drops hidden
-    namespaces and any name that is not one token of printable ASCII, at
-    most 255 bytes. A name can still be words joined by hyphens. The
-    gateway cannot tell the owner's commits from an outsider's: a merged
-    pull request, a dependency bot's commit and a stranger's edit are all
-    history on a branch the profile may fetch. Hidden refs (`refs/pull/` by
-    default) are dropped from listings and refused by name, which removes
-    the names only: a `want` for an object id is not restricted, so a
-    commit the forge will serve by id can be fetched by a client that
-    learned the id elsewhere. List only the repositories the agent works
-    on, keep `push_refs` to a namespace of its own that nothing deploys
-    from, and treat a checkout as untrusted content. Tested, the `want`
-    against a real git server.
+29. **What the git transport carries is judged in pieces, and a push not at all**
+    (#453, spec 027). A profile with a `git` block clones, fetches and pushes
+    through `/proxy/git`. Since spec 027 phase 1 the gateway reads every
+    object a fetch brings back as git reads it and judges it, and judges
+    every name in a ref listing before listing it, under `flag`: what is
+    flagged or could not be judged is delivered and named by object id on
+    git's side band (`remote: Trentina: flagged blob <oid> (L2, high)`), and
+    recorded. Forge text on the side band, `ERR` lines and a push's status
+    reasons are replaced by the gateway's own words. Five things remain.
+    History is judged in chunks: a file at the tip of a wanted ref is judged
+    whole, but an older version an agent reads with `git show` was judged
+    chunk by chunk, each behind the previous chunk's last 64 tokens, so an
+    instruction spread across a chunk boundary wider than that is missed.
+    An instruction split across files is judged a file at a time, and a
+    judged commit is still not one the owner wrote: a merged pull request,
+    a dependency bot's commit and a stranger's edit are all history on a
+    branch the profile may fetch. Under `flag`, objects not judged when the
+    pack ends (30 seconds after its last byte arrives) are delivered,
+    counted as pending, and judged after: the agent learns of a flag on its
+    next fetch. A push's pack is not read (phase 3 adds a credential scan).
+    Hidden refs (`refs/pull/` by default) are dropped from listings and
+    refused by name, which removes the names only: a `want` for an object id
+    is not restricted, and what it fetches is judged like any other object.
+    Re-clone a repository cloned before phase 1: judging does not reach back
+    into a checkout. Tested, the push and the chunk boundary.
 30. **The semantic request guard is a model, and judges one call at a time**
     (#456). A call to a guarded tool is forwarded when the profile's judge
     answers allow, and nothing else in the gatekeeper reads its content: a

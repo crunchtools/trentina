@@ -2647,6 +2647,14 @@ class GitRemote(BaseModel):
         return self.upstream.removeprefix("https://")
 
 
+DEFAULT_JUDGE_DEADLINE = 900
+"""Seconds a git fetch's judging may run: a clone's worth of L3 calls, not a request's."""
+MIN_JUDGE_DEADLINE = 30
+"""Below this the judging could not finish one L3 call, so it is no deadline."""
+DEFAULT_L3_DAILY_QUOTA = 2000
+"""L3 judgements a git grant's fetches may run per UTC day."""
+
+
 class GitGrant(BaseModel):
     """What one profile may do on one git remote (#453): ``git.<remote>``.
 
@@ -2656,8 +2664,9 @@ class GitGrant(BaseModel):
     ``deny`` wins over both lists and may also be a bare name pattern, which
     then holds for every owner.
 
-    The gateway enforces the repository and, on a push, the ref. It does not
-    read what a fetch brings back or what a push carries: known gap 29.
+    The gateway enforces the repository and, on a push, the ref. Since spec
+    027 every object a fetch brings back is judged and, under ``flag``, named
+    when flagged or unjudged; what a push carries is not read (known gap 29).
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
@@ -2696,6 +2705,36 @@ class GitGrant(BaseModel):
             "Namespaces of the remote's hidden_refs this profile may list and fetch "
             "anyway, in the repositories it may fetch: refs/pull/ to check out a "
             "pull request's head. Each must be one the remote hides."
+        ),
+    )
+    enforcement: Literal["flag"] = Field(
+        default="flag",
+        description=(
+            "What a flagged or unjudged object in a fetch does (spec 027). flag "
+            "delivers it and names it by object id on git's side band. block, "
+            "which refuses the fetch, ships with object release in phase 2"
+        ),
+    )
+    max_judged_pack_bytes: int = Field(
+        default=256 * 1024 * 1024,
+        ge=1024 * 1024,
+        description=(
+            "Largest pack, as it arrived, that a fetch's objects are judged in. "
+            "Past it the rest is delivered unjudged and named so"
+        ),
+    )
+    judge_deadline: int = Field(
+        default=DEFAULT_JUDGE_DEADLINE,
+        ge=MIN_JUDGE_DEADLINE,
+        description="Seconds a fetch's judging may run, delivered or not",
+    )
+    l3_daily_quota: int | None = Field(
+        default=DEFAULT_L3_DAILY_QUOTA,
+        ge=1,
+        description=(
+            "L3 judgements this grant's fetches may run per UTC day, counted "
+            "apart from the profile's defense.l3_daily_quota. Unset is unlimited. "
+            "At the cap an object is unjudged (l3_quota)"
         ),
     )
 

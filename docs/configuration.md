@@ -117,6 +117,7 @@ these variables control the process itself. Profile tokens
 | `TRENTINA_FORWARDED_ALLOW_IPS` | unset (uvicorn's default of `127.0.0.1`) | Peer addresses whose `X-Forwarded-For` is trusted. **Set this to your reverse proxy's address**, or every caller behind it shares one rate-limit bucket. See [Authentication](authentication.md). |
 | `TRENTINA_BLOCKLIST_TTL_DAYS` | `30` | Days a block refusal keeps its source on the calling profile's blocklist. Expired rows stop counting and are swept hourly. See [Blocklist](blocklist.md). |
 | `TRENTINA_VERDICT_TTL_HOURS` | `24` | Hours a perimeter verdict (a tool description's or a tool response's) is served from cache, counted from when it was judged; past it the layers run again. Checked on every read and when the stored verdicts load at startup. Clamped to 1–720. |
+| `TRENTINA_GIT_SUSPICIOUS` | `0.2` | The L2 score over which a git object's unit, still under the flag threshold, is judged alone at L3 rather than grouped (spec 027). Not a number: the default. |
 | `TRENTINA_AUDIT_RETENTION_DAYS` | `90` | Days a `gateway_calls` audit row is kept; swept hourly. `0` keeps every row. See [Audit Log](audit-log.md). |
 | `TRENTINA_FETCH_CONCURRENCY` | `8` | Fetches one profile may have in flight; the next waits for one of its own. Each fetch has 60 s of wall clock. See [Quarantine Tools](quarantine-tools.md). |
 | `TRENTINA_REGISTRATION_TTL_DAYS` | `90` | How long a DCR registration lives once a token exchange has promoted it. Each later exchange re-stamps it. |

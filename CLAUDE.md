@@ -87,6 +87,8 @@ uv run trentina
   the final component `lstat`ed as a socket. Reasons are a closed set and
   never the path. NOT `HARD_DENIED`: `/run` is where systemd puts sockets,
   and the roots are the operator's.
+- `TRENTINA_GIT_SUSPICIOUS` — default 0.2. An L2 score over it, under the flag
+  threshold, sends a git object's unit to L3 alone (spec 027); `Config.git_suspicious`.
 - `TRENTINA_FETCH_ALLOW_PRIVATE` — default false. Lifts the egress guard's
   address rule so fetch can reach non-global addresses; scheme, port and
   redirect rules still hold. Warns at startup. See `reach/egress.py` (#260).
@@ -991,10 +993,16 @@ replaced.
   `_Relayed`, which finishes the operation once (slot, upstream, audit row)
   however the response ends, and holds every `send` to `IDLE_TIMEOUT`. One
   `gateway_calls` row per HTTP request (`git:<remote>`, `fetch`/`push`,
-  `DestinationKind.GIT`). Reasons are the closed set `git_wire.REASONS`. A
-  pack is never read, either way, and a listed ref name is bounded
-  (`MAX_LISTED_REF`, printable ASCII) but not judged: known gap 29. A new rule on text the
-  route can read goes in `git_wire.py`; nothing there may parse a pack.
+  `DestinationKind.GIT`). Reasons are the closed set `git_wire.REASONS`.
+  Since spec 027 phase 1 a fetch's answer is judged (`git_fetch.py`): the
+  pack is read by `git_pack.py` (pure Python, no I/O, fuzzed against `git
+  index-pack --strict`) in a worker thread as it streams, each object judged
+  by `git_judge.py` (keyed chunks from `git_chunks.py`, `defense.screen` per
+  chunk, `defense.judge_l3` per group, the `git_verdicts` table), its last 64
+  KiB held up to 30 s, findings named by object id on the side band under
+  `flag`. Listings are buffered and their names judged. A push's pack is not
+  read: what remains of known gap 29. A new rule on text the route can read
+  goes in `git_wire.py`; pack parsing stays in `git_pack.py`.
   `tests/git_harness.py` runs real `git` against `git http-backend`.
 - `egress.open_pinned` — one request to an already-checked `ResolvedTarget`,
   streamed body, idle timeout, no deadline, and any 3xx refused as

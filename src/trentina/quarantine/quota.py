@@ -20,18 +20,29 @@ apart from ``l3_unavailable`` so "you spent your cap" is not read as "the
 provider is down"; block and redact refuse on it, flag delivers with it. The
 count is kept in memory, by UTC day: it starts again at midnight UTC and when
 the gateway restarts.
+
+Git judging (spec 027) spends a separate counter, ``charge_git``, against the
+git grant's ``l3_daily_quota`` and never the profile's. ``git_quota`` marks
+the calls that do; ``charge_for_call`` and ``refund_for_call`` pick the
+counter, so ``defense`` swaps two names and knows nothing of git. A git call is
+counted even in background work, which is the point of the cap: the profile's
+own counter skips background work, git judging is all of it.
 """
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import functools
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from .limiter import Priority, l3_priority
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from ..gateway.profile import Profile
 
 logger = logging.getLogger(__name__)
@@ -97,6 +108,77 @@ def refund(profile: Profile, day: str) -> None:
         _usage[owner] = (day, used - 1)
 
 
+#: Profile grant owner -> (UTC day, git judgements run that day). Kept apart from
+#: ``_usage`` so a clone spends the git grant's cap and not the agent's own.
+_git_usage: dict[str, tuple[str, int]] = {}
+
+GIT_QUOTA: contextvars.ContextVar[int | Literal[False] | None] = contextvars.ContextVar(
+    "trentina_git_quota", default=False
+)
+"""False outside git judging. Inside it, the git grant's ``l3_daily_quota``
+(None for no cap); see :func:`git_quota`."""
+
+
+@contextlib.contextmanager
+def git_quota(cap: int | None) -> Iterator[None]:
+    """Count the L3 calls inside against the git counter, capped at ``cap`` (None: no cap)."""
+    token = GIT_QUOTA.set(cap)
+    try:
+        yield
+    finally:
+        GIT_QUOTA.reset(token)
+
+
+def charge_git(profile: Profile, cap: int | None) -> str | None:
+    """Count one git L3 judgement against ``profile``; None when ``cap`` is spent.
+
+    The same day semantics as :func:`charge`, in a counter of its own. Not
+    skipped for background work: git judging is background work.
+    """
+    day = _clock().date().isoformat()
+    owner = profile.grant_owner
+    entry = _git_usage.get(owner)
+    used = entry[1] if entry is not None and entry[0] == day else 0
+    if cap is not None and used >= cap:
+        key = f"git:{owner}"
+        if _spent_logged.get(key) != day:
+            _spent_logged[key] = day
+            logger.warning(
+                "L3 daily git quota spent for profile %r (%d judgements, UTC day %s): "
+                "git objects judged after this report l3_quota until midnight UTC",
+                owner,
+                cap,
+                day,
+            )
+        return None
+    _git_usage[owner] = (day, used + 1)
+    return day
+
+
+def refund_git(profile: Profile, day: str) -> None:
+    """Give back a git judgement ``charge_git`` counted on ``day`` that L3 did not answer."""
+    owner = profile.grant_owner
+    entry = _git_usage.get(owner)
+    if entry is not None and entry[0] == day and entry[1]:
+        _git_usage[owner] = (day, entry[1] - 1)
+
+
+def charge_for_call(profile: Profile) -> str | None:
+    """:func:`charge`, or :func:`charge_git` inside :func:`git_quota`."""
+    cap = GIT_QUOTA.get()
+    if cap is False:
+        return charge(profile)
+    return charge_git(profile, cap)
+
+
+def refund_for_call(profile: Profile, day: str) -> None:
+    """:func:`refund`, or :func:`refund_git` inside :func:`git_quota`."""
+    if GIT_QUOTA.get() is False:
+        refund(profile, day)
+    else:
+        refund_git(profile, day)
+
+
 def snapshot(profile: Profile) -> dict[str, Any]:
     """``profile``'s cap, today's count and when it resets, for quarantine_stats."""
     now = _clock()
@@ -114,4 +196,5 @@ def snapshot(profile: Profile) -> dict[str, Any]:
 def reset() -> None:
     """Forget every count. For tests."""
     _usage.clear()
+    _git_usage.clear()
     _spent_logged.clear()

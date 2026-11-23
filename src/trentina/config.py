@@ -87,6 +87,8 @@ DEFAULT_BLOCKLIST_TTL_DAYS = 30
 """Days a block refusal keeps its source on the calling profile's blocklist."""
 
 DEFAULT_VERDICT_TTL_HOURS = 24
+DEFAULT_GIT_SUSPICIOUS = 0.2
+"""An L2 score over this, below the flag threshold, sends a git unit to L3 alone."""
 """Hours a perimeter verdict is served from cache, counted from when it was
 judged (#817). Long enough that a restart re-judges nothing it judged today,
 short enough that no verdict outlives a day."""
@@ -737,6 +739,17 @@ class Config:
             MAX_VERDICT_TTL_HOURS,
             int_env("TRENTINA_VERDICT_TTL_HOURS", DEFAULT_VERDICT_TTL_HOURS, minimum=1),
         )
+
+    @property
+    def git_suspicious(self) -> float:
+        """``TRENTINA_GIT_SUSPICIOUS``: the L2 score over which a git unit goes to L3 alone.
+
+        A value that is not a number takes the default, as ``int_env`` does."""
+        try:
+            return float(os.environ.get("TRENTINA_GIT_SUSPICIOUS", DEFAULT_GIT_SUSPICIOUS))
+        except ValueError:
+            logger.warning("config: TRENTINA_GIT_SUSPICIOUS is not a number — using the default")
+            return DEFAULT_GIT_SUSPICIOUS
 
     @property
     def part_ttl_seconds(self) -> int:

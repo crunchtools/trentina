@@ -39,7 +39,7 @@ from urllib.parse import quote
 from .config import get_config
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Iterator
+    from collections.abc import Collection, Iterator, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +84,16 @@ CREATE TABLE IF NOT EXISTS tool_pins (
     last_seen TEXT NOT NULL,
     PRIMARY KEY (backend_id, tool, definition_hash)
 );
+-- Spec 027: verdicts on git chunks. Bounded (LRU by used_at) and read on demand,
+-- never loaded whole, because a repository can mint chunks without limit.
+CREATE TABLE IF NOT EXISTS git_verdicts (
+    key TEXT PRIMARY KEY,
+    verdict TEXT NOT NULL,
+    stamp TEXT NOT NULL,
+    judged_at REAL NOT NULL,
+    used_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS git_verdicts_used_at ON git_verdicts (used_at);
 """
 
 #: What a ``tool_pins.state`` may hold. ``pending`` is held awaiting an
@@ -718,5 +728,97 @@ def delete_all_verdicts() -> int:
     """Flush every persisted verdict, forcing a full rescan on next boot."""
     db = get_perimeter_db()
     count = db.execute("DELETE FROM verdict_cache").rowcount
+    db.commit()
+    return count
+
+
+GIT_VERDICTS_MAX = 2_000_000
+"""LRU bound on ``git_verdicts``: an attacker repository can mint chunks without limit."""
+
+_GIT_BATCH = 500
+"""Placeholders per statement, under SQLite's variable limit on every build."""
+
+_GIT_EVICT_EVERY = 1000
+"""Rows written between size checks, so the count is not taken on every save."""
+
+_git_written = 0
+
+
+def get_git_verdicts(
+    keys: Sequence[str], stamp: str, ttl_seconds: float
+) -> dict[str, dict[str, Any] | None]:
+    """The fresh verdicts under ``stamp`` for ``keys``; a key not returned is a miss.
+
+    A clean verdict is returned as None, so a hit and a miss differ by the key's
+    presence. Read in batches of 500, touching ``used_at`` on every hit so the
+    LRU keeps what is in use. Never reads the table whole. An unreadable row is
+    a miss.
+    """
+    db = get_perimeter_db()
+    now = time.time()
+    out: dict[str, dict[str, Any] | None] = {}
+    for start in range(0, len(keys), _GIT_BATCH):
+        batch = list(keys[start : start + _GIT_BATCH])
+        rows = db.execute(
+            "SELECT key, verdict, judged_at FROM git_verdicts "
+            "WHERE stamp = ? AND key IN (SELECT value FROM json_each(?))",
+            (stamp, json.dumps(batch)),
+        ).fetchall()
+        hits: list[str] = []
+        for key, blob, judged_at in rows:
+            if not 0 <= now - judged_at < ttl_seconds:
+                continue
+            try:
+                out[key] = json.loads(blob)
+            except ValueError:
+                continue
+            hits.append(key)
+        if hits:
+            db.execute(
+                "UPDATE git_verdicts SET used_at = ? WHERE key IN (SELECT value FROM json_each(?))",
+                (now, json.dumps(hits)),
+            )
+    db.commit()
+    return out
+
+
+def save_git_verdicts(rows: Sequence[tuple[str, dict[str, Any] | None, float]], stamp: str) -> None:
+    """Store ``(key, verdict, judged_at)`` rows in one transaction, then trim to the bound."""
+    global _git_written
+    if not rows:
+        return
+    db = get_perimeter_db()
+    now = time.time()
+    db.executemany(
+        "INSERT OR REPLACE INTO git_verdicts (key, verdict, stamp, judged_at, used_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [(key, json.dumps(verdict), stamp, judged_at, now) for key, verdict, judged_at in rows],
+    )
+    db.commit()
+    _git_written += len(rows)
+    if _git_written >= max(1, min(_GIT_EVICT_EVERY, GIT_VERDICTS_MAX // 100)):
+        _git_written = 0
+        _evict_git_verdicts(db)
+
+
+def _evict_git_verdicts(db: sqlite3.Connection) -> None:
+    """Delete the least recently used rows beyond ``GIT_VERDICTS_MAX``."""
+    count = db.execute("SELECT COUNT(*) FROM git_verdicts").fetchone()[0]
+    excess = count - GIT_VERDICTS_MAX
+    if excess <= 0:
+        return
+    db.execute(
+        "DELETE FROM git_verdicts WHERE key IN "
+        "(SELECT key FROM git_verdicts ORDER BY used_at LIMIT ?)",
+        (excess,),
+    )
+    db.commit()
+    logger.info("perimeter: evicted %d least recently used git verdict(s)", excess)
+
+
+def delete_git_verdicts() -> int:
+    """Flush every stored git verdict."""
+    db = get_perimeter_db()
+    count = db.execute("DELETE FROM git_verdicts").rowcount
     db.commit()
     return count

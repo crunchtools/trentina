@@ -71,11 +71,13 @@ from ..transports.base import (
 )
 from ..transports.perimeter import InTree
 from .destination import MAX_DESTINATION_CHARS
+from .git_fetch import Fetch, enter_lane, relay_fetch, relay_listing, relay_push
 from .git_wire import (
     FLUSH,
     INFO_REFS,
     OPERATION,
     PROTOCOL_HEADER,
+    PROTOCOL_V2,
     PROTOCOLS,
     PUSH,
     REASONS,
@@ -84,12 +86,15 @@ from .git_wire import (
     Command,
     GitRefusedError,
     PktReader,
-    RefFilter,
     RepoPath,
     check_upload_request,
+    is_promisor_fetch,
+    negotiated_sideband,
     parse_command,
     parse_repo_path,
     refuse_ref_update,
+    strip_fetch_request,
+    wants,
 )
 from .proxy_utils import PLAIN_TEXT
 from .relay import Relayed
@@ -256,12 +261,11 @@ class GitRoute(Route[GitAdmitted, InTree]):
         """
         # TRUST: a git request from an agent, to a forge that holds its code
         #   untrusted: remote, path, query, headers and body, all agent-chosen
-        #   judged-by: git_wire (path, service, protocol, command list, ref
-        #     requests), GitGrant (repository and branch lists), egress (address)
+        #   judged-by: git_wire (request), GitGrant (repository, branches), egress (address)
         #   on-failure: fail-closed; refused with a closed reason and audited
         #   owner: gateway/git_transport.py, gateway/git_wire.py
-        #   evidence: T3 module docstring; T4 URL and every header built here from
-        #     validated parts; T3 known gap 29: a pack is not judged
+        #   evidence: T3 module docstring; T4 URL and headers built here from validated
+        #     parts; T3 spec 027: a fetch's objects and names are judged, a push's pack is not
         op = ctx.op
         kind = "advertisement" if admitted.lists_refs else "result"
         answer_type = f"application/x-{admitted.service}-{kind}"
@@ -269,13 +273,33 @@ class GitRoute(Route[GitAdmitted, InTree]):
         if admitted.protocol is not None:
             headers["Git-Protocol"] = admitted.protocol
         content: bytes | AsyncIterator[bytes] | None = None
-        listing = RefFilter(admitted.hidden) if admitted.lists_refs else None
+        negotiation: Negotiation | None = None
         if not admitted.lists_refs:
             headers["Content-Type"] = f"application/x-{admitted.service}-request"
             if op.tool == PUSH:
                 content = await _push(ctx.stream(), op, ctx.grant.options["git"])
             else:
-                content, listing = await _negotiation(ctx.stream(), admitted)
+                negotiation = await _negotiation(ctx.stream(), admitted)
+                content = negotiation.body
+        if negotiation is not None and negotiation.wants:
+            # A judged fetch waits for its lane before the forge is asked, and
+            # gives it back when the operation finishes, however it ends.
+            lane = await enter_lane(ctx.profile.name, negotiation.promisor)
+            op.upstream.callback(lane.release)
+        return await self._answer(admitted, ctx, headers, content, negotiation)
+
+    async def _answer(
+        self,
+        admitted: GitAdmitted,
+        ctx: InTree,
+        headers: dict[str, str],
+        content: bytes | AsyncIterator[bytes] | None,
+        negotiation: Negotiation | None,
+    ) -> Response:
+        """Send the request to the forge and relay its answer, judged."""
+        op = ctx.op
+        kind = "advertisement" if admitted.lists_refs else "result"
+        answer_type = f"application/x-{admitted.service}-{kind}"
         path = admitted.path
         resp = await ctx.open(
             ctx.wire.method,
@@ -299,7 +323,7 @@ class GitRoute(Route[GitAdmitted, InTree]):
         if resp.headers.get("content-type", "").partition(";")[0].strip().lower() != answer_type:
             raise GitRefusedError(HTTPStatus.BAD_GATEWAY, "upstream_content", Outcome.BACKEND_ERROR)
         return Relayed(
-            _relay(ctx, resp, listing),
+            _relayed(admitted, ctx, resp, negotiation),
             op,
             media_type=answer_type,
             headers={"Cache-Control": "no-cache"},
@@ -342,8 +366,30 @@ async def _body(stream: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
             yield piece
 
 
-def _admit_negotiation(arrived: bytes, admitted: GitAdmitted) -> tuple[bytes, bool]:
-    """Inflate and check one upload-pack request; True when it is an ``ls-refs``.
+@dataclass(frozen=True)
+class Negotiation:
+    """An upload-pack request as the forge will read it, and what it asks for."""
+
+    body: bytes
+    lists_refs: bool
+    wants: list[str]
+    promisor: bool
+
+    @property
+    def object_format(self) -> str:
+        """The repository's object format, by the length of the ids it wants."""
+        return "sha256" if any(len(oid) == 64 for oid in self.wants) else "sha1"
+
+
+def _admit_negotiation(arrived: bytes, admitted: GitAdmitted) -> Negotiation:
+    """Inflate, strip and check one upload-pack request.
+
+    ``thin-pack``, ``packfile-uris`` and ``sideband-all`` are taken out
+    before it is checked (spec 027), so the forge parses exactly the bytes
+    that were: a thin pack's bases, a pack fetched from a URI and progress
+    outside the pack section would each be content off the judged path. A
+    v0 or v1 fetch that did not ask for ``side-band-64k`` is refused: the
+    gateway names what it judged on that band. git always asks.
 
     Runs in a worker thread: eight megabytes of pkt-lines is too long to
     hold the event loop for. A gzip body is inflated to at most
@@ -365,14 +411,23 @@ def _admit_negotiation(arrived: bytes, admitted: GitAdmitted) -> tuple[bytes, bo
             raise GitRefusedError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "too_large")
         if not inflater.eof or inflater.unused_data:
             raise GitRefusedError(HTTPStatus.BAD_REQUEST, "malformed")
-    return body, check_upload_request(body, admitted.protocol, admitted.hidden)
+    try:
+        body = strip_fetch_request(body, admitted.protocol)
+    except ValueError:
+        raise GitRefusedError(HTTPStatus.BAD_REQUEST, "malformed") from None
+    lists_refs = check_upload_request(body, admitted.protocol, admitted.hidden)
+    try:
+        wanted = [] if lists_refs else wants(body, admitted.protocol)
+    except ValueError:
+        raise GitRefusedError(HTTPStatus.BAD_REQUEST, "malformed") from None
+    if wanted and not negotiated_sideband(body, admitted.protocol):
+        raise GitRefusedError(HTTPStatus.BAD_REQUEST, "sideband")
+    promisor = bool(wanted) and is_promisor_fetch(body, admitted.protocol)
+    return Negotiation(body, lists_refs, wanted, promisor)
 
 
-async def _negotiation(
-    stream: AsyncIterator[bytes], admitted: GitAdmitted
-) -> tuple[bytes, RefFilter | None]:
-    """An upload-pack request, read whole and checked; and the filter its
-    answer needs when it is an ``ls-refs``.
+async def _negotiation(stream: AsyncIterator[bytes], admitted: GitAdmitted) -> Negotiation:
+    """An upload-pack request, read whole, stripped and checked.
 
     The body goes upstream inflated, so the forge parses the bytes that were
     checked and not a second reading of a compressed stream.
@@ -388,8 +443,7 @@ async def _negotiation(
             raise GitRefusedError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "too_large")
     arrived = bytes(buffer)
     buffer.clear()  # one copy of the body from here on, and its inflation
-    body, lists_refs = await asyncio.to_thread(_admit_negotiation, arrived, admitted)
-    return body, RefFilter(admitted.hidden) if lists_refs else None
+    return await asyncio.to_thread(_admit_negotiation, arrived, admitted)
 
 
 async def _command_list(pieces: AsyncIterator[bytes]) -> tuple[list[Command], bytes]:
@@ -470,27 +524,43 @@ async def _push(
     return head
 
 
-async def _relay(ctx: InTree, resp: Any, listing: RefFilter | None) -> AsyncIterator[bytes]:
-    """The forge's answer for the client, counted as it passes.
+async def _relayed(
+    admitted: GitAdmitted,
+    ctx: InTree,
+    resp: Any,
+    negotiation: Negotiation | None,
+) -> AsyncIterator[bytes]:
+    """The forge's answer for the client, by what was asked (spec 027).
 
-    A ref listing goes through ``listing``, which drops hidden refs. Anything
-    else is passed on unread: it is a pack, or the side-band stream one
-    travels in (known gap 29). A stream that fails part-way simply ends, and
-    git reads a truncated listing or pack as the error it is.
+    A ref listing (``info/refs``, or an ``ls-refs`` answer) is buffered,
+    rewritten and its names judged; a fetch's pack is judged as it streams;
+    a push's report has the forge's words replaced.
     """
-    op = ctx.op
-    try:
-        async for piece in ctx.chunks(resp):
-            op.received += len(piece)
-            passed = listing.feed(piece) if listing is not None else piece
-            if passed:
-                yield passed
-        if listing is not None:
-            listing.finish()
-        op.settle(Outcome.OK)
-    except ValueError:
-        logger.warning("git transport: a ref listing could not be filtered; ended it")
-        op.settle(Outcome.BLOCKED_DEFENSE, "advertisement")
-    except RefusedError as failed:
-        logger.warning("git transport: upstream %s mid-stream", failed.reason)
-        op.settle(Outcome.BACKEND_ERROR, failed.reason)
+    grant: GitGrant = ctx.grant.options["git"]
+    source = f"git:{ctx.op.backend.removeprefix('git:')}/{admitted.path.slug}"
+    if admitted.lists_refs or (negotiation is not None and negotiation.lists_refs):
+        relayed = relay_listing(
+            ctx,
+            resp,
+            protocol=admitted.protocol,
+            hidden=admitted.hidden,
+            profile=ctx.profile,
+            grant=grant,
+            source=source,
+            slug=admitted.path.slug,
+        )
+    elif admitted.tool == PUSH or negotiation is None:
+        relayed = relay_push(ctx, resp)
+    else:
+        fetch = Fetch(
+            profile=ctx.profile,
+            grant=grant,
+            source=source,
+            slug=admitted.path.slug,
+            v2=admitted.protocol == PROTOCOL_V2,
+            wants=negotiation.wants,
+            object_format=negotiation.object_format,
+        )
+        relayed = relay_fetch(ctx, resp, fetch)
+    async for piece in relayed:
+        yield piece
