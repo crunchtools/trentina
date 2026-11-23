@@ -337,3 +337,59 @@ async def test_waiting_on_l3_calls_already_finished_returns() -> None:
     dispatch._tasks = Counted({finished})
     await dispatch.done()
     assert not dispatch._tasks
+
+
+async def test_an_object_the_reader_kept_is_unjudged_too_large() -> None:
+    judge = git_judge.GitJudge(
+        profile=harness.profile(),
+        grant=harness.profile().git[harness.REMOTE],
+        source="git:forge/acme/widgets",
+        call_ref="ref",
+        chunk_secret=b"k" * 32,
+    )
+    judge.submit_unread("c" * 40, "blob", "too_large")
+    judge.close()
+    await judge.start(60.0)
+    outcome = judge.outcome()
+    assert outcome.unjudged == [("blob", "c" * 40, "too_large")]
+    assert outcome.total == 1 and not outcome.flagged
+
+
+def _binary(data: bytes) -> PackObject:
+    oid = hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
+    return PackObject(oid=oid, kind="blob", content=data, offset=0)
+
+
+async def test_a_binary_over_its_limit_is_unread(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(git_judge, "MAX_BINARY_BYTES", 8)
+    blob = _binary(b"\x00\x01\x02" * 8)
+    judge = await _judged(blob)
+    assert judge.outcome().unjudged == [("blob", blob.oid, "binary_unread")]
+
+
+async def test_a_binary_the_unpack_stage_could_not_read_is_unread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class View:
+        text = ""
+        unread = ("image/png",)
+
+    async def unreadable(_reader: Any, _blob: bytes) -> View:
+        return View()
+
+    monkeypatch.setattr(git_judge, "run_unpacking", unreadable)
+    blob = _binary(b"\x00\x01\x02" * 8)
+    judge = await _judged(blob)
+    assert judge.outcome().unjudged == [("blob", blob.oid, "binary_unread")]
+
+
+def test_the_suspicious_mark_reads_its_setting(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from trentina.config import DEFAULT_GIT_SUSPICIOUS, Config
+
+    monkeypatch.setenv("TRENTINA_GIT_SUSPICIOUS", "0.35")
+    assert Config().git_suspicious == 0.35
+    monkeypatch.setenv("TRENTINA_GIT_SUSPICIOUS", "lots")
+    assert Config().git_suspicious == DEFAULT_GIT_SUSPICIOUS
+    assert "TRENTINA_GIT_SUSPICIOUS is not a number" in caplog.text

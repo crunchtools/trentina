@@ -228,7 +228,8 @@ Closed words and an object id, never a path or any of the content. Map an id
 to a path with `git rev-list --objects --all | grep <oid>`. Past 20 objects
 it is one line with the counts. A gap is one of `l2_unavailable`,
 `l3_unavailable`, `l3_quota`, `binary_unread`, `backlog`, `deadline`,
-`too_large` and `failed`. Pending objects go on being judged after the
+`too_large` and `failed`; an object over 64 MiB inflated is `too_large`, and
+its bytes stay in the reader child. Pending objects go on being judged after the
 fetch, at background priority, for up to the grant's `judge_deadline`; their
 verdicts land as `detections` rows and warm the cache, so the next fetch is
 quick. A flagged name in a ref listing is listed, recorded, and counted on

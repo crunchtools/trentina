@@ -39,7 +39,9 @@ def repo(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactor
     return make_repo(tmp_path_factory.mktemp("worker"), request.param)
 
 
-def _run(pack: bytes, fmt: str, spool: Path) -> subprocess.CompletedProcess[bytes]:
+def _run(
+    pack: bytes, fmt: str, spool: Path, max_object: int = INFLATED
+) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         [
             sys.executable,
@@ -48,6 +50,7 @@ def _run(pack: bytes, fmt: str, spool: Path) -> subprocess.CompletedProcess[byte
             fmt,
             str(ARRIVED),
             str(INFLATED),
+            str(max_object),
             str(CPU),
             str(spool),
         ],
@@ -59,9 +62,10 @@ def _run(pack: bytes, fmt: str, spool: Path) -> subprocess.CompletedProcess[byte
     )
 
 
-def _frames(out: bytes) -> tuple[dict[str, tuple[str, bytes]], bytes]:
-    """The objects in a child's stdout, and its closing line."""
-    objects: dict[str, tuple[str, bytes]] = {}
+def _frames(out: bytes) -> tuple[dict[str, tuple[str, bytes | None]], bytes]:
+    """The objects in a child's stdout, and its closing line; an object sent
+    over the limit has no content."""
+    objects: dict[str, tuple[str, bytes | None]] = {}
     i = 0
     while True:
         eol = out.index(b"\n", i)
@@ -70,6 +74,10 @@ def _frames(out: bytes) -> tuple[dict[str, tuple[str, bytes]], bytes]:
         if words[0] in (b"end", b"refused"):
             assert eol + 1 == len(out), "nothing follows the closing line"
             return objects, line
+        if words[4:] == [b"over"]:
+            objects[words[1].decode()] = (words[0].decode(), None)
+            i = eol + 1
+            continue
         kind, oid, _offset, length = words
         start = eol + 1
         objects[oid.decode()] = (kind.decode(), out[start : start + int(length)])
@@ -82,6 +90,18 @@ def test_real_pack_equals_git(repo: Path, tmp_path: Path) -> None:
     objects, last = _frames(proc.stdout)
     assert last == b"end\n"
     assert objects == expected_objects(repo)
+
+
+def test_an_object_over_the_limit_is_sent_without_its_content(repo: Path, tmp_path: Path) -> None:
+    expected = expected_objects(repo)
+    limit = sorted(len(content) for _kind, content in expected.values())[len(expected) // 2]
+    objects, last = _frames(_run(repack_bytes(repo), fmt_of(repo), tmp_path, limit).stdout)
+    assert last == b"end\n"
+    assert objects == {
+        oid: (kind, None if len(content) > limit else content)
+        for oid, (kind, content) in expected.items()
+    }
+    assert any(content is None for _kind, content in objects.values())
 
 
 def test_a_truncated_pack_is_refused(repo: Path, tmp_path: Path) -> None:
@@ -127,11 +147,15 @@ def test_the_child_environment_carries_no_credential() -> None:
 class FakeJudge:
     def __init__(self) -> None:
         self.submitted: list[PackObject] = []
+        self.unread: dict[str, str] = {}
         self.finished = 0
         self.closed = 0
 
     def submit(self, obj: PackObject) -> None:
         self.submitted.append(obj)
+
+    def submit_unread(self, oid: str, _kind: str, gap: str) -> None:
+        self.unread[oid] = gap
 
     def finish_pack(self) -> None:
         self.finished += 1
@@ -159,6 +183,35 @@ async def test_the_feeder_hands_every_object_to_the_judge(repo: Path, tmp_path: 
     assert feeder.done()
     assert {o.oid: (o.kind, o.content) for o in judge.submitted} == expected_objects(repo)
     assert judge.finished == 1 and judge.closed == 1
+
+
+async def test_the_feeder_names_an_object_over_the_limit_unjudged(
+    repo: Path, tmp_path: Path
+) -> None:
+    expected = expected_objects(repo)
+    limit = sorted(len(content) for _kind, content in expected.values())[len(expected) // 2]
+    judge = FakeJudge()
+    reading = _Reading(fmt_of(repo), ARRIVED, INFLATED, 60, str(tmp_path), max_object=limit)
+    feeder = _Feeder(reading, cast("git_judge.GitJudge", judge))
+    await _feed_in_pieces(feeder, repack_bytes(repo))
+    await feeder.finish()
+    assert feeder.refused is None
+    over = {oid for oid, (_kind, content) in expected.items() if len(content) > limit}
+    assert over and judge.unread == dict.fromkeys(over, "too_large")
+    assert {o.oid for o in judge.submitted} == expected.keys() - over
+
+
+async def test_content_over_the_limit_without_saying_so_is_a_failed_reader(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    liar = [sys.executable, "-c", f"print('blob {SHA1} 0 9'); print('012345678')"]
+    monkeypatch.setattr(_Reading, "argv", lambda self: liar)
+    judge = FakeJudge()
+    reading = _Reading("sha1", ARRIVED, INFLATED, 60, str(tmp_path), max_object=8)
+    feeder = _Feeder(reading, cast("git_judge.GitJudge", judge))
+    await feeder.finish()
+    assert feeder.refused == "failed"
+    assert judge.submitted == []
 
 
 async def test_a_truncated_pack_through_the_feeder(repo: Path, tmp_path: Path) -> None:
@@ -209,8 +262,9 @@ SHA1, SHA256 = "a" * 40, "b" * 64
 
 
 def test_header_accepts_both_object_formats() -> None:
-    assert _header(["blob", SHA1, "12", "5"], 100) == ("blob", SHA1, 12, 5)
-    assert _header(["commit", SHA256, "0", "100"], 100) == ("commit", SHA256, 0, 100)
+    assert _header(["blob", SHA1, "12", "5"], 100) == ("blob", SHA1, 12, 5, False)
+    assert _header(["commit", SHA256, "0", "100"], 100) == ("commit", SHA256, 0, 100, False)
+    assert _header(["blob", SHA1, "12", "50", "over"], 100) == ("blob", SHA1, 12, 50, True)
 
 
 @pytest.mark.parametrize(
@@ -227,6 +281,7 @@ def test_header_accepts_both_object_formats() -> None:
         ["blob", SHA1, "0", "101"],
         ["blob", SHA1, "0"],
         ["blob", SHA1, "0", "5", "extra"],
+        ["blob", SHA1, "0", "5", "over", "over"],
     ],
 )
 def test_header_rejects(words: list[str]) -> None:

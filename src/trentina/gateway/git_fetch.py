@@ -60,7 +60,7 @@ from ..unpack.git_pack import (
 )
 from ..unpack.git_pack import REASONS as PACK_REASONS
 from .git_chunks import gateway_chunk_key
-from .git_judge import GitJudge, flush_store
+from .git_judge import MAX_OBJECT_BYTES, GitJudge, flush_store
 from .git_wire import (
     PACKFILE_HEADER,
     FetchResponse,
@@ -207,6 +207,7 @@ class _Reading:
     max_inflated: int
     deadline: int
     spool_dir: str
+    max_object: int = MAX_OBJECT_BYTES
 
     def argv(self) -> list[str]:
         return [
@@ -216,6 +217,7 @@ class _Reading:
             self.object_format,
             str(self.max_arrived),
             str(self.max_inflated),
+            str(self.max_object),
             str(self.deadline),
             self.spool_dir,
         ]
@@ -250,7 +252,10 @@ class _Feeder:
                     stderr=asyncio.subprocess.DEVNULL,
                     env=environment(),
                 )
-            except OSError:
+            except OSError as exc:
+                logger.error(
+                    "git judge: pack reader not started: %s at %s", exc_kind(exc), exc_where(exc)
+                )
                 self.refused = "failed"
                 return None
             self._task = asyncio.ensure_future(self._read(self._proc))
@@ -323,23 +328,30 @@ class _Feeder:
             if len(words) == 2 and words[0] == "refused":
                 self.refused = words[1] if words[1] in PACK_REASONS else "failed"
                 return False
-            kind, oid, offset, length = _header(words, self._reading.max_inflated)
+            kind, oid, offset, length, over = _header(words, self._reading.max_inflated)
+            if over:
+                self._judge.submit_unread(oid, kind, "too_large")
+                continue
+            if length > self._reading.max_object:
+                raise ValueError("an object over the limit was sent")
             content = await stdout.readexactly(length)
             self._judge.submit(PackObject(oid=oid, kind=kind, content=content, offset=offset))
         self.refused = self.refused or "failed"  # it ended without saying so
         return False
 
 
-def _header(words: list[str], limit: int) -> tuple[str, str, int, int]:
-    """One object header from the reader child, or ValueError."""
-    if len(words) != 4 or words[0] not in _KINDS:
+def _header(words: list[str], limit: int) -> tuple[str, str, int, int, bool]:
+    """One object header from the reader child, or ValueError; the last field
+    is True for an object over the limit, sent without its content."""
+    over = words[4:] == ["over"]
+    if len(words) != 4 + over or words[0] not in _KINDS:
         raise ValueError("not an object header")
-    kind, oid, offset, length = words
+    kind, oid, offset, length = words[:4]
     if len(oid) not in _OID_HEX or not _HEX.issuperset(oid):
         raise ValueError("not an object id")
     if not (offset.isdigit() and length.isdigit()) or int(length) > limit:
         raise ValueError("not a length")
-    return kind, oid, int(offset), int(length)
+    return kind, oid, int(offset), int(length), over
 
 
 _KINDS = frozenset({OBJ_BLOB, OBJ_COMMIT, OBJ_TAG, OBJ_TREE})

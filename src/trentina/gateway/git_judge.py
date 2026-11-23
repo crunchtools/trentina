@@ -88,6 +88,10 @@ MAX_BACKLOG_BYTES = 256 * 1024 * 1024
 """Unit text waiting to be judged, held in memory. Past it, an object is
 unjudged (``backlog``), never silently dropped."""
 
+MAX_OBJECT_BYTES = 64 * 1024 * 1024
+"""Largest object the reader child hands the gateway. Past it the object is
+unjudged (``too_large``) and its bytes never leave the child."""
+
 MAX_TIP_BYTES = 64 * 1024 * 1024
 """Small text blobs kept until the pack ends, to judge the tip's whole."""
 
@@ -263,6 +267,15 @@ class GitJudge:
             self._record(obj.oid, state, None, None)
         for unit in units:
             self._add(unit, obj.oid, state)
+
+    def submit_unread(self, oid: str, kind: str, gap: str) -> None:
+        """An object the reader saw and did not hand over: unjudged, for ``gap``."""
+        if gap not in GAPS:
+            raise ValueError("not a gap")
+        if oid not in self._objects:
+            state = ObjectState(kind, _SOURCE_TYPE[kind])
+            state.gap = gap
+            self._objects[oid] = state
 
     def submit_names(self, names: Iterable[str], *, source_type: str = "git_refs") -> list[str]:
         """Queue ref names (and symref targets) as units; returns their ids.

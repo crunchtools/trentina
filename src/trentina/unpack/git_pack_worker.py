@@ -10,9 +10,11 @@ directory the gateway chose, and killed at the fetch's judging deadline.
 
 The pack arrives on stdin as it streams in. Each object it resolves is
 written to stdout as one header line, ``<kind> <oid> <offset> <length>``,
-then its content; the stream ends with ``end`` or ``refused <reason>``, a
-reason from ``git_pack.REASONS``. The parent checks every header for shape
-and every length against the limit before it reads the content.
+then its content; an object over the parent's per-object limit is the
+header alone with ``over`` after it, so the gateway never holds one. The
+stream ends with ``end`` or ``refused <reason>``, a reason from
+``git_pack.REASONS``. The parent checks every header for shape and every
+length against the limit before it reads the content.
 """
 
 from __future__ import annotations
@@ -36,23 +38,30 @@ own state. Bases are spooled to disk, not held."""
 READ_BYTES = 1024 * 1024
 """What is read from stdin at a time."""
 
-ARGUMENTS = 5
+ARGUMENTS = 6
 """argv after the program: object format, arrived bytes, inflated bytes,
-CPU seconds, spool directory."""
+object bytes, CPU seconds, spool directory."""
 
 
-def _send(out: IO[bytes], objects: Iterable[PackObject]) -> None:
+def _send(out: IO[bytes], objects: Iterable[PackObject], max_object: int) -> None:
     for obj in objects:
-        out.write(
-            b"%s %s %d %d\n" % (obj.kind.encode(), obj.oid.encode(), obj.offset, len(obj.content))
+        header = b"%s %s %d %d" % (
+            obj.kind.encode(),
+            obj.oid.encode(),
+            obj.offset,
+            len(obj.content),
         )
-        out.write(obj.content)
+        if len(obj.content) > max_object:
+            out.write(header + b" over\n")
+        else:
+            out.write(header + b"\n")
+            out.write(obj.content)
 
 
 def main(argv: list[str]) -> int:
     if len(argv) != ARGUMENTS + 1:
         return 2
-    object_format, arrived, inflated, cpu, spool = argv[1:]
+    object_format, arrived, inflated, max_object, cpu, spool = argv[1:]
     seconds = int(cpu)
     resource.setrlimit(resource.RLIMIT_CPU, (seconds, seconds))
     resource.setrlimit(resource.RLIMIT_AS, (MEMORY_BYTES, MEMORY_BYTES))
@@ -65,8 +74,8 @@ def main(argv: list[str]) -> int:
     try:
         # A pipe read returns what has arrived, so objects go out as the pack comes in.
         while piece := os.read(stdin, READ_BYTES):
-            _send(out, reader.feed(piece))
-        _send(out, reader.finish())
+            _send(out, reader.feed(piece), int(max_object))
+        _send(out, reader.finish(), int(max_object))
         out.write(b"end\n")
     except PackRefusedError as refused:
         out.write(b"refused %s\n" % refused.reason.encode())
