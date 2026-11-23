@@ -147,7 +147,7 @@ def resolve_profile_llm(
     return resolved, llm_keys[resolved].api_key, profile.defense.model
 
 
-def _judge_of(provider_name: str | None = None) -> str:
+def _failure_context(provider_name: str | None = None) -> str:
     """``profile=… provider=…`` for an L3 failure's log line. A provider's 403
     is a per-key spend cap as often as anything, and the key is the profile's
     own (a1126): without these the operator cannot tell which key ran dry."""
@@ -562,7 +562,7 @@ async def quarantine_verify(text: str) -> dict[str, Any]:
             turn="verify",
         )
     except QuarantineAgentError as exc:
-        logger.warning("Q-Agent verification failed: %s %s", exc_kind(exc), _judge_of())
+        logger.warning("Q-Agent verification failed: %s %s", exc_kind(exc), _failure_context())
         return {"injection_detected": False, "l3_unavailable": True}
     parsed.pop("_usage", None)
     return parsed
@@ -656,7 +656,7 @@ async def quarantine_redact(
         logger.warning("Q-Agent extraction stopped at the output-token cap")
         return CleanResult(refused_by="t2_truncated")
     except QuarantineAgentError as exc:
-        logger.warning("Q-Agent extraction failed: %s %s", exc_kind(exc), _judge_of())
+        logger.warning("Q-Agent extraction failed: %s %s", exc_kind(exc), _failure_context())
         return CleanResult(refused_by="t2_unavailable")
     return await _judge_extraction(extraction, content)
 
@@ -732,7 +732,9 @@ async def quarantine_detect(
                 turn="detection",
             )
     except QuarantineAgentError as exc:
-        logger.warning("Q-Agent detection failed: %s %s", exc_kind(exc), _judge_of(provider_name))
+        logger.warning(
+            "Q-Agent detection failed: %s %s", exc_kind(exc), _failure_context(provider_name)
+        )
         # "We could not ask" is not "no injection". The distinct marker lets
         # enforcement tell an unavailable judge from a clean verdict — a
         # block-mode profile fails closed on it, and the adversarial review
