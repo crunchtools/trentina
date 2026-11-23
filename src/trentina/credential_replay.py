@@ -40,7 +40,7 @@ from urllib.parse import quote
 import yaml
 
 from .gateway.guards import refused_credentials
-from .gateway.modes_policy import MODE_PARAM, PROMPT_PARAM
+from .gateway.modes_policy import MODE_PARAM, PROMPT_PARAM, SELECT_PARAM
 from .gateway.profile import DESTINATION_NAME_RE, Backend
 from .transforms.policy import PREPROCESS_PARAM
 
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
 Pair = tuple[str, str]  # (backend, tool)
-_GATEWAY_PARAMS = frozenset({MODE_PARAM, PROMPT_PARAM, PREPROCESS_PARAM})
+_GATEWAY_PARAMS = frozenset({MODE_PARAM, PROMPT_PARAM, PREPROCESS_PARAM, SELECT_PARAM})
 _SEP = "__"
 
 

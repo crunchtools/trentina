@@ -37,7 +37,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from ..config import get_config
-from ..errors import PromptParamGoneError
+from ..errors import PromptParamGoneError, SelectNotPermittedError
 from ..logsafe import redact_source
 from ..modes import Mode, ModePolicy, parse_mode_arg
 from ..transforms.policy import (
@@ -47,6 +47,7 @@ from ..transforms.policy import (
     PreProcessPolicy,
     switch_value,
 )
+from .field_select import SelectPathError, key_path, parse_paths
 from .guards import evaluate_constraint
 from .transform import resolve as resolve_preprocess_config
 
@@ -91,7 +92,9 @@ MODE_PARAM = "trentina_mode"
 # The redact question, as request guards address it. No longer an argument
 # (0.43.0): a call carrying one is refused.
 PROMPT_PARAM = "trentina_prompt"
-INSERTED_PARAMS = (MODE_PARAM, PROMPT_PARAM, PREPROCESS_PARAM)
+# Field select (#915): the leaves the call wants, by path (gateway/field_select.py).
+SELECT_PARAM = "trentina_select"
+INSERTED_PARAMS = (MODE_PARAM, PROMPT_PARAM, PREPROCESS_PARAM, SELECT_PARAM)
 
 _MODE_TEXT = {
     Mode.BLOCK: "block refuses flagged or incompletely judged content",
@@ -220,7 +223,7 @@ def mode_instructions(profile: Profile) -> str:
     }
     modes = [m for m in Mode if m.value in offered]
     if len(modes) < 2:
-        return _PREPROCESS_TEXT + _parts_text()
+        return _PREPROCESS_TEXT + _SELECT_TEXT + _parts_text()
     default = profile.defense.enforcement
     return (
         f"Content from every tool is judged by Trentina's three layers. Pass "
@@ -229,6 +232,7 @@ def mode_instructions(profile: Profile) -> str:
         + "; ".join(_MODE_TEXT[m] for m in modes)
         + ". A refusal lists the alternatives your policy allows. "
         + _PREPROCESS_TEXT
+        + _SELECT_TEXT
         + _parts_text()
     )
 
@@ -250,6 +254,48 @@ _PREPROCESS_TEXT = (
     f"editing and saving it back. true minifies a tool that returns exact text "
     f"by default. What is judged is exactly what is delivered."
 )
+
+
+_SELECT_TEXT = (
+    f' Pass {SELECT_PARAM}, a list of paths such as ["[].commit_id", '
+    f'"[].user.login"], to get only those values from a tool that returns JSON. '
+    f"SHAs, logins, timestamps, numbers, booleans and state words come back "
+    f"exact and unjudged. Anything else selected is judged under the mode."
+)
+
+
+def resolve_select(
+    backend: Backend, tool_name: str, arguments: dict[str, Any]
+) -> tuple[tuple[str, ...], ...] | None:
+    """The call's ``trentina_select`` paths, or None when it sent none (#915).
+
+    Offered on every remote, non-federated backend. An internal tool judges
+    its own ingress and returns its own shape, and a federated peer judges
+    before this gateway sees the bytes, so neither has a raw result to pick
+    from. A ``literal_request_guards`` entry on ``trentina_select`` holds each
+    path's ``key_path`` to it, as one on ``trentina_mode`` holds the mode;
+    ``deny: ["*"]`` turns select off for that tool.
+
+    Raises:
+        SelectNotPermittedError: the paths are malformed, the backend offers
+            no select, or a guard refuses a path.
+    """
+    value = arguments.get(SELECT_PARAM)
+    if value is None:
+        return None
+    # A decoy answers as a real remote tool would, so it is not excluded here.
+    if backend.is_internal or backend.federated is not None:
+        raise SelectNotPermittedError("not offered on this tool")
+    try:
+        paths = parse_paths(value)
+    except SelectPathError as exc:
+        raise SelectNotPermittedError(str(exc)) from None
+    guard = backend.literal_request_guards.get(tool_name, {}).get(SELECT_PARAM)
+    if guard is not None:
+        for path in paths:
+            if evaluate_constraint(key_path(path), guard) is not None:
+                raise SelectNotPermittedError("not permitted on this tool")
+    return paths
 
 
 def resolve_call(

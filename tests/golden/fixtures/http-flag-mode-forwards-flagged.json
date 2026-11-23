@@ -68,6 +68,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent2",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "POST"

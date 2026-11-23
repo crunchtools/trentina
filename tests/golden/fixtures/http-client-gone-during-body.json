@@ -43,6 +43,7 @@
    "normalized": null,
    "outcome": "cancelled",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 0,
    "tool": "POST"

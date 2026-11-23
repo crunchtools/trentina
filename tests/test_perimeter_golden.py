@@ -117,7 +117,8 @@ def _busy_reads_no_body(record: dict[str, Any]) -> dict[str, Any]:
 _COLUMNS = (
     "backend", "bytes_arrived", "bytes_delivered", "call_ref", "caller_peer", "caller_sub",
     "content_digest", "destination", "destination_kind", "detections_digest", "error_message",
-    "federated_verdict", "normalized", "outcome", "profile", "session", "success", "tool",
+    "federated_verdict", "normalized", "outcome", "profile", "selected", "session", "success",
+    "tool",
 )  # fmt: skip
 
 

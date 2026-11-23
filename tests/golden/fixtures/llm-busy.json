@@ -84,6 +84,7 @@
    "normalized": null,
    "outcome": "denied_guard",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 0,
    "tool": "messages"
@@ -104,6 +105,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -124,6 +126,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -144,6 +147,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -164,6 +168,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -184,6 +189,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -204,6 +210,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -224,6 +231,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -244,6 +252,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -264,6 +273,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -284,6 +294,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -304,6 +315,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -324,6 +336,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -344,6 +357,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -364,6 +378,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -384,6 +399,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -404,6 +420,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -424,6 +441,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -444,6 +462,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -464,6 +483,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -484,6 +504,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -504,6 +525,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -524,6 +546,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -544,6 +567,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -564,6 +588,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -584,6 +609,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -604,6 +630,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -624,6 +651,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -644,6 +672,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -664,6 +693,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -684,6 +714,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -704,6 +735,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -724,6 +756,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -744,6 +777,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -764,6 +798,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -784,6 +819,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -804,6 +840,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -824,6 +861,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -844,6 +882,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -864,6 +903,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -884,6 +924,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -904,6 +945,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -924,6 +966,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -944,6 +987,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -964,6 +1008,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -984,6 +1029,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1004,6 +1050,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1024,6 +1071,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1044,6 +1092,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1064,6 +1113,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1084,6 +1134,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1104,6 +1155,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1124,6 +1176,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1144,6 +1197,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1164,6 +1218,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1184,6 +1239,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1204,6 +1260,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1224,6 +1281,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1244,6 +1302,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1264,6 +1323,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1284,6 +1344,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1304,6 +1365,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1324,6 +1386,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1344,6 +1407,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"
@@ -1364,6 +1428,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"

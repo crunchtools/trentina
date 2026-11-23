@@ -28,7 +28,13 @@ from .destination import Destination, destination_of
 from .filter import filter_tools
 from .gatekeeper import judge_call
 from .guards import check_request_guards, refused_credentials
-from .modes_policy import MODE_PARAM, PROMPT_PARAM, resolve_call, resolve_preprocess
+from .modes_policy import (
+    MODE_PARAM,
+    PROMPT_PARAM,
+    resolve_call,
+    resolve_preprocess,
+    resolve_select,
+)
 from .names import resolve_name
 from .outbound import REASON_CREDENTIAL
 from .parts import _read_part
@@ -236,6 +242,7 @@ def _decoy_call(
     try:
         resolve_call(profile, backend, tool_name, arguments)
         resolve_preprocess(profile, backend, tool_name, arguments)
+        resolve_select(backend, tool_name, arguments)
     except (ModeNotPermittedError, TransformNotPermittedError) as exc:
         audit._audit(profile.name, backend_name, tool_name, Outcome.DECOY_TRIPPED, 0, str(exc))
         record_trip(profile.name, backend_name, tool_name, "decoy tool")

@@ -64,12 +64,14 @@ Matching uses `fnmatch.fnmatchcase()`, which matches across newlines — so `*NI
 ## Pipeline Position
 
 ```
-Tool in allowlist? → Literal request guards → Backend call → Literal response guards → Pre-process → Defense scan → Agent
+Tool in allowlist? → Literal request guards → Backend call → Literal response guards → Field select → Pre-process → Defense scan → Agent
 ```
 
-Two properties of that position are deliberate:
+Three properties of that position are deliberate:
 
 **Before pre-processing.** [Transforms](token-routing.md#defense-pipeline-interaction) collapse, summarize and paraphrase. A guard reading the transformed artifact would be matching text a model rewrote, and a literal the operator forbade could be dissolved on the way past. The guard reads the bytes the backend actually sent.
+
+**Before a [field select](field-select.md).** A guard reads the whole raw result, not the fields a call picked, so a call cannot select its way past a forbidden literal: if the result holds it anywhere, nothing is delivered, the projection included.
 
 **On internal backends too.** Internal (`internal://`) backends skip pre-processing and the defense scan, because the firewall already filtered that content where it *entered*. Egress policy is a different question — it is about who is asking, and the asker is the same either way — so literal response guards run regardless.
 

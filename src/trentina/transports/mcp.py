@@ -30,7 +30,7 @@ import json
 import logging
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 # This transport owns the gateway's ``tools/call`` path; its collaborators are
@@ -50,6 +50,7 @@ from ..gateway import (
     attestation,
     audit,
     discovery,
+    field_select,
     gatekeeper,
     paging,
     parts,
@@ -64,6 +65,7 @@ from ..gateway.context import (
     PartsOffer,
     current_call,
     current_federated_verdict,
+    current_select,
     current_session,
     profile_context,
 )
@@ -82,6 +84,7 @@ from ..gateway.modes_policy import (
     policy_for,
     resolve_call,
     resolve_preprocess,
+    resolve_select,
 )
 from ..gateway.names import NAMESPACE_SEP, served_name
 from ..gateway.parts import _part_reader
@@ -154,6 +157,8 @@ class McpParsed:
     minify: bool | None
     normalized: Normalized
     dest: Destination | None
+    # The ``trentina_select`` paths (#915), or None for a call without one.
+    select: tuple[tuple[str, ...], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -619,6 +624,50 @@ def _federated_recut_refusal(
     )
 
 
+def _selected(
+    arrived: Arrived,
+    paths: tuple[tuple[str, ...], ...] | None,
+    call_result: BackendCall,
+    ok: Outcome,
+) -> Assembled | Arrived:
+    """A ``trentina_select`` applied to an arrived result (#915).
+
+    ``arrived`` unchanged without a select, and for a backend error, whose
+    text is judged and delivered whole so the agent learns why the call
+    failed.
+
+    An ``Assembled`` when the call is answered here: the projection, every
+    leaf a typed value, delivered without the layers; or a refusal when the
+    result is not one JSON document. Otherwise the ``Arrived`` the rest of the
+    response edge judges: the projection as one text block and nothing else,
+    so what the layers read is exactly what is delivered and a flagged field
+    nobody selected is in neither.
+    """
+    if paths is None or arrived.is_error:
+        return arrived
+    try:
+        projection = field_select.project(
+            field_select.document_of(arrived.content_blocks, arrived.structured), paths
+        )
+    except ValueError as exc:
+        current_select.set(field_select.REFUSED)
+        refused = results._select_refusal(str(exc))
+        return Assembled(
+            results._executed(refused, call_result.is_error) if arrived.acted else refused,
+            Outcome.DENIED_RESPONSE_GUARD,
+            f"trentina_select: {exc}",
+            stripped=arrived.stripped,
+        )
+    block = {"type": "text", "text": projection.text}
+    if projection.safe:
+        current_select.set(field_select.UNJUDGED)
+        return Assembled(
+            {"content": [block], "isError": call_result.is_error}, ok, stripped=arrived.stripped
+        )
+    current_select.set(field_select.JUDGED)
+    return replace(arrived, content_blocks=[block], structured=None)
+
+
 def _federated_early(
     profile: Profile,
     backend: Backend,
@@ -923,6 +972,9 @@ class McpServerFace(Face):
         answered here, a bad mode or preprocess switch, or a guarded argument.
         """
         profile, req_id = ctx.profile, ctx.req_id
+        # Per call, not per request: a batch must not hand one call's select
+        # outcome to the next call's audit row.
+        current_select.set(None)
 
         routed = await self._route(ctx)
         if isinstance(routed, Early):
@@ -936,6 +988,7 @@ class McpServerFace(Face):
             preprocess, requested, minify = resolve_preprocess(
                 profile, backend, tool_name, arguments
             )
+            select = resolve_select(backend, tool_name, arguments)
         except (ModeNotPermittedError, TransformNotPermittedError) as exc:
             await request_edge.mark_refused_credentials(backend, tool_name, arguments)
             audit._audit(
@@ -992,6 +1045,7 @@ class McpServerFace(Face):
             minify=minify,
             normalized=normalized,
             dest=dest,
+            select=select,
         )
 
     async def deliver(
@@ -1120,20 +1174,30 @@ class McpServerFace(Face):
             acted=results._may_have_acted(backend, tool_name),
         )
 
+        # Field select (#915), on the raw result before anything rewrites it:
+        # typed leaves go out unjudged here, anything else continues as the
+        # projection alone. Never on a federated backend (resolve_select).
+        picked = _selected(arrived, parsed.select, call_result, ok)
+        arrived = picked if isinstance(picked, Arrived) else arrived
+
         # Before the transform, two federated early exits (#592): a peer's pin
         # call gate refusal mapped to our own "held on the secondary" words (E1c), and a
         # peer's trusted signed verdict served without re-judging (D2a). Both
         # fail-closed — anything else falls through to the full local pipeline.
-        early = _federated_early(
-            profile,
-            backend,
-            backend_name,
-            arrived,
-            call_result,
-            mode=mode,
-            policy=policy,
-            stripped=stripped,
-            ok=ok,
+        early = (
+            picked
+            if isinstance(picked, Assembled)
+            else _federated_early(
+                profile,
+                backend,
+                backend_name,
+                arrived,
+                call_result,
+                mode=mode,
+                policy=policy,
+                stripped=stripped,
+                ok=ok,
+            )
         )
         if early is not None:
             return early

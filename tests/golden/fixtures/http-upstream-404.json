@@ -43,6 +43,7 @@
    "normalized": null,
    "outcome": "tool_error",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 0,
    "tool": "GET"

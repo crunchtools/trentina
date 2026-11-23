@@ -29,6 +29,7 @@ from .context import (
     current_call,
     current_caller,
     current_federated_verdict,
+    current_select,
     current_session,
 )
 
@@ -69,6 +70,8 @@ def _audit(
     # Whether a federated response was served on the secondary's verdict or
     # re-judged here (#637). A closed value, decided in the response path.
     federated_verdict = current_federated_verdict.get()
+    # How a field-select call was delivered (#915), unjudged or judged.
+    selected = current_select.get()
     # The audit must never fail the call it records, and sqlite3.Error is not
     # all a write can raise (a closed connection, a thread-affinity
     # ProgrammingError, a full disk surfacing as OSError). A lost row is
@@ -93,6 +96,7 @@ def _audit(
             caller_peer=caller_peer,
             caller_sub=caller_sub,
             federated_verdict=federated_verdict,
+            selected=selected,
         )
     except Exception as exc:
         logger.warning("gateway: audit row lost profile=%s err=%s", profile, exc_kind(exc))

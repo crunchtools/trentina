@@ -74,6 +74,11 @@ current_origin: ContextVar[str | None] = ContextVar("current_origin", default=No
 current_federated_verdict: ContextVar[str | None] = ContextVar(
     "current_federated_verdict", default=None
 )
+# How a ``trentina_select`` call was delivered (#915): ``unjudged`` when every
+# picked leaf was a typed value no layer read, ``judged`` when the projection
+# went through the layers. Set on the response path, read by the audit, as
+# ``current_federated_verdict`` is. None for every call without a select.
+current_select: ContextVar[str | None] = ContextVar("current_select", default=None)
 
 
 def session_fingerprint(session_id: str) -> str:

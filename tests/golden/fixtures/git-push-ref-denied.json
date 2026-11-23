@@ -47,6 +47,7 @@
    "normalized": null,
    "outcome": "denied_allowlist",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 0,
    "tool": "push"

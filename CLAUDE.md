@@ -392,6 +392,13 @@ the real tool; keep it that way. `find_tools` reads only the served
 aggregate (`tool_search.py`), never a backend. Leave it off for Claude Code:
 its hooks key on real names.
 
+`trentina_select` (#915, `gateway/field_select.py`, `docs/field-select.md`)
+picks paths out of a remote tool's raw JSON before the transform. All leaves
+typed by key and value (hex SHA, login, ISO time, number, bool, closed word):
+delivered unjudged, `selected=unjudged` on the audit row, the layer contract's
+second stated exception (gap 35 is the login). Otherwise the projection alone
+takes the normal path. Response guards run before it on the whole result.
+
 Until 0.32.0 the mode was the tool's NAME prefix (#193), so the agent chose
 its own posture and nothing enforced it. Now the policy does:
 
