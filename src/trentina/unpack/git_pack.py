@@ -330,12 +330,6 @@ class PackReader:
     def arrived(self) -> int:
         return self._arrived
 
-    def tail_offset(self) -> int:
-        """Offset of the first unparsed byte: the start of the entry being read."""
-        if self._state == _BODY and self._cur is not None:
-            return self._cur.offset
-        return self._pos
-
     @contextlib.contextmanager
     def _final(self) -> Iterator[None]:
         """Remember a refusal raised inside: it is final."""

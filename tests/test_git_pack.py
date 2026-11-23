@@ -320,7 +320,6 @@ def test_byte_at_a_time(repo: Path) -> None:
     for i in range(len(pack)):
         seen += len(reader.feed(pack[i : i + 1]))
         assert reader.arrived == i + 1
-        assert reader.tail_offset() <= i + 1
     reader.finish()
     assert seen == reader.declared == reader.read
 
@@ -331,7 +330,6 @@ def test_reader_state_after_header(repo: Path) -> None:
     assert (reader.declared, reader.read, reader.arrived) == (0, 0, 0)
     reader.feed(pack[:12])
     assert reader.declared == len(expected_objects(repo))
-    assert reader.tail_offset() == 12
 
 
 def test_render_and_links_on_real_objects(repo: Path) -> None:
