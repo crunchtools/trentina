@@ -17,7 +17,8 @@ operation, and on a push which refs. It checks each against the profile's
 lists, injects the profile's forge token, and opens its own connection to
 the forge.
 
-**What a fetch brings back is judged** (spec 027 phase 1). The gateway
+**What a fetch brings back is judged when a grant says `enforcement: flag`**
+(spec 027 phase 1; opt-in, the default `none` is the pass-through below). The gateway
 reads every object in the pack as git reads it, inflating each entry,
 resolving deltas and hashing it itself, and judges it: text files as
 chunks of about 2 KB cut where a key only the gateway holds says, each read
@@ -55,6 +56,7 @@ profiles:
         push: [acme/widgets, acme/gadgets]
         push_refs: ['refs/heads/agent1/*']
         deny: ['*-private']
+        enforcement: flag   # judge what a fetch brings back; the default, none, passes it through
 ```
 
 `git_remotes`, at the top level, names each forge:
@@ -75,7 +77,7 @@ A profile's `git` block has one entry per remote it may use:
 | `push_refs` | Branch patterns a push may create or move, each under `refs/heads/`. Required with `push`. |
 | `deny` | Patterns refused for fetch and push alike, checked first. |
 | `show_refs` | Namespaces of the remote's `hidden_refs` this profile may list and fetch anyway, in the repositories it may fetch. `[refs/pull/]` lets a reviewing agent run `git fetch origin pull/7/head`. Each entry must be one the remote hides, or the file is refused. |
-| `enforcement` | What a flagged or unjudged object does. `flag` (the default and, in phase 1, the only value) delivers it and names it on git's side band. |
+| `enforcement` | Whether a fetch's objects and ref names are judged. `none`, the default, is a pass-through: the request and the forge's answer cross as before spec 027 (hidden refs are still dropped), nothing is judged, laned, rewritten or counted against `l3_daily_quota`, and the fields below do nothing. `flag` turns the judging on: a flagged or unjudged object is delivered and named on git's side band. |
 | `max_judged_pack_bytes` | Largest pack, as it arrived, whose objects are judged. Default 256 MiB. Past it the rest is delivered and named unjudged (`too_large`). |
 | `judge_deadline` | Seconds a fetch's judging may run, after delivery included. Default 900. What is left then is unjudged (`deadline`). |
 | `l3_daily_quota` | L3 judgements this grant's fetches may run per UTC day, apart from the profile's `defense.l3_daily_quota`. Default 2000; unset is unlimited. At the cap an object is unjudged (`l3_quota`). |
@@ -193,7 +195,9 @@ there and nothing is sent upstream.
     profile: it is listed, and a `ref-prefix` or `want-ref` naming it is
     forwarded. Its refs reach the agent like any branch, judged as any
     other, an outsider's pull request included.
-13. **What moves content off the judged path is taken out.** Before a fetch
+13. **What moves content off the judged path is taken out** (`enforcement: flag`
+    only; under `none` the request and the answer cross unchanged, items 13
+    and 14 included). Before a fetch
     request is checked, `thin-pack`, `packfile-uris` and `sideband-all` are
     removed from it, so the forge sends every object whole, in the pack, and
     parses exactly the bytes that were checked. A v0 or v1 fetch that did not
@@ -211,7 +215,7 @@ there and nothing is sent upstream.
 
 ### What a fetch tells the agent
 
-Under `enforcement: flag`, the only mode in phase 1, a fetch is delivered
+Under `enforcement: flag`, the only judging mode in phase 1 (the default `none` judges nothing and tells the agent nothing), a fetch is delivered
 as it arrives. The gateway holds back only the last 64 KiB of the pack,
 for up to 30 seconds after the forge's last byte, for the reading and the
 judging to catch up, and then writes its findings on git's side band, which git prints as
@@ -258,6 +262,9 @@ makes no progress for 5 minutes ends it.
 
 ## What is not enforced
 
+- **A grant on `enforcement: none` (the default) judges nothing.** What a
+  fetch brings back, and every name in a listing, crosses unread, as it did
+  before spec 027. Opt in per grant with `enforcement: flag`.
 - **A push's pack is not read.** It is the agent's own output, carried as
   it was written. Phase 3 adds a credential scan.
 - **History is judged in chunks.** A file at the tip of a branch the agent

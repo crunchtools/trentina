@@ -86,6 +86,7 @@ from .git_wire import (
     Command,
     GitRefusedError,
     PktReader,
+    RefFilter,
     RepoPath,
     check_upload_request,
     is_promisor_fetch,
@@ -183,6 +184,9 @@ class GitAdmitted(Admitted):
     protocol: str | None = None
     gzipped: bool = False
     hidden: tuple[bytes, ...] = ()
+    #: The grant's ``enforcement`` is ``flag``: this request takes the spec 027
+    #: path. False is 6.30.1's pass-through, and nothing below the fork runs.
+    judges: bool = False
 
     @property
     def lists_refs(self) -> bool:
@@ -248,6 +252,7 @@ class GitRoute(Route[GitAdmitted, InTree]):
             protocol=protocols[0] if protocols else None,
             gzipped=encoding == _GZIP,
             hidden=tuple(prefix.encode() for prefix in instance.options["hidden_refs"]),
+            judges=lists.judges,
         )
 
     async def deliver(self, admitted: GitAdmitted, ctx: InTree) -> Response:
@@ -411,6 +416,11 @@ def _admit_negotiation(arrived: bytes, admitted: GitAdmitted) -> Negotiation:
             raise GitRefusedError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "too_large")
         if not inflater.eof or inflater.unused_data:
             raise GitRefusedError(HTTPStatus.BAD_REQUEST, "malformed")
+    if not admitted.judges:
+        # 6.30.1: the request is checked and forwarded as it came.
+        return Negotiation(
+            body, check_upload_request(body, admitted.protocol, admitted.hidden), [], False
+        )
     try:
         body = strip_fetch_request(body, admitted.protocol)
     except ValueError:
@@ -536,6 +546,13 @@ async def _relayed(
     rewritten and its names judged; a fetch's pack is judged as it streams;
     a push's report has the forge's words replaced.
     """
+    if not admitted.judges:
+        listing = None
+        if admitted.lists_refs or (negotiation is not None and negotiation.lists_refs):
+            listing = RefFilter(admitted.hidden)
+        async for piece in _relay(ctx, resp, listing):
+            yield piece
+        return
     grant: GitGrant = ctx.grant.options["git"]
     source = f"git:{ctx.op.backend.removeprefix('git:')}/{admitted.path.slug}"
     if admitted.lists_refs or (negotiation is not None and negotiation.lists_refs):
@@ -564,3 +581,29 @@ async def _relayed(
         relayed = relay_fetch(ctx, resp, fetch)
     async for piece in relayed:
         yield piece
+
+
+async def _relay(ctx: InTree, resp: Any, listing: RefFilter | None) -> AsyncIterator[bytes]:
+    """The forge's answer for the client, counted as it passes (``enforcement: none``).
+
+    A ref listing goes through ``listing``, which drops hidden refs. Anything
+    else is passed on unread: it is a pack, or the side-band stream one
+    travels in. A stream that fails part-way simply ends, and git reads a
+    truncated listing or pack as the error it is.
+    """
+    op = ctx.op
+    try:
+        async for piece in ctx.chunks(resp):
+            op.received += len(piece)
+            passed = listing.feed(piece) if listing is not None else piece
+            if passed:
+                yield passed
+        if listing is not None:
+            listing.finish()
+        op.settle(Outcome.OK)
+    except ValueError:
+        logger.warning("git transport: a ref listing could not be filtered; ended it")
+        op.settle(Outcome.BLOCKED_DEFENSE, "advertisement")
+    except RefusedError as failed:
+        logger.warning("git transport: upstream %s mid-stream", failed.reason)
+        op.settle(Outcome.BACKEND_ERROR, failed.reason)

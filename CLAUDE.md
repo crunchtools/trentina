@@ -994,7 +994,8 @@ replaced.
   however the response ends, and holds every `send` to `IDLE_TIMEOUT`. One
   `gateway_calls` row per HTTP request (`git:<remote>`, `fetch`/`push`,
   `DestinationKind.GIT`). Reasons are the closed set `git_wire.REASONS`.
-  Since spec 027 phase 1 a fetch's answer is judged (`git_fetch.py`): the
+  A grant with `enforcement: flag` (default `none`: 6.30.1's pass-through, forked once on
+  `GitAdmitted.judges`) has its fetch's answer judged (`git_fetch.py`, spec 027 phase 1): the
   pack is read by `unpack/git_pack.py` (pure Python, no I/O, fuzzed against
   `git index-pack --strict`) in a child process (`unpack/git_pack_worker.py`:
   CPU and memory limits, no credential, killed at `judge_deadline`) as it

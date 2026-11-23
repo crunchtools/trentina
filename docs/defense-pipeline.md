@@ -569,7 +569,7 @@ one does; the rest name the benchmark that measured them.
     theirs.
 29. **What the git transport carries is judged in pieces, and a push not at all**
     (#453, spec 027). A profile with a `git` block clones, fetches and pushes
-    through `/proxy/git`. Since spec 027 phase 1 the gateway reads every
+    through `/proxy/git`. On a grant with `enforcement: flag` (opt-in; the default `none` is a pass-through that reads nothing) the gateway, since spec 027 phase 1, reads every
     object a fetch brings back as git reads it and judges it, and judges
     every name in a ref listing before listing it, under `flag`: what is
     flagged or could not be judged is delivered and named by object id on

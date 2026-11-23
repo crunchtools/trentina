@@ -102,8 +102,14 @@ def profile(
     push_refs: Sequence[str] = ("refs/heads/agent/*",),
     deny: Sequence[str] = ("*-private",),
     show_refs: Sequence[str] = (),
+    enforcement: str | None = "flag",
 ) -> Profile:
-    """A profile whose bearer is ``GATEWAY_TOKEN`` and whose grant is on ``REMOTE``."""
+    """A profile whose bearer is ``GATEWAY_TOKEN`` and whose grant is on ``REMOTE``.
+
+    Judging is on (``flag``) unless ``enforcement`` is None, which leaves the field
+    unset: the grant of a profile that never heard of spec 027.
+    """
+    judging: dict[str, Any] = {} if enforcement is None else {"enforcement": enforcement}
     grant = GitGrant(
         token_env="FORGE_TOKEN",
         fetch=list(fetch),
@@ -111,6 +117,7 @@ def profile(
         push_refs=list(push_refs),
         deny=list(deny),
         show_refs=list(show_refs),
+        **judging,
     )
     grant.token = SecretStr(FORGE_TOKEN)
     auth = AuthConfig(bearer_token_env="TOK")

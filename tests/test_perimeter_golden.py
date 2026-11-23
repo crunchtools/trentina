@@ -161,45 +161,6 @@ DELTAS["llm-unknown-provider"] = _gains_row(
 )
 
 
-#: Spec 027 phase 1 (a1062) changes what a git agent receives, on purpose:
-#:   * a ref listing is buffered whole (4 MiB) so every name in it is judged
-#:     before any is listed, so a listing the forge sent in pieces arrives as
-#:     one body;
-#:   * a fetch answer is held to git's own framing: under side-band-64k a pack
-#:     outside band 1 is not git's, and the answer is ended (``section``)
-#:     rather than passed on, since nothing could be judged in it.
-#: A clean listing's row is unchanged; a fetch row that judged a pack gains
-#: counts and a ``call_ref``, which no recorded case reaches.
-def _listing_sent_whole(record: dict[str, Any]) -> dict[str, Any]:
-    for exchange in record["exchanges"]:
-        messages = exchange["messages"]
-        bodies = [m for m in messages if m["type"] == "body" and m["body"]]
-        if len(bodies) > 1:
-            joined = dict(bodies[0], body="".join(m["body"] for m in bodies))
-            first = messages.index(bodies[0])
-            exchange["messages"] = [
-                m for m in messages if m not in bodies[1:] and m is not bodies[0]
-            ]
-            exchange["messages"].insert(first, joined)
-    return record
-
-
-def _pack_outside_side_band_is_ended(record: dict[str, Any]) -> dict[str, Any]:
-    for exchange in record["exchanges"]:
-        exchange["messages"] = [
-            m for m in exchange["messages"] if not (m["type"] == "body" and m["body"])
-        ]
-    for row in record["gateway_calls"]:
-        if row["tool"] == "fetch" and row["outcome"] == "ok":
-            row.update(outcome="blocked_defense", error_message="section", success=0)
-    return record
-
-
-DELTAS["git-refs-chunked"] = _listing_sent_whole
-DELTAS["git-upload-pack"] = _pack_outside_side_band_is_ended
-DELTAS["git-upload-pack-gzip"] = _pack_outside_side_band_is_ended
-
-
 def case(name: str) -> Callable[[Case], Case]:
     def deco(fn: Case) -> Case:
         CASES[name] = fn

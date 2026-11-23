@@ -2664,9 +2664,10 @@ class GitGrant(BaseModel):
     ``deny`` wins over both lists and may also be a bare name pattern, which
     then holds for every owner.
 
-    The gateway enforces the repository and, on a push, the ref. Since spec
-    027 every object a fetch brings back is judged and, under ``flag``, named
-    when flagged or unjudged; what a push carries is not read (known gap 29).
+    The gateway enforces the repository and, on a push, the ref. With
+    ``enforcement: flag`` (spec 027; the default ``none`` is a pass-through)
+    every object a fetch brings back is judged and named when flagged or
+    unjudged; what a push carries is not read (known gap 29).
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
@@ -2707,12 +2708,14 @@ class GitGrant(BaseModel):
             "pull request's head. Each must be one the remote hides."
         ),
     )
-    enforcement: Literal["flag"] = Field(
-        default="flag",
+    enforcement: Literal["none", "flag"] = Field(
+        default="none",
         description=(
-            "What a flagged or unjudged object in a fetch does (spec 027). flag "
-            "delivers it and names it by object id on git's side band. block, "
-            "which refuses the fetch, ships with object release in phase 2"
+            "Whether a fetch's objects and ref names are judged (spec 027). none, "
+            "the default, passes the forge's answer through unread, as before the "
+            "feature. flag judges them, delivers what is flagged or unjudged and "
+            "names it by object id on git's side band. block, which refuses the "
+            "fetch, ships with object release in phase 2"
         ),
     )
     max_judged_pack_bytes: int = Field(
@@ -2737,6 +2740,11 @@ class GitGrant(BaseModel):
             "At the cap an object is unjudged (l3_quota)"
         ),
     )
+
+    @property
+    def judges(self) -> bool:
+        """Whether this grant's fetches take the judged path (``enforcement: flag``)."""
+        return self.enforcement == "flag"
 
     @field_validator("token_env")
     @classmethod

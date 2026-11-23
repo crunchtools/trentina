@@ -124,9 +124,13 @@ class _Stack(SimpleNamespace):
 
 
 async def _stack(
-    monkeypatch: pytest.MonkeyPatch, forge: Any, *, show_refs: tuple[str, ...] = ()
+    monkeypatch: pytest.MonkeyPatch,
+    forge: Any,
+    *,
+    show_refs: tuple[str, ...] = (),
+    enforcement: str | None = "flag",
 ) -> AsyncIterator[_Stack]:
-    profiles = {"agent1": harness.profile(show_refs=show_refs)}
+    profiles = {"agent1": harness.profile(show_refs=show_refs, enforcement=enforcement)}
     active = SimpleNamespace(config=SimpleNamespace(git_remotes=harness.remotes()))
     monkeypatch.setattr(loader, "get_active_config", lambda: active)
     monkeypatch.setattr(egress, "_lookup", lambda _host, _port: [PUBLIC_ADDRESS])
@@ -1718,7 +1722,9 @@ class TestRemoteModel:
 class TestGrantModel:
     def test_the_judging_fields_default_and_accept_their_minimums(self) -> None:
         grant = _grant()
-        assert grant.enforcement == "flag"
+        assert grant.enforcement == "none"
+        assert not grant.judges
+        assert _grant(enforcement="flag").judges
         assert grant.max_judged_pack_bytes == 256 * 1024 * 1024
         assert grant.judge_deadline == DEFAULT_JUDGE_DEADLINE
         assert grant.l3_daily_quota == DEFAULT_L3_DAILY_QUOTA
