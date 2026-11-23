@@ -108,8 +108,9 @@ _AUTH_METHODS: tuple[AuthMethod, ...] = (
 )
 #: Only https leaves the gateway, with one exception: the ONE backend resource
 #: being brokered may be reached over plain http (its ping and protected-resource
-#: metadata) when its own host is named in TRENTINA_FETCH_PRIVATE_NAMES. The
-#: exception is scoped to that single host, never to the allowlist at large, and
+#: metadata) when its own host is named in TRENTINA_FETCH_PRIVATE_NAMES (with
+#: its port, `name:8000`, when that is not 80 or 443: a1063). The exception is
+#: scoped to that single host, never to the allowlist at large, and
 #: never to an authorization-server URL (issuer metadata, token, revocation,
 #: registration), which stay https-only always.
 _REQUIRE_HTTPS = True

@@ -114,8 +114,10 @@ class _Stack(SimpleNamespace):
     client: httpx.AsyncClient
 
 
-async def _stack(monkeypatch: pytest.MonkeyPatch, forge: Any) -> AsyncIterator[_Stack]:
-    profiles = {"agent1": harness.profile()}
+async def _stack(
+    monkeypatch: pytest.MonkeyPatch, forge: Any, *, show_refs: tuple[str, ...] = ()
+) -> AsyncIterator[_Stack]:
+    profiles = {"agent1": harness.profile(show_refs=show_refs)}
     active = SimpleNamespace(config=SimpleNamespace(git_remotes=harness.remotes()))
     monkeypatch.setattr(loader, "get_active_config", lambda: active)
     monkeypatch.setattr(egress, "_lookup", lambda _host, _port: [PUBLIC_ADDRESS])
@@ -141,6 +143,13 @@ async def _stack(monkeypatch: pytest.MonkeyPatch, forge: Any) -> AsyncIterator[_
 async def stack(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Stack]:
     """The gateway in front of a scripted forge."""
     async for running in _stack(monkeypatch, harness.Scripted()):
+        yield running
+
+
+@pytest.fixture
+async def shown(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Stack]:
+    """As ``stack``, for a profile whose grant shows ``refs/pull/``."""
+    async for running in _stack(monkeypatch, harness.Scripted(), show_refs=("refs/pull/",)):
         yield running
 
 
@@ -677,6 +686,51 @@ class TestWhatIsListedBack:
         stack.forge.body = _listing(ONE + b" refs/heads/main", TWO + b" refs/merge-requests/3/head")
         response = await stack.client.get(stack.url + REFS)
         assert response.content == _listing(ONE + b" refs/heads/main")
+
+
+class TestAShownNamespace:
+    """``show_refs`` un-hides a namespace for one profile, and only that one."""
+
+    async def test_it_is_listed_back(self, shown: _Stack) -> None:
+        listing = _listing(ONE + b" refs/heads/main", TWO + b" refs/pull/7/head")
+        shown.forge.body = listing
+        response = await shown.client.get(shown.url + REFS)
+        assert response.content == listing
+
+    async def test_an_ls_refs_for_it_is_forwarded(self, shown: _Stack) -> None:
+        shown.forge.body = _listing(TWO + b" refs/pull/7/head")
+        body = _v2(b"ls-refs", b"peel", b"ref-prefix refs/pull/7/head")
+        response = await shown.client.post(
+            f"{shown.url}/acme/widgets/git-upload-pack",
+            content=body,
+            headers={"Content-Type": UPLOAD_REQUEST, "Git-Protocol": "version=2"},
+        )
+        assert response.status_code == 200
+        assert response.content == shown.forge.body
+        assert shown.forge.bodies == [body]
+
+    async def test_another_namespace_the_remote_hides_stays_hidden(
+        self, shown: _Stack, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        remote = GitRemote(
+            upstream=f"https://{harness.FORGE_HOST}",
+            hidden_refs=["refs/pull/", "refs/merge-requests/"],
+        )
+        active = SimpleNamespace(config=SimpleNamespace(git_remotes={harness.REMOTE: remote}))
+        monkeypatch.setattr(loader, "get_active_config", lambda: active)
+        shown.forge.body = _listing(
+            TWO + b" refs/pull/7/head", TWO + b" refs/merge-requests/3/head"
+        )
+        response = await shown.client.get(shown.url + REFS)
+        assert response.content == _listing(TWO + b" refs/pull/7/head")
+
+    async def test_a_repository_it_may_not_fetch_is_still_refused(
+        self, shown: _Stack, audit_db: Path
+    ) -> None:
+        response = await shown.client.get(
+            f"{shown.url}/other/widgets/info/refs?service=git-upload-pack"
+        )
+        await _refused(audit_db, response, 403, "repo_not_listed")
 
 
 class TestWhatAPushMayMove:
@@ -1279,8 +1333,9 @@ needs_git = pytest.mark.skipif(
 )
 
 
-@pytest.fixture
-async def forge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[_Stack]:
+async def _real_forge(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, show_refs: tuple[str, ...] = ()
+) -> AsyncIterator[_Stack]:
     """The gateway in front of ``git http-backend`` serving ``acme/widgets``.
 
     ``main`` has one commit with an incompressible file, ``refs/pull/7/head``
@@ -1309,11 +1364,26 @@ async def forge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterato
     harness.git_sync(home, "commit", "-m", "an outsider's change", cwd=seed)
     harness.git_sync(home, "push", str(bare), "main", "outsider:refs/pull/7/head", cwd=seed)
     harness.git_sync(home, "push", str(bare), "refs/heads/topic/*:refs/heads/topic/*", cwd=seed)
-    async for running in _stack(monkeypatch, harness.Forge(bare.parent.parent, backend)):
+    real = harness.Forge(bare.parent.parent, backend)
+    async for running in _stack(monkeypatch, real, show_refs=show_refs):
         running.home = home
         running.bare = bare
         running.work = tmp_path / "clone"
         running.outsider = harness.git_sync(home, "rev-parse", "outsider", cwd=seed)
+        yield running
+
+
+@pytest.fixture
+async def forge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[_Stack]:
+    """See ``_real_forge``."""
+    async for running in _real_forge(monkeypatch, tmp_path):
+        yield running
+
+
+@pytest.fixture
+async def shown_forge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[_Stack]:
+    """``forge``, for a profile whose grant shows ``refs/pull/``."""
+    async for running in _real_forge(monkeypatch, tmp_path, show_refs=("refs/pull/",)):
         yield running
 
 
@@ -1429,6 +1499,26 @@ class TestRealGit:
         assert "count: 0" in objects and "in-pack: 0" in objects, "nothing was fetched"
         if version == "2":
             assert "hidden_ref" in {row["error_message"] for row in _rows(audit_db)}
+
+    @pytest.mark.parametrize("version", ["0", "2"])
+    async def test_a_profile_shown_pull_refs_fetches_one_by_name(
+        self, shown_forge: _Stack, version: str
+    ) -> None:
+        forge = shown_forge
+        harness.git_sync(forge.home, "init", "-b", "main", str(forge.work))
+        code, output = await harness.git(
+            forge.home,
+            forge.port,
+            "-c",
+            f"protocol.version={version}",
+            "fetch",
+            "GATEWAY/acme/widgets",
+            "pull/7/head",
+            cwd=forge.work,
+        )
+        assert code == 0, output
+        fetched = harness.git_sync(forge.home, "rev-parse", "FETCH_HEAD", cwd=forge.work)
+        assert fetched.strip() == forge.outsider.strip()
 
     async def test_a_want_by_object_id_is_not_closed(self, forge: _Stack) -> None:
         """Known gap 29, held open here against a real server: hiding the
@@ -1549,6 +1639,11 @@ class TestGrantModel:
         assert grant.allows("fetch", "anyone", "public") is None
         assert grant.allows("fetch", "acme", "x-widgets") == "repo_not_listed"
 
+    @pytest.mark.parametrize("prefix", ["refs/pull", "pull/", "refs/", "refs/../x/"])
+    def test_a_shown_namespace_is_a_refs_prefix(self, prefix: str) -> None:
+        with pytest.raises(ValidationError):
+            _grant(show_refs=[prefix])
+
     def test_push_refs_match_branches_and_a_star_crosses_slashes_there(self) -> None:
         grant = _grant(push=["acme/widgets"], push_refs=["refs/heads/agent/*", "refs/heads/wip"])
         assert grant.may_move("refs/heads/agent/x")
@@ -1648,6 +1743,22 @@ class TestLoader:
     def test_a_dangling_remote_fails_closed(self, tmp_path: Path) -> None:
         with pytest.raises(ProfileConfigError, match="not a git_remotes entry"):
             self._load(tmp_path, _YAML.replace("  forge:\n    upstream", "  other:\n    upstream"))
+
+    def test_a_grant_may_be_shown_a_namespace_its_remote_hides(self, tmp_path: Path) -> None:
+        text = _YAML.replace(
+            "deny: ['*-private']", "deny: ['*-private']\n        show_refs: [refs/pull/]"
+        )
+        config = self._load(tmp_path, text)
+        assert config.profiles["agent1"].git["forge"].show_refs == ["refs/pull/"]
+
+    def test_showing_a_namespace_the_remote_does_not_hide_fails_closed(
+        self, tmp_path: Path
+    ) -> None:
+        text = _YAML.replace(
+            "deny: ['*-private']", "deny: ['*-private']\n        show_refs: [refs/merge-requests/]"
+        )
+        with pytest.raises(ProfileConfigError, match="does not hide"):
+            self._load(tmp_path, text)
 
     def test_a_git_block_with_no_git_remotes_section_fails_closed(self, tmp_path: Path) -> None:
         with pytest.raises(ProfileConfigError, match="not a git_remotes entry"):

@@ -18,7 +18,21 @@ under that name.
 
 - **L3 stops flagging LLM completions for their envelope under gemini-2.5-flash-lite (a1013).** The completion edge handed L3 the raw response body with no briefing, and 2.5 read `reasoning.encrypted` ciphertext as `hidden_content` and security reviews as `data_exfiltration`: 110 of 614 Gatehouse completions flagged in production after the switch, against 10 of 6,389 before. `judge_llm_completion` now briefs L3 with `prompts.COMPLETION_BRIEFING`, and no other edge does: the provider's envelope is excused and nothing else is (an encoded value in the answer, reasoning or tool arguments is content), what to flag is examples with the pack's beacon category among them, and findings are described in 2.5's own words, since quoting non-ASCII payload text looped it to `MAX_OUTPUT_TOKENS` (`TruncatedResponseError`, 25 in five hours). Whether an excused field is really ciphertext is decided in code, not by L3: `gateway/completion_envelope.py` flags a completion (L1, high, a detection row) whose `signature`, or encrypted-reasoning `data`, is anything but one base64 token no layer can read. The 2.5 prompt pack is unchanged; a pack-level rule is #908.
 
+## [6.28.0] - 2026-11-23
+
+**Migration:** `TRENTINA_FETCH_PRIVATE_NAMES` keeps the port rule now (a1063, #912). A deployment that reaches a listed name on a port other than 80/443 must name it, e.g. `mcp-gw-personal:8000`, or those fetches fail `egress_port`.
+
+### Added
+
+- **`git.<remote>.show_refs`: a profile may fetch a pull request's head by name (a1046).** `refs/pull/` stays hidden by every remote by default, so `git fetch origin pull/7/head` was refused with a bare HTTP 403 (`hidden_ref`; git prints no reason mid-RPC) and a reviewing seat had to guess the head branch, which a fork's pull request does not have. A grant that lists a namespace of its remote's `hidden_refs` in `show_refs` is shown it, in the repositories it may fetch: listed back, and a `ref-prefix` or `want-ref` naming it forwarded. A namespace the remote does not hide fails the load. An agent's reload already holds its own `git` block, so only an operator grants it.
+- `.specify/specs/027-git-pack-judging/spec.md`: spec 027, judging what the git transport carries (gap 29, #909). Design only; nothing ships with it.
+
+### Fixed
+
+- **`TRENTINA_FETCH_PRIVATE_NAMES` no longer lifts the address rule for an IP literal (a1067).** `check_url` matched the URL's spelling against the list, so a listed `::1`, `[::1]:8000` or `127.1` let a fetch reach loopback. An entry that is an address in any spelling the resolver accepts is now dropped with a warning, and `check_url` never matches a literal against the list.
+- **`TRENTINA_FETCH_PRIVATE_NAMES` no longer lifts the port rule by itself (a1063).** A listed name could reach any port, so a fixture or lab name was a licence to walk every service on that host; `TRENTINA_FETCH_ALLOW_PRIVATE` never lifted it. A bare name now keeps `fetch`'s and `forward`'s ports (80/443). `name:8000` adds that port for that name and `name:*` every port; an entry whose port is not one is dropped with a warning. **Migration:** a deployment that reaches a listed name on another port must name it, e.g. `mcp-gw-personal:8000` for #778's plain-http OAuth brokering, which otherwise fails `egress_port`. The benchmark workflow now lists its fixtures as `name:*`.
 - **`sdlc ci`'s image-tests fit a 4 GB seat (a1000).** They ran a fixed `-n 4`, and every xdist worker loads the L2 model (1.5 GB at peak, measured) and starts an OCR or PDF child of about the same, so a 4 GB seat had workers killed for memory until the run failed. They now pass `-n auto --worker-mb 1800`, and `tests/conftest.py` sizes `-n auto` from the memory the tightest cgroup from the process to the root can still take (and `MemAvailable`), never above the CPU count. One that fits runs in-process. `--maxprocesses 4` keeps the GitHub runners at the four they ran; without `--worker-mb`, `-n auto` is xdist's own.
+- **`llm_completion` detection rows carry `profile`, `backend` and `direction` (#902).** `judge_llm_completion` called `defend()` with no attribution, so every `/proxy/llm` response-edge row had them NULL while the request-edge row from the same call had them; a per-backend query undercounted. The row now reads `direction=response`, `backend=llm:<provider>`, and `blocked` is true only for a profile whose `defense.llm_completion` is `block` (flag has already streamed the completion).
 
 ## [6.27.0] - 2026-11-22
 
@@ -31,7 +45,6 @@ under that name.
 ### Fixed
 
 - **L1 counts a `/proxy/llm` request whole again (#866, gap 34).** Since requests were cut into units (a341), L1 graded each message on its own, so four markers split over two messages were two mediums and flagged nothing. Each unit's `OutboundVerdict` now carries L1's suspicious count, and `request_units.merge` grades the sum: past L1's threshold the request is flagged by L1, and refused under `block`. L1 still reads each unit once, and a kept verdict carries its count.
-- **`llm_completion` detection rows carry `profile`, `backend` and `direction` (#902).** `judge_llm_completion` called `defend()` with no attribution, so every `/proxy/llm` response-edge row had them NULL while the request-edge row from the same call had them; a per-backend query undercounted. The row now reads `direction=response`, `backend=llm:<provider>`, and `blocked` is true only for a profile whose `defense.llm_completion` is `block` (flag has already streamed the completion).
 - **A request L1 flags on its summed count writes a detection row (#866 follow-up).** No unit's `defend` flagged, so none wrote one; `judge_units` now does, under the profile's `defense.audit`, with the summed count and the number of units in `layer1_stats`. `request_units.merge` takes `mode` as a required argument: its `flag` default would have let a caller skip a refusal under `block`.
 
 ### Security

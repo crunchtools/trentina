@@ -1555,7 +1555,8 @@ def _load_git_remotes(section: Any, registry: dict[str, Profile]) -> dict[str, G
 
     Raises:
         ProfileConfigError: the section is not a mapping, a name or an entry
-            does not validate, or a profile names a remote that is not here.
+            does not validate, a profile names a remote that is not here, or
+            shows a namespace that remote does not hide.
     """
     if section is None:
         section = {}
@@ -1574,6 +1575,17 @@ def _load_git_remotes(section: Any, registry: dict[str, Profile]) -> dict[str, G
                 f"{'.'.join(map(str, e['loc'])) or 'entry'}: {e['msg']}" for e in exc.errors()
             )
             raise ProfileConfigError(f"git_remotes.{name}: {reasons}") from exc
+    _check_git_grants(remotes, registry)
+    return remotes
+
+
+def _check_git_grants(remotes: dict[str, GitRemote], registry: dict[str, Profile]) -> None:
+    """Hold every profile's ``git`` block to the remotes the file configures.
+
+    Raises:
+        ProfileConfigError: a profile names a remote that is not here, or
+            shows a namespace that remote does not hide.
+    """
     for profile_name, profile in sorted(registry.items()):
         for remote in profile.git:
             if remote not in remotes:
@@ -1581,7 +1593,13 @@ def _load_git_remotes(section: Any, registry: dict[str, Profile]) -> dict[str, G
                     f"Profile {profile_name!r} git names remote {remote!r}, "
                     "which is not a git_remotes entry"
                 )
-    return remotes
+            if set(profile.git[remote].show_refs) - set(remotes[remote].hidden_refs):
+                # A namespace the remote never hid shows nothing: a typo that
+                # reads as a grant.
+                raise ProfileConfigError(
+                    f"Profile {profile_name!r} git.{remote}.show_refs lists a "
+                    "namespace that remote does not hide"
+                )
 
 
 def _load_egress_upstreams(section: Any, registry: dict[str, Profile]) -> dict[str, EgressUpstream]:

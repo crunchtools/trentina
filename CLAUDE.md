@@ -277,7 +277,8 @@ new pattern goes into that file's attack, benign and linearity tables.
   (#535, for #507): host in the instance's and the grant's `hosts`, by name,
   ports 80/443, no redirect, no credential, both edges judged.
   `TRENTINA_FETCH_PRIVATE_NAMES` (exact names, warned) exempts a fixture
-  name from the address rule and the port rule. `/proxy/<name>/{instance}/...` for a `dist:` route
+  name from the address rule; the port rule too only for `name:port` or
+  `name:*` (a1063). `/proxy/<name>/{instance}/...` for a `dist:` route
   plugin. Every `/proxy/*` path and CONNECT is mounted by
   `transports.registry.mount_routes`/`start_listeners`; nothing else serves one.
 - `GET|POST /proxy/git/{remote}/{owner}/{repo}[.git]/{info/refs,git-upload-pack,git-receive-pack}` —
@@ -970,7 +971,9 @@ replaced.
   repositories a profile's `git.<remote>` lists (`GitGrant`, `GitRemote` in
   `profile.py`; top-level `git_remotes`). `git_wire.py` is the reading, with
   no I/O: the path, pkt-lines, a push's command list, an upload-pack
-  request, and `RefFilter` for ref listings. `git_transport.py` is the
+  request, and `RefFilter` for ref listings. A grant's `show_refs` takes
+  namespaces out of its remote's `hidden_refs` for that profile alone
+  (`perimeter._bind_git`). `git_transport.py` is the
   route: caller by bearer (`resolve_profile_by_token`), every header and the
   URL built from validated parts, the profile's token injected as Basic,
   upstream through `egress.open_pinned` on `upstream.checked_target`'s

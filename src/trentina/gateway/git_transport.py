@@ -28,7 +28,8 @@ What it decides, in order, each one deterministic:
   checked. No redirect is followed: a renamed repository would otherwise
   carry the injected token to a repository nobody matched.
 - **what is listed back**: refs under a hidden namespace (``refs/pull/`` by
-  default) are dropped from ref advertisements and ``ls-refs`` answers.
+  default) are dropped from ref advertisements and ``ls-refs`` answers,
+  unless the profile's grant lists that namespace in ``show_refs``.
 
 What it does not decide is anything inside a pack. The gateway terminates
 this connection, so that is a choice and not a limit: a pack is compressed

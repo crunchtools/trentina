@@ -240,7 +240,10 @@ def _bind_git(asked: Binding) -> Bound | None:
             name=asked.name,
             type="git",
             origins={"origin": Origin(remote.host)},
-            options={"hidden_refs": tuple(remote.hidden_refs)},
+            # What the remote hides, less what this profile's grant shows.
+            options={
+                "hidden_refs": tuple(p for p in remote.hidden_refs if p not in lists.show_refs)
+            },
         ),
         grant=Grant(
             origins=frozenset({"origin"}),
@@ -710,15 +713,14 @@ def _dial(
             raise RefusedError("port") from None
         # An explicit :0 is a port asked for, not the default: refused below.
         port = named if named is not None else HTTPS_PORT if parts.scheme == "https" else HTTP_PORT
-        # A name the operator let reach a private address by env (a benchmark's
-        # fixtures, on ports the runner picks) is let reach any port on it too:
-        # the port rule stops an agent walking internal services, which is the
-        # decision that name already carries (cto, #535).
-        private = host in get_config().fetch_private_names
+        # A name the operator let reach a private address by env keeps the
+        # route's ports unless its entry names the port (`name:8000`, `name:*`;
+        # a benchmark's fixtures, on ports the runner picks): the port rule
+        # stops an agent walking internal services (a1063, was #535).
         if (
             parts.scheme not in ("http", "https")
             or port == 0
-            or (port not in route.ports and not private)
+            or (port not in route.ports and not get_config().private_name_port(host, port))
         ):
             raise RefusedError("port")
         if not is_dns_name(host) or (

@@ -501,6 +501,120 @@ class TestEscapeHatch:
         assert config_mod.Config().fetch_allow_private is False
 
 
+class TestPrivateNames:
+    """TRENTINA_FETCH_PRIVATE_NAMES lifts the address rule for a name, and the
+    port rule only for a port its entry names (a1063)."""
+
+    @staticmethod
+    def _names(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+        monkeypatch.setenv("TRENTINA_FETCH_PRIVATE_NAMES", value)
+        config_mod._config = None
+        route(monkeypatch, lambda _r: httpx.Response(200, text="inside"), {"lab": ["10.0.0.9"]})
+
+    async def test_a_bare_name_keeps_the_port_rule(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._names(monkeypatch, "lab")
+        content, _, _ = await fetch_url("http://lab/")
+        assert content == "inside"
+        assert (await _refusal("http://lab:8019/")).reason == "port"
+
+    async def test_a_named_port_is_that_port_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._names(monkeypatch, "lab:8019")
+        content, _, _ = await fetch_url("http://lab:8019/")
+        assert content == "inside"
+        assert (await _refusal("http://lab:8020/")).reason == "port"
+
+    async def test_a_star_is_every_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._names(monkeypatch, "lab:*")
+        content, _, _ = await fetch_url("http://lab:8020/")
+        assert content == "inside"
+
+    async def test_a_port_opens_nothing_for_another_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._names(monkeypatch, "lab:*")
+        assert (await _refusal("http://other.example:8020/")).reason == "port"
+
+    def test_entries_parse(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setenv(
+            "TRENTINA_FETCH_PRIVATE_NAMES",
+            "Lab., lab:8000 fix.test:*,fix.test:9000 "
+            "a.test:http b.test:0 c.test:70000 d.test:\u00b2 ::1 [FD00::9]:8000 "
+            "e.test:*:* :8000 f.test: [::1 [::2]x [nope]:80 1:2:zz [::3]:",
+        )
+        config = config_mod.Config()
+        assert config.fetch_private_ports == {
+            "lab": frozenset({8000}),
+            "fix.test": None,
+        }
+        assert config.fetch_private_names == frozenset({"lab", "fix.test"})
+        assert caplog.text.count("is an IP address; dropped") == 2
+        assert config.private_name_port("lab", 8000)
+        assert not config.private_name_port("lab", 8001)
+        assert config.private_name_port("fix.test", 1)
+        assert not config.private_name_port("a.test", 80)
+        assert "port is not one" in caplog.text
+        assert caplog.text.count("is not a name; dropped") == 8
+        assert "a.test:http" not in caplog.text
+        assert "e.test" not in caplog.text
+
+    def test_names_with_ports_survive_and_addresses_do_not(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a1067: an address in any spelling is dropped, with or without a port."""
+        monkeypatch.setenv(
+            "TRENTINA_FETCH_PRIVATE_NAMES",
+            "mcp-gw-personal:8000 lab:* [::1]:8000 ::1 127.0.0.1:80 127.1 "
+            "2130706433:* 0x7f.1 0x7f000001",
+        )
+        config = config_mod.Config()
+        assert config.fetch_private_ports == {
+            "mcp-gw-personal": frozenset({8000}),
+            "lab": None,
+        }
+        assert caplog.text.count("is an IP address; dropped") == 7
+        assert "127.1" not in caplog.text
+
+    @pytest.mark.parametrize(
+        ("url", "reason"),
+        [
+            ("http://[::1]/", "non_global_address"),
+            ("http://[::1]:8019/", "port"),
+            ("http://127.0.0.1/", "non_global_address"),
+            ("http://127.1:8019/", "port"),
+            ("http://2130706433/", "non_global_address"),
+            ("http://0x7f.1/", "non_global_address"),
+            ("http://0x7f000001:8019/", "port"),
+        ],
+    )
+    async def test_check_url_lifts_nothing_for_a_literal(
+        self, monkeypatch: pytest.MonkeyPatch, url: str, reason: str
+    ) -> None:
+        """Even with a literal on the set by some other road, check_url holds both rules."""
+        listed = ("::1", "127.0.0.1", "127.1", "2130706433", "0x7f.1", "0x7f000001")
+        monkeypatch.setattr(config_mod.get_config(), "fetch_private_ports", dict.fromkeys(listed))
+        monkeypatch.setattr(egress, "_lookup", lambda _h, _p: ["127.0.0.1"])
+        with pytest.raises(EgressRefusedError) as exc:
+            await egress.check_url(url)
+        assert exc.value.reason == reason
+
+    async def test_a_redirect_to_another_port_on_the_name_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The listed name on 443 cannot bounce the fetch to its own :8443."""
+        seen: list[int | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.url.port)
+            return httpx.Response(302, headers={"location": "https://lab:8443/admin"})
+
+        self._names(monkeypatch, "lab")
+        route(monkeypatch, handler, {"lab": ["10.0.0.9"]})
+        assert (await _refusal("https://lab/")).reason == "port"
+        assert seen == [None]
+
+
 class TestDeliveredAsARefusal:
     """The agent gets a refusal with no way round it; the audit calls it a block."""
 

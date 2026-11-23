@@ -67,6 +67,7 @@ A profile's `git` block has one entry per remote it may use:
 | `push` | `owner/name` patterns the profile may push to. A list, never a switch: a repository that is fetched is not thereby pushed to. |
 | `push_refs` | Branch patterns a push may create or move, each under `refs/heads/`. Required with `push`. |
 | `deny` | Patterns refused for fetch and push alike, checked first. |
+| `show_refs` | Namespaces of the remote's `hidden_refs` this profile may list and fetch anyway, in the repositories it may fetch. `[refs/pull/]` lets a reviewing agent run `git fetch origin pull/7/head`. Each entry must be one the remote hides, or the file is refused. |
 
 Repository patterns are lower-case and compared with the owner and name the
 caller asked for, lower-cased. `*` stands for any run of name characters and
@@ -177,7 +178,10 @@ there and nothing is sent upstream.
     streams past. So is a ref whose name is over 255 bytes or holds anything
     but printable ASCII: a name is delivered unjudged, so it is held to what
     cannot hide a character. Such a branch cannot be fetched by name through
-    this route.
+    this route. A namespace in the grant's `show_refs` is not hidden for that
+    profile: it is listed, and a `ref-prefix` or `want-ref` naming it is
+    forwarded. Its refs reach the agent like any branch, pack unread, an
+    outsider's pull request included.
 
 The headers sent upstream are built by the gateway: the profile's token as
 HTTP Basic, `User-Agent`, `Accept`, `Content-Type`, the validated
