@@ -41,6 +41,7 @@ import hashlib
 import logging
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -107,6 +108,17 @@ VERDICT_TTL = 30 * 24 * 3600.0
 content and the stamp names the judge, so a verdict holds until the stamp
 changes; the cap bounds what a judge later found wanting still serves."""
 
+READ_THREADS = 2
+"""Worker threads reading objects (chunking, tree entries, rendering) for all
+fetches in the gateway at once; the event loop never does that work."""
+
+INLINE_BYTES = 4096
+"""An object this small is read on the loop: a hop to a thread would cost
+more than the read."""
+
+ADD_YIELD = 512
+"""Units recorded on the loop between turns given back to it."""
+
 _MEMORY_MAX = 65536
 _memory: OrderedDict[str, tuple[float, dict[str, Any] | None]] = OrderedDict()
 """Verdicts this process reached or read back, ahead of the store."""
@@ -126,6 +138,9 @@ GAPS = frozenset(
 )
 
 CLEAN: dict[str, Any] | None = None
+
+
+_POOL = ThreadPoolExecutor(READ_THREADS, thread_name_prefix="git-read")
 
 
 @dataclass
@@ -173,6 +188,18 @@ class ObjectState:
         return self.waiting == 0
 
 
+@dataclass
+class _Read:
+    """What reading one object found: pure data, recorded later on the loop."""
+
+    units: list[Unit]
+    encoding: str | None = None
+    tree: list[tuple[str, str, str]] | None = None
+    commit_tree: str | None = None
+    tag_target: str | None = None
+    small: bool = False  # a text blob small enough to keep for the tip's whole
+
+
 @dataclass(frozen=True)
 class Outcome:
     """What a fetch's objects came to, for the side band and the row."""
@@ -187,7 +214,7 @@ class Outcome:
 class GitJudge:
     """The judging of one fetch's objects, fed as the pack is read.
 
-    ``submit`` is cheap and synchronous: it turns an object into units and
+    ``add`` turns an object into units (a large one in a worker thread) and
     queues those not already decided. ``start`` runs the judging as a task of
     its own, outside the request, so a fetch delivered under ``flag`` before
     its last verdict goes on being judged, its verdicts warming the cache and
@@ -231,6 +258,7 @@ class GitJudge:
         self._objects: dict[str, ObjectState] = {}
         self._units: dict[str, Unit] = {}
         self._queue: asyncio.Queue[Unit | None] = asyncio.Queue()
+        self._lane = asyncio.Lock()
         self._backlog = 0
         self._trees: dict[str, list[tuple[str, str, str]]] = {}
         self._commit_trees: dict[str, str] = {}
@@ -258,24 +286,79 @@ class GitJudge:
     # --- feeding -------------------------------------------------------------
 
     def submit(self, obj: PackObject) -> None:
-        """Turn one resolved object into units and queue what is undecided."""
-        if obj.oid in self._objects:
+        """Read one resolved object on the calling thread and queue its undecided units.
+
+        For small objects and callers with no loop to spare; ``add`` is the
+        feeder's way in.
+        """
+        if (state := self._begin(obj)) is None:
             return
+        try:
+            read = self._read_object(obj)
+        except Exception as exc:  # a reader bug is an unjudged object, not a crash
+            self._failed(state, exc)
+            return
+        for unit in self._take(obj, state, read):
+            self._add(unit, obj.oid, state)
+
+    async def add(self, obj: PackObject) -> None:
+        """Like ``submit``, with the reading of a large object done in a worker thread.
+
+        One object at a time per fetch (the lane), and ``READ_THREADS`` across
+        the gateway, so neither a backlog nor a crowd of fetches grows the
+        work; all state is recorded back on the loop, in arrival order.
+        """
+        if len(obj.content) <= INLINE_BYTES:
+            self.submit(obj)
+            await asyncio.sleep(0)  # a run of small objects still gives the loop a turn
+            return
+        if (state := self._begin(obj)) is None:
+            return
+        async with self._lane:
+            try:
+                read = await asyncio.get_running_loop().run_in_executor(
+                    _POOL, self._read_object, obj
+                )
+            except asyncio.CancelledError:
+                state.gap = "deadline"  # the thread finishes alone; its result is dropped
+                raise
+            except Exception as exc:
+                self._failed(state, exc)
+                return
+        for count, unit in enumerate(self._take(obj, state, read), 1):
+            self._add(unit, obj.oid, state)
+            if count % ADD_YIELD == 0:
+                await asyncio.sleep(0)
+
+    def _begin(self, obj: PackObject) -> ObjectState | None:
+        if obj.oid in self._objects:
+            return None
         state = ObjectState(obj.kind, _SOURCE_TYPE[obj.kind])
         self._objects[obj.oid] = state
-        try:
-            units, encoding = self._units_of(obj)
-        except Exception as exc:  # a reader bug is an unjudged object, not a crash
-            logger.warning("git judge: object not read: %s at %s", exc_kind(exc), exc_where(exc))
-            state.gap = "failed"
-            return
-        if encoding is not None:
+        return state
+
+    @staticmethod
+    def _failed(state: ObjectState, exc: Exception) -> None:
+        logger.warning("git judge: object not read: %s at %s", exc_kind(exc), exc_where(exc))
+        state.gap = "failed"
+
+    def _take(self, obj: PackObject, state: ObjectState, read: _Read) -> list[Unit]:
+        """Record what reading ``obj`` found, on the loop; the units still to add."""
+        if read.commit_tree is not None:
+            self._commit_trees[obj.oid] = read.commit_tree
+        if read.tag_target is not None:
+            self._tag_targets[obj.oid] = read.tag_target
+        if read.tree is not None:
+            self._trees[obj.oid] = read.tree
+        if read.small and self._small_bytes + len(obj.content) <= MAX_TIP_BYTES:
+            self._small_text[obj.oid] = obj.content
+            self._small_bytes += len(obj.content)
+        if read.encoding is not None:
             # A message in an encoding the layers read one way and a tool
             # another (UTF-7, UTF-16) is flagged as that, deterministically.
             state.flagged = ("L1", "high")
             self._record(obj.oid, state, None, None)
-        for unit in units:
-            self._add(unit, obj.oid, state)
+        return read.units
 
     def submit_unread(self, oid: str, kind: str, gap: str) -> None:
         """An object the reader saw and did not hand over: unjudged, for ``gap``."""
@@ -367,35 +450,40 @@ class GitJudge:
             whole=whole,
         )
 
-    def _units_of(self, obj: PackObject) -> tuple[list[Unit], str | None]:
-        """An object's units, and ``encoding`` when its declared encoding is refused."""
+    def _read_object(self, obj: PackObject) -> _Read:
+        """An object's units and what the tip walk needs of it.
+
+        Pure and thread-safe: it touches no judge state, only the immutable
+        secret, oid width and judge, so it runs in a worker thread.
+        """
         if obj.kind == OBJ_COMMIT:
             text, encoding = render_text(obj.content)
-            if (tree := commit_tree(obj.content)) is not None:
-                self._commit_trees[obj.oid] = tree
-            return self._text_units(text, "git_commit"), encoding
+            return _Read(
+                self._text_units(text, "git_commit"),
+                encoding,
+                commit_tree=commit_tree(obj.content),
+            )
         if obj.kind == OBJ_TAG:
             text, encoding = render_text(obj.content)
-            if (target := tag_target(obj.content)) is not None:
-                self._tag_targets[obj.oid] = target[0]
-            return self._text_units(text, "git_tag"), encoding
+            target = tag_target(obj.content)
+            return _Read(
+                self._text_units(text, "git_tag"),
+                encoding,
+                tag_target=None if target is None else target[0],
+            )
         if obj.kind == OBJ_TREE:
             entries = tree_entries(obj.content, oid_len=self._oid_len)
-            self._trees[obj.oid] = entries
-            return [self._unit(name, "", "git_tree") for _m, name, _o in entries], None
+            names = [self._unit(name, "", "git_tree") for _m, name, _o in entries]
+            return _Read(names, tree=entries)
         if is_binary(obj.content):
             # Read as anywhere else (images, PDFs, archives, office files) or
             # for its strings; keyed by its bytes, since that is what was read.
             unit = self._unit(f"binary:{_digest(obj.content)}", "", "git_blob")
             unit.binary = obj.content
-            return [unit], None
-        if len(obj.content) <= get_config().whole_tokens * TOKEN_BYTES and (
-            self._small_bytes + len(obj.content) <= MAX_TIP_BYTES
-        ):
-            self._small_text[obj.oid] = obj.content
-            self._small_bytes += len(obj.content)
+            return _Read([unit])
+        small = len(obj.content) <= get_config().whole_tokens * TOKEN_BYTES
         chunks = chunk_blob(obj.content, self._secret)
-        return [self._unit(c.text, c.lead_in, "git_blob") for c in chunks], None
+        return _Read([self._unit(c.text, c.lead_in, "git_blob") for c in chunks], small=small)
 
     def _text_units(self, text: str, source_type: str) -> list[Unit]:
         chunks: list[Chunk] = chunk_blob(text.encode("utf-8", "replace"), self._secret)

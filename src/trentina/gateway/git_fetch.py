@@ -335,7 +335,7 @@ class _Feeder:
             if length > self._reading.max_object:
                 raise ValueError("an object over the limit was sent")
             content = await stdout.readexactly(length)
-            self._judge.submit(PackObject(oid=oid, kind=kind, content=content, offset=offset))
+            await self._judge.add(PackObject(oid=oid, kind=kind, content=content, offset=offset))
         self.refused = self.refused or "failed"  # it ended without saying so
         return False
 

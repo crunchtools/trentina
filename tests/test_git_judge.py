@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
+import threading
+import time
 from typing import Any
 
 import pytest
@@ -534,3 +536,73 @@ async def test_a_unit_l2_read_only_part_of_is_unjudged(
     judge = await _judged(blob)
     assert judge.outcome().unjudged == [("blob", blob.oid, "too_large")]
     assert layers.asked == [] and not git_judge._memory
+
+
+def _fresh() -> git_judge.GitJudge:
+    return git_judge.GitJudge(
+        profile=harness.profile(),
+        grant=harness.profile().git[harness.REMOTE],
+        source="git:forge/acme/widgets",
+        call_ref="ref",
+        chunk_secret=b"k" * 32,
+    )
+
+
+async def test_a_large_object_is_chunked_off_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+    real = git_judge.chunk_blob
+
+    def recording(content: bytes, secret: bytes) -> Any:
+        seen.append(threading.current_thread().name)
+        time.sleep(0.2)  # a hostile blob: long enough that a blocked loop would show
+        return real(content, secret)
+
+    monkeypatch.setattr(git_judge, "chunk_blob", recording)
+    ticks = 0
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    judge = _fresh()
+    watching = asyncio.ensure_future(ticker())
+    await judge.add(_blob("a short line\n" * 1000))
+    watching.cancel()
+    assert seen
+    assert seen[0].startswith("git-read"), "chunked in a worker thread"
+    assert ticks > 10, "the loop kept turning while the blob was read"
+    assert judge.stats["units"] > 0
+
+
+async def test_a_large_tree_is_recorded_on_the_loop_for_the_tip_walk() -> None:
+    entries = b"".join(b"100644 f%d.txt\0" % n + bytes([n % 256]) * 20 for n in range(300))
+    tree = PackObject(oid="a" * 40, kind="tree", content=entries, offset=0)
+    judge = _fresh()
+    await judge.add(tree)
+    assert len(judge._trees["a" * 40]) == 300
+    assert judge.stats["units"] == 300
+
+
+async def test_one_large_object_is_read_at_a_time_per_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    running = peak = 0
+    real = git_judge.chunk_blob
+    lock = threading.Lock()
+
+    def counting(content: bytes, secret: bytes) -> Any:
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        time.sleep(0.05)
+        with lock:
+            running -= 1
+        return real(content, secret)
+
+    monkeypatch.setattr(git_judge, "chunk_blob", counting)
+    judge = _fresh()
+    await asyncio.gather(*(judge.add(_blob(f"{n} line\n" * 1000)) for n in range(4)))
+    assert peak == 1

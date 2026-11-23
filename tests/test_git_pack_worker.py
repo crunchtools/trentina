@@ -179,7 +179,7 @@ class FakeJudge:
         self.finished = 0
         self.closed = 0
 
-    def submit(self, obj: PackObject) -> None:
+    async def add(self, obj: PackObject) -> None:
         self.submitted.append(obj)
 
     def submit_unread(self, oid: str, _kind: str, gap: str) -> None:
