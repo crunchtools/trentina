@@ -211,19 +211,28 @@ def project(document: Any, paths: tuple[tuple[str, ...], ...]) -> Projection:
     """Pick ``paths`` out of ``document`` and type every leaf picked.
 
     Raises:
-        ValueError: a subtree picked whole is too deep to serialize.
+        ValueError: a subtree picked whole is too deep to serialize, or the
+            selection holds NaN or Infinity, which JSON has no spelling for.
     """
     picked: Any = _MISSING
     for path in paths:
         picked = _merge(picked, _pick(document, path))
     if picked is _MISSING:
         picked = None
-    named = frozenset(segment for path in paths for segment in path if segment != ITERATE)
+    # Every key position a path names, as keys from the root with ``[]``
+    # dropped: ``[].user.login`` names ``("user",)`` and ``("user", "login")``.
+    named = frozenset(
+        keys[:i]
+        for keys in (tuple(s for s in path if s != ITERATE) for path in paths)
+        for i in range(1, len(keys) + 1)
+    )
     leaves, safe = _leaves(picked, named)
     try:
-        text = json.dumps(picked, ensure_ascii=False, separators=(",", ":"))
+        text = json.dumps(picked, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     except RecursionError:
         raise ValueError("the selection is nested too deeply") from None
+    except ValueError:
+        raise ValueError("the selection holds NaN or Infinity") from None
     return Projection(text=text, leaves=leaves, safe=safe)
 
 
@@ -308,28 +317,31 @@ def _merge(a: Any, b: Any) -> Any:
     return a
 
 
-def _leaves(picked: Any, named: frozenset[str]) -> tuple[int, bool]:
+def _leaves(picked: Any, named: frozenset[tuple[str, ...]]) -> tuple[int, bool]:
     """How many leaves the projection holds, and whether each is a safe value.
 
-    A dict's keys are leaves too, as ``jsonwalk`` says. A key the call's own
-    paths ``named`` was written by the caller; any other key is inside a
-    subtree a path picked whole, was written by the backend, and is free text
-    however identifier-shaped it is: ``{"ignore_previous_instructions": 1}``.
+    A dict's keys are leaves too, as ``jsonwalk`` says. A key at a position the
+    call's own paths ``named`` was written by the caller; any other key is
+    inside a subtree a path picked whole, was written by the backend, and is
+    free text however identifier-shaped it is: ``{"ignore_previous_instructions": 1}``.
+    The check is by POSITION, not by name: a path that names ``login`` at the
+    root does not vouch for a ``login`` key inside a subtree another path
+    picked whole.
     """
     count, safe = 0, True
-    stack: list[tuple[Any, str | None]] = [(picked, None)]
+    stack: list[tuple[Any, tuple[str, ...]]] = [(picked, ())]
     while stack:
-        node, key = stack.pop()
+        node, at = stack.pop()
         if isinstance(node, dict):
             for k, v in node.items():
-                if k not in named:
+                if (*at, k) not in named:
                     safe = False
-                stack.append((v, k))
+                stack.append((v, (*at, k)))
         elif isinstance(node, list):
-            stack.extend((x, key) for x in node)
+            stack.extend((x, at) for x in node)
         else:
             count += 1
-            safe = safe and _safe_leaf(key, node)
+            safe = safe and _safe_leaf(at[-1] if at else None, node)
     return count, safe
 
 

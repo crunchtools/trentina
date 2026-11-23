@@ -660,6 +660,8 @@ def _selected(
         )
     block = {"type": "text", "text": projection.text}
     if projection.safe:
+        # Returned before ``parts._hold_paged``: nothing here is paged, so only
+        # the backend response cap bounds what an unjudged projection carries.
         current_select.set(field_select.UNJUDGED)
         return Assembled(
             {"content": [block], "isError": call_result.is_error}, ok, stripped=arrived.stripped

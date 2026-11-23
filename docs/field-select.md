@@ -67,7 +67,7 @@ A value is typed by its KEY, then checked against its VALUE. A key alone never m
 
 Everything else is free text: `name`, `body`, `title`, `html_url`, a label, a branch. A check run's `name` is judged, and a select of check names alone is cheap to judge because it holds nothing else.
 
-A key is a leaf too, since a model reads a key as it reads a value. A key the call's own paths named was written by the caller; any other key is the backend's and is free text, however identifier-shaped. So a subtree picked whole (`[].user`) is always judged: `{"ignore_previous_instructions": 1}` would otherwise reach the agent unread. Name the leaves you want (`[].user.login`).
+A key is a leaf too, since a model reads a key as it reads a value. A key at a position the call's own paths named was written by the caller; any other key is the backend's and is free text, however identifier-shaped. Position, not name: a path `login` vouches for a `login` at the root and nowhere else. So a subtree picked whole (`[].user`) is always judged: `{"ignore_previous_instructions": 1}` would otherwise reach the agent unread. Name the leaves you want (`[].user.login`).
 
 ## What Field Select Is Not
 
