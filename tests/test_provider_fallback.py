@@ -15,6 +15,7 @@ from trentina.gateway.standalone import standalone_profile
 from trentina.quarantine.agent import (
     _call_with_fallback,
     _is_retryable,
+    quarantine_detect,
 )
 from trentina.quarantine.providers import (
     get_fallback_providers,
@@ -352,6 +353,26 @@ class TestCallWithFallback:
 
         gemini_mock.assert_called_once()
         openai_mock.assert_not_called()
+
+    async def test_a_refused_key_names_its_profile_and_provider(self, monkeypatch, caplog):
+        # A 403 is a per-key spend cap as often as not, and the key is the
+        # profile's: the warning names both, or the operator is left guessing (a1126).
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        monkeypatch.delenv("TRENTINA_PROVIDER_FALLBACK", raising=False)
+        get_config()
+
+        refused = AsyncMock(side_effect=QuarantineAgentError("HTTP 403", status_code=403))
+        with patch(
+            "trentina.quarantine.providers.gemini.GeminiProvider.generate",
+            new=refused,
+        ):
+            verdict = await quarantine_detect("test content")
+
+        assert verdict["l3_unavailable"] is True
+        assert (
+            "Q-Agent detection failed: QuarantineAgentError status=403 "
+            "profile=standalone provider=gemini"
+        ) in caplog.text
 
     async def test_all_providers_exhausted_raises(self, monkeypatch):
         # No throttle budget: a 429 moves down the chain at once.

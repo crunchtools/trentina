@@ -10,6 +10,10 @@ under that name.
 
 ## [Unreleased]
 
+### Changed
+
+- **An L3 failure's warning names the profile and provider it ran as (a1126).** `Q-Agent detection failed: QuarantineAgentError status=403` named neither, so a per-key OpenRouter spend cap on one profile (the `kagemusha` key, at its $10 monthly limit, during every boot's warm-up) read as the whole judge failing, and finding the key took syslog archaeology. The detection, extraction and verification warnings now end `profile=<name> provider=<provider>`.
+
 ## [6.30.0] - 2026-11-23
 
 **Migration:** every cached verdict is judged once more after the upgrade (`PERIMETER_VERSION` 26). A federation peer must re-pin BOTH `trust_verdict.perimeter_stamp` (now `26:…`) and `trust_verdict.judge`: the stamp is checked first, so updating only the judge still fails `stamp_mismatch` on every response. The judge to pin is the one this release's `judge_stamp` reports: the `-20260721` build for the OpenRouter default (#921), and the provider's own model for anthropic, openai or ollama on the default (#926). Until both are re-pinned, that peer's responses are re-judged locally (fail-closed, gap 33), not refused.
