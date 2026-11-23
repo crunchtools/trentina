@@ -37,6 +37,7 @@ from .context import (
     current_caller,
     current_federated_verdict,
     current_origin,
+    current_select,
     current_session,
     session_fingerprint,
 )
@@ -767,6 +768,7 @@ async def _handle_post(
     # a reused task cannot carry a previous call's trust decision into this
     # call's audit row (#637).
     current_federated_verdict.set(None)
+    current_select.set(None)
     # The agent's trace, so this call's telemetry nests under its run (#556).
     telemetry.current_trace.set(telemetry.trace_from_request(request.headers))
     try:

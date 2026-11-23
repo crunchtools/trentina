@@ -155,6 +155,25 @@ def _preprocess_refusal(failed: str, mode: Mode | None) -> dict[str, Any]:
     }
 
 
+def _select_refusal(reason: str) -> dict[str, Any]:
+    """A ``trentina_select`` that had nothing to pick from (#915).
+
+    Same shape as a defense block; ``reason`` is ``field_select``'s own words.
+    No mode would help: the call without the select is the way to the result.
+    """
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": f"[TRENTINA] Refused: trentina_select needs JSON, and {reason}."
+                " The original content was not delivered.",
+            }
+        ],
+        "isError": False,  # a refusal is an answer, not an error: see _refused
+        "_trentina_refusal": {"reason": "select_not_json", "mode": None, "alternatives": []},
+    }
+
+
 def _l3_context(backend: Backend, reduced: TransformOutcome) -> str | None:
     """The operator's word on what this backend returns (#204), then invariant 3.
 

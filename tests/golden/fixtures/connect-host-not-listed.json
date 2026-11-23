@@ -21,6 +21,7 @@
    "normalized": null,
    "outcome": "denied_allowlist",
    "profile": "agent2",
+   "selected": null,
    "session": null,
    "success": 0,
    "tool": "connect"

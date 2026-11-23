@@ -21,6 +21,7 @@
    "normalized": null,
    "outcome": "backend_error",
    "profile": "agent2",
+   "selected": null,
    "session": null,
    "success": 0,
    "tool": "connect"

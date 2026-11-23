@@ -181,6 +181,19 @@ class PromptParamGoneError(ModeNotPermittedError):
         self.mode = "redact"
 
 
+class SelectNotPermittedError(ModeNotPermittedError):
+    """A ``trentina_select`` the gateway cannot apply (#915).
+
+    A ``ModeNotPermittedError`` so every edge that refuses a bad mode refuses
+    this in the same place and the same shape. The reason is a rule of ours,
+    never the caller's path.
+    """
+
+    def __init__(self, reason: str) -> None:
+        TrentinaError.__init__(self, f"Parameter 'trentina_select' refused: {reason}")
+        self.mode = "select"
+
+
 class TransformNotPermittedError(TrentinaError):
     """The call named a transform the caller's policy does not offer (#183)."""
 

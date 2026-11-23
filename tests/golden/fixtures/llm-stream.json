@@ -64,6 +64,7 @@
    "normalized": null,
    "outcome": "ok",
    "profile": "agent1",
+   "selected": null,
    "session": null,
    "success": 1,
    "tool": "messages"

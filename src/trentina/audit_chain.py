@@ -142,6 +142,7 @@ _OPTIONAL_CHAIN_FIELDS = (
     "caller_peer",
     "caller_sub",
     "federated_verdict",
+    "selected",
 )
 
 

@@ -30,8 +30,24 @@ Each gateway call writes one row to the `gateway_calls` table:
 | `call_ref` | text | `8c1d…`: a random reference for this call. A `detections` row raised by the call carries the same one |
 | `content_digest` | text | `b27e…`: a fingerprint of the delivered result. NULL when nothing was delivered |
 | `federated_verdict` | text | `trusted` when the response was served on a secondary's signed verdict without this gateway's own layers running; otherwise why it was re-judged (`absent`, `bad_signature`, `stamp_mismatch`, `judge_mismatch`, `hash_mismatch`, `mode_mismatch`, `stale`, `undigestable`, `uninterpretable`, `incomplete`). A closed set, never the peer's text. NULL for every non-federated call, and for the later parts of a paged one |
+| `selected` | text | How a [field select](field-select.md) was delivered: `unjudged` (every picked leaf a typed value, no layer read it), `judged` (the projection crossed the layers under the call's mode; the `outcome` says how that went) or `refused` (the result was not one JSON document). NULL for every call without `trentina_select` |
 | `caller_peer` | text | On a federation ingress, the peer whose key verified the request's primary JWT — the actor. NULL for every non-federated call |
 | `caller_sub` | text | The caller that peer asserted (`sub`). Peer-chosen, so it is an audit fact and never an input to scope, role, policy or a guard. NULL for every non-federated call |
+
+### Which deliveries skipped the layers
+
+A field select of typed leaves is the one tool-call delivery no layer reads,
+and `selected = 'unjudged'` marks every one:
+
+```sql
+SELECT profile, backend, tool, COUNT(*)
+FROM gateway_calls
+WHERE selected = 'unjudged'
+GROUP BY profile, backend, tool;
+```
+
+Like `federated_verdict`, the column enters `row_hash` only when it is set, so a
+row written before it existed still verifies.
 
 ### How much of a federated link runs on the peer's scan
 
@@ -146,7 +162,7 @@ blocked 34 hostile pages.
 | `blocked_defense` | blocked | L1/L2/L3 refused the content. Working as designed. |
 | `denied_allowlist` | blocked | Tool not permitted for this profile. |
 | `denied_guard` | blocked | A deterministic request-side or egress denial: a literal request guard, a credential in a tool call's arguments, a mode/transform policy, or an egress/proxy refusal. |
-| `denied_response_guard` | blocked | A literal response guard rejected the backend's result. |
+| `denied_response_guard` | blocked | A literal response guard rejected the backend's result, or a `trentina_select` found no JSON in it (`selected` is `refused`). |
 | `denied_gatekeeper` | blocked | [Semantic request guards](semantic-request-guards.md) refused the call before it was forwarded. The message is the reason code, then what the gatekeeper was told: `first_contact` and `session_flagged`. |
 | `denied_response_gatekeeper` | blocked | [Semantic response guards](semantic-response-guards.md) refused delivery of the backend's result. The backend was contacted and answered; the answer was withheld. Distinct from `denied_response_guard`, the deterministic literal response guard. |
 | `decoy_tripped` | tripped | A [decoy tool](profiles.md#decoy-tools-and-honeytokens) was called, or a planted credential was in a call's arguments or in a `/proxy/http` or `/proxy/llm` request (refused in every mode, worded as `flagged`). An alarm about the caller. |

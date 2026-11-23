@@ -310,3 +310,28 @@ class TestLostRows:
         assert report["first_break"] is None  # the chain is continuous
         assert report["lost_rows"] == 1
         assert report["ok"] is False
+
+
+def test_a_select_outcome_is_stored_and_chained(db: Any) -> None:
+    """#915: the gateway's audit writes ``selected`` from the call's context,
+    the row commits to it, and editing it breaks the chain."""
+    from trentina.gateway import audit
+    from trentina.gateway.context import current_select
+
+    token = current_select.set("unjudged")
+    try:
+        audit._audit("p", "github", "list_pull_request_reviews", Outcome.OK, 1)
+    finally:
+        current_select.reset(token)
+    audit._audit("p", "github", "get_issue", Outcome.OK, 1)
+
+    conn = db.get_db()
+    rows = conn.execute("SELECT tool, selected FROM gateway_calls ORDER BY id").fetchall()
+    assert [(r["tool"], r["selected"]) for r in rows] == [
+        ("list_pull_request_reviews", "unjudged"),
+        ("get_issue", None),
+    ]
+    assert _verify(db)["ok"] is True
+
+    conn.execute("UPDATE gateway_calls SET selected = 'judged' WHERE selected = 'unjudged'")
+    assert _verify(db)["ok"] is False

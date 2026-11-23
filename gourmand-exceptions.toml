@@ -1264,3 +1264,10 @@ path = "corpora/fetch.py"
 item = "pinned"
 justification = "Matched only by shape: against scripts/mutation_advisory.py's main (a CLI entry point with the same run-print-return shape) and gateway/at_rest.configure (the startup KEK read, an if/raise/return), sharing none of the same code."
 classification = "by_design"
+
+[[exceptions]]
+check = "EV010-single_use_helpers"
+path = "tests/test_field_select.py"
+symbol = "_profile"
+justification = "Not single-use: _profile is called at test_field_select.py:125 (the default in _call), :238 (the guarded profile) and :269 (the instructions test). The check appears to count only the call whose result is assigned to a name, not one inside an `or` or passed as an argument."
+classification = "gourmand_bug"

@@ -119,12 +119,28 @@ literal_request_guards:
 
 The guard is checked against the RESOLVED mode — an omitted `trentina_mode` becomes the profile default first — so leaving the argument out cannot skip it, which is what a guard does with any other absent argument. The tool's schema offers only what survives the guard. Every value, glob or not, must match at least one of `block`, `flag` or `redact`, or the profile fails to load: a value that matches no mode (`warn`, the pre-0.35.0 name for `flag`, or `warn*`) could never fire, and a guard that silently denies nothing is worse than a load error.
 
+### Narrow or turn off field select on one tool
+
+`trentina_select` ([field select](field-select.md)) is offered on every remote tool. A guard on it is checked against each path's keys joined by dots, with `[]` left out, so `[].user.login` is `user.login` (a guard pattern cannot hold a bracket):
+
+```yaml
+literal_request_guards:
+  list_pull_request_reviews:
+    trentina_select:
+      allow: ["commit_id", "user.login", "state"]
+  get_issue:
+    trentina_select:
+      deny: ["*"]          # no select on this tool
+```
+
+A call with no `trentina_select` is not checked: without it the response takes the ordinary path, which is never less judged than a select.
+
 ## Pipeline Position
 
 Literal request guards run after the tool-name allowlist check and before the backend call:
 
 ```
-Parse tool name → Backend exists? → Tool in allowlist? → Resolve trentina_mode and trentina_preprocess → Literal request guards → Semantic request guards (if the tool is guarded) → Backend call
+Parse tool name → Backend exists? → Tool in allowlist? → Resolve trentina_mode, trentina_preprocess and trentina_select → Literal request guards → Semantic request guards (if the tool is guarded) → Backend call
 ```
 
 A rejected call returns immediately. The backend never sees the request. The error message is terse and does not include the rejected value (to avoid leaking guard configuration to the agent).

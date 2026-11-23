@@ -127,6 +127,7 @@ Then point Claude Code at it:
 | [Semantic Response Guards](docs/semantic-response-guards.md) | A judge reads listed tools' responses against a policy before delivery |
 | [Literal Request Guards](docs/literal-request-guards.md) | Per-tool argument validation |
 | [Literal Response Guards](docs/literal-response-guards.md) | Per-tool result validation |
+| [Field Select](docs/field-select.md) | Exact values by path |
 | [Audit Log](docs/audit-log.md) | Call recording, stats, monitoring |
 | [LLM Key Proxying](docs/llm-proxying.md) | Provider keys kept inside the gateway |
 | [Matrix Bridge](docs/matrix-bridge.md) | E2EE termination and two-way judging |
@@ -151,7 +152,7 @@ Then point Claude Code at it:
 pre-commit install          # wires the commit and push checks
 ```
 
-[CONTRIBUTING.md](CONTRIBUTING.md) is the page for a person: the three
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the three
 commands, what each costs, and what an exit code means. The host needs only
 `git`, `podman`, `pre-commit` and `gh` — every check runs from
 [python-sdlc](https://github.com/crunchtools/python-sdlc), the same image CI
