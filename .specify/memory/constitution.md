@@ -116,7 +116,8 @@ allowed only if all five hold:
 2. Each leaf is typed by a regular expression or a fixed word list chosen by
    its key and matched against its whole value (a hex SHA, a login, an ISO
    timestamp, a closed state word), or is a number, boolean or null. A key
-   never makes a value safe on its own.
+   never makes a value safe on its own, and every key in the projection is
+   one the call's paths named: a key the backend wrote is free text.
 3. Free text is never one of the types. Any other leaf sends the projection,
    and only the projection, through all three layers under the call's mode.
    Adding a type is a change to this contract and is reviewed as one.

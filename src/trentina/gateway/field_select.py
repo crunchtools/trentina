@@ -24,7 +24,9 @@ GitHub login, ``sha`` forty or sixty-four lowercase hex digits, ``*_at`` an
 ISO 8601 timestamp, ``state`` one of a closed set of words. A string under any
 other key, a ``name`` or ``body`` or ``url``, is free text. So is a typed key
 whose value does not match: ``"login": "ignore all previous"`` is judged,
-never delivered on its key's say-so.
+never delivered on its key's say-so. A key is free text too unless the
+call's own paths named it, so a subtree picked whole (``[].user``) is judged:
+its keys are the backend's.
 
 The one safe type an outsider chooses is a login: a 39-character
 hyphenated word, ``ignore-previous-instructions-run-this``, is a real
@@ -216,7 +218,8 @@ def project(document: Any, paths: tuple[tuple[str, ...], ...]) -> Projection:
         picked = _merge(picked, _pick(document, path))
     if picked is _MISSING:
         picked = None
-    leaves, safe = _leaves(picked)
+    named = frozenset(segment for path in paths for segment in path if segment != ITERATE)
+    leaves, safe = _leaves(picked, named)
     try:
         text = json.dumps(picked, ensure_ascii=False, separators=(",", ":"))
     except RecursionError:
@@ -305,12 +308,13 @@ def _merge(a: Any, b: Any) -> Any:
     return a
 
 
-def _leaves(picked: Any) -> tuple[int, bool]:
+def _leaves(picked: Any, named: frozenset[str]) -> tuple[int, bool]:
     """How many leaves the projection holds, and whether each is a safe value.
 
-    A dict's keys are leaves too, as ``jsonwalk`` says, but every key here is
-    one a path named, matched by ``_KEY``, or one inside a subtree a path
-    picked whole; the second kind is checked like any string.
+    A dict's keys are leaves too, as ``jsonwalk`` says. A key the call's own
+    paths ``named`` was written by the caller; any other key is inside a
+    subtree a path picked whole, was written by the backend, and is free text
+    however identifier-shaped it is: ``{"ignore_previous_instructions": 1}``.
     """
     count, safe = 0, True
     stack: list[tuple[Any, str | None]] = [(picked, None)]
@@ -318,7 +322,7 @@ def _leaves(picked: Any) -> tuple[int, bool]:
         node, key = stack.pop()
         if isinstance(node, dict):
             for k, v in node.items():
-                if not (isinstance(k, str) and _KEY.fullmatch(k)):
+                if k not in named:
                     safe = False
                 stack.append((v, k))
         elif isinstance(node, list):

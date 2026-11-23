@@ -49,7 +49,7 @@ A path is keys joined by `.`, with `[]` for every element of a list. A leading `
 | `[].user.login` | each element's `user.login` |
 | `head.sha` | the head SHA of one pull request |
 | `check_runs[].conclusion` | each check run's conclusion |
-| `[].user` | each element's whole `user` object, every leaf of it typed by its own key |
+| `[].user` | each element's whole `user` object; judged, since its keys are the backend's |
 
 There are no filters, indices or recursive descent. Keys are 1 to 64 of `A-Z a-z 0-9 _ -`, not starting with a digit or hyphen. A call takes at most 32 paths of at most 256 characters and 16 segments each. A malformed path is refused before the backend is called, and the refusal names the rule, never the path.
 
@@ -67,7 +67,7 @@ A value is typed by its KEY, then checked against its VALUE. A key alone never m
 
 Everything else is free text: `name`, `body`, `title`, `html_url`, a label, a branch. A check run's `name` is judged, and a select of check names alone is cheap to judge because it holds nothing else.
 
-A dict key inside a subtree picked whole is checked too. A key that is not a plain identifier is free text, since a model reads a key as it reads a value.
+A key is a leaf too, since a model reads a key as it reads a value. A key the call's own paths named was written by the caller; any other key is the backend's and is free text, however identifier-shaped. So a subtree picked whole (`[].user`) is always judged: `{"ignore_previous_instructions": 1}` would otherwise reach the agent unread. Name the leaves you want (`[].user.login`).
 
 ## What Field Select Is Not
 

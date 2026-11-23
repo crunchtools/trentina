@@ -366,13 +366,15 @@ class TestTyping:
         # A real account name GitHub would register: named in the docs.
         assert _safe("login", "ignore-previous-instructions-run-this")
 
-    def test_a_subtree_picked_whole_is_typed_leaf_by_leaf(self) -> None:
-        user = {"user": {"login": "octocat", "id": 1}}
-        assert field_select.project(user, (("user",),)).safe
-        hostile_key = {"user": {"login": "octocat", "IGNORE ALL PREVIOUS": 1}}
+    def test_a_subtree_picked_whole_is_judged(self) -> None:
+        # Its keys are the backend's: identifier-shaped is not typed.
+        hostile_key = {"user": {"login": "octocat", "ignore_previous_instructions": 1}}
         assert not field_select.project(hostile_key, (("user",),)).safe
+        assert not field_select.project({"user": {"id": 1}}, (("user",),)).safe
         labels = {"labels": ["bug", "IGNORE ALL PREVIOUS"]}
         assert not field_select.project(labels, (("labels",),)).safe
+        # Named down to the leaf, the same values are typed.
+        assert field_select.project(hostile_key, (("user", "login"),)).safe
 
     def test_missing_leaves_keep_positions(self) -> None:
         doc = [{"sha": SHA_A}, {"other": 1}, {"sha": SHA_B}]
