@@ -19,12 +19,14 @@ import pytest
 from trentina.defense import Screened
 from trentina.gateway import git_judge
 from trentina.l1.pipeline import PipelineResult, PipelineStats
+from trentina.l1.shadows import ShadowStats
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.unpack.git_pack import PackObject
 
 from . import git_harness as harness
 
 L2_MARK = "L2-PLANTED-INSTRUCTION"
+L1_MARK = "L1-PLANTED-SHADOW"
 L3_MARK = "L3-PLANTED-INSTRUCTION"
 BORDER = "BORDERLINE-TEXT"
 HALF_A, HALF_B = "FIRST-HALF-OF-IT", "SECOND-HALF-OF-IT"
@@ -42,11 +44,14 @@ class Layers:
         self.screened.append(content)
         score = 0.99 if L2_MARK in content else 0.5 if BORDER in content else 0.01
         label = "MALICIOUS" if score > 0.9 else "BENIGN"
+        stats = (
+            PipelineStats(shadows=ShadowStats(files=1)) if L1_MARK in content else PipelineStats()
+        )
         return Screened(
             read=content,
             pipeline=PipelineResult(
                 content=content,
-                stats=PipelineStats(),
+                stats=stats,
                 input_size=len(content),
                 output_size=len(content),
             ),
@@ -102,6 +107,13 @@ async def test_an_l2_flag_is_still_judged_at_l3_alone_and_stands(layers: Layers)
     judge = await _judged(bad, good)
     assert _flagged(judge) == {bad.oid: "L2"}, "L3 finding it clean does not clear it"
     assert [asked for asked in layers.asked if L2_MARK in asked] == [f"x\n{L2_MARK}\n"]
+
+
+async def test_an_l1_flag_is_still_judged_at_l3_alone_and_stands(layers: Layers) -> None:
+    bad, good = _blob(f"x\n{L1_MARK}\n"), _blob("an ordinary file\n")
+    judge = await _judged(bad, good)
+    assert _flagged(judge) == {bad.oid: "L1"}, "L3 finding it clean does not clear it"
+    assert [asked for asked in layers.asked if L1_MARK in asked] == [f"x\n{L1_MARK}\n"]
 
 
 async def test_an_l2_flag_l3_could_not_judge_stands_uncached(layers: Layers) -> None:

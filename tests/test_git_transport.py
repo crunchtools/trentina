@@ -25,11 +25,19 @@ from starlette.responses import Response, StreamingResponse
 from trentina import config as config_mod
 from trentina import database as database_mod
 from trentina.errors import EGRESS_REASONS
-from trentina.gateway import git_transport, loader, upstream
+from trentina.gateway import git_fetch, git_transport, loader, upstream
 from trentina.gateway.errors import ProfileConfigError
 from trentina.gateway.git_wire import REASONS, GitRefusedError
 from trentina.gateway.loader import ActiveConfig, GatewayConfig, load_profiles
-from trentina.gateway.profile import AuthConfig, GitGrant, GitRemote, Profile
+from trentina.gateway.profile import (
+    DEFAULT_JUDGE_DEADLINE,
+    DEFAULT_L3_DAILY_QUOTA,
+    MIN_JUDGE_DEADLINE,
+    AuthConfig,
+    GitGrant,
+    GitRemote,
+    Profile,
+)
 from trentina.gateway.relay import Operation, Relayed
 from trentina.outcomes import Outcome
 from trentina.reach import egress
@@ -751,6 +759,26 @@ class TestWhatIsListedBack:
         stack.forge.body = _listing(ONE + b" refs/heads/main", TWO + b" refs/merge-requests/3/head")
         response = await stack.client.get(stack.url + REFS)
         assert response.content == _listing(ONE + b" refs/heads/main")
+
+
+class TestTheListingBuffer:
+    @pytest.mark.parametrize("over", [0, 1])
+    async def test_a_listing_at_the_limit_is_sent_and_one_byte_over_is_not(
+        self, stack: _Stack, audit_db: Path, monkeypatch: pytest.MonkeyPatch, over: int
+    ) -> None:
+        body = _listing(ONE + b" refs/heads/main")
+        monkeypatch.setattr(git_fetch, "MAX_LISTING_BYTES", len(body) - over)
+        stack.forge.body = body
+        response = await stack.client.get(
+            f"{stack.url}/acme/widgets/info/refs?service=git-receive-pack"
+        )
+        (row,) = await _settled(audit_db)
+        if over:
+            assert b"refs/heads/main" not in response.content
+            assert (row["outcome"], row["error_message"]) == ("blocked_defense", "too_large")
+        else:
+            assert response.content == body
+            assert row["outcome"] == "ok"
 
 
 class TestAShownNamespace:
@@ -1688,6 +1716,36 @@ class TestRemoteModel:
 
 
 class TestGrantModel:
+    def test_the_judging_fields_default_and_accept_their_minimums(self) -> None:
+        grant = _grant()
+        assert grant.enforcement == "flag"
+        assert grant.max_judged_pack_bytes == 256 * 1024 * 1024
+        assert grant.judge_deadline == DEFAULT_JUDGE_DEADLINE
+        assert grant.l3_daily_quota == DEFAULT_L3_DAILY_QUOTA
+        least = _grant(
+            max_judged_pack_bytes=1024 * 1024, judge_deadline=MIN_JUDGE_DEADLINE, l3_daily_quota=1
+        )
+        assert least.max_judged_pack_bytes == 1024 * 1024
+        assert least.judge_deadline == MIN_JUDGE_DEADLINE
+        assert least.l3_daily_quota == 1
+        assert _grant(l3_daily_quota=None).l3_daily_quota is None
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"max_judged_pack_bytes": 1024 * 1024 - 1},
+            {"judge_deadline": MIN_JUDGE_DEADLINE - 1},
+            {"l3_daily_quota": 0},
+            {"enforcement": "block"},
+            {"enforcement": "off"},
+        ],
+    )
+    def test_a_judging_field_below_its_minimum_or_unsupported_is_refused(
+        self, fields: dict[str, Any]
+    ) -> None:
+        with pytest.raises(ValidationError):
+            _grant(**fields)
+
     def test_the_documented_grant(self) -> None:
         grant = _grant(
             fetch=["Acme/*"],
