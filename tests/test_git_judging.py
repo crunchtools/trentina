@@ -15,15 +15,17 @@ import sqlite3
 import subprocess
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import pytest
 
 from trentina.defense import Screened
 from trentina.gateway import git_fetch, git_judge
+from trentina.gateway.profile import AuthConfig, Profile
 from trentina.l1.pipeline import PipelineResult, PipelineStats
 from trentina.quarantine.classifier import ClassifierResult
+from trentina.unpack.git_pack import PackObject
 
 from . import git_harness as harness
 from . import test_git_transport as route
@@ -33,6 +35,8 @@ from .test_git_transport import RECEIVE_REQUEST, UPLOAD_REQUEST, _settled, _stac
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
     from pathlib import Path
+
+    from trentina.gateway.profile import GitGrant
 
 pytestmark = needs_git
 
@@ -579,3 +583,161 @@ class TestAPushReport:
         assert b"obey me" not in response.content
         assert b"ng refs/heads/agent/x rejected" in response.content.replace(b"\x01", b"")
         assert b"unpack error" in response.content.replace(b"\x01", b"")
+
+
+# --- background slots ----------------------------------------------------------
+
+
+async def _slots_free(timeout: float = 10.0) -> bool:
+    for _ in range(int(timeout / 0.02)):
+        if git_fetch._slots.total == 0:
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
+@pytest.fixture(autouse=True)
+async def no_slot_leaks() -> Any:
+    """Every test starts with no judging slot held, and ends having let each go."""
+    git_fetch._slots.total = 0
+    git_fetch._slots.by_profile.clear()
+    yield
+    assert await _slots_free(), "a judging slot was never given back"
+
+
+class TestJudgingSlots:
+    @pytest.fixture
+    def slow(self, layers: Layers, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A judge that outlasts its response."""
+        monkeypatch.setattr(git_fetch, "TAIL_HOLD", 0.2)
+        layers.delay = 0.8
+
+    async def _next(self, stack: Any, name: str) -> tuple[int, str]:
+        stack.repo.work = stack.repo.work.with_name(name)
+        return await stack.repo.clone(stack, "2")
+
+    async def test_a_fetch_past_the_cap_is_delivered_whole_and_named_busy(
+        self, judged: Any, slow: None, audit_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRENTINA_GIT_JUDGES", "1")
+        repo = judged.repo
+        repo.plant({"notes.txt": b"some notes\n"})
+        code, output = await repo.clone(judged, "2")
+        assert code == 0, output
+        code, output = await self._next(judged, "clone2")
+        assert code == 0, output
+        assert "Trentina: unjudged pack (busy)" in _remote(output), output
+        assert (repo.work.with_name("clone2") / "notes.txt").read_text() == "some notes\n"
+        rows = _db(audit_db, "SELECT * FROM gateway_calls ORDER BY id")
+        assert rows[-1]["error_message"] == "git_unjudged", "the gap is audited"
+        assert await _slots_free()
+
+    async def test_the_slot_is_held_past_the_response_and_released_when_judging_settles(
+        self, judged: Any, slow: None
+    ) -> None:
+        judged.repo.plant({"notes.txt": b"some notes\n"})
+        code, output = await judged.repo.clone(judged, "2")
+        assert code == 0, output
+        assert git_fetch._slots.total == 1, "still judging after the response ended"
+        assert await _slots_free()
+
+    async def test_a_client_that_goes_away_still_gives_the_slot_back(
+        self, judged: Any, slow: None
+    ) -> None:
+        body = (
+            pkt(f"want {judged.repo.rev('HEAD')} side-band-64k ofs-delta\n".encode())
+            + FLUSH
+            + pkt(b"done\n")
+        )
+        async with judged.client.stream(
+            "POST",
+            f"{judged.url}/acme/widgets/git-upload-pack",
+            content=body,
+            headers={"Content-Type": UPLOAD_REQUEST},
+        ) as response:
+            async for _piece in response.aiter_raw():
+                break
+        assert await _slots_free(), "the slot outlived a client that left"
+
+    async def test_a_slot_whose_reader_never_ends_is_released_at_the_backstop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(git_fetch, "SLOT_GRACE", 0.05)
+        assert git_fetch._slots.take("agent")
+        feeder = cast("git_fetch._Feeder", SimpleNamespace(over=asyncio.Event()))
+        judge = asyncio.ensure_future(asyncio.sleep(0))
+        await git_fetch._hold("agent", judge, feeder, 0.0)
+        assert git_fetch._slots.total == 0
+
+    async def test_a_slot_waits_for_both_the_reader_and_the_judge(self) -> None:
+        assert git_fetch._slots.take("agent")
+        over = asyncio.Event()
+        feeder = cast("git_fetch._Feeder", SimpleNamespace(over=over))
+        gate = asyncio.Event()
+        judge = asyncio.ensure_future(asyncio.wait_for(gate.wait(), 30))
+        hold = asyncio.ensure_future(git_fetch._hold("agent", judge, feeder, 30.0))
+        over.set()
+        await asyncio.sleep(0.05)
+        assert git_fetch._slots.total == 1, "the judge is still running"
+        gate.set()
+        await hold
+        assert git_fetch._slots.total == 0
+
+    async def test_the_profile_cap_is_counted_apart_from_the_gateways(
+        self, judged: Any, slow: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRENTINA_GIT_JUDGES", "8")
+        monkeypatch.setenv("TRENTINA_GIT_PROFILE_JUDGES", "1")
+        judged.repo.plant({"notes.txt": b"some notes\n"})
+        code, output = await judged.repo.clone(judged, "2")
+        assert code == 0, output
+        code, output = await self._next(judged, "clone2")
+        assert "Trentina: unjudged pack (busy)" in _remote(output), "the profile is at its cap"
+        assert await _slots_free()
+
+    def test_another_profile_still_gets_a_slot_when_one_is_at_its_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRENTINA_GIT_JUDGES", "3")
+        monkeypatch.setenv("TRENTINA_GIT_PROFILE_JUDGES", "2")
+        slots = git_fetch._slots
+        assert slots.take("a") and slots.take("a")
+        assert not slots.take("a"), "a is at its own cap with the gateway's to spare"
+        assert slots.take("b")
+        assert not slots.take("c"), "the gateway's cap is reached"
+        for name in ("a", "a", "b"):
+            slots.release(name)
+        assert slots.total == 0
+        assert not slots.by_profile
+
+
+def _bare_judge() -> git_judge.GitJudge:
+    return git_judge.GitJudge(
+        profile=Profile(name="agent1", auth=AuthConfig(bearer_token_env="TOK")),
+        grant=cast("GitGrant", SimpleNamespace()),
+        source="git:forge/acme/widgets",
+        call_ref=None,
+        chunk_secret=b"k" * 32,
+    )
+
+
+class TestJudgeBounds:
+    def test_a_tree_past_the_byte_bound_is_unjudged_not_dropped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        judge = _bare_judge()
+        monkeypatch.setattr(git_judge, "MAX_TREE_BYTES", 40)
+        content = b"100644 a\x00" + b"\x01" * 20
+        judge.submit(PackObject(oid="1" * 40, kind="tree", content=content, offset=0))
+        judge.submit(PackObject(oid="2" * 40, kind="tree", content=content, offset=0))
+        assert judge._tree_bytes == len(content)
+        assert [(o, g) for _k, o, g in judge.outcome().unjudged] == [("2" * 40, "backlog")]
+
+    def test_the_judge_says_when_it_tracks_as_many_objects_as_it_may(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        judge = _bare_judge()
+        monkeypatch.setattr(git_judge, "MAX_TRACKED_OBJECTS", 1)
+        assert not judge.full()
+        judge.submit_unread("1" * 40, "blob", "too_large")
+        assert judge.full()

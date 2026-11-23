@@ -94,6 +94,13 @@ short enough that no verdict outlives a day."""
 DEFAULT_GIT_SUSPICIOUS = 0.2
 """An L2 score over this, below the flag threshold, sends a git unit to L3 alone."""
 
+DEFAULT_GIT_JUDGES = 4
+"""Fetches the gateway judges at once, the reader child and judge task of each
+held until its judging ends; the next is delivered unjudged (``busy``)."""
+
+DEFAULT_GIT_PROFILE_JUDGES = 2
+"""The same, for one profile's fetches."""
+
 MAX_VERDICT_TTL_HOURS = 720
 """The longest a setting may ask for: thirty days, the blocklist's default. A
 verdict the operator meant to keep "for good" is still re-judged monthly."""
@@ -751,6 +758,20 @@ class Config:
         except ValueError:
             logger.warning("config: TRENTINA_GIT_SUSPICIOUS is not a number — using the default")
             return DEFAULT_GIT_SUSPICIOUS
+
+    @property
+    def git_judges(self) -> int:
+        """``TRENTINA_GIT_JUDGES``: fetches judged at once, gateway-wide (spec 027).
+
+        Each holds a reader child (3 GiB of address space, up to 2 GiB spooled
+        on the perimeter volume) and a judge until its judging ends, which can
+        be long after the response did. ``0`` judges none."""
+        return int_env("TRENTINA_GIT_JUDGES", DEFAULT_GIT_JUDGES, minimum=0)
+
+    @property
+    def git_profile_judges(self) -> int:
+        """``TRENTINA_GIT_PROFILE_JUDGES``: fetches one profile has judged at once."""
+        return int_env("TRENTINA_GIT_PROFILE_JUDGES", DEFAULT_GIT_PROFILE_JUDGES, minimum=0)
 
     @property
     def part_ttl_seconds(self) -> int:

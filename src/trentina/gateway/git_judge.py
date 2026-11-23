@@ -97,6 +97,16 @@ unjudged (``too_large``) and its bytes never leave the child."""
 MAX_TIP_BYTES = 64 * 1024 * 1024
 """Small text blobs kept until the pack ends, to judge the tip's whole."""
 
+MAX_TRACKED_OBJECTS = 1_000_000
+"""Objects one fetch may have the judge track, as many as the reader accepts in
+a pack. Past it the fetch stops being judged and its pack is named unjudged
+(``too_many``): ``_objects`` holds one state for each, so it is the bound."""
+
+MAX_TREE_BYTES = 64 * 1024 * 1024
+"""Tree content kept until the pack ends, to find the tip. A tree past it is
+unjudged (``backlog``) and the tip walk stops at it; its blobs are still judged
+as they arrive, only not again whole."""
+
 SCREENERS = 2
 """Units screened at once by one fetch: the L2 gate's own width."""
 
@@ -265,6 +275,7 @@ class GitJudge:
         self._tag_targets: dict[str, str] = {}
         self._small_text: dict[str, bytes] = {}
         self._small_bytes = 0
+        self._tree_bytes = 0
         self._task: asyncio.Task[None] | None = None
         self._screening = 0
         self._closed = False
@@ -349,6 +360,10 @@ class GitJudge:
         if read.tag_target is not None:
             self._tag_targets[obj.oid] = read.tag_target
         if read.tree is not None:
+            if self._tree_bytes + len(obj.content) > MAX_TREE_BYTES:
+                state.gap = "backlog"
+                return []
+            self._tree_bytes += len(obj.content)
             self._trees[obj.oid] = read.tree
         if read.small and self._small_bytes + len(obj.content) <= MAX_TIP_BYTES:
             self._small_text[obj.oid] = obj.content
@@ -405,6 +420,11 @@ class GitJudge:
         self._small_text.clear()
         self._small_bytes = 0
         self._trees.clear()
+        self._tree_bytes = 0
+
+    def full(self) -> bool:
+        """True once ``MAX_TRACKED_OBJECTS`` are tracked: no more may be submitted."""
+        return len(self._objects) >= MAX_TRACKED_OBJECTS
 
     def close(self) -> None:
         """No more objects: the judging task ends when its queue is empty."""

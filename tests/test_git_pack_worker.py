@@ -185,6 +185,9 @@ class FakeJudge:
     def submit_unread(self, oid: str, _kind: str, gap: str) -> None:
         self.unread[oid] = gap
 
+    def full(self) -> bool:
+        return False
+
     def finish_pack(self) -> None:
         self.finished += 1
 

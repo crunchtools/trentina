@@ -102,6 +102,13 @@ FEED_BYTES = 1024 * 1024
 LANE_QUEUE = 4
 """Judged fetches that may wait for a profile's lane."""
 
+BUSY = "busy"
+"""The unjudged-pack reason for a fetch that found no judging slot."""
+
+SLOT_GRACE = 60.0
+"""Seconds past ``judge_deadline`` a judging slot is held at most, in case what
+should end it never does."""
+
 _OID_BYTES = {"sha1": 20, "sha256": 32}
 _DEFAULT_OID_BYTES = _OID_BYTES["sha1"]
 
@@ -145,6 +152,63 @@ async def enter_lane(profile: str, promisor: bool) -> asyncio.Semaphore:
     else:
         await lane.gate.acquire()
     return lane.gate
+
+
+# --- judging slots ------------------------------------------------------------
+
+
+class _Slots:
+    """The fetches being judged, counted gateway-wide and per profile.
+
+    A judged fetch outlives its response: the reader child and the judge go on
+    until the pack is read and the last unit settles, up to ``judge_deadline``.
+    The lane is let go with the response, so the lane cannot count them; a slot
+    is taken when judging starts and given back by ``_hold`` once both have
+    ended. A fetch that finds none is delivered unjudged (``busy``), never
+    refused. With ``Config.git_judges`` slots and a reader that spools at most
+    ``DEFAULT_LIMITS.max_inflated`` (2 GiB) each, the spool on the perimeter
+    volume is bounded by their product, and the children's memory by the
+    slots times the reader's address-space limit.
+    """
+
+    def __init__(self) -> None:
+        self.total = 0
+        self.by_profile: dict[str, int] = {}
+
+    def take(self, profile: str) -> bool:
+        config = get_config()
+        if self.total >= config.git_judges:
+            return False
+        if self.by_profile.get(profile, 0) >= config.git_profile_judges:
+            return False
+        self.total += 1
+        self.by_profile[profile] = self.by_profile.get(profile, 0) + 1
+        return True
+
+    def release(self, profile: str) -> None:
+        self.total = max(self.total - 1, 0)
+        left = self.by_profile.get(profile, 0) - 1
+        if left > 0:
+            self.by_profile[profile] = left
+        else:
+            self.by_profile.pop(profile, None)
+
+
+_slots = _Slots()
+
+
+async def _hold(profile: str, judge: asyncio.Task[None], feeder: _Feeder, deadline: float) -> None:
+    """Keep the profile's judging slot until the reader has ended and the judge
+    task has settled, however the response ended; at the latest ``SLOT_GRACE``
+    past the deadline, which bounds both."""
+    try:
+        async with asyncio.timeout(deadline + SLOT_GRACE):
+            await feeder.over.wait()
+            await asyncio.wait({judge})
+    except TimeoutError:
+        logger.warning("git judge: a judging slot was released at its backstop")
+    finally:
+        _slots.release(profile)
 
 
 # --- the chunk key -------------------------------------------------------------
@@ -241,6 +305,8 @@ class _Feeder:
         self._task: asyncio.Task[None] | None = None
         self._finished = False
         self.refused: str | None = None
+        #: Set once the reader child has exited and the judge has been told no more is coming.
+        self.over = asyncio.Event()
 
     async def _started(self) -> asyncio.subprocess.Process | None:
         if self._proc is None and self.refused is None:
@@ -291,6 +357,7 @@ class _Feeder:
             await asyncio.shield(self._task)
         else:
             self._judge.close()
+            self.over.set()
 
     def done(self) -> bool:
         return self._finished and (self._task is None or self._task.done())
@@ -311,6 +378,7 @@ class _Feeder:
                 proc.kill()
             await proc.wait()
             self._judge.close()
+            self.over.set()
 
     async def _objects(self, proc: asyncio.subprocess.Process) -> bool:
         """Read the child's objects into the judge; True when the pack was whole.
@@ -329,6 +397,9 @@ class _Feeder:
                 self.refused = words[1] if words[1] in PACK_REASONS else "failed"
                 return False
             kind, oid, offset, length, over = _header(words, self._reading.max_inflated)
+            if self._judge.full():
+                self.refused = "too_many"
+                return False
             if over:
                 self._judge.submit_unread(oid, kind, "too_large")
                 continue
@@ -383,6 +454,10 @@ def _named(judge: GitJudge, refused: str | None, refs: int) -> list[bytes]:
     return [progress(line) for line in lines]
 
 
+def _unjudged(reason: str) -> bytes:
+    return progress(f"Trentina: unjudged pack ({reason})")
+
+
 def _progress(judge: GitJudge) -> bytes:
     judged, seen = judge.progress()
     return progress(f"Trentina: judged {judged}/{seen} objects")
@@ -391,6 +466,9 @@ def _progress(judge: GitJudge) -> bytes:
 def _found(flagged: object, unjudged: object) -> str | None:
     """The row's reason for what a fetch or listing found: a flag outranks a gap."""
     return "git_flagged" if flagged else "git_unjudged" if unjudged else None
+
+
+_COUNTS = ("git_objects", "git_flagged", "git_unjudged", "git_pending", "git_units", "git_cached")
 
 
 def _account(judge: GitJudge, refused: str | None) -> dict[str, str]:
@@ -421,9 +499,15 @@ class _FetchRelay:
         self.judge: GitJudge | None = None
         self.feeder: _Feeder | None = None
         self.refs = _flagged_refs.pop((fetch.profile.name, fetch.slug), 0)
+        self.busy = False
 
-    def _start(self) -> _Feeder:
+    def _start(self) -> _Feeder | None:
+        """The judging of this fetch, or None when no slot is free: the pack
+        then goes on unjudged, named ``busy``."""
         op, fetch = self.ctx.op, self.fetch
+        if self.busy or not _slots.take(fetch.profile.name):
+            self.busy = True
+            return None
         op.call_ref = op.call_ref or new_call_ref()
         self.judge = GitJudge(
             profile=fetch.profile,
@@ -443,9 +527,18 @@ class _FetchRelay:
             deadline=fetch.grant.judge_deadline,
             spool_dir=str(Path(config.perimeter_db_path).parent),
         )
-        self.judge.start(float(fetch.grant.judge_deadline))
+        task = self.judge.start(float(fetch.grant.judge_deadline))
         self.feeder = _Feeder(reading, self.judge)
+        hold = asyncio.ensure_future(
+            _hold(fetch.profile.name, task, self.feeder, float(fetch.grant.judge_deadline))
+        )
+        _CLOSING.add(hold)
+        hold.add_done_callback(_CLOSING.discard)
         return self.feeder
+
+    async def _feed(self, pack: bytes) -> None:
+        if feeder := self.feeder or self._start():
+            await feeder.feed(pack)
 
     async def take(self, piece: bytes) -> AsyncIterator[bytes]:
         """What to send on for one piece of the forge's answer."""
@@ -456,7 +549,7 @@ class _FetchRelay:
             elif event == "section_start":
                 out += PACKFILE_HEADER
             elif event == "pack":
-                await (self.feeder or self._start()).feed(value)
+                await self._feed(value)
                 out += self._hold(value)
             elif event == "forge_error":
                 out += progress("Trentina: the forge reported an error")
@@ -491,6 +584,9 @@ class _FetchRelay:
         held = b"".join(self.tail)
         self.tail.clear()
         self.tail_bytes = 0
+        if self.busy:
+            yield _unjudged(BUSY) + held
+            return
         if self.feeder is None or self.judge is None:
             yield held
             return
@@ -513,6 +609,14 @@ class _FetchRelay:
 
     def settle(self) -> None:
         op = self.ctx.op
+        if self.busy:
+            op.normalized = {
+                **dict.fromkeys(_COUNTS, "0"),
+                "git_pack": BUSY,
+            }
+            op.flag_reason = "git_unjudged"
+            op.settle(Outcome.OK, "git_unjudged")
+            return
         if self.judge is None:
             op.settle(Outcome.OK)
             return
