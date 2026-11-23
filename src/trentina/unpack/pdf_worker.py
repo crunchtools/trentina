@@ -48,7 +48,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any
 
-from pypdf import PdfReader, filters
+from pypdf import PdfReader, overwrite_configuration
 from pypdf.errors import PyPdfError
 from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, StreamObject
 
@@ -368,8 +368,10 @@ def _dictionaries(target: Any) -> list[DictionaryObject]:
 def main() -> int:
     resource.setrlimit(resource.RLIMIT_CPU, (CPU_SECONDS, CPU_SECONDS))
     resource.setrlimit(resource.RLIMIT_AS, (MEMORY_BYTES, MEMORY_BYTES))
-    filters.ZLIB_MAX_OUTPUT_LENGTH = MAX_STREAM_BYTES
-    filters.LZW_MAX_OUTPUT_LENGTH = MAX_STREAM_BYTES
+    overwrite_configuration(
+        zlib_maximum_output_length=MAX_STREAM_BYTES,
+        lzw_maximum_output_length=MAX_STREAM_BYTES,
+    )
     reader = PdfReader(io.BytesIO(sys.stdin.buffer.read()))
     if reader.is_encrypted and not reader.decrypt(""):
         json.dump({"encrypted": True}, sys.stdout)

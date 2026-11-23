@@ -14,6 +14,7 @@ under that name.
 
 ### Changed
 
+- pypdf 6.21.4 → 7.1.0 (#876, a1115). pypdf 7 raises `DeprecationError` from `PdfReader()` when the legacy `filters.*_MAX_OUTPUT_LENGTH` module constants are overridden, so the PDF worker now sets its 32 MB zlib/LZW inflation caps through `pypdf.overwrite_configuration`; the test fixture's removed `add_js` becomes `add_open_action(JavaScript(...))`. Both APIs exist back to the 6.19 floor.
 - **The verdict cache key carries the perimeter stamp, and the default judge is pinned to a dated build (a1061, constitution 2.20.0 condition 1).** The stamp (`PERIMETER_VERSION`, the L2 model, revision, threshold and gates) only marked the persisted row, so a change of L2 swept the store on load while an in-memory verdict kept being served until its TTL. It is now in every key. The default L3 judge was keyed as the alias `google/gemini-3.5-flash-lite`, which OpenRouter can repoint at a new build under a cached verdict; it is now asked for, keyed, pinned and packed as `google/gemini-3.5-flash-lite-20260721`, the build the pack gate measured. `judge_of` names an OpenRouter judge as the driver sends it, so the verdict key, the federation `judge_stamp` and `Provider.judge` agree. Google's API has no dated id for the model, so the `gemini` provider still sends the alias and the TTL bounds it.
 - Dependabot no longer proposes a new Python minor for the `hummingbird/python` base images; digest bumps within the pinned tag still arrive, and the next minor moves by hand once its wheels exist (#874).
 

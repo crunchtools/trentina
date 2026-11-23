@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 
 from pypdf import PdfWriter
+from pypdf.actions import JavaScript
 from pypdf.generic import (
     ArrayObject,
     DecodedStreamObject,
@@ -129,7 +130,7 @@ def pdf(
     for name, content in (attachments or {}).items():
         writer.add_attachment(name, content)
     if javascript:
-        writer.add_js(javascript)
+        writer.add_open_action(JavaScript(javascript))
     buffer = io.BytesIO()
     writer.write(buffer)
     return buffer.getvalue()
