@@ -61,6 +61,7 @@ if str(_REPO_ROOT) not in sys.path:
 from corpora.internal import ATTACKS
 from trentina import defense
 from trentina.defense import Provenance, defend
+from trentina.gateway.completion_envelope import not_ciphertext
 from trentina.quarantine import l3_cache
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.quarantine.prompts import COMPLETION_BRIEFING
@@ -174,7 +175,22 @@ def stub_l2(score: float) -> None:
 
 
 async def judge(body: str, briefing: str | None) -> dict[str, Any]:
-    """One reading of ``body`` by the layers, as the completion edge asks."""
+    """One reading of ``body``, as the completion edge reaches its verdict.
+
+    With the shipped briefing the edge also checks that the excused envelope
+    fields are ciphertext (``completion_envelope``) and flags a completion
+    whose fields are not, whatever L3 says. So when the check fires, no L3
+    call is made here: the verdict is already the edge's. ``--briefing none``
+    is the edge before a1013, which had neither.
+    """
+    if briefing is not None and await not_ciphertext(body):
+        return {
+            "flagged": True,
+            "flagged_by": "L1",
+            "risk": "high",
+            "unavailable": False,
+            "error": None,
+        }
     verdict = await defend(
         body,
         source="llm:benchmark:completion",
