@@ -653,7 +653,7 @@ async def quarantine_redact(
             content, prompt, briefing=extraction_briefing(detection)
         )
     except TruncatedResponseError:
-        logger.warning("Q-Agent extraction stopped at the output-token cap")
+        logger.warning("Q-Agent extraction stopped at the output-token cap %s", _failure_context())
         return CleanResult(refused_by="t2_truncated")
     except QuarantineAgentError as exc:
         logger.warning("Q-Agent extraction failed: %s %s", exc_kind(exc), _failure_context())
