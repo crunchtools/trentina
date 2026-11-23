@@ -12,6 +12,8 @@ under that name.
 
 ### Changed
 
+- **Prompt pack v2 candidate for gemini-2.5-flash-lite, and the pack gate counts cut-off answers (a1053, #908).** `benchmarks/packs/gemini-2.5-flash-lite.candidate.json` is now v1's prompts with the no-quote rule the completion edge got in #906 added to detection: quoting non-ASCII payload text looped the judge on escapes until `MAX_OUTPUT_TOKENS`, an unavailable judge on about 2% of readings. It is not shipped: it ships with `--emit` only once it beats a fresh briefed v1 baseline held-out. `benchmarks/prompt_pack.py` reports `truncated` (the `TruncatedResponseError` answers) per arm beside schema conformance.
+
 - **`agent-mints-releases` also catches ruleset and org Actions settings writes (a1093, #917).** mcp-github gains tools that set the org's fork PR approval policy, its Actions event policies (the `pull_request_target` allowance GitHub enforces from 2026-12-02) and org/repo rulesets. Each can lift what guards a release tag or decide which workflows run with secrets, so a write whose object is a `ruleset` or an `org` now counts as release-minting for a non-operator profile. [Tool filtering](docs/tool-filtering.md#releases-stay-with-the-operator) adds them to the deny and gives the operator's `literal_request_guards` pinning `org` to `crunchtools`.
 
 ## [6.28.0] - 2026-11-23
