@@ -1,8 +1,8 @@
 # trentina Constitution
 
-> **Version:** 2.25.0
+> **Version:** 2.26.0
 > **Ratified:** 2026-09-22
-> **Amended:** 2026-11-22
+> **Amended:** 2026-11-23
 > **Status:** Active
 > **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.53.0
 > **Profile:** Security Gateway
@@ -93,8 +93,8 @@ layer's weakness is fixed inside that layer or at model selection; read time
 is linear) are written in `docs/defense-pipeline.md` under the same heading,
 and `tests/test_layer_contract.py` enforces the first two.
 
-The one boundary at which a payload may be delivered without this gateway
-running its three layers is a **declared federation trust boundary** (#592):
+Two boundaries allow a payload to be delivered without this gateway running
+its three layers. The first is a **declared federation trust boundary** (#592):
 where an operator has pinned a federated upstream's key, perimeter stamp and
 judge, a response the upstream already scanned is delivered on its signed
 verdict instead of being re-judged. This is not an off switch — the layers ran
@@ -105,6 +105,27 @@ stamp and its judge, and it is fail-closed: an absent, forged, stale or
 mismatched verdict falls through to the full local pipeline. The carve-out
 lives in the response edge, never in a layer, so the four rules above still
 hold for every other ingress. See `docs/federation.md` and known gap 33.
+
+The second is a **typed field select** (#915): a `trentina_select` projection
+whose every leaf is a value with nothing in it for a layer to read. It is
+allowed only if all five hold:
+
+1. The leaves are picked from the raw result after the literal and semantic
+   response guards have read all of it, so a select narrows what is delivered
+   and never what a guard sees.
+2. Each leaf is typed by a regular expression or a fixed word list chosen by
+   its key and matched against its whole value (a hex SHA, a login, an ISO
+   timestamp, a closed state word), or is a number, boolean or null. A key
+   never makes a value safe on its own.
+3. Free text is never one of the types. Any other leaf sends the projection,
+   and only the projection, through all three layers under the call's mode.
+   Adding a type is a change to this contract and is reviewed as one.
+4. Every such delivery is audited (`gateway_calls.selected = unjudged`), and
+   the column is in the hash chain.
+5. A type an outsider can choose is a numbered known gap with a hold-open
+   test: a login (gap 35).
+
+See `docs/field-select.md`.
 
 A **verdict cache** is not a skipped layer: it serves a verdict a layer
 already reached on the same input, the layer's own read reused (#816). A
@@ -541,3 +562,4 @@ justification in `gourmand-exceptions.toml`.
 | 2.23.0 | 2026-11-22 | Decoys: a honeytoken is checked in what leaves by `/proxy/http` and `/proxy/llm` too (#865), not only in a tool call's arguments. Each route checks the raw request first (`orchestrator.outbound_trip`), before any other refusal, an admission count or a cached verdict, so a body no layer reads or a count past its deadline cannot carry a token out; on `/proxy/llm` a tool result is left out where its API puts it and only when it answers a call made earlier in the same request, since an agent that read the planted file carries it in its history without sending it; an agent forging both a call and its answer is the residual. A trip refuses a trip in every mode, `flag` included, as a trip refuses on MCP regardless of mode. The agent is told `flagged`, which names nothing a caller can use; the audit row is `decoy_tripped`. Git, Matrix and the CONNECT tunnel stay documented gaps. Kept deterministic and outside the layers: no model reads the match, and no layer is skipped for a request that is not a trip. `PERIMETER_VERSION` does not move: no verdict a layer reaches changes |
 | 2.24.0 | 2026-11-22 | Credentials in Tool-Call Arguments added (#862), CTO ruling: an MCP `tools/call` whose arguments carry a credential shape is refused as `denied_guard` in every mode, `flag` included, unless the backend lists that kind in `credentials_allowed` for the tool or for every tool. The list is validated at load (unknown kinds and `*` beside named kinds fail), the refusal and audit row carry the kinds and the tool and never the value, and `trentina-credential-replay` reads past calls to print the allowances a profile would need before the block is deployed. Deterministic and outside the layers; the judge-side redaction of #863 stays. `PERIMETER_VERSION` does not move: no verdict a layer reaches changes |
 | 2.25.0 | 2026-11-22 | Human Approval gains a sixth decision (#883), CTO ruling: widening `credentials_allowed` through `config_tool` (a kind, or `*`, a tool may newly carry past the #862 guard) is proposed by the operator agent and applied only on a person's approval. Compared by coverage, so `["*"]` narrowed to named kinds is a narrowing and applies at once, as every withdrawal does. An agent reload holds each backend's allowance, as it holds `federated`. `PERIMETER_VERSION` does not move: no verdict changes |
+| 2.26.0 | 2026-11-23 | Layer Contract gains a second boundary (#915, a1084), CTO ruling: a typed field select. In a1079 a seat needed review `commit_id`s and logins; `block` refused the list for one flagged body, `redact` garbled the SHAs, and the seat went to the forge around the gateway. `trentina_select` picks paths out of the raw result, and a projection whose every leaf is a regex- or word-list-typed value by key and value, or a number, boolean or null, is delivered unread, on five conditions: response guards read the whole result first, a key alone never types a value, free text is never a type and anything else sends the projection alone through the layers, every such delivery is audited and hash-chained, and an outsider-chosen type is a numbered gap (35, a login). Gatehouse flagged it CRITICAL as an unauthorized exception, which it was until this row. `PERIMETER_VERSION` does not move: no verdict a layer reaches changes |

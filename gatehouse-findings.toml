@@ -82,3 +82,27 @@ file = "src/trentina/defense.py"
 evidence = "if day is None:\n    return {\"injection_detected\": False, \"l3_unavailable\": True, \"l3_quota\": True}"
 status = "not-a-bug"
 reason = "A spent quota is a gap, not a pass: block and redact refuse on l3_quota whatever TRENTINA_REQUIRE_L3 says, stricter than l3_unavailable, as #891 specifies. flag delivering through a gap with the warning is the existing rule for every gap, l3_unavailable included (core/dispose.py, docs/defense-pipeline.md); flag is the deliberate-reading grant, kept out of agent policies. Ruled on by Josui Prime for #898 (flag delivers with the verdict attached)."
+
+[[findings]]
+agent = "constitution"
+category = "constitution"
+file = "src/trentina/transports/mcp.py"
+evidence = "if projection.safe:\n    current_select.set(field_select.UNJUDGED)\n    return Assembled(\n        {\"content\": [block], \"isError\": call_result.is_error}, ok, stripped=arrived.stripped\n    )"
+status = "not-a-bug"
+reason = "Authorized by constitution 2.26.0 (#915), added in this change: the Layer Contract now names a typed field select as its second boundary, on five conditions this code meets (guards read the whole result first, a key alone never types a value, free text is never a type, every such delivery is audited and hash-chained as selected=unjudged, gap 35 names the login residual). Same path as 2.20.0 took for verdict caches."
+
+[[findings]]
+agent = "security"
+category = "security"
+file = "src/trentina/gateway/field_select.py"
+evidence = "if key == \"login\":\n    return _LOGIN.fullmatch(value) is not None"
+status = "not-a-bug"
+reason = "The stated residual, not an oversight: known gap 35 with a hold-open test in tests/test_coverage_gaps.py, constitution 2.26.0 condition 5. A login is at most 39 letters, digits and single hyphens. Judging logins is the redact path that garbled values in a1079, which is what pushed a seat around the gateway; the brief (a1084) asks for logins delivered exact."
+
+[[findings]]
+agent = "performance"
+category = "performance"
+file = "src/trentina/gateway/field_select.py"
+evidence = "for path in paths:\n    picked = _merge(picked, _pick(document, path))"
+status = "not-a-bug"
+reason = "Bounded and linear: at most 32 paths, each walking only the nodes on its own path (one visit per list element it crosses), so the cost is O(paths x matched nodes) over a result already capped at the backend response limit. Next to the transform and an L2 scan of the same result it is noise, and the unjudged path skips both. A trie would save microseconds for more code."
