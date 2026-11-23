@@ -48,7 +48,7 @@ from typing import TYPE_CHECKING
 
 from ..config import get_config
 from ..quarantine.packs import SUPPORTED, pack_for, supported_judges
-from ..quarantine.providers import openrouter_model
+from ..quarantine.providers import driver_model
 from .context import _current_profile
 
 if TYPE_CHECKING:
@@ -164,9 +164,11 @@ def judge_of(profile: Profile | None) -> tuple[str, str]:
     """The (provider, model) that L3 runs on for ``profile``.
 
     The same resolution the Q-Agent applies: the profile's override, else the
-    env default. None is the env default itself. An OpenRouter model is named
-    as the driver sends it (a1061), so a verdict key and a federation pin carry
-    the dated build rather than an alias, and agree with ``Provider.judge``.
+    env default. None is the env default itself. The model is named as the
+    driver sends it (``driver_model``): an OpenRouter alias as its dated build
+    (a1061), and the Gemini default on anthropic, openai or ollama as that
+    provider's own default (#922), so a verdict key and a federation pin agree
+    with ``Provider.judge``.
     """
     config = get_config()
     if profile is None:
@@ -174,7 +176,7 @@ def judge_of(profile: Profile | None) -> tuple[str, str]:
     else:
         provider = profile.defense.provider or config.provider
         model = profile.defense.model or config.model
-    return provider, openrouter_model(model) if provider == "openrouter" else model
+    return provider, driver_model(provider, model)
 
 
 def judge_stamp(profile: Profile | None) -> str:

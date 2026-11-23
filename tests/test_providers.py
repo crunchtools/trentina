@@ -426,6 +426,63 @@ class TestGetProviderFactory:
         config_mod._config = None
 
 
+class TestJudgeOfAgreesWithTheDriver:
+    """``judge_of`` names the model ``Provider.judge`` does (#922).
+
+    On the default model anthropic, openai and ollama each send their own
+    default, not the Gemini one; the verdict key, the federation pin and the
+    pack lookup used to name the Gemini default anyway.
+    """
+
+    def setup_method(self) -> None:
+        reset_provider()
+
+    def teardown_method(self) -> None:
+        reset_provider()
+
+    @pytest.mark.parametrize(
+        ("provider_name", "key_env", "model"),
+        [
+            ("gemini", "GEMINI_API_KEY", "gemini-3.5-flash-lite"),
+            ("openai", "OPENAI_API_KEY", "gpt-4o-mini"),
+            ("anthropic", "ANTHROPIC_API_KEY", "claude-haiku-4-5-20251001"),
+            ("ollama", None, "qwen-judge:1b"),
+            ("openrouter", "OPENROUTER_API_KEY", "google/gemini-3.5-flash-lite-20260721"),
+        ],
+    )
+    def test_on_the_default_model(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        provider_name: str,
+        key_env: str | None,
+        model: str,
+    ) -> None:
+        from trentina import config as config_mod
+        from trentina.gateway.service import judge_of
+
+        monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", provider_name)
+        monkeypatch.delenv("QUARANTINE_MODEL", raising=False)
+        monkeypatch.setenv("OLLAMA_MODEL", "qwen-judge:1b")
+        if key_env:
+            monkeypatch.setenv(key_env, "test-key")
+        config_mod._config = None
+
+        assert judge_of(None) == get_provider().judge == (provider_name, model)
+        config_mod._config = None
+
+    def test_an_explicit_model_is_sent_as_named(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trentina import config as config_mod
+        from trentina.gateway.service import judge_of
+
+        monkeypatch.setenv("TRENTINA_MODEL_PROVIDER", "anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.setenv("QUARANTINE_MODEL", "claude-sonnet-5-5")
+        config_mod._config = None
+
+        assert judge_of(None) == get_provider().judge == ("anthropic", "claude-sonnet-5-5")
+        config_mod._config = None
+
+
 class TestJudgeBaseUrl:
     """TRENTINA_ANTHROPIC_BASE_URL / TRENTINA_OPENAI_BASE_URL: where those two judges post."""
 

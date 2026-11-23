@@ -16,6 +16,10 @@ under that name.
 
 - **The verdict cache key carries the perimeter stamp, and the default judge is pinned to a dated build (a1061, constitution 2.20.0 condition 1).** The stamp (`PERIMETER_VERSION`, the L2 model, revision, threshold and gates) only marked the persisted row, so a change of L2 swept the store on load while an in-memory verdict kept being served until its TTL. It is now in every key. The default L3 judge was keyed as the alias `google/gemini-3.5-flash-lite`, which OpenRouter can repoint at a new build under a cached verdict; it is now asked for, keyed, pinned and packed as `google/gemini-3.5-flash-lite-20260721`, the build the pack gate measured. `judge_of` names an OpenRouter judge as the driver sends it, so the verdict key, the federation `judge_stamp` and `Provider.judge` agree. Google's API has no dated id for the model, so the `gemini` provider still sends the alias and the TTL bounds it.
 
+### Fixed
+
+- **`judge_of` names the model the judge runs on for anthropic, openai and ollama (#922, a1111).** With `QUARANTINE_MODEL` unset, those drivers swap the Gemini default for their own (`claude-haiku-4-5-20251001`, `gpt-4o-mini`, `OLLAMA_MODEL`), but `judge_of` still reported `gemini-3.5-flash-lite`, so the verdict key, `judge_stamp` and the pack lookup named a model that never reached the verdict. One `driver_model` now resolves the per-provider default for `get_provider`, `judge_of` and `pack_for`. **Migration:** a federation peer pinning `trust_verdict.judge` for such a gateway re-pins to the reported spelling; its cached verdicts are judged once more.
+
 ## [6.29.0] - 2026-11-23
 
 **Migration:** verify the audit log with this release's `trentina-audit-verify` (#915). An older one does not know the new `selected` column and reports a break at the first row carrying it.
