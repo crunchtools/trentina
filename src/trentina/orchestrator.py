@@ -617,7 +617,8 @@ async def judge_llm_completion(
     response edge.
 
     Args:
-        text: The assembled completion as text the layers read.
+        text: The assembled completion. The layers read it with its verified
+            provider ciphertext replaced by placeholders (``completion_envelope``).
         profile: The calling profile, whose ``defense`` settings the scan runs under.
         provider_name: The upstream provider (server-configured; the row's backend).
         deadline: Seconds the scan may take before a timeout counts as unjudged.
@@ -631,13 +632,16 @@ async def judge_llm_completion(
         # test seam, and — like the original inline scan — an import failure is
         # caught here rather than left to fail the background task unhandled.
         from .defense import defend
-        from .gateway.completion_envelope import non_ciphertext_fields
+        from .gateway.completion_envelope import strip_ciphertext
 
         with profile_context(profile):
             async with asyncio.timeout(deadline):
-                forged = await non_ciphertext_fields(text)
+                # Verified provider ciphertext is a placeholder by the time
+                # any layer reads the body; a field that fails the check
+                # stays in it and flags below.
+                judged, forged = await strip_ciphertext(text)
                 verdict = await defend(
-                    text,
+                    judged,
                     source=f"llm:{profile.name}:{provider_name}",
                     source_type="llm_completion",
                     defense=profile.defense,

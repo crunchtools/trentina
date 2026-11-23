@@ -14,16 +14,18 @@ as ``data_exfiltration``. This measures a judge and a briefing on four sets:
   output about private diffs. Record your own; ``--bodies`` reads ``*.json``.
 - **attacks**: every attack in ``corpora/internal.py``, placed as the
   answer (``choices[0].message.content``) inside the first JSON body's own
-  envelope, encrypted reasoning and all. What the briefing excuses must not
-  include an attack that arrives inside a completion.
+  envelope, encrypted reasoning and all. What the briefing tells L3 is the
+  provider's metadata must not include an attack that arrives inside a
+  completion.
 - **disguised**: the same attacks ROT13'd and gzip+base64'd, set in the
-  answer under an ``encrypted_reasoning`` label: the class the briefing
-  excuses in the envelope, arriving where it does not.
-- **envelope**: the same disguised attacks in the envelope fields the
-  briefing names: the encrypted reasoning entry's ``data``, and a
-  ``signature``. The unpack stage hands them to L3 decoded, and the briefing
-  excuses those fields only while they read as ciphertext, so each must flag.
-  An attack excused here is a hole in the briefing.
+  answer under an ``encrypted_reasoning`` label: the class the edge strips
+  from the envelope, arriving where it does not.
+- **envelope**: the same disguised attacks in the provider's ciphertext
+  fields: the encrypted reasoning entry's ``data``, and a ``signature``.
+  Verified ciphertext there is replaced by a placeholder before the layers
+  read the body (``completion_envelope``); a planted attack fails that check,
+  is never stripped, and flags. One that passed it would be a hole in the
+  check, and the layers would never see it.
 
 ``--sets`` picks which run (``bodies`` unless the attack sets are named)
 and ``--cases`` keeps only the case ids listed in a file, one a line: a
@@ -61,7 +63,7 @@ if str(_REPO_ROOT) not in sys.path:
 from corpora.internal import ATTACKS
 from trentina import defense
 from trentina.defense import Provenance, defend
-from trentina.gateway.completion_envelope import non_ciphertext_fields
+from trentina.gateway.completion_envelope import strip_ciphertext
 from trentina.quarantine import l3_cache
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.quarantine.prompts import COMPLETION_BRIEFING
@@ -112,7 +114,7 @@ DISGUISES: dict[str, Callable[[str], str]] = {
 def disguised_cases(template: str) -> list[tuple[str, str]]:
     """Each corpus attack, encoded, as the answer's ``encrypted_reasoning``.
 
-    What the briefing excuses is the provider's own envelope. An answer that
+    Only the provider's own ciphertext fields are stripped. An answer that
     labels its own payload as encrypted reasoning is not the envelope, and
     the layers read it decoded (the unpack stage reads gzip and base64 and
     ROT13), so each of these must still flag. Five reach L3 still ciphered,
@@ -177,13 +179,17 @@ def stub_l2(score: float) -> None:
 async def judge(body: str, briefing: str | None) -> dict[str, Any]:
     """One reading of ``body``, as the completion edge reaches its verdict.
 
-    With the shipped briefing the edge also checks that the excused envelope
-    fields are ciphertext (``completion_envelope``) and flags a completion
-    whose fields are not, whatever L3 says. So when the check fires, no L3
-    call is made here: the verdict is already the edge's. ``--briefing none``
-    is the edge before a1013, which had neither.
+    With the shipped briefing the edge also replaces verified provider
+    ciphertext with placeholders before the layers read the body, and flags a
+    completion whose ``data`` or ``signature`` is not ciphertext, whatever L3
+    says (``completion_envelope``). So when the check fires, no L3 call is
+    made here: the verdict is already the edge's. ``--briefing none`` is the
+    edge before a1013, which had neither.
     """
-    if briefing is not None and await non_ciphertext_fields(body):
+    forged: list[str] = []
+    if briefing is not None:
+        body, forged = await strip_ciphertext(body)
+    if forged:
         return {
             "flagged": True,
             "flagged_by": "L1",

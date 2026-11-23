@@ -152,13 +152,15 @@ consuming agent's trust posture, not of which provider answered.
   waiting can make; `redact` is meaningless on a token stream and is refused.
 
 Either way L3 is briefed that it reads a provider's response
-(`prompts.COMPLETION_BRIEFING`, a1013), and no other edge is: the provider's
-envelope is excused and nothing else, and an answer that analyses a
-vulnerability is the model's work for its user. Without it
-gemini-2.5-flash-lite flagged about one Gatehouse completion in six. Whether an
-excused field really is ciphertext is not asked of L3:
-`gateway/completion_envelope.py` flags a completion whose `signature` or
-encrypted-reasoning `data` is anything but one base64 token no layer can read.
+(`prompts.COMPLETION_BRIEFING`, a1013), and no other edge is: an answer that
+analyses a vulnerability is the model's work for its user. Without it
+gemini-2.5-flash-lite flagged about one Gatehouse completion in six. Provider
+ciphertext never reaches the layers: `gateway/completion_envelope.py` checks
+each `signature` and encrypted-reasoning `data`, and one that is a single
+base64 token no layer can read is replaced by
+`[provider ciphertext: <field>, <n> bytes, verified]` before L1, L2 or L3 read
+the body. One that is anything else stays in the body and flags the
+completion. The agent still receives the completion unaltered.
 `benchmarks/llm_completion.py` measures both on recorded bodies and on attacks
 planted in the answer and in those fields.
 
